@@ -122,6 +122,9 @@ jobs:
           set -e
           lk actor
           lk target "$TARGET"
+          lk walkthrough --non-interactive --steps 1
+          grep -q "LIVE EXECUTION" .audit/walkthrough/model.json || true
+          test -f script/LowkeyWalkthrough_Fixture.s.sol
           lk status
           lk context
           lk signals
