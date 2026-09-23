@@ -151,6 +151,32 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertEqual(payload["contractName"], "Escrow")
 
 
+    def test_find_artifact_accepts_source_artifact_without_bytecode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "EthEscrow.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Escrow {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "EthEscrow.sol" / "Escrow.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Escrow",
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            found = generator.find_artifact(root, "EthEscrow")
+
+            self.assertIsNotNone(found)
+            self.assertEqual(found[0], artifact)
+            self.assertEqual(found[1]["contractName"], "Escrow")
+
+
     def test_find_artifact_resolves_source_filename_symbol(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
