@@ -57,7 +57,7 @@ class AuditContextTests(unittest.TestCase):
             second = audit_context.add_signal(signal, root)
             self.assertEqual(second["id"], first_id)
             self.assertEqual(len(audit_context.signals(root)), 1)
-            self.assertEqual(second["status"], "open")
+            self.assertEqual(second["status"], "investigating")
 
     def test_update_signal_status_records_triage(self):
         with tempfile.TemporaryDirectory() as tmp:
