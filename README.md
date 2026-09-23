@@ -497,3 +497,5 @@ Target resolution is project-first:
 A live target is still required for state-changing investigation commands such as lk changes,
 because those commands need an address on the connected chain.
 
+
+<!-- unified regression gate: keep branch tip continuously validated -->
