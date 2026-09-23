@@ -747,7 +747,11 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         request.calldata = encoded.removeprefix("0x")
 
     artifact = find_artifact(root)
-    contract = str(artifact[1].get("contractName")) if artifact else "Target"
+    if artifact:
+        payload = artifact[1]
+        contract = str(payload.get("contractName") or artifact[0].stem or "Target")
+    else:
+        contract = "Target"
     ident = _id(contract, "Target")
     if kind == "poc":
         content = _template_poc(contract, request.target, request.function or "raw-call", request.value, request.calldata)
