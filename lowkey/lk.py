@@ -2050,7 +2050,20 @@ def parse_deployed_address(output):
     # accidentally selecting an unrelated address from compiler output.
     return None
 
-def artifact_source_name(artifact, path):
+def _configured_src_prefix(root):
+    root_path = Path(root).expanduser().resolve()
+    src_prefix = "src"
+    try:
+        foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'(?m)^\\s*src\\s*=\\s*"([^"]+)"', foundry)
+        if match:
+            src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
+    except OSError:
+        pass
+    return src_prefix
+
+
+def artifact_source_name(artifact, path, root=None):
     if isinstance(artifact, dict) and artifact.get("sourceName"):
         return str(artifact.get("sourceName")).replace("\\", "/").lstrip("./")
 
@@ -2064,19 +2077,51 @@ def artifact_source_name(artifact, path):
                 contract_name = artifact_contract_name(path, artifact)
                 preferred = [
                     name for name in sources
-                    if Path(name).name == f"{contract_dir}"
+                    if Path(name).name == contract_dir
                     or Path(name).stem == contract_dir
                     or Path(name).stem == contract_name
                 ]
+                if root is not None:
+                    src_prefix = _configured_src_prefix(root)
+                    root_path = Path(root).expanduser().resolve()
+                    for name in preferred:
+                        normalized = str(name).replace("\\", "/").lstrip("./")
+                        candidate = root_path / normalized
+                        if (normalized == src_prefix or normalized.startswith(src_prefix + "/")) and candidate.is_file():
+                            return normalized
                 if preferred:
-                    return preferred[0]
-                if sources:
-                    return next(iter(sources))
+                    return str(preferred[0]).replace("\\", "/").lstrip("./")
+                if root is None and sources:
+                    return str(next(iter(sources))).replace("\\", "/").lstrip("./")
         except (json.JSONDecodeError, TypeError):
             pass
-    # Never guess a source path from the artifact directory. Foundry's
-    # output directory flattens dependency source roots, so e.g.
-    # out/Address.sol/Address.json does not imply src/Address.sol.
+
+    # When Foundry did not retain sourceName, recover the source only from
+    # the current project source tree. Never invent a source path from the
+    # artifact directory alone.
+    if root is not None:
+        root_path = Path(root).expanduser().resolve()
+        src_prefix = _configured_src_prefix(root_path)
+        src_root = root_path / src_prefix
+        contract_name = artifact_contract_name(path, artifact)
+        contract_dir = Path(path).parent.name
+
+        candidates = []
+        direct = src_root / contract_dir
+        if direct.is_file():
+            candidates.append(direct)
+
+        named = sorted(src_root.rglob(f"{contract_name}.sol")) if src_root.is_dir() else []
+        candidates.extend(p for p in named if p not in candidates)
+
+        for candidate in candidates:
+            try:
+                normalized = candidate.relative_to(root_path).as_posix()
+            except ValueError:
+                continue
+            if normalized == src_prefix or normalized.startswith(src_prefix + "/"):
+                return normalized
+
     return None
 
 def artifact_constructor_inputs(artifact):
@@ -2100,7 +2145,7 @@ def artifact_is_project_application(root, path, artifact):
         return False
 
     root_path = Path(root).expanduser().resolve()
-    source = artifact_source_name(artifact, path)
+    source = artifact_source_name(artifact, path, root)
     if not source:
         return False
 
@@ -2194,7 +2239,7 @@ def discover_generic_lab_contract(root, query=None):
         elif "test" in lowered_path:
             score = 90
         constructor_inputs = artifact_constructor_inputs(artifact)
-        source = artifact_source_name(artifact, path)
+        source = artifact_source_name(artifact, path, root)
         fqn = f"{source}:{contract}" if source else None
         if not fqn:
             continue
