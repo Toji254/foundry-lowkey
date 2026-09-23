@@ -1524,24 +1524,27 @@ contract Escrow {
         self.assertNotEqual(first, third)
 
     def test_state_diff_parser_accepts_fallback_write(self):
-        output = """
-[PASS] test_state_diff() (gas: 123)
-Logs:
-  CALL createescrow(uint256,address)
-  SUCCESS true
-  ETH_SENT 1000000000000000000
-  FALLBACK_WRITES 1
-  SLOT
-  0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  FROM
-  unknown
-  TO
-  0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  STORAGE_CHANGES 0
-"""
+        slot = "0x" + "a" * 64
+        after = "0x" + "b" * 64
+        output = (
+            "[PASS] test_state_diff() (gas: 123)\n"
+            "Logs:\n"
+            "  CALL createescrow(uint256,address)\n"
+            "  SUCCESS true\n"
+            "  ETH_SENT 1000000000000000000\n"
+            "  FALLBACK_WRITES 1\n"
+            "  SLOT\n"
+            "  " + slot + "\n"
+            "  FROM\n"
+            "  unknown\n"
+            "  TO\n"
+            "  " + after + "\n"
+            "  STORAGE_CHANGES 0\n"
+        )
         parsed = lk.parse_state_diff_output(output)
         self.assertEqual(parsed["fallback_writes"], 1)
         self.assertEqual(len(parsed["slots"]), 1)
+        self.assertEqual(parsed["slots"][0]["slot"], slot)
         self.assertEqual(parsed["slots"][0]["from"], "unknown")
 
     def test_state_diff_parser_extracts_json_storage_write(self):
