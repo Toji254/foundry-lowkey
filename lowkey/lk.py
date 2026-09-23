@@ -453,6 +453,96 @@ def foundry_project_root(start="."):
             return str(parent)
     return None
 
+def path_is_within(path, root):
+    try:
+        Path(path).expanduser().resolve().relative_to(Path(root).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+def project_context_target(root=None):
+    """Return the current project's remembered target, ignoring stale legacy data."""
+    project_root = audit_context.foundry_project_root(root)
+    context = audit_context.load(project_root)
+    target = context.get("target", {})
+    if not isinstance(target, dict) or not is_address(target.get("address")):
+        return None
+
+    source = target.get("source")
+    artifact = target.get("artifact")
+    contract = target.get("contract")
+
+    # Older contexts may contain a global target copied from another project.
+    # Accept an explicitly recorded project target, or legacy targets that still
+    # point at a contract/artifact belonging to this project.
+    if source in {"manual", "auto", "project"}:
+        return target
+    if artifact and path_is_within(artifact, project_root):
+        return target
+    if contract and artifact:
+        return target
+    return None
+
+def active_project_target(config, root=None):
+    """Resolve a target for the current Foundry project before using global config."""
+    project_root = audit_context.foundry_project_root(root)
+    target = project_context_target(project_root)
+    if target:
+        return target.get("address")
+
+    global_target = config.get("target")
+    if not is_address(global_target):
+        return None
+
+    # Never reuse a target whose remembered project root belongs elsewhere.
+    configured_root = configured_project_root(global_target, config)
+    if configured_root and Path(configured_root).resolve() == Path(project_root).resolve():
+        return global_target
+    return None
+
+def activate_project_target(config, root=None):
+    """Hydrate legacy command config from the current project's target memory."""
+    project_root = audit_context.foundry_project_root(root)
+    target = project_context_target(project_root)
+    if not target:
+        if not active_project_target(config, project_root):
+            config["target"] = None
+        return None
+
+    config["target"] = target.get("address")
+    if target.get("contract"):
+        config["target_contract"] = target["contract"]
+    if target.get("artifact"):
+        config.setdefault("abi_paths", {})[target["address"]] = target["artifact"]
+    return target["address"]
+
+def project_artifact_function_matches(root, query):
+    """Find ABI functions directly from the current project's build artifacts."""
+    matches = []
+    query_lower = str(query or "").lower()
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not isinstance(artifact, dict):
+            continue
+        abi = artifact.get("abi", [])
+        if not isinstance(abi, list):
+            continue
+        contract = artifact_contract_name(path, artifact)
+        for item in abi_functions(abi):
+            signature = format_signature(item)
+            candidate = signature.lower()
+            name = str(item.get("name") or "").lower()
+            if not query_lower or query_lower in candidate or query_lower == name:
+                matches.append((contract, signature, path))
+    # Exact signatures/names first, then shortest contract/path ordering.
+    matches.sort(key=lambda item: (
+        0 if str(query).lower() == item[1].lower() else
+        1 if str(query).lower() == item[1].split("(", 1)[0].lower() else 2,
+        item[0].lower(),
+        item[1].lower(),
+    ))
+    return matches
+
 def configured_project_root(target,config):
     roots=config.get("project_roots",{}) if isinstance(config,dict) else {}
     root=roots.get(target) if isinstance(roots,dict) else None
@@ -722,8 +812,21 @@ def run_abi(config):
             for item in items:
                 print(f"  {format_signature(item)}")
 def run_functions(config,query=None):
-    target=config.get("target")
-    if not target: return fail("Error: Set target first.")
+    root=audit_context.foundry_project_root()
+    target=active_project_target(config,root)
+    if not target:
+        if not query:
+            return fail("Error: no project target selected. Use 'lk fn <function>' to search build artifacts, or deploy and run 'lk target auto'.")
+        matches=project_artifact_function_matches(root,query)
+        if not matches:
+            return fail(f"Error: no built-project function matched '{query}'. Run 'forge build' first.")
+        print(f"Built-project function matches for '{query}':")
+        for index,(contract,signature,path) in enumerate(matches[:12],1):
+            print(f"  {index:>2}. {contract}::{signature}")
+            print(f"      ABI: {path}")
+        print("\nNo live target selected. Deploy a contract before using lk changes/trace against it.")
+        return 0
+
     functions=abi_functions(load_abi(target,config))
     if not functions: return fail("Error: No ABI functions loaded for the current target.")
     getter_names=storage_getter_names(target,config,functions)
@@ -1696,9 +1799,14 @@ def run_deployments(config):
         seen.add(key); print(f"{r['contract']:<24} {r['address']}  {r['file']}")
 
 def run_auto_target(config,name=None):
-    records=discover_deployments(".")
+    root=audit_context.foundry_project_root()
+    records=discover_deployments(root)
     if not records:
-        return fail("No deployment found in broadcast/. Run your Foundry deploy script with --broadcast first.")
+        existing=project_context_target(root)
+        if existing:
+            print(f"Target already remembered for this project: {existing.get('contract') or 'unknown'} -> {existing.get('address')}")
+            return 0
+        return fail("No deployment found in broadcast/. Build artifacts exist, but a live target still needs deployment.")
 
     record=None
     if name:
@@ -1721,16 +1829,25 @@ def run_auto_target(config,name=None):
     config["targets"][alias]=record["address"]
     config["target"]=record["address"]
 
-    for path in local_artifact_paths():
+    artifact_path=None
+    for path in local_artifact_paths(root):
         artifact=read_artifact(path) or {}
         contract_name=artifact_contract_name(path,artifact)
         if contract_name.lower()==str(record["contract"]).lower():
+            artifact_path=path
             config["abi_paths"][record["address"]]=path
             print(f"ABI auto-loaded: {path}")
             break
 
     config["target_contract"]=record["contract"]
     save_config(config)
+    audit_context.set_target(
+        root,
+        address=record["address"],
+        contract=record["contract"],
+        artifact=artifact_path,
+        source="auto",
+    )
     print(f"Target selected: {alias} -> {record['address']}")
     return 0
 
@@ -3595,17 +3712,20 @@ def run_investigate(config, args):
 def _sync_audit_context(config, root=None):
     root = root or audit_context.foundry_project_root()
     existing = audit_context.load(root)
-    existing_target = existing.get("target", {}) if isinstance(existing.get("target"), dict) else {}
-
+    existing_target = project_context_target(root) or {}
     target = dict(existing_target)
-    candidates = {
-        "address": config.get("target"),
-        "contract": config.get("target_contract"),
-        "artifact": config.get("abi_paths", {}).get(config.get("target")),
-    }
-    for key, value in candidates.items():
-        if value:
-            target[key] = value
+
+    # Project-local target memory wins. A global target from another Foundry
+    # project must never leak into this context.
+    if not target:
+        global_target = active_project_target(config, root)
+        if global_target:
+            target = {
+                "address": global_target,
+                "contract": config.get("target_contract"),
+                "artifact": config.get("abi_paths", {}).get(global_target),
+                "source": "legacy-global",
+            }
 
     actor = actor_display(config)
     if actor == "none":
@@ -4029,13 +4149,26 @@ NOTES
 """)
 
 def dispatch_command(cmd,args,config,from_batch=False):
+    activate_project_target(config)
     if cmd in {"--h","--help","-h","help"}: print_help()
     elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.1 — Foundry Attack Lab")
     elif cmd=="target":
-        if not args: print(f"Current target: {config.get('target') or 'none'}"); return
-        if args[0]=="reset": config["target"]=None
-        elif args[0]=="list": run_targets(config); return
-        elif args[0]=="auto": run_auto_target(config,args[1] if len(args)>1 else None); return
+        root=audit_context.foundry_project_root()
+        current=active_project_target(config,root)
+        if not args:
+            project=project_context_target(root)
+            if project:
+                print(f"Current project target: {project.get('contract') or 'unknown'} -> {project.get('address')}")
+            else:
+                print(f"Current project target: {current or 'none'}")
+            return
+        if args[0]=="reset":
+            config["target"]=None
+            audit_context.set_target(root, address=None, contract=None, artifact=None, source="project")
+        elif args[0]=="list":
+            run_targets(config); return
+        elif args[0]=="auto":
+            return run_auto_target(config,args[1] if len(args)>1 else None)
         elif len(args)==1:
             resolved=resolve_target_ref(config,args[0])
             if resolved:
@@ -4044,7 +4177,25 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 config["target"]=args[0]
             else:
                 return run_auto_target(config,args[0])
-        elif len(args)==2 and is_address(args[1]): config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]
+            audit_context.set_target(
+                root,
+                address=config["target"],
+                contract=config.get("target_contract"),
+                artifact=config.get("abi_paths",{}).get(config["target"]),
+                source="manual",
+            )
+        elif len(args)==2 and is_address(args[1]):
+            config["aliases"][args[0]]=args[1]
+            config["targets"][args[0]]=args[1]
+            config["target"]=args[1]
+            config["target_contract"]=args[0]
+            audit_context.set_target(
+                root,
+                address=args[1],
+                contract=args[0],
+                artifact=config.get("abi_paths",{}).get(args[1]),
+                source="manual",
+            )
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
     elif cmd in {"targets","target-list"}: run_targets(config)
