@@ -292,11 +292,18 @@ def _select_finding(findings: list[dict[str, Any]], index: int | None = None) ->
         return None
     if index is not None:
         return findings[index - 1] if 1 <= index <= len(findings) else None
+    actionable = [
+        item for item in findings
+        if str(item.get("impact", "informational")).lower() in {"high", "medium", "low"}
+    ]
+    pool = actionable or []
+    if not pool:
+        return None
     return sorted(
-        findings,
+        pool,
         key=lambda x: (
-            IMPACT_ORDER.get(x.get("impact", "informational"), 99),
-            0 if x.get("confidence") == "high" else 1,
+            IMPACT_ORDER.get(str(x.get("impact", "informational")).lower(), 99),
+            0 if str(x.get("confidence", "unknown")).lower() == "high" else 1,
             -len(x.get("locations", [])),
         ),
     )[0]
@@ -575,7 +582,7 @@ contract Poc_{slug} is Test {{
             "last_tx": config.get("last_tx"),
             "rpc": config.get("rpc"),
         },
-        "poc_file": str(sol_path.relative_to(Path(root).resolve())),
+        "poc_file": os.path.relpath(sol_path.resolve(), Path(root).resolve()),
         "refinement_checklist": [
             "Resolve exact function/signature and calldata.",
             "Set attacker identities, balances, and pre-state.",
