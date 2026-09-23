@@ -1584,7 +1584,7 @@ contract LowkeyProbe is Test {{
 }}
 '''
         write_generated_test("probe_"+signature.split("(",1)[0],body)
-        code=run_foundry(["test","--match-path",pathlib.Path(path).as_posix(),"-vvvv"])
+        code=run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
         if not _keep:
             try: os.remove(path)
             except OSError: pass
