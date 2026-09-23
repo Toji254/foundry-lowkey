@@ -1725,10 +1725,11 @@ def generated_test_path(prefix):
     safe=solidity_identifier(prefix)
     return os.path.join("test", f"Lowkey_{safe}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
 
-def write_generated_test(prefix, content):
+def write_generated_test(prefix, content, announce=True):
     path=generated_test_path(prefix)
     Path(path).write_text(content, encoding="utf-8")
-    print(f"Lowkey generated test: {path}")
+    if announce:
+        print(f"Lowkey generated test: {path}")
     return path
 
 def resolve_lab_value(config, signature, raw_values, value_option):
@@ -1832,9 +1833,232 @@ contract LowkeyProbe is Test {{
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
 
+def storage_layout_details(config):
+    target=config.get("target")
+    contract=config.get("target_contract")
+    if not contract and target:
+        path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
+        artifact=read_artifact(path) if path else None
+        if isinstance(artifact,dict):
+            contract=artifact.get("contractName")
+    if not contract:
+        return {}, []
+
+    code,out,_=cast_output(["forge","inspect",str(contract),"storage-layout","--json"])
+    if code!=0 or not out:
+        return {}, []
+    try:
+        payload=json.loads(out)
+    except json.JSONDecodeError:
+        return {}, []
+
+    storage=payload.get("storage",[]) if isinstance(payload,dict) else []
+    types=payload.get("types",{}) if isinstance(payload,dict) else {}
+    return types if isinstance(types,dict) else {}, storage if isinstance(storage,list) else []
+
+
+def lab_argument_candidates(config, signature, raw_values, actor_address_value=None):
+    abi=load_abi(config.get("target"),config)
+    matches=matching_functions(abi,signature) if abi else []
+    candidates=[]
+    if len(matches)==1:
+        inputs=matches[0].get("inputs",[])
+        values=list(raw_values or [])
+        # The helper understands "1 ether" as one uint argument.
+        prepared=prepare_argument_values(config,matches[0],values)
+        for item,value in zip(inputs,prepared):
+            item_type=canonical_type(item)
+            if item_type in {"address","bytes32"}:
+                candidates.append((item_type,value))
+            elif item_type.startswith("uint") or item_type.startswith("int"):
+                normalized=normalize_numeric_argument(value,item_type)
+                if re.fullmatch(r"[0-9]+",str(normalized)):
+                    candidates.append((item_type,normalized))
+    if actor_address_value:
+        candidates.append(("address",actor_address_value))
+
+    for _,address in configured_actor_addresses(config):
+        candidates.append(("address",address))
+
+    for number in range(0,17):
+        candidates.append(("uint256",str(number)))
+
+    seen=set()
+    result=[]
+    for key_type,key in candidates:
+        marker=(key_type.lower(),str(key).lower())
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append((key_type,key))
+    return result
+
+
+def mapping_slot_matches(config, signature, raw_values, actor_address_value, changed_slots):
+    types,storage=storage_layout_details(config)
+    if not storage or not types:
+        return {}
+
+    labels={}
+    candidates=lab_argument_candidates(config,signature,raw_values,actor_address_value)
+    for entry in storage:
+        type_id=entry.get("type")
+        info=types.get(type_id,{}) if isinstance(type_id,str) else {}
+        if info.get("encoding")!="mapping":
+            continue
+        key_type_id=info.get("key")
+        value_type_id=info.get("value")
+        key_info=types.get(key_type_id,{}) if isinstance(key_type_id,str) else {}
+        key_label=key_info.get("label","") if isinstance(key_info,dict) else ""
+        base_slot=entry.get("slot")
+        if not key_label or base_slot is None:
+            continue
+
+        for candidate_type,candidate_value in candidates:
+            if candidate_type!=key_label:
+                if not (candidate_type=="uint256" and str(key_label).startswith(("uint","int"))):
+                    continue
+            code,out,_=cast_output(["cast","index",str(key_label),str(candidate_value),str(base_slot)])
+            if code!=0 or not out:
+                continue
+            mapped_slot=out.splitlines()[-1].strip().lower()
+            if mapped_slot.startswith("0x"):
+                mapped_slot=mapped_slot[2:].zfill(64)
+            key_display=display_storage_key(config,candidate_value)
+            value_info=types.get(value_type_id,{}) if isinstance(value_type_id,str) else {}
+            members=value_info.get("members",[]) if isinstance(value_info,dict) else []
+
+            if not members:
+                for changed in changed_slots:
+                    if changed.lower().removeprefix("0x").zfill(64)==mapped_slot:
+                        labels[changed.lower()]="%s[%s]"%(entry.get("label","mapping"),key_display)
+            else:
+                try:
+                    base_int=int(mapped_slot,16)
+                except ValueError:
+                    continue
+                for member in members:
+                    try:
+                        member_slot=base_int+int(str(member.get("slot","0")),0)
+                    except ValueError:
+                        continue
+                    full="0x"+format(member_slot,"064x")
+                    if full.lower() in {x.lower() for x in changed_slots}:
+                        labels[full.lower()]="%s[%s].%s"%(
+                            entry.get("label","mapping"),key_display,member.get("label","field")
+                        )
+            if labels:
+                # Keep looking for other mappings/keys; a function can touch more than one.
+                pass
+    return labels
+
+
+def display_storage_key(config, value):
+    text_value=str(value)
+    if is_address(text_value):
+        name=assigned_anvil_address(config,text_value)
+        return name or text_value
+    return text_value
+
+
+def decode_storage_value(raw, type_id, types, path=""):
+    raw=str(raw).strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",raw):
+        return raw
+    info=types.get(type_id,{}) if isinstance(type_id,str) else {}
+    label=str(info.get("label",""))
+    lowered=label.lower()
+
+    if lowered=="address" or lowered.startswith("contract "):
+        value="0x"+raw[-40:]
+        if int(raw[-40:],16)==0:
+            return "none"
+        return value
+
+    if lowered=="bool":
+        return "true" if int(raw,16)!=0 else "false"
+
+    if lowered.startswith("uint") or lowered.startswith("int") or lowered.startswith("enum "):
+        return str(int(raw,16))
+
+    return raw
+
+
+def format_storage_value(config, raw, type_id, types, label, eth_sent_wei=None):
+    value=decode_storage_value(raw,type_id,types,label)
+    if value=="none":
+        return "none"
+    if is_address(value):
+        return assigned_anvil_address(config,value) or value
+    if re.fullmatch(r"[0-9]+",value or ""):
+        lowered=label.lower()
+        if eth_sent_wei is not None and int(value)==eth_sent_wei and any(x in lowered for x in ("amount","balance","value")):
+            eth=eth_sent_wei/10**18
+            return f"{eth:g} ETH"
+        return value
+    return value
+
+
+def parse_state_diff_output(output):
+    text_output=str(output or "")
+    gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",text_output)
+    call_match=re.search(r"CALL ([^\r\n]+)",text_output)
+    success_match=re.search(r"SUCCESS (true|false)",text_output,re.I)
+    eth_match=re.search(r"ETH_SENT ([0-9]+)",text_output)
+    change_match=re.search(r"STORAGE_CHANGES ([0-9]+)",text_output)
+    slots=[]
+    lines=[line.strip() for line in text_output.splitlines()]
+    for index,line in enumerate(lines):
+        if line=="SLOT" and index+6<len(lines):
+            slot=lines[index+1]
+            if index+5<len(lines) and lines[index+2]=="FROM" and lines[index+4]=="TO":
+                before=lines[index+3]
+                after=lines[index+5]
+                if re.fullmatch(r"0x[0-9a-fA-F]{64}",slot) and re.fullmatch(r"0x[0-9a-fA-F]{64}",before) and re.fullmatch(r"0x[0-9a-fA-F]{64}",after):
+                    slots.append({"slot":slot,"from":before,"to":after})
+    return {
+        "gas":int(gas_match.group(1)) if gas_match else None,
+        "call":call_match.group(1).strip() if call_match else None,
+        "success":success_match.group(1).lower()=="true" if success_match else None,
+        "eth_sent":int(eth_match.group(1)) if eth_match else 0,
+        "changes_expected":int(change_match.group(1)) if change_match else len(slots),
+        "slots":slots,
+        "raw":text_output,
+    }
+
+
+def format_lab_value(text_value, address_map=None):
+    text_value=str(text_value)
+    if is_address(text_value):
+        if address_map and text_value.lower() in address_map:
+            return address_map[text_value.lower()]
+    return text_value
+
+
+def format_call_display(config, signature, raw_values):
+    abi=load_abi(config.get("target"),config)
+    matches=matching_functions(abi,signature) if abi else []
+    if len(matches)!=1:
+        return signature
+    prepared=prepare_argument_values(config,matches[0],raw_values)
+    inputs=matches[0].get("inputs",[])
+    rendered=[]
+    address_map={}
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and is_address(entry.get("address")):
+            address_map[entry["address"].lower()]=name
+    for item,value in zip(inputs,prepared):
+        item_type=canonical_type(item)
+        shown=str(value)
+        if item_type=="address":
+            shown=address_map.get(shown.lower(),shown)
+        rendered.append(shown)
+    return f"{matches[0].get('name','<function>')}({', '.join(rendered)})"
+
+
 def run_state_diff(config,args):
     if not args:
-        return fail("Usage: lk state-diff <function> [args...] [--actor NAME] [--value AMOUNT]")
+        return fail("Usage: lk changes <function> [args...] [--as ACTOR] [--eth AMOUNT]")
     try:
         values,actor,value,_keep=split_lab_options(args)
         if not values:
@@ -1846,6 +2070,7 @@ def run_state_diff(config,args):
         address=actor_address(config,selected_actor)
         if not address:
             raise ValueError("Choose an actor first with lk actor <index> <name>.")
+
         target_literal=solidity_address_literal(target)
         actor_literal=solidity_address_literal(address)
         body=f'''// Generated by LowkeyCast. Records EVM account and storage accesses.
@@ -1904,9 +2129,61 @@ contract LowkeyStateDiff is Test {{
     }}
 }}
 '''
-        path=write_generated_test("state-diff_"+signature.split("(",1)[0],body)
-        code=run_foundry(local_foundry_test_args(config,path))
-        return code
+        path=write_generated_test("state-diff_"+signature.split("(",1)[0],body,announce=False)
+        result=run_foundry(local_foundry_test_args(config,path),capture=True)
+        output=result.text
+        parsed=parse_state_diff_output(output)
+        if result.code!=0:
+            tail="\n".join(output.splitlines()[-18:]) if output else "forge test failed"
+            return fail(f"Error: changes could not run.\n{tail}",result.code)
+
+        address_map={}
+        for name,entry in config.get("wallets",{}).items():
+            if isinstance(entry,dict) and is_address(entry.get("address")):
+                address_map[entry["address"].lower()]=name
+
+        types,_storage=storage_layout_details(config)
+        raw_args=values[1:]
+        labels=mapping_slot_matches(config,signature,raw_args,address, [item["slot"] for item in parsed["slots"]])
+
+        print("CHANGES")
+        print("=======")
+        print(f"Call:      {format_call_display(config,signature,raw_args)}")
+        print(f"Caller:    {selected_actor or address}")
+        eth_sent=parsed["eth_sent"]
+        print(f"ETH sent:  {eth_sent/10**18:g} ETH" if eth_sent%10**18==0 else f"ETH sent:  {eth_sent} wei")
+        status="SUCCESS" if parsed["success"] else "REVERTED"
+        print(f"Result:    {status}")
+        if parsed["gas"] is not None:
+            print(f"Gas:       {parsed['gas']}")
+        print(f"Storage:   {len(parsed['slots'])} change(s)")
+
+        if not parsed["slots"]:
+            if parsed["success"]:
+                print("No storage values changed.")
+            print(f"\nTest: {path}")
+            return 0
+
+        print("\nStorage changes:")
+        for item in parsed["slots"]:
+            slot=item["slot"].lower()
+            label=labels.get(slot)
+            if not label:
+                label=f"slot {slot}"
+            # Use a layout member type when the label was decoded from a mapping.
+            type_id=None
+            for key_type_name in _storage:
+                if isinstance(key_type_name,dict) and key_type_name.get("label")==label:
+                    type_id=key_type_name.get("type")
+            before=format_storage_value(config,item["from"],type_id,types,label,eth_sent)
+            after=format_storage_value(config,item["to"],type_id,types,label,eth_sent)
+            print(f"  {label}")
+            print(f"    {before}  ->  {after}")
+
+        if parsed["changes_expected"]!=len(parsed["slots"]):
+            print(f"\nNote: Forge reported {parsed['changes_expected']} changed slots; Lowkey decoded {len(parsed['slots'])}.")
+        print(f"\nTest: {path}")
+        return 0
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
 
