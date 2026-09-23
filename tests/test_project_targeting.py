@@ -69,6 +69,43 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertEqual(config["target_contract"], "ConfidencePoolFactory")
             self.assertEqual(config["abi_paths"][project_target], str(artifact))
 
+
+    def test_ask_uses_current_build_artifacts_without_live_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "contractName": "ConfidencePoolFactory",
+                        "abi": [
+                            {
+                                "type": "function",
+                                "name": "createPool",
+                                "stateMutability": "nonpayable",
+                                "inputs": [
+                                    {"name": "agreement", "type": "address"},
+                                    {"name": "stakeToken", "type": "address"},
+                                ],
+                                "outputs": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = {"target": None}
+            output = io.StringIO()
+            with patch_cwd(root), redirect_stdout(output):
+                result = lk.dispatch_command("ask", ["createPool"], config)
+
+            self.assertEqual(result, 0)
+            rendered = output.getvalue()
+            self.assertIn("Built-project function matches", rendered)
+            self.assertIn("ConfidencePoolFactory::createPool(address,address)", rendered)
+
     def test_fn_searches_current_build_artifacts_without_live_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
