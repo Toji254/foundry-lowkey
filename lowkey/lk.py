@@ -2881,13 +2881,9 @@ contract LowkeyStateDiff is Test {{
         audit_context.update(root, latest={"function":signature, "value":str(parsed["eth_sent"]), "calldata":calldata, "state_diff":"recorded"})
         audit_context.record_tool("state-diff", root, status="completed", summary=f"{len(parsed['slots'])} storage change(s)", data={"function":signature, "generated_test":path})
 
-        if not parsed["slots"]:
-            if parsed["success"]:
-                print("No storage values changed.")
-            print(f"\nTest: {path}")
-            return 0
-
-        print("\nStorage changes:")
+        storage_evidence = []
+        if parsed["slots"]:
+            print("\nStorage changes:")
         for item in parsed["slots"]:
             slot=item["slot"].lower()
             decoded=labels.get(slot)
@@ -2900,10 +2896,50 @@ contract LowkeyStateDiff is Test {{
             after=format_storage_value(config,item["to"],type_id,types,label,eth_sent)
             print(f"  {label}")
             print(f"    {before}  ->  {after}")
+            storage_evidence.append({
+                "slot": slot,
+                "label": label,
+                "type": type_id,
+                "from": item["from"],
+                "to": item["to"],
+                "from_display": before,
+                "to_display": after,
+            })
             print(f"    slot: {slot}")
 
         if parsed["changes_expected"]!=len(parsed["slots"]):
             print(f"\nNote: Forge reported {parsed['changes_expected']} changed slots; Lowkey decoded {len(parsed['slots'])}.")
+
+        evidence={
+            "kind":"state-diff",
+            "function":signature,
+            "calldata":calldata,
+            "caller":selected_actor or address,
+            "actor":selected_actor,
+            "success":parsed["success"],
+            "gas":parsed["gas"],
+            "eth_sent_wei":parsed["eth_sent"],
+            "changes_expected":parsed["changes_expected"],
+            "fallback_writes":parsed["fallback_writes"],
+            "state_diff_json":parsed["state_diff_json"],
+            "storage_changes":storage_evidence,
+            "generated_test":path,
+        }
+        focus=audit_context.load(root).get("focus")
+        focus_signal_id=focus.get("signal_id") if isinstance(focus,dict) else None
+        if focus_signal_id:
+            linked=audit_context.attach_signal_evidence(focus_signal_id,evidence,root)
+            if linked:
+                print(f"\nEvidence linked: {focus_signal_id}")
+            else:
+                print(f"\nWarning: investigation focus {focus_signal_id} no longer exists; evidence was not linked.",file=sys.stderr)
+
+        if not parsed["slots"]:
+            if parsed["success"]:
+                print("No storage values changed.")
+            print(f"\nTest: {path}")
+            return 0
+
         print(f"\nTest: {path}")
         return 0
     except (ValueError,IndexError) as error:
@@ -3461,6 +3497,47 @@ def run_audit_mode(config):
         else: print("Unknown option.")
 
 
+def _signal_evidence(signal):
+    evidence = signal.get("evidence", []) if isinstance(signal, dict) else []
+    return [item for item in evidence if isinstance(item, dict)] if isinstance(evidence, list) else []
+
+def _render_signal_evidence(signal, prefix="   "):
+    evidence = _signal_evidence(signal)
+    if not evidence:
+        return
+    print(f"\n{prefix}Evidence ({len(evidence)}):")
+    for index, item in enumerate(evidence, 1):
+        kind = str(item.get("kind") or "evidence").replace("-", " ").title()
+        function = item.get("function") or "unknown function"
+        success = item.get("success")
+        status = "SUCCESS" if success else "REVERTED" if success is False else "UNKNOWN"
+        print(f"{prefix}  {index}. {kind} — {function} — {status}")
+        caller = item.get("caller") or item.get("actor")
+        if caller:
+            print(f"{prefix}     Caller      : {caller}")
+        if item.get("eth_sent_wei") is not None:
+            try:
+                wei = int(item.get("eth_sent_wei"))
+                rendered = f"{wei / 10**18:g} ETH" if wei % 10**18 == 0 else f"{wei} wei"
+                print(f"{prefix}     ETH sent    : {rendered}")
+            except (TypeError, ValueError):
+                print(f"{prefix}     ETH sent    : {item.get('eth_sent_wei')}")
+        if item.get("gas") is not None:
+            print(f"{prefix}     Gas         : {item.get('gas')}")
+        changes = item.get("storage_changes", [])
+        if not isinstance(changes, list) or not changes:
+            print(f"{prefix}     Storage     : no changed slots")
+            continue
+        print(f"{prefix}     Storage     : {len(changes)} changed slot(s)")
+        for change in changes:
+            label = change.get("label") or f"slot {change.get('slot', 'unknown')}"
+            before = change.get("from_display", change.get("from", "unknown"))
+            after = change.get("to_display", change.get("to", "unknown"))
+            slot = change.get("slot", "unknown")
+            print(f"{prefix}       {label}")
+            print(f"{prefix}         {before}  ->  {after}")
+            print(f"{prefix}         slot: {slot}")
+
 def run_investigate(config, args):
     root = audit_context.foundry_project_root()
     if not args or args[0].lower() in {"help", "-h", "--help"}:
@@ -3502,6 +3579,7 @@ def run_investigate(config, args):
     if isinstance(actions, list) and actions:
         print("Suggested  : " + " -> ".join(str(item) for item in actions))
 
+    _render_signal_evidence(signal)
     print("\nUseful commands:")
     function = signal.get("function")
     if function:
@@ -3647,6 +3725,10 @@ def run_signals(config, args):
         if signal.get("triage_note"):
             print(f"   Note       : {signal['triage_note']}")
         print(f"   Status     : {signal.get('status', 'open')}")
+        evidence = _signal_evidence(signal)
+        if evidence:
+            print(f"   Evidence   : {len(evidence)} captured")
+            _render_signal_evidence(signal, prefix="      ")
     return 0
 
 def run_status(config):
