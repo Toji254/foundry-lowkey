@@ -10,6 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
+
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+import audit_context
 from urllib.parse import quote
 
 
