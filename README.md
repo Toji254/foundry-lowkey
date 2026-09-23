@@ -180,6 +180,48 @@ The deployment generator uses the compiled ABI to externalize constructor inputs
 
 These generators are scaffolding and education aids; they do not automatically declare that behavior is vulnerable.
 
+## Shared audit context
+
+All Lowkey subsystems are designed to share one project-scoped audit state instead of operating as isolated wrappers. The state lives under `.audit/`.
+
+~~~text
+.audit/
+├── context.json          current target, actor, RPC, latest transaction, tool state
+├── events.jsonl          append-only audit activity/evidence stream
+├── slither/
+│   ├── latest.json       raw machine-readable Slither evidence
+│   └── latest.sarif      SARIF evidence for editors/CI
+└── ...
+~~~
+
+Useful commands:
+
+~~~bash
+lk context
+lk signals
+lk signals all
+~~~
+
+A Slither detector result is normalized into an audit signal with a stable ID, impact, confidence, source location, and status. Forge commands and transaction-producing Lowkey commands publish execution evidence into the same context. Generators can read that context when deciding what target or project state they are working with.
+
+The intended workflow is therefore connected:
+
+~~~text
+STATIC SIGNAL
+     ↓
+AUDIT CONTEXT
+     ↓
+FUNCTION / STORAGE / CALL-SITE INVESTIGATION
+     ↓
+FOUNDRY REPRODUCTION
+     ↓
+TRACE + STATE DIFF + LOG EVIDENCE
+     ↓
+FINDING
+~~~
+
+The context is deliberately project-scoped. Lowkey configuration under `~/.lowkey/` remains for reusable user settings, wallets, aliases, and RPC preferences; `.audit/` is the audit evidence shared by the tools working on the current Foundry project.
+
 ## Slither static analysis
 
 Lowkey treats Slither as the static-analysis layer of the audit workflow. It runs the current project through Slither's detectors, excludes dependency-only findings by default, and saves machine-readable evidence under `.audit/slither/`.
