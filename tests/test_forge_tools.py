@@ -41,8 +41,9 @@ class LowkeyForgeTests(unittest.TestCase):
         run.assert_called_once_with(["test", "-vvvv", "--match-test", "testFoo"])
 
     @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_sequence(self, _supports, run):
+    def test_audit_sequence(self, _supports, _compat, run):
         self.assertEqual(forge_tools.run_audit([]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
                          [["build", "--skip", "test", "--skip", "script"],
@@ -52,8 +53,9 @@ class LowkeyForgeTests(unittest.TestCase):
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_slither_preflight", return_value=0)
     @patch("forge_tools.command_available", return_value=False)
+    @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_checks_runs_slither_preflight(self, supports, available, slither, run):
+    def test_audit_checks_runs_slither_preflight(self, supports, compat, available, slither, run):
         self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
         slither.assert_called_once()
         self.assertEqual(run.call_args_list[0].args[0], ["build", "--skip", "test", "--skip", "script"])
@@ -90,9 +92,85 @@ note[low-level-calls]: generated helper
         self.assertEqual(forge_tools.run_inspect_audit(["Vault"]), 1)
         self.assertEqual(run.call_count, 6)
 
-    @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, run):
+    @patch("forge_tools._coverage_needs_ir", return_value=True)
+    def test_coverage_compatibility_flags_detect_via_ir(self, needs_ir, supports):
+        flags = forge_tools._coverage_compatibility_flags(pathlib.Path("/project"), [])
+        self.assertEqual(flags, ["--ir-minimum"])
+        needs_ir.assert_called_once()
+        supports.assert_called_once_with("coverage", "--ir-minimum")
+
+    @patch("forge_tools._coverage_needs_ir", return_value=True)
+    def test_coverage_compatibility_flags_respects_existing_ir_flag(self, needs_ir):
+        self.assertEqual(
+            forge_tools._coverage_compatibility_flags(pathlib.Path("/project"), ["--ir-minimum"]),
+            [],
+        )
+        needs_ir.assert_not_called()
+
+    @patch("forge_tools._supports_option", return_value=True)
+    @patch("forge_tools.audit_context.record_tool")
+    @patch("forge_tools.audit_context.emit")
+    @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
+    @patch("forge_tools.subprocess.run")
+    def test_coverage_retries_stack_too_deep_with_ir_minimum(
+        self, run, _path, _emit, _record
+    ):
+        first = type("Result", (), {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "Error: Compiler error: Stack too deep.",
+        })()
+        second = type("Result", (), {
+            "returncode": 0,
+            "stdout": "coverage ok\n",
+            "stderr": "",
+        })()
+        run.side_effect = [first, second]
+
+        self.assertEqual(
+            forge_tools.run_coverage_audit(
+                ["coverage", "--no-match-path", "test/Lowkey_*"],
+                pathlib.Path("/project"),
+            ),
+            0,
+        )
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/usr/bin/forge", "coverage", "--no-match-path", "test/Lowkey_*", "--ir-minimum"],
+        )
+        _record.assert_called_once()
+        self.assertEqual(_record.call_args.kwargs["status"], "completed")
+        self.assertEqual(_record.call_args.kwargs["data"]["attempts"], 2)
+
+    @patch("forge_tools._supports_option", return_value=True)
+    @patch("forge_tools.audit_context.record_tool")
+    @patch("forge_tools.audit_context.emit")
+    @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
+    @patch("forge_tools.subprocess.run")
+    def test_coverage_does_not_retry_unrelated_failure(
+        self, run, _path, _emit, _record, _supports
+    ):
+        result = type("Result", (), {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "Error: test fixture failed.",
+        })()
+        run.return_value = result
+
+        self.assertEqual(
+            forge_tools.run_coverage_audit(["coverage"], pathlib.Path("/project")),
+            1,
+        )
+        run.assert_called_once()
+        _record.assert_called_once()
+        self.assertEqual(_record.call_args.kwargs["data"]["attempts"], 1)
+
+    @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools._coverage_compatibility_flags", return_value=[])
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, _compat, run):
         self.assertEqual(forge_tools.run_audit(["--via-ir"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
@@ -100,8 +178,9 @@ note[low-level-calls]: generated helper
         )
 
     @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_respects_explicit_verbosity(self, _supports, run):
+    def test_audit_respects_explicit_verbosity(self, _supports, _compat, run):
         self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
