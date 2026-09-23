@@ -3,6 +3,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from contextlib import redirect_stdout
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("audit_engine", ROOT / "lowkey" / "audit_engine.py")
@@ -114,6 +115,52 @@ class AuditEngineTests(unittest.TestCase):
                 payload = record.call_args.args[1]
             self.assertEqual(payload["count"], 1)
             self.assertEqual(payload["markers"][0]["label"], "TX.ORIGIN")
+
+    def test_render_audit_dashboard_is_human_readable(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence = root / ".audit" / "evidence"
+            evidence.mkdir(parents=True)
+            records = {
+                "context": {"target": "0x" + "1" * 40, "rpc": "http://127.0.0.1:8545", "git_sha": "abc123", "git_branch": "audit"},
+                "build": {"exit_code": 0, "stdout": "Compiler run successful", "stderr": ""},
+                "tests": {"exit_code": 0, "stdout": "Suite result: ok. 3 passed", "stderr": ""},
+                "coverage": {"exit_code": 0, "stdout": "Total coverage: 91.2%", "stderr": ""},
+                "slither": {
+                    "available": False,
+                    "exit_code": 127,
+                    "reason": "slither not found on PATH",
+                    "finding_count": 0,
+                    "findings": [],
+                },
+                "source_triage": {"count": 19, "markers": []},
+            }
+            for name, data in records.items():
+                (evidence / f"{name}.json").write_text(
+                    json.dumps({"data": data}),
+                    encoding="utf-8",
+                )
+            (evidence / "manifest.json").write_text(
+                json.dumps({"pipeline": {"completed_at": "2026-09-24T00:00:00"}}),
+                encoding="utf-8",
+            )
+
+            output = io.StringIO()
+            with patch.object(audit_engine, "_config", return_value={"target": records["context"]["target"], "rpc": records["context"]["rpc"]}):
+                with redirect_stdout(output):
+                    code = audit_engine.render_audit_dashboard(str(root), 0)
+
+        self.assertEqual(code, 0)
+        rendered = output.getvalue()
+        self.assertIn("LOWKEY AUDIT DASHBOARD", rendered)
+        self.assertIn("Forge build", rendered)
+        self.assertIn("PASS", rendered)
+        self.assertIn("Slither", rendered)
+        self.assertIn("SKIPPED", rendered)
+        self.assertIn("19 review markers", rendered)
+        self.assertIn("Heuristic findings are review leads", rendered)
 
     def test_run_rg_treats_no_match_as_success(self):
         with patch.object(audit_engine, "rg_available", return_value=True), patch.object(
