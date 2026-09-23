@@ -434,34 +434,60 @@ def read_artifact(path):
     except (OSError,json.JSONDecodeError): return None
 
 def auto_abi_path(target,config):
-    if not target or not is_address(target): return None
+    if not target or not is_address(target):
+        return None
+
+    paths=local_artifact_paths()
     preferred=config.get("target_contract")
+    candidate_addresses=[target]
+
     if not preferred:
         for record in discover_deployments("."):
             if str(record.get("address","")).lower()==target.lower():
                 preferred=record.get("contract")
-                if preferred: config["target_contract"]=preferred
+                if preferred:
+                    config["target_contract"]=preferred
                 break
-    paths=local_artifact_paths()
+
+    rpc=effective_rpc(config)
+    if rpc:
+        code,implementation,error=cast_output(["cast","implementation",target,"--rpc-url",rpc])
+        if code==0 and is_address(implementation):
+            implementation=implementation.strip().splitlines()[-1].strip()
+            if implementation.lower()!=target.lower():
+                candidate_addresses.insert(0,implementation)
+                if not preferred:
+                    for record in discover_deployments("."):
+                        if str(record.get("address","")).lower()==implementation.lower():
+                            preferred=record.get("contract")
+                            if preferred:
+                                config["target_contract"]=preferred
+                            break
+
     if preferred:
         preferred_lower=str(preferred).lower()
         for path in paths:
             artifact=read_artifact(path)
-            if artifact_contract_name(path,artifact).lower()==preferred_lower or Path(path).stem.lower()==preferred_lower:
+            name=artifact_contract_name(path,artifact).lower()
+            if name==preferred_lower or Path(path).stem.lower()==preferred_lower:
                 config.setdefault("abi_paths",{})[target]=path
                 return path
-    rpc=effective_rpc(config)
+
     if rpc:
-        code,runtime,_=cast_output(["cast","code",target,"--rpc-url",rpc])
-        if code==0 and runtime and runtime.startswith("0x") and runtime!="0x":
+        for candidate in candidate_addresses:
+            code,runtime,_=cast_output(["cast","code",candidate,"--rpc-url",rpc])
+            if code!=0 or not runtime or not runtime.startswith("0x") or runtime=="0x":
+                continue
             for path in paths:
                 artifact=read_artifact(path)
                 deployed=artifact.get("deployedBytecode") if isinstance(artifact,dict) else None
-                if isinstance(deployed,dict): deployed=deployed.get("object")
+                if isinstance(deployed,dict):
+                    deployed=deployed.get("object")
                 if isinstance(deployed,str) and deployed.lower()==runtime.lower():
                     config.setdefault("abi_paths",{})[target]=path
                     config["target_contract"]=artifact_contract_name(path,artifact)
                     return path
+
     return None
 
 def load_abi(target,config):
