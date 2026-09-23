@@ -3218,6 +3218,14 @@ def run_status(config):
     print(f"ABI    : {abi or 'auto/not found'}")
     print(f"Contract: {contract}")
     print(f"Last tx: {config.get('last_tx') or 'none'}")
+    root = audit_context.foundry_project_root()
+    context = audit_context.load(root)
+    open_signals = len(audit_context.signals(root, "open"))
+    print(f"Signals: {open_signals} open")
+    for tool_name in ("slither", "forge", "generator"):
+        state = context.get("tools", {}).get(tool_name, {})
+        if isinstance(state, dict) and state.get("status"):
+            print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
 def run_wizard(config,args):
     if not args:
         return fail("Usage: lk wizard <function> [call|send|encode]")
