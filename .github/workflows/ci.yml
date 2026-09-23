@@ -61,11 +61,7 @@ jobs:
           cat > test/Fixture.t.sol <<'EOF'
           pragma solidity ^0.8.20;
           import "forge-std/Test.sol";
-
-          contract Fixture {
-              event Ping(uint256 value);
-              function ping(uint256 value) external { emit Ping(value); }
-          }
+          import "../src/Fixture.sol";
 
           contract FixtureTest is Test {
               Fixture public target;
