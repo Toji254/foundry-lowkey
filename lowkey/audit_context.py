@@ -388,6 +388,7 @@ def human_snapshot(root: Path | None = None) -> str:
         + (f" ({target.get('address')})" if target.get("address") else ""),
         f"Actor   : {data.get('actor') or 'none'}",
         f"RPC     : {data.get('rpc') or 'none'}",
+        f"Focus   : {(data.get('focus') or {}).get('signal_id') if isinstance(data.get('focus'), dict) and (data.get('focus') or {}).get('signal_id') else 'none'}",
         f"Latest  : {latest.get('function') or 'none'}"
         + (f" [{latest.get('tx_hash')}]" if latest.get("tx_hash") else ""),
         f"Signals : {open_signals} open",
