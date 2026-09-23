@@ -69,6 +69,23 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
         matches.append((path, payload))
     if not matches:
         return None
+
+    # Test/script artifacts can also appear under out/. Prefer a real src/ artifact
+    # so generated filenames stay tied to the protocol contract rather than its tests.
+    if contract_name is None:
+        source_matches = []
+        for path, payload in matches:
+            try:
+                relative = path.relative_to(root / "out")
+                parts = list(relative.parts)[:-1]
+                source = root / "src" / Path(*parts)
+                if source.exists() and payload.get("bytecode", {}).get("object"):
+                    source_matches.append((path, payload))
+            except (ValueError, OSError):
+                continue
+        if source_matches:
+            matches = source_matches
+
     matches.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
     return matches[0]
 
@@ -336,6 +353,10 @@ def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]
         if latest:
             latest.output = request.output
             latest.force = request.force
+            if request.value != "0":
+                latest.value = request.value
+            if request.calldata:
+                latest.calldata = request.calldata
             return latest
     return request
 
@@ -538,10 +559,15 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         print("Error: no function supplied and no recorded cast send was found.")
         return 2
     if not request.calldata:
-        request.calldata, error = _run(root, "cast", ["calldata", request.function or "", *(request.args or [])])[1:]
-        if error:
-            print(f"Error generating calldata: {error}")
-            return 2
+        code, encoded, error = _run(
+            root,
+            "cast",
+            ["calldata", request.function or "", *(request.args or [])],
+        )
+        if code != 0 or not encoded:
+            print(f"Error generating calldata: {error or 'cast calldata failed'}")
+            return code or 2
+        request.calldata = encoded.removeprefix("0x")
 
     artifact = find_artifact(root)
     contract = str(artifact[1].get("contractName")) if artifact else "Target"
