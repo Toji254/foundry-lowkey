@@ -1006,6 +1006,8 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             "evidence_brief": str(brief_path),
             "candidate_signal": evidence.get("candidate", {}).get("id"),
             "candidate_mode": evidence.get("candidate", {}).get("mode"),
+            "placeholder": placeholder_request,
+            "calldata_present": bool(request.calldata),
         },
     )
     return 0
