@@ -1591,6 +1591,9 @@ def split_lab_options(args):
                 raise ValueError("--value needs an ETH amount")
             value=raw[index+1]
             index+=2
+            if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
+                value=f"{value} {raw[index]}"
+                index+=1
             continue
         if token=="--keep":
             keep=True
@@ -1602,9 +1605,8 @@ def split_lab_options(args):
 
 def solidity_value(value):
     value=str(value or "0").strip()
-    for unit in ("ether","gwei","wei"):
-        value=re.sub(rf"(?i)(?<![A-Za-z0-9_]){re.escape(unit)}\\b", f" {unit}", value)
-    return value
+    value=re.sub(r"(?i)(?<=\d)(ether|gwei|wei)\b", r" \1", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 def encode_target_call(config, function, values):
     target=config.get("target")
@@ -1621,6 +1623,7 @@ def encode_target_call(config, function, values):
     abi=load_abi(target,config)
     matches=matching_functions(abi,signature) if abi else []
     if len(matches)==1:
+        values=resolve_actor_arguments(config,matches[0],values)
         inputs=matches[0].get("inputs",[])
         if len(values)!=len(inputs):
             expected=", ".join(
@@ -1652,6 +1655,14 @@ def write_generated_test(prefix, content):
     Path(path).write_text(content, encoding="utf-8")
     print(f"Lowkey generated test: {path}")
     return path
+
+def local_foundry_test_args(config, path):
+    args=["test","--match-path",Path(path).as_posix(),"-vvvv"]
+    rpc=effective_rpc(config)
+    if rpc and anvil_rpc_info(config):
+        args[1:1]=["--fork-url",rpc]
+    return args
+
 
 def configured_actor_addresses(config):
     result=[]
@@ -1717,7 +1728,7 @@ contract LowkeyProbe is Test {{
 }}
 '''
         path=write_generated_test("probe_"+signature.split("(",1)[0],body)
-        code=run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
+        code=run_foundry(local_foundry_test_args(config,path))
         return code
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
@@ -1787,7 +1798,7 @@ contract LowkeyStateDiff is Test {{
 }}
 '''
         path=write_generated_test("state-diff_"+signature.split("(",1)[0],body)
-        code=run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
+        code=run_foundry(local_foundry_test_args(config,path))
         return code
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
