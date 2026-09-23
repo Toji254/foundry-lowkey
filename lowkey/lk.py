@@ -3180,10 +3180,21 @@ def run_audit_mode(config):
 
 
 def run_investigate(config, args):
-    if not args:
-        return fail("Usage: lk investigate <SIGNAL_ID>")
-
     root = audit_context.foundry_project_root()
+    if not args or args[0].lower() in {"help", "-h", "--help"}:
+        print("Usage: lk focus <SIGNAL_ID>")
+        print("Focus one audit finding and mark it as investigating.")
+        print("Use: lk findings to list signal IDs.")
+        return 0
+
+    if args[0].lower() == "clear":
+        context = audit_context.load(root)
+        context["focus"] = None
+        audit_context.save(context, root)
+        audit_context.emit("focus-cleared", root, tool="lowkey", summary="investigation focus cleared")
+        print("Investigation focus cleared.")
+        return 0
+
     signal = audit_context.set_focus(args[0], root)
     if not signal:
         return fail(f"Error: signal '{args[0]}' was not found.")
@@ -3194,13 +3205,7 @@ def run_investigate(config, args):
     print(f"Issue      : {signal.get('title')}")
     print(f"Impact     : {signal.get('impact', 'Unknown')}")
     print(f"Confidence : {signal.get('confidence', 'Unknown')}")
-    location = audit_context.source_link(
-        signal.get("file"),
-        signal.get("line"),
-        signal.get("column"),
-        root,
-    )
-    print(f"Location   : {location}")
+    print(f"Location   : {audit_context.source_link(signal.get('file'), signal.get('line'), signal.get('column'), root)}")
     if signal.get("function"):
         print(f"Function   : {signal.get('function')}")
     if signal.get("description"):
@@ -3215,16 +3220,16 @@ def run_investigate(config, args):
     if isinstance(actions, list) and actions:
         print("Suggested  : " + " -> ".join(str(item) for item in actions))
 
-    print("\nExisting LK tools to use next:")
+    print("\nUseful commands:")
     function = signal.get("function")
     if function:
         print(f"  lk fn {function}")
         print(f"  lk ask {function}")
         print(f"  lk changes {function}")
-        print(f"  lk trace")
+        print("  lk trace")
         print(f"  lk generate test {function} ...")
+    print("  lk findings")
     print("  lk context")
-    print("  lk signals")
     return 0
 
 def _sync_audit_context(config, root=None):
@@ -3604,7 +3609,7 @@ LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 START
   lk audit                         Run the connected audit pipeline
   lk findings                      Show audit findings
-  lk focus <ID>                    Focus one finding
+  lk focus <ID>                    Focus one finding and mark it investigating
   lk status                        Show target and audit state
   lk doctor                        Check the toolchain
   lk target <address|name>         Select the contract under review
