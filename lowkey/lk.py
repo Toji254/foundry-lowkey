@@ -1765,8 +1765,11 @@ def tool_path(name):
 
 def run_foundry(args, capture=False):
     binary = tool_path("forge")
+    root = audit_context.foundry_project_root()
+    command_name = args[0] if args else "forge"
     if not binary:
         message = "Error: forge was not found on PATH. Install Foundry first."
+        audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
         result = CommandResult(message, 127)
         record_status(result.code)
         if capture:
@@ -1777,19 +1780,32 @@ def run_foundry(args, capture=False):
         completed = subprocess.run([binary, *args], capture_output=capture, text=True)
     except OSError as error:
         message = f"Error executing forge: {error}"
+        audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
         result = CommandResult(message, 1)
         record_status(result.code)
         if capture:
             return result
         print(message, file=sys.stderr)
         return result.code
+
+    code = completed.returncode
+    output = (completed.stdout or completed.stderr or "").strip()
+    audit_context.emit(
+        "forge-command",
+        root,
+        tool="forge",
+        status="completed" if code == 0 else "failed",
+        summary=f"forge {command_name}",
+        data={"command": command_name, "exit_code": code},
+    )
+
     if capture:
-        output = (completed.stdout or completed.stderr or "").strip()
-        result = CommandResult(output, completed.returncode)
-        record_status(completed.returncode)
+        result = CommandResult(output, code)
+        record_status(code)
         return result
-    record_status(completed.returncode)
-    return completed.returncode
+
+    record_status(code)
+    return code
 
 def run_tool(name, args=None):
     binary = tool_path(name)
