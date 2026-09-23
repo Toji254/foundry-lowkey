@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
