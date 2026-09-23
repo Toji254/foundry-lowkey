@@ -322,7 +322,7 @@ def _format_coverage_report(output: str) -> str:
         "================",
         "Coverage = code exercised by tests. The last column shows what remains untested.",
         "",
-        f"{'File':<45} {'Lines':>15} {'Statements':>18} {'Branches':>16} {'Functions':>15} {'Untested':>10}",
+        f"{'File':<45} {'Lines':>15} {'Statements':>18} {'Branches':>16} {'Functions':>15} {'Not exercised L/S/B/F':>22}",
         "-" * 123,
     ]
     for row in shown:
@@ -339,10 +339,10 @@ def _format_coverage_report(output: str) -> str:
             for key in ("lines", "statements", "branches", "functions")
             if row[key] is not None
         ]
-        gap_text = "/".join(gaps) if gaps else "N/A"
+        gap_text = (f"L{gaps[0]} S{gaps[1]} B{gaps[2]} F{gaps[3]}" if len(gaps) == 4 else "N/A")
         header.append(
             f"{str(row['file'])[:45]:<45} "
-            f"{metrics[0]:>15} {metrics[1]:>18} {metrics[2]:>16} {metrics[3]:>15} {gap_text:>10}"
+            f"{metrics[0]:>15} {metrics[1]:>18} {metrics[2]:>16} {metrics[3]:>15} {gap_text:>22}"
         )
 
     total = next((row for row in rows if str(row["file"]).strip() == "Total"), None)
@@ -401,7 +401,12 @@ def run_coverage_audit(command: Sequence[str], root: Path) -> int:
 
         combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
         if result.stdout:
-            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+            visible_stdout = _strip_coverage_table(result.stdout)
+            if visible_stdout:
+                print(visible_stdout, end="" if visible_stdout.endswith("\n") else "\n")
+            coverage_report = _format_coverage_report(result.stdout)
+            if coverage_report:
+                print(coverage_report)
         if result.stderr:
             print(
                 result.stderr,
