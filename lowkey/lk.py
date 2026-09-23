@@ -1319,6 +1319,9 @@ AUDIT OS
   lk matrix list                      List scenarios
   lk matrix test <name>               Generate Forge test skeleton
   lk test-gen                         Reproduce latest send as Forge test
+  lk generate deployment <Contract>  Generate advanced commented deployment script
+  lk generate poc [<function> args...] Generate advanced commented PoC script
+  lk generate test [<function> args...] Generate advanced commented Forge test
   lk note <text>                      Save audit note
   lk todo <text>                      Add audit TODO
   lk session [start|resume|end]       Audit session lifecycle
