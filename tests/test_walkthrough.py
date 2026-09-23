@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "walkthrough.py"
@@ -58,6 +59,95 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(model.mappings[0]["name"], "positions")
         self.assertEqual(model.arrays[0]["name"], "ids")
         self.assertIn("onlyOwner", model.modifiers)
+
+
+    def test_artifacts_are_scoped_to_project_source_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            entries = [
+                ("src/App.sol", "App"),
+                ("lib/Dependency.sol", "Dependency"),
+                ("test/AppTest.t.sol", "AppTest"),
+            ]
+            for source, name in entries:
+                source_path = root / source
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(
+                    f"pragma solidity ^0.8.20; contract {name} {{ function ping() external {{}} }}",
+                    encoding="utf-8",
+                )
+                out = root / "out" / (pathlib.Path(source).stem + ".sol")
+                out.mkdir(parents=True, exist_ok=True)
+                (out / f"{name}.json").write_text(
+                    json.dumps({
+                        "contractName": name,
+                        "sourceName": source,
+                        "abi": [{"type": "function", "name": "ping", "stateMutability": "nonpayable", "inputs": [], "outputs": []}],
+                    }),
+                    encoding="utf-8",
+                )
+            models = walkthrough._artifact_models(root)
+        self.assertEqual([model.name for model in models], ["App"])
+
+    def test_planner_excludes_setup_and_admin_controls(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[
+                {"type": "function", "name": "initialize", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "acceptOwnership", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "pause", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "createPool", "stateMutability": "nonpayable", "inputs": []},
+            ],
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        steps = walkthrough.plan_workflow(model, actors, actors[0].address, 100, 8)
+        self.assertEqual([step.function for step in steps], ["createPool()"])
+
+    def test_runtime_discovery_marks_clones_as_live_contracts(self):
+        child = walkthrough.ContractModel(
+            name="Child",
+            source="src/Child.sol",
+            artifact="out/Child.sol/Child.json",
+        )
+        known = [walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "Factory", "target")]
+        trace = {"type": "CREATE2", "from": "0x" + "1" * 40, "result": "0x" + "3" * 40}
+        with patch.object(walkthrough, "_runtime_code", return_value="0x1234"),              patch.object(walkthrough, "_match_runtime_model", return_value=("Child", "0x" + "2" * 40)):
+            found = walkthrough._discover_runtime_contracts(
+                pathlib.Path("."),
+                "http://127.0.0.1:8545",
+                [child],
+                known,
+                None,
+                trace,
+                1,
+                "0x" + "1" * 40,
+            )
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].model, "Child")
+        self.assertEqual(found[0].relation, "CLONE")
+        self.assertEqual(found[0].parent, "0x" + "1" * 40)
+
+    def test_runtime_graph_shows_parent_child_relation(self):
+        runtime = [
+            walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "Factory", "target"),
+            walkthrough.RuntimeContract(
+                "0x" + "2" * 40,
+                "Pool",
+                "Pool #1",
+                "CLONE",
+                "0x" + "1" * 40,
+                1,
+                "0x" + "3" * 40,
+            ),
+        ]
+        rendered = walkthrough._render_runtime_graph(runtime, enabled=False)
+        self.assertIn("Factory", rendered)
+        self.assertIn("Pool #1", rendered)
+        self.assertIn("⋯⋯⋯▶", rendered)
 
     def test_argument_inference_uses_roles(self):
         actors = [
