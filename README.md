@@ -180,6 +180,32 @@ The deployment generator uses the compiled ABI to externalize constructor inputs
 
 These generators are scaffolding and education aids; they do not automatically declare that behavior is vulnerable.
 
+## Slither static analysis
+
+Lowkey treats Slither as the static-analysis layer of the audit workflow. It runs the current project through Slither's detectors, excludes dependency-only findings by default, and saves machine-readable evidence under `.audit/slither/`.
+
+~~~bash
+# Smart default: analyze the Foundry project you are currently inside
+lk slither
+
+# Keep using any native Slither option when you want a specialized pass
+lk slither --detect reentrancy-eth,tx-origin
+lk slither --print human-summary
+lk slither --list-detectors
+
+# CI-style gates are explicit; the default Lowkey pass does not abort just because findings exist
+lk slither --fail-high
+~~~
+
+The default Lowkey pass writes:
+
+~~~text
+.audit/slither/latest.json
+.audit/slither/latest.sarif
+~~~
+
+`lk doctor` reports whether Slither is installed. `lk forge audit --checks` also runs Slither as a static-analysis stage alongside Forge lint/geiger. Lowkey does not treat a Slither detector result as a vulnerability verdict; use it to choose what to investigate and prove with Foundry tests/traces. Slither supports project-directory analysis, detector selection/exclusion, printers, JSON/SARIF export, and explicit fail thresholds. 
+
 ## Foundry power tools
 
 Lowkey exposes useful native Foundry testing paths directly:
