@@ -325,8 +325,11 @@ class LowkeyCastTests(unittest.TestCase):
         tx_hash = "0x" + "1" * 64
         config = {"last_tx": tx_hash}
         with patch.object(lk, "run_cast") as run_cast:
-            lk.run_receipt(config)
+            with patch.object(lk, "audit_context") as audit_context:
+                lk.run_receipt(config)
             run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
+            audit_context.set_latest.assert_called_once()
+            audit_context.record_tool.assert_called_once()
 
     def test_scan_records_source_triage_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
