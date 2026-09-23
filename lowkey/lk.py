@@ -1548,12 +1548,11 @@ def run_probe(config,args):
         signature,calldata=encode_target_call(config,values[0],values[1:])
         target=config.get("target")
         actors=[]
-        selected=actor or config.get("actor")
-        if selected:
-            address=actor_address(config,selected)
+        if actor:
+            address=actor_address(config,actor)
             if not address:
-                raise ValueError(f"unknown actor: {selected}")
-            actors=[(selected,address)]
+                raise ValueError(f"unknown actor: {actor}")
+            actors=[(actor,address)]
         else:
             actors=configured_actor_addresses(config)
         if not actors:
