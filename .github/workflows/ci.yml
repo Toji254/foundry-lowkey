@@ -39,6 +39,9 @@ jobs:
       - name: Build integration fixture
         run: |
           mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
+          cd /tmp/lowkey-fixture
+          forge install foundry-rs/forge-std --no-commit
+          cd -
           cat > /tmp/lowkey-fixture/foundry.toml <<'EOF'
           [profile.default]
           src = "src"
