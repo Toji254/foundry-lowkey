@@ -246,11 +246,11 @@ def update_submodules(
         str(jobs),
     ]
     if depth:
-        command += ["--depth", str(depth), "--shallow-submodules"]
+        command += ["--depth", str(depth)]
     if use_cache:
         cache = ensure_cache_repo()
         if cache_has_objects(cache):
-            command += ["--reference-if-able", str(cache), "--dissociate"]
+            command += ["--reference-if-able", str(cache)]
     return run_git(command).returncode
 
 
