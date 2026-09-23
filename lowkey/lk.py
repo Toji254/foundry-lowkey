@@ -789,7 +789,7 @@ def run_cast(args,config,capture=False):
     for flag in ["--preview","--dry-run","--confirm","--yes"]:
         while flag in remaining: remaining.remove(flag)
     cmd.extend(remaining)
-    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","index","selectors","rpc","tx-pool"}
+    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","index","selectors","rpc"}
     active_rpc=effective_rpc(config)
     if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
     actor=config.get("actor")
@@ -1702,7 +1702,34 @@ def run_calldata(config,args):
     return 0
 
 def run_txpool(config,args):
-    return run_cast(["tx-pool",*args],config)
+    rpc=effective_rpc(config)
+    if not rpc:
+        return fail("Error: an RPC is required for txpool inspection. Start Anvil or set lk rpc <url>.")
+
+    mode=(args[0].lower() if args else "status")
+    methods={
+        "status":"txpool_status",
+        "content":"txpool_content",
+        "pending":"txpool_content",
+    }
+    method=methods.get(mode)
+    if not method:
+        return fail("Usage: lk txpool [status|content]")
+
+    result=rpc_json(rpc,method,[])
+    if result is None:
+        return fail(f"Error: RPC method {method} is unavailable on {rpc}.")
+
+    if mode=="status":
+        pending=result.get("pending","?") if isinstance(result,dict) else "?"
+        queued=result.get("queued","?") if isinstance(result,dict) else "?"
+        print("TXPOOL")
+        print(f"  pending: {pending}")
+        print(f"  queued:  {queued}")
+        return 0
+
+    print(json.dumps(result,indent=2))
+    return 0
 
 def run_disasm(config,args):
     values=list(args)
