@@ -73,6 +73,7 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         str(root),
         "--exclude-dependencies",
         "--disable-color",
+        "--fail-none",
         "--json",
         str(json_path),
         "--sarif",
@@ -83,6 +84,7 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
     print("=== LOWKEY SLITHER ===")
     print(f"Project : {root}")
     print("Mode    : all detectors, dependencies excluded")
+    print("Failure : analysis findings do not abort the workflow; use --fail-high/medium/low for CI gates")
     print(f"JSON    : {json_path}")
     print(f"SARIF   : {sarif_path}")
 
