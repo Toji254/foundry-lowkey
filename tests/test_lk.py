@@ -194,10 +194,11 @@ class LowkeyCastTests(unittest.TestCase):
 
         self.assertEqual(captured["args"], ["--checks"])
     def test_compact_audit_checks_dispatch(self):
-        with patch.object(lk, "run_audit", return_value=0) as runner:
-            result = lk.dispatch_command("audit--checks", [], {"target": None})
+        config = {"target": None}
+        with patch.object(lk, "run_audit_mode", return_value=0) as runner:
+            result = lk.dispatch_command("audit--checks", [], config)
         self.assertEqual(result, 0)
-        runner.assert_called_once_with({"target": None}, ["--checks"])
+        runner.assert_called_once_with(config, ["--checks"])
 
     def test_version_reports_runtime_state(self):
         with patch.object(
@@ -1484,7 +1485,7 @@ class LowkeyCastTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
-            audit_context.set_target(
+            lk.audit_context.set_target(
                 root,
                 address="0x" + "1" * 40,
                 contract="Fixture",
@@ -1565,14 +1566,15 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("7) full evidence pass   8) generate PoC   0) exit",rendered)
 
     def test_dispatch_uses_audit_session_commands(self):
+        config = {"target": None}
         with patch.object(lk, "run_audit_mode", return_value=0) as audit_mode,              patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as findings,              patch.object(lk, "run_investigate", return_value=0) as focus:
-            self.assertEqual(lk.dispatch_command("audit", [], {}), 0)
-            self.assertEqual(lk.dispatch_command("audit", ["auto", "--checks"], {}), 0)
-            self.assertEqual(lk.dispatch_command("findings", [], {}), 0)
-            self.assertEqual(lk.dispatch_command("focus", ["SIG-1"], {}), 0)
-            self.assertEqual(lk.dispatch_command("context", [], {}), 0)
-        audit_mode.assert_any_call({}, [])
-        audit_mode.assert_any_call({}, ["auto", "--checks"])
+            self.assertEqual(lk.dispatch_command("audit", [], config), 0)
+            self.assertEqual(lk.dispatch_command("audit", ["auto", "--checks"], config), 0)
+            self.assertEqual(lk.dispatch_command("findings", [], config), 0)
+            self.assertEqual(lk.dispatch_command("focus", ["SIG-1"], config), 0)
+            self.assertEqual(lk.dispatch_command("context", [], config), 0)
+        audit_mode.assert_any_call(config, [])
+        audit_mode.assert_any_call(config, ["auto", "--checks"])
         self.assertEqual(audit_mode.call_count, 2)
         findings.assert_called_once()
         focus.assert_called_once()
