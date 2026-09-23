@@ -2315,7 +2315,7 @@ def run_clone(config, args):
         print("PASS  build")
 
         print("\n[2/3] Running connected audit...")
-        audit_code = run_audit(config, [])
+        audit_code = run_audit(config, ["--checks"])
         if audit_code != 0:
             print("Warning: connected audit did not finish cleanly.", file=sys.stderr)
 
@@ -4473,7 +4473,7 @@ def _sync_audit_context(config, root=None):
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
         print("Usage: lk audit")
-        print("Build, static-scan, test, and measure the current Foundry project.")
+        print("Build, test, and measure the current Foundry project; use --checks for Slither and optional lint/geiger checks.")
         return 0
 
     root = audit_context.foundry_project_root()
@@ -4484,10 +4484,9 @@ def run_audit(config, args):
     except ImportError as exc:
         return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
 
-    # Keep one owner for the audit presentation so the output is not duplicated.
+    # Preserve the user's audit mode. Plain 'lk audit' is the baseline pipeline;
+    # '--checks' explicitly opts into Slither and optional lint/geiger checks.
     forge_args = list(args)
-    if "--checks" not in forge_args:
-        forge_args.insert(0, "--checks")
     return_code = run_forge_audit(forge_args)
 
     audit_context.record_tool(
