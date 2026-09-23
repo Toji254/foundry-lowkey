@@ -96,6 +96,7 @@ class AuditEngineTests(unittest.TestCase):
             brief = json.loads((root / ".audit" / "poc" / "Poc_reentrancy_eth.json").read_text())
             self.assertEqual(brief["candidate"]["mode"], "reentrancy")
             self.assertEqual(brief["candidate"]["impact"], "high")
+            self.assertEqual(brief["poc_file"], "test/Poc_reentrancy_eth.t.sol")
 
     def test_run_source_triage_handles_relative_root(self):
         from tempfile import TemporaryDirectory
