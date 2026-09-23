@@ -904,7 +904,12 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
 
     if not request.function and not request.calldata:
         # A focused signal is enough to create a compile-ready investigation scaffold.
-        placeholder_request = bool(candidate.get("id"))
+        tools_state = evidence.get("tools", {})
+        bootstrap_evidence = any(
+            tools_state.get(key)
+            for key in ("forge_build", "forge_tests", "forge_coverage", "slither_findings", "source_triage_markers")
+        )
+        placeholder_request = bool(candidate.get("id") or evidence.get("latest", {}).get("tx_hash") or bootstrap_evidence)
         if not placeholder_request:
             print("Error: no function supplied and no recorded cast send was found.")
             return 2
