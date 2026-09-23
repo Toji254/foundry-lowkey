@@ -1557,24 +1557,56 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk,"save_config"),              patch.object(lk,"run_workspace"),              patch.object(lk,"run_matrix"),              patch.object(lk,"run_checklist"),              patch.object(lk,"run_session_lifecycle"),              patch.object(lk,"run_scan",return_value=0) as scan,              patch.object(lk,"run_audit",return_value=0) as audit,              patch("builtins.input",side_effect=lambda prompt: next(choices)),              patch.object(lk.audit_context,"load",return_value={"target":{"address":config["target"]}}):
             output=io.StringIO()
             with redirect_stdout(output):
-                result=lk.run_audit_mode(config,[])
+                result=lk.run_audit_mode(config,[],interactive=True)
         self.assertEqual(result,0)
         scan.assert_called_once_with([])
         audit.assert_called_once_with(config,[])
         rendered=output.getvalue()
         self.assertIn("7) full evidence pass   8) generate PoC   0) exit",rendered)
 
-    def test_dispatch_uses_simple_audit_commands(self):
-        with patch.object(lk, "run_audit", return_value=0) as audit,              patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as findings,              patch.object(lk, "run_investigate", return_value=0) as focus:
+    def test_dispatch_uses_audit_session_commands(self):
+        with patch.object(lk, "run_audit_mode", return_value=0) as audit_mode,              patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as findings,              patch.object(lk, "run_investigate", return_value=0) as focus:
             self.assertEqual(lk.dispatch_command("audit", [], {}), 0)
+            self.assertEqual(lk.dispatch_command("audit", ["auto", "--checks"], {}), 0)
             self.assertEqual(lk.dispatch_command("findings", [], {}), 0)
             self.assertEqual(lk.dispatch_command("focus", ["SIG-1"], {}), 0)
             self.assertEqual(lk.dispatch_command("context", [], {}), 0)
-        audit.assert_called_once()
+        audit_mode.assert_any_call({}, [])
+        audit_mode.assert_any_call({}, ["auto", "--checks"])
+        self.assertEqual(audit_mode.call_count, 2)
         findings.assert_called_once()
         focus.assert_called_once()
         context.assert_called_once()
 
+
+    def test_audit_detects_existing_anvil_without_starting_one(self):
+        config={"target":"0x"+"1"*40,"session_active":True,"actor":None,"wallets":{},"labels":{}}
+        info={"url":"http://127.0.0.1:8545","accounts":["0x"+"2"*40]}
+        choices=iter(["0"])
+        with patch.object(lk,"save_config"),              patch.object(lk,"run_workspace"),              patch.object(lk,"run_matrix"),              patch.object(lk,"run_checklist"),              patch.object(lk,"run_session_lifecycle"),              patch.object(lk,"anvil_rpc_info",return_value=info),              patch.object(lk,"ensure_project_anvil") as ensure,              patch.object(lk,"_bootstrap_audit_target",return_value=config["target"]),              patch.object(lk,"run_scan",return_value=0),              patch.object(lk,"run_audit",return_value=0),              patch("builtins.input",side_effect=lambda prompt: next(choices)),              patch.object(lk.audit_context,"load",return_value={"target":{"address":config["target"]}}):
+            result=lk.run_audit_mode(config,[],interactive=True)
+        self.assertEqual(result,0)
+        ensure.assert_not_called()
+        self.assertEqual(config["actor"],"lab-deployer")
+        self.assertEqual(config["wallets"]["lab-deployer"]["address"],"0x"+"2"*40)
+
+    def test_audit_auto_starts_anvil_when_missing(self):
+        config={"target":None,"session_active":True,"actor":None,"wallets":{},"labels":{}}
+        info={"url":"http://127.0.0.1:8545","accounts":["0x"+"3"*40]}
+        choices=iter(["0"])
+        with patch.object(lk,"save_config"),              patch.object(lk,"run_workspace"),              patch.object(lk,"run_matrix"),              patch.object(lk,"run_checklist"),              patch.object(lk,"run_session_lifecycle"),              patch.object(lk,"anvil_rpc_info",return_value=None),              patch.object(lk,"ensure_project_anvil",return_value=info) as ensure,              patch.object(lk,"_bootstrap_audit_target",return_value=None),              patch.object(lk,"run_scan",return_value=0),              patch.object(lk,"run_audit",return_value=0),              patch("builtins.input",side_effect=lambda prompt: next(choices)),              patch.object(lk.audit_context,"load",return_value={}):
+            result=lk.run_audit_mode(config,["auto"],interactive=True)
+        self.assertEqual(result,0)
+        ensure.assert_called_once_with(config, lk.audit_context.foundry_project_root())
+        self.assertEqual(config["actor"],"lab-deployer")
+        self.assertEqual(config["wallets"]["lab-deployer"]["address"],"0x"+"3"*40)
+
+    def test_audit_noninteractive_skips_menu(self):
+        config={"target":"0x"+"4"*40,"session_active":True,"actor":None,"wallets":{},"labels":{}}
+        with patch.object(lk,"save_config"),              patch.object(lk,"run_workspace"),              patch.object(lk,"run_matrix"),              patch.object(lk,"run_checklist"),              patch.object(lk,"run_session_lifecycle"),              patch.object(lk,"anvil_rpc_info",return_value=None),              patch.object(lk,"_bootstrap_audit_target",return_value=config["target"]),              patch.object(lk,"run_scan",return_value=0),              patch.object(lk,"run_audit",return_value=0),              patch("builtins.input") as prompt:
+            result=lk.run_audit_mode(config,[],interactive=False)
+        self.assertEqual(result,0)
+        prompt.assert_not_called()
 
     def test_dispatch_exposes_shared_audit_commands(self):
         with patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as signals:
