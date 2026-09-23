@@ -52,44 +52,54 @@ class LowkeyCloneTests(unittest.TestCase):
             ("https://github.com/owner/project.git", "my-project", 3, 6, False),
         )
 
+    @patch("clone_tools.git_repo_ready", return_value=False)
     @patch("clone_tools.ensure_cache_repo")
-    @patch("clone_tools.cache_has_objects", return_value=True)
     @patch("clone_tools.run_git")
-    def test_update_submodules_uses_parallel_shallow_cached_mode(
-        self, run_git, _has_objects, ensure_cache
+    def test_update_one_level_uses_cache_and_jobs(
+        self, run_git, ensure_cache, _ready
     ):
-        ensure_cache.return_value = Path("/tmp/lowkey-cache.git")
+        ensure_cache.return_value = Path("/tmp/forge-std-cache.git")
         run_git.return_value = MagicMock(returncode=0)
+        repo = Path("/tmp/project")
+        entries = [
+            (
+                "https://github.com/foundry-rs/forge-std",
+                "a" * 40,
+                repo / "lib" / "forge-std",
+            )
+        ]
         self.assertEqual(
-            clone_tools.update_submodules(
-                Path("/tmp/project"), depth=1, jobs=6, use_cache=True
-            ),
+            clone_tools.update_one_level(repo, entries, jobs=8, use_cache=True),
             0,
         )
         command = run_git.call_args.args[0]
-        self.assertIn("--recursive", command)
+        self.assertIn("submodule", command)
+        self.assertIn("update", command)
+        self.assertIn("--init", command)
         self.assertIn("--jobs", command)
-        self.assertIn("6", command)
+        self.assertIn("8", command)
         self.assertIn("--depth", command)
         self.assertIn("1", command)
-        self.assertNotIn("--shallow-submodules", command)
         self.assertIn("--reference-if-able", command)
-        self.assertNotIn("--dissociate", command)
+        self.assertIn("/tmp/forge-std-cache.git", command)
 
-    @patch("clone_tools.ensure_cache_repo")
-    @patch("clone_tools.run_git")
-    def test_update_submodules_without_cache(self, run_git, ensure_cache):
-        run_git.return_value = MagicMock(returncode=0)
-        self.assertEqual(
-            clone_tools.update_submodules(
-                Path("/tmp/project"), depth=1, jobs=4, use_cache=False
-            ),
-            0,
+    @patch("clone_tools.cache_submodule", return_value=True)
+    @patch("clone_tools.git_repo_ready", return_value=True)
+    def test_populate_level_cache(self, _ready, cache_submodule):
+        repo = Path("/tmp/project/lib/forge-std")
+        entries = [
+            (
+                "https://github.com/foundry-rs/forge-std",
+                "a" * 40,
+                repo,
+            )
+        ]
+        clone_tools.populate_level_cache(entries, use_cache=True)
+        cache_submodule.assert_called_once_with(
+            "https://github.com/foundry-rs/forge-std",
+            repo,
+            "a" * 40,
         )
-        ensure_cache.assert_not_called()
-        command = run_git.call_args.args[0]
-        self.assertNotIn("--reference-if-able", command)
-        self.assertNotIn("--dissociate", command)
 
 
 if __name__ == "__main__":
