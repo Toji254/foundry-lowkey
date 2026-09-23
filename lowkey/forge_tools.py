@@ -360,10 +360,7 @@ def run_audit(args: Sequence[str]) -> int:
     coverage_cmd = ["coverage", *forwarded]
     coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded))
     if not _has_path_filter(forwarded) and _supports_option("coverage", "--no-match-path"):
-        coverage_cmd.extend([
-            "--no-match-path", "test/Lowkey_*",
-            "--no-match-path", "script/Lowkey_*",
-        ])
+        coverage_cmd.extend(["--no-match-path", "**/Lowkey_*"])
 
     steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
     if checks:
