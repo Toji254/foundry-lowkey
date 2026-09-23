@@ -1108,8 +1108,7 @@ class LowkeyCastTests(unittest.TestCase):
             {"calldata", "probe", "state-diff", "fuzz", "invariant", "mutate", "symbolic"},
         )
 
-if __name__ == "__main__":
-    unittest.main()    def test_dispatch_exposes_simple_audit_aliases(self):
+    def test_dispatch_exposes_simple_audit_aliases(self):
         config={}
         calls={}
         with patch.object(lk,"run_probe",side_effect=lambda *_: calls.setdefault("try",1)), \
@@ -1121,4 +1120,6 @@ if __name__ == "__main__":
             lk.dispatch_command("send",["release"],config)
         self.assertEqual(set(calls),{"try","changes","cast"})
 
+if __name__ == "__main__":
+    unittest.main()
 
