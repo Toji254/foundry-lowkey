@@ -106,6 +106,37 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertIn("LOWKEY BUILD FUNCTION", rendered)
             self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address)", rendered)
 
+    def test_parse_deployed_address(self):
+        self.assertEqual(
+            lk.parse_deployed_address("Deployed to: 0x" + "b" * 40),
+            "0x" + "b" * 40,
+        )
+        self.assertEqual(
+            lk.parse_deployed_address('{"deployedTo":"0x' + "c" * 40 + '"}'),
+            "0x" + "c" * 40,
+        )
+        self.assertIsNone(lk.parse_deployed_address("deployment complete"))
+
+    def test_artifact_constructor_inputs(self):
+        artifact = {
+            "abi": [
+                {
+                    "type": "constructor",
+                    "inputs": [
+                        {"name": "owner", "type": "address"},
+                        {"name": "limit", "type": "uint256"},
+                    ],
+                }
+            ]
+        }
+        self.assertEqual(
+            lk.artifact_constructor_inputs(artifact),
+            [
+                {"name": "owner", "type": "address"},
+                {"name": "limit", "type": "uint256"},
+            ],
+        )
+
     def test_parse_lab_marker(self):
         self.assertEqual(
             lk.parse_lab_marker("LOWKEY_TARGET 0x" + "a" * 40),
