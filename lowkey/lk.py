@@ -97,7 +97,8 @@ def save_config(config):
     tmp=CONFIG_FILE+".tmp"
     try:
         with open(tmp,"w",encoding="utf-8") as f:
-            persisted={k:v for k,v in config.items() if not str(k).startswith("_")}\n        json.dump(persisted,f,indent=4); f.write("\n")
+            persisted={k:v for k,v in config.items() if not str(k).startswith("_")}
+        json.dump(persisted,f,indent=4); f.write("\n")
         os.chmod(tmp,0o600); os.replace(tmp,CONFIG_FILE); os.chmod(CONFIG_FILE,0o600)
     finally:
         if os.path.exists(tmp):
