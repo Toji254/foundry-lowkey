@@ -156,6 +156,30 @@ lk test-gen
 
 Then edit the generated test to express the exact invariant or exploit you want to prove.
 
+## Lowkey project-aware generation
+
+Lowkey can generate readable, project-aware Foundry artifacts instead of only passing commands through to Forge:
+
+~~~bash
+# Rebuild, inspect the compiled artifact, and generate a reusable deployment script
+lk generate deployment EthEscrow
+
+# Generate a PoC from the latest recorded cast send
+lk generate poc
+
+# Generate a Foundry reproduction test from the latest recorded cast send
+lk generate test
+
+# Or provide the call explicitly
+lk generate test createescrow(uint256,address) 1000000000000000000 0x0000000000000000000000000000000000000001 --value 1ether
+~~~
+
+Generated Solidity is intentionally teaching-oriented. Focused `//` comments sit beside important Foundry ideas such as `vm.prank`, `vm.startBroadcast`, `vm.deal`, `vm.snapshot`, revert-data handling, assertions, and the difference between transaction success and a proven security property.
+
+The deployment generator uses the compiled ABI to externalize constructor inputs, adds post-deployment sanity checks, and writes a machine-readable deployment record. The PoC generator replays concrete calldata and records before/after balances. The test generator turns the same observation into a deterministic Forge test where the actual invariant or exploit condition is deliberately left for the auditor to define.
+
+These generators are scaffolding and education aids; they do not automatically declare that behavior is vulnerable.
+
 ## Foundry power tools
 
 Lowkey exposes useful native Foundry testing paths directly:
@@ -311,6 +335,7 @@ foundry-lowkey/
 ├── bin/lk
 ├── lowkey/lk.py
 ├── lowkey/forge_tools.py
+├── lowkey/generator.py
 ├── tests/test_lk.py
 ├── tests/test_forge_tools.py
 ├── .github/workflows/ci.yml
