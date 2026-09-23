@@ -283,6 +283,9 @@ def _signal_from_finding(finding: dict) -> dict:
         "line": line,
         "column": column,
         "description": _human_observation(finding, check),
+        "meaning": guidance.get("meaning", ""),
+        "why": guidance.get("why", ""),
+        "next": guidance.get("next", ""),
     }
 
 
