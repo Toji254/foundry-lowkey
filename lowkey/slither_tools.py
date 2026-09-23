@@ -94,7 +94,13 @@ def _clean_description(value: object) -> str:
 
 def _terminal_link(label: str, absolute: Path, line: int, column: int = 1) -> str:
     """Compatibility wrapper around the shared audit-context source linker."""
-    return audit_context.source_link(absolute.name if absolute.name else label, line, column, absolute.parent.parent)
+    return audit_context.source_link(
+        absolute,
+        line,
+        column,
+        absolute.parent.parent,
+        display=label,
+    )
 
 
 
@@ -141,6 +147,7 @@ def _source_location(finding: dict, project_root: Path) -> tuple[str, str] | Non
             first,
             column,
             project_root,
+            display=label,
         )
         return label, linked
 
