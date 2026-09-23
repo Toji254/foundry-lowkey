@@ -207,6 +207,7 @@ def render_deployment(root: Path, contract: str, artifact_path: Path, artifact: 
 pragma solidity ^0.8.20;
 
 import {{Script, console2}} from "forge-std/Script.sol";
+import {{Vm}} from "forge-std/Vm.sol";
 import {{ {contract} }} from "{source}";
 
 /// @title Lowkey-generated deployment for {contract}
