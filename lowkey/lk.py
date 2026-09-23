@@ -3141,6 +3141,54 @@ def run_audit_mode(config):
         else: print("Unknown option.")
 
 
+def run_context(config):
+    root = audit_context.foundry_project_root()
+    audit_context.update(
+        root,
+        target={
+            "address": config.get("target"),
+            "contract": config.get("target_contract"),
+            "artifact": config.get("abi_paths", {}).get(config.get("target")),
+        },
+        actor=actor_display(config),
+        rpc=effective_rpc(config),
+    )
+    print("LOWKEY AUDIT CONTEXT")
+    print("====================")
+    print(audit_context.human_snapshot(root))
+    print(f"Context : {audit_context.context_path(root)}")
+    print(f"Events  : {audit_context.events_path(root)}")
+
+def run_signals(config, args):
+    root = audit_context.foundry_project_root()
+    requested = args[0].lower() if args else "open"
+    status = requested if requested in {"open", "closed", "all"} else "open"
+    selected = audit_context.signals(root, None if status == "all" else status)
+
+    print("LOWKEY AUDIT SIGNALS")
+    print("====================")
+    if not selected:
+        print(f"No {status} audit signals recorded.")
+        return 0
+
+    for index, signal in enumerate(selected, 1):
+        location = signal.get("file") or "unknown location"
+        if signal.get("line"):
+            location += f":{signal['line']}"
+        if signal.get("column"):
+            location += f":{signal['column']}"
+
+        print(f"\n{index}. {signal.get('title') or 'Audit signal'}")
+        print(f"   ID         : {signal.get('id')}")
+        print(f"   Source     : {signal.get('tool')}")
+        print(f"   Impact     : {signal.get('impact', 'Unknown')}")
+        print(f"   Confidence : {signal.get('confidence', 'Unknown')}")
+        print(f"   Location   : {location}")
+        if signal.get("description"):
+            print(f"   Observation: {signal['description']}")
+        print(f"   Status     : {signal.get('status', 'open')}")
+    return 0
+
 def run_status(config):
     target=config.get("target")
     if target:
