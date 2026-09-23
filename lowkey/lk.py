@@ -412,8 +412,7 @@ def humanize_value(text):
     return re.sub(wei_pattern, replace_wei, text)
 
 def is_address(value):
-    return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", value))
-
+    return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}",value))
 def is_nonzero_slot(value):
     try:
         return int(value, 16) != 0
@@ -475,19 +474,23 @@ def run_cast(args,config,capture=False):
     except OSError as error: print(f"Error executing cast: {error}",file=sys.stderr)
     return None
 def run_recon(config):
-    target = config.get("target")
+    target=config.get("target")
     if not target:
-        print("Error: Set target first.")
-        return
-    print(f"🔍 CONTRACT RECON: {target}\n" + "="*40)
-    bal = run_cast(["balance", target], config, capture=True)
-    print(f"Balance: {humanize_value(bal) if bal else 'Unknown'}")
-    code = run_cast(["code", target], config, capture=True)
-    print(f"Code: {'YES' if code and '0x' in code and len(code) > 2 else 'NO'}")
-    proxy = inspect_proxy(config, quiet=True)
-    print(f"Proxy: {'YES' if proxy else 'NO'}")
-    print("="*40)
-
+        print("Error: Set target first."); return
+    print(f"CONTRACT RECON: {target}\n" + "="*52)
+    balance=run_cast(["balance",target],config,capture=True)
+    code=run_cast(["code",target],config,capture=True) or ""
+    codehash=run_cast(["codehash",target],config,capture=True)
+    nonce=run_cast(["nonce",target],config,capture=True)
+    codesize=run_cast(["codesize",target],config,capture=True)
+    print(f"Balance:  {humanize_value(balance) if balance else 'Unknown'}")
+    print(f"Code:     {'YES' if code.startswith('0x') and len(code)>2 else 'NO'}")
+    print(f"Codehash: {codehash or 'Unknown'}")
+    print(f"Codesize: {codesize or 'Unknown'} bytes")
+    print(f"Nonce:    {nonce or 'Unknown'}")
+    proxy=inspect_proxy(config,quiet=True)
+    print(f"Proxy:    {'YES' if proxy else 'NO'}")
+    print("="*52)
 def inspect_proxy(config, quiet=False):
     target = config.get("target")
     if not target:
@@ -508,8 +511,15 @@ def inspect_proxy(config, quiet=False):
     return is_proxy
 
 def run_proxy(config):
-    inspect_proxy(config)
-
+    target=config.get("target")
+    if not target:
+        print("Error: Set target first."); return
+    detected=inspect_proxy(config)
+    if not detected: return
+    implementation=run_cast(["implementation",target],config,capture=True)
+    admin=run_cast(["admin",target],config,capture=True)
+    print(f"Implementation: {implementation or 'Unknown'}")
+    print(f"Admin:         {admin or 'Unknown'}")
 def run_mapping(config,*args):
     if not config.get("target"): print("Error: Set target first."); return
     if len(args)==2: slot,key=args; key_type="address" if is_address(key) else "uint256"
@@ -619,7 +629,7 @@ def run_matrix(config, args):
             "expected": " ".join(args[4:]),
             "evidence": {
                 "last_tx": config.get("last_tx"),
-                "snapshot": os.path.join(SNAPSHOT_DIR, "last_state.json") if os.path.exists(os.path.join(SNAPSHOT_DIR, "last_state.json")) else None,
+                "snapshot": snapshot_path(config) if os.path.exists(snapshot_path(config)) else None,
                 "session": SESSION_FILE,
             },
             "created": datetime.now().isoformat(timespec="seconds"),
@@ -719,98 +729,70 @@ def run_export(config):
     Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
     print(f"Audit report exported: {export_dir}")
 def run_self_test():
-    checks = [
-        ("address validation", is_address("0x" + "1" * 40) and not is_address("0x" + "1" * 64)),
-        ("slot validation", is_nonzero_slot("0x" + "1" + "0" * 63) and not is_nonzero_slot("not-hex")),
-        ("ETH formatting", "1.0000 ETH" in humanize_value("1000000000000000000")),
+    checks=[
+        ("address validation",is_address("0x"+"1"*40) and not is_address("0x"+"1"*64) and not is_address(None)),
+        ("slot validation",is_nonzero_slot("0x"+"1"+"0"*63) and not is_nonzero_slot("not-hex")),
+        ("ETH formatting","1.0000 ETH" in humanize_value("1000000000000000000")),
+        ("secret redaction","<redacted>" in redact_secrets("--private-key 0x"+"1"*64)),
+        ("jwt redaction","<redacted>" in redact_secrets("--jwt-secret supersecret")),
+        ("rpc redaction","sensitive-token" not in redact_secrets("--rpc-url https://example.com/sensitive-token")),
+        ("tuple canonicalization",canonical_type({"type":"tuple","components":[{"type":"address"},{"type":"uint256"}]})=="(address,uint256)"),
+        ("nested tuple array",canonical_type({"type":"tuple[]","components":[{"type":"address"},{"type":"uint256[]"}]})=="(address,uint256[])[]"),
+        ("output signature",format_output_signature({"name":"f","inputs":[{"type":"address"}],"outputs":[{"type":"uint256"}]})=="f(address)(uint256)"),
+        ("target alias resolution",resolve_target_ref({"aliases":{"one":"0x"+"1"*40},"targets":{}},"one")=="0x"+"1"*40),
     ]
-    failed = [name for name, passed in checks if not passed]
-    for name, passed in checks:
+    failed=[name for name,passed in checks if not passed]
+    for name,passed in checks:
         print(f"{'PASS' if passed else 'FAIL'}  {name}")
     if failed:
-        print(f"Self-test failed: {', '.join(failed)}")
-        return 1
-    print(f"Self-test passed ({len(checks)} checks).")
-    return 0
-
+        print("Self-test failed: "+", ".join(failed)); return 1
+    print(f"Self-test passed ({len(checks)} checks)."); return 0
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
-        print("Error: No session history found.")
-        return
-    with open(SESSION_FILE, "r") as f:
-        lines = f.readlines()
-    last_send = None
-    for line in reversed(lines):
-        if "CMD: cast send" in line:
-            last_send = line.split("CMD: ")[1].strip()
-            break
+        print("Error: No session history found."); return
+    lines=Path(SESSION_FILE).read_text(encoding="utf-8").splitlines()
+    last_send=next((line.split("CMD: ",1)[1].strip() for line in reversed(lines) if "CMD: cast send " in line),None)
     if not last_send:
-        print("Error: No send transaction found in session.")
-        return
+        print("Error: No send transaction found in session."); return
     try:
-        parts = shlex.split(last_send)
-        send_index = parts.index("send")
-        target = parts[send_index + 1]
-        func = parts[send_index + 2]
-        positional = []
-        value = "0"
-        index = send_index + 3
-        while index < len(parts):
-            if parts[index] == "--value" and index + 1 < len(parts):
-                value = parts[index + 1]
-                index += 2
-                continue
+        parts=shlex.split(last_send)
+        send_index=parts.index("send")
+        target=parts[send_index+1]; func=parts[send_index+2]
+        positional=[]; value="0"; index=send_index+3
+        while index<len(parts):
+            if parts[index]=="--value" and index+1<len(parts):
+                value=parts[index+1]; index+=2; continue
             if parts[index].startswith("--"):
-                index += 2 if index + 1 < len(parts) and not parts[index + 1].startswith("--") else 1
-                continue
-            positional.append(parts[index])
-            index += 1
-        calldata_result = subprocess.run(
-            ["cast", "calldata", func, *positional],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        calldata = calldata_result.stdout.strip().removeprefix("0x")
-    except (ValueError, IndexError, subprocess.CalledProcessError) as error:
-        print(f"Error generating test: {error}")
-        return
-
-    value_expression = value
-    for unit in ["ether", "gwei", "wei"]:
-        value_expression = value_expression.replace(unit, f" {unit}")
-    template = """pragma solidity ^0.8.0;
+                index+=2 if index+1<len(parts) and not parts[index+1].startswith("--") else 1; continue
+            positional.append(parts[index]); index+=1
+        code,encoded,error=cast_output(["cast","calldata",func,*positional])
+        if code!=0 and not encoded:
+            print(f"Error generating calldata: {error}"); return
+        calldata=encoded.removeprefix("0x")
+    except (ValueError,IndexError) as error:
+        print(f"Error generating test: {error}"); return
+    value_expression=value
+    for unit in ["ether","gwei","wei"]:
+        if unit in value_expression and " " not in value_expression:
+            value_expression=value_expression.replace(unit,f" {unit}")
+    test=f'''pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 
-contract ExploitTest is Test {{
-    address target = {target};
+contract Exploit_Reproduction is Test {{
+    address constant TARGET = {target};
 
-    function testReproduce() public {{
-        uint256 value = {value};
+    function test_reproduce() public {{
+        uint256 value = {value_expression};
         vm.deal(address(this), value);
-        (bool success, ) = target.call{{value: value}}(hex"{calldata}");
-        assertTrue(success);
+        (bool success, bytes memory data) = TARGET.call{{value: value}}(hex"{calldata}");
+        assertTrue(success, string(data));
     }}
 }}
-"""
-    final_test = template.format(target=target, value=value_expression, calldata=calldata)
-    os.makedirs("test", exist_ok=True)
-    filename = f"test/Exploit_{datetime.now().strftime('%H%M%S')}.t.sol"
-    with open(filename, "w") as f:
-        f.write(final_test)
-    print(f"Exploit skeleton generated: {filename}")
-
-AUDIT_CHECKLIST=[
-    "Authorization: roles, owner, privileged callers","Reentrancy: external calls before/after state updates",
-    "Accounting: balances, shares, liabilities, conservation","Access control: initialization, modifiers, role admin",
-    "Oracles: source, freshness, manipulation, fallback","Price manipulation: spot pricing, low-liquidity assumptions",
-    "Precision: rounding, decimals, scaling, unit mismatch","Token handling: fee-on-transfer, hooks, non-standard returns",
-    "Signatures: replay, domain separation, nonce handling","Upgrades: proxy admin, implementation, initializer, storage",
-    "External calls: return values, callbacks, arbitrary targets","DoS: loops, unbounded work, griefing, stuck funds",
-    "MEV: ordering, sandwichability, deadline/slippage assumptions","Lifecycle: state transitions, one-time actions, terminal states",
-    "Math: overflow/underflow, unchecked blocks, casts","Timestamp/randomness: timestamp, blockhash, prevrandao assumptions",
-]
-
+'''
+    os.makedirs("test",exist_ok=True)
+    filename=os.path.join("test",f"Exploit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
+    Path(filename).write_text(test,encoding="utf-8")
+    print(f"Exploit reproduction generated: {filename}")
 def run_checklist(config,action=None,item=None):
     path=os.path.join(AUDIT_DIR,"CHECKLIST.md"); os.makedirs(AUDIT_DIR,exist_ok=True)
     if not os.path.exists(path): Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8")
