@@ -4631,7 +4631,7 @@ def run_audit_mode(config, args=None, interactive=None):
         target_label = target.get("contract") or target.get("address") or config.get("target") or "none"
         print(f"\nTarget: {target_label} | RPC: {rpc_display(effective_rpc(config)) or 'none'}")
         print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments")
-        print("7) full evidence pass   8) generate PoC   0) exit")
+        print("7) full evidence pass   8) generate PoC   9) protocol walkthrough   0) exit")
         try:
             choice = input("lk> ").strip()
         except EOFError:
@@ -4660,6 +4660,10 @@ def run_audit_mode(config, args=None, interactive=None):
             code = _generate_connected_poc(config)
             if code == 0:
                 print("Connected PoC scaffold refreshed.")
+        elif choice == "9":
+            code = walkthrough.run(config, [], host=sys.modules[__name__])
+            if code != 0:
+                print("Protocol walkthrough needs review.", file=sys.stderr)
         elif choice == "0":
             return baseline_code
         else:
