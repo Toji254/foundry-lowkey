@@ -66,12 +66,11 @@ def resolve_wallet_key(config,wallet_name=None):
     if not name: return None
     entry=config.get("wallets",{}).get(name)
     if isinstance(entry,dict):
-        if entry.get("env"): return os.environ.get(entry["env"])
+        if entry.get("env"): return normalize_private_key(os.environ.get(entry["env"]))
         return normalize_private_key(entry.get("private_key"))
     if isinstance(entry,str): return normalize_private_key(entry)
-    if isinstance(name,str) and name.startswith("env:"): return os.environ.get(name[4:])
+    if isinstance(name,str) and name.startswith("env:"): return normalize_private_key(os.environ.get(name[4:]))
     return normalize_private_key(name)
-
 def rpc_display(url):
     if not url: return None
     try:
@@ -227,12 +226,16 @@ def run_info(config):
     print(f"ABI:    {'LOADED' if load_abi(target, config) else 'NOT LOADED'}")
     print(f"Proxy:  {'YES' if inspect_proxy(config, quiet=True) else 'NO'}")
 
-def run_encode(config, args):
+def run_encode(config,args):
     if not args:
-        print("Usage: lk encode <function> [args]")
-        return
-    run_cast(["calldata"] + args, config)
-
+        print("Usage: lk encode <function> [args]"); return
+    values=list(args)
+    target=config.get("target")
+    if target and ("(" not in values[0] or ")" not in values[0]):
+        try: values[0]=resolve_function(values[0],target,config)
+        except ValueError as error:
+            print(f"Error: {error}",file=sys.stderr); return
+    run_cast(["calldata"]+values,config)
 def run_signature(args):
     if not args:
         print("Usage: lk sig <function(signature)>"); return
@@ -416,7 +419,11 @@ def run_cast(args,config,capture=False):
     cmd.extend(remaining)
     rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price"}
     if cast_cmd in rpc_commands and config.get("rpc") and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",config["rpc"]])
+    actor=config.get("actor")
     actor_key=resolve_wallet_key(config)
+    if cast_cmd=="send" and actor and actor in config.get("wallets",{}) and not actor_key:
+        print(f"Error: signer profile '{actor}' has no usable private key. Check its environment variable.",file=sys.stderr)
+        return None
     if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd): cmd.extend(["--private-key",actor_key])
     safe_cmd=redact_secrets(shlex.join(cmd))
     if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
@@ -442,7 +449,8 @@ def run_cast(args,config,capture=False):
         message="Error: cast was not found in PATH. Install/update Foundry first."
         if capture: return message
         print(message,file=sys.stderr)
-    except OSError as error: print(f"Error executing cast: {error}",file=sys.stderr)
+    except OSError as error:
+        print(f"Error executing cast: {error}",file=sys.stderr)
     return None
 def run_recon(config):
     target=config.get("target")
@@ -504,12 +512,33 @@ def snapshot_path(config):
     safe_target=re.sub(r"[^0-9a-fA-Fx_-]","_",target); directory=os.path.join(SNAPSHOT_DIR,str(chain)); os.makedirs(directory,exist_ok=True)
     return os.path.join(directory,f"{safe_target}.json")
 
+def snapshot_path(config,chain=None):
+    target=config.get("target") or "no-target"
+    chain=chain or run_cast(["chain-id"],config,capture=True) or "unknown-chain"
+    safe_target=re.sub(r"[^0-9a-fA-Fx_-]","_",target)
+    directory=os.path.join(SNAPSHOT_DIR,str(chain)); os.makedirs(directory,exist_ok=True)
+    return os.path.join(directory,f"{safe_target}.json")
+
 def run_snapshot(config,slots=None):
-    if not config.get("target"): print("Error: Set target first."); return
-    requested=list(slots or [str(i) for i in range(10)])
-    state={str(slot):run_cast(["st",str(slot)],config,capture=True) for slot in requested}
-    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":run_cast(["block-number"],config,capture=True),"saved_at":datetime.now().isoformat(timespec="seconds"),"slots":state}
-    path=snapshot_path(config); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
+    if not config.get("target"):
+        print("Error: Set target first."); return
+    values=list(slots or [])
+    block=None
+    if "--block" in values:
+        i=values.index("--block")
+        if i+1>=len(values):
+            print("Usage: lk snapshot [slot ...] [--block BLOCK]"); return
+        block=values[i+1]; del values[i:i+2]
+    requested=values or [str(i) for i in range(10)]
+    state={}
+    storage_args=[]
+    if block: storage_args=["--block",block]
+    for slot in requested:
+        state[str(slot)]=run_cast(["st",str(slot)]+storage_args,config,capture=True)
+    current_block=block or run_cast(["block-number"],config,capture=True)
+    chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
+    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().isoformat(timespec="seconds"),"slots":state}
+    path=snapshot_path(config,chain); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
     print(f"Snapshot saved: {path}")
 def run_diff(config):
     path=snapshot_path(config)
@@ -927,10 +956,17 @@ def run_risk(config):
         if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
         print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
 def run_gas(config,args):
-    if not args: print("Usage: lk gas <function> [args]"); return
-    if not config.get("target"): print("Error: Set target first."); return
-    run_cast(["estimate",config["target"]]+args,config)
-
+    if not args:
+        print("Usage: lk gas <function> [args]"); return
+    target=config.get("target")
+    if not target:
+        print("Error: Set target first."); return
+    values=list(args)
+    if values and ("(" not in values[0] or ")" not in values[0]):
+        try: values[0]=resolve_function(values[0],target,config)
+        except ValueError as error:
+            print(f"Error: {error}",file=sys.stderr); return
+    run_cast(["estimate",target]+values,config)
 def run_raw(config,args):
     if not args: print("Usage: lk raw <cast-subcommand> [args...]"); return
     safe=redact_secrets(shlex.join(["cast"]+args)); print(f"DEBUG: Executing -> {safe}")
@@ -940,17 +976,24 @@ def run_raw(config,args):
     return code
 
 def run_batch(config,args):
-    if len(args)!=1: print("Usage: lk batch <command-file>"); return
+    if len(args)!=1:
+        print("Usage: lk batch <command-file>"); return
     path=args[0]
-    if not os.path.exists(path): print(f"Batch file not found: {path}"); return
+    if not os.path.exists(path):
+        print(f"Batch file not found: {path}"); return
     for lineno,line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(),1):
         stripped=line.strip()
         if not stripped or stripped.startswith("#"): continue
         try: tokens=shlex.split(stripped)
-        except ValueError as error: print(f"Batch line {lineno}: {error}",file=sys.stderr); continue
-        if tokens[0]=="raw": run_raw(config,tokens[1:])
-        else: dispatch_command(tokens[0],tokens[1:],config,from_batch=True)
-
+        except ValueError as error:
+            print(f"Batch line {lineno}: {error}",file=sys.stderr); continue
+        if not tokens: continue
+        command=tokens[0]
+        command_args=tokens[1:]
+        if command in {"s","send"} and "--yes" not in command_args and "--confirm" not in command_args and "--preview" not in command_args and "--dry-run" not in command_args:
+            command_args.append("--confirm")
+        if command=="raw": run_raw(config,command_args)
+        else: dispatch_command(command,command_args,config,from_batch=True)
 def run_audit_mode(config):
     print("\n=== LOWKEYCAST AUDIT MODE ===")
     while True:
