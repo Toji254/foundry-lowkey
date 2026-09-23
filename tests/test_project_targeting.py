@@ -106,6 +106,64 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertIn("LOWKEY BUILD FUNCTION", rendered)
             self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address)", rendered)
 
+    def test_repo_clone_helpers(self):
+        self.assertEqual(
+            lk.repo_clone_url("CodeHawks-Contests/2026-07-bc-confidence-pools"),
+            "https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git",
+        )
+        self.assertEqual(
+            lk.repo_clone_name("https://github.com/Toji254/foundry-lowkey.git"),
+            "foundry-lowkey",
+        )
+        self.assertEqual(
+            lk.repo_clone_name("git@github.com:Toji254/foundry-lowkey.git"),
+            "foundry-lowkey",
+        )
+
+    def test_dispatch_accepts_git_clone_alias(self):
+        original = lk.run_clone
+        calls = []
+
+        def fake_run_clone(config, args):
+            calls.append((config, args))
+            return 0
+
+        lk.run_clone = fake_run_clone
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = self._root(tmp)
+                config = {"target": None}
+                with patch_cwd(root):
+                    result = lk.dispatch_command(
+                        "git",
+                        ["clone", "https://example.com/repo.git", "Escrow"],
+                        config,
+                    )
+        finally:
+            lk.run_clone = original
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            calls[0][1],
+            ["https://example.com/repo.git", "Escrow"],
+        )
+
+    def test_upgradeable_artifact_has_initializer(self):
+        artifact = {
+            "abi": [
+                {"type": "constructor", "inputs": []},
+                {"type": "function", "name": "initialize", "inputs": [], "outputs": []},
+            ],
+            "bytecode": {"object": "0x6000"},
+        }
+        self.assertTrue(
+            any(
+                item.get("name") == "initialize"
+                for item in artifact["abi"]
+                if isinstance(item, dict)
+            )
+        )
+
     def test_parse_deployed_address(self):
         self.assertEqual(
             lk.parse_deployed_address("Deployed to: 0x" + "b" * 40),
