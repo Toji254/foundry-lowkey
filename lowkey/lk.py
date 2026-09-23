@@ -580,8 +580,10 @@ def cast_output(args,input_text=None):
     result=subprocess.run(args,capture_output=True,text=True,input=input_text)
     return result.returncode,result.stdout.strip(),result.stderr.strip()
 def abi_selector(signature):
-    output, _ = cast_output(["cast", "sig", signature])
-    return output.splitlines()[0].strip() if output else None
+    code, output, _ = cast_output(["cast", "sig", signature])
+    if code != 0 or not output:
+        return None
+    return output.splitlines()[0].strip()
 
 def decode_abi_input(signature,data):
     payload=data[10:] if data.startswith("0x") and len(data)>=10 else data
@@ -714,7 +716,7 @@ def humanize_value(text, assume_wei=False):
     if not assume_wei:
         return str(text)
     value = str(text)
-    wei_pattern = r'\\b(0x)?(\\d+)\\b'
+    wei_pattern = r'\b(0x)?(\d+)\b'
     def replace_wei(match):
         try:
             raw = int(match.group(2))
