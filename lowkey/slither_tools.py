@@ -44,24 +44,28 @@ DETECTOR_GUIDANCE = {
         "meaning": "The project allows a Solidity compiler version that Slither associates with known compiler bugs.",
         "why": "A compiler bug can change how otherwise-correct Solidity behaves after compilation. This is a build-safety issue, not proof that the contract is exploitable.",
         "next": "Check the exact compiler version used by Foundry, compare it with the Solidity bug list, and pin a patched version that is compatible with the project.",
+        "actions": ["doctor", "build"],
     },
     "low-level-calls": {
         "title": "Low-level external call",
         "meaning": "The contract sends a call directly to another address instead of using a higher-level typed call.",
         "why": "The callee can control how that call behaves. Review reentrancy, return-value handling, recipient control, and whether state is updated safely around the call.",
         "next": "Inspect the full calling function and trace the state changes before and after the call. Then reproduce the path with a hostile recipient in a Foundry test.",
+        "actions": ["functions", "ask", "state-diff", "trace", "generate test"],
     },
     "naming-convention": {
         "title": "Naming convention",
         "meaning": "A Solidity identifier does not follow the naming convention configured or expected by Slither.",
         "why": "This is primarily a readability and maintainability issue. It normally has no direct security impact.",
         "next": "Rename it only if the project's style guide requires it. Do not treat this finding as a vulnerability.",
+        "actions": ["fmt"],
     },
     "reentrancy-eth": {
         "title": "ETH reentrancy",
         "meaning": "An external call that transfers ETH occurs in a code path where state may be affected in a way that deserves reentrancy review.",
         "why": "A malicious recipient can execute code during an external call and potentially re-enter the contract before its assumptions are restored.",
         "next": "Check checks-effects-interactions ordering, reentrancy guards, and whether the same value can be claimed twice. Reproduce with a malicious receiver contract.",
+        "actions": ["state-diff", "trace", "fuzz", "invariant", "generate test"],
     },
     "reentrancy-no-eth": {
         "title": "Reentrancy risk",
@@ -74,6 +78,7 @@ DETECTOR_GUIDANCE = {
         "meaning": "The contract relies on the original transaction signer rather than the immediate caller for some logic.",
         "why": "Another contract can call the target while preserving the user's tx.origin, which can break authorization assumptions.",
         "next": "Inspect the affected authorization path and check whether msg.sender should be used instead. Build a proxy-contract reproduction.",
+        "actions": ["functions", "ask", "probe", "matrix", "generate test"],
     },
 }
 
@@ -304,6 +309,7 @@ def _signal_from_finding(finding: dict) -> dict:
         "meaning": guidance.get("meaning", ""),
         "why": guidance.get("why", ""),
         "next": guidance.get("next", ""),
+        "actions": list(guidance.get("actions", [])),
     }
 
 
@@ -316,6 +322,7 @@ def _human_finding(finding: dict, number: int, total: int, project_root: Path) -
         "meaning": "Static analysis found a code pattern that deserves manual security review.",
         "why": "The pattern may be intentional or may not violate a security property in this contract.",
         "next": "Read the affected code in context, identify the relevant security property, and reproduce the behavior with Foundry before recording a finding.",
+        "actions": ["functions", "ask", "state-diff", "trace", "generate test"],
     })
 
     print(f"\nFINDING {number}/{total}")
