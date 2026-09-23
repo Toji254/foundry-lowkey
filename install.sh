@@ -7,10 +7,22 @@ TARGET_BIN_DIR="$HOME/.foundry/bin"
 
 mkdir -p "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR"
 
-cp "$REPO_DIR/lowkey/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
-cp "$REPO_DIR/lowkey/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
-cp "$REPO_DIR/lowkey/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
-cp "$REPO_DIR/bin/lk" "$TARGET_BIN_DIR/lk"
+copy_if_needed() {
+  local source="$1"
+  local destination="$2"
+
+  # Avoid GNU cp's "same file" failure when a previous install used symlinks.
+  if [ -e "$destination" ] && [ "$(realpath "$source")" = "$(realpath "$destination")" ]; then
+    return 0
+  fi
+
+  cp "$source" "$destination"
+}
+
+copy_if_needed "$REPO_DIR/lowkey/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
+copy_if_needed "$REPO_DIR/lowkey/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
+copy_if_needed "$REPO_DIR/lowkey/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
+copy_if_needed "$REPO_DIR/bin/lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
 cat <<EOF
