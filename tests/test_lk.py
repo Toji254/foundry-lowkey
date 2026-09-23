@@ -534,6 +534,20 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("RUNTIME-ONLY:", output.getvalue())
         self.assertIn("ABI-ONLY:", output.getvalue())
 
+
+    def test_txpool_uses_rpc_methods_not_cast_flag(self):
+        config={"rpc":"http://127.0.0.1:8545"}
+        with patch.object(lk,"rpc_json",side_effect=[
+            {"pending":"0x1","queued":"0x2"},
+            {"pending":{},"queued":{}},
+        ]) as rpc_json:
+            output=io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(lk.run_txpool(config, []),0)
+                self.assertEqual(lk.run_txpool(config, ["content"]),0)
+        self.assertEqual(rpc_json.call_args_list[0].args[:2], ("http://127.0.0.1:8545","txpool_status"))
+        self.assertEqual(rpc_json.call_args_list[1].args[:2], ("http://127.0.0.1:8545","txpool_content"))
+
     def test_foundry_test_wrappers(self):
         with patch.object(lk, "run_foundry", return_value=0) as run:
             self.assertEqual(lk.run_fuzz(["--fuzz-runs", "10"]), 0)
