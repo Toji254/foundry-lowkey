@@ -1,3 +1,4 @@
+import io
 import json
 import importlib.util
 import unittest
