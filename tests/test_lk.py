@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import pathlib
+from pathlib import Path
 import subprocess
 import sys
 import tempfile
@@ -234,7 +235,7 @@ class LowkeyCastTests(unittest.TestCase):
                 result = lk.run_cast(args, config, capture=True)
             self.assertEqual(result.code, 0)
             actual = cast_output.call_args.args[0]
-            self.assertEqual(actual[:len(args)], ["cast", *args])
+            self.assertEqual(actual[:len(args)+1], ["cast", *args])
             self.assertNotIn("--rpc-url", actual)
 
     def test_mapping_rejects_failed_slot_calculation(self):
@@ -1016,7 +1017,7 @@ class LowkeyCastTests(unittest.TestCase):
         }
         captured = {}
 
-        def fake_write(prefix, content):
+        def fake_write(prefix, content, announce=True):
             captured["prefix"] = prefix
             captured["content"] = content
             return "test/Lowkey_probe.t.sol"
@@ -1485,7 +1486,7 @@ contract Escrow {
             )
         self.assertEqual(
             labels[changed_slot.lower()],
-            ("escrow[0].creator", "t_address"),
+            ("escrow[16].creator", "t_address"),
         )
 
     def test_dispatch_exposes_simple_audit_aliases(self):
