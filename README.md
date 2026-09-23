@@ -200,6 +200,7 @@ Useful commands:
 lk context
 lk signals
 lk signals all
+lk investigate SLITHER-XXXXXXXXXX
 lk signals set <ID> investigating "check reentrancy path"
 ~~~
 
