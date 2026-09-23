@@ -2240,7 +2240,7 @@ def run_clone(config, args):
     finally:
         os.chdir(previous_cwd)
 
-def run_project_lab_script(config, root, script, rpc, accounts, key):
+def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
@@ -2273,8 +2273,9 @@ def run_project_lab_script(config, root, script, rpc, accounts, key):
     if not target:
         return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
 
-    artifact = os.path.join(root, "out", "ConfidencePoolFactory.sol", "ConfidencePoolFactory.json")
-    if not os.path.isfile(artifact):
+    contract = requested or "local-lab-target"
+    artifact = os.path.join(root, "out", f"{contract}.sol", f"{contract}.json") if contract else None
+    if not artifact or not os.path.isfile(artifact):
         artifact = None
 
     config["actor"] = "lab-deployer"
@@ -2284,9 +2285,9 @@ def run_project_lab_script(config, root, script, rpc, accounts, key):
         "address": accounts[0],
     }
     config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
-    set_lab_target(config, root, target, "ConfidencePoolFactory", artifact)
+    set_lab_target(config, root, target, contract, artifact)
 
-    print(f"Target  : ConfidencePoolFactory -> {target}")
+    print(f"Target  : {contract} -> {target}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     print("Ready   : lk changes <function> ... | lk trace")
     return 0
@@ -2357,20 +2358,28 @@ def run_lab(config,args):
     if args and args[0].lower() in {"help","-h","--help"}:
         print("Usage: lk lab [Contract]")
         print("Start a disposable local audit lab and auto-connect its target.")
-        print("A project-specific adapter is optional; otherwise Lowkey can deploy a built contract generically.")
+        print("A project-specific lab adapter is preferred; otherwise Lowkey uses generic deployment.")
         return 0
 
     root = audit_context.foundry_project_root()
     if not root:
         return fail("Error: this command must be run inside a Foundry project.")
 
+    if args and args[0].lower() == "stop":
+        return stop_project_anvil(root)
+
     requested = str(args[0]).strip() if args else None
     script = discover_local_lab_script(root)
 
     rpc = effective_rpc(config)
     info = anvil_rpc_info(config)
+    if not info and not config.get("rpc"):
+        info = ensure_project_anvil(config, root)
+        rpc = effective_rpc(config)
+    if config.get("rpc") and not info:
+        return fail("Error: the configured RPC is not an Anvil node.")
     if not rpc or not info:
-        return fail("Error: no local Anvil detected. Start Anvil with: anvil")
+        return fail("Error: no local Anvil detected and Lowkey could not start one.")
 
     accounts = info.get("accounts", [])
     if not accounts:
@@ -2379,8 +2388,8 @@ def run_lab(config,args):
     if not key:
         return fail("Error: could not derive the default Anvil account #0 key.")
 
-    if script and (not requested or requested.lower() in {"localaudit", "lab"}):
-        return run_project_lab_script(config, root, script, rpc, accounts, key)
+    if script and (not requested or requested.lower() not in {"generic", "forge", "artifact"}):
+        return run_project_lab_script(config, root, script, rpc, accounts, key, requested)
 
     # No adapter? Use the focused finding/function to pick the most relevant artifact.
     if not requested:
