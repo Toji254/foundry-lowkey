@@ -84,7 +84,8 @@ installed = {
     str(lowkey_dir / "generator.py"): sha256(lowkey_dir / "generator.py"),
     str(lowkey_dir / "slither_tools.py"): sha256(lowkey_dir / "slither_tools.py"),
     str(lowkey_dir / "audit_context.py"): sha256(lowkey_dir / "audit_context.py"),
-    str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),\n    str(lowkey_dir / "walkthrough.py"): sha256(lowkey_dir / "walkthrough.py"),
+    str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),
+    str(lowkey_dir / "walkthrough.py"): sha256(lowkey_dir / "walkthrough.py"),
     str(bin_dir / "lk"): sha256(bin_dir / "lk"),
 }
 
