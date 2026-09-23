@@ -106,6 +106,50 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertIn("LOWKEY BUILD FUNCTION", rendered)
             self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address)", rendered)
 
+    def test_discover_audit_target_contract_prefers_higher_impact_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            for contract in ("Factory", "Helper"):
+                artifact = root / "out" / f"{contract}.sol" / f"{contract}.json"
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_text(
+                    json.dumps(
+                        {
+                            "contractName": contract,
+                            "bytecode": {"object": "0x6000"},
+                            "abi": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            lk.audit_context.add_signal(
+                {
+                    "id": "HIGH-TEST",
+                    "title": "High issue",
+                    "tool": "test",
+                    "impact": "High",
+                    "confidence": "High",
+                    "file": "src/Factory.sol",
+                    "line": 10,
+                    "status": "open",
+                },
+                root,
+            )
+            lk.audit_context.add_signal(
+                {
+                    "id": "LOW-TEST",
+                    "title": "Low issue",
+                    "tool": "test",
+                    "impact": "Low",
+                    "confidence": "High",
+                    "file": "src/Helper.sol",
+                    "line": 10,
+                    "status": "open",
+                },
+                root,
+            )
+            self.assertEqual(lk.discover_audit_target_contract(root), "Factory")
+
     def test_repo_clone_helpers(self):
         self.assertEqual(
             lk.repo_clone_url("CodeHawks-Contests/2026-07-bc-confidence-pools"),
