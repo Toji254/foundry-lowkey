@@ -623,6 +623,23 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
     results.append({"label": "slither", "code": slither_code})
     triage_code = run_source_triage(root)
     results.append({"label": "source_triage", "code": triage_code})
+
+    forge = command_path("forge")
+    for optional in ("lint", "geiger"):
+        if forge:
+            help_code, _, _ = run_command(["forge", optional, "--help"], root)
+            if help_code == 0:
+                print(f"\n=== LOWKEY EVIDENCE: {optional.upper()} ===")
+                code, stdout, stderr = run_command(["forge", optional], root, 600)
+                write_text(evidence_dir(root) / f"{optional}.stdout.txt", stdout)
+                write_text(evidence_dir(root) / f"{optional}.stderr.txt", stderr)
+                record_evidence(optional, {
+                    "command": ["forge", optional],
+                    "exit_code": code,
+                    "stdout": stdout[-50000:],
+                    "stderr": stderr[-20000:],
+                }, root)
+                results.append({"label": optional, "code": code})
     manifest = read_json(manifest_path(root), {})
     manifest["pipeline"] = {"completed_at": now_stamp(), "steps": results}
     write_json(manifest_path(root), manifest)
