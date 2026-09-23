@@ -132,7 +132,9 @@ foundry-lowkey/
 ├── bin/
 │   └── lk
 ├── lowkey/
-│   └── lk.py
+│   ├── lk.py
+│   ├── forge_tools.py
+│   └── audit_engine.py
 ├── tests/
 │   └── test_lk.py
 ├── .github/
@@ -245,7 +247,6 @@ To run the audit and create a scaffold in one pass:
 lk audit run --poc
 ```
 
-Slither's JSON export and its Foundry-aware compilation path are used by the evidence layer; current Slither documentation describes `--json` output and Foundry project support. citeturn265382search0turn265382search4
 
 
 - `test-audit` runs native `forge test` with `-vvvv` unless you provide
