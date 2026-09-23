@@ -103,8 +103,7 @@ note[low-level-calls]: generated helper
 
 
     def test_coverage_table_is_parsed_and_summarised(self):
-        output = """\u001b[?25l
-╭--------------------------------------------+------------------+------------------+------------------+-----------------╮
+        output = """╭--------------------------------------------+------------------+------------------+------------------+-----------------╮
 | File                                       | % Lines          | % Statements     | % Branches       | % Funcs         |
 +=======================================================================================================================+
 | src/ConfidencePool.sol                     | 96.89% (312/322) | 97.01% (422/435) | 94.23% (98/104)  | 96.88% (31/32)  |
@@ -120,11 +119,12 @@ note[low-level-calls]: generated helper
         self.assertEqual(rows[2]["branches"], None)
 
         report = forge_tools._format_coverage_report(output)
-        self.assertIn("COVERAGE SUMMARY", report)
+        self.assertIn("COVERAGE TABLE", report)
         self.assertIn("src/ConfidencePool.sol", report)
-        self.assertIn("L10 S13 B6 F1", report)
+        self.assertIn("312/322 (96.89%)", report)
+        self.assertIn("10 / 13 / 6 / 1", report)
+        self.assertIn("src/mocks/MockERC20.sol", report)
         self.assertIn("All reported files", report)
-        self.assertNotIn("src/mocks/MockERC20.sol", report)
 
     def test_raw_coverage_table_is_stripped_before_display(self):
         output = """before
@@ -139,6 +139,8 @@ after
         self.assertIn("before", visible)
         self.assertIn("after", visible)
         self.assertNotIn("| src/A.sol |", visible)
+        self.assertNotIn("╭----------+", visible)
+
 
     @patch("forge_tools._supports_option", return_value=True)
     @patch("forge_tools._coverage_needs_ir", return_value=True)
