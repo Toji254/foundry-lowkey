@@ -120,8 +120,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args:
         return run_default(foundry_project_root())
 
-    # Explicit Slither arguments remain a transparent escape hatch. When a
-    # project directory is the first positional argument, use it as-is.
+    # Explicit Slither arguments remain a transparent escape hatch. When
+    # the user starts with an option, automatically target the current Foundry
+    # project so option-first commands work naturally.
+    if args and args[0].startswith("-"):
+        args = [str(foundry_project_root()), *args]
     command = [binary, *args]
     try:
         return subprocess.run(command).returncode
