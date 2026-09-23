@@ -20,6 +20,7 @@ MODULE_DIR = Path(__file__).resolve().parent
 if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 import audit_context
+import walkthrough
 
 try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
@@ -5173,7 +5174,7 @@ START
   lk audit auto                    Autonomous local audit; starts Anvil if needed and bootstraps target
   lk audit --checks                Same audit session with Slither + optional lint/geiger checks
   lk audit auto --checks           Autonomous audit with Slither + optional lint/geiger checks
-  lk audit--checks                 Legacy compact alias for audit --checks
+  lk walkthrough [options]       Build and execute a visual whole-protocol workflow\n  lk walkthrough --auto           Auto-provision a local Anvil target when needed\n  lk walkthrough --static         Render the compiled protocol model without execution\n  lk walkthrough --contract X     Focus the workflow model on contract X\n  lk audit--checks                 Legacy compact alias for audit --checks
   lk findings                      Show audit findings
   lk focus <ID>                    Focus one finding and mark it investigating
   lk status                        Show target and audit state
@@ -5403,7 +5404,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="status": run_status(config)
     elif cmd in {"audit--checks","audit-checks"}: return run_audit_mode(config, ["--checks", *args])
     elif cmd=="audit": return run_audit_mode(config,args)
-    elif cmd=="context": return run_context(config)
+    elif cmd in {"walkthrough","walk"}: return walkthrough.run(config,args,host=sys.modules[__name__])\n    elif cmd=="context": return run_context(config)
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
     elif cmd in {"findings", "signals", "signal"}: return run_signals(config,args)
     elif cmd=="chain": run_chain(config)
@@ -5502,7 +5503,7 @@ def main():
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
-        "audit","audit--checks","audit-checks"
+        "audit","audit--checks","audit-checks","walkthrough","walk"
     }
     if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks"}:
         try:
