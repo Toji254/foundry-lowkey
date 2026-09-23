@@ -4125,7 +4125,7 @@ def run_scan(args):
     if not os.path.isdir(root) and not root.endswith(".sol"):
         return fail(f"Path is not a Solidity file or directory: {root}")
     patterns = [
-        ("REENTRANCY REVIEW", re.compile(r"\\.(?:call|delegatecall|staticcall)\\s*(?:\\{|\\()")),
+        ("REENTRANCY REVIEW", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
         ("ETH TRANSFER REVIEW", re.compile(r"\.(transfer|send)\s*\(")),
         ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
         ("DELEGATECALL", re.compile(r"\bdelegatecall\b")),
