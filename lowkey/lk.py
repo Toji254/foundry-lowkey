@@ -1965,6 +1965,33 @@ def artifact_is_deployable(artifact):
         obj = str(bytecode or "")
     return bool(obj and obj not in {"0x", "0X"})
 
+def discover_audit_target_contract(root):
+    """Choose a likely application contract from existing audit signals."""
+    scores = {}
+    for signal in audit_context.signals(root, "open"):
+        if not isinstance(signal, dict):
+            continue
+        path = str(signal.get("file") or "")
+        parts = Path(path).parts
+        if "src" not in parts or not path.lower().endswith(".sol"):
+            continue
+        name = Path(path).stem
+        lowered = path.lower()
+        if "/interfaces/" in lowered or name.lower().startswith("i"):
+            continue
+        impact = str(signal.get("impact") or "").lower()
+        weight = {"high": 100, "medium": 50, "low": 10, "informational": 2}.get(impact, 5)
+        scores[name] = scores.get(name, 0) + weight
+    if not scores:
+        return None
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].lower()))
+    for contract, _score in ranked:
+        candidate = discover_generic_lab_contract(root, contract)
+        if candidate:
+            return contract
+    return None
+
 def discover_generic_lab_contract(root, query=None):
     matches = project_artifact_function_matches(root, query) if query else []
     preferred_contracts = []
@@ -2395,7 +2422,11 @@ def run_lab(config,args):
     if script and (not requested or requested.lower() not in {"generic", "forge", "artifact"}):
         return run_project_lab_script(config, root, script, rpc, accounts, key, requested)
 
-    # No adapter? Use the focused finding/function to pick the most relevant artifact.
+    # No adapter? Prefer the audit evidence; it usually points at the application's
+    # most security-relevant implementation contract.
+    if not requested:
+        requested = discover_audit_target_contract(root)
+
     if not requested:
         context = audit_context.load(root)
         focus = context.get("focus") or {}
