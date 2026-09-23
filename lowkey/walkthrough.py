@@ -971,7 +971,7 @@ def _render_trace(step: Step) -> str:
     return "\n".join(["  " + EXTERNAL + " " + x for x in step.trace_edges[-10:]])
 
 
-def _render_board(model: ContractModel, actors: list[Actor], steps: list[Step], current: Step | None,
+def _render_board(model: ContractModel, models: list[ContractModel], actors: list[Actor], steps: list[Step], current: Step | None,
                   storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
     title = _paint("LOWKEY  //  PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled)
     subtitle = _paint(
@@ -1106,7 +1106,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     print(_render_plan(model, plan, enabled))
     if static:
         print()
-        print(_render_board(model, actors, plan, None, [], enabled, static=True))
+        print(_render_board(model, models, actors, plan, None, [], enabled, static=True))
         _save_artifacts(root, model_payload, plan)
         return 0
 
@@ -1131,7 +1131,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             step.status = "reverted"
             step.error = output or "transaction failed"
             _save_artifacts(root, model_payload, plan)
-            print("\n" + _render_board(model, actors, plan, step, before_storage, enabled))
+            print("\n" + _render_board(model, models, actors, plan, step, before_storage, enabled))
             try:
                 input("\nPress ENTER for the next source-guided step…  ")
             except EOFError:
@@ -1157,7 +1157,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         model_payload["workflow"] = [asdict(x) for x in plan]
         _save_artifacts(root, model_payload, plan)
         print("\033[2J\033[H" if enabled else "")
-        print(_render_board(model, actors, plan, step, after_storage, enabled))
+        print(_render_board(model, models, actors, plan, step, after_storage, enabled))
         print("")
         print(_paint("STATE TRANSITION", BOLD + GREEN, enabled))
         print(f"  {step.actor} {ARROW} {step.function} {ARROW} storage/events/trace captured")
