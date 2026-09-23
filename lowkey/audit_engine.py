@@ -424,6 +424,8 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
     findings = findings if isinstance(findings, list) else []
     selected = _select_finding(findings, finding_index)
     matrix = _matrix(root)
+    triage_payload = read_json(evidence_dir(root) / "source_triage.json", {}).get("data", {})
+    triage_markers = triage_payload.get("markers", []) if isinstance(triage_payload, dict) else []
     config = _config()
     target = config.get("target")
     abi_map = _abi_functions(_load_abi(config, target))
