@@ -4293,12 +4293,28 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="fork": return run_fork(args,config)
     elif cmd=="ask":
         if not args: return fail("Usage: lk ask <function>")
-        funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
+        query=args[0]
+        root=audit_context.foundry_project_root()
+        target=active_project_target(config,root)
+        funcs=abi_functions(load_abi(target,config)) if target else []
+        if not funcs:
+            artifact_matches=project_artifact_function_matches(root,query)
+            if not artifact_matches:
+                return fail(f"Error: no built-project function matched '{query}'. Run 'forge build' first.")
+            print(f"Built-project function matches for '{query}':")
+            for contract,signature,path in artifact_matches[:8]:
+                print(f"  {contract}::{signature}")
+            print("Use a deployed project target when you need live-chain details.")
+            return 0
+        matches=matching_functions(funcs,query)
         if len(matches)!=1:
-            for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]: print(" ",format_signature(item))
+            for item in sorted(funcs,key=lambda x:function_score(x,query),reverse=True)[:8]:
+                print(" ",format_signature(item))
         else:
-            item=matches[0]; print(f"Function: {format_signature(item)}")
-            for index,param in enumerate(item.get("inputs",[]),1): print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
+            item=matches[0]
+            print(f"Function: {format_signature(item)}")
+            for index,param in enumerate(item.get("inputs",[]),1):
+                print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
     elif cmd=="audit": return run_audit(config,args)
