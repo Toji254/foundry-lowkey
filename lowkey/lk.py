@@ -2290,7 +2290,9 @@ def run_foundry(args, capture=False):
         return result.code
 
     code = completed.returncode
-    output = (completed.stdout or completed.stderr or "").strip()
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    output = "\n".join(part for part in (stdout, stderr) if part).strip()
     audit_context.emit(
         "forge-command",
         root,
