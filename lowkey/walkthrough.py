@@ -273,7 +273,7 @@ def _artifact_models(root: Path) -> list[ContractModel]:
                 target_name = target_fn.split("(", 1)[0]
                 if target_name == name:
                     continue
-                if re.search(r"\\b" + re.escape(target_name) + r"\\s*\\(", segment):
+                if re.search(r"\b" + re.escape(target_name) + r"\s*\(", segment):
                     edges.append({
                         "kind": "internal",
                         "from": name,
@@ -285,7 +285,7 @@ def _artifact_models(root: Path) -> list[ContractModel]:
                     continue
                 for target in known[other_name].functions:
                     target_name = target.split("(", 1)[0]
-                    if re.search(r"\\b" + re.escape(other_name) + r"\\s*\\([^;{}]{0,120}\\)\\s*\\.?\\s*" + re.escape(target_name) + r"\\s*\\(", segment):
+                    if re.search(r"\b" + re.escape(other_name) + r"\s*\([^;{}]{0,120}\)\s*\.?\s*" + re.escape(target_name) + r"\s*\(", segment):
                         edges.append({
                             "kind": "cross-contract",
                             "from": name,
@@ -306,7 +306,7 @@ def _artifact_models(root: Path) -> list[ContractModel]:
                 seen.add(key)
                 model.calls.append(edge)
 
-    return sorted(models, key=lambda m: (m.name.lower(), m.source))
+    return sorted(models, key=lambda m: (0 if str(m.source).startswith("src/") else 1, m.name.lower(), m.source))
 
 
 def _parse_structs(source: str) -> dict[str, list[Field]]:
