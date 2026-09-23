@@ -200,6 +200,7 @@ Useful commands:
 lk context
 lk signals
 lk signals all
+lk signals set <ID> investigating "check reentrancy path"
 ~~~
 
 A Slither detector result is normalized into an audit signal with a stable ID, impact, confidence, source location, and status. Forge commands and transaction-producing Lowkey commands publish execution evidence into the same context. Generators can read that context when deciding what target or project state they are working with.
@@ -404,6 +405,8 @@ foundry-lowkey/
 ├── lowkey/lk.py
 ├── lowkey/forge_tools.py
 ├── lowkey/generator.py
+├── lowkey/slither_tools.py
+├── lowkey/audit_context.py
 ├── tests/test_lk.py
 ├── tests/test_forge_tools.py
 ├── .github/workflows/ci.yml
