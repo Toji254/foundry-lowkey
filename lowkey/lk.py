@@ -1238,7 +1238,7 @@ def run_audit_mode(config):
     print("\n=== LOWKEYCAST AUDIT MODE ===")
     while True:
         print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
-        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   0) exit")
+        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   7) full evidence pass   8) generate PoC   0) exit")
         try: choice=input("lk> ").strip()
         except EOFError: return
         if choice=="1": run_recon(config)
@@ -1247,6 +1247,8 @@ def run_audit_mode(config):
         elif choice=="4": run_checklist(config)
         elif choice=="5": run_targets(config)
         elif choice=="6": run_deployments(config)
+        elif choice=="7" and run_audit_pipeline: run_audit_pipeline(".")
+        elif choice=="8" and generate_poc: generate_poc(".")
         elif choice=="0": return
         else: print("Unknown option.")
 
