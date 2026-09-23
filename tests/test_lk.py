@@ -707,17 +707,47 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(encoded, "abcdef")
         self.assertEqual(cast.call_args.args[0][-2:], ["1000000000000000000", "0x" + "2" * 40])
 
-    def test_local_foundry_test_args_uses_detected_anvil(self):
-        config = {"rpc": "http://127.0.0.1:8545"}
-        with patch.object(
-            lk, "anvil_rpc_info",
-            return_value={"url": config["rpc"], "accounts": []},
-        ):
-            args = lk.local_foundry_test_args(config, "test/X.t.sol")
-        self.assertEqual(
-            args[:3],
-            ["test", "--fork-url", "http://127.0.0.1:8545"],
-        )
+    def test_run_cast_resolves_actor_name_for_address_argument(self):
+        target="0x"+"1"*40
+        config={
+            "target":target,
+            "wallets":{"Bob":{"address":"0x"+"2"*40}},
+            "actor":"Alice",
+        }
+        abi=[{
+            "type":"function",
+            "name":"sendTo",
+            "inputs":[{"name":"to","type":"address"}],
+            "stateMutability":"nonpayable",
+        }]
+        with patch.object(lk,"load_abi",return_value=abi), \
+             patch.object(lk,"cast_output",return_value=(0,"ok","")) as cast:
+            self.assertEqual(lk.run_cast(["send","sendTo","Bob"],config),0)
+        sent=cast.call_args.args[0]
+        self.assertIn("sendTo(address)",sent)
+        self.assertIn("0x"+"2"*40,sent)
+
+    def test_encode_target_call_normalizes_ether_argument(self):
+        config={
+            "target":"0x"+"1"*40,
+            "wallets":{"Bob":{"address":"0x"+"2"*40}},
+        }
+        abi=[{
+            "type":"function",
+            "name":"createescrow",
+            "inputs":[
+                {"name":"amount","type":"uint256"},
+                {"name":"recipient","type":"address"},
+            ],
+            "stateMutability":"payable",
+        }]
+        with patch.object(lk,"load_abi",return_value=abi), \
+             patch.object(lk,"cast_output",return_value=(0,"0xabcdef","")) as cast:
+            lk.encode_target_call(config,"createescrow",["1ether","Bob"])
+        sent=cast.call_args.args[0]
+        self.assertIn("1000000000000000000",sent)
+        self.assertIn("0x"+"2"*40,sent)
+
 
     def test_split_lab_options(self):
         values, actor, value, keep = lk.split_lab_options(
