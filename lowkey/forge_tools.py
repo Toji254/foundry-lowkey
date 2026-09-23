@@ -78,24 +78,26 @@ def run_audit(args: Sequence[str]) -> int:
     test_cmd = ["test", *forwarded]
     if not has_verbosity(forwarded):
         test_cmd.insert(1, "-vvv")
-    steps = [("build", ["build"]), ("tests", test_cmd), ("coverage", ["coverage"])]
+    steps = [("build", ["build"])]
     if checks:
+        # Keep static checks after compilation so dependency/compiler failures are
+        # reported by Forge before Slither starts its own compilation pass.
+        steps.append(("slither", None))
         for optional in ("lint", "geiger"):
             if command_available(optional):
                 steps.append((optional, [optional]))
             else:
                 print(f"LowkeyForge: skipping unavailable command: forge {optional}")
-
-        # Slither is external to Forge, so keep it as a labeled static-analysis
-        # stage rather than pretending it is another forge subcommand.
-        root = Path.cwd().resolve()
-        slither_code = run_slither_preflight(root)
-        if slither_code != 0:
-            print("\nLowkeyForge: stopped after failed Slither static analysis.", file=sys.stderr)
-            return slither_code
+    steps.extend([("tests", test_cmd), ("coverage", ["coverage"])])
 
     for label, command in steps:
-        print(f"\n=== LOWKEY FORGE: {label.upper()} ===")
+        print(f"\n=== LOWKEY {'STATIC' if label == 'slither' else 'FORGE'}: {label.upper()} ===")
+        if label == "slither":
+            code = run_slither_preflight(Path.cwd().resolve())
+            if code != 0:
+                print("\nLowkeyForge: stopped after failed Slither static analysis.", file=sys.stderr)
+                return code
+            continue
         code = run_forge(command)
         if code != 0:
             print(f"\nLowkeyForge: stopped after failed step: forge {' '.join(command)}", file=sys.stderr)
