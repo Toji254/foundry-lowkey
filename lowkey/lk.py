@@ -548,13 +548,32 @@ def project_context_target(root=None):
     artifact = target.get("artifact")
     contract = target.get("contract")
 
-    # Older contexts may contain a global target copied from another project.
-    # Accept an explicitly recorded project target, or legacy targets that still
-    # point at a contract/artifact belonging to this project.
-    if source in {"manual", "auto", "project", "project-lab", "auto-detected"}:
+    # Explicit manual targets are allowed to survive without an artifact.
+    if source == "manual":
         return target
-    if artifact and path_is_within(artifact, project_root):
-        return target
+
+    # Auto/project targets must still resolve to a real first-party application
+    # artifact. This prevents stale dependency targets (for example OpenZeppelin
+    # Address) from bypassing fresh project-scoped discovery.
+    artifact_path = None
+    if artifact:
+        try:
+            artifact_path = Path(os.path.expanduser(str(artifact)))
+            if not artifact_path.is_absolute():
+                artifact_path = project_root / artifact_path
+            artifact_path = artifact_path.resolve()
+        except OSError:
+            artifact_path = None
+
+    if artifact_path and artifact_path.is_file():
+        artifact_data = read_artifact(str(artifact_path))
+        if artifact_data and artifact_is_project_application(project_root, str(artifact_path), artifact_data):
+            artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
+            if not contract or str(contract).lower() == str(artifact_contract).lower():
+                return target
+
+    # Legacy contexts without an explicit source are accepted only when the
+    # remembered artifact is valid and first-party.
     return None
 
 def active_project_target(config, root=None):
@@ -571,7 +590,22 @@ def active_project_target(config, root=None):
     # Never reuse a target whose remembered project root belongs elsewhere.
     configured_root = configured_project_root(global_target, config)
     if configured_root and Path(configured_root).resolve() == Path(project_root).resolve():
-        return global_target
+        artifact = config.get("abi_paths", {}).get(global_target)
+        contract = config.get("target_contract")
+        if artifact:
+            try:
+                artifact_path = Path(os.path.expanduser(str(artifact)))
+                if not artifact_path.is_absolute():
+                    artifact_path = Path(project_root) / artifact_path
+                artifact_path = artifact_path.resolve()
+            except OSError:
+                artifact_path = None
+            if artifact_path and artifact_path.is_file():
+                artifact_data = read_artifact(str(artifact_path))
+                if artifact_data and artifact_is_project_application(Path(project_root), str(artifact_path), artifact_data):
+                    artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
+                    if not contract or str(contract).lower() == str(artifact_contract).lower():
+                        return global_target
     return None
 
 def activate_project_target(config, root=None):
@@ -4451,7 +4485,7 @@ def _live_target_candidate(config, root, contract_name=None):
         if not isinstance(artifact, dict):
             continue
         name = artifact_contract_name(path, artifact)
-        if artifact_is_deployable(artifact):
+        if artifact_is_project_application(root, path, artifact):
             artifacts_by_name[str(name).lower()] = (str(name), path)
 
     aliases = target_aliases(config)
