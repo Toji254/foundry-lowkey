@@ -59,9 +59,7 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].args[0], ["build", "--skip", "test", "--skip", "script"])
         self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv", "--no-match-path", "test/Lowkey_*"])
         self.assertEqual(run.call_args_list[2].args[0], ["coverage", "--no-match-path", "test/Lowkey_*"])
-
-
-    @patch("forge_tools.run_forge", return_value=0)
+        self.assertEqual(available.call_count, 2)
 
     def test_filter_generated_diagnostics(self):
         output = """note[custom-errors]: use custom errors
