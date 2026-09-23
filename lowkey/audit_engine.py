@@ -378,6 +378,46 @@ def _body(mode: str) -> str:
 ''')
 
 
+def run_source_triage(root: str = ".") -> int:
+    patterns = [
+        ("REENTRANCY/LOW-LEVEL CALL", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
+        ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
+        ("DELEGATECALL", re.compile(r"\bdelegatecall\b")),
+        ("SELFDESTRUCT", re.compile(r"\bselfdestruct\s*\(")),
+        ("UNCHECKED", re.compile(r"\bunchecked\s*\{")),
+        ("ASSEMBLY", re.compile(r"\bassembly\s*\{")),
+        ("ENCODE_PACKED", re.compile(r"\babi\.encodePacked\s*\(")),
+        ("TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
+        ("BLOCKHASH/PREVRANDAO", re.compile(r"\bblock\.hash\s*(?:\(|$)|\bblockhash\s*\(|\bblock\.prevrandao\b")),
+        ("ECRECOVER", re.compile(r"\becrecover\s*\(")),
+    ]
+    base = Path(root) / "src" if (Path(root) / "src").is_dir() else Path(root)
+    markers = []
+    for path in sorted(base.rglob("*.sol")):
+        if any(part in {".git", "out", "cache", "lib", ".audit"} for part in path.parts):
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            for label, pattern in patterns:
+                if pattern.search(line):
+                    markers.append({
+                        "file": str(path.relative_to(Path(root).resolve())),
+                        "line": number,
+                        "label": label,
+                        "text": line.strip(),
+                    })
+    record_evidence("source_triage", {"count": len(markers), "markers": markers}, root)
+    print("SOURCE TRIAGE")
+    print("=" * 52)
+    for item in markers:
+        print(f"{item['file']}:{item['line']}: [{item['label']}] {item['text']}")
+    print(f"\nReview markers: {len(markers)}")
+    return 0
+
+
 def generate_poc(root: str = ".", finding_index: int | None = None, name: str | None = None) -> tuple[int, list[Path]]:
     evidence = read_json(evidence_dir(root) / "slither.json", {}).get("data", {})
     findings = evidence.get("findings", []) if isinstance(evidence, dict) else []
@@ -532,6 +572,16 @@ contract Poc_{slug} is Test {{
 def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
     results = []
+    git_code, git_sha, _ = run_command(["git", "rev-parse", "HEAD"], root)
+    branch_code, branch, _ = run_command(["git", "branch", "--show-current"], root)
+    config = _config()
+    record_evidence("context", {
+        "target": config.get("target"),
+        "rpc": config.get("rpc"),
+        "git_sha": git_sha.strip() if git_code == 0 else None,
+        "git_branch": branch.strip() if branch_code == 0 else None,
+        "started_at": now_stamp(),
+    }, root)
     for label, command, timeout in (
         ("build", ["forge", "build"], 300),
         ("tests", ["forge", "test", "-vvvv"], 600),
@@ -556,6 +606,8 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
 
     slither_code = run_slither(root, slither_args)
     results.append({"label": "slither", "code": slither_code})
+    triage_code = run_source_triage(root)
+    results.append({"label": "source_triage", "code": triage_code})
     manifest = read_json(manifest_path(root), {})
     manifest["pipeline"] = {"completed_at": now_stamp(), "steps": results}
     write_json(manifest_path(root), manifest)
