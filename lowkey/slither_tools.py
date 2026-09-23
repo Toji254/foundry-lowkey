@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -15,7 +14,6 @@ MODULE_DIR = Path(__file__).resolve().parent
 if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 import audit_context
-from urllib.parse import quote
 
 
 def slither_path() -> str | None:
@@ -95,15 +93,10 @@ def _clean_description(value: object) -> str:
 
 
 def _terminal_link(label: str, absolute: Path, line: int, column: int = 1) -> str:
-    """Return visible relative text with a VS Code-clickable terminal link."""
-    # OSC 8 keeps the displayed path clean while attaching a richer URI target.
-    if str(os.environ.get("TERM_PROGRAM", "")).lower() != "vscode":
-        return label
+    """Compatibility wrapper around the shared audit-context source linker."""
+    return audit_context.source_link(absolute.name if absolute.name else label, line, column, absolute.parent.parent)
 
-    encoded = quote(str(absolute), safe="/:")
-    target = f"vscode://file/{encoded}:{line}:{column}"
-    return f"\x1b]8;;{target}\x1b\\{label}\x1b]8;;\x1b\\"
-    
+
 
 def _source_location(finding: dict, project_root: Path) -> tuple[str, str] | None:
     elements = finding.get("elements")
@@ -132,116 +125,28 @@ def _source_location(finding: dict, project_root: Path) -> tuple[str, str] | Non
         except (TypeError, ValueError):
             continue
 
-        column = mapping.get("starting_column")
         try:
-            column = int(column) if column is not None else 1
+            column = int(mapping.get("starting_column", 1))
         except (TypeError, ValueError):
             column = 1
 
-        # Keep the visible text relative to the project, while the hidden
-        # hyperlink target points to the exact local file/line/column.
-        display_path = Path(str(filename))
-        if display_path.is_absolute():
-            try:
-                display_path = display_path.relative_to(project_root)
-            except ValueError:
-                pass
-        else:
-            display_path = Path(*display_path.parts)
-
-        relative_text = display_path.as_posix()
+        label = str(filename)
         if first == last:
-            label = f"{relative_text}:{first}"
+            label = f"{label}:{first}"
         else:
-            label = f"{relative_text}:{first}-{last}"
+            label = f"{label}:{first}-{last}"
 
-        absolute = Path(str(filename))
-        if not absolute.is_absolute():
-            absolute = (project_root / absolute).resolve()
-        else:
-            absolute = absolute.resolve()
-
-        linked = _terminal_link(label, absolute, first, column)
+        linked = audit_context.source_link(
+            str(filename),
+            first,
+            column,
+            project_root,
+        )
         return label, linked
 
     return None
 
 
-def _element_context(finding: dict) -> str | None:
-    elements = finding.get("elements")
-    if not isinstance(elements, list):
-        return None
-
-    labels = []
-    for element in elements:
-        if not isinstance(element, dict):
-            continue
-        kind = str(element.get("type") or "").strip().lower()
-        name = str(element.get("name") or "").strip()
-        if not name or kind == "node":
-            continue
-        labels.append(f"{kind} {name}" if kind else name)
-        if len(labels) == 2:
-            break
-
-    return ", ".join(labels) if labels else None
-
-
-def _human_observation(finding: dict, check: str) -> str:
-    elements = finding.get("elements")
-    first_function = None
-    first_enum = None
-    first_pragma = None
-
-    if isinstance(elements, list):
-        for element in elements:
-            if not isinstance(element, dict):
-                continue
-            kind = str(element.get("type") or "").lower()
-            name = str(element.get("name") or "").strip()
-            if kind == "function" and name and first_function is None:
-                first_function = name
-            elif kind == "enum" and name and first_enum is None:
-                first_enum = name
-            elif kind == "pragma" and name and first_pragma is None:
-                first_pragma = name
-
-    if check == "low-level-calls":
-        return (
-            f"The function {first_function}() makes a raw external call that can execute code "
-            "in the receiving address."
-            if first_function
-            else "The contract makes a raw external call that can execute code in the receiving address."
-        )
-    if check == "naming-convention":
-        return (
-            f"The enum '{first_enum}' uses a naming style that does not match the project's "
-            "expected Solidity convention."
-            if first_enum
-            else "A Solidity identifier does not follow the expected naming convention."
-        )
-    if check == "solc-version":
-        return (
-            f"The project accepts Solidity compiler versions allowed by '{first_pragma}', "
-            "including releases that Slither flags for known compiler issues."
-            if first_pragma
-            else "The project accepts Solidity compiler versions that Slither flags for known compiler issues."
-        )
-    if check == "reentrancy-eth":
-        return (
-            f"The function {first_function}() contains an ETH transfer path that needs a reentrancy review."
-            if first_function
-            else "An ETH transfer path needs a reentrancy review."
-        )
-    if check == "reentrancy-no-eth":
-        return (
-            f"The function {first_function}() contains an external call in a path that may be re-entered."
-            if first_function
-            else "An external call occurs in a path that may be re-entered."
-        )
-    if check == "tx-origin":
-        return "The contract uses the original transaction signer for logic where caller-based authorization should be reviewed."
-    return "Static analysis found a code pattern that deserves manual security review."
 
 
 def _signal_function(finding: dict) -> str | None:
