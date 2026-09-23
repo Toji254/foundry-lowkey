@@ -319,6 +319,8 @@ def set_focus(signal_id: str, root: Path | None = None) -> dict[str, Any] | None
             "function": signal.get("function"),
             "updated_at": _now(),
         }
+        signal["status"] = "investigating"
+        signal["updated_at"] = _now()
         context["focus"] = focus
         save(context, root)
         emit(
