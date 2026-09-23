@@ -1693,14 +1693,16 @@ def run_cast_deep(config,args):
         if not target:
             return fail(f"Usage: lk {command} <address>")
         result=run_cast([command,target,*values[1:]],config,capture=True)
-        if result.code != 0 and effective_rpc(config) and anvil_rpc_info(config):
-            text=result.text.lower()
-            if "etherscan" in text or "constructor" in text or "creation" in text:
+        result_code=getattr(result,"code",result if isinstance(result,int) else 1)
+        result_text=getattr(result,"text",str(result or ""))
+        if result_code != 0 and effective_rpc(config) and anvil_rpc_info(config):
+            lowered=result_text.lower()
+            if "etherscan" in lowered or "constructor" in lowered or "creation" in lowered:
                 return fail(
                     f"Error: {command} needs creation/deployment data that this local Anvil state may not contain."
                 )
-        print(result.text)
-        return result.code
+        print(result_text)
+        return result_code
     if command=="access-list":
         target=config.get("target")
         if values and is_address(values[0]):
