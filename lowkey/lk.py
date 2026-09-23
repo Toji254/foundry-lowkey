@@ -2023,6 +2023,55 @@ def run_deps(args):
                 print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
     if matches==0:
         print("No imports or inheritance relationships detected.")
+
+def run_seams(config):
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    abi=load_abi(target,config)
+    funcs=abi_functions(abi)
+    if not funcs:
+        return fail("Error: No ABI functions loaded for the current target.")
+
+    print("AUDIT SEAMS / HOTSPOTS")
+    print("======================")
+    print("Heuristic cross-surface leads. Treat these as places to investigate, not findings.")
+
+    for item in funcs:
+        name=item.get("name","<anonymous>")
+        signature=format_signature(item)
+        signals=[]
+        mutable=item.get("stateMutability") not in {"view","pure"}
+        payable=item.get("stateMutability")=="payable"
+        address_input=any(canonical_type(p).startswith("address") for p in item.get("inputs",[]))
+        asset_name=any(token in name.lower() for token in ("withdraw","transfer","send","execute","mint","burn","sweep","claim","release"))
+        auth_name=any(token in name.lower() for token in ("owner","admin","role","authorize","pause","upgrade"))
+        callbackish=any(token in name.lower() for token in ("call","callback","execute","hook","flash"))
+        if mutable and address_input:
+            signals.append("state-write + address input")
+        if mutable and asset_name:
+            signals.append("state-write + asset/value flow")
+        if mutable and payable:
+            signals.append("state-write + payable")
+        if auth_name and mutable:
+            signals.append("authorization + state transition")
+        if callbackish and mutable:
+            signals.append("external/callback surface + state transition")
+        if item.get("inputs") and any(canonical_type(p).startswith(("bytes","tuple","string")) for p in item.get("inputs",[])):
+            signals.append("complex user-controlled data")
+        if signals:
+            print(f"\n{signature}")
+            for signal in signals:
+                print(f"  - {signal}")
+    print("\nSEAM CHECKLIST")
+    print("  authorization ↔ state transition")
+    print("  external call ↔ accounting")
+    print("  callback ↔ reentrancy")
+    print("  token/oracle read ↔ value decision")
+    print("  proxy/implementation ↔ storage layout")
+    print("  user input ↔ numeric/encoding assumptions")
+    return 0
+
 def run_risk(config):
     target=config.get("target")
     if not target:
@@ -2308,6 +2357,7 @@ RECON → UNDERSTAND THE CONTRACT
   lk deps [dir|file]                  Imports + inheritance
   lk layout <Contract>                Forge storage layout
   lk risk                              Function review-surface hints
+  lk seams                             Cross-surface audit hotspots
   lk selectors [--compare]            Runtime vs ABI selectors
   lk disasm [address|bytecode]        EVM disassembly
 
@@ -2587,6 +2637,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
             states=read_json_file(paths["matrix_states"],{}); states[args[1]]={"description":" ".join(args[2:])}; write_json_file(paths["matrix_states"],states); print(f"Matrix state saved: {args[1]}")
         else: run_matrix(config,args)
     elif cmd=="risk": run_risk(config)
+    elif cmd in {"seams","hotspots"}: return run_seams(config)
     elif cmd=="scan": run_scan(args)
     elif cmd=="deps": run_deps(args)
     elif cmd=="layout": run_layout(args)
