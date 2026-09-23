@@ -1153,7 +1153,7 @@ def run_self_test():
     checks=[
         ("address validation",is_address("0x"+"1"*40) and not is_address("0x"+"1"*64) and not is_address(None)),
         ("slot validation",is_nonzero_slot("0x"+"1"+"0"*63) and not is_nonzero_slot("not-hex")),
-        ("ETH formatting","1.0000 ETH" in humanize_value("1000000000000000000")),
+        ("ETH formatting","1.0000 ETH" in humanize_value("1000000000000000000", assume_wei=True)),
         ("secret redaction","<redacted>" in redact_secrets("--private-key 0x"+"1"*64)),
         ("jwt redaction","<redacted>" in redact_secrets("--jwt-secret supersecret")),
         ("rpc redaction","sensitive-token" not in redact_secrets("--rpc-url https://example.com/sensitive-token")),
