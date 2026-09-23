@@ -2269,11 +2269,11 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     if not target:
         return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
 
-    remembered = project_context_target(root) or {}
-    contract = requested or remembered.get("contract") or "local-lab-target"
-    artifact = os.path.join(root, "out", f"{contract}.sol", f"{contract}.json") if contract else None
-    if not artifact or not os.path.isfile(artifact):
-        artifact = None
+    # Let the live target drive ABI discovery. This is important for proxies:
+    # the deployed address may be a proxy while the useful ABI lives on its implementation.
+    config["target_contract"] = None
+    artifact = auto_abi_path(target, config)
+    contract = config.get("target_contract") or "auto-detected"
 
     config["actor"] = "lab-deployer"
     config.setdefault("wallets", {})["lab-deployer"] = {
