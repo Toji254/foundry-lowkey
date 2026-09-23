@@ -47,6 +47,9 @@ jobs:
           libs = ["lib"]
           EOF
           cd /tmp/lowkey-fixture
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
           forge install foundry-rs/forge-std --no-commit
           cat > src/Fixture.sol <<'EOF'
           pragma solidity ^0.8.20;
