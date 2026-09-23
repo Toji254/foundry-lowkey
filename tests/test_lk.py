@@ -655,6 +655,25 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk, "cast_output", return_value=(0, "0x12345678\n", "")):
             self.assertEqual(lk.abi_selector("foo(uint256)"), "0x12345678")
 
+    def test_encode_target_call_rejects_placeholder(self):
+        config={"target":"0x"+"1"*40}
+        with patch.object(lk,"load_abi",return_value=[
+            {"type":"function","name":"acceptescrow","inputs":[{"name":"accepted","type":"bool"}],"stateMutability":"nonpayable"}
+        ]):
+            with self.assertRaisesRegex(ValueError, "Replace '...'"):
+                lk.encode_target_call(config,"acceptescrow",["..."])
+
+    def test_encode_target_call_reports_argument_count(self):
+        config={"target":"0x"+"1"*40}
+        abi=[{
+            "type":"function","name":"createescrow",
+            "inputs":[{"name":"amount","type":"uint256"},{"name":"recipient","type":"address"}],
+            "stateMutability":"payable"
+        }]
+        with patch.object(lk,"load_abi",return_value=abi):
+            with self.assertRaisesRegex(ValueError, r"expects 2 argument\(s\), got 1"):
+                lk.encode_target_call(config,"createescrow",["1 ether"])
+
     def test_split_lab_options(self):
         values, actor, value, keep = lk.split_lab_options(
             ["release", "1", "0x" + "1" * 40, "--actor", "Alice", "--value", "1ether", "--keep"]
