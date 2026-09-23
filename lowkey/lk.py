@@ -15,6 +15,11 @@ from urllib.parse import urlsplit
 from difflib import SequenceMatcher
 from pathlib import Path
 
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+import audit_context
+
 try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
 except ImportError:
