@@ -119,8 +119,18 @@ jobs:
           lk c ping 7
           lk encode ping 7
           lk calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk decode-calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk 4byte 0x773acdef
+          lk 4byte-calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk 4byte-event 0x48257dc961b6f792c2b78a080dacfed693b660960a702de21cee364e20270e2f
+          lk access-list ping 7
+          lk interface
+          lk constructor-args 0x0000000000000000000000000000000000000001 || true
+          lk creation-code 0x0000000000000000000000000000000000000001 || true
+          lk abi-encode uint256 7
           lk disasm
           lk selectors --compare
+          lk seams
           lk cheatcodes store
           lk impersonate 0x1000000000000000000000000000000000000001 whale
           cast rpc anvil_setBalance 0x1000000000000000000000000000000000000001 0x56bc75e2d63100000
@@ -128,6 +138,10 @@ jobs:
           lk txpool
           lk probe ping 7
           lk state-diff ping 7
+          lk matrix init
+          lk matrix actor Alice 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+          lk matrix add smoke ping Alice "success"
+          lk matrix test smoke
           lk logs --decode
           lk deps
           lk forge test
@@ -138,6 +152,11 @@ jobs:
           lk symbolic emit --match-test testSmoke
           lk mutate --match-test testSmoke
           lk brutalize --match-test testSmoke
+          lk fork http://127.0.0.1:8545 --port 8546
+          lk fork status
+          lk impersonate 0x1000000000000000000000000000000000000001 whale
+          lk fork stop
+          lk fork status
           lk forge inspect-audit Fixture
           lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
           set +e
