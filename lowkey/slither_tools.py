@@ -239,6 +239,53 @@ def _human_observation(finding: dict, check: str) -> str:
     return "Static analysis found a code pattern that deserves manual security review."
 
 
+def _signal_from_finding(finding: dict) -> dict:
+    check = str(finding.get("check") or "static-analysis")
+    guidance = DETECTOR_GUIDANCE.get(check, {})
+    file_name = ""
+    line = None
+    column = None
+
+    elements = finding.get("elements", [])
+    if isinstance(elements, list):
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            mapping = element.get("source_mapping")
+            if not isinstance(mapping, dict):
+                continue
+            file_name = str(
+                mapping.get("filename_relative")
+                or mapping.get("filename_short")
+                or mapping.get("filename_used")
+                or ""
+            )
+            lines = mapping.get("lines")
+            if isinstance(lines, list) and lines:
+                try:
+                    line = int(lines[0])
+                except (TypeError, ValueError):
+                    line = None
+            try:
+                column = int(mapping.get("starting_column", 1))
+            except (TypeError, ValueError):
+                column = 1
+            if file_name:
+                break
+
+    return {
+        "tool": "slither",
+        "check": check,
+        "title": guidance.get("title") or check.replace("-", " ").title(),
+        "impact": str(finding.get("impact") or "Unknown"),
+        "confidence": str(finding.get("confidence") or "Unknown"),
+        "file": file_name,
+        "line": line,
+        "column": column,
+        "description": _human_observation(finding, check),
+    }
+
+
 def _human_finding(finding: dict, number: int, total: int, project_root: Path) -> None:
     check = str(finding.get("check") or "unknown-detector")
     impact = str(finding.get("impact") or "Unknown")
