@@ -2238,7 +2238,7 @@ def source_mapping_declarations(root):
             key_parts = key_raw.split()
             value_parts = value_raw.split()
             key_type = key_parts[0] if key_parts else key_raw
-            value_type = value_parts[-1] if value_parts else value_raw
+            value_type = value_parts[0] if value_parts else value_raw
 
             declarations.append({
                 "file": str(path),
@@ -3725,6 +3725,7 @@ START
   lk doctor                        Check the toolchain
   lk target <address|name>         Select the contract under review
   lk actor <index> <name>          Name an Anvil account
+  lk actor 0 Alice                  Name Anvil account #0 as Alice
 
 UNDERSTAND
   lk recon                         Inspect contract identity and runtime
