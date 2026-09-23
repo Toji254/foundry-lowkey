@@ -1298,23 +1298,13 @@ def run_batch(config,args):
         else: dispatch_command(command,command_args,config,from_batch=True)
 def run_audit_mode(config):
     print("\n=== LOWKEYCAST AUDIT MODE ===")
-    project = os.getcwd()
-    if config.get("audit_project") != project:
-        config["audit_bootstrapped"] = False
-        config["audit_project"] = project
-        config["session_active"] = False
-        save_config(config)
+    config["audit_project"] = os.getcwd()
+    save_config(config)
 
-    if not config.get("audit_bootstrapped"):
-        run_audit_startup(config)
-        config["audit_bootstrapped"] = True
-        config["audit_project"] = project
-        save_config(config)
-    else:
-        run_workspace(config, ["init"])
-        if not config.get("session_active"):
-            run_session_lifecycle(config, "resume")
-        print("Audit workspace resumed; evidence collection remains active.")
+    # Every explicit audit launch gets a fresh baseline against the
+    # current checkout, while the project-local evidence workspace persists.
+    run_audit_startup(config)
+
     while True:
         print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
         print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   7) full evidence pass   8) generate PoC   0) exit")
@@ -1327,13 +1317,14 @@ def run_audit_mode(config):
         elif choice=="5": run_targets(config)
         elif choice=="6": run_deployments(config)
         elif choice=="7" and run_audit_pipeline: run_audit_pipeline(".")
-        elif choice=="8" and generate_poc: generate_poc(".")
+        elif choice=="8" and generate_poc: generate_poc(".", None, None)
         elif choice=="0":
             if generate_poc:
                 print("\nRefreshing PoC before leaving audit mode...")
                 generate_poc(".", None, None)
             return
         else: print("Unknown option.")
+
 
 def actor_display(config):
     actor=config.get("actor")
@@ -1717,7 +1708,7 @@ def main():
         "checklist","session"
     }
     if (
-        config.get("audit_bootstrapped")
+        config.get("session_active")
         and sys.argv[1] in evidence_commands
         and sys.argv[1] not in {"audit","poc"}
         and generate_poc
