@@ -241,7 +241,8 @@ def _human_finding(finding: dict, number: int, total: int, project_root: Path) -
 
 
 def _summary(payload: dict, project_root: Path | None = None) -> None:
-    project_root = (project_root or Path.cwd()).resolve()\n    results = payload.get("results")
+    project_root = (project_root or Path.cwd()).resolve()
+    results = payload.get("results")
     if not isinstance(results, dict):
         results = {}
     detectors = results.get("detectors", [])
