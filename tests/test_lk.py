@@ -1515,6 +1515,36 @@ contract Escrow {
             lk.dispatch_command("send",["release"],config)
         self.assertEqual(set(calls),{"try","changes","cast"})
 
+
+    def test_generated_test_path_is_stable_for_same_content(self):
+        first = lk.generated_test_path("probe_release", "same-content")
+        second = lk.generated_test_path("probe_release", "same-content")
+        third = lk.generated_test_path("probe_release", "different-content")
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, third)
+
+    def test_state_diff_parser_accepts_fallback_write(self):
+        output = """
+[PASS] test_state_diff() (gas: 123)
+Logs:
+  CALL createescrow(uint256,address)
+  SUCCESS true
+  ETH_SENT 1000000000000000000
+  FALLBACK_WRITES 1
+  SLOT
+  0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  FROM
+  unknown
+  TO
+  0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  STORAGE_CHANGES 0
+"""
+        parsed = lk.parse_state_diff_output(output)
+        self.assertEqual(parsed["fallback_writes"], 1)
+        self.assertEqual(len(parsed["slots"]), 1)
+        self.assertEqual(parsed["slots"][0]["from"], "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
 
