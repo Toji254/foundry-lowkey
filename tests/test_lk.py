@@ -492,7 +492,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("STORAGE GETTERS:", rendered)
         self.assertIn("balances(address)  [public storage getter]", rendered)
         self.assertIn("escrow(uint256)  [public storage getter]", rendered)
-        self.assertNotIn("status()", rendered.split("STORAGE GETTERS:", 1)[1].split("\n", 2)[-1])
+        self.assertIn("status()  [public storage getter]", rendered)
 
 
 
