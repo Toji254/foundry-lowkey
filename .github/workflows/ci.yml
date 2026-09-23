@@ -107,7 +107,7 @@ jobs:
           lk scan src
           lk scan src/Fixture.sol
           lk forge build
-          TARGET=0x0000000000000000000000000000000000000001
+          TARGET=0x1000000000000000000000000000000000000001
           CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
           cast rpc anvil_setCode "$TARGET" "$CODE"
           lk actor 0 Alice
@@ -133,8 +133,8 @@ jobs:
           lk 4byte-event 0x48257dc961b6f792c2b78a080dacfed693b660960a702de21cee364e20270e2f || true
           lk access-list ping 7
           lk interface
-          lk constructor-args 0x0000000000000000000000000000000000000001 || true
-          lk creation-code 0x0000000000000000000000000000000000000001 || true
+          lk constructor-args "$TARGET" || true
+          lk creation-code "$TARGET" || true
           lk abi-encode uint256 7
           lk disasm
           lk selectors --compare
