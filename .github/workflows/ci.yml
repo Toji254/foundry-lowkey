@@ -122,11 +122,15 @@ jobs:
           lk status
           lk context
           lk signals
-          lk audit
+          lk audit | tee /tmp/lowkey-audit-baseline.txt
+          grep -q "Pipeline: build -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
+          ! grep -q "Pipeline: build -> Slither" /tmp/lowkey-audit-baseline.txt
           test -f script/LowkeyPoC_Fixture.s.sol
           test -f .audit/poc/LowkeyPoc_Fixture.json
-          lk audit --checks
-          lk audit--checks
+          lk audit --checks | tee /tmp/lowkey-audit-checks.txt
+          grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-checks.txt
+          lk audit--checks | tee /tmp/lowkey-audit-compact-checks.txt
+          grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
           lk findings
           lk functions
           lk fn ping
