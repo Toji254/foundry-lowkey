@@ -155,6 +155,55 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertTrue(hasattr(lk, "Path"))
         self.assertTrue(lk.AUDIT_CHECKLIST)
 
+    def test_local_cast_commands_do_not_receive_rpc_url(self):
+        config = {"rpc": "http://127.0.0.1:8545"}
+        expected_commands = [
+            ["index", "uint256", "1", "1"],
+            ["selectors", "0x6000"],
+            ["constructor-args", "0x" + "1" * 40],
+            ["creation-code", "0x" + "1" * 40],
+        ]
+        for args in expected_commands:
+            with self.subTest(command=args[0]), patch.object(
+                lk, "cast_output", return_value=(0, "0x" + "0" * 64, "")
+            ) as cast_output:
+                result = lk.run_cast(args, config, capture=True)
+            self.assertEqual(result.code, 0)
+            actual = cast_output.call_args.args[0]
+            self.assertEqual(actual[:len(args)], ["cast", *args])
+            self.assertNotIn("--rpc-url", actual)
+
+    def test_mapping_rejects_failed_slot_calculation(self):
+        target = "0x" + "1" * 40
+        config = {"target": target}
+        failure = lk.CommandResult(
+            "error: unexpected argument '--rpc-url' found", 1
+        )
+        with patch.object(lk, "run_cast", return_value=failure) as run_cast:
+            result = lk.run_mapping(config, "uint256", "1", "1")
+        self.assertEqual(result, 2)
+        run_cast.assert_called_once_with(
+            ["index", "uint256", "1", "1"], config, capture=True
+        )
+
+    def test_mapping_reads_computed_slot_only_after_success(self):
+        target = "0x" + "1" * 40
+        config = {"target": target}
+        slot = "0x" + "ab" * 32
+        with patch.object(
+            lk,
+            "run_cast",
+            side_effect=[lk.CommandResult(slot, 0), 0],
+        ) as run_cast:
+            result = lk.run_mapping(config, "uint256", "1", "1")
+        self.assertEqual(result, 0)
+        self.assertEqual(run_cast.call_args_list[0].args[0], ["index", "uint256", "1", "1"])
+        self.assertEqual(run_cast.call_args_list[0].args[1]["target"], target)
+        self.assertEqual(
+            run_cast.call_args_list[1].args[0],
+            ["st", slot],
+        )
+
     def test_receipt_uses_async(self):
         tx_hash = "0x" + "1" * 64
         config = {"last_tx": tx_hash}
