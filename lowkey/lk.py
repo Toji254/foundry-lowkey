@@ -273,7 +273,16 @@ def resolve_wallet_key(config,wallet_name=None):
             actual=str(accounts[index]).lower()
             if recorded and recorded!=actual:
                 return None
-            return derive_default_anvil_key(index)
+            key=derive_default_anvil_key(index)
+            if not key:
+                return None
+            code,derived_address,_=cast_output(["cast","wallet","address","--private-key",key])
+            if code!=0 or not derived_address:
+                return None
+            derived_address=derived_address.strip().splitlines()[-1].strip()
+            if derived_address.lower()!=actual:
+                return None
+            return key
         if entry.get("env"): return normalize_private_key(os.environ.get(entry["env"]))
         return normalize_private_key(entry.get("private_key"))
     if isinstance(entry,str): return normalize_private_key(entry)
