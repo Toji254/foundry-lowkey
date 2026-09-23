@@ -438,8 +438,12 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
         function = None
         for location in locations:
             candidate = str(location.get("name") or "")
+            base = candidate.split("(", 1)[0]
             if candidate in abi_map:
                 function = abi_map[candidate][0]
+                break
+            if base in abi_map:
+                function = abi_map[base][0]
                 break
     elif matrix:
         scenario = matrix[0]
