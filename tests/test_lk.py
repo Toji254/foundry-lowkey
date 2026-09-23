@@ -783,7 +783,7 @@ class LowkeyCastTests(unittest.TestCase):
     def test_help_long_alias(self):
         result = self.run_cli("--h")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Lowkey", result.stdout)
+        self.assertIn("LOWKEY", result.stdout)
         self.assertIn("lk actor 0 Alice", result.stdout)
 
     def test_cli_failure_exit_codes(self):
