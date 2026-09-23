@@ -123,8 +123,8 @@ def _filter_generated_diagnostics(output: str) -> tuple[str, int]:
     return "\n\n".join(kept).strip(), filtered
 
 
-def run_forge_diagnostics(args: Sequence[str], label: str) -> int:
-    """Run Forge diagnostics and keep Lowkey-generated helper noise out of lk audit."""
+def run_forge_diagnostics(args: Sequence[str], label: str, quiet: bool = False) -> int:
+    """Run Forge diagnostics and optionally hide successful raw output."""
     binary = forge_path()
     root = audit_context.foundry_project_root()
     if not binary:
@@ -135,56 +135,14 @@ def run_forge_diagnostics(args: Sequence[str], label: str) -> int:
         return die(f"could not execute forge: {exc}", 1)
     combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
     visible, filtered = _filter_generated_diagnostics(combined)
-    if visible:
-        print(visible)
-    if filtered:
+    if visible and (not quiet or result.returncode != 0):
+        print(visible, file=sys.stderr if result.returncode != 0 else sys.stdout)
+    if filtered and not quiet:
         print(f"LowkeyForge: filtered {filtered} diagnostic(s) from Lowkey-generated helper files; use 'lk forge {label}' to see them.")
     status = "completed" if result.returncode == 0 else "failed"
-    audit_context.emit("forge-command", root, tool="forge", status=status,
-                       summary=f"forge {label}",
-                       data={"command": label, "exit_code": result.returncode, "filtered": filtered})
-    audit_context.record_tool(f"forge-{label}", root, status=status,
-                              summary=f"forge {label}",
-                              data={"exit_code": result.returncode, "filtered": filtered})
+    audit_context.emit("forge-command", root, tool="forge", status=status, summary=f"forge {label}", data={"command":label,"exit_code":result.returncode,"filtered":filtered})
+    audit_context.record_tool(f"forge-{label}", root, status=status, summary=f"forge {label}", data={"exit_code":result.returncode,"filtered":filtered})
     return result.returncode
-
-
-def run_slither_preflight(root: Path) -> int:
-    helper = Path(__file__).with_name("slither_tools.py")
-    binary = shutil.which("slither")
-
-    if not binary:
-        print("LowkeyForge: skipping Slither (not found on PATH).")
-        audit_context.record_tool(
-            "slither",
-            root,
-            status="skipped",
-            summary="Slither is not installed",
-            data={"available": False},
-        )
-        return 0
-
-    if helper.is_file():
-        try:
-            code = subprocess.run(
-                [sys.executable, str(helper)],
-                cwd=root,
-            ).returncode
-            return code
-        except OSError as exc:
-            print(f"LowkeyForge: could not execute Lowkey Slither reporter: {exc}", file=sys.stderr)
-            return 1
-
-    # Fallback for unusual installations where the companion reporter is absent.
-    print("\n=== LOWKEY STATIC: SLITHER ===")
-    command = [binary, str(root), "--exclude-dependencies", "--disable-color", "--fail-none"]
-    try:
-        return subprocess.run(command, cwd=root).returncode
-    except OSError as exc:
-        print(f"LowkeyForge: could not execute Slither: {exc}", file=sys.stderr)
-        return 1
-
-
 def _has_path_filter(args: Sequence[str]) -> bool:
     return any(arg in {"--match-path", "--no-match-path"} for arg in args)
 
@@ -249,7 +207,7 @@ def _coverage_needs_ir(root: Path, args: Sequence[str]) -> bool:
     return bool(config.get("via_ir"))
 
 
-def _coverage_compatibility_flags(root: Path, args: Sequence[str]) -> list[str]:
+def _coverage_compatibility_flags(root: Path, args: Sequence[str], quiet: bool = False) -> list[str]:
     """Add coverage-only compiler compatibility flags without editing project config."""
     if _has_flag(args, "--ir-minimum", "--via-ir", "--no-via-ir"):
         return []
@@ -263,10 +221,11 @@ def _coverage_compatibility_flags(root: Path, args: Sequence[str]) -> list[str]:
         )
         return []
 
-    print(
-        "LowkeyForge: detected via_ir=true in the effective Foundry config; "
-        "using forge coverage --ir-minimum to match the project's compiler constraints."
-    )
+    if not quiet:
+        print(
+            "LowkeyForge: detected via_ir=true in the effective Foundry config; "
+            "using forge coverage --ir-minimum to match the project's compiler constraints."
+        )
     return ["--ir-minimum"]
 
 
@@ -293,6 +252,8 @@ def _parse_coverage_table(output: str) -> list[dict[str, object]]:
             in_table = True
             continue
         if not in_table:
+            continue
+        if stripped.startswith(("+", "╭", "╰", "├", "-")):
             continue
         if not stripped.startswith("|"):
             if stripped:
@@ -456,7 +417,7 @@ def _strip_coverage_table(output: str) -> str:
     return "\n".join(kept).strip()
 
 
-def run_coverage_audit(command: Sequence[str], root: Path) -> int:
+def run_coverage_audit(command: Sequence[str], root: Path, quiet: bool = False) -> int:
     """Run coverage and retry once with IR minimum when coverage hits stack-too-deep."""
     binary = forge_path()
     if not binary:
@@ -464,86 +425,43 @@ def run_coverage_audit(command: Sequence[str], root: Path) -> int:
 
     def execute(current: Sequence[str]):
         try:
-            result = subprocess.run(
-                [binary, *current],
-                cwd=root,
-                text=True,
-                capture_output=True,
-            )
+            result = subprocess.run([binary, *current], cwd=root, text=True, capture_output=True)
         except OSError as exc:
             return None, str(exc)
-
         combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
-
-        # Foundry can emit coverage output on either stdout or stderr depending
-        # on version/runtime. Treat the combined stream as the source of truth.
         visible_stdout = _strip_coverage_table(result.stdout) if result.stdout else ""
         visible_stderr = _strip_coverage_table(result.stderr) if result.stderr else ""
         coverage_report = _format_coverage_report(combined)
-
-        if visible_stdout:
-            print(visible_stdout, end="" if visible_stdout.endswith("\n") else "\n")
-        if visible_stderr:
-            print(
-                visible_stderr,
-                file=sys.stderr,
-                end="" if visible_stderr.endswith("\n") else "\n",
-            )
+        if not quiet:
+            if visible_stdout:
+                print(visible_stdout, end="" if visible_stdout.endswith("\n") else "\n")
+            if visible_stderr:
+                print(visible_stderr, file=sys.stderr, end="" if visible_stderr.endswith("\n") else "\n")
         if coverage_report:
             print(coverage_report)
-
+        if quiet and result.returncode != 0 and combined.strip():
+            print("\nForge coverage failed:\n" + "\n".join(combined.splitlines()[-24:]), file=sys.stderr)
         return result, combined
 
     result, output = execute(command)
     if result is None:
         return die(f"could not execute forge coverage: {output}", 1)
-
     attempts = 1
-    if (
-        result.returncode != 0
-        and _is_stack_too_deep(output)
-        and not _has_flag(command, "--ir-minimum", "--via-ir", "--no-via-ir")
-    ):
+    if result.returncode != 0 and _is_stack_too_deep(output) and not _has_flag(command, "--ir-minimum", "--via-ir", "--no-via-ir"):
         if _supports_option("coverage", "--ir-minimum"):
             retry = [*command, "--ir-minimum"]
             attempts = 2
-            print(
-                "LowkeyForge: coverage compilation hit stack too deep; retrying once "
-                "with --ir-minimum without modifying the project's foundry.toml."
-            )
+            if not quiet:
+                print("LowkeyForge: coverage compilation hit stack too deep; retrying once with --ir-minimum without modifying the project's foundry.toml.")
             result, retry_output = execute(retry)
             if result is None:
                 return die(f"could not execute forge coverage retry: {retry_output}", 1)
         else:
-            print(
-                "LowkeyForge: coverage hit stack too deep, but this Forge does not "
-                "support --ir-minimum; leaving coverage failed.",
-                file=sys.stderr,
-            )
-
+            print("LowkeyForge: coverage hit stack too deep, but this Forge does not support --ir-minimum; leaving coverage failed.", file=sys.stderr)
     status = "completed" if result.returncode == 0 else "failed"
-    audit_context.emit(
-        "forge-command",
-        root,
-        tool="forge",
-        status=status,
-        summary="forge coverage",
-        data={
-            "command": "coverage",
-            "exit_code": result.returncode,
-            "attempts": attempts,
-        },
-    )
-    audit_context.record_tool(
-        "forge-coverage",
-        root,
-        status=status,
-        summary=f"forge coverage ({attempts} attempt{'s' if attempts != 1 else ''})",
-        data={"exit_code": result.returncode, "attempts": attempts},
-    )
+    audit_context.emit("forge-command", root, tool="forge", status=status, summary="forge coverage", data={"command":"coverage","exit_code":result.returncode,"attempts":attempts})
+    audit_context.record_tool("forge-coverage", root, status=status, summary=f"forge coverage ({attempts} attempt{'s' if attempts != 1 else ''})", data={"exit_code":result.returncode,"attempts":attempts})
     return result.returncode
-
-
 def _project_owned_tests(root: Path) -> list[Path]:
     test_root = root / "test"
     if not test_root.is_dir():
@@ -552,49 +470,63 @@ def _project_owned_tests(root: Path) -> list[Path]:
 
 
 def run_audit(args: Sequence[str]) -> int:
+    """Run the complete audit pipeline with concise output by default."""
     root = Path.cwd().resolve()
     checks = "--checks" in args
-    forwarded = [a for a in args if a != "--checks"]
+    verbose = "--verbose" in args
+    quiet = not verbose
+    forwarded = [a for a in args if a not in {"--checks", "--verbose", "--quiet"}]
     test_cmd = ["test", *forwarded]
     if not has_verbosity(forwarded):
         test_cmd.insert(1, "-vvv")
     if not _has_path_filter(forwarded):
         test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
-
     coverage_cmd = ["coverage", *forwarded]
-    coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded))
+    coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded, quiet=quiet))
     if not _has_path_filter(forwarded) and _supports_option("coverage", "--no-match-path"):
         coverage_cmd.extend(["--no-match-path", "**/Lowkey_*"])
-
     steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
     if checks:
         steps.append(("slither", None))
         for optional in ("lint", "geiger"):
             if command_available(optional):
                 steps.append((optional, None))
-            else:
-                print(f"LowkeyForge: skipping unavailable command: forge {optional}")
     steps.extend([("tests", test_cmd), ("coverage", coverage_cmd)])
-
+    print("LOWKEY CONNECTED AUDIT")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Mode    : {'verbose' if verbose else 'quiet'}")
+    print("Pipeline: build" + (" -> Slither -> lint/geiger" if checks else "") + " -> tests -> coverage")
+    print()
     if not _project_owned_tests(root):
-        print("LowkeyForge: no project-owned Forge tests found; Lowkey-generated experiments are excluded from the audit suite.")
-
+        print("Tests   : no project-owned Forge tests (Lowkey experiments excluded)")
     for label, command in steps:
-        print(f"\n=== LOWKEY {'STATIC' if label == 'slither' else 'FORGE'}: {label.upper()} ===")
         if label == "slither":
-            code = run_slither_preflight(root)
+            code = run_slither_preflight(root, quiet=quiet)
         elif label in {"lint", "geiger"}:
-            code = run_forge_diagnostics([label], label)
+            code = run_forge_diagnostics([label], label, quiet=quiet)
         elif label == "coverage":
-            code = run_coverage_audit(command, root)
+            code = run_coverage_audit(command, root, quiet=quiet)
         else:
-            code = run_forge(command)
+            code = run_forge(command, quiet=quiet)
+        context = audit_context.load(root)
+        detail = ""
+        if label == "slither":
+            state = context.get("tools", {}).get("slither", {})
+            if isinstance(state, dict) and state.get("finding_count") is not None:
+                detail = f" — {state['finding_count']} finding(s)"
+        print(f"{'PASS' if code == 0 else 'FAIL':<5} {label:<9}{detail}")
         if code != 0:
-            print(f"\nLowkeyForge: stopped after failed step: forge {label}", file=sys.stderr)
+            print(f"\nLowkeyForge: audit stopped at {label}.", file=sys.stderr)
             return code
-    print("\nLowkeyForge: audit preflight completed. Generated Lowkey experiments stay available through lk probe/lk changes/lk generate.")
+    print("\nAUDIT SUMMARY")
+    print("=============")
+    print("Result  : PASS")
+    print("Artifacts: .audit/context.json + tool evidence")
+    print("Next    : lk findings  |  lk context")
+    if checks:
+        print("Static  : lk findings -> lk focus <ID> -> lk changes ...")
     return 0
-
 def run_test_audit(args: Sequence[str]) -> int:
     forwarded = list(args)
     if not has_verbosity(forwarded):
