@@ -391,7 +391,8 @@ def run_source_triage(root: str = ".") -> int:
         ("BLOCKHASH/PREVRANDAO", re.compile(r"\bblock\.hash\s*(?:\(|$)|\bblockhash\s*\(|\bblock\.prevrandao\b")),
         ("ECRECOVER", re.compile(r"\becrecover\s*\(")),
     ]
-    base = Path(root) / "src" if (Path(root) / "src").is_dir() else Path(root)
+    root_path = Path(root).resolve()
+    base = root_path / "src" if (root_path / "src").is_dir() else root_path
     markers = []
     for path in sorted(base.rglob("*.sol")):
         if any(part in {".git", "out", "cache", "lib", ".audit"} for part in path.parts):
@@ -404,7 +405,7 @@ def run_source_triage(root: str = ".") -> int:
             for label, pattern in patterns:
                 if pattern.search(line):
                     markers.append({
-                        "file": str(path.relative_to(Path(root).resolve())),
+                        "file": str(path.relative_to(root_path)),
                         "line": number,
                         "label": label,
                         "text": line.strip(),
