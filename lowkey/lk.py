@@ -2348,9 +2348,16 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
 
     print(f"Target  : {contract} -> {target}")
     print(f"ABI     : {path}")
-    if any(item.get("name") == "initialize" for item in artifact.get("abi", []) if isinstance(item, dict)):
-        print("Note    : this contract exposes initialize(); direct implementation deployment is not a configured proxy lab.")
-        print("Next    : use a project lab adapter or a proxy-aware setup for runtime testing.")
+    has_initializer = any(
+        item.get("name") == "initialize"
+        for item in artifact.get("abi", [])
+        if isinstance(item, dict)
+    )
+    if has_initializer:
+        print("Status  : CONFIGURATION REQUIRED")
+        print("Note    : this is an upgradeable-style contract; generic deployment does not create/configure its proxy runtime.")
+        print("Next    : add/use a project lab adapter, then rerun lk lab.")
+        return 1
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
@@ -4984,10 +4991,11 @@ def main():
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
     if config.pop("_config_dirty",False):
         save_config(config)
-    _sync_audit_context(config, root)
+    final_root = audit_context.foundry_project_root()
+    _sync_audit_context(config, final_root)
     audit_context.emit(
         "lk-command",
-        root,
+        final_root,
         tool="lk",
         status="completed" if (not isinstance(result,int) or result == 0) else "failed",
         summary=sys.argv[1],
