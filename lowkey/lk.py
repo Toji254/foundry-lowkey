@@ -789,7 +789,7 @@ def run_cast(args,config,capture=False):
     for flag in ["--preview","--dry-run","--confirm","--yes"]:
         while flag in remaining: remaining.remove(flag)
     cmd.extend(remaining)
-    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","index","selectors","rpc"}
+    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","index","selectors","rpc","access-list","constructor-args","creation-code"}
     active_rpc=effective_rpc(config)
     if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
     actor=config.get("actor")
@@ -1675,6 +1675,56 @@ contract LowkeyStateDiff is Test {{
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
 
+
+def run_cast_deep(config,args):
+    if not args:
+        return fail("Usage: lk <4byte|4byte-calldata|4byte-event|access-list|interface|constructor-args|creation-code|decode-calldata|abi-encode> ...")
+    command=args[0]
+    values=list(args[1:])
+    if command=="interface":
+        if values:
+            return run_cast(["interface",*values],config)
+        target=config.get("target")
+        if not target:
+            return fail("Error: Set target or provide an ABI path.")
+        path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
+        if not path:
+            return fail("Error: no local ABI found for the current target.")
+        return run_cast(["interface",path],config)
+    if command in {"constructor-args","creation-code"}:
+        target=values[0] if values else config.get("target")
+        if not target:
+            return fail(f"Usage: lk {command} <address>")
+        return run_cast([command,target,*values[1:]],config)
+    if command=="access-list":
+        target=config.get("target")
+        if values and is_address(values[0]):
+            target=values.pop(0)
+        if not target:
+            return fail("Usage: lk access-list [address] <function> [args]")
+        if not values:
+            return run_cast(["access-list",target],config)
+        function=values[0]
+        if "(" not in function or ")" not in function:
+            try:
+                function=resolve_function(function,target,config)
+            except ValueError as error:
+                return fail(f"Error: {error}")
+        return run_cast(["access-list",target,function,*values[1:]],config)
+    if command=="decode-calldata":
+        if not values:
+            return fail("Usage: lk decode-calldata <0x...>")
+        return run_cast(["decode-calldata",*values],config)
+    if command=="abi-encode":
+        if not values:
+            return fail("Usage: lk abi-encode <type> [args...]")
+        return run_cast(["abi-encode",*values],config)
+    if command in {"4byte","4byte-calldata","4byte-event"}:
+        if not values:
+            return fail(f"Usage: lk {command} <value>")
+        return run_cast([command,*values],config)
+    return fail(f"Error: unsupported Cast power command: {command}")
+
 def run_calldata(config,args):
     if len(args)!=1:
         return fail("Usage: lk calldata <raw-calldata>")
@@ -2377,6 +2427,15 @@ CALL → SEND → FORENSICS
   lk s <function> [args] --preview    See calldata/signing command first
   lk encode <function> [args]         Build calldata
   lk calldata <0x...>                 Decode/pretty-print calldata
+  lk decode-calldata <0x...>          Native Cast calldata decoder
+  lk 4byte <selector>                 Signature database lookup
+  lk 4byte-event <topic0>             Event signature lookup
+  lk 4byte-calldata <0x...>            Calldata signature database lookup
+  lk access-list <function> [args]    Build an EIP-2930 access list
+  lk interface [ABI|address]          Generate a Solidity interface
+  lk constructor-args [address]       Decode constructor arguments
+  lk creation-code [address]          Inspect creation bytecode
+  lk abi-encode <type> [args]          Raw ABI argument encoding
   lk decode <function> <0x...>        Decode return data
   lk decode-error <0x...>             Decode custom-error data
   lk event <sig> <data> [topics...]   Decode an event
@@ -2595,6 +2654,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="proof": run_proof(config,args)
     elif cmd=="selectors": return run_selectors(config,args)
     elif cmd=="calldata": return run_calldata(config,args)
+    elif cmd in {"4byte","4byte-calldata","4byte-event","access-list","interface","constructor-args","creation-code","decode-calldata","abi-encode"}: return run_cast_deep(config,[cmd,*args])
     elif cmd=="disasm": return run_disasm(config,args)
     elif cmd=="txpool": return run_txpool(config,args)
     elif cmd=="chisel": return run_chisel(args)
