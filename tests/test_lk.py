@@ -229,9 +229,28 @@ class LowkeyCastTests(unittest.TestCase):
             "actor":"Alice",
         }
         info={"url":"http://127.0.0.1:8545","accounts":[address]}
-        with patch.object(lk, "anvil_rpc_info", return_value=info),              patch.object(lk, "derive_default_anvil_key", return_value="0x"+"b"*64):
+        with patch.object(lk, "anvil_rpc_info", return_value=info), \
+             patch.object(lk, "derive_default_anvil_key", return_value="0x"+"b"*64), \
+             patch.object(lk, "cast_output", return_value=(0, address, "")):
             self.assertEqual(lk.resolve_wallet_key(config), "0x"+"b"*64)
         self.assertNotIn("private_key", config["wallets"]["Alice"])
+
+    def test_anvil_actor_rejects_custom_account_for_default_key(self):
+        recorded="0x"+"1"*40
+        actual="0x"+"2"*40
+        config={
+            "wallets":{
+                "Alice":{
+                    "source":"anvil-default",
+                    "anvil_index":0,
+                    "address":recorded,
+                }
+            },
+            "actor":"Alice",
+        }
+        info={"url":"http://127.0.0.1:8545","accounts":[actual]}
+        with patch.object(lk, "anvil_rpc_info", return_value=info):
+            self.assertIsNone(lk.resolve_wallet_key(config))
 
     def test_load_abi_auto_from_local_artifact(self):
         artifact = {
