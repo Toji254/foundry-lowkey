@@ -334,12 +334,13 @@ def _format_coverage_report(output: str) -> str:
             else:
                 percent, covered, total = metric  # type: ignore[misc]
                 metrics.append(f"{percent}% ({covered}/{total})")
-        gaps = [
-            _coverage_gap(row[key])
-            for key in ("lines", "statements", "branches", "functions")
+        gap_labels = ("L", "S", "B", "F")
+        gap_keys = ("lines", "statements", "branches", "functions")
+        gap_text = " ".join(
+            f"{label}{_coverage_gap(row[key])}"
+            for label, key in zip(gap_labels, gap_keys)
             if row[key] is not None
-        ]
-        gap_text = (f"L{gaps[0]} S{gaps[1]} B{gaps[2]} F{gaps[3]}" if len(gaps) == 4 else "N/A")
+        ) or "N/A"
         header.append(
             f"{str(row['file'])[:45]:<45} "
             f"{metrics[0]:>15} {metrics[1]:>18} {metrics[2]:>16} {metrics[3]:>15} {gap_text:>22}"
