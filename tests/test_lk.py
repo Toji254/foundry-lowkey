@@ -1524,7 +1524,7 @@ class LowkeyCastTests(unittest.TestCase):
         set_focus.assert_called_once_with("SLITHER-ABC123",root)
         rendered=output.getvalue()
         self.assertIn("LOWKEY INVESTIGATION FOCUS",rendered)
-        self.assertIn("lk changes withdraw()",rendered)
+        self.assertIn("lk changes 'withdraw()'",rendered)
 
 
     def test_investigate_quotes_full_abi_signatures_for_shell(self):
