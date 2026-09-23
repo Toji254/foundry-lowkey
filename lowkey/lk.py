@@ -1246,6 +1246,54 @@ def run_finding(config, note):
     if os.path.isdir(WORKSPACE_DIR):
         with open(workspace_finding, "a") as f:
             f.write(line)
+
+    # Keep manually recorded findings in the same shared ledger as analyzer signals.
+    impact = "Unknown"
+    title = str(note)
+    description = str(note)
+    match = re.match(r"^\[([A-Za-z]+)\]\s*(.*)$", str(note))
+    if match:
+        level = match.group(1).lower()
+        impact = {
+            "high": "High",
+            "medium": "Medium",
+            "low": "Low",
+            "info": "Informational",
+            "informational": "Informational",
+        }.get(level, "Unknown")
+        remainder = match.group(2).strip()
+        if ":" in remainder:
+            title, description = remainder.split(":", 1)
+            title = title.strip()
+            description = description.strip()
+        else:
+            title = remainder
+
+    root = audit_context.foundry_project_root()
+    focus = audit_context.load(root).get("focus")
+    signal = {
+        "tool": "manual",
+        "check": "manual",
+        "title": title or "Manual finding",
+        "impact": impact,
+        "confidence": "Manual",
+        "file": focus.get("file") if isinstance(focus, dict) else "",
+        "line": focus.get("line") if isinstance(focus, dict) else None,
+        "column": focus.get("column") if isinstance(focus, dict) else None,
+        "function": focus.get("function") if isinstance(focus, dict) else None,
+        "description": description,
+        "next": "Validate the security property with source review and a reproducible Foundry test.",
+        "status": "open",
+    }
+    audit_context.add_signal(signal, root)
+    audit_context.emit(
+        "manual-finding",
+        root,
+        tool="manual",
+        summary=title or "Manual finding",
+        data=signal,
+    )
+
     print("Finding recorded.")
 
 def workspace_paths():
