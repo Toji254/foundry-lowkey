@@ -1835,26 +1835,60 @@ contract LowkeyProbe is Test {{
 
 def storage_layout_details(config):
     target=config.get("target")
-    contract=config.get("target_contract")
-    if not contract and target:
-        path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
-        artifact=read_artifact(path) if path else None
-        if isinstance(artifact,dict):
-            contract=artifact.get("contractName")
-    if not contract:
-        return {}, []
+    paths=[]
+    if target:
+        preferred_path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
+        if preferred_path:
+            paths.append(preferred_path)
+    contracts=[]
+    configured=config.get("target_contract")
+    if configured:
+        contracts.append(str(configured))
 
-    code,out,_=cast_output(["forge","inspect",str(contract),"storage-layout","--json"])
-    if code!=0 or not out:
-        return {}, []
-    try:
-        payload=json.loads(out)
-    except json.JSONDecodeError:
-        return {}, []
+    # Prefer the target artifact's own storageLayout when available. It is tied
+    # to the exact ABI/artifact Lowkey selected, so it avoids stale contract-name
+    # config causing the decoder to silently give up.
+    for path in paths:
+        artifact=read_artifact(path) or {}
+        name=artifact.get("contractName")
+        if name and str(name) not in contracts:
+            contracts.append(str(name))
+        layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
+        if isinstance(layout,dict):
+            storage=layout.get("storage",[])
+            types=layout.get("types",{})
+            if isinstance(storage,list) and isinstance(types,dict) and storage and types:
+                return types, storage
 
-    storage=payload.get("storage",[]) if isinstance(payload,dict) else []
-    types=payload.get("types",{}) if isinstance(payload,dict) else {}
-    return types if isinstance(types,dict) else {}, storage if isinstance(storage,list) else []
+    # The exact artifact may omit storageLayout. Ask Forge, trying every
+    # trustworthy contract name we have for the selected target.
+    if not contracts:
+        return {}, []
+    for contract in contracts:
+        code,out,_=cast_output(["forge","inspect",contract,"storage-layout","--json"])
+        if code!=0 or not out:
+            continue
+        try:
+            payload=json.loads(out)
+        except json.JSONDecodeError:
+            continue
+        storage=payload.get("storage",[]) if isinstance(payload,dict) else []
+        types=payload.get("types",{}) if isinstance(payload,dict) else {}
+        if isinstance(storage,list) and isinstance(types,dict) and storage and types:
+            return types, storage
+    return {}, []
+
+
+def storage_type_label(types, type_id):
+    if not isinstance(type_id,str):
+        return ""
+    info=types.get(type_id,{}) if isinstance(types,dict) else {}
+    label=str(info.get("label") or type_id)
+    # Foundry normally gives human labels ("address", "uint256"), but some
+    # layouts expose internal ids such as "t_address" / "t_uint256".
+    if label.startswith("t_"):
+        label=label[2:]
+    return label
 
 
 def lab_argument_candidates(config, signature, raw_values, actor_address_value=None):
@@ -1908,8 +1942,7 @@ def mapping_slot_matches(config, signature, raw_values, actor_address_value, cha
             continue
         key_type_id=info.get("key")
         value_type_id=info.get("value")
-        key_info=types.get(key_type_id,{}) if isinstance(key_type_id,str) else {}
-        key_label=key_info.get("label","") if isinstance(key_info,dict) else ""
+        key_label=storage_type_label(types,key_type_id)
         base_slot=entry.get("slot")
         if not key_label or base_slot is None:
             continue
@@ -1965,8 +1998,7 @@ def decode_storage_value(raw, type_id, types, path=""):
     raw=str(raw).strip()
     if not re.fullmatch(r"0x[0-9a-fA-F]{64}",raw):
         return raw
-    info=types.get(type_id,{}) if isinstance(type_id,str) else {}
-    label=str(info.get("label",""))
+    label=storage_type_label(types,type_id)
     lowered=label.lower()
 
     if lowered=="address" or lowered.startswith("contract "):
@@ -2177,6 +2209,7 @@ contract LowkeyStateDiff is Test {{
             after=format_storage_value(config,item["to"],type_id,types,label,eth_sent)
             print(f"  {label}")
             print(f"    {before}  ->  {after}")
+            print(f"    slot: {slot}")
 
         if parsed["changes_expected"]!=len(parsed["slots"]):
             print(f"\nNote: Forge reported {parsed['changes_expected']} changed slots; Lowkey decoded {len(parsed['slots'])}.")
