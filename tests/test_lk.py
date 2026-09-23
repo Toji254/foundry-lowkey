@@ -102,6 +102,24 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
 
+    def test_findings_command_is_handled_by_lowkey(self):
+        result = self.run_cli("findings")
+        self.assertNotIn("unrecognized subcommand 'findings'", result.stderr)
+        self.assertIn("LOWKEY FINDINGS", result.stdout)
+
+    def test_focus_command_is_handled_by_lowkey(self):
+        result = self.run_cli("focus")
+        self.assertNotIn("unrecognized subcommand 'focus'", result.stderr)
+        self.assertIn("Set target first.", result.stderr)
+
+    def test_audit_checks_flag_is_dispatched(self):
+        result = self.run_cli("audit", "--checks")
+        self.assertNotIn("unrecognized subcommand 'checks'", result.stderr)
+
+    def test_audit_compact_checks_alias_is_dispatched(self):
+        result = self.run_cli("audit--checks")
+        self.assertNotIn("unrecognized subcommand 'audit--checks'", result.stderr)
+
     def test_runtime_fixes(self):
         self.assertTrue(hasattr(lk, "Path"))
         self.assertTrue(lk.AUDIT_CHECKLIST)
