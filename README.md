@@ -465,3 +465,20 @@ Can I turn it into a Forge test?
 Does fuzzing/invariant/symbolic testing catch it?
 
 That is the job.
+
+## Project-scoped audit memory
+
+Lowkey keeps the active audit target and investigation state in the current Foundry project's
+.audit/context.json rather than relying on one global target. The .audit/ directory is ignored
+by git, so each project can remember its own target, focus, latest transaction, and tool evidence.
+
+Target resolution is project-first:
+
+- lk target reads the current project's remembered target.
+- lk target auto searches that project's Foundry broadcast/ records.
+- A target remembered for another Foundry project is ignored instead of leaking into the current one.
+- lk fn <query> can inspect the current project's built out/ artifacts even when no live deployment exists.
+
+A live target is still required for state-changing investigation commands such as lk changes,
+because those commands need an address on the connected chain.
+
