@@ -997,6 +997,14 @@ def _render_connections(models: list[ContractModel], model: ContractModel, enabl
                 lines.append(f"  {base}  {DOTTED}  {model.name}  (inheritance)")
         else:
             lines.append(f"  {base}  {DOTTED}  {model.name}  (inherited source)")
+    for edge in model.calls[:24]:
+        kind = edge.get("kind")
+        arrow = EXTERNAL if kind == "cross-contract" else ARROW
+        lines.append(
+            f"  {model.name}.{edge.get('from')}  {arrow}  "
+            f"{edge.get('to_contract')}.{edge.get('to_function')}  "
+            f"(source edge, INFERRED)"
+        )
     # Source-level qualified calls are shown as INFERRED. Runtime trace edges
     # below are the execution authority.
     names = {m.name for m in models if m.name != model.name}
