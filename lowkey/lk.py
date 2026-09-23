@@ -3442,6 +3442,8 @@ RECON → UNDERSTAND THE CONTRACT
   lk ask <function>                  Show its parameters
   lk abi                               Show the loaded ABI
   lk deps [dir|file]                  Imports + inheritance
+  lk context                           Show shared project audit state
+  lk signals [open|closed|all]         Show analyzer signals
   lk slither [args...]                 Slither static analysis (auto-saves JSON + SARIF)
   lk layout <Contract>                Forge storage layout
   lk risk                              Function review-surface hints
@@ -3687,6 +3689,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
             for index,param in enumerate(item.get("inputs",[]),1): print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
+    elif cmd=="context": return run_context(config)
+    elif cmd in {"signals", "signal"}: return run_signals(config,args)
     elif cmd=="chain": run_chain(config)
     elif cmd=="encode": run_encode(config,args)
     elif cmd=="sig": run_signature(args)
@@ -3775,10 +3779,41 @@ def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
     config=load_config()
+    root = audit_context.foundry_project_root()
+    audit_context.update(
+        root,
+        target={
+            "address": config.get("target"),
+            "contract": config.get("target_contract"),
+            "artifact": config.get("abi_paths", {}).get(config.get("target")),
+        },
+        actor=actor_display(config),
+        rpc=effective_rpc(config),
+        latest={"tx_hash": config.get("last_tx")},
+    )
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
     if config.pop("_config_dirty",False):
         save_config(config)
+    audit_context.update(
+        root,
+        target={
+            "address": config.get("target"),
+            "contract": config.get("target_contract"),
+            "artifact": config.get("abi_paths", {}).get(config.get("target")),
+        },
+        actor=actor_display(config),
+        rpc=effective_rpc(config),
+        latest={"tx_hash": config.get("last_tx")},
+    )
+    audit_context.emit(
+        "lk-command",
+        root,
+        tool="lk",
+        status="completed" if (not isinstance(result,int) or result == 0) else "failed",
+        summary=sys.argv[1],
+        data={"command": sys.argv[1], "exit_code": result if isinstance(result,int) else 0},
+    )
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 
