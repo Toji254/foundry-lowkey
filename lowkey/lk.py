@@ -728,6 +728,8 @@ def run_matrix(config,args):
             "created":datetime.now().isoformat(timespec="seconds"),
         }
         scenarios=read_json_file(paths["matrix_scenarios"],[]); scenarios.append(scenario); write_json_file(paths["matrix_scenarios"],scenarios)
+        if record_evidence:
+            record_evidence("matrix_" + solidity_identifier(scenario["name"]), scenario)
         print(f"Scenario saved: {scenario['name']}"); return
     scenarios=read_json_file(paths["matrix_scenarios"],[])
     if action=="list":
@@ -761,6 +763,8 @@ contract Matrix_{identifier} is Test {{
         base=os.path.join("test",f"Matrix_{identifier}.t.sol")
         filename=base if not os.path.exists(base) else os.path.join("test",f"Matrix_{identifier}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
         Path(filename).write_text(template,encoding="utf-8")
+        if record_evidence:
+            record_evidence("generated_matrix_test_" + identifier, {"scenario":scenario,"file":filename})
         print(f"Matrix test skeleton generated: {filename}"); return
     print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
 
@@ -1179,6 +1183,7 @@ def run_risk(config):
     if not funcs:
         print("Error: No ABI functions loaded."); return
     print("Function review-surface heuristic:")
+    rows=[]
     for item in funcs:
         name=item.get("name","").lower(); signals=[]
         if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
@@ -1186,7 +1191,10 @@ def run_risk(config):
         if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
         if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
         if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
+        rows.append({"signature":format_signature(item),"signals":signals})
         print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+    if record_evidence:
+        record_evidence("risk", {"target":target,"functions":rows})
 def run_gas(config,args):
     if not args:
         print("Usage: lk gas <function> [args]"); return
