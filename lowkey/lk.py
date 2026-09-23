@@ -5,6 +5,8 @@ import sys
 import re
 import shlex
 from datetime import datetime
+from urllib.parse import urlsplit
+from difflib import SequenceMatcher
 
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -13,26 +15,144 @@ AUDIT_DIR = os.path.expanduser("~/.lowkey/audit")
 SESSION_FILE = os.path.join(AUDIT_DIR, "session_log.txt")
 WORKSPACE_DIR = os.path.join(os.getcwd(), ".audit")
 
+DEFAULT_CONFIG = {
+    "target": None, "aliases": {}, "targets": {}, "rpc": None,
+    "rpc_profiles": {}, "actor": None, "wallets": {},
+    "abi_paths": {}, "labels": {}, "confirm_sends": False, "version": 2
+}
+
+def fresh_config():
+    return json.loads(json.dumps(DEFAULT_CONFIG))
+
 def load_config():
-    if not os.path.exists(CONFIG_DIR):
-        os.makedirs(CONFIG_DIR)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     if not os.path.exists(CONFIG_FILE):
-        return {
-            "target": None, "aliases": {}, "rpc": None,
-            "rpc_profiles": {}, "actor": None, "wallets": {},
-            "abi_paths": {}, "labels": {}
-        }
-    with open(CONFIG_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except:
-            return {"target": None, "aliases": {}, "rpc": None, "rpc_profiles": {}, "actor": None, "wallets": {}, "abi_paths": {}, "labels": {}}
+        return fresh_config()
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        print(f"Warning: invalid config at {CONFIG_FILE}; using defaults.", file=sys.stderr)
+        return fresh_config()
+    if not isinstance(loaded, dict):
+        return fresh_config()
+    config = fresh_config()
+    config.update(loaded)
+    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "labels"]:
+        if not isinstance(config.get(key), dict): config[key] = {}
+    return config
 
 def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4)
-    os.chmod(CONFIG_FILE, 0o600)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    tmp=CONFIG_FILE+".tmp"
+    try:
+        with open(tmp,"w",encoding="utf-8") as f:
+            json.dump(config,f,indent=4); f.write("\n")
+        os.chmod(tmp,0o600); os.replace(tmp,CONFIG_FILE); os.chmod(CONFIG_FILE,0o600)
+    finally:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
 
+def normalize_private_key(value):
+    if not value: return None
+    value=str(value).strip()
+    if re.fullmatch(r"(0x)?[0-9a-fA-F]{64}",value):
+        return value if value.startswith("0x") else "0x"+value
+    return None
+
+def resolve_wallet_key(config,wallet_name=None):
+    name=wallet_name or config.get("actor")
+    if not name: return None
+    entry=config.get("wallets",{}).get(name)
+    if isinstance(entry,dict):
+        if entry.get("env"): return normalize_private_key(os.environ.get(entry["env"]))
+        return normalize_private_key(entry.get("private_key"))
+    if isinstance(entry,str): return normalize_private_key(entry)
+    if isinstance(name,str) and name.startswith("env:"): return normalize_private_key(os.environ.get(name[4:]))
+    return normalize_private_key(name)
+def rpc_display(url):
+    if not url: return None
+    try:
+        parts=urlsplit(url)
+        if parts.hostname in {"localhost","127.0.0.1","::1"}: return url
+        host=parts.hostname or "<rpc>"
+        if ":" in host and not host.startswith("["): host=f"[{host}]"
+        if parts.port: host += f":{parts.port}"
+        return f"{parts.scheme or 'rpc'}://{host}/<redacted>"
+    except ValueError:
+        return "<redacted-rpc-url>"
+
+def redact_secrets(text):
+    text=re.sub(r"(--private-key(?:=|\s+))(\S+)",r"\1<redacted>",text,flags=re.I)
+    text=re.sub(r"(--jwt-secret(?:=|\s+))(\S+)",r"\1<redacted>",text,flags=re.I)
+    return re.sub(r"(--rpc-url(?:=|\s+))(\S+)",
+                  lambda m:m.group(1)+(rpc_display(m.group(2)) or "<redacted-rpc-url>"),
+                  text,flags=re.I)
+
+def is_probable_private_key(value):
+    return bool(re.fullmatch(r"(0x)?[0-9a-fA-F]{64}",str(value or "")))
+
+def target_aliases(config):
+    merged={}
+    for name,addr in config.get("aliases",{}).items():
+        if is_address(addr): merged[str(name)]=addr
+    for name,addr in config.get("targets",{}).items():
+        if is_address(addr): merged[str(name)]=addr
+    return merged
+
+def resolve_target_ref(config,ref):
+    if ref is None: return config.get("target")
+    if is_address(ref): return ref
+    aliases=target_aliases(config)
+    if str(ref) in aliases: return aliases[str(ref)]
+    if str(ref).isdigit():
+        names=list(aliases); index=int(ref)-1
+        if 0<=index<len(names): return aliases[names[index]]
+    return None
+
+def canonical_type(param):
+    if not isinstance(param,dict): return ""
+    raw=param.get("type","")
+    if raw.startswith("tuple"):
+        suffix=raw[len("tuple"):]
+        return f"({','.join(canonical_type(c) for c in param.get('components',[]))}){suffix}"
+    return raw
+
+def format_signature(item):
+    return f"{item.get('name','<anonymous>')}({','.join(canonical_type(v) for v in item.get('inputs',[]))})"
+def format_output_signature(item):
+    return f"{item.get('name','<anonymous>')}({','.join(canonical_type(v) for v in item.get('inputs',[]))})({','.join(canonical_type(v) for v in item.get('outputs',[]))})"
+
+def abi_functions(abi): return [item for item in abi if item.get("type")=="function"]
+
+def matching_functions(abi,func_name):
+    if "(" in func_name: return [item for item in abi_functions(abi) if format_signature(item)==func_name]
+    return [item for item in abi_functions(abi) if item.get("name")==func_name]
+
+def resolve_function(func_name,target,config):
+    abi=load_abi(target,config)
+    if not abi: return func_name
+    matches=matching_functions(abi,func_name)
+    if len(matches)==1: return format_signature(matches[0])
+    if len(matches)>1:
+        raise ValueError("Ambiguous overloaded function '%s'. Use one of: %s" % (
+            func_name,", ".join(format_signature(item) for item in matches)))
+    return func_name
+
+def function_score(item,query):
+    candidate=format_signature(item).lower(); query=query.lower()
+    return 1.0 if query in candidate else SequenceMatcher(None,candidate,query).ratio()
+
+def artifact_json_files(root="."):
+    result=[]
+    for base in ["out","broadcast"]:
+        base_path=os.path.join(root,base)
+        if not os.path.isdir(base_path): continue
+        for path,_,files in os.walk(base_path):
+            for filename in files:
+                if filename.endswith(".json"): result.append(os.path.join(path,filename))
+    return result
 def last_transaction(config):
     return config.get("last_tx")
 
@@ -42,39 +162,18 @@ def log_session(command, result):
     with open(SESSION_FILE, "a") as f:
         f.write(f"[{timestamp}] CMD: {command}\nRES: {result}\n{'-'*40}\n")
 
-def resolve_function(func_name, target, config):
-    abi_path = config.get("abi_paths", {}).get(target)
-    if not abi_path or not os.path.exists(abi_path):
-        return func_name
+def load_abi(target,config):
+    abi_paths=config.get("abi_paths",{})
+    abi_path=abi_paths.get(target)
+    if not abi_path and isinstance(target,str):
+        lowered=target.lower()
+        abi_path=next((path for address,path in abi_paths.items() if isinstance(address,str) and address.lower()==lowered),None)
+    if not abi_path or not os.path.exists(abi_path): return []
     try:
-        with open(abi_path, "r") as f:
-            abi = json.load(f)
-            if isinstance(abi, dict):
-                abi = abi.get("abi", [])
-            for item in abi:
-                if item.get("type") == "function" and item.get("name") == func_name:
-                    inputs = item.get("inputs", [])
-                    types = [i.get("type") for i in inputs]
-                    return f"{func_name}({','.join(types)})"
-    except Exception:
-        pass
-    return func_name
-
-def load_abi(target, config):
-    abi_path = config.get("abi_paths", {}).get(target)
-    if not abi_path or not os.path.exists(abi_path):
-        return []
-    try:
-        with open(abi_path, "r") as f:
-            artifact = json.load(f)
-        return artifact.get("abi", []) if isinstance(artifact, dict) else artifact
-    except (OSError, json.JSONDecodeError):
-        return []
-
-def format_signature(item):
-    inputs = ",".join(value.get("type", "") for value in item.get("inputs", []))
-    return f"{item.get('name', '<anonymous>')}({inputs})"
-
+        with open(abi_path,"r",encoding="utf-8") as f: artifact=json.load(f)
+        abi=artifact.get("abi",[]) if isinstance(artifact,dict) else artifact
+        return abi if isinstance(abi,list) else []
+    except (OSError,json.JSONDecodeError): return []
 def run_chain(config):
     chain_id = run_cast(["chain-id"], config, capture=True)
     block = run_cast(["block-number"], config, capture=True)
@@ -104,19 +203,17 @@ def run_abi(config):
             for item in items:
                 print(f"  {format_signature(item)}")
 
-def run_functions(config):
-    target = config.get("target")
-    if not target:
-        print("Error: Set target first.")
-        return
-    functions = [item for item in load_abi(target, config) if item.get("type") == "function"]
-    if not functions:
-        print("Error: No ABI functions loaded for the current target.")
-        return
-    for item in functions:
-        mutability = item.get("stateMutability", "unknown").upper()
-        print(f"{mutability:10} {format_signature(item)}")
-
+def run_functions(config,query=None):
+    target=config.get("target")
+    if not target: print("Error: Set target first."); return
+    functions=abi_functions(load_abi(target,config))
+    if not functions: print("Error: No ABI functions loaded for the current target."); return
+    if query:
+        functions=sorted(functions,key=lambda item:function_score(item,query),reverse=True)[:8]
+        print(f"Function matches for '{query}':")
+    else: print("Functions:")
+    for index,item in enumerate(functions,1):
+        print(f"{index:>2}. {item.get('stateMutability','unknown').upper():10} {format_signature(item)}")
 def run_info(config):
     target = config.get("target")
     if not target:
@@ -129,99 +226,86 @@ def run_info(config):
     print(f"ABI:    {'LOADED' if load_abi(target, config) else 'NOT LOADED'}")
     print(f"Proxy:  {'YES' if inspect_proxy(config, quiet=True) else 'NO'}")
 
-def run_encode(config, args):
+def run_encode(config,args):
     if not args:
-        print("Usage: lk encode <function> [args]")
-        return
-    run_cast(["calldata"] + args, config)
-
+        print("Usage: lk encode <function> [args]"); return
+    values=list(args)
+    target=config.get("target")
+    if target and ("(" not in values[0] or ")" not in values[0]):
+        try: values[0]=resolve_function(values[0],target,config)
+        except ValueError as error:
+            print(f"Error: {error}",file=sys.stderr); return
+    run_cast(["calldata"]+values,config)
 def run_signature(args):
     if not args:
-        print("Usage: lk sig <function(signature)>")
-        return
-    signature = args[0]
-    selector = subprocess.run(["cast", "sig", signature], capture_output=True, text=True)
-    if selector.stdout.strip():
-        print(selector.stdout.strip())
-    if selector.stderr.strip():
-        print(selector.stderr.strip(), file=sys.stderr)
-
-def cast_output(args):
-    result = subprocess.run(args, capture_output=True, text=True)
-    return result.stdout.strip(), result.stderr.strip()
-
+        print("Usage: lk sig <function(signature)>"); return
+    code,out,err=cast_output(["cast","sig",args[0]])
+    if out: print(out)
+    if err: print(err,file=sys.stderr)
+    if code!=0 and not err:
+        print("Unable to resolve selector.",file=sys.stderr)
+def cast_output(args,input_text=None):
+    result=subprocess.run(args,capture_output=True,text=True,input=input_text)
+    return result.returncode,result.stdout.strip(),result.stderr.strip()
 def abi_selector(signature):
     output, _ = cast_output(["cast", "sig", signature])
     return output.splitlines()[0].strip() if output else None
 
-def decode_abi_input(signature, data):
-    payload = data[10:] if data.startswith("0x") else data
-    output, error = cast_output(["cast", "decode-abi", "--input", signature, "0x" + payload])
-    return output or error
-
-def run_decode_error(config, args):
-    if not args:
-        print("Usage: lk decode-error <revert-data>")
-        return
-    data = args[0]
-    if not data.startswith("0x") or len(data) < 10:
-        print("Error: revert data must be hex calldata beginning with 0x.")
-        return
-    selector = data[:10].lower()
-    errors = [item for item in load_abi(config.get("target"), config) if item.get("type") == "error"]
-    for item in errors:
-        signature = format_signature(item)
-        if (abi_selector(signature) or "").lower() == selector:
+def decode_abi_input(signature,data):
+    payload=data[10:] if data.startswith("0x") and len(data)>=10 else data
+    _,out,err=cast_output(["cast","decode-abi","--input",signature,"0x"+payload])
+    return out or err
+def run_decode_error(config,args):
+    if not args: print("Usage: lk decode-error <revert-data>"); return
+    data=args[0]
+    if not re.fullmatch(r"0x[0-9a-fA-F]+",data or "") or len(data)<10:
+        print("Error: revert data must be hex calldata beginning with 0x."); return
+    for item in [x for x in load_abi(config.get("target"),config) if x.get("type")=="error"]:
+        signature=format_signature(item)
+        if (abi_selector(signature) or "").lower()==data[:10].lower():
             print(f"Error: {signature}")
-            if item.get("inputs"):
-                decoded = decode_abi_input(signature, data)
-                if decoded:
-                    print(decoded)
-            else:
-                print("Arguments: none")
-            return
-    print(f"Unknown custom error selector: {selector}")
-    print(f"Raw data: {data}")
+            print(decode_abi_input(signature,data) if item.get("inputs") else "Arguments: none"); return
+    print("Loaded ABI did not contain that custom error; asking Cast resolver:")
+    run_cast(["decode-error",data],config)
+def abi_path_for_target(config,target):
+    return config.get("abi_paths",{}).get(target)
 
-def run_tx(config, args):
-    tx_hash = args[0] if args else last_transaction(config)
-    if not tx_hash:
-        print("Usage: lk tx <transaction-hash> (or save a transaction first)")
-        return
-    command = ["cast", "tx", tx_hash, "--json"]
-    if config.get("rpc"):
-        command.extend(["--rpc-url", config["rpc"]])
-    output, error = cast_output(command)
-    if error and not output:
-        print(error, file=sys.stderr)
-        return
-    try:
-        transaction = json.loads(output)
-    except json.JSONDecodeError:
-        print(output)
-        return
-    transaction = transaction.get("data", transaction)
-    print(f"Hash:  {transaction.get('hash', tx_hash)}")
-    print(f"From:  {apply_labels(transaction.get('from', 'Unknown'), config)}")
-    print(f"To:    {apply_labels(transaction.get('to', 'Unknown'), config)}")
-    value = transaction.get("value", "0")
-    if isinstance(value, str) and value.startswith("0x"):
-        value = str(int(value, 16))
+def run_tx(config,args):
+    tx_hash=args[0] if args else last_transaction(config)
+    if not tx_hash: print("Usage: lk tx <transaction-hash> (or save a transaction first)"); return
+    command=["cast","tx",tx_hash,"--json"]
+    if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
+    code,output,error=cast_output(command)
+    if code!=0 and not output: print(error or "cast tx failed",file=sys.stderr); return
+    try: transaction=json.loads(output)
+    except json.JSONDecodeError: print(output or error); return
+    if not isinstance(transaction,dict): print("Unexpected cast tx JSON."); return
+    if isinstance(transaction.get("transaction"),dict): transaction=transaction["transaction"]
+    elif isinstance(transaction.get("data"),dict) and any(k in transaction["data"] for k in ["hash","from","to"]):
+        transaction=transaction["data"]
+    tx_to=transaction.get("to") or ""
+    abi_target=tx_to if is_address(tx_to) else config.get("target")
+    abi=load_abi(abi_target,config)
+    print(f"Hash:  {transaction.get('hash',tx_hash)}")
+    print(f"From:  {apply_labels(transaction.get('from','Unknown'),config)}")
+    print(f"To:    {apply_labels(transaction.get('to','Unknown'),config)}")
+    value=transaction.get("value","0")
+    if isinstance(value,str) and value.startswith("0x"):
+        try: value=str(int(value,16))
+        except ValueError: pass
     print(f"Value: {humanize_value(str(value))}")
-    input_data = transaction.get("input", "0x")
-    if input_data and input_data != "0x" and len(input_data) >= 10:
-        selector = input_data[:10].lower()
-        for item in load_abi(config.get("target"), config):
-            if item.get("type") != "function":
-                continue
-            signature = format_signature(item)
-            if (abi_selector(signature) or "").lower() == selector:
+    input_data=transaction.get("input") or transaction.get("data") or "0x"
+    if isinstance(input_data,str) and input_data.startswith("0x") and len(input_data)>=10:
+        selector=input_data[:10].lower(); decoded=False
+        for item in abi_functions(abi):
+            signature=format_signature(item)
+            if (abi_selector(signature) or "").lower()==selector:
                 print(f"Function: {signature}")
-                print(f"Args:    {decode_abi_input(signature, input_data)}")
-                break
-        else:
+                print(f"Args:    {decode_abi_input(signature,input_data)}"); decoded=True; break
+        if not decoded:
             print(f"Selector: {selector} (unknown to loaded ABI)")
-
+            _,fourbyte,_=cast_output(["cast","4byte",selector])
+            if fourbyte: print(f"4byte:   {fourbyte}")
 def run_receipt(config, tx_hash=None):
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash:
@@ -229,17 +313,50 @@ def run_receipt(config, tx_hash=None):
         return
     run_cast(["receipt", tx_hash], config)
 
-def run_trace(config, args=None):
-    args = args or []
-    tx_hash = args[0] if args and args[0].startswith("0x") else last_transaction(config)
-    if not tx_hash:
-        print("Error: No transaction hash supplied or saved.")
-        return
-    run_cast(["run", tx_hash] + (["-t"] if "--trace-printer" in args else []), config)
+def run_trace(config,args=None):
+    args=list(args or [])
+    tx_hash=args.pop(0) if args and args[0].startswith("0x") else last_transaction(config)
+    if not tx_hash: print("Error: No transaction hash supplied or saved."); return
+    grep=None
+    if "--grep" in args:
+        i=args.index("--grep")
+        if i+1>=len(args): print("Usage: lk trace [tx] [--quick] [--decode-internal] [--trace-printer] [--grep text]"); return
+        grep=args[i+1]; del args[i:i+2]
+    output=run_cast(["run",tx_hash]+args,config,capture=True) if grep else None
+    if grep:
+        matched=[line for line in (output or "").splitlines() if grep.lower() in line.lower()]
+        print("\n".join(matched) if matched else f"No trace lines matched '{grep}'.")
+    else: run_cast(["run",tx_hash]+args,config)
+def decode_event_log(config,log):
+    topics=log.get("topics",[]) if isinstance(log,dict) else []
+    data=log.get("data","0x") if isinstance(log,dict) else "0x"
+    if not topics: return None
+    topic0=topics[0].lower()
+    for item in [x for x in load_abi(config.get("target"),config) if x.get("type")=="event" and not x.get("anonymous")]:
+        signature=format_signature(item)
+        event_topic=cast_output(["cast","sig-event",signature])[1]
+        if event_topic.lower().strip()==topic0:
+            decoded=run_cast(["decode-event","--sig",signature,data,"--topics"]+topics[1:],config,capture=True)
+            return signature,decoded
+    return None
 
-def run_logs(config, args):
-    run_cast(["logs"] + args, config)
-
+def run_logs(config,args):
+    args=list(args); decode="--decode" in args
+    if decode: args.remove("--decode")
+    if not decode: run_cast(["logs"]+args,config); return
+    command=["cast","logs","--json"]+args
+    if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
+    code,output,error=cast_output(command)
+    if code!=0: print(error or "cast logs failed",file=sys.stderr); return
+    try: payload=json.loads(output)
+    except json.JSONDecodeError: print(output); return
+    logs=payload if isinstance(payload,list) else payload.get("logs",payload.get("result",[]))
+    if not isinstance(logs,list): print(output); return
+    if not logs: print("No logs found."); return
+    for log in logs:
+        print(json.dumps(log,indent=2))
+        event=decode_event_log(config,log)
+        if event: print(f"Event: {event[0]}\nDecoded: {event[1]}")
 def run_last(config, args):
     action = args[0] if args else "receipt"
     actions = {
@@ -272,89 +389,87 @@ def humanize_value(text):
     return re.sub(wei_pattern, replace_wei, text)
 
 def is_address(value):
-    return bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", value))
-
+    return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}",value))
 def is_nonzero_slot(value):
     try:
         return int(value, 16) != 0
     except (TypeError, ValueError):
         return False
 
-def redact_secrets(text):
-    return re.sub(r"(--private-key\s+)(\S+)", r"\1<redacted>", text)
-
-def run_cast(args, config, capture=False):
+def run_cast(args,config,capture=False):
     if not args: return None
-    action = args[0]
-    shortcut_map = {"c": "call", "s": "send", "st": "storage"}
-    cast_cmd = shortcut_map.get(action, action)
-    cmd = ["cast", cast_cmd]
-    remaining_args = args[1:]
-
-    target = config.get("target")
-    if cast_cmd in ["call", "send", "storage"]:
-        if remaining_args and is_address(remaining_args[0]):
-            target = remaining_args.pop(0)
-        if target:
-            cmd.append(target)
-
-    if cast_cmd in ["call", "send"] and remaining_args:
-        func_arg = remaining_args[0]
-        if "(" not in func_arg or ")" not in func_arg:
-            resolved = resolve_function(func_arg, target, config)
-            if resolved != func_arg:
-                remaining_args[0] = resolved
-
-    cmd.extend(remaining_args)
-    local_commands = {"keccak", "calldata", "sig"}
-    if cast_cmd not in local_commands and config.get("rpc") and "--rpc-url" not in " ".join(cmd):
-        cmd.extend(["--rpc-url", config["rpc"]])
-    if cast_cmd == "send" and config.get("actor") and "--private-key" not in " ".join(cmd):
-        cmd.extend(["--private-key", config["actor"]])
-
-    full_cmd = " ".join(cmd)
-    safe_cmd = redact_secrets(full_cmd)
-    if not capture: print(f"DEBUG: Executing -> {safe_cmd}\n")
-
+    action=args[0]; shortcut_map={"c":"call","s":"send","st":"storage"}; cast_cmd=shortcut_map.get(action,action)
+    remaining=list(args[1:]); target=config.get("target")
+    if cast_cmd in {"call","send","storage"}:
+        if remaining and is_address(remaining[0]): target=remaining.pop(0)
+        if not target:
+            if capture: return None
+            print("Error: no target set. Use lk target <address> or pass one explicitly.",file=sys.stderr); return None
+        cmd=["cast",cast_cmd,target]
+    else: cmd=["cast",cast_cmd]
+    if cast_cmd in {"call","send"} and remaining:
+        if "(" not in remaining[0] or ")" not in remaining[0]:
+            try: remaining[0]=resolve_function(remaining[0],target,config)
+            except ValueError as error: print(f"Error: {error}",file=sys.stderr); return None
+    preview="--preview" in remaining or "--dry-run" in remaining
+    confirm="--confirm" in remaining
+    bypass="--yes" in remaining
+    for flag in ["--preview","--dry-run","--confirm","--yes"]:
+        while flag in remaining: remaining.remove(flag)
+    cmd.extend(remaining)
+    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price"}
+    if cast_cmd in rpc_commands and config.get("rpc") and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",config["rpc"]])
+    actor=config.get("actor")
+    actor_key=resolve_wallet_key(config)
+    if cast_cmd=="send" and actor and actor in config.get("wallets",{}) and not actor_key:
+        print(f"Error: signer profile '{actor}' has no usable private key. Check its environment variable.",file=sys.stderr)
+        return None
+    if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd): cmd.extend(["--private-key",actor_key])
+    safe_cmd=redact_secrets(shlex.join(cmd))
+    if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
+    if cast_cmd=="send" and preview:
+        print(f"Preview: {safe_cmd}"); return None
+    if cast_cmd=="send" and (confirm or (config.get("confirm_sends") and not bypass)):
+        print(f"Preview: {safe_cmd}")
+        try: answer=input("Send transaction? [y/N] ").strip().lower()
+        except EOFError: answer=""
+        if answer not in {"y","yes"}: print("Transaction cancelled."); return None
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        out = result.stdout.strip()
-        err = result.stderr.strip()
-        final_res = out if out else err
-
-        log_session(safe_cmd, final_res)
-
-        if cast_cmd == "send" and out:
-            match = re.search(r"transactionHash\s+(0x[0-9a-fA-F]{64})", out)
-            if match:
-                config["last_tx"] = match.group(1)
-                save_config(config)
-
-        if capture: return final_res
-
-        if out:
-            print(humanize_value(apply_labels(out, config)))
+        code,out,err=cast_output(cmd); final=out or err; log_session(safe_cmd,final)
+        if cast_cmd=="send" and out:
+            match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
+            if match: config["last_tx"]=match.group(1); config["last_tx_block"]=None; save_config(config)
+        if capture: return final
+        if out: print(humanize_value(apply_labels(out,config)))
         if err:
-            if "execution reverted" in err.lower(): err = "❌ REVERT: " + err
-            print(apply_labels(err, config), file=sys.stderr)
-    except Exception as e:
-        print(f"Error executing cast: {e}")
+            if code!=0 and "execution reverted" in err.lower(): err="REVERT: "+err
+            print(apply_labels(err,config),file=sys.stderr)
+        return final
+    except FileNotFoundError:
+        message="Error: cast was not found in PATH. Install/update Foundry first."
+        if capture: return message
+        print(message,file=sys.stderr)
+    except OSError as error:
+        print(f"Error executing cast: {error}",file=sys.stderr)
     return None
-
 def run_recon(config):
-    target = config.get("target")
+    target=config.get("target")
     if not target:
-        print("Error: Set target first.")
-        return
-    print(f"🔍 CONTRACT RECON: {target}\n" + "="*40)
-    bal = run_cast(["balance", target], config, capture=True)
-    print(f"Balance: {humanize_value(bal) if bal else 'Unknown'}")
-    code = run_cast(["code", target], config, capture=True)
-    print(f"Code: {'YES' if code and '0x' in code and len(code) > 2 else 'NO'}")
-    proxy = inspect_proxy(config, quiet=True)
-    print(f"Proxy: {'YES' if proxy else 'NO'}")
-    print("="*40)
-
+        print("Error: Set target first."); return
+    print(f"CONTRACT RECON: {target}\n" + "="*52)
+    balance=run_cast(["balance",target],config,capture=True)
+    code=run_cast(["code",target],config,capture=True) or ""
+    codehash=run_cast(["codehash",target],config,capture=True)
+    nonce=run_cast(["nonce",target],config,capture=True)
+    codesize=run_cast(["codesize",target],config,capture=True)
+    print(f"Balance:  {humanize_value(balance) if balance else 'Unknown'}")
+    print(f"Code:     {'YES' if code.startswith('0x') and len(code)>2 else 'NO'}")
+    print(f"Codehash: {codehash or 'Unknown'}")
+    print(f"Codesize: {codesize or 'Unknown'} bytes")
+    print(f"Nonce:    {nonce or 'Unknown'}")
+    proxy=inspect_proxy(config,quiet=True)
+    print(f"Proxy:    {'YES' if proxy else 'NO'}")
+    print("="*52)
 def inspect_proxy(config, quiet=False):
     target = config.get("target")
     if not target:
@@ -375,44 +490,68 @@ def inspect_proxy(config, quiet=False):
     return is_proxy
 
 def run_proxy(config):
-    inspect_proxy(config)
+    target=config.get("target")
+    if not target:
+        print("Error: Set target first."); return
+    detected=inspect_proxy(config)
+    if not detected: return
+    implementation=run_cast(["implementation",target],config,capture=True)
+    admin=run_cast(["admin",target],config,capture=True)
+    print(f"Implementation: {implementation or 'Unknown'}")
+    print(f"Admin:         {admin or 'Unknown'}")
+def run_mapping(config,*args):
+    if not config.get("target"): print("Error: Set target first."); return
+    if len(args)==2: slot,key=args; key_type="address" if is_address(key) else "uint256"
+    elif len(args)==3: key_type,slot,key=args
+    else: print("Usage: lk mapping [key_type] <slot> <key>"); return
+    computed=run_cast(["index",key_type,key,slot],config,capture=True)
+    if not computed: print("Error: could not compute mapping slot."); return
+    print(f"Mapping slot: {computed}"); run_cast(["st",computed],config)
+def snapshot_path(config):
+    target=config.get("target") or "no-target"; chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
+    safe_target=re.sub(r"[^0-9a-fA-Fx_-]","_",target); directory=os.path.join(SNAPSHOT_DIR,str(chain)); os.makedirs(directory,exist_ok=True)
+    return os.path.join(directory,f"{safe_target}.json")
 
-def run_mapping(config, slot, key):
-    target = config.get("target")
-    if not target: return
-    try:
-        slot_hex = f"0x{int(slot):x}" if not slot.startswith("0x") else slot
-        key_hex = f"0x{key}" if not key.startswith("0x") else key
-        padded_key = key_hex.replace("0x", "").zfill(64)
-        padded_slot = slot_hex.replace("0x", "").zfill(64)
-        combined = "0x" + padded_key + padded_slot
-        computed_slot = run_cast(["keccak", combined], config, capture=True)
-        if computed_slot:
-            print(f"Computed Slot: {computed_slot}")
-            run_cast(["st", computed_slot], config)
-    except Exception as e: print(f"Error: {e}")
+def snapshot_path(config,chain=None):
+    target=config.get("target") or "no-target"
+    chain=chain or run_cast(["chain-id"],config,capture=True) or "unknown-chain"
+    safe_target=re.sub(r"[^0-9a-fA-Fx_-]","_",target)
+    directory=os.path.join(SNAPSHOT_DIR,str(chain)); os.makedirs(directory,exist_ok=True)
+    return os.path.join(directory,f"{safe_target}.json")
 
-def run_snapshot(config, slots=None):
-    target = config.get("target")
-    if not target: return
-    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
-    slots = slots or [str(i) for i in range(10)]
-    state = {str(slot): run_cast(["st", str(slot)], config, capture=True) for slot in slots}
-    with open(os.path.join(SNAPSHOT_DIR, "last_state.json"), "w") as f:
-        json.dump(state, f, indent=4)
-    print(f"Snapshot saved ({len(state)} slots).")
-
+def run_snapshot(config,slots=None):
+    if not config.get("target"):
+        print("Error: Set target first."); return
+    values=list(slots or [])
+    block=None
+    if "--block" in values:
+        i=values.index("--block")
+        if i+1>=len(values):
+            print("Usage: lk snapshot [slot ...] [--block BLOCK]"); return
+        block=values[i+1]; del values[i:i+2]
+    requested=values or [str(i) for i in range(10)]
+    state={}
+    storage_args=[]
+    if block: storage_args=["--block",block]
+    for slot in requested:
+        state[str(slot)]=run_cast(["st",str(slot)]+storage_args,config,capture=True)
+    current_block=block or run_cast(["block-number"],config,capture=True)
+    chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
+    payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().isoformat(timespec="seconds"),"slots":state}
+    path=snapshot_path(config,chain); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
+    print(f"Snapshot saved: {path}")
 def run_diff(config):
-    path = os.path.join(SNAPSHOT_DIR, "last_state.json")
-    if not os.path.exists(path): return
-    with open(path, "r") as f: old_state = json.load(f)
-    print("Comparing storage...\n" + "-"*40)
-    for slot, old_val in old_state.items():
-        new_val = run_cast(["st", slot], config, capture=True)
-        if new_val != old_val:
-            print(f"Slot {slot}: {old_val} -> {new_val}")
-    print("-" * 40)
-
+    path=snapshot_path(config)
+    if not os.path.exists(path): print("No snapshot for the current target/chain."); return
+    try: old=json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError,json.JSONDecodeError): print("Error: invalid snapshot."); return
+    old_slots=old.get("slots",old); print(f"Snapshot block: {old.get('block','unknown')}")
+    changed=0
+    for slot,old_val in old_slots.items():
+        new_val=run_cast(["st",slot],config,capture=True)
+        if str(new_val).lower()!=str(old_val).lower():
+            changed+=1; print(f"Slot {slot}: {old_val} -> {new_val}")
+    if not changed: print("No changes detected in snapshotted slots.")
 def run_finding(config, note):
     os.makedirs(AUDIT_DIR, exist_ok=True)
     line = f"- [{datetime.now().strftime('%Y-%m-%d %H:%M')}] {note}\n"
@@ -438,31 +577,16 @@ def workspace_paths():
         "session": os.path.join(WORKSPACE_DIR, "history", "session.log"),
     }
 
-def run_workspace(config, args):
-    paths = workspace_paths()
-    action = args[0] if args else "init"
-    if action != "init":
-        print("Usage: lk workspace init")
-        return
-    for directory in [
-        paths["root"],
-        os.path.join(paths["root"], "abi"),
-        os.path.join(paths["root"], "transactions"),
-        os.path.join(paths["root"], "traces"),
-        os.path.join(paths["root"], "storage"),
-        os.path.join(paths["root"], "findings"),
-        os.path.join(paths["root"], "history"),
-        paths["matrix"],
-    ]:
-        os.makedirs(directory, exist_ok=True)
-    if not os.path.exists(paths["notes"]):
-        open(paths["notes"], "w").close()
-    if not os.path.exists(paths["todos"]):
-        open(paths["todos"], "w").close()
-    with open(paths["config"], "w") as f:
-        json.dump({"target": config.get("target"), "rpc": config.get("rpc"), "abi": config.get("abi_paths", {}).get(config.get("target"))}, f, indent=4)
+def run_workspace(config,args):
+    paths=workspace_paths(); action=args[0] if args else "init"
+    if action!="init": print("Usage: lk workspace init"); return
+    for directory in [paths["root"],os.path.join(paths["root"],"abi"),os.path.join(paths["root"],"transactions"),os.path.join(paths["root"],"traces"),os.path.join(paths["root"],"storage"),os.path.join(paths["root"],"findings"),os.path.join(paths["root"],"history"),paths["matrix"]]:
+        os.makedirs(directory,exist_ok=True)
+    for key in ["notes","todos","findings"]:
+        if not os.path.exists(paths[key]): open(paths[key],"w",encoding="utf-8").close()
+    if not os.path.exists(paths["config"]):
+        Path(paths["config"]).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"created":datetime.now().isoformat(timespec="seconds")},indent=4),encoding="utf-8")
     print(f"Audit workspace ready: {paths['root']}")
-
 def read_json_file(path, default):
     try:
         with open(path, "r") as f:
@@ -505,7 +629,7 @@ def run_matrix(config, args):
             "expected": " ".join(args[4:]),
             "evidence": {
                 "last_tx": config.get("last_tx"),
-                "snapshot": os.path.join(SNAPSHOT_DIR, "last_state.json") if os.path.exists(os.path.join(SNAPSHOT_DIR, "last_state.json")) else None,
+                "snapshot": snapshot_path(config) if os.path.exists(snapshot_path(config)) else None,
                 "session": SESSION_FILE,
             },
             "created": datetime.now().isoformat(timespec="seconds"),
@@ -592,354 +716,599 @@ def run_session_lifecycle(config, action):
         print("Usage: lk session start|resume")
 
 def run_export(config):
-    paths = workspace_paths()
-    export_dir = os.path.join(os.getcwd(), "audit-report")
-    os.makedirs(export_dir, exist_ok=True)
-    report = {
-        "target": config.get("target"),
-        "rpc": config.get("rpc"),
-        "last_tx": config.get("last_tx"),
-        "abi": config.get("abi_paths", {}).get(config.get("target")),
-    }
-    with open(os.path.join(export_dir, "contract.json"), "w") as f:
-        json.dump(report, f, indent=4)
-    for source, destination in [(paths["notes"], "notes.md"), (paths["todos"], "TODO.md"), (paths["findings"], "findings.md"), (paths["session"], "session.log")]:
-        if os.path.exists(source):
-            with open(source, "r") as source_file, open(os.path.join(export_dir, destination), "w") as destination_file:
-                destination_file.write(source_file.read())
+    paths=workspace_paths(); export_dir=os.path.join(os.getcwd(),"audit-report"); os.makedirs(export_dir,exist_ok=True)
+    lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(config.get('rpc')) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Not loaded'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Findings",""]
+    finding_path=paths["findings"] if os.path.exists(paths["findings"]) else os.path.join(AUDIT_DIR,"findings.md")
+    lines.append(Path(finding_path).read_text(encoding="utf-8") if os.path.exists(finding_path) else "No findings recorded.")
+    lines += ["","## Checklist",""]
+    checklist_path=os.path.join(AUDIT_DIR,"CHECKLIST.md")
+    lines.append(Path(checklist_path).read_text(encoding="utf-8") if os.path.exists(checklist_path) else "No checklist initialized.")
+    Path(os.path.join(export_dir,"report.md")).write_text("\n".join(lines),encoding="utf-8")
+    for name,source in [("notes.md",paths["notes"]),("TODO.md",paths["todos"]),("session.log",paths["session"]),("matrix_actors.json",paths["matrix_actors"]),("matrix_states.json",paths["matrix_states"]),("matrix_scenarios.json",paths["matrix_scenarios"])]:
+        if os.path.exists(source): Path(os.path.join(export_dir,name)).write_text(Path(source).read_text(encoding="utf-8"),encoding="utf-8")
+    Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
     print(f"Audit report exported: {export_dir}")
-
 def run_self_test():
-    checks = [
-        ("address validation", is_address("0x" + "1" * 40) and not is_address("0x" + "1" * 64)),
-        ("slot validation", is_nonzero_slot("0x" + "1" + "0" * 63) and not is_nonzero_slot("not-hex")),
-        ("ETH formatting", "1.0000 ETH" in humanize_value("1000000000000000000")),
+    checks=[
+        ("address validation",is_address("0x"+"1"*40) and not is_address("0x"+"1"*64) and not is_address(None)),
+        ("slot validation",is_nonzero_slot("0x"+"1"+"0"*63) and not is_nonzero_slot("not-hex")),
+        ("ETH formatting","1.0000 ETH" in humanize_value("1000000000000000000")),
+        ("secret redaction","<redacted>" in redact_secrets("--private-key 0x"+"1"*64)),
+        ("jwt redaction","<redacted>" in redact_secrets("--jwt-secret supersecret")),
+        ("rpc redaction","sensitive-token" not in redact_secrets("--rpc-url https://example.com/sensitive-token")),
+        ("tuple canonicalization",canonical_type({"type":"tuple","components":[{"type":"address"},{"type":"uint256"}]})=="(address,uint256)"),
+        ("nested tuple array",canonical_type({"type":"tuple[]","components":[{"type":"address"},{"type":"uint256[]"}]})=="(address,uint256[])[]"),
+        ("output signature",format_output_signature({"name":"f","inputs":[{"type":"address"}],"outputs":[{"type":"uint256"}]})=="f(address)(uint256)"),
+        ("target alias resolution",resolve_target_ref({"aliases":{"one":"0x"+"1"*40},"targets":{}},"one")=="0x"+"1"*40),
     ]
-    failed = [name for name, passed in checks if not passed]
-    for name, passed in checks:
+    failed=[name for name,passed in checks if not passed]
+    for name,passed in checks:
         print(f"{'PASS' if passed else 'FAIL'}  {name}")
     if failed:
-        print(f"Self-test failed: {', '.join(failed)}")
-        return 1
-    print(f"Self-test passed ({len(checks)} checks).")
-    return 0
-
+        print("Self-test failed: "+", ".join(failed)); return 1
+    print(f"Self-test passed ({len(checks)} checks)."); return 0
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
-        print("Error: No session history found.")
-        return
-    with open(SESSION_FILE, "r") as f:
-        lines = f.readlines()
-    last_send = None
-    for line in reversed(lines):
-        if "CMD: cast send" in line:
-            last_send = line.split("CMD: ")[1].strip()
-            break
+        print("Error: No session history found."); return
+    lines=Path(SESSION_FILE).read_text(encoding="utf-8").splitlines()
+    last_send=next((line.split("CMD: ",1)[1].strip() for line in reversed(lines) if "CMD: cast send " in line),None)
     if not last_send:
-        print("Error: No send transaction found in session.")
-        return
+        print("Error: No send transaction found in session."); return
     try:
-        parts = shlex.split(last_send)
-        send_index = parts.index("send")
-        target = parts[send_index + 1]
-        func = parts[send_index + 2]
-        positional = []
-        value = "0"
-        index = send_index + 3
-        while index < len(parts):
-            if parts[index] == "--value" and index + 1 < len(parts):
-                value = parts[index + 1]
-                index += 2
-                continue
+        parts=shlex.split(last_send)
+        send_index=parts.index("send")
+        target=parts[send_index+1]; func=parts[send_index+2]
+        positional=[]; value="0"; index=send_index+3
+        while index<len(parts):
+            if parts[index]=="--value" and index+1<len(parts):
+                value=parts[index+1]; index+=2; continue
             if parts[index].startswith("--"):
-                index += 2 if index + 1 < len(parts) and not parts[index + 1].startswith("--") else 1
-                continue
-            positional.append(parts[index])
-            index += 1
-        calldata_result = subprocess.run(
-            ["cast", "calldata", func, *positional],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        calldata = calldata_result.stdout.strip().removeprefix("0x")
-    except (ValueError, IndexError, subprocess.CalledProcessError) as error:
-        print(f"Error generating test: {error}")
-        return
-
-    value_expression = value
-    for unit in ["ether", "gwei", "wei"]:
-        value_expression = value_expression.replace(unit, f" {unit}")
-    template = """pragma solidity ^0.8.0;
+                index+=2 if index+1<len(parts) and not parts[index+1].startswith("--") else 1; continue
+            positional.append(parts[index]); index+=1
+        code,encoded,error=cast_output(["cast","calldata",func,*positional])
+        if code!=0 and not encoded:
+            print(f"Error generating calldata: {error}"); return
+        calldata=encoded.removeprefix("0x")
+    except (ValueError,IndexError) as error:
+        print(f"Error generating test: {error}"); return
+    value_expression=value
+    for unit in ["ether","gwei","wei"]:
+        if unit in value_expression and " " not in value_expression:
+            value_expression=value_expression.replace(unit,f" {unit}")
+    test=f'''pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 
-contract ExploitTest is Test {{
-    address target = {target};
+contract Exploit_Reproduction is Test {{
+    address constant TARGET = {target};
 
-    function testReproduce() public {{
-        uint256 value = {value};
+    function test_reproduce() public {{
+        uint256 value = {value_expression};
         vm.deal(address(this), value);
-        (bool success, ) = target.call{{value: value}}(hex"{calldata}");
-        assertTrue(success);
+        (bool success, bytes memory data) = TARGET.call{{value: value}}(hex"{calldata}");
+        assertTrue(success, string(data));
     }}
 }}
-"""
-    final_test = template.format(target=target, value=value_expression, calldata=calldata)
-    os.makedirs("test", exist_ok=True)
-    filename = f"test/Exploit_{datetime.now().strftime('%H%M%S')}.t.sol"
-    with open(filename, "w") as f:
-        f.write(final_test)
-    print(f"Exploit skeleton generated: {filename}")
+'''
+    os.makedirs("test",exist_ok=True)
+    filename=os.path.join("test",f"Exploit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
+    Path(filename).write_text(test,encoding="utf-8")
+    print(f"Exploit reproduction generated: {filename}")
+def run_checklist(config,action=None,item=None):
+    path=os.path.join(AUDIT_DIR,"CHECKLIST.md"); os.makedirs(AUDIT_DIR,exist_ok=True)
+    if not os.path.exists(path): Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8")
+    lines=Path(path).read_text(encoding="utf-8").splitlines(True)
+    if action=="reset":
+        Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8"); print("Checklist reset."); return
+    if action=="done" and item:
+        q=item.lower()
+        for i,line in enumerate(lines):
+            if q in line.lower() and "[ ]" in line:
+                lines[i]=line.replace("[ ]","[x]",1); Path(path).write_text("".join(lines),encoding="utf-8"); print(f"Marked complete: {line.strip()[6:]}"); return
+        print(f"Checklist item not found: {item}"); return
+    print("".join(lines))
+def run_targets(config):
+    aliases=target_aliases(config); current=config.get("target")
+    if not aliases: print("No saved targets. Use lk target <name> <address>."); return
+    for i,(name,address) in enumerate(aliases.items(),1):
+        print(f"{'*' if address==current else ' '} {i:>2}. {name:<20} {address}")
 
-def run_checklist(config, action=None, item=None):
-    path = os.path.join(AUDIT_DIR, "CHECKLIST.md")
-    default_list = [
-        "[ ] Authorization: Check owner/roles",
-        "[ ] Reentrancy: Check external calls",
-        "[ ] Accounting: Check math/rounding",
-        "[ ] Oracles: Check price staleness",
-        "[ ] Proxies: Check implementation/admin"
-    ]
+def discover_deployments(root="."):
+    records=[]
+    for path in artifact_json_files(root):
+        if not path.startswith(os.path.join(root,"broadcast")): continue
+        try: payload=json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError,json.JSONDecodeError): continue
+        txs=payload.get("transactions",[]) if isinstance(payload,dict) else []
+        if not isinstance(txs,list): continue
+        mtime=os.path.getmtime(path)
+        for tx in txs:
+            if not isinstance(tx,dict): continue
+            tx_type=str(tx.get("transactionType","")).upper(); address=tx.get("contractAddress") or tx.get("address")
+            if tx_type.startswith("CREATE") and is_address(address):
+                records.append({"contract":tx.get("contractName") or "Unknown","address":address,"file":path,"time":mtime,"hash":tx.get("hash")})
+    return sorted(records,key=lambda x:x["time"],reverse=True)
+
+def run_deployments(config):
+    records=discover_deployments(".")
+    if not records: print("No Foundry broadcast deployments discovered."); return
+    seen=set()
+    for r in records:
+        key=(r["contract"],r["address"])
+        if key in seen: continue
+        seen.add(key); print(f"{r['contract']:<24} {r['address']}  {r['file']}")
+
+def run_auto_target(config,name=None):
+    records=discover_deployments(".")
+    if not records: print("No deployment found in broadcast/."); return
+    record=records[0]; alias=name or record["contract"]
+    config["aliases"][alias]=record["address"]; config["targets"][alias]=record["address"]; config["target"]=record["address"]
+    for path in artifact_json_files("."):
+        if os.path.join(".","out") in path and os.path.basename(path)==f"{record['contract']}.json":
+            config["abi_paths"][record["address"]]=path; print(f"ABI auto-loaded: {path}"); break
+    save_config(config); print(f"Target selected: {alias} -> {record['address']}")
+
+def run_ens(config,args):
+    if not args: print("Usage: lk ens <name|address>"); return
+    value=args[0]; run_cast(["lookup-address",value] if is_address(value) else ["resolve-name",value],config)
+
+def run_token(config,args):
+    if not args: print("Usage: lk token <token> | lk token balance <token> <holder>"); return
+    if args[0]=="balance":
+        if len(args)!=3: print("Usage: lk token balance <token> <holder>"); return
+        run_cast(["erc20-token","balance",args[1],args[2]],config); return
+    for action in ["name","symbol","decimals","total-supply"]: run_cast(["erc20-token",action,args[0]],config)
+
+def run_decode(config,args):
+    if len(args)<2: print("Usage: lk decode <function> <return-data>"); return
+    matches=matching_functions(load_abi(config.get("target"),config),args[0])
+    if len(matches)!=1: print("Error: function must resolve to exactly one ABI entry."); return
+    item=matches[0]
+    if not item.get("outputs"): print("Function has no outputs."); return
+    run_cast(["decode-abi",format_output_signature(item),args[1]],config)
+
+def run_event(config,args):
+    if len(args)<2: print("Usage: lk event <event-signature> <data> [topic ...]"); return
+    run_cast(["decode-event","--sig",args[0],args[1],"--topics"]+args[2:],config)
+
+def run_namespace(config,args):
+    if len(args)!=1: print("Usage: lk namespace <erc7201-namespace-id>"); return
+    run_cast(["index-erc7201",args[0]],config)
+
+def run_proof(config,args):
+    if not args: print("Usage: lk proof <slot> [block]"); return
+    run_cast(["proof",config.get("target"),args[0]]+(["--block",args[1]] if len(args)>1 else []),config)
+
+def run_selectors(config,args):
+    code=args[0] if args else run_cast(["code",config.get("target")],config,capture=True)
+    if not code or not str(code).startswith("0x"): print("Error: no runtime bytecode available."); return
+    run_cast(["selectors",code],config)
+
+def run_layout(args):
+    if not args: print("Usage: lk layout <ContractName>"); return
+    code,out,err=cast_output(["forge","inspect",args[0],"storage-layout","--json"])
+    if code!=0: print(err or "forge inspect failed",file=sys.stderr); return
+    try: payload=json.loads(out)
+    except json.JSONDecodeError: print(out); return
+    storage=payload.get("storage",payload) if isinstance(payload,dict) else payload
+    if isinstance(storage,list):
+        print("Storage layout:")
+        for entry in storage:
+            if isinstance(entry,dict): print(f"slot={entry.get('slot')} offset={entry.get('offset')} label={entry.get('label')} type={entry.get('type')}")
+    else: print(json.dumps(payload,indent=2))
+
+def source_sol_files(root):
+    paths=[]
+    for path,dirs,files in os.walk(root):
+        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib"}]
+        for filename in files:
+            if filename.endswith(".sol"): paths.append(os.path.join(path,filename))
+    return sorted(paths)
+
+def run_scan(args):
+    root=args[0] if args else "src"
+    if not os.path.exists(root): print(f"Path not found: {root}"); return
+    patterns=[
+        ("REENTRANCY REVIEW",re.compile(r"\.(call|delegatecall|staticcall)\s*(\{|\(")),
+        ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
+        ("TX.ORIGIN",re.compile(r"\btx\.origin\b")),("DELEGATECALL",re.compile(r"\bdelegatecall\b")),
+        ("SELFDESTRUCT",re.compile(r"\bselfdestruct\s*\(")),("UNCHECKED",re.compile(r"\bunchecked\s*\{")),
+        ("ASSEMBLY",re.compile(r"\bassembly\s*\{")),("ENCODE_PACKED",re.compile(r"\babi\.encodePacked\s*\(")),
+        ("TIMESTAMP",re.compile(r"\bblock\.timestamp\b")),("BLOCKHASH",re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
+        ("PREVRANDAO",re.compile(r"\bblock\.prevrandao\b")),("ECRECOVER",re.compile(r"\becrecover\s*\(")),
+        ("CREATE2",re.compile(r"\bcreate2\b"))]
+    hits=0
+    for path in source_sol_files(root):
+        try: lines=Path(path).read_text(encoding="utf-8").splitlines()
+        except OSError: continue
+        for lineno,line in enumerate(lines,1):
+            for label,pattern in patterns:
+                if pattern.search(line):
+                    hits+=1; print(f"{path}:{lineno}: [{label}] {line.strip()}")
+    print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
+
+def run_deps(args):
+    root=args[0] if args else "src"; files=source_sol_files(root)
+    if not files: print(f"No Solidity files found under {root}."); return
+    print("Dependency / inheritance map:")
+    for path in files:
+        try: text_content=Path(path).read_text(encoding="utf-8")
+        except OSError: continue
+        rel=os.path.relpath(path,root)
+        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content): print(f"  {rel} -> import {imported}")
+        for contract in re.finditer(r"\b(contract|interface|library)\s+(\w+)(?:\s+is\s+([^{]+))?",text_content):
+            for parent in [p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]:
+                print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+
+def run_risk(config):
+    target=config.get("target")
+    if not target:
+        print("Error: Set target first."); return
+    funcs=abi_functions(load_abi(target,config))
+    if not funcs:
+        print("Error: No ABI functions loaded."); return
+    print("Function review-surface heuristic:")
+    for item in funcs:
+        name=item.get("name","").lower(); signals=[]
+        if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
+        if item.get("stateMutability")=="payable": signals.append("value-flow")
+        if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
+        if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
+        if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
+        print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+def run_gas(config,args):
+    if not args:
+        print("Usage: lk gas <function> [args]"); return
+    target=config.get("target")
+    if not target:
+        print("Error: Set target first."); return
+    values=list(args)
+    if values and ("(" not in values[0] or ")" not in values[0]):
+        try: values[0]=resolve_function(values[0],target,config)
+        except ValueError as error:
+            print(f"Error: {error}",file=sys.stderr); return
+    run_cast(["estimate",target]+values,config)
+def run_raw(config,args):
+    if not args: print("Usage: lk raw <cast-subcommand> [args...]"); return
+    safe=redact_secrets(shlex.join(["cast"]+args)); print(f"DEBUG: Executing -> {safe}")
+    code,out,err=cast_output(["cast"]+args); log_session(safe,out or err)
+    if out: print(humanize_value(apply_labels(out,config)))
+    if err: print(err,file=sys.stderr)
+    return code
+
+def run_batch(config,args):
+    if len(args)!=1:
+        print("Usage: lk batch <command-file>"); return
+    path=args[0]
     if not os.path.exists(path):
-        with open(path, "w") as f: f.write("\n".join(default_list))
-    with open(path, "r") as f: lines = f.readlines()
-    if action == "done" and item:
-        for i, line in enumerate(lines):
-            if item in line:
-                lines[i] = line.replace("[ ]", "[x]")
-                break
-        with open(path, "w") as f: f.writelines(lines)
-        print(f"Marked '{item}' as done.")
-    else:
-        print("\n--- AUDIT CHECKLIST ---")
-        print("".join(lines))
+        print(f"Batch file not found: {path}"); return
+    for lineno,line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(),1):
+        stripped=line.strip()
+        if not stripped or stripped.startswith("#"): continue
+        try: tokens=shlex.split(stripped)
+        except ValueError as error:
+            print(f"Batch line {lineno}: {error}",file=sys.stderr); continue
+        if not tokens: continue
+        command=tokens[0]
+        command_args=tokens[1:]
+        if command in {"s","send"} and "--yes" not in command_args and "--confirm" not in command_args and "--preview" not in command_args and "--dry-run" not in command_args:
+            command_args.append("--confirm")
+        if command=="raw": run_raw(config,command_args)
+        else: dispatch_command(command,command_args,config,from_batch=True)
+def run_audit_mode(config):
+    print("\n=== LOWKEYCAST AUDIT MODE ===")
+    while True:
+        print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
+        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   0) exit")
+        try: choice=input("lk> ").strip()
+        except EOFError: return
+        if choice=="1": run_recon(config)
+        elif choice=="2": run_functions(config)
+        elif choice=="3": run_risk(config)
+        elif choice=="4": run_checklist(config)
+        elif choice=="5": run_targets(config)
+        elif choice=="6": run_deployments(config)
+        elif choice=="0": return
+        else: print("Unknown option.")
 
+def actor_display(config):
+    actor=config.get("actor")
+    if not actor: return "none"
+    if actor in config.get("wallets",{}): return str(actor)
+    if is_probable_private_key(actor): return "<raw private key configured>"
+    return str(actor)
+
+def run_status(config):
+    print(f"Target : {config.get('target') or 'none'}")
+    print(f"RPC    : {rpc_display(config.get('rpc')) or 'none'}")
+    print(f"Actor  : {actor_display(config)}")
+    print(f"ABI    : {config.get('abi_paths',{}).get(config.get('target')) or 'not loaded'}")
+    print(f"LastTX : {config.get('last_tx') or 'none'}")
+
+def run_wizard(config,args):
+    if not args:
+        print("Usage: lk wizard <function> [call|send|encode]")
+        return
+    mode=args[1].lower() if len(args)>1 else "call"
+    if mode not in {"call","send","encode"}:
+        print("Mode must be call, send, or encode."); return
+    target=config.get("target")
+    if not target:
+        print("Error: Set target first."); return
+    funcs=abi_functions(load_abi(target,config))
+    matches=matching_functions(funcs,args[0])
+    if len(matches)!=1:
+        print("Function must resolve to exactly one ABI entry.")
+        for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]:
+            print(" ",format_signature(item))
+        return
+    item=matches[0]; signature=format_signature(item); values=[]
+    print(f"Function: {signature}")
+    for index,param in enumerate(item.get("inputs",[]),1):
+        label=param.get("name") or f"arg{index}"
+        try: value=input(f"{label} ({canonical_type(param)}): ").strip()
+        except EOFError: print("Wizard cancelled."); return
+        if not value:
+            print("Argument values are required."); return
+        values.append(value)
+    if mode=="encode": run_cast(["calldata",signature,*values],config)
+    elif mode=="send": run_cast(["send",signature,*values,"--confirm"],config)
+    else: run_cast(["call",signature,*values],config)
+
+def run_replay(config,args):
+    if not args:
+        print("Usage: lk replay <transaction-hash> [trace flags...]"); return
+    run_trace(config,args)
+
+def run_fork(args):
+    if not args:
+        print("Usage: lk fork <rpc-url> [block-number]"); return
+    rpc=args[0]
+    command=["anvil","--fork-url",rpc]
+    if len(args)>1: command.extend(["--fork-block-number",args[1]])
+    print("Start a local fork with:")
+    print("  "+redact_secrets(shlex.join(command)))
+    print("Then point LowkeyCast at it:")
+    print("  lk rpc http://127.0.0.1:8545")
 def print_help():
-    help_text = """
-LowkeyCast (lk) - The Lazy Auditor's Interface for Foundry
+    print("""
+LowkeyCast - Foundry auditor interface
 
-PLACEHOLDERS
-    <addr>     A contract or wallet address, e.g. 0x1234...abcd
-    <alias>    A short name you choose for an address, e.g. escrow
-    <url>      An RPC endpoint, e.g. http://127.0.0.1:8545
-    <name>     A profile name you choose, e.g. anvil or attacker
-    <pk>       A private key; use a local test key, never a real wallet key
-    <path>     A JSON ABI file path, e.g. ./out/EthEscrow.sol/Escrow.json
-    <func>     A function name or signature, e.g. escrow or escrow(uint256)
-    <args>     Values passed to the function, e.g. 1 or 0xabc...
-    <slot>     A storage slot number or 32-byte slot hash, e.g. 0 or 0x...
-    <key>      A mapping key, usually an address or uint256 value
+CORE
+  lk target <addr>                    Set target
+  lk target <name> <addr>             Save + select target
+  lk target list                      List saved targets
+  lk target auto [name]               Use latest broadcast deployment
+  lk use <name|number>                Switch target
+  lk deployments                      List deployments
+  lk status                           Show target/RPC/actor/ABI/last tx
+  lk rpc <url>                        Set RPC
+  lk rpc set <name> <url>             Save RPC profile
+  lk rpc use <name>                   Select RPC profile
+  lk wallet list                      List signer profiles
+  lk wallet set <name> <private-key>  Save local test key (plaintext on disk)
+  lk wallet set-env <name> <ENV_VAR>  Use environment-backed signer
+  lk wallet use <name>                Select signer
+  lk wallet remove <name>             Remove signer
+  lk actor reset                      Clear signer
 
---- STATE MANAGEMENT (Tier 1) ---
-    lk target <addr>                 Set the current contract
-        Example: lk target 0x5FbDB2315678afecb367f032d93F642f64180aa3
-    lk target <alias> <addr>         Save an address with a friendly name
-        Example: lk target escrow 0x5FbDB2315678afecb367f032d93F642f64180aa3
-    lk use <alias>                   Switch to a saved address
-        Example: lk use escrow
-    lk target reset                  Clear the current contract
-    lk rpc <url>                     Use an RPC endpoint for this session
-        Example: lk rpc http://127.0.0.1:8545
-    lk rpc set <name> <url>          Save and select an RPC profile
-        Example: lk rpc set anvil http://127.0.0.1:8545
-    lk rpc use <name>                Switch to a saved RPC profile
-        Example: lk rpc use anvil
-    lk rpc reset                     Clear the current RPC
-    lk wallet set <name> <pk>        Save a signing key as a wallet profile
-        Example: lk wallet set attacker 0xabc123...
-    lk wallet use <name>             Select a saved wallet for sends
-        Example: lk wallet use attacker
-    lk actor <name>                  Use a saved wallet for sends
-        Example: lk actor attacker
-    lk actor reset                   Clear the active wallet
+ABI / INTERACTION
+  lk abi <path>                       Load ABI
+  lk abi auto                         Auto-load ABI
+  lk functions [query]                List/fuzzy-find functions
+  lk fn <query>                       Fuzzy-find functions
+  lk ask <function>                   Show argument names/types
+  lk wizard <function> [mode]         Prompt for call/send/encode arguments
+  lk c <func> [args]                  Read
+  lk s <func> [args]                  Send
+  lk s ... --preview                  Preview without sending
+  lk s ... --confirm                  Preview + confirmation prompt
+  lk encode <func> [args]             Build calldata
+  lk decode <function> <return-data>  Decode return values
+  lk decode-error <revert-data>       Decode custom error
+  lk event <sig> <data> [topics...]   Decode event data
+  lk tx [hash]                        Inspect/decode transaction
+  lk raw <cast-command> ...           Raw Cast bypass
 
---- COGNITIVE LOAD REDUCTION (Tier 2) ---
-    lk abi <path>                    Load an ABI so function names can be shortened
-        Example: lk abi ./out/EthEscrow.sol/Escrow.json
-    lk label <addr> <name>           Show a friendly label in command output
-        Example: lk label 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 Deployer
-    lk c <func> <args>               Read contract state with cast call
-        Example: lk c balances(address) 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-    lk s <func> <args>               Send a transaction with cast send
-        Example: lk s createescrow(uint256,address) 0 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether
-    lk abi                           Show the loaded ABI as a readable interface
-        Example: lk abi
-    lk functions                     List functions grouped by mutability
-        Example: lk functions
-    lk encode <func> <args>          Build calldata without sending a transaction
-        Example: lk encode createescrow(uint256,address) 0 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-    lk sig <signature>               Show a function selector
-        Example: lk sig balances(address)
-    lk decode-error <data>           Decode a custom error using the loaded ABI
-        Example: lk decode-error 0x...
+INSPECTION
+  lk info                             Target/chain/code/ABI/proxy
+  lk recon                            Balance/codehash/codesize/nonce
+  lk proxy                            Proxy + implementation/admin
+  lk implementation                   Resolve implementation
+  lk admin                            Resolve proxy admin
+  lk selectors                        Extract runtime selectors
+  lk mapping <slot> <key>             Compute/read mapping slot
+  lk mapping <type> <slot> <key>      Explicit key type
+  lk namespace <id>                   ERC-7201 namespace slot
+  lk proof <slot> [block]             Storage proof
+  lk snapshot [slot ...]              Save target/chain-scoped storage
+  lk diff                             Compare snapshot
+  lk ens <name|address>               ENS lookup
+  lk token <token>                    ERC20 metadata
+  lk token balance <token> <holder>   ERC20 balance
 
---- AUDITOR INSPECTION (Tier 3) ---
-    lk info                          Show target, chain, code, ABI, and proxy status
-        Example: lk info
-    lk chain                         Show chain ID, block, and RPC
-        Example: lk chain
-    lk recon                         Show balance, bytecode, and proxy status
-        Example: lk recon
-    lk proxy                         Check standard EIP-1967 proxy slots
-        Example: lk proxy
-    lk mapping <slot> <key>          Read a mapping value from its hashed slot
-        Example: lk mapping 0 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-    lk snapshot [slot ...]           Save default slots, or only listed slots
-        Example: lk snapshot 0 1 0x7230...da722
-    lk diff                          Compare storage with the last snapshot
-        Example: lk diff
+SOURCE TRIAGE
+  lk scan [src]                       High-signal Solidity review markers
+  lk deps [src]                       Import/inheritance map
+  lk layout <ContractName>            Forge storage layout
+  lk risk                             ABI-level function risk heuristic
+  lk gas <func> [args]                Estimate gas
+  lk trace [tx] [flags]               Replay/trace transaction
+  lk replay <tx> [flags...]            Explicit replay alias
+  lk fork <rpc-url> [block]           Print Anvil fork command
+  lk logs [args...]                   Query logs
+  lk logs --decode [args...]          Query + decode ABI events
 
---- AUDIT OS (Tier 4) ---
-    lk finding "<note>"             Record an observation in findings.md
-        Example: lk finding "release does not update escrow status"
-    lk test-gen                      Generate a Forge test from the last send
-        Example: lk test-gen
-    lk checklist                     View the audit checklist
-        Example: lk checklist
-    lk checklist done "<item>"       Mark a checklist item as complete
-        Example: lk checklist done "Authorization"
-    lk session                       Show the LowkeyCast command history
-        Example: lk session
-    lk session start                 Start a project audit session
-        Example: lk session start
-    lk session resume                Resume a project audit session
-        Example: lk session resume
-    lk workspace init                Create a local .audit workspace
-        Example: lk workspace init
-    lk note "<text>"                Save a note in the audit workspace
-        Example: lk note "release does not update status"
-    lk todo "<text>"                Add an audit TODO
-        Example: lk todo "check recipient authorization"
-    lk export                        Export the audit workspace as audit-report
-        Example: lk export
-    lk matrix init                   Create the attacker-state matrix
-        Example: lk matrix init
-    lk matrix actor <name> <addr>    Save a public actor for scenarios
-        Example: lk matrix actor attacker 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-    lk matrix add <name> <func> <actor> <expected>
-                                    Record a scenario and its evidence context
-        Example: lk matrix add unauthorized-release release attacker "revert"
-    lk matrix list                   List recorded scenarios
-        Example: lk matrix list
-    lk matrix test <name>            Generate a Forge test skeleton
-        Example: lk matrix test unauthorized-release
-    lk self-test                     Run local LowkeyCast regression checks
-        Example: lk self-test
-    lk receipt [tx]                  Show a transaction receipt
-        Example: lk receipt
-    lk trace [tx]                    Trace a transaction with Cast
-        Example: lk trace
-    lk logs [topic]                  Query logs for the current RPC
-        Example: lk logs
-    lk last [receipt|trace|logs]     Inspect the most recent send
-        Example: lk last trace
-    lk tx [hash]                     Inspect a transaction and decode its calldata
-        Example: lk tx
+AUDIT OS
+  lk audit                            Interactive dashboard
+  lk finding <note>                   Record observation
+  lk finding add <severity> <title> <text>
+  lk checklist                       View/mark/reset checklist
+  lk matrix init                      Initialize attacker-state matrix
+  lk matrix actor <name> <addr>       Add actor
+  lk matrix state <name> <desc>       Add state definition
+  lk matrix add <name> <func> <actor> <expected>
+  lk matrix list                      List scenarios
+  lk matrix test <name>               Generate Forge test skeleton
+  lk test-gen                         Reproduce latest send as Forge test
+  lk note <text>                      Save audit note
+  lk todo <text>                      Add audit TODO
+  lk session [start|resume|end]       Audit session lifecycle
+  lk export                           Build audit-report/
+  lk batch <file>                     Run one lk command per line
+  lk self-test                        Run regression checks
 
---- SHORTCUTS ---
-    lk st <slot>                     Read raw storage from the current target
-        Example: lk st 0
-
-QUICK START
-    lk rpc set anvil http://127.0.0.1:8545
-    lk rpc use anvil
-    lk target escrow 0x5FbDB2315678afecb367f032d93F642f64180aa3
-    lk use escrow
-    lk abi ./out/EthEscrow.sol/Escrow.json
-    lk c escrow 1
-    """
-    print(help_text)
+FORENSICS
+  lk receipt [tx]                     Transaction receipt
+  lk last [tx|trace|logs]             Reuse latest transaction
+  lk c ...                            Cast call shortcut
+  lk s ...                            Cast send shortcut
+  lk st ...                           Cast storage shortcut
+""")
+def dispatch_command(cmd,args,config,from_batch=False):
+    if cmd in {"--help","-h","help"}: print_help()
+    elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.0")
+    elif cmd=="target":
+        if not args: print(f"Current target: {config.get('target') or 'none'}"); return
+        if args[0]=="reset": config["target"]=None
+        elif args[0]=="list": run_targets(config); return
+        elif args[0]=="auto": run_auto_target(config,args[1] if len(args)>1 else None); return
+        elif len(args)==1: config["target"]=resolve_target_ref(config,args[0]) or args[0]
+        elif len(args)==2 and is_address(args[1]): config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]
+        else: print("Usage: lk target <address> | lk target <name> <address> | lk target auto"); return
+        save_config(config)
+    elif cmd in {"targets","target-list"}: run_targets(config)
+    elif cmd=="use":
+        if not args: run_targets(config); return
+        resolved=resolve_target_ref(config,args[0])
+        if not resolved: print(f"Unknown target: {args[0]}"); return
+        config["target"]=resolved; save_config(config)
+    elif cmd=="deployments": run_deployments(config)
+    elif cmd=="rpc":
+        if not args: print(f"RPC: {rpc_display(config.get('rpc')) or 'none'}"); return
+        sub=args[0]
+        if sub=="reset": config["rpc"]=None
+        elif sub=="set" and len(args)==3: config["rpc_profiles"][args[1]]=args[2]; config["rpc"]=args[2]
+        elif sub=="use" and len(args)==2 and args[1] in config["rpc_profiles"]: config["rpc"]=config["rpc_profiles"][args[1]]
+        elif len(args)==1: config["rpc"]=args[0]
+        else: print("Usage: lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset"); return
+        save_config(config)
+    elif cmd=="wallet":
+        if args and args[0]=="list":
+            for name,entry in config.get("wallets",{}).items(): print(f"{name}: {'env' if isinstance(entry,dict) and entry.get('env') else 'key'}")
+        elif len(args)==3 and args[0]=="set":
+            key=normalize_private_key(args[2])
+            if not key: print("Invalid private key format."); return
+            config["wallets"][args[1]]={"private_key":key}; config["actor"]=args[1]; save_config(config)
+            print("Wallet saved. This stores the key locally; use wallet set-env for secret-free storage.")
+        elif len(args)==3 and args[0]=="set-env":
+            config["wallets"][args[1]]={"env":args[2]}; config["actor"]=args[1]; save_config(config)
+            print(f"Wallet profile '{args[1]}' now reads from environment variable {args[2]}.")
+        elif len(args)==2 and args[0]=="use" and args[1] in config.get("wallets",{}): config["actor"]=args[1]; save_config(config)
+        elif len(args)==2 and args[0]=="remove":
+            config["wallets"].pop(args[1],None)
+            if config.get("actor")==args[1]: config["actor"]=None
+            save_config(config)
+        else: print("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
+    elif cmd=="actor":
+        if args and args[0]=="reset": config["actor"]=None; save_config(config)
+        elif args: config["actor"]=args[0]; save_config(config)
+        else: print(f"Actor: {actor_display(config)}")
+    elif cmd=="abi":
+        target=config.get("target")
+        if not target: print("Error: Set target first."); return
+        if args:
+            if args[0]=="auto":
+                records=discover_deployments("."); match=next((x for x in records if x["address"]==target),None)
+                if match:
+                    for path in artifact_json_files("."):
+                        if os.path.join(".","out") in path and os.path.basename(path)==f"{match['contract']}.json":
+                            config["abi_paths"][target]=path; break
+            else: config["abi_paths"][target]=args[0]
+            save_config(config)
+        else: run_abi(config)
+    elif cmd=="functions": run_functions(config,args[0] if args else None)
+    elif cmd=="fn": run_functions(config," ".join(args) if args else None)
+    elif cmd=="wizard": run_wizard(config,args)
+    elif cmd=="replay": run_replay(config,args)
+    elif cmd=="fork": run_fork(args)
+    elif cmd=="ask":
+        if not args: print("Usage: lk ask <function>"); return
+        funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
+        if len(matches)!=1:
+            for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]: print(" ",format_signature(item))
+        else:
+            item=matches[0]; print(f"Function: {format_signature(item)}")
+            for index,param in enumerate(item.get("inputs",[]),1): print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
+    elif cmd=="info": run_info(config)
+    elif cmd=="status": run_status(config)
+    elif cmd=="chain": run_chain(config)
+    elif cmd=="encode": run_encode(config,args)
+    elif cmd=="sig": run_signature(args)
+    elif cmd in {"decode-error","error"}: run_decode_error(config,args)
+    elif cmd in {"decode","returns"}: run_decode(config,args)
+    elif cmd in {"event","decode-event"}: run_event(config,args)
+    elif cmd=="tx": run_tx(config,args)
+    elif cmd=="label":
+        if len(args)==2: config["labels"][args[0]]=args[1]; save_config(config)
+        else: print("Usage: lk label <address> <name>")
+    elif cmd=="recon": run_recon(config)
+    elif cmd=="proxy": run_proxy(config)
+    elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
+    elif cmd=="admin": run_cast(["admin",config.get("target")],config)
+    elif cmd in {"mapping","map"}: run_mapping(config,*args)
+    elif cmd=="namespace": run_namespace(config,args)
+    elif cmd=="proof": run_proof(config,args)
+    elif cmd=="selectors": run_selectors(config,args)
+    elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
+    elif cmd in {"token","erc20"}: run_token(config,args)
+    elif cmd=="snapshot": run_snapshot(config,args)
+    elif cmd=="diff": run_diff(config)
+    elif cmd=="finding":
+        if args and args[0]=="add" and len(args)>=4: run_finding(config,f"[{args[1].upper()}] {args[2]}: {' '.join(args[3:])}")
+        elif args: run_finding(config," ".join(args))
+        else: print("Usage: lk finding <note>")
+    elif cmd=="checklist":
+        if args and args[0]=="done": run_checklist(config,"done"," ".join(args[1:]))
+        elif args and args[0]=="reset": run_checklist(config,"reset")
+        else: run_checklist(config)
+    elif cmd=="session":
+        if args and args[0] in {"start","resume"}: run_session_lifecycle(config,args[0])
+        elif args and args[0]=="end":
+            config["session_active"]=False; config["session_ended"]=datetime.now().isoformat(timespec="seconds"); save_config(config); print("Audit session ended.")
+        elif os.path.exists(SESSION_FILE): print(Path(SESSION_FILE).read_text(encoding="utf-8"))
+        else: print("No session history yet.")
+    elif cmd=="workspace": run_workspace(config,args)
+    elif cmd=="note": run_note(" ".join(args))
+    elif cmd=="todo": run_todo(" ".join(args))
+    elif cmd=="export": run_export(config)
+    elif cmd=="matrix":
+        if args and args[0]=="state" and len(args)>=3:
+            paths=workspace_paths(); os.makedirs(paths["matrix"],exist_ok=True)
+            states=read_json_file(paths["matrix_states"],{}); states[args[1]]={"description":" ".join(args[2:])}; write_json_file(paths["matrix_states"],states); print(f"Matrix state saved: {args[1]}")
+        else: run_matrix(config,args)
+    elif cmd=="risk": run_risk(config)
+    elif cmd=="scan": run_scan(args)
+    elif cmd=="deps": run_deps(args)
+    elif cmd=="layout": run_layout(args)
+    elif cmd=="gas": run_gas(config,args)
+    elif cmd=="raw": run_raw(config,args)
+    elif cmd=="batch": run_batch(config,args)
+    elif cmd=="audit": run_audit_mode(config)
+    elif cmd=="self-test": raise SystemExit(run_self_test())
+    elif cmd=="receipt": run_receipt(config,args[0] if args else None)
+    elif cmd=="trace": run_trace(config,args)
+    elif cmd=="logs": run_logs(config,args)
+    elif cmd=="last":
+        action=args[0] if args else "receipt"
+        if action=="tx": run_tx(config,[])
+        elif action=="trace": run_trace(config,[])
+        elif action=="logs": run_logs(config,[])
+        else: run_receipt(config)
+    elif cmd=="test-gen": run_test_gen(config)
+    elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
+    else: run_cast([cmd]+args,config)
 
 def main():
-    config = load_config()
-    if len(sys.argv) < 2:
-        print_help()
-        return
-    cmd = sys.argv[1]
-    args = sys.argv[2:]
-    if cmd in ["--help", "-h"]:
-        print_help()
-        return
-    if cmd == "target":
-        if not args: return
-        if args[0] == "reset": config["target"] = None
-        elif len(args) == 1: config["target"] = args[0]
-        elif len(args) == 2: config["aliases"][args[0]] = args[1]; config["target"] = args[1]
-        save_config(config)
-    elif cmd == "use":
-        if args and args[0] in config["aliases"]:
-            config["target"] = config["aliases"][args[0]]; save_config(config)
-    elif cmd == "rpc":
-        if not args: return
-        sub = args[0]
-        if sub == "reset": config["rpc"] = None
-        elif sub == "set" and len(args) == 3:
-            config["rpc_profiles"][args[1]] = args[2]; config["rpc"] = args[2]
-        elif sub == "use" and len(args) == 2:
-            config["rpc"] = config["rpc_profiles"].get(args[1])
-        elif len(args) == 1: config["rpc"] = args[0]
-        save_config(config)
-    elif cmd == "wallet":
-        if len(args) == 3 and args[0] == "set":
-            config["wallets"][args[1]] = args[2]; save_config(config)
-        elif len(args) == 2 and args[0] == "use" and args[1] in config["wallets"]:
-            config["actor"] = config["wallets"][args[1]]; save_config(config)
-    elif cmd == "actor":
-        if args and args[0] in config["wallets"]:
-            config["actor"] = config["wallets"][args[0]]; save_config(config)
-        elif args and args[0] == "reset":
-            config["actor"] = None; save_config(config)
-    elif cmd == "abi":
-        if args:
-            if not config.get("target"): return
-            config["abi_paths"][config["target"]] = args[0]; save_config(config)
-        else:
-            run_abi(config)
-    elif cmd == "functions": run_functions(config)
-    elif cmd == "info": run_info(config)
-    elif cmd == "chain": run_chain(config)
-    elif cmd == "encode": run_encode(config, args)
-    elif cmd == "sig": run_signature(args)
-    elif cmd == "decode-error": run_decode_error(config, args)
-    elif cmd == "tx": run_tx(config, args)
-    elif cmd == "label":
-        if len(args) == 2: config["labels"][args[0]] = args[1]; save_config(config)
-    elif cmd == "recon": run_recon(config)
-    elif cmd == "proxy": run_proxy(config)
-    elif cmd == "mapping":
-        if len(args) >= 2: run_mapping(config, args[0], args[1])
-    elif cmd == "snapshot": run_snapshot(config, args)
-    elif cmd == "diff": run_diff(config)
-    elif cmd == "finding":
-        if args: run_finding(config, " ".join(args))
-    elif cmd == "test-gen":
-        run_test_gen(config)
-    elif cmd == "checklist":
-        if len(args) >= 2 and args[0] == "done":
-            run_checklist(config, "done", " ".join(args[1:]))
-        else:
-            run_checklist(config)
-    elif cmd == "session":
-        if args and args[0] in ["start", "resume"]:
-            run_session_lifecycle(config, args[0])
-        elif os.path.exists(SESSION_FILE):
-            with open(SESSION_FILE, "r") as f: print(f.read())
-        else:
-            print("No session history yet.")
-    elif cmd == "workspace": run_workspace(config, args)
-    elif cmd == "note": run_note(" ".join(args))
-    elif cmd == "todo": run_todo(" ".join(args))
-    elif cmd == "export": run_export(config)
-    elif cmd == "matrix": run_matrix(config, args)
-    elif cmd == "self-test": raise SystemExit(run_self_test())
-    elif cmd == "receipt": run_receipt(config, args[0] if args else None)
-    elif cmd == "trace": run_trace(config, args)
-    elif cmd == "logs": run_logs(config, args)
-    elif cmd == "last": run_last(config, args)
-    elif cmd in ["c", "s", "st"]:
-        run_cast([cmd] + args, config)
-    else:
-        run_cast([cmd] + args, config)
-
-if __name__ == "__main__":
-    main()
+    config=load_config()
+    if len(sys.argv)<2: print_help(); return
+    dispatch_command(sys.argv[1],sys.argv[2:],config)

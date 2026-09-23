@@ -1,0 +1,24 @@
+name: Validate LowkeyCast
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Compile
+        run: python -m py_compile lowkey/lk.py
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: bash -n bin/lk install.sh
