@@ -448,6 +448,7 @@ def _template_test(contract: str, target: str, function: str, value: str, callda
 pragma solidity ^0.8.20;
 
 import {{Test, console2}} from "forge-std/Test.sol";
+import {{Vm}} from "forge-std/Vm.sol";
 
 /// @title Lowkey-generated reproduction test for {contract}
 /// @notice Deterministic setup + concrete call + obvious places for security assertions.
