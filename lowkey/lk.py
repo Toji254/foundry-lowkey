@@ -111,11 +111,78 @@ def normalize_private_key(value):
         return value if value.startswith("0x") else "0x"+value
     return None
 
+DEFAULT_ANVIL_MNEMONIC = "test test test test test test test test test test test junk"
+
+def rpc_json(url, method, params=None):
+    if not url: return None
+    try:
+        payload=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params or []}).encode()
+        req=urllib_request.Request(url, data=payload, headers={"Content-Type":"application/json"})
+        with urllib_request.urlopen(req, timeout=0.8) as response:
+            body=json.loads(response.read().decode("utf-8"))
+        if isinstance(body,dict) and body.get("error"): return None
+        return body.get("result") if isinstance(body,dict) else None
+    except Exception:
+        return None
+
+def local_port_open(host,port):
+    try:
+        with socket.create_connection((host,port),timeout=0.05): return True
+    except OSError:
+        return False
+
+def detect_anvil_rpc(preferred=None):
+    candidates=[]
+    if preferred:
+        candidates.append(preferred)
+    else:
+        env_rpc=os.environ.get("ETH_RPC_URL")
+        if env_rpc: candidates.append(env_rpc)
+        for host,port in (("127.0.0.1",8545),("127.0.0.1",8546)):
+            if local_port_open(host,port): candidates.append(f"http://{host}:{port}")
+    for url in candidates:
+        client=rpc_json(url,"web3_clientVersion",[])
+        if not client or "anvil" not in str(client).lower(): continue
+        accounts=rpc_json(url,"eth_accounts",[])
+        if not isinstance(accounts,list): accounts=[]
+        return {"url":url,"client":str(client),"accounts":[x for x in accounts if is_address(x)]}
+    return None
+
+def derive_default_anvil_key(index):
+    try:
+        code,out,err=cast_output(["cast","wallet","private-key",DEFAULT_ANVIL_MNEMONIC,str(index)])
+    except Exception:
+        return None
+    if code != 0: return None
+    match=re.search(r"0x[0-9a-fA-F]{64}",out or "")
+    return normalize_private_key(match.group(0)) if match else None
+
+def wallet_entry_kind(entry):
+    if isinstance(entry,dict):
+        if entry.get("source") == "anvil-default": return f"anvil #{entry.get('anvil_index','?')}"
+        if entry.get("env"): return "env"
+        if entry.get("private_key"): return "key"
+    return "key"
+
+def assigned_anvil_index(config,index):
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and entry.get("source")=="anvil-default" and str(entry.get("anvil_index"))==str(index):
+            return name
+    return None
+
+def assigned_anvil_address(config,address):
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and str(entry.get("address","")).lower()==str(address).lower():
+            return name
+    return None
+
 def resolve_wallet_key(config,wallet_name=None):
     name=wallet_name or config.get("actor")
     if not name: return None
     entry=config.get("wallets",{}).get(name)
     if isinstance(entry,dict):
+        if entry.get("source") == "anvil-default" and entry.get("anvil_index") is not None:
+            return derive_default_anvil_key(int(entry["anvil_index"]))
         if entry.get("env"): return normalize_private_key(os.environ.get(entry["env"]))
         return normalize_private_key(entry.get("private_key"))
     if isinstance(entry,str): return normalize_private_key(entry)
