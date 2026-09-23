@@ -37,8 +37,10 @@ def run_git(
     binary = git_path()
     if not binary:
         raise RuntimeError("git was not found on PATH.")
+    # Preserve the HTTP/1.1 transport workaround used by the feature-complete
+    # clone path; it applies harmlessly to local Git commands too.
     return subprocess.run(
-        [binary, *args],
+        [binary, "-c", "http.version=HTTP/1.1", *args],
         cwd=str(cwd) if cwd else None,
         text=True,
         capture_output=capture,
