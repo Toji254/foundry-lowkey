@@ -55,6 +55,12 @@ jobs:
           pragma solidity ^0.8.20;
           contract FixtureTest {
               function testSmoke() public {}
+              function testFuzz_roundTrip(uint256 value) public pure {
+                  assert(value == value);
+              }
+              function invariant_fixture_code() public view {
+                  assert(address(0x0000000000000000000000000000000000000001).code.length > 0);
+              }
           }
           EOF
       - name: Start Anvil
@@ -92,10 +98,26 @@ jobs:
           lk status
           lk functions
           lk c ping 7
-          lk s ping 7
+          lk encode ping 7
+          lk calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk disasm
+          lk selectors --compare
+          lk cheatcodes store
+          lk impersonate 0x1000000000000000000000000000000000000001 whale
+          cast rpc anvil_setBalance 0x1000000000000000000000000000000000000001 0x56bc75e2d63100000
+          lk as whale s ping 8
+          lk txpool
+          lk probe ping 7
+          lk state-diff ping 7
           lk logs --decode
           lk deps
           lk forge test
+          lk fuzz --match-test testFuzz_roundTrip
+          lk fuzz replay
+          lk invariant
+          lk mutate --match-path test/Fixture.t.sol
+          lk symbolic --match-test testSmoke
+          lk brutalize --match-test testSmoke
           lk forge inspect-audit Fixture
           lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
           set +e
