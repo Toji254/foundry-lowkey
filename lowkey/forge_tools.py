@@ -143,6 +143,43 @@ def run_forge_diagnostics(args: Sequence[str], label: str, quiet: bool = False) 
     audit_context.emit("forge-command", root, tool="forge", status=status, summary=f"forge {label}", data={"command":label,"exit_code":result.returncode,"filtered":filtered})
     audit_context.record_tool(f"forge-{label}", root, status=status, summary=f"forge {label}", data={"exit_code":result.returncode,"filtered":filtered})
     return result.returncode
+def run_slither_preflight(root: Path, quiet: bool = False) -> int:
+    helper = Path(__file__).with_name("slither_tools.py")
+    binary = shutil.which("slither")
+
+    if not binary:
+        if not quiet:
+            print("LowkeyForge: skipping Slither (not found on PATH).")
+        audit_context.record_tool(
+            "slither", root, status="skipped",
+            summary="Slither is not installed", data={"available": False},
+        )
+        return 0
+
+    if helper.is_file():
+        try:
+            command = [sys.executable, str(helper)]
+            if quiet:
+                command.append("--quiet")
+            return subprocess.run(command, cwd=root).returncode
+        except OSError as exc:
+            print(f"LowkeyForge: could not execute Lowkey Slither reporter: {exc}", file=sys.stderr)
+            return 1
+
+    # Fallback for unusual installations where the companion reporter is absent.
+    command = [binary, str(root), "--exclude-dependencies", "--disable-color", "--fail-none"]
+    try:
+        if quiet:
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            if result.returncode != 0 and result.stderr:
+                print(result.stderr.rstrip(), file=sys.stderr)
+            return result.returncode
+        print("\n=== LOWKEY STATIC: SLITHER ===")
+        return subprocess.run(command, cwd=root).returncode
+    except OSError as exc:
+        print(f"LowkeyForge: could not execute Slither: {exc}", file=sys.stderr)
+        return 1
+
 def _has_path_filter(args: Sequence[str]) -> bool:
     return any(arg in {"--match-path", "--no-match-path"} for arg in args)
 
