@@ -42,7 +42,7 @@ class LowkeyForgeTests(unittest.TestCase):
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_sequence(self, run, _supports):
+    def test_audit_sequence(self, _supports, run):
         self.assertEqual(forge_tools.run_audit([]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
                          [["build", "--skip", "test", "--skip", "script"],
@@ -53,7 +53,7 @@ class LowkeyForgeTests(unittest.TestCase):
     @patch("forge_tools.run_slither_preflight", return_value=0)
     @patch("forge_tools.command_available", return_value=False)
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_checks_runs_slither_preflight(self, available, slither, run, supports):
+    def test_audit_checks_runs_slither_preflight(self, supports, available, slither, run):
         self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
         slither.assert_called_once()
         self.assertEqual(run.call_args_list[0].args[0], ["build", "--skip", "test", "--skip", "script"])
@@ -77,6 +77,7 @@ note[low-level-calls]: generated helper
         self.assertNotIn("test/Lowkey_probe_release_abcd.t.sol", visible)
         self.assertEqual(filtered, 1)
 
+    @patch("forge_tools.run_forge", return_value=0)
     def test_inspect_audit_sequence(self, run):
         self.assertEqual(forge_tools.run_inspect_audit(["Vault"]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
@@ -93,7 +94,7 @@ note[low-level-calls]: generated helper
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, run, _supports):
+    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, run):
         self.assertEqual(forge_tools.run_audit(["--via-ir"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
@@ -102,7 +103,7 @@ note[low-level-calls]: generated helper
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_respects_explicit_verbosity(self, run, _supports):
+    def test_audit_respects_explicit_verbosity(self, _supports, run):
         self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
