@@ -558,7 +558,7 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     if kind == "deployment":
         # Deployment generation only needs source artifacts; don't let an old/broken audit test
         # block artifact discovery. Foundry supports --skip test for this workflow.
-        code, _, error = _run(root, "forge", ["build", "--skip", "test"])
+        code, _, error = _run(root, "forge", ["build", "--skip", "test", "--skip", "script"])
         if code:
             print(error or "forge build failed")
             return code or 2
