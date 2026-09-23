@@ -2061,6 +2061,43 @@ def artifact_is_deployable(artifact):
         obj = str(bytecode or "")
     return bool(obj and obj not in {"0x", "0X"})
 
+def artifact_is_project_application(root, path, artifact):
+    """Return True only for first-party deployable application contracts."""
+    if not artifact_is_deployable(artifact):
+        return False
+
+    root_path = Path(root).expanduser().resolve()
+    source = artifact_source_name(artifact, path)
+    if not source:
+        return False
+
+    normalized = str(source).replace("\\", "/").lstrip("./")
+    src_prefix = "src"
+    try:
+        foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', foundry)
+        if match:
+            src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
+    except OSError:
+        pass
+
+    if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
+        return False
+
+    source_path = root_path / normalized
+    if source_path.is_file():
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source_text = ""
+        contract_name = artifact_contract_name(path, artifact)
+        if re.search(r"\blibrary\s+" + re.escape(contract_name) + r"\b", source_text):
+            return False
+        if re.search(r"\binterface\s+" + re.escape(contract_name) + r"\b", source_text):
+            return False
+    return True
+
+
 def discover_audit_target_contract(root):
     """Choose a likely application contract from existing audit signals."""
     scores = {}
@@ -2085,7 +2122,7 @@ def discover_audit_target_contract(root):
     artifacts = {}
     for path in local_artifact_paths(root):
         artifact = read_artifact(path)
-        if artifact_is_deployable(artifact):
+        if artifact_is_project_application(root, path, artifact):
             name = artifact_contract_name(path, artifact)
             artifacts[str(name).lower()] = str(name)
     for contract, _score in ranked:
@@ -2103,7 +2140,7 @@ def discover_generic_lab_contract(root, query=None):
     candidates = []
     for path in local_artifact_paths(root):
         artifact = read_artifact(path)
-        if not artifact_is_deployable(artifact):
+        if not artifact_is_project_application(root, path, artifact):
             continue
         contract = artifact_contract_name(path, artifact)
         lowered_path = str(path).lower()
@@ -4476,7 +4513,7 @@ def _focused_audit_target_contract(root):
 
     for path in local_artifact_paths(root):
         artifact = read_artifact(path)
-        if not artifact_is_deployable(artifact):
+        if not artifact_is_project_application(root, path, artifact):
             continue
         contract = artifact_contract_name(path, artifact)
         if str(contract).lower() == source_name.lower():
