@@ -156,6 +156,25 @@ def _source_location(finding: dict, project_root: Path) -> tuple[str, str] | Non
 
 
 
+def _element_context(finding: dict) -> str | None:
+    elements = finding.get("elements")
+    if not isinstance(elements, list):
+        return None
+
+    labels = []
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        kind = str(element.get("type") or "").strip().lower()
+        name = str(element.get("name") or "").strip()
+        if not name or kind == "node":
+            continue
+        labels.append(f"{kind} {name}" if kind else name)
+        if len(labels) == 2:
+            break
+    return ", ".join(labels) if labels else None
+
+
 def _signal_function(finding: dict) -> str | None:
     elements = finding.get("elements")
     if not isinstance(elements, list):
