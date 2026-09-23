@@ -224,7 +224,13 @@ lk diff
 
 ### Evidence-backed PoC scaffolding
 
-After the audit pass:
+`lk audit` is now the audit-session entrypoint. On the first run in a project it automatically initializes the project-local workspace, attacker matrix, checklist, session log, evidence store, then runs the baseline evidence pass and creates the initial PoC scaffold.
+
+```bash
+lk audit
+```
+
+After that, evidence-producing commands feed the same project session and Lowkey refreshes the PoC scaffold automatically. You can still regenerate it explicitly:
 
 ```bash
 lk poc
