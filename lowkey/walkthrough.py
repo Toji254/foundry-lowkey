@@ -85,17 +85,6 @@ class Actor:
 
 
 @dataclass
-class RuntimeContract:
-    address: str
-    model: str
-    label: str
-    relation: str = "target"
-    parent: str | None = None
-    discovered_at_step: int = 0
-    implementation: str | None = None
-
-
-@dataclass
 class Step:
     index: int
     actor: str
@@ -117,9 +106,6 @@ class Step:
     storage_changes: list[dict[str, Any]] = field(default_factory=list)
     balance_before: dict[str, str] = field(default_factory=dict)
     balance_after: dict[str, str] = field(default_factory=dict)
-    discovered_contracts: list[dict[str, Any]] = field(default_factory=list)
-    preflight: str | None = None
-    runtime_contracts: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _box(title: str, lines: Iterable[str], width: int = 72, left: str = "╭", right: str = "╮") -> str:
@@ -182,122 +168,146 @@ def _json_file(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _foundry_src_dir(root: Path) -> str:
-    try:
-        text = (root / "foundry.toml").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return "src"
-    match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', text)
-    return match.group(1).strip().rstrip("/") if match else "src"
-
-
-def _source_kind(source_text: str, name: str) -> str:
-    if re.search(r"\binterface\s+" + re.escape(name) + r"\b", source_text):
-        return "interface"
-    if re.search(r"\blibrary\s+" + re.escape(name) + r"\b", source_text):
-        return "library"
-    if re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source_text):
-        return "abstract"
-    if re.search(r"\bcontract\s+" + re.escape(name) + r"\b", source_text):
-        return "contract"
-    return "unknown"
-
-
 def _artifact_models(root: Path) -> list[ContractModel]:
     models: list[ContractModel] = []
     out = root / "out"
     if not out.is_dir():
         return models
 
-    source_prefix = _foundry_src_dir(root).replace("\\", "/").strip("/") or "src"
     for path in out.rglob("*.json"):
         if "build-info" in path.parts:
             continue
         data = _json_file(path)
         if not data or not isinstance(data.get("abi"), list):
             continue
-        name = str(data.get("contractName") or path.stem)
-        source = str(data.get("sourceName") or "")
-        normalized_source = source.replace("\\", "/").lstrip("./")
-        if not (normalized_source == source_prefix or normalized_source.startswith(source_prefix + "/")):
+        name = data.get("contractName")
+        if not name:
+            name = path.stem
+        abi = data["abi"]
+        if not abi:
+            # Empty ABI artifacts can still be interfaces, but are not useful
+            # as execution targets.
+            continue
+        source = str(data.get("sourceName") or path)
+        if (
+            "/test/" in "/" + source + "/"
+            or source.startswith("test/")
+            or source.startswith("lib/")
+            or "/lib/" in "/" + source
+            or source.startswith("script/")
+        ):
             continue
 
+        functions = [
+            _signature(item)
+            for item in abi
+            if item.get("type") == "function" and item.get("name")
+        ]
+        events = [
+            _signature(item)
+            for item in abi
+            if item.get("type") == "event" and item.get("name")
+        ]
+        storage = data.get("storageLayout") or {}
         source_text = ""
-        source_path = root / normalized_source
+        source_path = root / source
         if source_path.is_file():
             try:
                 source_text = source_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 pass
 
-        kind = _source_kind(source_text, name)
-        if kind in {"interface", "library"}:
-            continue
-
-        abi = data["abi"]
-        functions = [_signature(x) for x in abi if x.get("type") == "function" and x.get("name")]
-        events = [_signature(x) for x in abi if x.get("type") == "event" and x.get("name")]
         bases: list[str] = []
-        for match in re.finditer(r"\b(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\{", source_text):
+        for match in re.finditer(
+            r"\b(?:contract|abstract\s+contract)\s+(\w+)\s+is\s+([^\{]+)\{",
+            source_text,
+        ):
+            clause = match.group(2)
             if match.group(1) == name:
-                bases = [re.sub(r"\s+", "", x).split("(")[0] for x in match.group(2).split(",") if x.strip()]
+                bases = [x.strip().split("(")[0].split()[-1] for x in clause.split(",") if x.strip()]
 
-        if any(m.name == name and m.source == normalized_source for m in models):
+        structs = _parse_structs(source_text)
+        mappings = _parse_mappings(source_text)
+        arrays = _parse_arrays(source_text)
+        modifiers = re.findall(r"\bmodifier\s+(\w+)", source_text)
+
+        # Avoid duplicate artifacts for the same contract name/source.
+        if any(m.name == name and m.source == source for m in models):
             continue
         models.append(
             ContractModel(
                 name=name,
-                source=normalized_source,
+                source=source,
                 artifact=str(path.relative_to(root)),
                 abi=abi,
-                storage=data.get("storageLayout") or {},
+                storage=storage,
                 bases=bases,
                 functions=functions,
-                modifiers=re.findall(r"\bmodifier\s+(\w+)", source_text),
-                structs=_parse_structs(source_text),
-                mappings=_parse_mappings(source_text),
-                arrays=_parse_arrays(source_text),
+                modifiers=modifiers,
+                structs=structs,
+                mappings=mappings,
+                arrays=arrays,
                 events=events,
             )
         )
-
+    # Resolve source-level function connections after all application models
+    # are known. These edges are explicitly INFERRED; runtime traces remain the
+    # authority for what actually executed.
     known = {m.name: m for m in models}
     for model in models:
-        try:
-            source_text = (root / model.source).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            source_text = ""
+        source_text = ""
+        source_path = root / model.source
+        if source_path.is_file():
+            try:
+                source_text = source_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
         edges: list[dict[str, Any]] = []
         for fn in model.functions:
             name = fn.split("(", 1)[0]
             pos = source_text.find("function " + name)
             if pos < 0:
                 continue
-            segment = source_text[pos : pos + 16000]
+            segment = source_text[pos : pos + 12000]
             for target_fn in model.functions:
                 target_name = target_fn.split("(", 1)[0]
-                if target_name != name and re.search(r"\b" + re.escape(target_name) + r"\s*\(", segment):
-                    edges.append({"kind": "internal", "from": name, "to_contract": model.name, "to_function": target_fn})
-            for other_name, other in known.items():
-                if other_name == model.name or not re.search(r"\b" + re.escape(other_name) + r"\b", segment):
+                if target_name == name:
                     continue
-                for target_fn in other.functions:
-                    target_name = target_fn.split("(", 1)[0]
-                    if re.search(r"\.\s*" + re.escape(target_name) + r"\s*\(", segment):
-                        edges.append({"kind": "cross-contract", "from": name, "to_contract": other_name, "to_function": target_fn})
-
+                if re.search(r"\b" + re.escape(target_name) + r"\s*\(", segment):
+                    edges.append({
+                        "kind": "internal",
+                        "from": name,
+                        "to_contract": model.name,
+                        "to_function": target_fn,
+                    })
+            for other_name in sorted(known):
+                if other_name == model.name or other_name not in segment:
+                    continue
+                for target in known[other_name].functions:
+                    target_name = target.split("(", 1)[0]
+                    if re.search(r"\b" + re.escape(other_name) + r"\s*\([^;{}]{0,120}\)\s*\.?\s*" + re.escape(target_name) + r"\s*\(", segment):
+                        edges.append({
+                            "kind": "cross-contract",
+                            "from": name,
+                            "to_contract": other_name,
+                            "to_function": target,
+                        })
+        # De-duplicate while preserving discovery order.
         seen: set[tuple[str, str, str, str]] = set()
         model.calls = []
         for edge in edges:
-            key = (str(edge.get("kind")), str(edge.get("from")), str(edge.get("to_contract")), str(edge.get("to_function")))
+            key = (
+                str(edge.get("kind")),
+                str(edge.get("from")),
+                str(edge.get("to_contract")),
+                str(edge.get("to_function")),
+            )
             if key not in seen:
                 seen.add(key)
                 model.calls.append(edge)
 
-    return sorted(models, key=lambda m: (m.name.lower(), m.source))
+    return sorted(models, key=lambda m: (0 if str(m.source).startswith("src/") else 1, m.name.lower(), m.source))
 
-
-def _parse_structs
 
 def _parse_structs(source: str) -> dict[str, list[Field]]:
     result: dict[str, list[Field]] = {}
@@ -351,34 +361,34 @@ def _signature(item: dict[str, Any]) -> str:
 def _find_model(models: list[ContractModel], name: str | None, target_contract: str | None) -> ContractModel | None:
     query = (name or target_contract or "").lower().strip()
     if query:
-        exact = [m for m in models if m.name.lower() == query]
-        if exact:
-            return exact[0]
-        partial = [m for m in models if query in m.name.lower()]
-        if partial:
-            return partial[0]
-    executable = [m for m in models if any(x.get("type") == "function" for x in m.abi)]
-    for token in ("factory", "manager", "router", "controller"):
-        for model in executable:
-            if token in model.name.lower():
-                return model
-    return executable[0] if executable else (models[0] if models else None)
+        matches = [m for m in models if m.name.lower() == query]
+        if matches:
+            return matches[0]
+        matches = [m for m in models if query in m.name.lower()]
+        if matches:
+            return matches[0]
+    deployable = [m for m in models if any(
+        x.get("type") == "constructor" for x in m.abi
+    ) or any(x.get("type") == "function" for x in m.abi)]
+    return deployable[0] if deployable else (models[0] if models else None)
 
 
 def _mutators(model: ContractModel) -> list[dict[str, Any]]:
     return [
         x for x in model.abi
-        if x.get("type") == "function" and x.get("name")
-        and x.get("stateMutability") not in {"view", "pure"}
+        if x.get("type") == "function"
+        and x.get("name")
+        and x.get("stateMutability") != "view"
+        and x.get("stateMutability") != "pure"
     ]
 
 
 _PHASES = [
-    ("bootstrap", ("create", "open", "start")),
-    ("fund", ("deposit", "fund", "contribute", "join", "stake")),
-    ("action", ("buy", "swap", "place", "commit", "submit", "add", "borrow", "lend")),
-    ("settle", ("close", "finalize", "settle", "resolve", "flag")),
-    ("exit", ("withdraw", "redeem", "refund", "cancel", "unstake", "collect", "claim", "release")),
+    ("bootstrap", ("initialize", "init", "setup", "configure", "register", "create")),
+    ("fund", ("deposit", "fund", "contribute", "join", "stake", "approve", "mint")),
+    ("action", ("buy", "swap", "place", "commit", "submit", "add", "remove", "borrow", "lend", "claim")),
+    ("settle", ("close", "finalize", "settle", "release", "execute", "resolve")),
+    ("exit", ("withdraw", "redeem", "refund", "cancel", "unstake", "collect")),
 ]
 
 
@@ -386,78 +396,47 @@ def _phase_score(name: str) -> tuple[int, int]:
     lower = name.lower()
     for index, (_, names) in enumerate(_PHASES):
         for token in names:
-            if lower == token or lower.startswith(token):
+            if lower.startswith(token) or token in lower:
                 return index, -len(token)
-    return 4, -999
+    return 3, -999
 
 
-_ADMIN_TOKENS = (
-    "upgrade", "setadmin", "transferownership", "renounceownership",
-    "selfdestruct", "pause", "unpause", "acceptownership",
-)
-
-
-def _is_admin_control(name: str) -> bool:
-    return any(token in name.lower() for token in _ADMIN_TOKENS)
-
-
-def _is_setup_only(name: str) -> bool:
-    return name.lower() == "initialize" or name.lower().startswith("initialize")
-
-
-def _is_lifecycle_candidate(item: dict[str, Any]) -> bool:
-    name = str(item.get("name") or "")
-    return bool(name and not _is_admin_control(name) and not _is_setup_only(name))
-
-
-def _actor_for_step(name: str, actors: list[Actor]) -> Actor:
-    if not actors:
-        return Actor("Alice", "0x" + "00" * 20, 0)
-    lower = name.lower()
-    if any(x in lower for x in ("withdraw", "redeem", "refund", "claim", "release", "finalize", "settle", "resolve")) and len(actors) > 1:
-        return actors[1]
-    return actors[0]
-
-
-def _arg_for(param: dict[str, Any], actors: list[Actor], target: str, now: int, observed: dict[str, Any] | None = None) -> Any:
+def _arg_for(param: dict[str, Any], actors: list[Actor], target: str, now: int) -> Any:
     ptype = _canonical_type(param)
     name = str(param.get("name") or "arg").lower()
-    observed = observed or {}
     alice = actors[0].address if actors else target
     bob = actors[1].address if len(actors) > 1 else alice
     attacker = actors[2].address if len(actors) > 2 else bob
-    compact = re.sub(r"[^a-z0-9]", "", name)
 
-    if compact in {"staketoken", "safeharborregistry", "poolimplementation", "defaultoutcomemoderator", "outcomemoderator"} and observed.get(compact):
-        return observed[compact]
     if ptype.startswith("address[]"):
         return [alice, bob]
     if ptype == "address":
         if any(x in name for x in ("attacker", "malicious", "evil")):
             return attacker
-        if any(x in name for x in ("recipient", "receiver", "beneficiary", "recovery")):
+        if any(x in name for x in ("recipient", "receiver", "to", "user", "beneficiary")):
             return bob
-        return observed.get(compact, alice)
-    if ptype.startswith(("uint", "int")):
+        return alice
+    if ptype.startswith("uint") or ptype.startswith("int"):
         if any(x in name for x in ("deadline", "expiry", "expires")):
-            return now + 31 * 24 * 60 * 60
+            return now + 3600
         if any(x in name for x in ("id", "index", "nonce", "count")):
             return 0
-        if any(x in name for x in ("amount", "stake", "minstake")):
-            return 1
         if any(x in name for x in ("bps", "basis", "fee")):
             return 100
         return 1
     if ptype == "bool":
         return True
     if ptype == "bytes32":
-        return "0x" + "42" * 32
+        return "0x" + ("42" * 32)
     if ptype == "bytes":
         return "0x"
     if ptype == "string":
         return name + "-lowkey"
     if ptype.startswith("tuple"):
-        return [_arg_for(comp, actors, target, now, observed) for comp in param.get("components", [])]
+        return [
+            _arg_for(comp, actors, target, now)
+            for comp in param.get("components", [])
+        ]
     if ptype.endswith("[]"):
         return []
     return 0
@@ -466,85 +445,331 @@ def _arg_for(param: dict[str, Any], actors: list[Actor], target: str, now: int, 
 def _value_for(fn: dict[str, Any]) -> int:
     if fn.get("stateMutability") != "payable":
         return 0
-    return 10**15 if any(x in str(fn.get("name") or "").lower() for x in ("deposit", "fund", "pay", "contribute", "stake")) else 0
+    name = str(fn.get("name") or "").lower()
+    return 10**15 if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")) else 0
 
 
-def plan_workflow(model: ContractModel, actors: list[Actor], target: str, now: int, max_steps: int, observed: dict[str, Any] | None = None) -> list[Step]:
-    candidates = [x for x in _mutators(model) if _is_lifecycle_candidate(x)]
-    candidates.sort(
-        key=lambda item: (
-            0 if any(t in str(item.get("name") or "").lower() for t in ("create", "deposit", "stake", "contribute")) else 1,
-            _phase_score(str(item.get("name") or "")),
-            str(item.get("name") or ""),
-        )
-    )
+def plan_workflow(model: ContractModel, actors: list[Actor], target: str, now: int, max_steps: int) -> list[Step]:
+    candidates = _mutators(model)
+    candidates.sort(key=lambda item: (_phase_score(str(item.get("name") or "")), str(item.get("name") or "")))
+
     steps: list[Step] = []
-    for item in candidates[:max_steps]:
+    used: set[str] = set()
+    for item in candidates:
         name = str(item.get("name") or "")
-        actor = _actor_for_step(name, actors)
-        steps.append(
-            Step(
+        if not name or name in used:
+            continue
+        # Do not auto-trigger clearly administrative or destructive controls.
+        low = name.lower()
+        if any(x in low for x in ("upgrade", "setadmin", "transferownership", "selfdestruct", "pause", "unpause")):
+            continue
+        actor = actors[0] if actors else Actor("Alice", target, 0)
+        if any(x in low for x in ("withdraw", "claim", "redeem", "release", "refund", "settle", "finalize", "cancel")) and len(actors) > 1:
+            actor = actors[1]
+        args = [_arg_for(p, actors, target, now) for p in item.get("inputs", [])]
+        sig = _signature(item)
+        steps.append(Step(
+            index=len(steps) + 1,
+            actor=actor.name,
+            contract=model.name,
+            address=target,
+            function=sig,
+            args=args,
+            value_wei=_value_for(item),
+            reason=f"source-guided { _phase_score(name)[0] and 'workflow' or 'bootstrap'} phase",
+        ))
+        used.add(name)
+        if len(steps) >= max_steps:
+            break
+
+    # The sequence should cover at least two phases when the ABI permits it.
+    phases = {_phase_score(s.function.split("(", 1)[0])[0] for s in steps}
+    if len(phases) == 1 and len(candidates) > len(steps):
+        for item in candidates[len(steps):]:
+            sig = _signature(item)
+            if sig.split("(", 1)[0] in used:
+                continue
+            actor = actors[1] if len(actors) > 1 else actors[0]
+            steps.append(Step(
                 index=len(steps) + 1,
                 actor=actor.name,
                 contract=model.name,
                 address=target,
-                function=_signature(item),
-                args=[_arg_for(p, actors, target, now, observed) for p in item.get("inputs", [])],
+                function=sig,
+                args=[_arg_for(p, actors, target, now) for p in item.get("inputs", [])],
                 value_wei=_value_for(item),
-                reason=f"source-guided {_PHASES[_phase_score(name)[0]][0] if _phase_score(name)[0] < len(_PHASES) else 'lifecycle'} candidate",
-            )
-        )
+                reason="source-guided secondary phase",
+            ))
+            break
     return steps
 
 
-def _encode_cast_arg(value: Any) -> str:
-    if isinstance(value, list):
-        return json.dumps(value, separators=(",", ":"))
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
-
-
-def _call_view(rpc: str, target: str, signature: str, args: list[Any], value: int = 0) -> tuple[int, str, str]:
-    command = ["cast", "call", target, signature, *[_encode_cast_arg(x) for x in args], "--rpc-url", rpc]
-    if value:
-        command += ["--value", str(value)]
-    return _cmd(command, timeout=10)
-
-
-def _preflight(rpc: str, step: Step) -> tuple[bool, str]:
-    code, out, err = _call_view(rpc, step.address, step.function, step.args, step.value_wei)
-    text = (out or err or "").strip()
-    return code == 0, text[-1200:] or ("eth_call succeeded" if code == 0 else "eth_call reverted")
-
-
-def _getter_value(rpc: str, target: str, signature: str) -> str | None:
-    code, out, err = _call_view(rpc, target, signature, [])
+def _cast_json(host: Any, args: list[str], config: dict[str, Any]) -> Any:
+    # Prefer the already-integrated Lowkey cast wrapper; fall back to subprocess.
+    if hasattr(host, "cast_output"):
+        code, out, _err = host.cast_output(args)
+        if code == 0:
+            try:
+                return json.loads(out)
+            except json.JSONDecodeError:
+                return out.strip()
+        return None
+    rpc = config.get("rpc") or ""
+    code, out, _err = _cmd(["cast", *args] + (["--rpc-url", rpc] if rpc else []))
     if code != 0:
         return None
-    lines = (out or "").strip().splitlines()
-    return lines[-1].strip() if lines else None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return out.strip()
 
 
-def _collect_live_inputs(rpc: str, model: ContractModel, target: str, observed: dict[str, Any]) -> None:
-    candidates = {
-        "safeharborregistry": "safeHarborRegistry()",
-        "poolimplementation": "poolImplementation()",
-        "defaultoutcomemoderator": "defaultOutcomeModerator()",
-        "outcomemoderator": "outcomeModerator()",
-        "staketoken": "stakeToken()",
-        "owner": "owner()",
-    }
-    by_name = {re.sub(r"[^a-z0-9]", "", str(x.get("name") or "").lower()): x for x in model.abi if x.get("type") == "function"}
-    for key, signature in candidates.items():
-        item = by_name.get(re.sub(r"[^a-z0-9]", "", signature.split("(",1)[0].lower()))
-        if item and not item.get("inputs"):
-            value = _getter_value(rpc, target, signature)
-            if value:
-                observed[key] = value
+def _actor_rpc_setup(rpc: str, address: str) -> None:
+    _rpc_call(rpc, "anvil_impersonateAccount", [address])
+    _rpc_call(rpc, "anvil_setBalance", [address, hex(10**20)])
 
 
-def _models_payload
+def _send(host: Any, config: dict[str, Any], actor: Actor, target: str, signature: str, args: list[Any], value: int) -> tuple[str | None, str]:
+    rpc = config.get("rpc") or getattr(host, "effective_rpc", lambda c: None)(config)
+    if not rpc:
+        return None, "no RPC"
+    _actor_rpc_setup(rpc, actor.address)
+
+    encoded_args = [json.dumps(x, separators=(",", ":")) if isinstance(x, list) else str(x) for x in args]
+    command = [
+        "send", target, signature, *encoded_args,
+        "--rpc-url", rpc,
+        "--unlocked", "--from", actor.address,
+    ]
+    if value:
+        command += ["--value", str(value)]
+    if hasattr(host, "run_cast"):
+        # run_cast understands configured actors but --from is kept explicit for
+        # impersonated local accounts.
+        code, out, err = _cmd(["cast", *command])
+    else:
+        code, out, err = _cmd(["cast", *command])
+    if code != 0:
+        return None, (err or out).strip()[-1200:]
+    tx = _extract_tx_hash(out)
+    return tx, (out or "").strip()
+
+
+def _extract_tx_hash(text: str) -> str | None:
+    matches = re.findall(r"0x[0-9a-fA-F]{64}", text or "")
+    return matches[-1] if matches else None
+
+
+def _receipt(rpc: str, tx: str) -> dict[str, Any] | None:
+    value = _rpc_call(rpc, "eth_getTransactionReceipt", [tx])
+    return value if isinstance(value, dict) else None
+
+
+def _block_timestamp(rpc: str) -> int:
+    block = _rpc_call(rpc, "eth_getBlockByNumber", ["latest", False])
+    try:
+        return int(block["timestamp"], 16)
+    except Exception:
+        return int(time.time())
+
+
+def _balance(rpc: str, address: str) -> str:
+    value = _rpc_call(rpc, "eth_getBalance", [address, "latest"])
+    try:
+        return str(int(value, 16))
+    except Exception:
+        return "0"
+
+
+def _storage_read(rpc: str, address: str, slot: str) -> str:
+    value = _rpc_call(rpc, "eth_getStorageAt", [address, hex(int(slot, 0) if str(slot).startswith("0x") else int(str(slot))), "latest"])
+    return str(value or "0x" + "00" * 32)
+
+
+def _extract_packed(word: str, offset: int = 0, size: int = 32) -> str:
+    raw = (word or "").lower().removeprefix("0x").rjust(64, "0")
+    start = max(0, 64 - (offset + size) * 2)
+    end = 64 - offset * 2 if offset else 64
+    return "0x" + raw[start:end].rjust(size * 2, "0")
+
+
+def _decode_word(word: str, typ: str, offset: int = 0, size: int = 32) -> Any:
+    raw = _extract_packed(word, offset, size).removeprefix("0x").rjust(size * 2, "0")
+    try:
+        if typ == "address":
+            return "0x" + raw[-40:]
+        if typ == "bool":
+            return int(raw, 16) != 0
+        if typ.startswith(("uint", "int")):
+            value = int(raw, 16)
+            bits = max(8, size * 8)
+            if typ.startswith("int") and value >= 1 << (bits - 1):
+                value -= 1 << bits
+            return value
+        return "0x" + raw
+    except Exception:
+        return "0x" + raw
+
+
+def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addresses: list[str]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    entries = model.storage.get("storage") or []
+    types = model.storage.get("types") or {}
+
+    def type_info(type_id: str) -> dict[str, Any]:
+        return types.get(type_id, {}) if type_id else {}
+
+    def type_label(type_id: str) -> str:
+        info = type_info(type_id)
+        return str(info.get("label") or type_id or "bytes32")
+
+    for entry in entries[:64]:
+        slot = str(entry.get("slot", "0"))
+        typ = str(entry.get("type") or "")
+        info = type_info(typ)
+        label = str(entry.get("label") or "slot")
+        encoding = info.get("encoding")
+        item = {
+            "label": label,
+            "slot": slot,
+            "type": type_label(typ),
+            "encoding": encoding,
+        }
+
+        if encoding == "mapping":
+            key_type = str(info.get("key") or "")
+            value_type = str(info.get("value") or "")
+            value_info = type_info(value_type)
+            mapping = {
+                "key_type": type_label(key_type),
+                "value_type": type_label(value_type),
+                "rows": [],
+            }
+            keys: list[str] = []
+            key_label = type_label(key_type)
+            if key_label == "address":
+                keys = actor_addresses[:4]
+            elif key_label.startswith("uint") or key_label.startswith("int"):
+                keys = ["0", "1"]
+            elif key_label == "bytes32":
+                keys = ["0x" + "00" * 32]
+            for key in keys:
+                code, out, _err = _cmd(["cast", "index", key_label, key, slot], timeout=5)
+                if code != 0:
+                    continue
+                mapped_slot = out.strip().splitlines()[-1].strip()
+                row = {"key": key, "slot": mapped_slot}
+                if value_info.get("members"):
+                    fields = []
+                    for member in value_info.get("members", [])[:24]:
+                        member_slot = int(mapped_slot, 0) + int(member.get("slot", 0))
+                        member_info = type_info(str(member.get("type") or ""))
+                        member_word = _storage_read(rpc, address, str(member_slot))
+                        fields.append({
+                            "name": member.get("label") or member.get("name") or "field",
+                            "type": type_label(str(member.get("type") or "")),
+                            "slot": str(member_slot),
+                            "value": _decode_word(
+                                member_word,
+                                type_label(str(member.get("type") or "")),
+                                int(member.get("offset", 0)),
+                                int(member_info.get("numberOfBytes", 32) or 32),
+                            ),
+                        })
+                    row["struct"] = {"type": type_label(value_type), "fields": fields}
+                else:
+                    word = _storage_read(rpc, address, mapped_slot)
+                    row["value"] = _decode_word(
+                        word,
+                        type_label(value_type),
+                        0,
+                        int(value_info.get("numberOfBytes", 32) or 32),
+                    )
+                mapping["rows"].append(row)
+            item["mapping"] = mapping
+
+        elif encoding == "inplace":
+            word = _storage_read(rpc, address, slot)
+            item["value"] = _decode_word(
+                word,
+                type_label(typ),
+                int(entry.get("offset", 0) or 0),
+                int(info.get("numberOfBytes", 32) or 32),
+            )
+            members = info.get("members") or []
+            if members:
+                fields = []
+                for member in members[:24]:
+                    member_slot = int(slot) + int(member.get("slot", 0))
+                    member_type = str(member.get("type") or "")
+                    member_info = type_info(member_type)
+                    member_word = _storage_read(rpc, address, str(member_slot))
+                    fields.append({
+                        "name": member.get("label") or member.get("name") or "field",
+                        "type": type_label(member_type),
+                        "slot": str(member_slot),
+                        "offset": int(member.get("offset", 0) or 0),
+                        "value": _decode_word(
+                            member_word,
+                            type_label(member_type),
+                            int(member.get("offset", 0) or 0),
+                            int(member_info.get("numberOfBytes", 32) or 32),
+                        ),
+                    })
+                item["struct"] = {"type": type_label(typ), "fields": fields}
+
+        else:
+            # Dynamic bytes/string/array values still expose their anchor slot.
+            word = _storage_read(rpc, address, slot)
+            item["value"] = word
+
+        result.append(item)
+    return result
+
+
+def _storage_changed(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_key = {(str(x.get("slot")), str(x.get("label"))): x for x in before}
+    changes = []
+    for item in after:
+        key = (str(item.get("slot")), str(item.get("label")))
+        old = by_key.get(key)
+        if old and old != item:
+            changes.append({"label": item.get("label"), "slot": item.get("slot"), "before": old, "after": item})
+    return changes
+
+
+def _trace_edges(rpc: str, tx: str) -> list[str]:
+    code, out, _err = _cmd(["cast", "run", tx, "--rpc-url", rpc], timeout=20)
+    if code != 0:
+        return []
+    edges = []
+    for line in out.splitlines():
+        s = line.strip()
+        if any(kind in s for kind in ("CALL", "STATICCALL", "DELEGATECALL", "CREATE", "CREATE2")):
+            if len(s) > 180:
+                s = s[-180:]
+            edges.append(s)
+    return edges[-24:]
+
+
+def _event_rows(host: Any, config: dict[str, Any], receipt: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not receipt:
+        return []
+    result = []
+    for log in receipt.get("logs", []):
+        decoded = None
+        try:
+            if hasattr(host, "decode_event_log"):
+                decoded = host.decode_event_log(config, log)
+        except Exception:
+            decoded = None
+        result.append(decoded or {
+            "address": log.get("address"),
+            "topics": log.get("topics", []),
+            "data": log.get("data", "0x"),
+        })
+    return result
+
 
 def _models_payload(models: list[ContractModel]) -> list[dict[str, Any]]:
     return [asdict(m) for m in models]
