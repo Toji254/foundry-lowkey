@@ -21,6 +21,7 @@ Files copied:
   - $TARGET_BIN_DIR/lk
 
 Run:
-  lk --help
+  lk -h
+  lk doctor
   lk forge --help
 EOF
