@@ -42,6 +42,38 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertIn("Medium", rendered)
         self.assertIn("Informational", rendered)
 
+    def test_human_report_explains_finding(self):
+        payload = {
+            "results": {
+                "detectors": [{
+                    "check": "low-level-calls",
+                    "impact": "Informational",
+                    "confidence": "High",
+                    "description": "Low level call in Escrow.release()",
+                    "elements": [{
+                        "type": "function",
+                        "name": "release",
+                        "source_mapping": {
+                            "filename_short": "src/EthEscrow.sol",
+                            "lines": [61, 69],
+                        },
+                    }],
+                }]
+            }
+        }
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            slither_tools._summary(payload)
+        rendered = output.getvalue()
+        self.assertIn("Issue       : Low-level external call", rendered)
+        self.assertIn("Impact      : Informational", rendered)
+        self.assertIn("Confidence  : High", rendered)
+        self.assertIn("Where       : src/EthEscrow.sol:61-69", rendered)
+        self.assertIn("Why it matters:", rendered)
+        self.assertIn("Next audit move:", rendered)
+        self.assertNotIn("[Informational/High]", rendered)
+
+
     @patch("slither_tools.slither_path", return_value="/usr/bin/slither")
     @patch("slither_tools.subprocess.run")
     def test_default_scan_writes_and_summarizes_evidence(self, run, _path):
