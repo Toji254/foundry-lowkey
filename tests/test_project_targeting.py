@@ -145,6 +145,31 @@ class ProjectTargetingTests(unittest.TestCase):
             ],
         )
 
+    def test_run_foundry_capture_combines_stdout_and_stderr(self):
+        class Completed:
+            returncode = 0
+            stdout = "compile warning"
+            stderr = "Deployed to: 0x" + "e" * 40
+
+        class FakeSubprocess:
+            @staticmethod
+            def run(*args, **kwargs):
+                return Completed()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            original = lk.subprocess
+            lk.subprocess = FakeSubprocess
+            try:
+                with patch_cwd(root):
+                    result = lk.run_foundry(["create", "src/Test.sol:Test"], capture=True)
+            finally:
+                lk.subprocess = original
+
+        self.assertEqual(result.code, 0)
+        self.assertIn("compile warning", result.text)
+        self.assertIn("Deployed to: 0x" + "e" * 40, result.text)
+
     def test_parse_lab_marker(self):
         self.assertEqual(
             lk.parse_lab_marker("LOWKEY_TARGET 0x" + "a" * 40),
