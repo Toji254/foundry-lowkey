@@ -536,11 +536,22 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         ("forge-coverage", "Coverage"),
         ("generator", "PoC scaffold"),
     ):
-        status, detail = _dashboard_status(tools.get(key))
-        if key == "slither" and isinstance(tools.get(key), dict):
-            count = tools[key].get("finding_count")
+        state = tools.get(key)
+        status, detail = _dashboard_status(state)
+        if key == "slither" and isinstance(state, dict):
+            count = state.get("finding_count")
             if count is not None:
                 detail = f"{count} finding(s)"
+        elif key == "generator" and isinstance(state, dict):
+            output = state.get("output")
+            candidate = state.get("candidate_signal")
+            placeholder = state.get("placeholder")
+            if status == "PASS":
+                detail = "scaffold generated"
+                if placeholder:
+                    detail += " (placeholder)"
+                if candidate:
+                    detail += f" | {candidate}"
         rows.append((label, status, detail))
 
     signals = context.get("signals", [])
