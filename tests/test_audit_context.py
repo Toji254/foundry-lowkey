@@ -50,8 +50,9 @@ class AuditContextTests(unittest.TestCase):
             first_id = first["id"]
             self.assertTrue(first_id.startswith("SLITHER-"))
 
-            first["status"] = "investigating"
-            audit_context.save(audit_context.load(root), root)
+            context = audit_context.load(root)
+            context["signals"][0]["status"] = "investigating"
+            audit_context.save(context, root)
 
             second = audit_context.add_signal(signal, root)
             self.assertEqual(second["id"], first_id)
