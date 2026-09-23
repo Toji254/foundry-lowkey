@@ -33,6 +33,7 @@ AUDIT_DIR = os.path.expanduser("~/.lowkey/audit")
 SESSION_FILE = os.path.join(AUDIT_DIR, "session_log.txt")
 FORK_FILE = os.path.join(CONFIG_DIR, "fork.json")
 WORKSPACE_DIR = os.path.join(os.getcwd(), ".audit")
+INSTALL_MANIFEST = os.path.join(CONFIG_DIR, "install-manifest.json")
 
 AUDIT_CHECKLIST = [
     "Understand protocol purpose and trust assumptions",
@@ -118,6 +119,80 @@ def save_config(config):
         if os.path.exists(tmp):
             try: os.remove(tmp)
             except OSError: pass
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def load_install_manifest():
+    try:
+        with open(INSTALL_MANIFEST, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def runtime_sync_status():
+    """Detect stale/corrupted installed Lowkey files without mutating them."""
+    manifest = load_install_manifest()
+    if not manifest:
+        return {"status": "unknown", "detail": "no install manifest; run install.sh"}
+
+    mismatches = []
+    for path, expected in (manifest.get("files") or {}).items():
+        actual = _sha256_file(path)
+        if actual is None:
+            mismatches.append(f"missing: {path}")
+        elif actual != expected:
+            mismatches.append(f"modified: {path}")
+
+    source_repo = manifest.get("source_repo")
+    installed_sha = manifest.get("git_sha")
+    source_sha = None
+    if source_repo and os.path.isdir(os.path.join(source_repo, ".git")):
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source_repo,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                source_sha = result.stdout.strip()
+        except OSError:
+            pass
+
+    if mismatches:
+        return {
+            "status": "corrupt",
+            "detail": "; ".join(mismatches[:4]),
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    if source_sha and installed_sha and source_sha != installed_sha:
+        return {
+            "status": "stale",
+            "detail": f"source checkout is {source_sha[:12]}, installed runtime is {installed_sha[:12]}",
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    return {
+        "status": "ok",
+        "detail": f"installed runtime {installed_sha[:12]}" if installed_sha else "installed runtime verified",
+        "installed_sha": installed_sha,
+        "source_sha": source_sha,
+        "source_repo": source_repo,
+    }
 
 def normalize_private_key(value):
     if not value: return None
@@ -812,6 +887,11 @@ def run_abi(config):
 def run_functions(config,query=None):
     root=audit_context.foundry_project_root()
     target=active_project_target(config,root)
+    if not target:
+        explicit_target=config.get("target")
+        explicit_abi=config.get("abi_paths",{}).get(explicit_target) if isinstance(config.get("abi_paths"),dict) else None
+        if is_address(explicit_target) and explicit_abi and os.path.exists(os.path.expanduser(str(explicit_abi))):
+            target=explicit_target
     if not target:
         if not query:
             return fail("Error: no project target selected. Use 'lk fn <function>' to search build artifacts, or deploy and run 'lk target auto'.")
@@ -2178,97 +2258,77 @@ def ensure_project_anvil(config, root):
     return None
 
 def run_clone(config, args):
-    if not args or args[0].lower() in {"help", "-h", "--help"}:
-        print("Usage: lk clone <repo>")
-        print("Clone a Foundry project and prepare it for auditing.")
-        print("Lowkey will clone submodules, build, run the connected audit pipeline,")
-        print("start a disposable local Anvil when needed, and prepare the audit lab.")
-        return 0
-
-    repo = args[0]
-    if len(args) > 1:
-        return fail("Usage: lk clone <repo>")
-
-    destination_name = repo_clone_name(repo)
-    if not destination_name:
-        return fail("Error: could not determine the clone directory.")
-    destination = Path(destination_name).expanduser()
-    if not destination.is_absolute():
-        destination = Path.cwd() / destination
-    destination = destination.resolve()
-    if destination.exists():
-        return fail(f"Error: clone destination already exists: {destination}")
-
-    clone_url = repo_clone_url(repo)
-    git = tool_path("git")
-    if not git:
-        return fail("Error: git was not found on PATH.")
-
-    print("LOWKEY PROJECT ONBOARDING")
-    print("=========================")
-    print(f"Repository : {clone_url}")
-    print(f"Directory  : {destination}")
+    """Clone with the cache-aware engine, then perform full Lowkey onboarding."""
+    try:
+        from clone_tools import (
+            parse_clone_args,
+            resolve_destination,
+            run_clone as clone_project,
+        )
+    except ImportError as exc:
+        return fail(f"Error: Lowkey clone engine unavailable: {exc}")
 
     try:
-        # Stream Git's progress directly so a slow submodule clone does not
-        # look frozen to the user.
-        completed = subprocess.run(
-            [git, "-c", "http.version=HTTP/1.1", "clone", "--recurse-submodules", clone_url, str(destination)],
-            text=True,
-        )
-    except KeyboardInterrupt:
-        shutil.rmtree(destination, ignore_errors=True)
-        return fail("Error: clone cancelled; partial directory removed.", 130)
-    except OSError as error:
-        shutil.rmtree(destination, ignore_errors=True)
-        return fail(f"Error cloning repository: {error}")
+        repo_url, destination_arg, depth, jobs, use_cache = parse_clone_args(args)
+        destination = resolve_destination(repo_url, destination_arg)
+    except SystemExit:
+        return 0
+    except (ValueError, TypeError) as exc:
+        return fail(str(exc))
 
-    if completed.returncode != 0:
-        shutil.rmtree(destination, ignore_errors=True)
-        return fail("Error: git clone failed.", completed.returncode)
+    if destination.exists():
+        # clone_tools safely resumes an existing matching repository; let it own
+        # the clone semantics rather than rejecting a recoverable partial checkout.
+        pass
 
+    code = clone_project(args)
+    if code != 0:
+        return code
     if not (destination / "foundry.toml").is_file():
         return fail(f"Error: {destination} is not a Foundry project (foundry.toml missing).")
 
-    root = str(destination)
     previous_cwd = Path.cwd()
     try:
         os.chdir(destination)
-        print("\n[1/4] Building project...")
+        root = str(destination)
+
+        print("\n[1/3] Building project...")
         build = run_foundry(["build"], capture=True)
         if build.code != 0:
             tail = "\n".join(build.text.splitlines()[-20:]) if build.text else "forge build failed"
             return fail(f"Error: build failed.\n{tail}", build.code)
-        print("PASS build")
+        print("PASS  build")
 
-        print("\n[2/4] Running Lowkey audit pipeline...")
+        print("\n[2/3] Running connected audit...")
         audit_code = run_audit(config, [])
         if audit_code != 0:
-            print("Warning: static audit pipeline did not finish cleanly.", file=sys.stderr)
+            print("Warning: connected audit did not finish cleanly.", file=sys.stderr)
 
-        print("\n[3/4] Preparing local audit environment...")
+        print("\n[3/3] Preparing local audit lab...")
         info = ensure_project_anvil(config, root)
         if not info:
-            print("LAB : deferred (no local Anvil could be started).", file=sys.stderr)
+            print("LAB   : deferred (no local Anvil could be started).", file=sys.stderr)
             lab_code = 1
         else:
             lab_code = run_lab(config, [])
 
-        print("\n[4/4] Onboarding result")
-        print("======================")
+        print("\nLOWKEY CLONE ONBOARDING")
+        print("=======================")
         print(f"Project : {root}")
-        print(f"Target  : {config.get('target_contract') or 'auto-detected'}")
-        if lab_code == 0:
+        print(f"Mode    : {'shallow' if depth else 'full'} / {jobs} jobs / cache={'on' if use_cache else 'off'}")
+        if lab_code == 0 and audit_code == 0:
             print("Status  : READY FOR AUDIT")
-            print(f"Next    : cd {shlex.quote(root)}")
-            print("         lk findings")
-        else:
+            print("Next    : lk findings")
+        elif audit_code == 0:
             print("Status  : STATIC AUDIT READY; LIVE LAB NEEDS ATTENTION")
-            print(f"Next    : cd {shlex.quote(root)}")
-            print("         lk lab")
+            print("Next    : lk lab")
+        else:
+            print("Status  : ONBOARDING NEEDS ATTENTION")
+            print("Next    : lk audit")
         return 0 if audit_code == 0 and lab_code == 0 else 1
     finally:
         os.chdir(previous_cwd)
+
 
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
@@ -4386,6 +4446,19 @@ def run_audit(config, args):
     )
     return return_code
 
+def refresh_generated_poc(config):
+    """Refresh the connected PoC scaffold when a concrete send exists."""
+    root = audit_context.foundry_project_root()
+    latest = audit_context.load(root).get("latest", {})
+    if not isinstance(latest, dict) or not latest.get("tx_hash"):
+        return 0
+    try:
+        from generator import run_generate
+        return run_generate(config, ["poc"])
+    except Exception as exc:
+        print(f"Warning: PoC scaffold refresh skipped: {exc}", file=sys.stderr)
+        return 0
+
 def run_context(config):
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
@@ -4692,6 +4765,13 @@ def run_fork(args, config=None):
     print(f"PID: {process.pid}")
     print("Lowkey RPC switched to the local fork.")
     return 0
+def run_version():
+    runtime = runtime_sync_status()
+    print("LowkeyCast 2.1 — Foundry Attack Lab")
+    print(f"Runtime: {runtime['status'].upper()} - {runtime['detail']}")
+    if runtime.get("source_repo"):
+        print(f"Source : {runtime['source_repo']}")
+
 def print_help():
     print("""
 LOWKEY — SMART CONTRACT AUDITOR CONSOLE
@@ -4699,6 +4779,8 @@ LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 
 START
   lk audit                         Run the connected audit pipeline
+  lk audit --checks                Run audit with Slither + optional lint/geiger checks
+  lk audit--checks                Legacy compact alias for audit --checks
   lk findings                      Show audit findings
   lk focus <ID>                    Focus one finding and mark it investigating
   lk status                        Show target and audit state
@@ -4766,7 +4848,7 @@ NOTES
 def dispatch_command(cmd,args,config,from_batch=False):
     activate_project_target(config)
     if cmd in {"--h","--help","-h","help"}: print_help()
-    elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.1 — Foundry Attack Lab")
+    elif cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
         root=audit_context.foundry_project_root()
         current=active_project_target(config,root)
@@ -4926,6 +5008,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
+    elif cmd in {"audit--checks","audit-checks"}: return run_audit(config, ["--checks", *args])
     elif cmd=="audit": return run_audit(config,args)
     elif cmd=="context": return run_context(config)
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
@@ -4998,7 +5081,6 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": run_raw(config,args)
     elif cmd=="batch": run_batch(config,args)
-    elif cmd=="audit": run_audit_mode(config)
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": run_receipt(config,args[0] if args else None)
@@ -5023,6 +5105,17 @@ def main():
     _sync_audit_context(config, root)
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+    evidence_commands={
+        "scan","slither","changes","state-diff","trace","logs","tx","receipt",
+        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
+        "audit","audit--checks","audit-checks"
+    }
+    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings"}:
+        try:
+            refresh_generated_poc(config)
+        except Exception as error:
+            print(f"Warning: automatic PoC refresh failed: {error}", file=sys.stderr)
     if config.pop("_config_dirty",False):
         save_config(config)
     final_root = audit_context.foundry_project_root()
