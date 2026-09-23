@@ -1902,41 +1902,119 @@ def parse_lab_marker(output, marker="LOWKEY_TARGET"):
     match = re.search(rf"(?m)^\s*{re.escape(marker)}\s+(0x[0-9a-fA-F]{{40}})\s*$", str(output or ""))
     return match.group(1) if match else None
 
-def run_lab(config,args):
-    if args and args[0].lower() in {"help","-h","--help"}:
-        print("Usage: lk lab")
-        print("Start the project's disposable local audit lab on Anvil and connect its target automatically.")
-        return 0
+def parse_deployed_address(output):
+    text = str(output or "")
+    patterns = [
+        r"(?im)^\s*Deployed to:\s*(0x[0-9a-fA-F]{40})\s*$",
+        r'(?i)"deployedTo"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+        r'(?i)"deployed_to"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    return None
 
-    root = audit_context.foundry_project_root()
-    if not root:
-        return fail("Error: this command must be run inside a Foundry project.")
+def artifact_source_name(artifact, path):
+    metadata = artifact.get("metadata") if isinstance(artifact, dict) else None
+    if isinstance(metadata, str):
+        try:
+            payload = json.loads(metadata)
+            sources = payload.get("sources", {})
+            if isinstance(sources, dict):
+                contract_dir = Path(path).parent.name
+                contract_name = artifact_contract_name(path, artifact)
+                preferred = [
+                    name for name in sources
+                    if Path(name).name == f"{contract_dir}"
+                    or Path(name).stem == contract_dir
+                    or Path(name).stem == contract_name
+                ]
+                if preferred:
+                    return preferred[0]
+                if sources:
+                    return next(iter(sources))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    relative = Path(path).as_posix()
+    parts = Path(path).parts
+    if "out" in parts:
+        out_index = parts.index("out")
+        tail = Path(*parts[out_index + 1:])
+        if len(tail.parts) >= 2:
+            return str(Path("src") / tail.parent.name)
+    return None
 
-    script = discover_local_lab_script(root)
-    if not script:
-        deploy_script = os.path.join(root, "script", "Deploy.s.sol")
-        if os.path.isfile(deploy_script):
-            return fail(
-                "No Lowkey local lab harness found. The project has script/Deploy.s.sol, "
-                "but it requires project-specific deployment inputs. Add script/LocalAudit.s.sol "
-                "or use the project's documented deployment flow."
-            )
-        return fail("No local audit harness found. Lowkey looked for script/LocalAudit.s.sol, script/LocalDeploy.s.sol, and script/DeployLocal.s.sol.")
+def artifact_constructor_inputs(artifact):
+    abi = artifact.get("abi", []) if isinstance(artifact, dict) else []
+    constructors = [item for item in abi if isinstance(item, dict) and item.get("type") == "constructor"]
+    return constructors[0].get("inputs", []) if constructors else []
 
-    rpc = effective_rpc(config)
-    info = anvil_rpc_info(config)
-    if not rpc or not info:
-        return fail("Error: no local Anvil detected. Start Anvil with: anvil")
+def artifact_is_deployable(artifact):
+    if not isinstance(artifact, dict):
+        return False
+    bytecode = artifact.get("bytecode", {})
+    if isinstance(bytecode, dict):
+        obj = str(bytecode.get("object") or "")
+    else:
+        obj = str(bytecode or "")
+    return bool(obj and obj not in {"0x", "0X"})
 
-    # Local lab deployments are always signed with Anvil account #0. Lowkey derives
-    # the standard Anvil key locally and never stores or prints it.
-    accounts = info.get("accounts", [])
-    if not accounts:
-        return fail("Error: the detected Anvil node reported no accounts.")
-    key = derive_default_anvil_key(0)
-    if not key:
-        return fail("Error: could not derive the default Anvil account #0 key.")
+def discover_generic_lab_contract(root, query=None):
+    matches = project_artifact_function_matches(root, query) if query else []
+    preferred_contracts = []
+    for contract, _signature, path in matches:
+        if contract not in preferred_contracts:
+            preferred_contracts.append(contract)
 
+    candidates = []
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not artifact_is_deployable(artifact):
+            continue
+        contract = artifact_contract_name(path, artifact)
+        lowered_path = str(path).lower()
+        lowered_contract = contract.lower()
+        if "/interfaces/" in lowered_path or lowered_contract.startswith("i"):
+            continue
+        score = 50
+        if contract in preferred_contracts:
+            score = 0 + preferred_contracts.index(contract)
+        elif "/mocks/" in lowered_path or lowered_contract.startswith("mock"):
+            score = 100
+        elif "test" in lowered_path:
+            score = 90
+        constructor_inputs = artifact_constructor_inputs(artifact)
+        source = artifact_source_name(artifact, path)
+        fqn = f"{source}:{contract}" if source else None
+        if not fqn:
+            continue
+        candidates.append((score, contract, path, artifact, constructor_inputs, fqn))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1].lower(), item[2]))
+    return candidates[0]
+
+def set_lab_target(config, root, target, contract, artifact):
+    config["target"] = target
+    config["target_contract"] = contract
+    if artifact:
+        config.setdefault("abi_paths", {})[target] = artifact
+    config.setdefault("aliases", {})[contract] = target
+    config.setdefault("targets", {})[contract] = target
+    save_config(config)
+    audit_context.set_target(
+        root,
+        address=target,
+        contract=contract,
+        artifact=artifact,
+        source="project-lab",
+    )
+    audit_context.update(root, actor=actor_display(config), rpc=effective_rpc(config))
+
+def run_project_lab_script(config, root, script, rpc, accounts, key):
     relative = os.path.relpath(script, root)
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
@@ -1944,6 +2022,7 @@ def run_lab(config,args):
     print(f"Script  : {relative}")
     print(f"RPC     : {rpc_display(rpc)}")
     print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print("Mode    : project lab adapter")
     print("Action  : deploying disposable local test environment...")
 
     result = run_foundry(
@@ -1961,25 +2040,16 @@ def run_lab(config,args):
     output = result.text
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-20:]) if output else "forge script failed"
-        return fail(f"Error: local lab deployment failed.\\n{tail}", result.code)
+        return fail(f"Error: local lab deployment failed.\n{tail}", result.code)
 
     target = parse_lab_marker(output)
     if not target:
-        return fail("Error: local lab deployed, but it did not report LOWKEY_TARGET.")
+        return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
 
-    contract = "ConfidencePoolFactory"
     artifact = os.path.join(root, "out", "ConfidencePoolFactory.sol", "ConfidencePoolFactory.json")
     if not os.path.isfile(artifact):
         artifact = None
 
-    config["target"] = target
-    config["target_contract"] = contract
-    if artifact:
-        config.setdefault("abi_paths", {})[target] = artifact
-    config.setdefault("aliases", {})[contract] = target
-    config.setdefault("targets", {})[contract] = target
-    # A local lab is self-contained: the deployer is the default caller so factory
-    # authorization checks work immediately. The user can switch actors later with lk actor.
     config["actor"] = "lab-deployer"
     config.setdefault("wallets", {})["lab-deployer"] = {
         "source": "anvil-default",
@@ -1987,21 +2057,113 @@ def run_lab(config,args):
         "address": accounts[0],
     }
     config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
-    save_config(config)
+    set_lab_target(config, root, target, "ConfidencePoolFactory", artifact)
 
-    audit_context.set_target(
-        root,
-        address=target,
-        contract=contract,
-        artifact=artifact,
-        source="project-lab",
-    )
-    audit_context.update(root, actor=actor_display(config), rpc=rpc)
-
-    print(f"Target  : {contract} -> {target}")
+    print(f"Target  : ConfidencePoolFactory -> {target}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     print("Ready   : lk changes <function> ... | lk trace")
     return 0
+
+def run_generic_lab(config, root, rpc, accounts, key, requested=None):
+    candidate = discover_generic_lab_contract(root, requested)
+    if not candidate:
+        return fail(
+            "Lowkey could not find a deployable built contract for the local lab. "
+            "Run 'forge build' and optionally specify a contract: lk lab <Contract>."
+        )
+
+    _score, contract, path, artifact, constructor_inputs, fqn = candidate
+
+    print("LOWKEY LOCAL AUDIT LAB")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Target  : {contract}")
+    print(f"RPC     : {rpc_display(rpc)}")
+    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print("Mode    : generic artifact deployment")
+
+    values = []
+    for index, param in enumerate(constructor_inputs, 1):
+        label = param.get("name") or f"arg{index}"
+        ptype = canonical_type(param)
+        try:
+            value = input(f"Constructor {label} ({ptype}): ").strip()
+        except EOFError:
+            return fail("Local lab cancelled.")
+        if not value:
+            return fail(f"Constructor argument '{label}' is required.")
+        values.append(value)
+
+    print(f"Action  : deploying {contract}...")
+    result = run_foundry(
+        ["create", fqn, *values, "--rpc-url", rpc, "--private-key", key],
+        capture=True,
+    )
+    output = result.text
+    if result.code != 0:
+        tail = "\n".join(output.splitlines()[-20:]) if output else "forge create failed"
+        return fail(f"Error: generic lab deployment failed.\n{tail}", result.code)
+
+    target = parse_deployed_address(output)
+    if not target:
+        return fail("Error: deployment succeeded, but Lowkey could not read the deployed address.")
+
+    config["actor"] = "lab-deployer"
+    config.setdefault("wallets", {})["lab-deployer"] = {
+        "source": "anvil-default",
+        "anvil_index": 0,
+        "address": accounts[0],
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    set_lab_target(config, root, target, contract, path)
+
+    print(f"Target  : {contract} -> {target}")
+    print(f"ABI     : {path}")
+    if any(item.get("name") == "initialize" for item in artifact.get("abi", []) if isinstance(item, dict)):
+        print("Note    : this contract exposes initialize(); generic deployment does not initialize it.")
+        print("Next    : use lk wizard initialize to configure it when its inputs are known.")
+    print("Ready   : lk read ... | lk changes ... | lk trace")
+    return 0
+
+def run_lab(config,args):
+    if args and args[0].lower() in {"help","-h","--help"}:
+        print("Usage: lk lab [Contract]")
+        print("Start a disposable local audit lab and auto-connect its target.")
+        print("A project-specific adapter is optional; otherwise Lowkey can deploy a built contract generically.")
+        return 0
+
+    root = audit_context.foundry_project_root()
+    if not root:
+        return fail("Error: this command must be run inside a Foundry project.")
+
+    requested = str(args[0]).strip() if args else None
+    script = discover_local_lab_script(root)
+
+    rpc = effective_rpc(config)
+    info = anvil_rpc_info(config)
+    if not rpc or not info:
+        return fail("Error: no local Anvil detected. Start Anvil with: anvil")
+
+    accounts = info.get("accounts", [])
+    if not accounts:
+        return fail("Error: the detected Anvil node reported no accounts.")
+    key = derive_default_anvil_key(0)
+    if not key:
+        return fail("Error: could not derive the default Anvil account #0 key.")
+
+    if script and (not requested or requested.lower() in {"localaudit", "lab"}):
+        return run_project_lab_script(config, root, script, rpc, accounts, key)
+
+    # No adapter? Use the focused finding/function to pick the most relevant artifact.
+    if not requested:
+        context = audit_context.load(root)
+        focus_id = context.get("focus")
+        if focus_id:
+            signal = audit_context.get_signal(focus_id, root)
+            if isinstance(signal, dict) and signal.get("function"):
+                requested = str(signal.get("function")).split("(", 1)[0]
+
+    return run_generic_lab(config, root, rpc, accounts, key, requested)
 
 def run_ens(config,args):
     if not args: print("Usage: lk ens <name|address>"); return
@@ -4254,7 +4416,7 @@ START
   lk status                        Show target and audit state
   lk doctor                        Check the toolchain
   lk target <address|name>         Select the contract under review
-  lk lab                           Start the project's local audit lab and auto-target it
+  lk lab [Contract]                 Start a local audit lab and auto-target it
   lk actor <index> <name>          Name an Anvil account
   lk actor 0 Alice                  Name Anvil account #0 as Alice
 
