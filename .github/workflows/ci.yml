@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/audit_engine.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -34,6 +34,8 @@ jobs:
           forge --version
           cast --version
           anvil --version
+      - name: Install Slither
+        run: python -m pip install slither-analyzer
       - name: Install Lowkey
         run: ./install.sh
       - name: Build integration fixture
@@ -65,6 +67,9 @@ jobs:
           lk doctor
           lk scan src
           lk scan src/Fixture.sol
+          lk rg 'function|event' src
+          lk slither
+          lk poc
           lk forge build
           lk forge test
           lk forge inspect-audit Fixture
