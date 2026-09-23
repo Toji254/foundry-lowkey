@@ -1009,6 +1009,51 @@ def run_status(config):
     print(f"ABI    : {config.get('abi_paths',{}).get(config.get('target')) or 'not loaded'}")
     print(f"LastTX : {config.get('last_tx') or 'none'}")
 
+def run_wizard(config,args):
+    if not args:
+        print("Usage: lk wizard <function> [call|send|encode]")
+        return
+    mode=args[1].lower() if len(args)>1 else "call"
+    if mode not in {"call","send","encode"}:
+        print("Mode must be call, send, or encode."); return
+    target=config.get("target")
+    if not target:
+        print("Error: Set target first."); return
+    funcs=abi_functions(load_abi(target,config))
+    matches=matching_functions(funcs,args[0])
+    if len(matches)!=1:
+        print("Function must resolve to exactly one ABI entry.")
+        for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]:
+            print(" ",format_signature(item))
+        return
+    item=matches[0]; signature=format_signature(item); values=[]
+    print(f"Function: {signature}")
+    for index,param in enumerate(item.get("inputs",[]),1):
+        label=param.get("name") or f"arg{index}"
+        try: value=input(f"{label} ({canonical_type(param)}): ").strip()
+        except EOFError: print("Wizard cancelled."); return
+        if not value:
+            print("Argument values are required."); return
+        values.append(value)
+    if mode=="encode": run_cast(["calldata",signature,*values],config)
+    elif mode=="send": run_cast(["send",signature,*values,"--confirm"],config)
+    else: run_cast(["call",signature,*values],config)
+
+def run_replay(config,args):
+    if not args:
+        print("Usage: lk replay <transaction-hash> [trace flags...]"); return
+    run_trace(config,args)
+
+def run_fork(args):
+    if not args:
+        print("Usage: lk fork <rpc-url> [block-number]"); return
+    command=["anvil","--fork-url",args[0]]
+    if len(args)>1: command.extend(["--fork-block-number",args[1]])
+    print("Start a local fork with:")
+    print("  "+shlex.join(command))
+    print("Then point LowkeyCast at it:")
+    print("  lk rpc http://127.0.0.1:8545")
+
 def print_help():
     print("""
 LowkeyCast (lk) - Foundry auditor interface
@@ -1167,6 +1212,9 @@ def dispatch_command(cmd,args,config,from_batch=False):
         else: run_abi(config)
     elif cmd=="functions": run_functions(config,args[0] if args else None)
     elif cmd=="fn": run_functions(config," ".join(args) if args else None)
+    elif cmd=="wizard": run_wizard(config,args)
+    elif cmd=="replay": run_replay(config,args)
+    elif cmd=="fork": run_fork(args)
     elif cmd=="ask":
         if not args: print("Usage: lk ask <function>"); return
         funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
