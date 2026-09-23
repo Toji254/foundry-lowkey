@@ -4366,6 +4366,9 @@ def _bind_detected_anvil(config, info):
         }
         config.setdefault("labels", {})[account0] = "lab-deployer"
         config["actor"] = "lab-deployer"
+        # The actor profile contains only public account metadata; the private key
+        # is still derived on demand from Anvil's default mnemonic.
+        save_config(config)
 
     return info
 
@@ -4435,9 +4438,11 @@ def _live_target_candidate(config, root, contract_name=None):
         return None
 
     candidates.sort(key=lambda item: item[:3])
-    best = candidates[0]
-    if len(candidates) > 1 and candidates[0][:3] == candidates[1][:3]:
+    # Without a preferred contract, multiple live aliases are ambiguous. Do not
+    # silently choose one merely because its name sorts first.
+    if len(candidates) > 1 and not preferred:
         return None
+    best = candidates[0]
     return {
         "contract": best[3],
         "address": best[4],
