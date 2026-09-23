@@ -1781,6 +1781,43 @@ def run_symbolic(args):
     print("Running native Foundry symbolic testing.")
     return run_foundry(["test","--symbolic",*values])
 
+
+def run_cheatcodes(args):
+    snippets = {
+        "prank": 'vm.prank(alice);\\ntarget.withdraw();',
+        "start-prank": 'vm.startPrank(attacker);\\n...\\nvm.stopPrank();',
+        "deal": 'vm.deal(attacker, 100 ether);',
+        "warp": 'vm.warp(block.timestamp + 7 days);',
+        "roll": 'vm.roll(block.number + 100);',
+        "store": 'vm.store(address(target), bytes32(uint256(slot)), bytes32(value));',
+        "load": 'bytes32 raw = vm.load(address(target), bytes32(uint256(slot)));',
+        "etch": 'vm.etch(address(dependency), maliciousCode);',
+        "mock": 'vm.mockCall(address(oracle), abi.encodeWithSignature("getPrice()"), abi.encode(0));',
+        "state-diff": 'vm.startStateDiffRecording();\\n...\\nVm.AccountAccess[] memory d = vm.stopAndReturnStateDiff();',
+        "ffi": 'vm.ffi(cmds); // LAB ONLY: executes an external process',
+    }
+    if not args or args[0] in {"list","help"}:
+        print("Lowkey cheatcode lab")
+        print("====================")
+        for name in snippets:
+            suffix="  [LAB ONLY]" if name=="ffi" else ""
+            print(f"  {name:<11}{suffix}")
+        print("\\nUse: lk cheatcode <name>")
+        return 0
+    name=args[0].lower()
+    if name not in snippets:
+        return fail(f"Error: unknown cheatcode '{name}'. Use lk cheatcodes.")
+    print(f"CHEATCODE: {name}")
+    print(snippets[name])
+    if name=="ffi":
+        print("Warning: vm.ffi executes an external command from the test environment.")
+    return 0
+
+def run_brutalize(args):
+    print("Running Foundry brutalize testing.")
+    print("Foundry may corrupt selected inputs to exercise assumptions around calldata/state handling.")
+    return run_foundry(["test","--brutalize",*args])
+
 def run_fuzz_help():
     print("""Lowkey LAB testing:
   lk fuzz                    Run Forge tests (including fuzz tests)
@@ -2197,6 +2234,8 @@ PROVE IT WITH FOUNDRY
   lk mutate                            Forge mutation testing
   lk symbolic                          Forge symbolic testing
   lk symbolic emit                    Symbolic + regression output
+  lk brutalize [args...]              Brutalize tests
+  lk cheatcodes                       Foundry cheatcode quick reference
   lk forge test -vvvv                 Native Forge
   lk forge inspect-audit <Contract>  Build + inspect ABI/methods/errors/events/storage
   lk forge audit                      Build + traced tests + coverage
@@ -2381,6 +2420,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="invariant": return run_invariant(config,args)
     elif cmd=="mutate": return run_mutate(args)
     elif cmd=="symbolic": return run_symbolic(args)
+    elif cmd=="brutalize": return run_brutalize(args)
+    elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
     elif cmd in {"actors","actor-list"}: return list_anvil_actors(config)
     elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
     elif cmd in {"token","erc20"}: run_token(config,args)
