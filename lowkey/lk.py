@@ -861,7 +861,7 @@ def run_cast(args,config,capture=False):
             abi=load_abi(target,config)
             matches=matching_functions(abi,remaining[0]) if abi else []
             if len(matches)==1:
-                remaining[1:]=resolve_argument_aliases(config,matches[0],remaining[1:])
+                remaining[1:]=prepare_argument_values(config,matches[0],remaining[1:])
         except ValueError as error:
             result=CommandResult(f"Error: {error}",2)
             record_status(result.code)
@@ -1656,6 +1656,33 @@ def resolve_argument_aliases(config, function_item, values):
     return resolved
 
 
+def prepare_argument_values(config, function_item, values):
+    raw=list(values)
+    inputs=function_item.get("inputs",[]) if isinstance(function_item,dict) else []
+    prepared=[]
+    index=0
+
+    for item in inputs:
+        if index >= len(raw):
+            break
+        item_type=canonical_type(item)
+        value=raw[index]
+        if (
+            (item_type.startswith("uint") or item_type.startswith("int"))
+            and index + 1 < len(raw)
+            and str(raw[index + 1]).lower() in {"wei","gwei","ether"}
+        ):
+            value=f"{value} {raw[index + 1]}"
+            index += 2
+        else:
+            index += 1
+        prepared.append(value)
+
+    if index != len(raw):
+        return raw
+    return resolve_argument_aliases(config, function_item, prepared)
+
+
 def encode_target_call(config, function, values):
     target=config.get("target")
     if not target:
@@ -1671,7 +1698,7 @@ def encode_target_call(config, function, values):
     abi=load_abi(target,config)
     matches=matching_functions(abi,signature) if abi else []
     if len(matches)==1:
-        values=resolve_argument_aliases(config,matches[0],values)
+        values=prepare_argument_values(config,matches[0],values)
         inputs=matches[0].get("inputs",[])
         if len(values)!=len(inputs):
             expected=", ".join(
