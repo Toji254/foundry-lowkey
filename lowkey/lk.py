@@ -424,7 +424,7 @@ def auto_abi_path(target,config):
             if artifact_contract_name(path,artifact).lower()==preferred_lower or Path(path).stem.lower()==preferred_lower:
                 config.setdefault("abi_paths",{})[target]=path
                 return path
-    rpc=config.get("rpc")
+    rpc=effective_rpc(config)
     if rpc:
         code,runtime,_=cast_output(["cast","code",target,"--rpc-url",rpc])
         if code==0 and runtime and runtime.startswith("0x") and runtime!="0x":
@@ -580,7 +580,8 @@ def run_tx(config,args):
     if not tx_hash: return fail("Usage: lk tx <transaction-hash> (or save a transaction first)")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
     command=["cast","tx",tx_hash,"--json"]
-    if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
+    rpc=effective_rpc(config)
+    if rpc: command.extend(["--rpc-url",rpc])
     code,output,error=cast_output(command)
     if code!=0 and not output:
         print(error or "cast tx failed",file=sys.stderr)
@@ -662,7 +663,8 @@ def run_logs(config,args):
     if decode: args.remove("--decode")
     if not decode: run_cast(["logs"]+args,config); return
     command=["cast","logs","--json"]+args
-    if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
+    rpc=effective_rpc(config)
+    if rpc: command.extend(["--rpc-url",rpc])
     code,output,error=cast_output(command)
     if code!=0:
         print(error or "cast logs failed",file=sys.stderr)
@@ -1035,7 +1037,7 @@ def run_session_lifecycle(config, action):
 
 def run_export(config):
     paths=workspace_paths(); export_dir=os.path.join(os.getcwd(),"audit-report"); os.makedirs(export_dir,exist_ok=True)
-    lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(config.get('rpc')) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Not loaded'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Findings",""]
+    lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(effective_rpc(config)) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Auto-discovered when needed'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Findings",""]
     finding_path=paths["findings"] if os.path.exists(paths["findings"]) else os.path.join(AUDIT_DIR,"findings.md")
     lines.append(Path(finding_path).read_text(encoding="utf-8") if os.path.exists(finding_path) else "No findings recorded.")
     lines += ["","## Checklist",""]
@@ -1044,7 +1046,7 @@ def run_export(config):
     Path(os.path.join(export_dir,"report.md")).write_text("\n".join(lines),encoding="utf-8")
     for name,source in [("notes.md",paths["notes"]),("TODO.md",paths["todos"]),("session.log",paths["session"]),("matrix_actors.json",paths["matrix_actors"]),("matrix_states.json",paths["matrix_states"]),("matrix_scenarios.json",paths["matrix_scenarios"])]:
         if os.path.exists(source): Path(os.path.join(export_dir,name)).write_text(Path(source).read_text(encoding="utf-8"),encoding="utf-8")
-    Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
+    Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(effective_rpc(config)),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
     print(f"Audit report exported: {export_dir}")
 def run_self_test():
     checks=[
@@ -1650,7 +1652,11 @@ def dispatch_command(cmd,args,config,from_batch=False):
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
     elif cmd=="rpc":
-        if not args: print(f"RPC: {rpc_display(config.get('rpc')) or 'none'}"); return
+        if not args:
+            rpc=effective_rpc(config)
+            mode="manual" if config.get("rpc") else "auto Anvil"
+            print(f"RPC: {rpc_display(rpc) or 'none'} ({mode})" if rpc else "RPC: none (no local Anvil detected)")
+            return
         sub=args[0]
         if sub=="reset": config["rpc"]=None
         elif sub=="set" and len(args)==3: config["rpc_profiles"][args[1]]=args[2]; config["rpc"]=args[2]
@@ -1661,7 +1667,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
         save_config(config)
     elif cmd=="wallet":
         if args and args[0]=="list":
-            for name,entry in config.get("wallets",{}).items(): print(f"{name}: {'env' if isinstance(entry,dict) and entry.get('env') else 'key'}")
+            for name,entry in config.get("wallets",{}).items():
+                print(f"{name}: {wallet_entry_kind(entry)}")
         elif len(args)==3 and args[0]=="set":
             key=normalize_private_key(args[2])
             if not key: print("Invalid private key format."); return
