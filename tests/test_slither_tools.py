@@ -116,7 +116,7 @@ class LowkeySlitherTests(unittest.TestCase):
             }
         }
         output = io.StringIO()
-        with patch("sys.stdout", output):
+        with patch.dict("os.environ", {"TERM_PROGRAM": "xterm"}), patch("sys.stdout", output):
             slither_tools._summary(payload)
         rendered = output.getvalue()
         self.assertIn("Issue       : Low-level external call", rendered)
@@ -135,6 +135,19 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertNotIn("success,None", rendered)
 
 
+    @patch("slither_tools.slither_path", return_value="/usr/bin/slither")
+    @patch("slither_tools.subprocess.run")
+    def test_quiet_scan_suppresses_human_report(self, run, _path):
+        run.return_value = type("Result", (), {"returncode": 0, "stdout": "noisy slither", "stderr": ""})()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            evidence = root / ".audit" / "slither"
+            evidence.mkdir(parents=True)
+            (evidence / "latest.json").write_text(json.dumps({"results": {"detectors": []}}), encoding="utf-8")
+            with patch("slither_tools._default_paths", return_value=(evidence / "latest.json", evidence / "latest.sarif")), patch("sys.stdout", io.StringIO()) as output:
+                self.assertEqual(slither_tools.run_default(root, quiet=True), 0)
+                rendered = output.getvalue()
+        self.assertNotIn("LOWKEY STATIC ANALYSIS REPORT", rendered)
     @patch("slither_tools.slither_path", return_value="/usr/bin/slither")
     @patch("slither_tools.subprocess.run")
     def test_default_scan_writes_and_summarizes_evidence(self, run, _path):
