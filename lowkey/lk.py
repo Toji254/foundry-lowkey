@@ -3220,18 +3220,42 @@ def run_investigate(config, args):
     print("  lk signals")
     return 0
 
+def _sync_audit_context(config, root=None):
+    root = root or audit_context.foundry_project_root()
+    existing = audit_context.load(root)
+    existing_target = existing.get("target", {}) if isinstance(existing.get("target"), dict) else {}
+
+    target = dict(existing_target)
+    candidates = {
+        "address": config.get("target"),
+        "contract": config.get("target_contract"),
+        "artifact": config.get("abi_paths", {}).get(config.get("target")),
+    }
+    for key, value in candidates.items():
+        if value:
+            target[key] = value
+
+    actor = actor_display(config)
+    if actor == "none":
+        actor = existing.get("actor")
+
+    rpc = effective_rpc(config) or existing.get("rpc")
+    latest = dict(existing.get("latest", {}))
+    if config.get("last_tx"):
+        latest["tx_hash"] = config.get("last_tx")
+
+    return audit_context.update(
+        root,
+        target=target,
+        actor=actor,
+        rpc=rpc,
+        latest=latest,
+    )
+
+
 def run_context(config):
     root = audit_context.foundry_project_root()
-    audit_context.update(
-        root,
-        target={
-            "address": config.get("target"),
-            "contract": config.get("target_contract"),
-            "artifact": config.get("abi_paths", {}).get(config.get("target")),
-        },
-        actor=actor_display(config),
-        rpc=effective_rpc(config),
-    )
+    _sync_audit_context(config, root)
     print("LOWKEY AUDIT CONTEXT")
     print("====================")
     print(audit_context.human_snapshot(root))
@@ -3888,37 +3912,18 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else: run_cast([cmd]+args,config)
 
+
 def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
     config=load_config()
     root = audit_context.foundry_project_root()
-    audit_context.update(
-        root,
-        target={
-            "address": config.get("target"),
-            "contract": config.get("target_contract"),
-            "artifact": config.get("abi_paths", {}).get(config.get("target")),
-        },
-        actor=actor_display(config),
-        rpc=effective_rpc(config),
-        latest={"tx_hash": config.get("last_tx")},
-    )
+    _sync_audit_context(config, root)
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
     if config.pop("_config_dirty",False):
         save_config(config)
-    audit_context.update(
-        root,
-        target={
-            "address": config.get("target"),
-            "contract": config.get("target_contract"),
-            "artifact": config.get("abi_paths", {}).get(config.get("target")),
-        },
-        actor=actor_display(config),
-        rpc=effective_rpc(config),
-        latest={"tx_hash": config.get("last_tx")},
-    )
+    _sync_audit_context(config, root)
     audit_context.emit(
         "lk-command",
         root,
