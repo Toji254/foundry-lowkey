@@ -2018,7 +2018,7 @@ def encode_target_call(config, function, values):
     code,encoded,error=cast_output(["cast","calldata",signature,*values])
     if code!=0 or not encoded:
         raise ValueError(error or "cast calldata failed")
-    return signature, encoded.removeprefix("0x")
+    return signature, validate_calldata(encoded)
 
 def solidity_address_literal(address):
     if not is_address(address):
