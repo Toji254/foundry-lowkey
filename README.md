@@ -30,6 +30,9 @@ The primary commands are deliberately short and self-describing:
 
 ~~~bash
 lk audit
+lk audit auto
+lk audit --checks
+lk audit auto --checks
 lk status
 lk findings
 lk focus <SIGNAL_ID>
@@ -54,6 +57,8 @@ lk invariant
 ~~~
 
 Legacy aliases such as `signals`, `investigate`, `try`, `c`, `s`, and `state-diff` remain supported, but the help menu presents the clearer primary forms.
+
+Plain `lk audit` detects and uses an existing Anvil node but never starts one. `lk audit auto` is the autonomous local mode: it starts a project-owned Anvil when needed, binds a safe local actor, resolves a project target when possible, and may deploy a zero-constructor-argument local artifact without inventing constructor values. Both modes collect the same audit evidence and PoC scaffold; `--checks` adds Slither and optional lint/geiger checks.
 
 ## Actors
 
