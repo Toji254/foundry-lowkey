@@ -392,6 +392,50 @@ class LowkeyCastTests(unittest.TestCase):
         )
 
 
+    def test_functions_use_loaded_artifact_contract_name_for_storage_layout(self):
+        artifact = {
+            "contractName": "Escrow",
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "escrow",
+                    "inputs": [{"type": "uint256"}],
+                    "stateMutability": "view",
+                },
+                {
+                    "type": "function",
+                    "name": "status",
+                    "inputs": [],
+                    "stateMutability": "view",
+                },
+            ],
+        }
+        forge_layout = {
+            "storage": [
+                {"label": "escrow", "slot": "1", "type": "t_mapping(t_uint256,t_struct(Create))"}
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "Escrow.json"
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            config = {
+                "target": "0x" + "1" * 40,
+                "target_contract": "StaleContractName",
+                "abi_paths": {"0x" + "1" * 40: str(path)},
+            }
+            with patch.object(
+                lk,
+                "cast_output",
+                return_value=(0, json.dumps(forge_layout), ""),
+            ) as cast:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    lk.run_functions(config)
+        self.assertEqual(cast.call_args.args[0][:2], ["forge", "inspect"])
+        self.assertEqual(cast.call_args.args[0][2], "Escrow")
+        self.assertIn("STORAGE GETTERS:", output.getvalue())
+        self.assertIn("escrow(uint256)  [public storage getter]", output.getvalue())
+
     def test_deps_default_project_shows_project_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
