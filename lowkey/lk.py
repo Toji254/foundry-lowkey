@@ -3357,4 +3357,1433 @@ def main():
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 
 if __name__ == "__main__":
+    main()def mapping_slot_matches(config, signature, raw_values, actor_address_value, changed_slots):
+    types,storage=storage_layout_details(config)
+    if not storage or not types:
+        return {}
+
+    labels={}
+    candidates=lab_argument_candidates(config,signature,raw_values,actor_address_value)
+    for entry in storage:
+        type_id=entry.get("type")
+        info=types.get(type_id,{}) if isinstance(type_id,str) else {}
+        if info.get("encoding")!="mapping":
+            continue
+        key_type_id=info.get("key")
+        value_type_id=info.get("value")
+        key_label=storage_type_label(types,key_type_id)
+        base_slot=entry.get("slot")
+        if not key_label or base_slot is None:
+            continue
+
+        for candidate_type,candidate_value in candidates:
+            if candidate_type!=key_label:
+                if not (candidate_type=="uint256" and str(key_label).startswith(("uint","int"))):
+                    continue
+            code,out,_=cast_output(["cast","index",str(key_label),str(candidate_value),str(base_slot)])
+            if code!=0 or not out:
+                continue
+            mapped_slot=out.splitlines()[-1].strip().lower()
+            if mapped_slot.startswith("0x"):
+                mapped_slot=mapped_slot[2:].zfill(64)
+            key_display=display_storage_key(config,candidate_value)
+            value_info=types.get(value_type_id,{}) if isinstance(value_type_id,str) else {}
+            members=value_info.get("members",[]) if isinstance(value_info,dict) else []
+
+            if not members:
+                for changed in changed_slots:
+                    if changed.lower().removeprefix("0x").zfill(64)==mapped_slot:
+                        labels[changed.lower()]=("%s[%s]"%(entry.get("label","mapping"),key_display),value_type_id)
+            else:
+                try:
+                    base_int=int(mapped_slot,16)
+                except ValueError:
+                    continue
+                for member in members:
+                    try:
+                        member_slot=base_int+int(str(member.get("slot","0")),0)
+                    except ValueError:
+                        continue
+                    full="0x"+format(member_slot,"064x")
+                    if full.lower() in {x.lower() for x in changed_slots}:
+                        labels[full.lower()]="%s[%s].%s"%(
+                            entry.get("label","mapping"),key_display,member.get("label","field")
+                        )
+            if labels:
+                # Keep looking for other mappings/keys; a function can touch more than one.
+                pass
+    return labels
+
+
+def display_storage_key(config, value):
+    text_value=str(value)
+    if is_address(text_value):
+        name=assigned_anvil_address(config,text_value)
+        return name or text_value
+    return text_value
+
+
+def decode_storage_value(raw, type_id, types, path=""):
+    raw=str(raw).strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",raw):
+        return raw
+    label=storage_type_label(types,type_id)
+    lowered=label.lower()
+
+    if lowered=="address" or lowered.startswith("contract "):
+        value="0x"+raw[-40:]
+        if int(raw[-40:],16)==0:
+            return "none"
+        return value
+
+    if lowered=="bool":
+        return "true" if int(raw,16)!=0 else "false"
+
+    if lowered.startswith("uint") or lowered.startswith("int") or lowered.startswith("enum "):
+        return str(int(raw,16))
+
+    return raw
+
+
+def format_storage_value(config, raw, type_id, types, label, eth_sent_wei=None):
+    value=decode_storage_value(raw,type_id,types,label)
+    if value=="none":
+        return "none"
+    if is_address(value):
+        return assigned_anvil_address(config,value) or value
+    if re.fullmatch(r"[0-9]+",value or ""):
+        lowered=label.lower()
+        if eth_sent_wei is not None and int(value)==eth_sent_wei and any(x in lowered for x in ("amount","balance","value")):
+            eth=eth_sent_wei/10**18
+            return f"{eth:g} ETH"
+        return value
+    return value
+
+
+def parse_state_diff_output(output):
+    text_output=str(output or "")
+    gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",text_output)
+    call_match=re.search(r"CALL ([^\r\n]+)",text_output)
+    success_match=re.search(r"SUCCESS (true|false)",text_output,re.I)
+    eth_match=re.search(r"ETH_SENT ([0-9]+)",text_output)
+    change_match=re.search(r"STORAGE_CHANGES ([0-9]+)",text_output)
+    slots=[]
+    lines=[line.strip() for line in text_output.splitlines()]
+    for index,line in enumerate(lines):
+        if line=="SLOT" and index+6<len(lines):
+            slot=lines[index+1]
+            if index+5<len(lines) and lines[index+2]=="FROM" and lines[index+4]=="TO":
+                before=lines[index+3]
+                after=lines[index+5]
+                if re.fullmatch(r"0x[0-9a-fA-F]{64}",slot) and re.fullmatch(r"0x[0-9a-fA-F]{64}",before) and re.fullmatch(r"0x[0-9a-fA-F]{64}",after):
+                    slots.append({"slot":slot,"from":before,"to":after})
+    return {
+        "gas":int(gas_match.group(1)) if gas_match else None,
+        "call":call_match.group(1).strip() if call_match else None,
+        "success":success_match.group(1).lower()=="true" if success_match else None,
+        "eth_sent":int(eth_match.group(1)) if eth_match else 0,
+        "changes_expected":int(change_match.group(1)) if change_match else len(slots),
+        "slots":slots,
+        "raw":text_output,
+    }
+
+
+def format_lab_value(text_value, address_map=None):
+    text_value=str(text_value)
+    if is_address(text_value):
+        if address_map and text_value.lower() in address_map:
+            return address_map[text_value.lower()]
+    return text_value
+
+
+def format_call_display(config, signature, raw_values):
+    abi=load_abi(config.get("target"),config)
+    matches=matching_functions(abi,signature) if abi else []
+    if len(matches)!=1:
+        return signature
+    prepared=prepare_argument_values(config,matches[0],raw_values)
+    inputs=matches[0].get("inputs",[])
+    rendered=[]
+    address_map={}
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and is_address(entry.get("address")):
+            address_map[entry["address"].lower()]=name
+    for item,value in zip(inputs,prepared):
+        item_type=canonical_type(item)
+        shown=str(value)
+        if item_type=="address":
+            shown=address_map.get(shown.lower(),shown)
+        rendered.append(shown)
+    return f"{matches[0].get('name','<function>')}({', '.join(rendered)})"
+
+
+def run_state_diff(config,args):
+    if not args:
+        return fail("Usage: lk changes <function> [args...] [--as ACTOR] [--eth AMOUNT]")
+    try:
+        values,actor,value,_keep=split_lab_options(args)
+        if not values:
+            raise ValueError("function is required")
+        signature,calldata=encode_target_call(config,values[0],values[1:])
+        value=resolve_lab_value(config,signature,values[1:],value)
+        target=config.get("target")
+        selected_actor=actor or config.get("actor")
+        address=actor_address(config,selected_actor)
+        if not address:
+            raise ValueError("Choose an actor first with lk actor <index> <name>.")
+
+        target_literal=solidity_address_literal(target)
+        actor_literal=solidity_address_literal(address)
+        body=f'''// Generated by LowkeyCast. Records EVM account and storage accesses.
+pragma solidity ^0.8.20;
+
+import {{Test}} from "forge-std/Test.sol";
+import {{Vm}} from "forge-std/Vm.sol";
+import {{console2}} from "forge-std/console2.sol";
+
+contract LowkeyStateDiff is Test {{
+    address constant TARGET = {target_literal};
+    address constant ACTOR = {actor_literal};
+    uint256 constant VALUE = {solidity_value(value)};
+
+    function test_state_diff() public {{
+        vm.deal(ACTOR, 100 ether);
+        vm.startPrank(ACTOR);
+        vm.startStateDiffRecording();
+        (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        vm.stopPrank();
+
+        console2.log("CALL", "{signature}");
+        console2.log("SUCCESS", success);
+        console2.log("ETH_SENT", VALUE);
+        if (!success) {{
+            console2.log("REVERT_DATA");
+            console2.logBytes(data);
+            return;
+        }}
+
+        uint256 changed=0;
+        for (uint256 i = 0; i < accesses.length; i++) {{
+            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
+                Vm.StorageAccess memory item = accesses[i].storageAccesses[j];
+                if (item.isWrite && !item.reverted && item.previousValue != item.newValue) {{
+                    changed++;
+                }}
+            }}
+        }}
+
+        console2.log("STORAGE_CHANGES", changed);
+        for (uint256 i = 0; i < accesses.length; i++) {{
+            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
+                Vm.StorageAccess memory item = accesses[i].storageAccesses[j];
+                if (item.isWrite && !item.reverted && item.previousValue != item.newValue) {{
+                    console2.log("SLOT");
+                    console2.logBytes32(item.slot);
+                    console2.log("FROM");
+                    console2.logBytes32(item.previousValue);
+                    console2.log("TO");
+                    console2.logBytes32(item.newValue);
+                }}
+            }}
+        }}
+    }}
+}}
+'''
+        path=write_generated_test("state-diff_"+signature.split("(",1)[0],body,announce=False)
+        result=run_foundry(local_foundry_test_args(config,path),capture=True)
+        output=result.text
+        parsed=parse_state_diff_output(output)
+        if result.code!=0:
+            tail="\n".join(output.splitlines()[-18:]) if output else "forge test failed"
+            return fail(f"Error: changes could not run.\n{tail}",result.code)
+
+        address_map={}
+        for name,entry in config.get("wallets",{}).items():
+            if isinstance(entry,dict) and is_address(entry.get("address")):
+                address_map[entry["address"].lower()]=name
+
+        types,_storage=storage_layout_details(config)
+        raw_args=values[1:]
+        labels=mapping_slot_matches(config,signature,raw_args,address, [item["slot"] for item in parsed["slots"]])
+
+        print("CHANGES")
+        print("=======")
+        print(f"Call:      {format_call_display(config,signature,raw_args)}")
+        print(f"Caller:    {selected_actor or address}")
+        eth_sent=parsed["eth_sent"]
+        print(f"ETH sent:  {eth_sent/10**18:g} ETH" if eth_sent%10**18==0 else f"ETH sent:  {eth_sent} wei")
+        status="SUCCESS" if parsed["success"] else "REVERTED"
+        print(f"Result:    {status}")
+        if parsed["gas"] is not None:
+            print(f"Gas:       {parsed['gas']}")
+        print(f"Storage:   {len(parsed['slots'])} change(s)")
+
+        if not parsed["slots"]:
+            if parsed["success"]:
+                print("No storage values changed.")
+            print(f"\nTest: {path}")
+            return 0
+
+        print("\nStorage changes:")
+        for item in parsed["slots"]:
+            slot=item["slot"].lower()
+            decoded=labels.get(slot)
+            if isinstance(decoded,tuple):
+                label,type_id=decoded
+            else:
+                label=decoded or f"slot {slot}"
+                type_id=None
+            before=format_storage_value(config,item["from"],type_id,types,label,eth_sent)
+            after=format_storage_value(config,item["to"],type_id,types,label,eth_sent)
+            print(f"  {label}")
+            print(f"    {before}  ->  {after}")
+            print(f"    slot: {slot}")
+
+        if parsed["changes_expected"]!=len(parsed["slots"]):
+            print(f"\nNote: Forge reported {parsed['changes_expected']} changed slots; Lowkey decoded {len(parsed['slots'])}.")
+        print(f"\nTest: {path}")
+        return 0
+    except (ValueError,IndexError) as error:
+        return fail(f"Error: {error}")
+
+
+def run_cast_deep(config,args):
+    if not args:
+        return fail("Usage: lk <4byte|4byte-calldata|4byte-event|access-list|interface|constructor-args|creation-code|decode-calldata|abi-encode> ...")
+    command=args[0]
+    values=list(args[1:])
+    if command=="interface":
+        if values:
+            return run_cast(["interface",*values],config)
+        target=config.get("target")
+        if not target:
+            return fail("Error: Set target or provide an ABI path.")
+        path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
+        if not path:
+            return fail("Error: no local ABI found for the current target.")
+        return run_cast(["interface",path],config)
+    if command in {"constructor-args","creation-code"}:
+        target=values[0] if values else config.get("target")
+        if not target:
+            return fail(f"Usage: lk {command} <address>")
+        result=run_cast([command,target,*values[1:]],config,capture=True)
+        result_code=getattr(result,"code",result if isinstance(result,int) else 1)
+        result_text=getattr(result,"text",str(result or ""))
+        if result_code != 0 and effective_rpc(config) and anvil_rpc_info(config):
+            lowered=result_text.lower()
+            if "etherscan" in lowered or "constructor" in lowered or "creation" in lowered:
+                return fail(
+                    f"Error: {command} needs creation/deployment data that this local Anvil state may not contain."
+                )
+        print(result_text)
+        return result_code
+    if command=="access-list":
+        target=config.get("target")
+        if values and is_address(values[0]):
+            target=values.pop(0)
+        if not target:
+            return fail("Usage: lk access-list [address] <function> [args]")
+        if not values:
+            return run_cast(["access-list",target],config)
+        function=values[0]
+        if "(" not in function or ")" not in function:
+            try:
+                function=resolve_function(function,target,config)
+            except ValueError as error:
+                return fail(f"Error: {error}")
+        return run_cast(["access-list",target,function,*values[1:]],config)
+    if command=="decode-calldata":
+        if not values:
+            return fail("Usage: lk decode-calldata <0x...> | lk decode-calldata '<signature>' <0x...>")
+        if len(values)==1:
+            data=values[0]
+            if not re.fullmatch(r"0x[0-9a-fA-F]*",data or "") or len(data)<10 or len(data)%2:
+                return fail("Error: calldata must be even-length hex beginning with 0x.")
+            target=config.get("target")
+            matches=[]
+            for item in abi_functions(load_abi(target,config)):
+                signature=format_signature(item)
+                selector=abi_selector(signature)
+                if selector and selector.lower()==data[:10].lower():
+                    matches.append(signature)
+            if len(matches)==1:
+                print(f"Signature: {matches[0]}")
+                return run_cast(["decode-calldata",matches[0],data],config)
+            if len(matches)>1:
+                print("Ambiguous selector; use an exact signature:")
+                for signature in matches:
+                    print(f"  {signature}")
+                return fail("Error: multiple ABI functions match this selector.")
+            return fail("Error: no unique ABI signature for this calldata. Use lk 4byte-calldata or provide the signature explicitly.")
+        return run_cast(["decode-calldata",*values],config)
+    if command=="abi-encode":
+        if not values:
+            return fail("Usage: lk abi-encode <type[,type...]> [args...]")
+        signature=values[0]
+        if "(" not in signature:
+            signature=f"lowkey({signature})"
+        return run_cast(["abi-encode",signature,*values[1:]],config)
+    if command in {"4byte","4byte-calldata","4byte-event"}:
+        if not values:
+            return fail(f"Usage: lk {command} <value>")
+        return run_cast([command,*values],config)
+    return fail(f"Error: unsupported Cast power command: {command}")
+
+def run_calldata(config,args):
+    if len(args)!=1:
+        return fail("Usage: lk calldata <raw-calldata>")
+    data=args[0]
+    if not re.fullmatch(r"0x[0-9a-fA-F]*",data) or len(data)<10 or len(data)%2:
+        return fail("Error: calldata must be even-length hex beginning with 0x.")
+    print(f"Selector: {data[:10]}")
+    abi=load_abi(config.get("target"),config)
+    matches=[]
+    for item in abi_functions(abi):
+        signature=format_signature(item)
+        selector=abi_selector(signature)
+        if selector and selector.lower()==data[:10].lower():
+            matches.append((signature,item))
+    if len(matches)==1:
+        signature,item=matches[0]
+        print(f"ABI:      {signature}")
+        print(f"Args:     {decode_abi_input(signature,data)}")
+    elif len(matches)>1:
+        print("ABI:      ambiguous")
+        for signature,_ in matches:
+            print(f"  {signature}")
+    else:
+        print("ABI:      unknown")
+        code,out,error=cast_output(["cast","4byte-calldata",data])
+        if out:
+            print(out)
+        elif error:
+            print(error,file=sys.stderr)
+            record_status(code)
+    code,out,error=cast_output(["cast","pretty-calldata",data])
+    if out:
+        print("\nPretty calldata:")
+        print(out)
+    elif error:
+        print(error,file=sys.stderr)
+    return 0
+
+def run_txpool(config,args):
+    rpc=effective_rpc(config)
+    if not rpc:
+        return fail("Error: an RPC is required for txpool inspection. Start Anvil or set lk rpc <url>.")
+
+    mode=(args[0].lower() if args else "status")
+    methods={
+        "status":"txpool_status",
+        "content":"txpool_content",
+        "pending":"txpool_content",
+    }
+    method=methods.get(mode)
+    if not method:
+        return fail("Usage: lk txpool [status|content]")
+
+    result=rpc_json(rpc,method,[])
+    if result is None:
+        return fail(f"Error: RPC method {method} is unavailable on {rpc}.")
+
+    if mode=="status":
+        pending=result.get("pending","?") if isinstance(result,dict) else "?"
+        queued=result.get("queued","?") if isinstance(result,dict) else "?"
+        print("TXPOOL")
+        print(f"  pending: {pending}")
+        print(f"  queued:  {queued}")
+        return 0
+
+    print(json.dumps(result,indent=2))
+    return 0
+
+def run_disasm(config,args):
+    values=list(args)
+    if not values:
+        target=config.get("target")
+        if not target:
+            return fail("Usage: lk disasm [bytecode|address]")
+        values=[run_cast(["code",target],config,capture=True)]
+    elif len(values)==1 and is_address(values[0]):
+        values=[run_cast(["code",values[0]],config,capture=True)]
+    if not values[0] or not str(values[0]).startswith("0x"):
+        return fail("Error: no bytecode available.")
+    return run_cast(["disassemble",values[0]],config)
+
+def runtime_selector_set(code):
+    raw=code if isinstance(code,str) else str(code)
+    return set(re.findall(r"(?i)0x[0-9a-f]{8}(?![0-9a-f])",raw))
+
+def run_selector_compare(config,args):
+    values=list(args)
+    if values and values[0]=="--compare":
+        values.pop(0)
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    runtime=values[0] if values else run_cast(["code",target],config,capture=True)
+    if not runtime or not str(runtime).startswith("0x"):
+        return fail("Error: no runtime bytecode available.")
+    _,selector_output,_=cast_output(["cast","selectors",runtime])
+    runtime_selectors=runtime_selector_set(selector_output)
+    abi=load_abi(target,config)
+    abi_map={}
+    for item in abi_functions(abi):
+        signature=format_signature(item)
+        selector=abi_selector(signature)
+        if selector:
+            abi_map[selector.lower()]=signature
+    print("SELECTOR COMPARISON")
+    print("===================")
+    print("ABI SELECTORS:")
+    for selector,signature in sorted(abi_map.items()):
+        print(f"  {selector}  {signature}")
+    print("\nRUNTIME SELECTORS:")
+    for selector in sorted(runtime_selectors):
+        print(f"  {selector}  {abi_map.get(selector,'<not in loaded ABI>')}")
+    abi_only=sorted(set(abi_map)-runtime_selectors)
+    runtime_only=sorted(runtime_selectors-set(abi_map))
+    print("\nABI-ONLY:")
+    for selector in abi_only:
+        print(f"  {selector}  {abi_map[selector]}")
+    if not abi_only:
+        print("  none")
+    print("\nRUNTIME-ONLY:")
+    for selector in runtime_only:
+        print(f"  {selector}")
+    if not runtime_only:
+        print("  none")
+    print("\nReview note: selector extraction is a lead, not proof of hidden functionality.")
+    return 0
+
+def run_chisel(args):
+    return run_tool("chisel",args)
+
+def run_fuzz(args):
+    values=list(args)
+    mode=values.pop(0) if values and not values[0].startswith("-") else None
+    if mode in {"replay","rerun"}:
+        print("Replaying persisted Forge test failures...")
+        return run_foundry(["test","--rerun",*values])
+    if mode in {"failures","corpus"}:
+        roots=[
+            os.path.expanduser("~/.foundry/cache/fuzz/failures"),
+            os.path.expanduser("~/.foundry/cache/invariant/failures"),
+            os.path.expanduser("~/.foundry/cache/test-failures"),
+        ]
+        found=0
+        for root in roots:
+            if os.path.exists(root):
+                print(f"\n{root}")
+                if os.path.isdir(root):
+                    entries=sorted(os.path.relpath(p,root) for p in Path(root).rglob("*") if p.is_file())
+                    for entry in entries[:100]:
+                        print(f"  {entry}")
+                        found+=1
+                else:
+                    print("  present")
+                    found+=1
+        if not found:
+            print("No persisted Forge failure/corpus files found.")
+        return 0
+    if mode=="watch":
+        return run_foundry(["test","--watch",*values])
+    print("Running Forge fuzz/test campaign. Fuzz tests are discovered by Forge itself.")
+    return run_foundry(["test",*values])
+
+def run_invariant(config,args):
+    values=list(args)
+    if values and values[0]=="new":
+        if len(values)<2:
+            return fail("Usage: lk invariant new <ContractName>")
+        contract=values[1]
+        target=config.get("target") or "0x" + "0"*40
+        target_literal=solidity_address_literal(target) if is_address(target) else "address(0)"
+        body=f'''// Generated by LowkeyCast.
+pragma solidity ^0.8.20;
+
+import {{Test}} from "forge-std/Test.sol";
+
+contract Invariant_{solidity_identifier(contract)} is Test {{
+    address constant TARGET = {target_literal};
+
+    function invariant_target_code_stable() public view {{
+        if (TARGET != address(0)) {{
+            assertGt(TARGET.code.length, 0);
+        }}
+    }}
+}}
+'''
+        path=write_generated_test("invariant_"+contract,body)
+        code=run_foundry(["test","--match-path",Path(path).as_posix()])
+        if code==0:
+            print("Invariant starter compiles. Edit it to add handlers and protocol invariants.")
+        return code
+    match_present=any(values[index]=="--match-test" for index in range(len(values)))
+    if not match_present:
+        values=["--match-test","invariant_.*",*values]
+    print("Running Forge invariant-focused tests...")
+    return run_foundry(["test",*values])
+
+def run_mutate(args):
+    print("Running native Foundry mutation testing.")
+    return run_foundry(["test","--mutate",*args])
+
+def run_symbolic(args):
+    values=list(args)
+    emit=False
+    if values and values[0]=="emit":
+        values.pop(0)
+        emit=True
+    if emit and "--emit-regression" not in values:
+        values.append("--emit-regression")
+    print("Running native Foundry symbolic testing.")
+    return run_foundry(["test","--symbolic",*values])
+
+
+def run_cheatcodes(args):
+    snippets = {
+        "prank": 'vm.prank(alice);\\ntarget.withdraw();',
+        "start-prank": 'vm.startPrank(attacker);\\n...\\nvm.stopPrank();',
+        "deal": 'vm.deal(attacker, 100 ether);',
+        "warp": 'vm.warp(block.timestamp + 7 days);',
+        "roll": 'vm.roll(block.number + 100);',
+        "store": 'vm.store(address(target), bytes32(uint256(slot)), bytes32(value));',
+        "load": 'bytes32 raw = vm.load(address(target), bytes32(uint256(slot)));',
+        "etch": 'vm.etch(address(dependency), maliciousCode);',
+        "mock": 'vm.mockCall(address(oracle), abi.encodeWithSignature("getPrice()"), abi.encode(0));',
+        "state-diff": 'vm.startStateDiffRecording();\\n...\\nVm.AccountAccess[] memory d = vm.stopAndReturnStateDiff();',
+        "ffi": 'vm.ffi(cmds); // LAB ONLY: executes an external process',
+    }
+    if not args or args[0] in {"list","help"}:
+        print("Lowkey cheatcode lab")
+        print("====================")
+        for name in snippets:
+            suffix="  [LAB ONLY]" if name=="ffi" else ""
+            print(f"  {name:<11}{suffix}")
+        print("\\nUse: lk cheatcode <name>")
+        return 0
+    name=args[0].lower()
+    if name not in snippets:
+        return fail(f"Error: unknown cheatcode '{name}'. Use lk cheatcodes.")
+    print(f"CHEATCODE: {name}")
+    print(snippets[name])
+    if name=="ffi":
+        print("Warning: vm.ffi executes an external command from the test environment.")
+    return 0
+
+def run_brutalize(args):
+    print("Running Foundry brutalize testing.")
+    print("Foundry may corrupt selected inputs to exercise assumptions around calldata/state handling.")
+    return run_foundry(["test","--brutalize",*args])
+
+def run_fuzz_help():
+    print("""Lowkey LAB testing:
+  lk fuzz                    Run Forge tests (including fuzz tests)
+  lk fuzz --fuzz-runs N      Set Forge fuzz iterations
+  lk fuzz replay             Replay persisted failures
+  lk fuzz failures            Show persisted fuzz/invariant failure artifacts
+  lk invariant                Run invariant_* tests
+  lk invariant new <Contract> Generate a compiling invariant starter
+  lk mutate                   Run Forge mutation testing
+  lk symbolic                 Run Forge symbolic testing
+  lk symbolic emit            Ask Forge to emit regression cases
+""")
+
+def run_selectors(config,args):
+    if "--compare" in args:
+        return run_selector_compare(config,args)
+    code=args[0] if args else run_cast(["code",config.get("target")],config,capture=True)
+    if not code or not str(code).startswith("0x"):
+        return fail("Error: no runtime bytecode available.")
+    return run_cast(["selectors",code],config)
+
+def run_layout(args):
+    if not args: return fail("Usage: lk layout <ContractName>")
+    code,out,err=cast_output(["forge","inspect",args[0],"storage-layout","--json"])
+    if code!=0:
+        print(err or "forge inspect failed",file=sys.stderr)
+        return record_status(code)
+    try: payload=json.loads(out)
+    except json.JSONDecodeError: print(out); return
+    storage=payload.get("storage",payload) if isinstance(payload,dict) else payload
+    if isinstance(storage,list):
+        print("Storage layout:")
+        for entry in storage:
+            if isinstance(entry,dict): print(f"slot={entry.get('slot')} offset={entry.get('offset')} label={entry.get('label')} type={entry.get('type')}")
+    else: print(json.dumps(payload,indent=2))
+
+def source_sol_files(root):
+    if os.path.isfile(root):
+        return [root] if root.endswith(".sol") else []
+    if not os.path.isdir(root):
+        return []
+    paths=[]
+    for path,dirs,files in os.walk(root):
+        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib"}]
+        for filename in files:
+            if filename.endswith(".sol"): paths.append(os.path.join(path,filename))
+    return sorted(paths)
+
+def run_scan(args):
+    root=args[0] if args else "src"
+    if not os.path.exists(root): return fail(f"Path not found: {root}")
+    if not os.path.isdir(root) and not root.endswith(".sol"):
+        return fail(f"Path is not a Solidity file or directory: {root}")
+    patterns=[
+        ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
+        ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
+        ("TX.ORIGIN",re.compile(r"\btx\.origin\b")),("DELEGATECALL",re.compile(r"\bdelegatecall\b")),
+        ("SELFDESTRUCT",re.compile(r"\bselfdestruct\s*\(")),("UNCHECKED",re.compile(r"\bunchecked\s*\{")),
+        ("ASSEMBLY",re.compile(r"\bassembly\s*\{")),("ENCODE_PACKED",re.compile(r"\babi\.encodePacked\s*\(")),
+        ("TIMESTAMP",re.compile(r"\bblock\.timestamp\b")),("BLOCKHASH",re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
+        ("PREVRANDAO",re.compile(r"\bblock\.prevrandao\b")),("ECRECOVER",re.compile(r"\becrecover\s*\(")),
+        ("CREATE2",re.compile(r"\bcreate2\b"))]
+    hits=0
+    for path in source_sol_files(root):
+        try: lines=Path(path).read_text(encoding="utf-8").splitlines()
+        except OSError: continue
+        for lineno,line in enumerate(lines,1):
+            for label,pattern in patterns:
+                if pattern.search(line):
+                    hits+=1; print(f"{path}:{lineno}: [{label}] {line.strip()}")
+    print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
+
+def run_deps(args):
+    root=args[0] if args else "."
+    if not os.path.exists(root):
+        return fail(f"Path not found: {root}")
+    if os.path.isfile(root) and not root.endswith(".sol"):
+        return fail(f"Path is not a Solidity file: {root}")
+    files=source_sol_files(root)
+    if not files:
+        print(f"No Solidity files found under {root}.")
+        return
+    display_root=os.path.dirname(root) if os.path.isfile(root) else root
+    matches=0
+    print("Dependency / inheritance map:")
+    for path in files:
+        try:
+            text_content=Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        rel=os.path.relpath(path,display_root)
+        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
+            matches+=1
+            print(f"  {rel} -> imports {imported}")
+        for contract in re.finditer(r"\b(contract|interface|library)\s+(\w+)(?:\s+is\s+([^{]+))?",text_content):
+            for parent in [p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]:
+                matches+=1
+                print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+    if matches==0:
+        print("No imports or inheritance relationships detected.")
+
+def run_seams(config):
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    abi=load_abi(target,config)
+    funcs=abi_functions(abi)
+    if not funcs:
+        return fail("Error: No ABI functions loaded for the current target.")
+
+    print("AUDIT SEAMS / HOTSPOTS")
+    print("======================")
+    print("Heuristic cross-surface leads. Treat these as places to investigate, not findings.")
+
+    for item in funcs:
+        name=item.get("name","<anonymous>")
+        signature=format_signature(item)
+        signals=[]
+        mutable=item.get("stateMutability") not in {"view","pure"}
+        payable=item.get("stateMutability")=="payable"
+        address_input=any(canonical_type(p).startswith("address") for p in item.get("inputs",[]))
+        asset_name=any(token in name.lower() for token in ("withdraw","transfer","send","execute","mint","burn","sweep","claim","release"))
+        auth_name=any(token in name.lower() for token in ("owner","admin","role","authorize","pause","upgrade"))
+        callbackish=any(token in name.lower() for token in ("call","callback","execute","hook","flash"))
+        if mutable and address_input:
+            signals.append("state-write + address input")
+        if mutable and asset_name:
+            signals.append("state-write + asset/value flow")
+        if mutable and payable:
+            signals.append("state-write + payable")
+        if auth_name and mutable:
+            signals.append("authorization + state transition")
+        if callbackish and mutable:
+            signals.append("external/callback surface + state transition")
+        if item.get("inputs") and any(canonical_type(p).startswith(("bytes","tuple","string")) for p in item.get("inputs",[])):
+            signals.append("complex user-controlled data")
+        if signals:
+            print(f"\n{signature}")
+            for signal in signals:
+                print(f"  - {signal}")
+    print("\nSEAM CHECKLIST")
+    print("  authorization ↔ state transition")
+    print("  external call ↔ accounting")
+    print("  callback ↔ reentrancy")
+    print("  token/oracle read ↔ value decision")
+    print("  proxy/implementation ↔ storage layout")
+    print("  user input ↔ numeric/encoding assumptions")
+    return 0
+
+def run_risk(config):
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    funcs=abi_functions(load_abi(target,config))
+    if not funcs:
+        print("Error: No ABI functions loaded."); return
+    print("Function review-surface heuristic:")
+    for item in funcs:
+        name=item.get("name","").lower(); signals=[]
+        if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
+        if item.get("stateMutability")=="payable": signals.append("value-flow")
+        if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
+        if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
+        if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
+        print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+def run_gas(config,args):
+    if not args:
+        return fail("Usage: lk gas <function> [args]")
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    values=list(args)
+    if values and ("(" not in values[0] or ")" not in values[0]):
+        try: values[0]=resolve_function(values[0],target,config)
+        except ValueError as error:
+            print(f"Error: {error}",file=sys.stderr); return
+    run_cast(["estimate",target]+values,config)
+def run_raw(config,args):
+    if not args: return fail("Usage: lk raw <cast-subcommand> [args...]")
+    safe=redact_secrets(shlex.join(["cast"]+args)); print(f"DEBUG: Executing -> {safe}")
+    code,out,err=cast_output(["cast"]+args); log_session(safe,out or err)
+    if out: print(humanize_value(apply_labels(out,config)))
+    if err: print(err,file=sys.stderr)
+    return record_status(code)
+
+def run_batch(config,args):
+    if len(args)!=1:
+        print("Usage: lk batch <command-file>"); return
+    path=args[0]
+    if not os.path.exists(path):
+        print(f"Batch file not found: {path}"); return
+    for lineno,line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(),1):
+        stripped=line.strip()
+        if not stripped or stripped.startswith("#"): continue
+        try: tokens=shlex.split(stripped)
+        except ValueError as error:
+            print(f"Batch line {lineno}: {error}",file=sys.stderr); continue
+        if not tokens: continue
+        command=tokens[0]
+        command_args=tokens[1:]
+        if command in {"s","send"} and "--yes" not in command_args and "--confirm" not in command_args and "--preview" not in command_args and "--dry-run" not in command_args:
+            command_args.append("--confirm")
+        if command=="raw": run_raw(config,command_args)
+        else: dispatch_command(command,command_args,config,from_batch=True)
+def run_audit_mode(config):
+    print("\n=== LOWKEYCAST AUDIT MODE ===")
+    while True:
+        print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
+        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   0) exit")
+        try: choice=input("lk> ").strip()
+        except EOFError: return
+        if choice=="1": run_recon(config)
+        elif choice=="2": run_functions(config)
+        elif choice=="3": run_risk(config)
+        elif choice=="4": run_checklist(config)
+        elif choice=="5": run_targets(config)
+        elif choice=="6": run_deployments(config)
+        elif choice=="0": return
+        else: print("Unknown option.")
+
+
+def run_status(config):
+    target=config.get("target")
+    if target:
+        load_abi(target,config)
+    rpc=effective_rpc(config)
+    print(f"Target : {target or 'none'}")
+    if rpc:
+        mode="manual" if config.get("rpc") else "auto Anvil"
+        print(f"RPC    : {rpc} ({mode})")
+    else:
+        print("RPC    : none (no local Anvil detected)")
+    print(f"Actor  : {actor_display(config)}")
+    abi=config.get("abi_paths",{}).get(target) if target else None
+    contract=config.get("target_contract") or "unknown"
+    print(f"ABI    : {abi or 'auto/not found'}")
+    print(f"Contract: {contract}")
+    print(f"Last tx: {config.get('last_tx') or 'none'}")
+def run_wizard(config,args):
+    if not args:
+        return fail("Usage: lk wizard <function> [call|send|encode]")
+    mode=args[1].lower() if len(args)>1 else "call"
+    if mode not in {"call","send","encode"}:
+        return fail("Mode must be call, send, or encode.")
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    funcs=abi_functions(load_abi(target,config))
+    matches=matching_functions(funcs,args[0])
+    if len(matches)!=1:
+        return fail("Error: Function must resolve to exactly one ABI entry.")
+        for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]:
+            print(" ",format_signature(item))
+        return
+    item=matches[0]; signature=format_signature(item); values=[]
+    print(f"Function: {signature}")
+    for index,param in enumerate(item.get("inputs",[]),1):
+        label=param.get("name") or f"arg{index}"
+        try: value=input(f"{label} ({canonical_type(param)}): ").strip()
+        except EOFError: print("Wizard cancelled."); return 0
+        if not value:
+            return fail("Argument values are required.")
+        values.append(value)
+    if mode=="encode": run_cast(["calldata",signature,*values],config)
+    elif mode=="send": run_cast(["send",signature,*values,"--confirm"],config)
+    else: run_cast(["call",signature,*values],config)
+
+
+
+def run_impersonate(config,args):
+    if not args or not is_address(args[0]):
+        return fail("Usage: lk impersonate <address> [name]")
+    address=args[0]
+    name=args[1] if len(args)>1 else f"actor_{address[-6:]}"
+    rpc=effective_rpc(config)
+    info=anvil_rpc_info(config)
+    if not rpc or not info:
+        return fail("Error: an Anvil RPC is required for impersonation.")
+    if assigned_anvil_address(config,address) and assigned_anvil_address(config,address)!=name:
+        return fail(f"Error: address {address} is already assigned to '{assigned_anvil_address(config,address)}'.")
+    result=run_cast(["rpc","anvil_impersonateAccount",address],config,capture=True)
+    if result.code!=0:
+        return fail(f"Error: Anvil impersonation failed: {result.text or 'unknown error'}", result.code or 1)
+    config.setdefault("wallets",{})[name]={
+        "source":"anvil-impersonated",
+        "address":address,
+    }
+    config["actor"]=name
+    config.setdefault("labels",{})[address]=name
+    save_config(config)
+    print(f"Actor selected: {name} -> impersonated {address}")
+    return 0
+
+def run_as(config,args):
+    if len(args)<2:
+        return fail("Usage: lk as <actor> <command> [args...]")
+    actor=args[0]
+    if actor not in config.get("wallets",{}):
+        return fail(f"Error: unknown actor '{actor}'. Use lk actor to list actors.")
+    if args[1]=="as":
+        return fail("Error: nested actor switching is not supported.")
+    previous=config.get("actor")
+    config["actor"]=actor
+    try:
+        return dispatch_command(args[1],args[2:],config,from_batch=True)
+    finally:
+        config["actor"]=previous
+
+def run_replay(config,args):
+    if not args:
+        print("Usage: lk replay <transaction-hash> [trace flags...]"); return
+    run_trace(config,args)
+
+def fork_state():
+    return read_json_file(FORK_FILE,{}) if os.path.exists(FORK_FILE) else {}
+
+def fork_running(state):
+    pid=state.get("pid")
+    if not isinstance(pid,int):
+        return False
+    try:
+        os.kill(pid,0)
+        return True
+    except OSError:
+        return False
+
+
+def run_fork_state(config,args):
+    if not args or args[0] in {"help","-h","--help"}:
+        print("Usage: lk fork dump [file] | lk fork load <file>")
+        return 0
+    rpc=effective_rpc(config)
+    if not rpc or not anvil_rpc_info(config):
+        return fail("Error: a running Anvil RPC is required.")
+    action=args[0]
+    if action=="dump":
+        path=os.path.expanduser(args[1] if len(args)>1 else "anvil-state.json")
+        state=rpc_json(rpc,"anvil_dumpState",[])
+        if not isinstance(state,str):
+            return fail("Error: Anvil did not return a state snapshot.")
+        Path(path).write_text(state,encoding="utf-8")
+        print(f"Anvil state dumped: {path}")
+        return 0
+    if action=="load":
+        if len(args)!=2:
+            return fail("Usage: lk fork load <file>")
+        path=os.path.expanduser(args[1])
+        if not os.path.exists(path):
+            return fail(f"Error: state file not found: {path}")
+        try:
+            state=Path(path).read_text(encoding="utf-8").strip()
+        except OSError as error:
+            return fail(f"Error reading state file: {error}")
+        if not re.fullmatch(r"0x[0-9a-fA-F]+",state):
+            return fail("Error: state file does not contain an Anvil hex snapshot.")
+        result=rpc_json(rpc,"anvil_loadState",[state])
+        if result is not True:
+            return fail("Error: Anvil rejected the state snapshot.")
+        print(f"Anvil state loaded: {path}")
+        return 0
+    return fail("Usage: lk fork dump [file] | lk fork load <file>")
+
+def run_fork(args, config=None):
+    config=config or load_config()
+    values=list(args)
+    if not values:
+        return fail("Usage: lk fork <rpc-url> [block] [--port PORT] | lk fork status | lk fork stop")
+    if values[0] in {"dump","load"}:
+        return run_fork_state(config,values)
+    if values[0]=="status":
+        state=fork_state()
+        if state and fork_running(state):
+            print(f"Fork: running (PID {state.get('pid')})")
+            print(f"RPC:  {state.get('local_rpc','unknown')}")
+            if state.get("block"):
+                print(f"Block: {state['block']}")
+            return 0
+        print("Fork: stopped")
+        return 0
+    if values[0]=="stop":
+        state=fork_state()
+        pid=state.get("pid")
+        if isinstance(pid,int) and fork_running(state):
+            try:
+                os.kill(pid,15)
+            except OSError:
+                pass
+            print(f"Fork stopped (PID {pid}).")
+        else:
+            print("Fork is not running.")
+        try:
+            os.remove(FORK_FILE)
+        except OSError:
+            pass
+        if config.get("rpc")==state.get("local_rpc"):
+            config["rpc"]=None
+            save_config(config)
+        return 0
+    rpc=values.pop(0)
+    block=None
+    port=8546
+    index=0
+    extra=[]
+    while index<len(values):
+        token=values[index]
+        if token=="--port":
+            if index+1>=len(values):
+                return fail("Usage: lk fork <rpc-url> [block] [--port PORT]")
+            try: port=int(values[index+1])
+            except ValueError: return fail("Error: fork port must be a number.")
+            index+=2; continue
+        if block is None and not token.startswith("-"):
+            block=token; index+=1; continue
+        extra.append(token); index+=1
+    if fork_running(fork_state()):
+        return fail("Error: a Lowkey fork is already running. Use lk fork stop first.")
+    if not tool_path("anvil"):
+        return fail("Error: anvil was not found on PATH. Install Foundry first.")
+    if local_port_open("127.0.0.1",port):
+        return fail(f"Error: port {port} is already in use.")
+    command=["anvil","--fork-url",rpc,"--port",str(port),"--auto-impersonate","--silent"]
+    if block is not None:
+        command.extend(["--fork-block-number",block])
+    command.extend(extra)
+    log_path=os.path.join(AUDIT_DIR,"fork.log")
+    os.makedirs(AUDIT_DIR,exist_ok=True)
+    try:
+        with open(log_path,"a",encoding="utf-8") as log:
+            process=subprocess.Popen(command,stdout=log,stderr=log,start_new_session=True)
+    except (OSError,ValueError) as error:
+        return fail(f"Error starting fork: {error}",1)
+    for _ in range(30):
+        if rpc_json(f"http://127.0.0.1:{port}","eth_chainId",[]):
+            break
+        if process.poll() is not None:
+            return fail(f"Error: fork exited early. See {log_path}.")
+        import time
+        time.sleep(0.1)
+    else:
+        try: process.terminate()
+        except OSError: pass
+        return fail(f"Error: fork did not become ready. See {log_path}.")
+    state={"pid":process.pid,"local_rpc":f"http://127.0.0.1:{port}","block":block,"started":datetime.now().isoformat(timespec="seconds")}
+    Path(FORK_FILE).write_text(json.dumps(state,indent=4),encoding="utf-8")
+    config["rpc"]=state["local_rpc"]
+    save_config(config)
+    print(f"Fork started: {state['local_rpc']}")
+    if block is not None:
+        print(f"Fork block: {block}")
+    print(f"PID: {process.pid}")
+    print("Lowkey RPC switched to the local fork.")
+    return 0
+def print_help():
+    print("""
+LOWKEYCAST — YOUR FOUNDRY ATTACK + RESEARCH CONSOLE
+===================================================
+
+START HERE
+  lk -h / --h                         This menu
+  lk doctor                           Check your Foundry setup
+  lk status                           See target, actor, RPC, ABI
+  lk actor                            See Anvil actors/accounts
+  lk target <address>                 Set the contract under review
+  lk target <name>                    Auto-select named deployment from broadcast/
+  lk target <name> <address>          Save an explicit named target
+  lk target auto [name]                Auto-select latest or named broadcast deployment
+
+RECON → UNDERSTAND THE CONTRACT
+  lk recon                             Balance, code, codehash, nonce, proxy
+  lk functions                        Write / read / storage getters
+  lk fn <name>                        Find a function
+  lk ask <function>                  Show its parameters
+  lk abi                               Show the loaded ABI
+  lk deps [dir|file]                  Imports + inheritance
+  lk layout <Contract>                Forge storage layout
+  lk risk                              Function review-surface hints
+  lk seams                             Cross-surface audit hotspots
+  lk selectors [--compare]            Runtime vs ABI selectors
+  lk disasm [address|bytecode]        EVM disassembly
+
+ACTORS → THINK LIKE ALICE / BOB / THE ATTACKER
+  lk actor 0 Alice                    Bind Anvil #0 → Alice
+  lk actor 1 Bob                      Bind Anvil #1 → Bob
+  lk actor 2 attacker                 Bind Anvil #2 → attacker
+  lk actor                             List accounts + assignments
+  lk as attacker <command>            Run one command as attacker
+  --as Alice                          Choose the caller for try/changes
+  --eth 1 ether                       Attach ETH; inferred from '1 ether' when omitted
+  lk impersonate <address> [name]     Make a fork actor act as an existing account
+  lk actor reset                       Clear the current actor
+  lk wallet list / remove <name>      Manage saved actors
+
+CALL → SEND → FORENSICS
+  lk read <function> [args]           Read the contract
+  lk send <function> [args]           Send a transaction
+  lk send <function> [args] --preview Preview the send
+  lk c / s ...                         Short aliases for read / send
+  lk encode <function> [args]         Build calldata
+  lk calldata <0x...>                 Decode/pretty-print calldata
+  lk decode-calldata <0x...>          Native Cast calldata decoder
+  lk 4byte <selector>                 Signature database lookup
+  lk 4byte-event <topic0>             Event signature lookup
+  lk 4byte-calldata <0x...>            Calldata signature database lookup
+  lk access-list <function> [args]    Build an EIP-2930 access list
+  lk interface [ABI|address]          Generate a Solidity interface
+  lk constructor-args [address]       Decode constructor arguments
+  lk creation-code [address]          Inspect creation bytecode
+  lk abi-encode <type> [args]          Raw ABI argument encoding
+  lk decode <function> <0x...>        Decode return data
+  lk decode-error <0x...>             Decode custom-error data
+  lk event <sig> <data> [topics...]   Decode an event
+  lk tx [<tx>]                        Transaction details + ABI decode
+  lk receipt [<tx>]                   Receipt
+  lk trace [<tx>]                     Execution trace
+  lk logs --decode                    Query + decode logs
+  lk txpool                           Inspect pending TxPool
+
+STORAGE / STATE
+  lk mapping <slot> <key>             Calculate + read a mapping slot
+  lk namespace <id>                   ERC-7201 namespace slot
+  lk proof <slot> [block]             Storage proof
+  lk snapshot [slots...]              Save raw slots
+  lk diff                              Compare the saved snapshot
+  lk changes <function> [args...]     Show storage changes from a call
+
+ATTACK / EXPERIMENT
+  lk try <function> [args...]         Try a call on a test copy
+  lk changes <function> [args...]     Show only storage changes
+  --as Alice                          Choose who calls it
+  --eth 1 ether                       Attach ETH; omitted = auto when clear
+  probe / state-diff                  Older aliases still supported
+  lk matrix init                      Start an attacker/state matrix
+  lk matrix actor <name> <address>    Add an actor to the matrix
+  lk matrix state <name> <desc>       Record a state
+  lk matrix add <name> <fn> <actor> <expected>
+  lk matrix test <name>                Generate + run the scenario
+  lk test-gen                          Turn the last send into a Forge test
+  lk chisel                            Open the Solidity REPL
+
+TIME / FORKING
+  lk fork <rpc> [block]               Start a local fork on :8546
+  lk fork status                      Show fork status
+  lk fork dump [file]                 Save full Anvil state
+  lk fork load <file>                  Restore full Anvil state
+  lk fork stop                        Stop the Lowkey fork
+  lk rpc <rpc>                         Point Lowkey at a specific RPC
+
+PROVE IT WITH FOUNDRY
+  lk fuzz                              Run Forge fuzz tests
+  lk fuzz replay                      Replay persisted failures
+  lk fuzz failures                    Show persisted failure files
+  lk invariant                         Run invariant_* tests
+  lk invariant new <Contract>        Generate invariant starter
+  lk mutate                            Forge mutation testing
+  lk symbolic                          Forge symbolic testing
+  lk symbolic emit                    Symbolic + regression output
+  lk brutalize [args...]              Brutalize tests
+  lk cheatcodes                       Foundry cheatcode quick reference
+  lk forge test -vvvv                 Native Forge
+  lk forge inspect-audit <Contract>  Build + inspect ABI/methods/errors/events/storage
+  lk forge audit                      Build + traced tests + coverage
+
+SHORTCUTS / OVERRIDES
+  lk build                             forge build
+  lk test                              forge test
+  lk gas <function> [args]             Estimate gas
+  lk raw <cast-command> [args...]      Escape hatch to Cast
+  lk batch <file>                     Run a Lowkey command file
+  lk workspace init                    Create .audit workspace
+  lk finding <text>                    Save a finding
+  lk todo <text>                       Save a TODO
+  lk export                            Export audit-report/
+
+PLACEHOLDERS
+  <address>     0x1111...1111
+  <Contract>    EthEscrow
+  <function>    release
+  <file>        src/EthEscrow.sol
+  <dir>         src
+  <slot>        3
+  <key>         0x1111...1111
+  <tx>          0xaaa...aaa
+  <rpc>         http://127.0.0.1:8545
+
+ESCROW FLOW
+  anvil
+  lk actor 0 Alice
+  lk actor 1 Bob
+  lk actor 2 attacker
+  lk target escrow
+  lk functions
+  lk try release --as attacker
+  lk changes createescrow 1 ether Bob --as Alice
+  lk trace
+  lk test-gen
+
+RULE
+  Lowkey surfaces evidence and gives you attack/test tools.
+  It does not decide that a contract is vulnerable.
+""")
+
+def dispatch_command(cmd,args,config,from_batch=False):
+    if cmd in {"--h","--help","-h","help"}: print_help()
+    elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.1 — Foundry Attack Lab")
+    elif cmd=="target":
+        if not args: print(f"Current target: {config.get('target') or 'none'}"); return
+        if args[0]=="reset": config["target"]=None
+        elif args[0]=="list": run_targets(config); return
+        elif args[0]=="auto": run_auto_target(config,args[1] if len(args)>1 else None); return
+        elif len(args)==1:
+            resolved=resolve_target_ref(config,args[0])
+            if resolved:
+                config["target"]=resolved
+            elif is_address(args[0]):
+                config["target"]=args[0]
+            else:
+                return run_auto_target(config,args[0])
+        elif len(args)==2 and is_address(args[1]): config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]
+        else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
+        save_config(config)
+    elif cmd in {"targets","target-list"}: run_targets(config)
+    elif cmd=="use":
+        if not args: run_targets(config); return
+        resolved=resolve_target_ref(config,args[0])
+        if not resolved: print(f"Unknown target: {args[0]}"); return
+        config["target"]=resolved; save_config(config)
+    elif cmd=="deployments": run_deployments(config)
+    elif cmd=="rpc":
+        if not args:
+            rpc=effective_rpc(config)
+            mode="manual" if config.get("rpc") else "auto Anvil"
+            print(f"RPC: {rpc_display(rpc) or 'none'} ({mode})" if rpc else "RPC: none (no local Anvil detected)")
+            return
+        sub=args[0]
+        if sub=="reset": config["rpc"]=None
+        elif sub=="set" and len(args)==3: config["rpc_profiles"][args[1]]=args[2]; config["rpc"]=args[2]
+        elif sub=="use" and len(args)==2 and args[1] in config["rpc_profiles"]: config["rpc"]=config["rpc_profiles"][args[1]]
+        elif sub=="use": return fail(f"Error: unknown RPC profile: {args[1] if len(args)>1 else ''}")
+        elif len(args)==1: config["rpc"]=args[0]
+        else: return fail("Usage: lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset")
+        save_config(config)
+    elif cmd=="wallet":
+        if args and args[0]=="list":
+            for name,entry in config.get("wallets",{}).items():
+                print(f"{name}: {wallet_entry_kind(entry)}")
+        elif len(args)==3 and args[0]=="set":
+            key=normalize_private_key(args[2])
+            if not key: print("Invalid private key format."); return
+            config["wallets"][args[1]]={"private_key":key}; config["actor"]=args[1]; save_config(config)
+            print("Wallet saved. This stores the key locally; use wallet set-env for secret-free storage.")
+        elif len(args)==3 and args[0]=="set-env":
+            config["wallets"][args[1]]={"env":args[2]}; config["actor"]=args[1]; save_config(config)
+            print(f"Wallet profile '{args[1]}' now reads from environment variable {args[2]}.")
+        elif len(args)==2 and args[0]=="use" and args[1] in config.get("wallets",{}): config["actor"]=args[1]; save_config(config)
+        elif len(args)==2 and args[0]=="use": return fail(f"Error: unknown wallet profile: {args[1]}")
+        elif len(args)==2 and args[0]=="remove":
+            config["wallets"].pop(args[1],None)
+            if config.get("actor")==args[1]: config["actor"]=None
+            save_config(config)
+        else: return fail("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
+    elif cmd=="actor":
+        if args and args[0]=="reset":
+            config["actor"]=None
+            save_config(config)
+        elif len(args)>=2 and args[0].isdigit():
+            return select_anvil_actor(config,args[0],args[1])
+        elif len(args)==1 and args[0] in config.get("wallets",{}):
+            config["actor"]=args[0]
+            save_config(config)
+            print(f"Actor selected: {actor_display(config)}")
+        elif not args:
+            list_anvil_actors(config)
+        else:
+            return fail("Usage: lk actor <index> <name> | lk actor [existing-name] | lk actor reset")
+    elif cmd=="abi":
+        target=config.get("target")
+        if not target: return fail("Error: Set target first.")
+        if not args:
+            run_abi(config)
+        elif args[0]=="auto":
+            path=auto_abi_path(target,config)
+            if not path: return fail("Error: could not auto-discover an ABI for the current target.")
+            print(f"ABI auto-loaded: {path}")
+        else:
+            path=os.path.expanduser(args[0])
+            if not os.path.exists(path):
+                return fail(f"Error: ABI file not found: {path}")
+            config["abi_paths"][target]=path
+            config["target_contract"]=artifact_contract_name(path,read_artifact(path))
+            save_config(config)
+            print(f"ABI override saved: {path}")
+    elif cmd in {"read"}:
+        return run_cast(["call",*args],config)
+    elif cmd in {"send"}:
+        return run_cast(["send",*args],config)
+    elif cmd in {"try","probe"}:
+        return run_probe(config,args)
+    elif cmd in {"changes","state-diff"}:
+        return run_state_diff(config,args)
+    elif cmd=="functions": run_functions(config,args[0] if args else None)
+    elif cmd=="fn": run_functions(config," ".join(args) if args else None)
+    elif cmd=="wizard": run_wizard(config,args)
+    elif cmd=="replay": run_replay(config,args)
+    elif cmd=="fork": return run_fork(args,config)
+    elif cmd=="ask":
+        if not args: return fail("Usage: lk ask <function>")
+        funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
+        if len(matches)!=1:
+            for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]: print(" ",format_signature(item))
+        else:
+            item=matches[0]; print(f"Function: {format_signature(item)}")
+            for index,param in enumerate(item.get("inputs",[]),1): print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
+    elif cmd=="info": run_info(config)
+    elif cmd=="status": run_status(config)
+    elif cmd=="chain": run_chain(config)
+    elif cmd=="encode": run_encode(config,args)
+    elif cmd=="sig": run_signature(args)
+    elif cmd in {"decode-error","error"}: run_decode_error(config,args)
+    elif cmd in {"decode","returns"}: run_decode(config,args)
+    elif cmd in {"event","decode-event"}: run_event(config,args)
+    elif cmd=="tx": run_tx(config,args)
+    elif cmd=="label":
+        if len(args)==2: config["labels"][args[0]]=args[1]; save_config(config)
+        else: print("Usage: lk label <address> <name>")
+    elif cmd=="recon": run_recon(config)
+    elif cmd=="proxy": run_proxy(config)
+    elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
+    elif cmd=="admin": run_cast(["admin",config.get("target")],config)
+    elif cmd in {"mapping","map"}: run_mapping(config,*args)
+    elif cmd=="namespace": run_namespace(config,args)
+    elif cmd=="proof": run_proof(config,args)
+    elif cmd=="selectors": return run_selectors(config,args)
+    elif cmd=="calldata": return run_calldata(config,args)
+    elif cmd in {"4byte","4byte-calldata","4byte-event","access-list","interface","constructor-args","creation-code","decode-calldata","abi-encode"}: return run_cast_deep(config,[cmd,*args])
+    elif cmd=="disasm": return run_disasm(config,args)
+    elif cmd=="txpool": return run_txpool(config,args)
+    elif cmd=="chisel": return run_chisel(args)
+    elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
+    elif cmd=="as": return run_as(config,args)
+    elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
+    elif cmd=="fuzz": return run_fuzz(args)
+    elif cmd=="invariant": return run_invariant(config,args)
+    elif cmd=="mutate": return run_mutate(args)
+    elif cmd=="symbolic": return run_symbolic(args)
+    elif cmd=="brutalize": return run_brutalize(args)
+    elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
+    elif cmd in {"actors","actor-list"}: return list_anvil_actors(config)
+    elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
+    elif cmd in {"token","erc20"}: run_token(config,args)
+    elif cmd=="snapshot": run_snapshot(config,args)
+    elif cmd=="diff": run_diff(config)
+    elif cmd=="finding":
+        if args and args[0]=="add" and len(args)>=4: run_finding(config,f"[{args[1].upper()}] {args[2]}: {' '.join(args[3:])}")
+        elif args: run_finding(config," ".join(args))
+        else: print("Usage: lk finding <note>")
+    elif cmd=="checklist":
+        if args and args[0]=="done": run_checklist(config,"done"," ".join(args[1:]))
+        elif args and args[0]=="reset": run_checklist(config,"reset")
+        else: run_checklist(config)
+    elif cmd=="session":
+        if args and args[0] in {"start","resume"}: run_session_lifecycle(config,args[0])
+        elif args and args[0]=="end":
+            config["session_active"]=False; config["session_ended"]=datetime.now().isoformat(timespec="seconds"); save_config(config); print("Audit session ended.")
+        elif os.path.exists(SESSION_FILE): print(Path(SESSION_FILE).read_text(encoding="utf-8"))
+        else: print("No session history yet.")
+    elif cmd=="workspace": run_workspace(config,args)
+    elif cmd=="note": run_note(" ".join(args))
+    elif cmd=="todo": run_todo(" ".join(args))
+    elif cmd=="export": run_export(config)
+    elif cmd=="matrix":
+        if args and args[0]=="state" and len(args)>=3:
+            paths=workspace_paths(); os.makedirs(paths["matrix"],exist_ok=True)
+            states=read_json_file(paths["matrix_states"],{}); states[args[1]]={"description":" ".join(args[2:])}; write_json_file(paths["matrix_states"],states); print(f"Matrix state saved: {args[1]}")
+        else: run_matrix(config,args)
+    elif cmd=="risk": run_risk(config)
+    elif cmd in {"seams","hotspots"}: return run_seams(config)
+    elif cmd=="scan": run_scan(args)
+    elif cmd=="deps": run_deps(args)
+    elif cmd=="layout": run_layout(args)
+    elif cmd=="gas": run_gas(config,args)
+    elif cmd=="raw": run_raw(config,args)
+    elif cmd=="batch": run_batch(config,args)
+    elif cmd=="audit": run_audit_mode(config)
+    elif cmd=="self-test": raise SystemExit(run_self_test())
+    elif cmd=="doctor": return run_doctor()
+    elif cmd=="receipt": run_receipt(config,args[0] if args else None)
+    elif cmd=="trace": run_trace(config,args)
+    elif cmd=="logs": run_logs(config,args)
+    elif cmd=="last":
+        action=args[0] if args else "receipt"
+        if action=="tx": run_tx(config,[])
+        elif action=="trace": run_trace(config,[])
+        elif action=="logs": run_logs(config,[])
+        else: run_receipt(config)
+    elif cmd=="test-gen": run_test_gen(config)
+    elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
+    else: run_cast([cmd]+args,config)
+
+def main():
+    global _COMMAND_STATUS
+    _COMMAND_STATUS = 0
+    config=load_config()
+    if len(sys.argv)<2: print_help(); return
+    result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+    if isinstance(result,int): raise SystemExit(result)
+    if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
+
+if __name__ == "__main__":
     main()
