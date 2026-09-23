@@ -1668,9 +1668,6 @@ contract LowkeyStateDiff is Test {{
 '''
         path=write_generated_test("state-diff_"+signature.split("(",1)[0],body)
         code=run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
-        if not _keep:
-            try: os.remove(path)
-            except OSError: pass
         return code
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
@@ -2366,7 +2363,8 @@ def run_fork_state(config,args):
         return 0
     return fail("Usage: lk fork dump [file] | lk fork load <file>")
 
-def run_fork(args):
+def run_fork(args, config=None):
+    config=config or load_config()
     values=list(args)
     if not values:
         return fail("Usage: lk fork <rpc-url> [block] [--port PORT] | lk fork status | lk fork stop")
@@ -2695,7 +2693,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="fn": run_functions(config," ".join(args) if args else None)
     elif cmd=="wizard": run_wizard(config,args)
     elif cmd=="replay": run_replay(config,args)
-    elif cmd=="fork": run_fork(args)
+    elif cmd=="fork": return run_fork(args,config)
     elif cmd=="ask":
         if not args: return fail("Usage: lk ask <function>")
         funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
