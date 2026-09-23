@@ -3193,6 +3193,9 @@ ATTACK / EXPERIMENT
   lk matrix add <name> <fn> <actor> <expected>
   lk matrix test <name>                Generate + run the scenario
   lk test-gen                          Turn the last send into a Forge test
+  lk generate deployment <Contract>  Generate advanced commented deployment script
+  lk generate poc [<function> args...] Generate advanced commented PoC script
+  lk generate test [<function> args...] Generate advanced commented Forge test
   lk chisel                            Open the Solidity REPL
 
 TIME / FORKING
