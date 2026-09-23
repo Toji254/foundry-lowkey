@@ -962,6 +962,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     auto = "--auto" in args or "auto" in args
     static = "--static" in args or "--no-exec" in args
     no_slither = "--no-slither" in args
+    no_prompt = "--yes" in args or "--non-interactive" in args or not sys.stdin.isatty()
     contract = None
     max_steps = 8
     for i, arg in enumerate(args):
@@ -1031,7 +1032,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         _save_artifacts(root, model_payload, plan)
         return 0
 
-    input("Press ENTER to start the live walkthrough  ")
+    if not no_prompt:
+        try:
+            input("Press ENTER to start the live walkthrough  ")
+        except EOFError:
+            no_prompt = True
 
     for step in plan:
         try:
@@ -1082,12 +1087,13 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             print(_paint("  execution reverted; the board preserves the actual failure.", RED, enabled))
         if enabled:
             time.sleep(0.35)
-        try:
-            input("\nPress ENTER for next step (q to stop)  ")
-            if False:
-                break
-        except EOFError:
-            break
+        if not no_prompt:
+            try:
+                answer = input("\nPress ENTER for next step (q to stop)  ").strip().lower()
+                if answer == "q":
+                    break
+            except EOFError:
+                no_prompt = True
 
     replay = _generate_replay_script(root, model, target, plan)
     model_payload["replay_script"] = str(replay.relative_to(root))
