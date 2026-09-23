@@ -501,6 +501,7 @@ def _template_poc(contract: str, target: str, function: str, value: str, calldat
 pragma solidity ^0.8.20;
 
 import {{Script, console2}} from "forge-std/Script.sol";
+import {{Vm}} from "forge-std/Vm.sol";
 
 /// @title Lowkey-generated proof of concept
 /// @notice Replays one concrete call and exposes the measurements needed for a security property.
