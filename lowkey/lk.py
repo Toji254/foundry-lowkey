@@ -4500,7 +4500,7 @@ def run_audit(config, args):
     return return_code
 
 def refresh_generated_poc(config):
-    """Refresh the connected PoC scaffold when a concrete send exists."""
+    """Refresh the connected PoC scaffold after audit evidence or a concrete send."""
     root = audit_context.foundry_project_root()
     latest = audit_context.load(root).get("latest", {})
     if not isinstance(latest, dict) or not latest.get("tx_hash"):
