@@ -40,6 +40,9 @@ jobs:
         run: |
           mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
           cd /tmp/lowkey-fixture
+          git init -q
+          git config user.name "Lowkey CI"
+          git config user.email "ci@lowkey.invalid"
           forge install foundry-rs/forge-std --no-commit
           cd -
           cat > /tmp/lowkey-fixture/foundry.toml <<'EOF'
