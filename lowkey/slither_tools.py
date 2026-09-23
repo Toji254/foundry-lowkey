@@ -78,7 +78,7 @@ def _clean_description(value: object) -> str:
     text = " ".join(str(value or "").split())
     # Keep the evidence, but remove distracting repeated reference URLs from the
     # main human-readable explanation.
-    text = re.sub(r"\\s*https?://\\S+", "", text).strip()
+    text = re.sub(r"\s*https?://\S+", "", text).strip()
     return text.rstrip()
 
 
@@ -114,15 +114,77 @@ def _element_context(finding: dict) -> str | None:
     elements = finding.get("elements")
     if not isinstance(elements, list):
         return None
+
     labels = []
-    for element in elements[:4]:
+    for element in elements:
         if not isinstance(element, dict):
             continue
+        kind = str(element.get("type") or "").strip().lower()
         name = str(element.get("name") or "").strip()
-        kind = str(element.get("type") or "").strip()
-        if name:
-            labels.append(f"{kind} {name}" if kind else name)
+        if not name or kind == "node":
+            continue
+        labels.append(f"{kind} {name}" if kind else name)
+        if len(labels) == 2:
+            break
+
     return ", ".join(labels) if labels else None
+
+
+def _human_observation(finding: dict, check: str) -> str:
+    elements = finding.get("elements")
+    first_function = None
+    first_enum = None
+    first_pragma = None
+
+    if isinstance(elements, list):
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            kind = str(element.get("type") or "").lower()
+            name = str(element.get("name") or "").strip()
+            if kind == "function" and name and first_function is None:
+                first_function = name
+            elif kind == "enum" and name and first_enum is None:
+                first_enum = name
+            elif kind == "pragma" and name and first_pragma is None:
+                first_pragma = name
+
+    if check == "low-level-calls":
+        return (
+            f"The function {first_function}() makes a raw external call that can execute code "
+            "in the receiving address."
+            if first_function
+            else "The contract makes a raw external call that can execute code in the receiving address."
+        )
+    if check == "naming-convention":
+        return (
+            f"The enum '{first_enum}' uses a naming style that does not match the project's "
+            "expected Solidity convention."
+            if first_enum
+            else "A Solidity identifier does not follow the expected naming convention."
+        )
+    if check == "solc-version":
+        return (
+            f"The project accepts Solidity compiler versions allowed by '{first_pragma}', "
+            "including releases that Slither flags for known compiler issues."
+            if first_pragma
+            else "The project accepts Solidity compiler versions that Slither flags for known compiler issues."
+        )
+    if check == "reentrancy-eth":
+        return (
+            f"The function {first_function}() contains an ETH transfer path that needs a reentrancy review."
+            if first_function
+            else "An ETH transfer path needs a reentrancy review."
+        )
+    if check == "reentrancy-no-eth":
+        return (
+            f"The function {first_function}() contains an external call in a path that may be re-entered."
+            if first_function
+            else "An external call occurs in a path that may be re-entered."
+        )
+    if check == "tx-origin":
+        return "The contract uses the original transaction signer for logic where caller-based authorization should be reviewed."
+    return "Static analysis found a code pattern that deserves manual security review."
 
 
 def _human_finding(finding: dict, number: int, total: int) -> None:
@@ -131,9 +193,9 @@ def _human_finding(finding: dict, number: int, total: int) -> None:
     confidence = str(finding.get("confidence") or "Unknown")
     guidance = DETECTOR_GUIDANCE.get(check, {
         "title": check.replace("-", " ").replace("_", " ").title(),
-        "meaning": "Slither detected a code pattern that deserves manual security review.",
-        "why": "Static analysis identifies suspicious patterns, but the pattern may be intentional or may not violate a security property in this contract.",
-        "next": "Read the affected code in context, identify the security property involved, and reproduce the behavior with Foundry before recording a finding.",
+        "meaning": "Static analysis found a code pattern that deserves manual security review.",
+        "why": "The pattern may be intentional or may not violate a security property in this contract.",
+        "next": "Read the affected code in context, identify the relevant security property, and reproduce the behavior with Foundry before recording a finding.",
     })
 
     print(f"\nFINDING {number}/{total}")
@@ -141,7 +203,6 @@ def _human_finding(finding: dict, number: int, total: int) -> None:
     print(f"Issue       : {guidance['title']}")
     print(f"Impact      : {impact}")
     print(f"Confidence  : {confidence}")
-    print(f"Detector ID : {check}")
 
     location = _source_location(finding)
     if location:
@@ -151,10 +212,7 @@ def _human_finding(finding: dict, number: int, total: int) -> None:
     if context:
         print(f"Code area   : {context}")
 
-    description = _clean_description(finding.get("description"))
-    if description:
-        print(f"\nWhat Slither found:\n  {description}")
-
+    print(f"\nObserved:\n  {_human_observation(finding, check)}")
     print(f"\nWhat it means:\n  {guidance['meaning']}")
     print(f"\nWhy it matters:\n  {guidance['why']}")
     print(f"\nNext audit move:\n  {guidance['next']}")
@@ -268,7 +326,7 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         print(result.stdout.rstrip())
 
     print(f"\nSlither status: {'completed successfully' if result.returncode == 0 else 'failed'}")
-    print("Auditor's note: a static-analysis results are evidence to investigate, not automatic proof of a vulnerability.")
+    print("Auditor's note: static-analysis results are evidence to investigate, not automatic proof of a vulnerability.")
     return result.returncode
 
 
