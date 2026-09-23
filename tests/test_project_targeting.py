@@ -112,8 +112,16 @@ class ProjectTargetingTests(unittest.TestCase):
             "0x" + "b" * 40,
         )
         self.assertEqual(
-            lk.parse_deployed_address('{"deployedTo":"0x' + "c" * 40 + '"}'),
+            lk.parse_deployed_address("Deployed to: 0x" + "b" * 40 + " (ConfidencePoolFactory)"),
+            "0x" + "b" * 40,
+        )
+        self.assertEqual(
+            lk.parse_deployed_address("Contract Address: 0x" + "c" * 40),
             "0x" + "c" * 40,
+        )
+        self.assertEqual(
+            lk.parse_deployed_address('{"deployedTo":"0x' + "d" * 40 + '"}'),
+            "0x" + "d" * 40,
         )
         self.assertIsNone(lk.parse_deployed_address("deployment complete"))
 
