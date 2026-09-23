@@ -2213,7 +2213,7 @@ def run_clone(config, args):
         # Stream Git's progress directly so a slow submodule clone does not
         # look frozen to the user.
         completed = subprocess.run(
-            [git, "clone", "--recurse-submodules", clone_url, str(destination)],
+            [git, "-c", "http.version=HTTP/1.1", "clone", "--recurse-submodules", clone_url, str(destination)],
             text=True,
         )
     except KeyboardInterrupt:
