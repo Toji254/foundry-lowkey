@@ -334,6 +334,64 @@ def set_focus(signal_id: str, root: Path | None = None) -> dict[str, Any] | None
     return None
 
 
+def attach_signal_evidence(
+    signal_id: str,
+    evidence: dict[str, Any],
+    root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Attach structured investigation evidence to an existing audit signal.
+
+    Evidence is kept on the signal so ``lk findings`` and ``lk focus`` can show
+    the concrete observations produced while investigating that signal.
+    Re-running the same evidence payload updates it instead of duplicating it.
+    """
+    context = load(root)
+    for signal in context.setdefault("signals", []):
+        if signal.get("id") != signal_id:
+            continue
+
+        evidence = dict(evidence)
+        evidence.setdefault("captured_at", _now())
+        kind = str(evidence.get("kind") or "evidence")
+        identity = {
+            key: value
+            for key, value in evidence.items()
+            if key not in {"id", "captured_at"}
+        }
+        digest = hashlib.sha1(
+            json.dumps(identity, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:12].upper()
+        evidence.setdefault("id", f"{kind.upper()}-{digest}")
+
+        records = signal.setdefault("evidence", [])
+        if not isinstance(records, list):
+            records = []
+            signal["evidence"] = records
+
+        existing = next(
+            (item for item in records if isinstance(item, dict) and item.get("id") == evidence["id"]),
+            None,
+        )
+        if existing is None:
+            records.append(evidence)
+            action = "signal-evidence-added"
+        else:
+            existing.update(evidence)
+            evidence = existing
+            action = "signal-evidence-updated"
+
+        signal["updated_at"] = _now()
+        save(context, root)
+        emit(
+            action,
+            root,
+            tool=str(signal.get("tool") or "lowkey"),
+            summary=f"{signal_id}: {kind}",
+            data={"signal_id": signal_id, "evidence": evidence},
+        )
+        return signal
+    return None
+
 def set_target(
     root: Path | None = None,
     *,
