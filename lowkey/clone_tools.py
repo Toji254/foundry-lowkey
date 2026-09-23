@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 CONFIG_DIR = Path(os.path.expanduser("~/.lowkey"))
 CACHE_DIR = CONFIG_DIR / "cache"
-CACHE_REPO = CACHE_DIR / "submodule-reference.git"
+REPO_CACHE_DIR = CACHE_DIR / "repos"
 
 
 def die(message: str, code: int = 2) -> int:
@@ -418,6 +418,7 @@ def run_clone(args: Sequence[str]) -> int:
     print(f"Mode       : {'shallow' if depth else 'full'}")
     print(f"Submodules : parallel ({jobs} jobs)")
     print(f"Cache      : {'enabled' if use_cache else 'disabled'}")
+    print("Strategy   : on-the-fly per-repository cache reuse")
     print()
 
     code = initialize_main_repo(url, destination, depth)
@@ -427,16 +428,6 @@ def run_clone(args: Sequence[str]) -> int:
     code = sync_submodules(destination)
     if code != 0:
         return die("Failed to synchronize Git submodule URLs.", code)
-
-    if use_cache:
-        try:
-            cache = ensure_cache_repo()
-            if cache_has_objects(cache):
-                print(f"[CACHE] Reusing: {cache}")
-            else:
-                print(f"[CACHE] Initializing: {cache}")
-        except RuntimeError as exc:
-            print(f"[CACHE] Warning: {exc}", file=sys.stderr)
 
     print(
         f"[DEPS] Walking submodules incrementally "
@@ -448,9 +439,6 @@ def run_clone(args: Sequence[str]) -> int:
             "Submodule initialization failed. Re-run the same command to resume.",
             code,
         )
-
-    if use_cache:
-        populate_cache(destination)
 
     print()
     print("LOWKEY CLONE COMPLETE")
