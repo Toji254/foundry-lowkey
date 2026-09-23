@@ -58,19 +58,32 @@ def has_verbosity(args: Sequence[str]) -> bool:
 
 
 def run_slither_preflight(root: Path) -> int:
+    helper = Path(__file__).with_name("slither_tools.py")
+    if helper.is_file():
+        try:
+            return subprocess.run(
+                [sys.executable, str(helper)],
+                cwd=root,
+            ).returncode
+        except OSError as exc:
+            print(f"LowkeyForge: could not execute Lowkey Slither reporter: {exc}", file=sys.stderr)
+            return 1
+
     binary = shutil.which("slither")
     if not binary:
         print("LowkeyForge: skipping Slither (not found on PATH).")
         return 0
 
+    # Fallback for unusual installations where the companion reporter is absent.
+    # Keep this path transparent rather than hiding a broken installation.
     print("\n=== LOWKEY STATIC: SLITHER ===")
-    print(f"Project: {root}")
     command = [binary, str(root), "--exclude-dependencies", "--disable-color", "--fail-none"]
     try:
         return subprocess.run(command, cwd=root).returncode
     except OSError as exc:
         print(f"LowkeyForge: could not execute Slither: {exc}", file=sys.stderr)
         return 1
+
 
 def run_audit(args: Sequence[str]) -> int:
     checks = "--checks" in args
