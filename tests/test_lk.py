@@ -133,6 +133,110 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen[1], "ConfidencePoolFactory")
 
+    def test_project_context_rejects_stale_dependency_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "lib").mkdir()
+            (root / "out" / "ConfidencePoolFactory.sol").mkdir(parents=True)
+            (root / "out" / "Address.sol").mkdir(parents=True)
+            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+
+            (root / "src" / "ConfidencePoolFactory.sol").write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePoolFactory { }",
+                encoding="utf-8",
+            )
+            (root / "lib" / "Address.sol").write_text(
+                "pragma solidity ^0.8.20; library Address { }",
+                encoding="utf-8",
+            )
+
+            app_artifact = {
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "contractName": "ConfidencePoolFactory",
+                "sourceName": "src/ConfidencePoolFactory.sol",
+            }
+            lib_artifact = {
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "contractName": "Address",
+                "sourceName": "lib/openzeppelin-contracts/contracts/utils/Address.sol",
+            }
+            (root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json").write_text(
+                json.dumps(app_artifact), encoding="utf-8"
+            )
+            (root / "out" / "Address.sol" / "Address.json").write_text(
+                json.dumps(lib_artifact), encoding="utf-8"
+            )
+
+            stale = "0x" + "a" * 40
+            lk.audit_context.set_target(
+                root,
+                address=stale,
+                contract="Address",
+                artifact=str(root / "out" / "Address.sol" / "Address.json"),
+                source="project-lab",
+            )
+
+            self.assertIsNone(lk.project_context_target(root))
+
+    def test_live_target_candidate_ignores_dependency_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "lib").mkdir()
+            (root / "out" / "ConfidencePoolFactory.sol").mkdir(parents=True)
+            (root / "out" / "Address.sol").mkdir(parents=True)
+            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            (root / "src" / "ConfidencePoolFactory.sol").write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePoolFactory { }",
+                encoding="utf-8",
+            )
+            (root / "lib" / "Address.sol").write_text(
+                "pragma solidity ^0.8.20; library Address { }",
+                encoding="utf-8",
+            )
+
+            app = {
+                "abi": [], "bytecode": {"object": "0x6000"},
+                "contractName": "ConfidencePoolFactory",
+                "sourceName": "src/ConfidencePoolFactory.sol",
+            }
+            dep = {
+                "abi": [], "bytecode": {"object": "0x6000"},
+                "contractName": "Address",
+                "sourceName": "lib/openzeppelin-contracts/contracts/utils/Address.sol",
+            }
+            (root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json").write_text(
+                json.dumps(app), encoding="utf-8"
+            )
+            (root / "out" / "Address.sol" / "Address.json").write_text(
+                json.dumps(dep), encoding="utf-8"
+            )
+
+            config = {
+                "aliases": {
+                    "Address": "0x" + "1" * 40,
+                    "ConfidencePoolFactory": "0x" + "2" * 40,
+                },
+                "targets": {},
+            }
+            with patch.object(lk, "anvil_rpc_info", return_value={"url": "http://127.0.0.1:8545"}), \
+                 patch.object(
+                     lk,
+                     "cast_output",
+                     side_effect=lambda args: (0, "0x6000", "") if args[-1] in config["aliases"].values() else (1, "", ""),
+                 ):
+                candidate = lk._live_target_candidate(
+                    config,
+                    root,
+                    "ConfidencePoolFactory",
+                )
+
+            self.assertIsNotNone(candidate)
+            self.assertEqual(candidate["contract"], "ConfidencePoolFactory")
+
     def test_target_named_deployment_auto_selects_matching_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp)
