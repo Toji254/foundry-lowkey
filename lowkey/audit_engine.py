@@ -427,6 +427,12 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
     matrix = _matrix(root)
     triage_payload = read_json(evidence_dir(root) / "source_triage.json", {}).get("data", {})
     triage_markers = triage_payload.get("markers", []) if isinstance(triage_payload, dict) else []
+    trace_payload = read_json(evidence_dir(root) / "trace.json", {}).get("data", {})
+    storage_payload = read_json(evidence_dir(root) / "storage_diff.json", {}).get("data", {})
+    risk_payload = read_json(evidence_dir(root) / "risk.json", {}).get("data", {})
+    evidence_records = sorted(
+        p.stem for p in evidence_dir(root).glob("*.json") if p.name != "manifest.json"
+    )
     config = _config()
     target = config.get("target")
     abi_map = _abi_functions(_load_abi(config, target))
@@ -530,6 +536,10 @@ contract Poc_{slug} is Test {{
     // Candidate detector: {check} ({impact}/{confidence})
     // Candidate function: {function or "<identify-function(signature)>"}
     // Finding summary: {description[:700]}
+    // Evidence records captured: {", ".join(evidence_records) or "none"}
+    // Prior trace tx: {trace_payload.get("tx") if isinstance(trace_payload, dict) else "none"}
+    // Prior storage changes: {len(storage_payload.get("changes", [])) if isinstance(storage_payload, dict) else 0}
+    // Risk rows captured: {len(risk_payload.get("functions", [])) if isinstance(risk_payload, dict) else 0}
 
     {constructor}
 {reentrancy_body if mode == "reentrancy" else _body(mode)}
@@ -558,6 +568,10 @@ contract Poc_{slug} is Test {{
             "source_triage_markers": len(triage_markers),
             "matrix_scenarios": len(matrix),
             "notes_findings_todos": _notes(root),
+            "evidence_records": evidence_records,
+            "trace_tx": trace_payload.get("tx") if isinstance(trace_payload, dict) else None,
+            "storage_changes": len(storage_payload.get("changes", [])) if isinstance(storage_payload, dict) else 0,
+            "risk_functions": len(risk_payload.get("functions", [])) if isinstance(risk_payload, dict) else 0,
             "last_tx": config.get("last_tx"),
             "rpc": config.get("rpc"),
         },
