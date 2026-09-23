@@ -1480,6 +1480,24 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(lk.run_symbolic(["emit","--match-test","testFoo"]),0)
         self.assertIn("--emit-regression",run.call_args.args[0])
 
+    def test_project_lab_target_survives_context_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            audit_context.set_target(
+                root,
+                address="0x" + "1" * 40,
+                contract="Fixture",
+                artifact=str(root / "out" / "Fixture.sol" / "Fixture.json"),
+                source="project-lab",
+            )
+            config = {"target": None, "target_contract": None, "abi_paths": {}, "rpc": None, "actor": None}
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root),                  patch.object(lk, "effective_rpc", return_value=None):
+                state = lk._sync_audit_context(config, root)
+            self.assertEqual(state["target"]["address"], "0x" + "1" * 40)
+            self.assertEqual(state["target"]["contract"], "Fixture")
+            self.assertEqual(state["target"]["source"], "project-lab")
+
     def test_investigate_sets_shared_focus_and_suggests_tools(self):
         signal={
             "id":"SLITHER-ABC123",
