@@ -3726,6 +3726,16 @@ def _sync_audit_context(config, root=None):
                 "artifact": config.get("abi_paths", {}).get(global_target),
                 "source": "legacy-global",
             }
+        else:
+            # Clear stale target fields left by older Lowkey versions. The context updater
+            # merges nested dictionaries, so explicit nulls prevent a target from another
+            # Foundry project leaking into the current project.
+            target = {
+                "address": None,
+                "contract": None,
+                "artifact": None,
+                "source": "project-auto",
+            }
 
     actor = actor_display(config)
     if actor == "none":
