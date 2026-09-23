@@ -823,11 +823,15 @@ def run_functions(config,query=None):
         print(f"Query:   {query}")
 
         def artifact_kind(contract, path):
-            lowered = f"{contract} {path}".lower()
-            if "/interfaces/" in lowered or str(contract).startswith("i") and "mock" not in lowered:
-                return "interface"
-            if "/mocks/" in lowered or str(contract).lower().startswith("mock"):
+            lowered_contract = str(contract).lower()
+            lowered_path = str(path).lower()
+            if "/mocks/" in lowered_path or lowered_contract.startswith("mock"):
                 return "test mock"
+            # Solidity interfaces conventionally use an I-prefixed contract name.
+            if str(contract).startswith("I") and len(str(contract)) > 1 and str(contract)[1].isupper():
+                return "interface"
+            if "/interfaces/" in lowered_path:
+                return "interface"
             return "implementation"
 
         ranked = sorted(
