@@ -71,32 +71,38 @@ The installer copies:
 
 ## Typical audit flow
 
-```bash
-lk rpc set anvil http://127.0.0.1:8545
-lk target auto
+Lowkey auto-detects a running local Anvil node when no RPC is configured. For Anvil's default development accounts, actor keys are derived only when needed and are not stored in Lowkey config.
 
-lk status
-lk recon
+A normal local workflow can therefore be:
+
+```bash
+lk --h
+lk actor                 # choose account 0 and name it Alice
+lk actor 1 Bob           # choose another Anvil account
+lk target 0x...          # point at the deployed contract
+lk status                # ABI is auto-discovered from local artifacts
+lk scan src/EthEscrow.sol
+lk deps
 lk functions
 lk risk
-lk scan src
-lk deps src
-
-lk snapshot 0 1 2 3
-lk c someView
-lk s someWrite --preview
-lk receipt
-lk last tx
+lk recon
+lk forge inspect-audit Escrow
+lk c escrow 1
+lk s createescrow 1 0x... --preview
 lk trace
 lk logs --decode
-
-lk matrix init
-lk matrix actor attacker 0x...
-lk matrix add unauthorized-release release attacker "should revert"
-lk matrix test unauthorized-release
-
 lk export
 ```
+
+The manual commands still exist for unusual setups:
+
+```bash
+lk rpc http://127.0.0.1:8545
+lk abi out/EthEscrow.sol/Escrow.json
+lk wallet set-env attacker LK_ATTACKER_KEY
+```
+
+`lk functions` separates normal read/write functions from storage getter functions such as public mapping getters.
 
 For a historical transaction:
 
