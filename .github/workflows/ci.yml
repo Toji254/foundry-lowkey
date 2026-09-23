@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -38,36 +38,145 @@ jobs:
         run: ./install.sh
       - name: Build integration fixture
         run: |
+          rm -rf /tmp/lowkey-fixture
           mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
           cat > /tmp/lowkey-fixture/foundry.toml <<'EOF'
           [profile.default]
           src = "src"
           test = "test"
+          libs = ["lib"]
           EOF
-          cat > /tmp/lowkey-fixture/src/Fixture.sol <<'EOF'
+          cd /tmp/lowkey-fixture
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
+          cat > src/Fixture.sol <<'EOF'
           pragma solidity ^0.8.20;
           contract Fixture {
               event Ping(uint256 value);
-              function ping(uint256 value) external { emit Ping(value); }
+              uint256 public count;
+              function ping(uint256 value) external {
+                  count += value;
+                  emit Ping(value);
+              }
           }
           EOF
-          cat > /tmp/lowkey-fixture/test/Fixture.t.sol <<'EOF'
+          cat > test/Fixture.t.sol <<'EOF'
           pragma solidity ^0.8.20;
-          contract FixtureTest {
+          import "forge-std/Test.sol";
+          import "../src/Fixture.sol";
+
+          contract FixtureTest is Test {
+              Fixture public target;
+
+              function setUp() public {
+                  target = new Fixture();
+                  targetContract(address(target));
+              }
+
               function testSmoke() public {}
+              function testFuzz_roundTrip(uint256 value) public {
+                  target.ping(value);
+              }
+
+              function invariant_fixture_code() public view {
+                  assert(address(target).code.length > 0);
+              }
           }
           EOF
+
+      - name: Start Anvil
+        run: |
+          anvil --silent > /tmp/lowkey-anvil.log 2>&1 &
+          for i in $(seq 1 20); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat /tmp/lowkey-anvil.log
+          exit 1
       - name: Run installed integration checks
         working-directory: /tmp/lowkey-fixture
         run: |
+          lk --h
           lk --version
           lk self-test
           lk doctor
           lk scan src
           lk scan src/Fixture.sol
           lk forge build
+          TARGET=0x1000000000000000000000000000000000000001
+          CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
+          cast rpc anvil_setCode "$TARGET" "$CODE"
+          lk actor 0 Alice
+          lk actor 1 Bob
+          set +e
+          lk actor 0 Bob
+          test $? -ne 0
+          set -e
+          lk actor
+          lk target "$TARGET"
+          lk status
+          lk context
+          lk signals
+          lk audit
+          lk functions
+          lk c ping 7
+          lk encode ping 7
+          lk calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk decode-calldata "$(cast calldata 'ping(uint256)' 7)"
+          lk 4byte 0x773acdef
+          lk 4byte-calldata "$(cast calldata 'ping(uint256)' 7)"
+          # 4byte-event uses an external signature database; keep CI deterministic.
+          lk 4byte-event 0x48257dc961b6f792c2b78a080dacfed693b660960a702de21cee364e20270e2f || true
+          lk access-list ping 7
+          lk interface
+          lk constructor-args "$TARGET" || true
+          lk creation-code "$TARGET" || true
+          lk abi-encode uint256 7
+          lk disasm
+          lk selectors --compare
+          lk seams
+          lk cheatcodes store
+          lk impersonate 0x1000000000000000000000000000000000000001 whale
+          cast rpc anvil_setBalance 0x1000000000000000000000000000000000000001 0x56bc75e2d63100000
+          lk as whale s ping 8
+          lk txpool
+          lk probe ping 7
+          CHANGES=$(lk state-diff ping 7)
+          printf '%s\n' "$CHANGES"
+          grep -q "Storage:   1 change(s)" <<<"$CHANGES"
+          lk matrix init
+          lk matrix actor Alice 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+          lk matrix add smoke ping Alice "success"
+          lk matrix test smoke
+          lk logs --decode
+          lk deps
           lk forge test
+          lk fuzz --match-test testFuzz_roundTrip
+          lk fuzz replay
+          lk fuzz failures
+          lk invariant
+          lk symbolic emit --match-test testSmoke
+          lk mutate --match-test testSmoke
+          lk brutalize --match-test testSmoke
+          lk fork http://127.0.0.1:8545 --port 8546
+          lk fork status
+          lk impersonate 0x1000000000000000000000000000000000000001 whale
+          lk fork stop
+          lk fork status
           lk forge inspect-audit Fixture
+          lk generate deployment Fixture
+          test -f script/LowkeyDeploy_Fixture.s.sol
+          forge build
+          lk target 0x1111111111111111111111111111111111111111
+          lk generate test ping 42 --calldata 0xdeadbeef
+          test -f test/LowkeyTest_Fixture.t.sol
+          lk generate poc ping 42 --calldata 0xdeadbeef
+          test -f script/LowkeyPoC_Fixture.s.sol
+          forge build
           lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
           set +e
           lk scan /tmp/lowkey-fixture/missing.sol
