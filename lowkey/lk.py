@@ -2095,10 +2095,11 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
         values.append(value)
 
     print(f"Action  : deploying {contract}...")
-    result = run_foundry(
-        ["create", fqn, *values, "--rpc-url", rpc, "--private-key", key],
-        capture=True,
-    )
+    create_args = ["create", fqn]
+    if values:
+        create_args.extend(["--constructor-args", *values])
+    create_args.extend(["--rpc-url", rpc, "--private-key", key])
+    result = run_foundry(create_args, capture=True)
     output = result.text
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-20:]) if output else "forge create failed"
