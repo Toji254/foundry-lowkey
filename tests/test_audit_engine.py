@@ -97,6 +97,23 @@ class AuditEngineTests(unittest.TestCase):
             self.assertEqual(brief["candidate"]["mode"], "reentrancy")
             self.assertEqual(brief["candidate"]["impact"], "high")
 
+    def test_run_source_triage_handles_relative_root(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            src = root / "src"
+            src.mkdir()
+            (src / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault { function f() external { tx.origin; } }",
+                encoding="utf-8",
+            )
+            with patch.object(audit_engine, "record_evidence") as record:
+                self.assertEqual(audit_engine.run_source_triage(str(root)), 0)
+                payload = record.call_args.args[1]
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["markers"][0]["label"], "TX.ORIGIN")
+
     def test_run_rg_treats_no_match_as_success(self):
         with patch.object(audit_engine, "rg_available", return_value=True), patch.object(
             audit_engine, "run_command", return_value=(1, "", "")
