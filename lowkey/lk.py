@@ -710,10 +710,10 @@ def run_self_test():
         ("nested tuple array",canonical_type({"type":"tuple[]","components":[{"type":"address"},{"type":"uint256[]"}]})=="(address,uint256[])[]"),
         ("output signature",format_output_signature({"name":"f","inputs":[{"type":"address"}],"outputs":[{"type":"uint256"}]})=="f(address)(uint256)"),
         ("target alias resolution",resolve_target_ref({"aliases":{"one":"0x"+"1"*40},"targets":{}},"one")=="0x"+"1"*40),
+        ("safe solidity identifier",solidity_identifier("unauthorized release #1")=="unauthorized_release__1"),
     ]
     failed=[name for name,passed in checks if not passed]
-    for name,passed in checks:
-        print(f"{'PASS' if passed else 'FAIL'}  {name}")
+    for name,passed in checks: print(f"{'PASS' if passed else 'FAIL'}  {name}")
     if failed:
         print("Self-test failed: "+", ".join(failed)); return 1
     print(f"Self-test passed ({len(checks)} checks)."); return 0
