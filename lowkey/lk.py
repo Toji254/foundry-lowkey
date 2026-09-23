@@ -4525,6 +4525,7 @@ def run_audit_mode(config, args=None, interactive=None):
     root = audit_context.foundry_project_root()
     if not root:
         return fail("Error: 'lk audit' must be run inside a Foundry project.")
+    root = str(root)
 
     config["audit_project"] = root
     save_config(config)
