@@ -13,6 +13,32 @@ sys.modules[spec.name] = forge_tools
 spec.loader.exec_module(forge_tools)
 
 class LowkeyForgeTests(unittest.TestCase):
+    def test_audit_dashboard_renders_slither_status(self):
+        context = {
+            "target": {"address": "0x" + "1" * 40, "contract": "Fixture"},
+            "actor": "attacker",
+            "signals": [{"status": "open"}],
+            "focus": {"signal_id": "SLITHER-ABC", "title": "raw call"},
+            "tools": {
+                "forge-build": {"status": "completed", "summary": "build audit step"},
+                "slither": {"status": "completed", "summary": "2 finding(s)", "finding_count": 2},
+                "forge-tests": {"status": "completed", "summary": "tests audit step"},
+                "forge-coverage": {"status": "completed", "summary": "coverage audit step"},
+                "generator": {"status": "completed", "summary": "poc generated"},
+            },
+        }
+        with patch("forge_tools.audit_context.load", return_value=context):
+            output = io.StringIO()
+            with patch("sys.stdout", output):
+                result = forge_tools.render_audit_dashboard(pathlib.Path("/project"), 0)
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("LOWKEY AUDIT DASHBOARD", rendered)
+        self.assertIn("Slither", rendered)
+        self.assertIn("PASS", rendered)
+        self.assertIn("2 finding(s)", rendered)
+        self.assertIn("PoC scaffold", rendered)
+
     def test_native_commands(self):
         for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "geiger", "clone", "fuzz", "lsp"):
             self.assertIn(command, forge_tools.NATIVE_COMMANDS)
