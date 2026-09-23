@@ -128,6 +128,20 @@ lk state-diff release --keep
 
 The generated test records account accesses and storage accesses, including previous/new slot values and call depth.
 
+## Local audit lab
+
+Start a disposable local audit environment without manually copying contract addresses into Lowkey:
+
+~~~bash
+lk lab
+~~~
+
+Lowkey first checks for an optional project-specific lab adapter. If none exists, it falls back to a generic deployment from the current Foundry build artifacts. A focused finding/function is used to choose the relevant contract when possible.
+
+Project-specific adapters are optional. They are useful for protocols that require several mocks, registries, proxies, or initialization steps that Lowkey cannot safely guess.
+
+The resulting target and actor are stored in the current project's .audit/ context, so commands such as lk changes and lk trace work without manually setting the target address.
+
 ## Attack lab
 
 ### Probe
