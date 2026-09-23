@@ -163,7 +163,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
 
-    def test_audit_delegates_to_single_presenter(self):
+    def test_audit_delegates_to_single_presenter_without_implicit_checks(self):
         config = {}
         captured = {}
 
@@ -178,8 +178,21 @@ class LowkeyCastTests(unittest.TestCase):
                 result = lk.run_audit(config, [])
 
         self.assertEqual(result, 0)
-        self.assertEqual(captured["args"], ["--checks"])
+        self.assertEqual(captured["args"], [])
         self.assertEqual(output.getvalue().count("LOWKEY CONNECTED AUDIT"), 1)
+
+    def test_audit_preserves_explicit_checks(self):
+        config = {}
+        captured = {}
+
+        def fake_audit(args):
+            captured["args"] = args
+            return 0
+
+        with patch.object(lk, "_sync_audit_context"), patch("forge_tools.run_audit", side_effect=fake_audit):
+            self.assertEqual(lk.run_audit(config, ["--checks"]), 0)
+
+        self.assertEqual(captured["args"], ["--checks"])
     def test_compact_audit_checks_dispatch(self):
         with patch.object(lk, "run_audit", return_value=0) as runner:
             result = lk.dispatch_command("audit--checks", [], {"target": None})
