@@ -1905,14 +1905,19 @@ def parse_lab_marker(output, marker="LOWKEY_TARGET"):
 def parse_deployed_address(output):
     text = str(output or "")
     patterns = [
-        r"(?im)^\s*Deployed to:\s*(0x[0-9a-fA-F]{40})\s*$",
+        r"(?i)\bDeployed to:\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bContract Address:\s*(0x[0-9a-fA-F]{40})",
         r'(?i)"deployedTo"\s*:\s*"(0x[0-9a-fA-F]{40})"',
         r'(?i)"deployed_to"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+        r'(?i)"contractAddress"\s*:\s*"(0x[0-9a-fA-F]{40})"',
     ]
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             return match.group(1)
+    # Last-resort fallback for Forge output that labels an address on the same
+    # line with additional status text. Keep the label requirement to avoid
+    # accidentally selecting an unrelated address from compiler output.
     return None
 
 def artifact_source_name(artifact, path):
