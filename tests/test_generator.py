@@ -72,6 +72,34 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIn("vm.writeJson", output)
             self.assertIn("LOWKEY_CONSTRUCTOR_ARG_1", env_help[0])
 
+    def test_find_artifact_resolves_source_filename_symbol(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "EthEscrow.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Escrow {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "EthEscrow.sol" / "Escrow.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Escrow",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+
+            found = generator.find_artifact(root, "EthEscrow")
+
+            self.assertIsNotNone(found)
+            path, payload = found
+            self.assertEqual(path.name, "Escrow.json")
+            self.assertEqual(payload["contractName"], "Escrow")
+
+
     def test_generate_deployment_writes_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
