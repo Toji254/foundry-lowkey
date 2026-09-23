@@ -6,6 +6,7 @@ import re
 import shlex
 import io
 import shutil
+import socket
 from contextlib import redirect_stdout
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -140,13 +141,22 @@ def rpc_json(url, method, params=None):
         return None
 
 
+def local_port_open(host,port):
+    try:
+        with socket.create_connection((host,port),timeout=0.05): return True
+    except OSError:
+        return False
+
+
 def detect_anvil_rpc(preferred=None):
     candidates=[]
-    if preferred: candidates.append(preferred)
-    env_rpc=os.environ.get("ETH_RPC_URL")
-    if env_rpc and env_rpc not in candidates: candidates.append(env_rpc)
-    for local in ("http://127.0.0.1:8545", "http://localhost:8545", "http://127.0.0.1:8546", "http://localhost:8546"):
-        if local not in candidates: candidates.append(local)
+    if preferred:
+        candidates.append(preferred)
+    else:
+        env_rpc=os.environ.get("ETH_RPC_URL")
+        if env_rpc: candidates.append(env_rpc)
+        for host,port in (("127.0.0.1",8545),("127.0.0.1",8546)):
+            if local_port_open(host,port): candidates.append(f"http://{host}:{port}")
     for url in candidates:
         client=rpc_json(url,"web3_clientVersion",[])
         if not client or "anvil" not in str(client).lower(): continue
