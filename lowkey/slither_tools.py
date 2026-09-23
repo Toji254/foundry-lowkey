@@ -253,7 +253,8 @@ def _human_finding(finding: dict, number: int, total: int, project_root: Path) -
 
     location = _source_location(finding, project_root)
     if location:
-        print(f"Where       : {location}")
+        _, linked_location = location
+        print(f"Where       : {linked_location}")
 
     context = _element_context(finding)
     if context:
