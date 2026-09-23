@@ -38,23 +38,27 @@ jobs:
         run: ./install.sh
       - name: Build integration fixture
         run: |
-          cd /tmp/lowkey-fixture 2>/dev/null || true
+          rm -rf /tmp/lowkey-fixture
           mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
           cat > /tmp/lowkey-fixture/foundry.toml <<'EOF'
           [profile.default]
           src = "src"
           test = "test"
+          libs = ["lib"]
           EOF
-          cat > /tmp/lowkey-fixture/src/Fixture.sol <<'EOF'
+          cd /tmp/lowkey-fixture
+          forge install foundry-rs/forge-std --no-commit
+          cat > src/Fixture.sol <<'EOF'
           pragma solidity ^0.8.20;
           contract Fixture {
               event Ping(uint256 value);
               function ping(uint256 value) external { emit Ping(value); }
           }
           EOF
-          cat > /tmp/lowkey-fixture/test/Fixture.t.sol <<'EOF'
+          cat > test/Fixture.t.sol <<'EOF'
           pragma solidity ^0.8.20;
-          contract FixtureTest {
+          import "forge-std/Test.sol";
+          contract FixtureTest is Test {
               function testSmoke() public {}
               function testFuzz_roundTrip(uint256 value) public pure {
                   assert(value == value);
@@ -64,6 +68,7 @@ jobs:
               }
           }
           EOF
+
       - name: Start Anvil
         run: |
           anvil --silent > /tmp/lowkey-anvil.log 2>&1 &
