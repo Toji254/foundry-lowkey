@@ -39,6 +39,18 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("2 finding(s)", rendered)
         self.assertIn("PoC scaffold", rendered)
 
+    def test_audit_bootstraps_poc_before_dashboard(self):
+        import types
+        fake_generator = types.ModuleType("generator")
+        fake_generator.run_generate = lambda config, args: 0
+        with patch.object(forge_tools, "run_forge", return_value=0):
+            with patch.object(forge_tools, "run_slither_preflight", return_value=0):
+                with patch.object(forge_tools, "run_coverage_audit", return_value=0):
+                    with patch.object(forge_tools, "render_audit_dashboard", return_value=0):
+                        with patch.dict("sys.modules", {"generator": fake_generator}):
+                            result = forge_tools.run_audit(["--checks"])
+        self.assertEqual(result, 0)
+
     def test_native_commands(self):
         for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "geiger", "clone", "fuzz", "lsp"):
             self.assertIn(command, forge_tools.NATIVE_COMMANDS)
