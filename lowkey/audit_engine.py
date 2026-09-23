@@ -455,10 +455,18 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
         locations = []
         mode = "generic"
         function = scenario.get("function")
+    elif triage_markers:
+        marker = triage_markers[0]
+        check = "source-marker-" + str(marker.get("label") or "candidate").lower().replace(" ", "-")
+        impact = confidence = "manual"
+        description = str(marker.get("text") or "Manual source review marker")
+        locations = [marker]
+        mode = "generic"
+        function = None
     else:
         check = "audit-candidate"
         impact = confidence = "manual"
-        description = "No selected Slither finding or matrix scenario."
+        description = "No selected Slither finding, matrix scenario, or source marker."
         locations = []
         mode = "generic"
         function = None
