@@ -707,6 +707,39 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(encoded, "abcdef")
         self.assertEqual(cast.call_args.args[0][-2:], ["1000000000000000000", "0x" + "2" * 40])
 
+    def test_lab_flags_have_simple_aliases_and_auto_eth(self):
+        values, actor, value, keep = lk.split_lab_options(
+            ["createescrow", "1", "ether", "Bob", "--as", "Alice"]
+        )
+        self.assertEqual(values, ["createescrow", "1", "ether", "Bob"])
+        self.assertEqual(actor, "Alice")
+        self.assertEqual(value, "auto")
+        self.assertFalse(keep)
+
+        config={
+            "target":"0x"+"1"*40,
+            "wallets":{"Bob":{"address":"0x"+"2"*40}},
+        }
+        abi=[{
+            "type":"function",
+            "name":"createescrow",
+            "inputs":[
+                {"name":"amount","type":"uint256"},
+                {"name":"recipient","type":"address"},
+            ],
+            "stateMutability":"payable",
+        }]
+        with patch.object(lk,"load_abi",return_value=abi):
+            self.assertEqual(
+                lk.resolve_lab_value(
+                    config,
+                    "createescrow(uint256,address)",
+                    ["1","ether","Bob"],
+                    "auto",
+                ),
+                "1 ether",
+            )
+
     def test_run_cast_resolves_actor_name_for_address_argument(self):
         target="0x"+"1"*40
         config={
@@ -1076,4 +1109,16 @@ class LowkeyCastTests(unittest.TestCase):
         )
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main()    def test_dispatch_exposes_simple_audit_aliases(self):
+        config={}
+        calls={}
+        with patch.object(lk,"run_probe",side_effect=lambda *_: calls.setdefault("try",1)), \
+             patch.object(lk,"run_state_diff",side_effect=lambda *_: calls.setdefault("changes",1)), \
+             patch.object(lk,"run_cast",side_effect=lambda *_: calls.setdefault("cast",1)):
+            lk.dispatch_command("try",["release"],config)
+            lk.dispatch_command("changes",["release"],config)
+            lk.dispatch_command("read",["release"],config)
+            lk.dispatch_command("send",["release"],config)
+        self.assertEqual(set(calls),{"try","changes","cast"})
+
+
