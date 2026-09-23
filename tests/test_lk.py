@@ -152,6 +152,23 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
 
+    def test_audit_delegates_to_single_presenter(self):
+        config = {}
+        captured = {}
+
+        def fake_audit(args):
+            captured["args"] = args
+            print("LOWKEY CONNECTED AUDIT")
+            return 0
+
+        with patch.object(lk, "_sync_audit_context"), patch("forge_tools.run_audit", side_effect=fake_audit):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_audit(config, [])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured["args"], ["--checks"])
+        self.assertEqual(output.getvalue().count("LOWKEY CONNECTED AUDIT"), 1)
     def test_runtime_fixes(self):
         self.assertTrue(hasattr(lk, "Path"))
         self.assertTrue(lk.AUDIT_CHECKLIST)
