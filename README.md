@@ -1,33 +1,128 @@
 # Foundry LowkeyCast
 
-This repo contains the custom LowkeyCast helper used with Foundry. It adds the `lk` command to your Foundry install so you can audit contracts faster from any device.
+LowkeyCast is a small auditor-oriented CLI that sits on top of Foundry Cast. It keeps common contract-research, transaction-forensics, storage-inspection, and audit-workflow actions behind one command: `lk`.
 
-## What it includes
+## What it does
 
-- a custom `lk` launcher
-- the python-based LowkeyCast logic
-- an installer that copies the changes into your local Foundry installation
+### Contract interaction
+- Target aliases and numbered target switching
+- RPC profiles
+- Wallet profiles with optional environment-backed private keys
+- ABI loading with canonical tuple/struct signatures
+- Overload detection instead of silently choosing the first match
+- Read/send shortcuts: `lk c`, `lk s`, `lk st`
+- Transaction previews and confirmation prompts
+- Function search and argument wizard
+- Calldata, return-data, custom-error, and event decoding
 
-## Install on any device
+### Auditor inspection
+- Contract reconnaissance: balance, codehash, code size, nonce
+- EIP-1967 proxy inspection plus implementation/admin resolution
+- Mapping-slot calculation
+- ERC-7201 namespace indexing
+- Storage proofs
+- Runtime selector extraction
+- Target/chain-scoped storage snapshots and diffs
+- ERC20 metadata and holder balance helpers
+- ENS forward/reverse lookup
 
-Run this directly from a fresh machine:
+### Source and forensic tooling
+- Solidity review-marker scanner
+- Import/inheritance map
+- Forge storage-layout inspection
+- ABI-level function risk-surface heuristic
+- Gas estimation
+- Transaction replay/trace helpers
+- Log querying and optional ABI event decoding
+- Raw Cast passthrough
+- Batch command files
+
+### Audit workflow
+- Findings, notes, TODOs, sessions, checklist
+- Attacker-state matrix
+- Forge reproduction/test skeleton generation
+- Audit dashboard
+- Exportable `audit-report/`
+
+These inspection and triage commands are deliberately heuristic: they help surface things to review; they do not declare that a contract is vulnerable.
+
+## Install
+
+From a machine with Foundry already installed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Toji254/foundry-lowkey/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Toji254/foundry-lowkey/master/install.sh | bash
 ```
 
-This will:
-
-- create `~/.lowkey`
-- copy `lk.py` into `~/.lowkey/lk.py`
-- install the `lk` command into `~/.foundry/bin/lk`
-- make the custom Foundry command available immediately
-
-## Use it
+Then:
 
 ```bash
 lk --help
+lk self-test
 ```
+
+The installer copies:
+
+```text
+~/.lowkey/lk.py
+~/.foundry/bin/lk
+```
+
+## Typical audit flow
+
+```bash
+lk rpc set anvil http://127.0.0.1:8545
+lk target auto
+
+lk status
+lk recon
+lk functions
+lk risk
+lk scan src
+lk deps src
+
+lk snapshot 0 1 2 3
+lk c someView
+lk s someWrite --preview
+lk receipt
+lk last tx
+lk trace
+lk logs --decode
+
+lk matrix init
+lk matrix actor attacker 0x...
+lk matrix add unauthorized-release release attacker "should revert"
+lk matrix test unauthorized-release
+
+lk export
+```
+
+For a historical transaction:
+
+```bash
+lk tx 0x...
+lk replay 0x... --trace-printer --decode-internal
+```
+
+For a fork:
+
+```bash
+lk fork https://example-rpc.example
+# Start the printed Anvil command, then:
+lk rpc http://127.0.0.1:8545
+```
+
+## Wallet security
+
+Prefer environment-backed signers:
+
+```bash
+export LK_ATTACKER_KEY=...
+lk wallet set-env attacker LK_ATTACKER_KEY
+lk wallet use attacker
+```
+
+`lk wallet set` is intended for local/test keys and stores the supplied private key in `~/.lowkey/config.json`. The file is restricted to mode 0600, but that does not make plaintext key storage a production key-management system.
 
 ## Source layout
 
@@ -37,11 +132,13 @@ foundry-lowkey/
 │   └── lk
 ├── lowkey/
 │   └── lk.py
+├── tests/
+│   └── test_lk.py
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── SECURITY.md
 ├── install.sh
 ├── README.md
 └── .gitignore
 ```
-
-## Notes
-
-This is meant to be portable across machines. The project files are stored in GitHub, and the installer patches your local Foundry installation without needing to copy the whole Solidity project.
