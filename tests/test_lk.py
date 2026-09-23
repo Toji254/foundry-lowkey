@@ -537,7 +537,8 @@ class LowkeyCastTests(unittest.TestCase):
 
 
     def test_cast_deep_commands(self):
-        config={"target":"0x"+"1"*40,"abi_paths":{"0x"+"1"*40":"/tmp/abi.json"}}
+        target="0x"+"1"*40
+        config={"target":target,"abi_paths":{target:"/tmp/abi.json"}}
         calls=[]
         def fake_run(args,cfg,capture=False):
             calls.append(args)
