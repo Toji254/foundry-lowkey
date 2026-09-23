@@ -215,6 +215,43 @@ def add_signal(signal: dict[str, Any], root: Path | None = None) -> dict[str, An
     return signal
 
 
+def update_signal_status(
+    signal_id: str,
+    status: str,
+    root: Path | None = None,
+    *,
+    note: str | None = None,
+) -> dict[str, Any] | None:
+    allowed = {"open", "investigating", "proven", "dismissed"}
+    if status not in allowed:
+        raise ValueError(f"invalid signal status: {status}")
+
+    context = load(root)
+    for signal in context.setdefault("signals", []):
+        if signal.get("id") != signal_id:
+            continue
+        previous = signal.get("status", "open")
+        signal["status"] = status
+        signal["updated_at"] = _now()
+        if note:
+            signal["triage_note"] = note
+        save(context, root)
+        emit(
+            "signal-status",
+            root,
+            tool=str(signal.get("tool") or "lowkey"),
+            summary=f"{signal_id}: {previous} -> {status}",
+            data={
+                "signal_id": signal_id,
+                "previous": previous,
+                "status": status,
+                "note": note,
+            },
+        )
+        return signal
+    return None
+
+
 def signals(root: Path | None = None, status: str | None = None) -> list[dict[str, Any]]:
     found = list(load(root).get("signals", []))
     if status is None:
