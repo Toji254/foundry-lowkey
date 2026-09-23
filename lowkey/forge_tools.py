@@ -262,6 +262,126 @@ def _is_stack_too_deep(output: str) -> bool:
     return "stack too deep" in text or "stack-too-deep" in text
 
 
+
+def _parse_coverage_metric(cell: str) -> tuple[str, int, int] | None:
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)%\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)\s*", cell)
+    if not match:
+        return None
+    return match.group(1), int(match.group(2)), int(match.group(3))
+
+
+def _parse_coverage_table(output: str) -> list[dict[str, object]]:
+    """Extract Foundry coverage rows so Lowkey can render a clearer audit summary."""
+    rows: list[dict[str, object]] = []
+    in_table = False
+    for line in str(output or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("| File") and "% Lines" in stripped and "% Statements" in stripped:
+            in_table = True
+            continue
+        if not in_table:
+            continue
+        if not stripped.startswith("|"):
+            if stripped:
+                break
+            continue
+
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 5:
+            continue
+        name = cells[0]
+        metrics = {}
+        for key, cell in zip(("lines", "statements", "branches", "functions"), cells[1:5]):
+            metrics[key] = _parse_coverage_metric(cell)
+        if name and any(value is not None for value in metrics.values()):
+            rows.append({"file": name, **metrics})
+    return rows
+
+
+def _coverage_gap(metric: tuple[str, int, int] | None) -> str:
+    if metric is None:
+        return "N/A"
+    _, covered, total = metric
+    return str(max(total - covered, 0))
+
+
+def _format_coverage_report(output: str) -> str:
+    """Turn Foundry's dense coverage table into an audit-focused summary."""
+    rows = _parse_coverage_table(output)
+    if not rows:
+        return ""
+
+    production = [
+        row for row in rows
+        if str(row["file"]).startswith("src/") and "/mocks/" not in str(row["file"])
+    ]
+    shown = production or rows
+
+    header = [
+        "\nCOVERAGE SUMMARY",
+        "================",
+        "Coverage = code exercised by tests. The last column shows what remains untested.",
+        "",
+        f"{'File':<45} {'Lines':>15} {'Statements':>18} {'Branches':>16} {'Functions':>15} {'Untested':>10}",
+        "-" * 123,
+    ]
+    for row in shown:
+        metrics = []
+        for key in ("lines", "statements", "branches", "functions"):
+            metric = row[key]
+            if metric is None:
+                metrics.append("N/A")
+            else:
+                percent, covered, total = metric  # type: ignore[misc]
+                metrics.append(f"{percent}% ({covered}/{total})")
+        gaps = [
+            _coverage_gap(row[key])
+            for key in ("lines", "statements", "branches", "functions")
+            if row[key] is not None
+        ]
+        gap_text = "/".join(gaps) if gaps else "N/A"
+        header.append(
+            f"{str(row['file'])[:45]:<45} "
+            f"{metrics[0]:>15} {metrics[1]:>18} {metrics[2]:>16} {metrics[3]:>15} {gap_text:>10}"
+        )
+
+    total = next((row for row in rows if str(row["file"]).strip() == "Total"), None)
+    if total:
+        header.append("-" * 123)
+        metrics = []
+        for key in ("lines", "statements", "branches", "functions"):
+            metric = total[key]
+            if metric is None:
+                metrics.append("N/A")
+            else:
+                percent, covered, total_count = metric  # type: ignore[misc]
+                metrics.append(f"{percent}% ({covered}/{total_count})")
+        header.append(
+            f"{'All reported files':<45} "
+            f"{metrics[0]:>15} {metrics[1]:>18} {metrics[2]:>16} {metrics[3]:>15}"
+        )
+
+    return "\n".join(header)
+
+
+def _strip_coverage_table(output: str) -> str:
+    """Remove Foundry's raw coverage box before Lowkey prints its clearer summary."""
+    lines = str(output or "").splitlines()
+    kept: list[str] = []
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("| File") and "% Lines" in stripped and "% Statements" in stripped:
+            in_table = True
+            continue
+        if in_table:
+            if stripped.startswith("|") or stripped.startswith("+") or stripped.startswith("╭") or stripped.startswith("╰") or stripped.startswith("├"):
+                continue
+            in_table = False
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
 def run_coverage_audit(command: Sequence[str], root: Path) -> int:
     """Run coverage and retry once with IR minimum when coverage hits stack-too-deep."""
     binary = forge_path()
