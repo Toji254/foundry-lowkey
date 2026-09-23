@@ -1127,6 +1127,21 @@ def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
     return "\n".join(lines)
 
 
+def _slither_status(root: Path) -> str:
+    path = root / ".audit" / "slither" / "latest.json"
+    if not path.is_file():
+        return "Slither: no evidence file in this project context"
+    data = _json_file(path) or {}
+    results = data.get("results")
+    if isinstance(results, dict):
+        findings = results.get("detectors") or []
+    elif isinstance(results, list):
+        findings = results
+    else:
+        findings = data.get("findings") or []
+    return f"Slither: {len(findings)} recorded finding(s) [context evidence]"
+
+
 def _render_board(model: ContractModel, models: list[ContractModel], runtime: list[RuntimeContract], actors: list[Actor], steps: list[Step], current: Step | None, storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
     board=[
         _paint("LOWKEY  //  PROTOCOL WALKTHROUGH",BOLD+CYAN,enabled),
@@ -1138,7 +1153,7 @@ def _render_board(model: ContractModel, models: list[ContractModel], runtime: li
         "",
         _render_runtime_graph(runtime,enabled),
         "",
-        "  "+_slither_status(Path.cwd()),
+        "  "+_slither_status(root),
     ]
     if current:
         board += ["",_render_step(current,storage,enabled)]
@@ -1309,6 +1324,6 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     print("  model    : .audit/walkthrough/model.json")
     print("  evidence : .audit/walkthrough/latest.json")
     print(f"  replay   : {replay.relative_to(root)}")
-    print(f"  {_slither_status(Path.cwd())}")
+    print(f"  {_slither_status(root)}")
     return 0
 
