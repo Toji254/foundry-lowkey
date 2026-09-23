@@ -1086,7 +1086,19 @@ def run_cast(args,config,capture=False):
         code,out,err=cast_output(cmd); final=out or err; log_session(safe_cmd,final)
         if cast_cmd=="send" and out:
             match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
-            if match: config["last_tx"]=match.group(1); config["last_tx_block"]=None; save_config(config)
+            if match:
+                tx_hash=match.group(1)
+                config["last_tx"]=tx_hash; config["last_tx_block"]=None; save_config(config)
+                call=remaining[0] if remaining and "(" in remaining[0] else None
+                root=audit_context.foundry_project_root()
+                audit_context.set_latest(root,tx_hash=tx_hash,function=call)
+                audit_context.emit(
+                    "transaction",
+                    root,
+                    tool="cast",
+                    summary=call or "transaction sent",
+                    data={"tx_hash":tx_hash,"function":call},
+                )
         result=CommandResult(final,code)
         record_status(code)
         if capture: return result
