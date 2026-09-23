@@ -143,8 +143,18 @@ def ensure_cache_repo() -> Path:
 
 
 def cache_has_objects(repo: Path) -> bool:
-    objects = repo / "objects"
-    return objects.is_dir() and any(objects.iterdir())
+    result = run_git(["-C", str(repo), "count-objects", "-v"], capture=True)
+    if result.returncode != 0:
+        return False
+    values = {}
+    for line in result.stdout.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            values[key.strip()] = value.strip()
+    try:
+        return int(values.get("count", "0")) > 0 or int(values.get("in-pack", "0")) > 0
+    except ValueError:
+        return False
 
 
 def git_repo_ready(path: Path) -> bool:
