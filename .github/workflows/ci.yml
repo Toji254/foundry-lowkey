@@ -76,6 +76,7 @@ jobs:
           lk scan src/Fixture.sol
           lk rg 'function|event' src
           lk slither
+          lk audit run
           lk poc
           lk forge build
           lk forge test
