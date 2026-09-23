@@ -94,6 +94,45 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.resolve_target_ref(config, "alpha"), first)
         self.assertEqual(lk.resolve_target_ref(config, "1"), first)
 
+    def test_auto_lab_ignores_dependency_library_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "lib").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+
+            (root / "src" / "ConfidencePoolFactory.sol").write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePoolFactory { }",
+                encoding="utf-8",
+            )
+            (root / "lib" / "Address.sol").write_text(
+                "pragma solidity ^0.8.20; library Address { }",
+                encoding="utf-8",
+            )
+
+            app_out = root / "out" / "ConfidencePoolFactory.sol"
+            lib_out = root / "out" / "Address.sol"
+            app_out.mkdir(parents=True)
+            lib_out.mkdir(parents=True)
+            common_abi = {"abi": [], "bytecode": {"object": "0x6000"}}
+            app_artifact = {
+                **common_abi,
+                "contractName": "ConfidencePoolFactory",
+                "sourceName": "src/ConfidencePoolFactory.sol",
+            }
+            lib_artifact = {
+                **common_abi,
+                "contractName": "Address",
+                "sourceName": "lib/openzeppelin-contracts/contracts/utils/Address.sol",
+            }
+            (app_out / "ConfidencePoolFactory.json").write_text(json.dumps(app_artifact), encoding="utf-8")
+            (lib_out / "Address.json").write_text(json.dumps(lib_artifact), encoding="utf-8")
+
+            chosen = lk.discover_generic_lab_contract(root)
+
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen[1], "ConfidencePoolFactory")
+
     def test_target_named_deployment_auto_selects_matching_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp)
