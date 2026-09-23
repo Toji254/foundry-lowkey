@@ -123,7 +123,7 @@ note[low-level-calls]: generated helper
     @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
     @patch("forge_tools.subprocess.run")
     def test_coverage_retries_stack_too_deep_with_ir_minimum(
-        self, run, _path, _emit, _record
+        self, run, _path, _emit, _record, _supports
     ):
         first = type("Result", (), {
             "returncode": 1,
@@ -177,23 +177,33 @@ note[low-level-calls]: generated helper
         self.assertEqual(_record.call_args.kwargs["data"]["attempts"], 1)
 
     @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools.run_coverage_audit", return_value=0)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, _compat, run):
+    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, _compat, coverage, run):
         self.assertEqual(forge_tools.run_audit(["--via-ir"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
             ["test", "-vvv", "--via-ir", "--no-match-path", "test/Lowkey_*"],
         )
+        self.assertEqual(
+            coverage.call_args.args[0],
+            ["coverage", "--via-ir", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"],
+        )
 
     @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools.run_coverage_audit", return_value=0)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_respects_explicit_verbosity(self, _supports, _compat, run):
+    def test_audit_respects_explicit_verbosity(self, _supports, _compat, coverage, run):
         self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
             ["test", "--verbosity", "4", "--no-match-path", "test/Lowkey_*"],
+        )
+        self.assertEqual(
+            coverage.call_args.args[0],
+            ["coverage", "--verbosity", "4", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"],
         )
 
 if __name__ == "__main__":
