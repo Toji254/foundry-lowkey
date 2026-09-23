@@ -279,18 +279,77 @@ def log_session(command, result):
     with open(SESSION_FILE, "a") as f:
         f.write(f"[{timestamp}] CMD: {command}\nRES: {result}\n{'-'*40}\n")
 
+def local_artifact_paths():
+    return [p for p in artifact_json_files(".") if "out" in Path(p).parts]
+
+def artifact_contract_name(path, artifact):
+    if isinstance(artifact,dict) and artifact.get("contractName"): return str(artifact["contractName"])
+    return Path(path).stem
+
+def read_artifact(path):
+    try:
+        with open(path,"r",encoding="utf-8") as f: value=json.load(f)
+        return value if isinstance(value,dict) else None
+    except (OSError,json.JSONDecodeError): return None
+
+def auto_abi_path(target,config):
+    if not target or not is_address(target): return None
+    preferred=config.get("target_contract")
+    if not preferred:
+        for record in discover_deployments("."):
+            if str(record.get("address","")).lower()==target.lower():
+                preferred=record.get("contract")
+                if preferred: config["target_contract"]=preferred
+                break
+    paths=local_artifact_paths()
+    if preferred:
+        preferred_lower=str(preferred).lower()
+        for path in paths:
+            artifact=read_artifact(path)
+            if artifact_contract_name(path,artifact).lower()==preferred_lower or Path(path).stem.lower()==preferred_lower:
+                config.setdefault("abi_paths",{})[target]=path
+                return path
+    rpc=config.get("rpc")
+    if rpc:
+        code,runtime,_=cast_output(["cast","code",target,"--rpc-url",rpc])
+        if code==0 and runtime and runtime.startswith("0x") and runtime!="0x":
+            for path in paths:
+                artifact=read_artifact(path)
+                deployed=artifact.get("deployedBytecode") if isinstance(artifact,dict) else None
+                if isinstance(deployed,dict): deployed=deployed.get("object")
+                if isinstance(deployed,str) and deployed.lower()==runtime.lower():
+                    config.setdefault("abi_paths",{})[target]=path
+                    config["target_contract"]=artifact_contract_name(path,artifact)
+                    return path
+    return None
+
 def load_abi(target,config):
+    if not target: return []
     abi_paths=config.get("abi_paths",{})
     abi_path=abi_paths.get(target)
     if not abi_path and isinstance(target,str):
         lowered=target.lower()
         abi_path=next((path for address,path in abi_paths.items() if isinstance(address,str) and address.lower()==lowered),None)
+    if not abi_path or not os.path.exists(abi_path):
+        abi_path=auto_abi_path(target,config)
     if not abi_path or not os.path.exists(abi_path): return []
     try:
         with open(abi_path,"r",encoding="utf-8") as f: artifact=json.load(f)
         abi=artifact.get("abi",[]) if isinstance(artifact,dict) else artifact
+        if isinstance(artifact,dict) and artifact.get("contractName") and not config.get("target_contract"):
+            config["target_contract"]=artifact.get("contractName")
         return abi if isinstance(abi,list) else []
     except (OSError,json.JSONDecodeError): return []
+
+def storage_getter_names(target,config,abi):
+    path=config.get("abi_paths",{}).get(target)
+    if not path or not os.path.exists(path): path=auto_abi_path(target,config)
+    if not path or not os.path.exists(path): return set()
+    artifact=read_artifact(path) or {}
+    layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
+    storage=layout.get("storage",[]) if isinstance(layout,dict) else []
+    labels={entry.get("label") for entry in storage if isinstance(entry,dict) and entry.get("label")}
+    return {item.get("name") for item in abi if item.get("type")=="function" and item.get("stateMutability") in {"view","pure"} and item.get("name") in labels}
 def run_chain(config):
     chain_id = run_cast(["chain-id"], config, capture=True)
     block = run_cast(["block-number"], config, capture=True)
