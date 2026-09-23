@@ -72,9 +72,9 @@ class LowkeyCloneTests(unittest.TestCase):
         self.assertIn("6", command)
         self.assertIn("--depth", command)
         self.assertIn("1", command)
-        self.assertIn("--shallow-submodules", command)
+        self.assertNotIn("--shallow-submodules", command)
         self.assertIn("--reference-if-able", command)
-        self.assertIn("--dissociate", command)
+        self.assertNotIn("--dissociate", command)
 
     @patch("clone_tools.ensure_cache_repo")
     @patch("clone_tools.run_git")
