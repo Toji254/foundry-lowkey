@@ -421,5 +421,141 @@ class LowkeyCastTests(unittest.TestCase):
             "unauthorized_release__1",
         )
 
+
+    def test_humanize_value_is_explicit(self):
+        raw = "1000000000000000000"
+        self.assertEqual(lk.humanize_value(raw), raw)
+        self.assertIn("1.0000 ETH", lk.humanize_value(raw, assume_wei=True))
+
+    def test_abi_selector_uses_three_tuple(self):
+        with patch.object(lk, "cast_output", return_value=(0, "0x12345678\n", "")):
+            self.assertEqual(lk.abi_selector("foo(uint256)"), "0x12345678")
+
+    def test_split_lab_options(self):
+        values, actor, value, keep = lk.split_lab_options(
+            ["release", "1", "0x" + "1" * 40, "--actor", "Alice", "--value", "1ether", "--keep"]
+        )
+        self.assertEqual(values, ["release", "1", "0x" + "1" * 40])
+        self.assertEqual(actor, "Alice")
+        self.assertEqual(value, "1ether")
+        self.assertTrue(keep)
+
+    def test_as_restores_previous_actor(self):
+        config = {
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": "0x" + "1" * 40}, "Bob": {"address": "0x" + "2" * 40}},
+        }
+        seen = {}
+
+        def fake_dispatch(cmd, args, cfg, from_batch=False):
+            seen["actor"] = cfg["actor"]
+            return 0
+
+        with patch.object(lk, "dispatch_command", side_effect=fake_dispatch):
+            self.assertEqual(lk.run_as(config, ["Bob", "status"]), 0)
+        self.assertEqual(seen["actor"], "Bob")
+        self.assertEqual(config["actor"], "Alice")
+
+    def test_probe_generates_actor_probe(self):
+        config = {
+            "target": "0x" + "3" * 40,
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+        }
+        captured = {}
+
+        def fake_write(prefix, content):
+            captured["prefix"] = prefix
+            captured["content"] = content
+            return "test/Lowkey_probe.t.sol"
+
+        with patch.object(lk, "encode_target_call", return_value=("ping(uint256)", "abcdef")), \
+             patch.object(lk, "write_generated_test", side_effect=fake_write), \
+             patch.object(lk, "run_foundry", return_value=0):
+            self.assertEqual(lk.run_probe(config, ["ping", "7", "--actor", "Alice"]), 0)
+        self.assertIn("vm.startPrank", captured["content"])
+        self.assertIn('hex"abcdef"', captured["content"])
+        self.assertIn("ACTOR Alice", captured["content"])
+
+    def test_state_diff_generates_recording(self):
+        config = {
+            "target": "0x" + "3" * 40,
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+        }
+        captured = {}
+
+        def fake_write(prefix, content):
+            captured["content"] = content
+            return "test/Lowkey_state_diff.t.sol"
+
+        with patch.object(lk, "encode_target_call", return_value=("ping()", "abcdef")), \
+             patch.object(lk, "write_generated_test", side_effect=fake_write), \
+             patch.object(lk, "run_foundry", return_value=0):
+            self.assertEqual(lk.run_state_diff(config, ["ping"]), 0)
+        self.assertIn("vm.startStateDiffRecording()", captured["content"])
+        self.assertIn("vm.stopAndReturnStateDiff()", captured["content"])
+        self.assertIn("Vm.StorageAccess", captured["content"])
+
+    def test_selector_compare_uses_runtime_and_abi(self):
+        target = "0x" + "1" * 40
+        config = {
+            "target": target,
+            "abi_paths": {target: "/tmp/abi.json"},
+            "target_contract": "Fixture",
+        }
+        abi = [{"type": "function", "name": "ping", "inputs": [{"type": "uint256"}]}]
+        with patch.object(lk, "run_cast", return_value=lk.CommandResult("0x6000", 0)), \
+             patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(
+                 lk, "cast_output",
+                 side_effect=[
+                     (0, "0x12345678", ""),
+                     (0, "0x12345678", ""),
+                 ],
+             ), \
+             patch.object(lk, "abi_selector", return_value="0x12345678"):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_selector_compare(config, [])
+        self.assertEqual(result, 0)
+        self.assertIn("RUNTIME-ONLY:", output.getvalue())
+        self.assertIn("ABI-ONLY:", output.getvalue())
+
+    def test_foundry_test_wrappers(self):
+        with patch.object(lk, "run_foundry", return_value=0) as run:
+            self.assertEqual(lk.run_fuzz(["--fuzz-runs", "10"]), 0)
+            self.assertEqual(run.call_args.args[0][:1], ["test"])
+            self.assertEqual(lk.run_invariant({}, ["--match-test", "invariant_x"]), 0)
+        with patch.object(lk, "run_foundry", return_value=0) as run:
+            self.assertEqual(lk.run_mutate(["--match-path", "test/X.t.sol"]), 0)
+            self.assertEqual(run.call_args.args[0][:2], ["test", "--mutate"])
+        with patch.object(lk, "run_foundry", return_value=0) as run:
+            self.assertEqual(lk.run_symbolic(["emit"]), 0)
+            self.assertEqual(run.call_args.args[0][:2], ["test", "--symbolic"])
+            self.assertIn("--emit-regression", run.call_args.args[0])
+
+    def test_dispatch_exposes_lab_commands(self):
+        config = {}
+        calls = {}
+        with patch.object(lk, "run_calldata", side_effect=lambda *_: calls.setdefault("calldata", 1)), \
+             patch.object(lk, "run_probe", side_effect=lambda *_: calls.setdefault("probe", 1)), \
+             patch.object(lk, "run_state_diff", side_effect=lambda *_: calls.setdefault("state-diff", 1)), \
+             patch.object(lk, "run_fuzz", side_effect=lambda *_: calls.setdefault("fuzz", 1)), \
+             patch.object(lk, "run_invariant", side_effect=lambda *_: calls.setdefault("invariant", 1)), \
+             patch.object(lk, "run_mutate", side_effect=lambda *_: calls.setdefault("mutate", 1)), \
+             patch.object(lk, "run_symbolic", side_effect=lambda *_: calls.setdefault("symbolic", 1)):
+            lk.dispatch_command("calldata", ["0x12345678"], config)
+            lk.dispatch_command("probe", ["ping"], config)
+            lk.dispatch_command("state-diff", ["ping"], config)
+            lk.dispatch_command("fuzz", [], config)
+            lk.dispatch_command("invariant", [], config)
+            lk.dispatch_command("mutate", [], config)
+            lk.dispatch_command("symbolic", [], config)
+        self.assertEqual(
+            set(calls),
+            {"calldata", "probe", "state-diff", "fuzz", "invariant", "mutate", "symbolic"},
+        )
+
 if __name__ == "__main__":
     unittest.main()
