@@ -554,6 +554,16 @@ def _validate_value(value: str) -> str:
     return normalized
 
 
+def _signature_has_unresolved_arguments(function: str | None, args: list[str] | None) -> bool:
+    """Return True when a full ABI signature was supplied without concrete values."""
+    if args:
+        return False
+    match = re.fullmatch(r"\s*[A-Za-z_][A-Za-z0-9_]*\((.*)\)\s*", str(function or ""))
+    if not match:
+        return False
+    return bool(match.group(1).strip())
+
+
 def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]) -> Request:
     request = Request(kind, args=[])
     positional: list[str] = []
@@ -900,6 +910,13 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
 
     if not request.function and not request.calldata and candidate.get("function"):
         request.function = str(candidate.get("function"))
+        placeholder_request = True
+
+    # A full ABI signature printed by 'lk focus' is intentionally enough to
+    # create a scaffold even when concrete argument values are not known yet.
+    # This keeps the suggested command copy/pasteable without pretending that
+    # missing call data has been proved.
+    if _signature_has_unresolved_arguments(request.function, request.args):
         placeholder_request = True
 
     if not request.function and not request.calldata:
