@@ -87,6 +87,54 @@ def has_verbosity(args: Sequence[str]) -> bool:
     )
 
 
+LOWKEY_GENERATED_PATH_MARKERS = (
+    "test/Lowkey_",
+    "script/Lowkey_",
+)
+
+
+def _filter_generated_diagnostics(output: str) -> tuple[str, int]:
+    """Hide lint diagnostics emitted only by Lowkey-generated helper artifacts."""
+    text = str(output or "")
+    if not text.strip():
+        return "", 0
+    blocks = re.split(r"\n\s*\n", text)
+    kept = []
+    filtered = 0
+    for block in blocks:
+        if any(marker in block for marker in LOWKEY_GENERATED_PATH_MARKERS):
+            filtered += len(re.findall(r"(?m)^\s*note\[", block)) or 1
+            continue
+        kept.append(block)
+    return "\n\n".join(kept).strip(), filtered
+
+
+def run_forge_diagnostics(args: Sequence[str], label: str) -> int:
+    """Run Forge diagnostics and keep Lowkey-generated helper noise out of lk audit."""
+    binary = forge_path()
+    root = audit_context.foundry_project_root()
+    if not binary:
+        return die("forge was not found on PATH. Install Foundry first.")
+    try:
+        result = subprocess.run([binary, *args], cwd=root, capture_output=True, text=True)
+    except OSError as exc:
+        return die(f"could not execute forge: {exc}", 1)
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    visible, filtered = _filter_generated_diagnostics(combined)
+    if visible:
+        print(visible)
+    if filtered:
+        print(f"LowkeyForge: filtered {filtered} diagnostic(s) from Lowkey-generated helper files; use 'lk forge {label}' to see them.")
+    status = "completed" if result.returncode == 0 else "failed"
+    audit_context.emit("forge-command", root, tool="forge", status=status,
+                       summary=f"forge {label}",
+                       data={"command": label, "exit_code": result.returncode, "filtered": filtered})
+    audit_context.record_tool(f"forge-{label}", root, status=status,
+                              summary=f"forge {label}",
+                              data={"exit_code": result.returncode, "filtered": filtered})
+    return result.returncode
+
+
 def run_slither_preflight(root: Path) -> int:
     helper = Path(__file__).with_name("slither_tools.py")
     binary = shutil.which("slither")
@@ -123,37 +171,67 @@ def run_slither_preflight(root: Path) -> int:
         return 1
 
 
+def _has_path_filter(args: Sequence[str]) -> bool:
+    return any(arg in {"--match-path", "--no-match-path"} for arg in args)
+
+
+def _supports_option(command: str, option: str) -> bool:
+    binary = forge_path()
+    if not binary:
+        return False
+    try:
+        result = subprocess.run([binary, command, "--help"], capture_output=True, text=True)
+    except OSError:
+        return False
+    return option in ((result.stdout or "") + (result.stderr or ""))
+
+
+def _project_owned_tests(root: Path) -> list[Path]:
+    test_root = root / "test"
+    if not test_root.is_dir():
+        return []
+    return [path for path in test_root.rglob("*.t.sol") if not path.name.startswith("Lowkey_")]
+
+
 def run_audit(args: Sequence[str]) -> int:
     checks = "--checks" in args
     forwarded = [a for a in args if a != "--checks"]
     test_cmd = ["test", *forwarded]
     if not has_verbosity(forwarded):
         test_cmd.insert(1, "-vvv")
-    steps = [("build", ["build"])]
+    if not _has_path_filter(forwarded):
+        test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
+
+    coverage_cmd = ["coverage", *forwarded]
+    if not _has_path_filter(forwarded) and _supports_option("coverage", "--no-match-path"):
+        coverage_cmd.extend(["--no-match-path", "test/Lowkey_*"])
+
+    root = Path.cwd().resolve()
+    steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
     if checks:
-        # Keep static checks after compilation so dependency/compiler failures are
-        # reported by Forge before Slither starts its own compilation pass.
         steps.append(("slither", None))
         for optional in ("lint", "geiger"):
             if command_available(optional):
-                steps.append((optional, [optional]))
+                steps.append((optional, None))
             else:
                 print(f"LowkeyForge: skipping unavailable command: forge {optional}")
-    steps.extend([("tests", test_cmd), ("coverage", ["coverage"])])
+    steps.extend([("tests", test_cmd), ("coverage", coverage_cmd)])
+
+    if not _project_owned_tests(root):
+        print("LowkeyForge: no project-owned Forge tests found; Lowkey-generated experiments are excluded from the audit suite.")
 
     for label, command in steps:
         print(f"\n=== LOWKEY {'STATIC' if label == 'slither' else 'FORGE'}: {label.upper()} ===")
         if label == "slither":
-            code = run_slither_preflight(Path.cwd().resolve())
-            if code != 0:
-                print("\nLowkeyForge: stopped after failed Slither static analysis.", file=sys.stderr)
-                return code
-            continue
-        code = run_forge(command)
+            code = run_slither_preflight(root)
+        elif label in {"lint", "geiger"}:
+            code = run_forge_diagnostics([label], label)
+        else:
+            code = run_forge(command)
         if code != 0:
-            print(f"\nLowkeyForge: stopped after failed step: forge {' '.join(command)}", file=sys.stderr)
+            print(f"\nLowkeyForge: stopped after failed step: forge {label}", file=sys.stderr)
             return code
-    print("\nLowkeyForge: audit preflight completed. Review coverage and findings manually.")
+    print("\nLowkeyForge: audit preflight completed. Generated Lowkey experiments stay available through lk probe/lk changes/lk generate.")
     return 0
 
 def run_test_audit(args: Sequence[str]) -> int:
