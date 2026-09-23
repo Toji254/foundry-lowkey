@@ -1142,7 +1142,7 @@ def _slither_status(root: Path) -> str:
     return f"Slither: {len(findings)} recorded finding(s) [context evidence]"
 
 
-def _render_board(model: ContractModel, models: list[ContractModel], runtime: list[RuntimeContract], actors: list[Actor], steps: list[Step], current: Step | None, storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
+def _render_board(root: Path, model: ContractModel, models: list[ContractModel], runtime: list[RuntimeContract], actors: list[Actor], steps: list[Step], current: Step | None, storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
     board=[
         _paint("LOWKEY  //  PROTOCOL WALKTHROUGH",BOLD+CYAN,enabled),
         _paint("REALTIME: execute → observe → redraw → choose next interaction",DIM,enabled),
@@ -1219,7 +1219,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         plan=plan_workflow(model,actors,target or "0x"+"00"*20,int(time.time()),max_steps)
         runtime=[RuntimeContract(target or "0x"+"00"*20,model.name,model.name,"target")]
         print("\n"+_render_plan(model,plan,_ansi_enabled(static)))
-        print("\n"+_render_board(model,models,runtime,actors,plan,None,[],_ansi_enabled(static),True))
+        print("\n"+_render_board(root,model,models,runtime,actors,plan,None,[],_ansi_enabled(static),True))
         _save_artifacts(root,{"version":2,"mode":"source-guided-static","target":target,"contract":asdict(model),"contracts":_models_payload(models),"actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in plan],"runtime_contracts":[asdict(x) for x in runtime]},plan)
         return 0
 
@@ -1266,7 +1266,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             step.status="blocked"
             step.error="PRECONDITION BLOCKED: "+preflight
             steps.append(step)
-            print(_render_board(model,models,runtime,actors,steps,step,[],_ansi_enabled(False)))
+            print(_render_board(root,model,models,runtime,actors,steps,step,[],_ansi_enabled(False)))
         else:
             print(_paint("  EXECUTING NOW…",BOLD+GREEN,True))
             actor=next((a for a in actors if a.name==step.actor),actors[0])
@@ -1274,7 +1274,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             tx,output=_send(host,config,actor,step.address,step.function,step.args,step.value_wei)
             if not tx:
                 step.status="reverted"; step.error=output or "transaction failed"; steps.append(step)
-                print(_render_board(model,models,runtime,actors,steps,step,before,_ansi_enabled(False)))
+                print(_render_board(root,model,models,runtime,actors,steps,step,before,_ansi_enabled(False)))
             else:
                 receipt=_receipt(rpc,tx)
                 trace=_trace_tree(rpc,tx)
@@ -1291,7 +1291,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.runtime_contracts=[asdict(x) for x in runtime]
                 steps.append(step); completed.add(key)
                 print("\033[2J\033[H" if sys.stdout.isatty() else "")
-                print(_render_board(model,models,runtime,actors,steps,step,after,_ansi_enabled(False)))
+                print(_render_board(root,model,models,runtime,actors,steps,step,after,_ansi_enabled(False)))
                 if discovered:
                     print("\n"+_paint("RUNTIME DISCOVERY",BOLD+MAGENTA,True))
                     for node in discovered:
