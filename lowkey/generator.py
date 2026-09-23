@@ -108,7 +108,6 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
                 artifact_symbol = str(payload.get("contractName") or "")
                 if (
                     source == requested_source
-                    and payload.get("bytecode", {}).get("object")
                     and artifact_symbol in declared_symbols
                 ):
                     source_file_matches.append((path, payload))
