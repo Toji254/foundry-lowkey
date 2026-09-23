@@ -1,91 +1,36 @@
 # Foundry LowkeyCast
 
-LowkeyCast is a small auditor-oriented CLI that sits on top of Foundry Cast. It keeps common contract-research, transaction-forensics, storage-inspection, and audit-workflow actions behind one command: `lk`.
+LowkeyCast (lk) is a small auditor-oriented command line tool that sits on top of Foundry. It keeps the repetitive parts of contract research, Anvil interaction, storage inspection, transaction forensics, and test reproduction behind one workflow.
 
-## What it does
+The core idea is simple:
 
-### Contract interaction
-- Target aliases and numbered target switching
-- RPC profiles
-- Wallet profiles with optional environment-backed private keys
-- ABI loading with canonical tuple/struct signatures
-- Overload detection instead of silently choosing the first match
-- Read/send shortcuts: `lk c`, `lk s`, `lk st`
-- Transaction previews and confirmation prompts
-- Function search and argument wizard
-- Calldata, return-data, custom-error, and event decoding
+RECON → ATTACK → PROVE
 
-### Auditor inspection
-- Contract reconnaissance: balance, codehash, code size, nonce
-- EIP-1967 proxy inspection plus implementation/admin resolution
-- Mapping-slot calculation
-- ERC-7201 namespace indexing
-- Storage proofs
-- Runtime selector extraction
-- Target/chain-scoped storage snapshots and diffs
-- ERC20 metadata and holder balance helpers
-- ENS forward/reverse lookup
+Lowkey does not replace Forge or Cast. It orchestrates them and adds the local audit workflow around them.
 
-### Source and forensic tooling
-- Solidity review-marker scanner
-- Import/inheritance map
-- Forge storage-layout inspection
-- ABI-level function risk-surface heuristic
-- Gas estimation
-- Transaction replay/trace helpers
-- Log querying and optional ABI event decoding
-- Raw Cast passthrough
-- Batch command files
+## Start here
 
-### Audit workflow
-- Findings, notes, TODOs, sessions, checklist
-- Attacker-state matrix
-- Forge reproduction/test skeleton generation
-- Audit dashboard
-- Exportable `audit-report/`
-
-These inspection and triage commands are deliberately heuristic: they help surface things to review; they do not declare that a contract is vulnerable.
-
-## Install
-
-From a machine with Foundry already installed:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Toji254/foundry-lowkey/master/install.sh | bash
-```
-
-Then:
-
-```bash
-lk --h
-lk self-test
-lk doctor
-```
-
-The installer copies:
-
-```text
-~/.lowkey/lk.py
-~/.foundry/bin/lk
-```
-
-## Typical audit flow
-
-Lowkey is designed around a local Foundry/Anvil audit workflow. You normally do **not** need to paste an ABI path or RPC URL when Anvil is running.
-
-Anvil accounts are discovered automatically. For the default Anvil mnemonic, Lowkey derives the selected private key only when a transaction needs signing; it is not stored in Lowkey config. The selected account is locked to its actor name, so you cannot assign the same Anvil account number to a second actor until the first profile is removed.
-
-```bash
+~~~bash
 anvil
 
-lk --h
+lk -h
+lk doctor
 lk actor
+
 lk actor 0 Alice
 lk actor 1 Bob
+lk actor 2 attacker
+
 lk target 0x...
 lk status
+~~~
 
-lk scan src/EthEscrow.sol
+Lowkey automatically detects a local Anvil RPC on the common ports. For the default Anvil mnemonic it binds actors to account numbers and derives the corresponding key only when a signed local transaction is needed.
+
+## Everyday audit flow
+
+~~~bash
+lk recon
 lk deps
 lk functions
 lk fn release
@@ -93,152 +38,300 @@ lk ask createEscrow
 
 lk c balances 0x...
 lk s createEscrow 1 0x... --preview
+
+lk selectors --compare
+lk disasm
+lk calldata 0x...
 lk trace
 lk logs --decode
+~~~
 
-lk forge inspect-audit EthEscrow
-lk export
-```
+## Actors
 
-`lk deps` scans the whole Foundry project by default and can also inspect one file:
+Use actor names so your audit notes read like an attack story instead of a wall of addresses.
 
-```bash
-lk deps
-lk deps src/EthEscrow.sol
-```
-
-`lk functions` separates write functions, normal read functions, and public storage getters. A mapping such as `mapping(address => uint256) balances` still has an ABI getter (`balances(address)`), but it is shown under `STORAGE GETTERS` instead of being mixed into ordinary read functions.
-
-### Automatic ABI discovery
-
-After `lk target <address>`, Lowkey looks for the matching Foundry artifact in `out/` when a command needs an ABI. It uses the contract name from a deployment record when available, otherwise it can match deployed bytecode against local artifacts when an RPC is available.
-
-You can still manually override the ABI for unusual layouts:
-
-```bash
-lk abi out/EthEscrow.sol/EthEscrow.json
-```
-
-Manual ABI paths are an override, not the normal workflow.
-
-### Actors
-
-```bash
-lk actor
+~~~bash
 lk actor 0 Alice
 lk actor 1 Bob
-lk actor reset
-```
+lk actor 2 attacker
 
-For a default Anvil node, `lk actor` shows the available account numbers and who already owns each one. Lowkey will refuse:
+lk actor
+lk as attacker c balances 0x...
+lk as attacker s release --preview
+~~~
 
-```bash
-lk actor 0 Alice
-lk actor 0 Bob
-```
+The same Anvil account cannot be assigned to two actor names.
 
-because account `0` is already assigned to Alice.
+On a local fork, you can also impersonate an existing address:
 
-Lowkey verifies that an Anvil-derived key still matches the live account before using it. If you switch to a custom Anvil mnemonic or another RPC, use an environment-backed signer instead of the default development keys.
+~~~bash
+lk impersonate 0x...
+lk as whale s transfer ...
+~~~
 
-### Manual RPC / wallets
+The fork actor uses Anvil's unlocked-account path; no private key is required for the impersonated account.
 
-```bash
-lk rpc http://127.0.0.1:8545
-lk wallet set-env attacker LK_ATTACKER_KEY
-lk wallet use attacker
-```
+## ABI and function discovery
 
-Use these when you intentionally want a specific network or a non-default signer.
+Lowkey normally finds the ABI from Foundry's out/ artifacts. It can use deployment records, the configured contract name, proxy implementation discovery, and runtime bytecode matching.
 
-For a historical transaction:
+~~~bash
+lk abi
+lk functions
+lk fn withdraw
+lk ask withdraw
+lk encode withdraw 100
+lk calldata 0x...
+~~~
 
-```bash
-lk tx 0x...
-lk replay 0x... --trace-printer --decode-internal
-```
+Public mapping/struct getters are shown separately from ordinary read functions because an auditor usually cares about them as direct storage exposure.
 
-For a fork:
+Manual override is still available:
 
-```bash
-lk fork https://example-rpc.example
-# Start the printed Anvil command, then:
-lk rpc http://127.0.0.1:8545
-```
-## Wallet security
+~~~bash
+lk abi out/EthEscrow.sol/EthEscrow.json
+~~~
 
-Prefer environment-backed signers:
+## Storage and state forensics
 
-```bash
-export LK_ATTACKER_KEY=...
-lk wallet set-env attacker LK_ATTACKER_KEY
-lk wallet use attacker
-```
+~~~bash
+lk layout EthEscrow
+lk mapping 3 0x1111111111111111111111111111111111111111
+lk namespace MyNamespace
+lk proof 3
+lk snapshot 0 1 2 3
+lk diff
+~~~
 
-`lk wallet set` is intended for local/test keys and stores the supplied private key in `~/.lowkey/config.json`. The file is restricted to mode 0600, but that does not make plaintext key storage a production key-management system.
+For a real call, Lowkey can generate a temporary Forge test around Foundry's state-diff cheatcodes:
 
-## Source layout
+~~~bash
+lk state-diff release
+lk state-diff release --actor attacker
+lk state-diff createEscrow 1 0x...
+lk state-diff release --keep
+~~~
 
-```text
-foundry-lowkey/
-├── bin/
-│   └── lk
-├── lowkey/
-│   └── lk.py
-├── tests/
-│   └── test_lk.py
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-├── SECURITY.md
-├── install.sh
-├── README.md
-└── .gitignore
-```
+The generated test records account accesses and storage accesses, including previous/new slot values and call depth.
 
+## Attack lab
 
-## LowkeyForge audit layer
+### Probe
 
-LowkeyCast now includes a deliberately thin Forge layer. It removes repetitive
-typing without hiding Forge behavior: native commands are passed through
-unchanged.
+Probe a real ABI call as the current actor:
 
-### Native Forge passthrough
+~~~bash
+lk probe release
+lk probe createEscrow 1 0x...
+lk probe release --actor attacker
+lk probe release --value 1ether
+~~~
 
-```bash
+A probe is intentionally non-asserting. It is for discovering behavior.
+
+By default the temporary Forge test is deleted after the run. Add --keep when you want the generated test saved.
+
+### Matrix
+
+Turn attack assumptions into executable Forge scenarios:
+
+~~~bash
+lk matrix init
+lk matrix actor Alice 0x...
+lk matrix actor attacker 0x...
+lk matrix state funded "Escrow is funded"
+lk matrix add unauthorized-release release attacker "revert unauthorized"
+lk matrix test unauthorized-release
+~~~
+
+The generated matrix test uses the saved actor and calls the target through a low-level call so the scenario can be executed even when no typed contract interface is available.
+
+### Test generation
+
+Turn the last recorded send into a Forge reproduction:
+
+~~~bash
+lk test-gen
+~~~
+
+Then edit the generated test to express the exact invariant or exploit you want to prove.
+
+## Foundry power tools
+
+Lowkey exposes useful native Foundry testing paths directly:
+
+~~~bash
+lk fuzz
+lk fuzz --fuzz-runs 1000
+lk fuzz replay
+lk fuzz failures
+
+lk invariant
+lk invariant new EthEscrow
+
+lk mutate
+lk symbolic
+lk symbolic emit
+lk brutalize
+~~~
+
+These are workflow wrappers around the installed Forge version. They do not pretend to replace the underlying test engine.
+
+Foundry currently documents persistent fuzz/invariant failures, mutation testing, invariant testing, symbolic testing, and fuzz-corpus workflows as first-class testing workflows.
+
+## Cheatcode quick reference
+
+~~~bash
+lk cheatcodes
+lk cheatcode prank
+lk cheatcode deal
+lk cheatcode warp
+lk cheatcode roll
+lk cheatcode store
+lk cheatcode load
+lk cheatcode etch
+lk cheatcode mock
+lk cheatcode state-diff
+lk cheatcode ffi
+~~~
+
+The intentionally aggressive lab techniques are useful when you need to manufacture an otherwise unreachable state:
+
+~~~solidity
+vm.store(...)
+vm.etch(...)
+vm.mockCall(...)
+vm.prank(...)
+vm.warp(...)
+vm.roll(...)
+vm.deal(...)
+~~~
+
+vm.ffi is shown as LAB ONLY because it can execute an external command from a test environment.
+
+## Forking
+
+Lowkey can start and manage its own local Anvil fork:
+
+~~~bash
+lk fork https://your-rpc.example
+lk fork status
+lk impersonate 0x...
+lk fork stop
+~~~
+
+A block can be pinned:
+
+~~~bash
+lk fork https://your-rpc.example 18000000
+~~~
+
+The fork is started on port 8546 by default so a normal development Anvil instance on 8545 can remain running.
+
+## Cast shortcuts
+
+~~~bash
+lk c <function> [args]
+lk s <function> [args]
+lk gas <function> [args]
+lk tx [<tx>]
+lk receipt [<tx>]
+lk trace [<tx>]
+lk logs --decode
+lk txpool
+lk selectors --compare
+lk disasm
+~~~
+
+For anything Lowkey does not wrap yet:
+
+~~~bash
+lk raw <cast-command> [args...]
+~~~
+
+Native Cast arguments are passed through rather than reimplemented.
+
+## Forge shortcuts
+
+~~~bash
+lk build
+lk test
+
 lk forge test -vvvv
-lk forge build
 lk forge inspect MyContract storage-layout
-lk forge script ...
-lk forge coverage
-lk forge lint
-lk forge geiger
-```
-
-The high-frequency commands `build`, `test`, `script`, `inspect`,
-`coverage`, `lint`, `geiger`, and `fmt` also have direct
-shortcuts such as `lk test` and `lk build`. Existing LowkeyCast commands
-remain unchanged.
-
-### Audit shortcuts
-
-```bash
-lk forge test-audit
-lk forge test-audit --match-test testWithdraw
 lk forge inspect-audit MyContract
+lk forge test-audit --match-test testWithdraw
 lk forge audit
 lk forge audit --checks
-```
+~~~
 
-- `test-audit` runs native `forge test` with `-vvvv` unless you provide
-  your own verbosity.
-- `inspect-audit` builds first, then collects ABI, method identifiers, errors,
-  events, and storage layout.
-- `audit` runs build, traced tests, and coverage. `--checks` additionally
-  runs `forge lint` and `forge geiger` when those commands exist in the
-  installed Forge version.
-- Use `lk forge <command> --help` whenever you need the exact native Forge
-  behavior or options.
+inspect-audit collects ABI, methods, errors, events, and storage layout.
 
-These helpers automate workflow only. They do not detect, rank, score, or
-declare vulnerabilities.
+audit runs build, traced tests, and coverage; --checks additionally uses forge lint and forge geiger when those commands are available.
+
+## Audit evidence
+
+~~~bash
+lk workspace init
+lk session start
+lk finding add high unauthorized-release "attacker can release without creator confirmation"
+lk todo "check callback path"
+lk checklist
+lk export
+~~~
+
+Exported evidence goes into audit-report/.
+
+## Install
+
+From a machine that already has Foundry:
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/Toji254/foundry-lowkey/master/install.sh | bash
+~~~
+
+Then:
+
+~~~bash
+lk -h
+lk doctor
+~~~
+
+The installer places the Lowkey runtime under:
+
+~~~text
+~/.lowkey/
+~/.foundry/bin/lk
+~~~
+
+## Project layout
+
+~~~text
+foundry-lowkey/
+├── bin/lk
+├── lowkey/lk.py
+├── lowkey/forge_tools.py
+├── tests/test_lk.py
+├── tests/test_forge_tools.py
+├── .github/workflows/ci.yml
+├── SECURITY.md
+├── install.sh
+└── README.md
+~~~
+
+## Design rule
+
+Lowkey is deliberately opinionated about the workflow, not the verdict.
+
+It should help you answer:
+
+Who can call this?
+What state is this contract in?
+What storage changed?
+What external calls happened?
+What happens if the caller is hostile?
+Can I reproduce it?
+Can I turn it into a Forge test?
+Does fuzzing/invariant/symbolic testing catch it?
+
+That is the job.
