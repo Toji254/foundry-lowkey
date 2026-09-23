@@ -1,5 +1,8 @@
 import importlib.util
 import pathlib
+import tempfile
+from contextlib import redirect_stdout
+import io
 import unittest
 from unittest.mock import patch
 
@@ -93,6 +96,26 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk, "run_cast") as run_cast:
             lk.run_receipt(config)
             run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
+
+    def test_scan_smoke(self):
+        source = "contract X { function f() external { (bool ok,) = msg.sender.call{value: 1}(\"\"); require(ok); } function g() external { address a = tx.origin; } }"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "X.sol"
+            path.write_text(source, encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk.run_scan([tmp])
+            self.assertIn("REENTRANCY REVIEW", output.getvalue())
+            self.assertIn("TX.ORIGIN", output.getvalue())
+
+    def test_event_command_does_not_use_topics_flag(self):
+        with patch.object(lk, "cast_output", return_value=(0, "decoded", "")) as cast_output:
+            result = lk.run_event({}, ["Transfer(address,address,uint256)", "0x", "0x1"])
+            self.assertEqual(result, 0)
+            cast_output.assert_called_once_with([
+                "cast", "decode-event", "--sig",
+                "Transfer(address,address,uint256)", "0x", "0x1"
+            ])
 
     def test_solidity_identifier(self):
         self.assertEqual(
