@@ -2147,20 +2147,17 @@ def ensure_project_anvil(config, root):
 
 def run_clone(config, args):
     if not args or args[0].lower() in {"help", "-h", "--help"}:
-        print("Usage: lk clone <repo> <contract> [directory]")
+        print("Usage: lk clone <repo>")
         print("Clone a Foundry project and prepare it for auditing.")
         print("Lowkey will clone submodules, build, run the connected audit pipeline,")
         print("start a disposable local Anvil when needed, and prepare the audit lab.")
         return 0
 
     repo = args[0]
-    contract = str(args[1]).strip() if len(args) > 1 else ""
-    if not contract:
-        return fail("Usage: lk clone <repo> <contract> [directory]")
-    if len(args) > 3:
-        return fail("Usage: lk clone <repo> <contract> [directory]")
+    if len(args) > 1:
+        return fail("Usage: lk clone <repo>")
 
-    destination_name = args[2] if len(args) == 3 else repo_clone_name(repo)
+    destination_name = repo_clone_name(repo)
     if not destination_name:
         return fail("Error: could not determine the clone directory.")
     destination = Path(destination_name).expanduser()
@@ -2178,7 +2175,6 @@ def run_clone(config, args):
     print("LOWKEY PROJECT ONBOARDING")
     print("=========================")
     print(f"Repository : {clone_url}")
-    print(f"Target     : {contract}")
     print(f"Directory  : {destination}")
 
     try:
@@ -2222,12 +2218,12 @@ def run_clone(config, args):
             print("LAB : deferred (no local Anvil could be started).", file=sys.stderr)
             lab_code = 1
         else:
-            lab_code = run_lab(config, [contract])
+            lab_code = run_lab(config, [])
 
         print("\n[4/4] Onboarding result")
         print("======================")
         print(f"Project : {root}")
-        print(f"Target  : {contract}")
+        print(f"Target  : {config.get('target_contract') or 'auto-detected'}")
         if lab_code == 0:
             print("Status  : READY FOR AUDIT")
             print(f"Next    : cd {shlex.quote(root)}")
@@ -4787,7 +4783,6 @@ def dispatch_command(cmd,args,config,from_batch=False):
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
     elif cmd=="clone": return run_clone(config,args)
-    elif cmd=="git" and args and args[0].lower()=="clone": return run_clone(config,args[1:])
     elif cmd=="lab": return run_lab(config,args)
     elif cmd=="rpc":
         if not args:
