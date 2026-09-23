@@ -561,7 +561,7 @@ contract Poc_{slug} is Test {{
             "last_tx": config.get("last_tx"),
             "rpc": config.get("rpc"),
         },
-        "poс_file": str(sol_path.relative_to(Path(root).resolve())),
+        "poc_file": str(sol_path.relative_to(Path(root).resolve())),
         "refinement_checklist": [
             "Resolve exact function/signature and calldata.",
             "Set attacker identities, balances, and pre-state.",
