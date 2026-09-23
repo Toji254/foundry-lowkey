@@ -4450,6 +4450,39 @@ def _live_target_candidate(config, root, contract_name=None):
     }
 
 
+def _focused_audit_target_contract(root):
+    """Return the built contract associated with the current investigation focus."""
+    context = audit_context.load(root)
+    focus = context.get("focus", {}) if isinstance(context, dict) else {}
+    signal_id = focus.get("signal_id") if isinstance(focus, dict) else None
+    if not signal_id:
+        return None
+
+    signal = next(
+        (
+            item for item in audit_context.signals(root, None)
+            if isinstance(item, dict) and item.get("id") == signal_id
+        ),
+        None,
+    )
+    if not isinstance(signal, dict):
+        return None
+
+    file_name = str(signal.get("file") or "")
+    source_name = Path(file_name).stem if file_name else ""
+    if not source_name:
+        return None
+
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not artifact_is_deployable(artifact):
+            continue
+        contract = artifact_contract_name(path, artifact)
+        if str(contract).lower() == source_name.lower():
+            return str(contract)
+    return None
+
+
 def _bootstrap_audit_target(config, root, allow_deploy=False):
     """Resolve a live project target without guessing across unrelated projects."""
     existing = project_context_target(root)
@@ -4457,7 +4490,7 @@ def _bootstrap_audit_target(config, root, allow_deploy=False):
         activate_project_target(config, root)
         return existing.get("address")
 
-    preferred_contract = discover_audit_target_contract(root)
+    preferred_contract = _focused_audit_target_contract(root) or discover_audit_target_contract(root)
     candidate = _live_target_candidate(config, root, preferred_contract)
     if candidate:
         return _set_audit_auto_target(
