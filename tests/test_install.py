@@ -48,7 +48,7 @@ class InstallSmokeTests(unittest.TestCase):
             )
             self.assertEqual(help_result.returncode, 0, help_result.stderr)
             self.assertIn("lk slither", help_result.stdout)
-            self.assertIn("lk audit run", help_result.stdout)
+            self.assertIn("lk audit --checks", help_result.stdout)
 
 
 if __name__ == "__main__":
