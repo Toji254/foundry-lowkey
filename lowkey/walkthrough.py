@@ -217,6 +217,13 @@ def _artifact_models(root: Path) -> list[ContractModel]:
             continue
         name = str(data.get("contractName") or path.stem)
         source = str(data.get("sourceName") or "").replace("\\","/").lstrip("./")
+        if not source:
+            try:
+                relative_artifact = path.relative_to(out)
+                if len(relative_artifact.parts) >= 2:
+                    source = str(Path(src_prefix) / relative_artifact.parent.name)
+            except ValueError:
+                source = ""
         if not (source == src_prefix or source.startswith(src_prefix + "/")):
             continue
         source_text = ""
