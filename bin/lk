@@ -1,2 +1,15 @@
 #!/bin/bash
-python3 "$HOME/.lowkey/lk.py" "$@"
+set -euo pipefail
+
+if [[ "${1:-}" == "forge" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
+fi
+
+case "${1:-}" in
+    build|test|script|inspect|debug|coverage|lint|geiger|fmt)
+        exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
+        ;;
+esac
+
+exec python3 "$HOME/.lowkey/lk.py" "$@"
