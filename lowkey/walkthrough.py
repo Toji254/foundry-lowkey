@@ -74,6 +74,7 @@ class ContractModel:
     mappings: list[dict[str, Any]] = field(default_factory=list)
     arrays: list[dict[str, Any]] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
+    calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -188,7 +189,13 @@ def _artifact_models(root: Path) -> list[ContractModel]:
             # as execution targets.
             continue
         source = str(data.get("sourceName") or path)
-        if "/test/" in "/" + source + "/" or source.startswith("test/"):
+        if (
+            "/test/" in "/" + source + "/"
+            or source.startswith("test/")
+            or source.startswith("lib/")
+            or "/lib/" in "/" + source
+            or source.startswith("script/")
+        ):
             continue
 
         functions = [
@@ -243,6 +250,62 @@ def _artifact_models(root: Path) -> list[ContractModel]:
                 events=events,
             )
         )
+    # Resolve source-level function connections after all application models
+    # are known. These edges are explicitly INFERRED; runtime traces remain the
+    # authority for what actually executed.
+    known = {m.name: m for m in models}
+    for model in models:
+        source_text = ""
+        source_path = root / model.source
+        if source_path.is_file():
+            try:
+                source_text = source_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+        edges: list[dict[str, Any]] = []
+        for fn in model.functions:
+            name = fn.split("(", 1)[0]
+            pos = source_text.find("function " + name)
+            if pos < 0:
+                continue
+            segment = source_text[pos : pos + 12000]
+            for target_fn in model.functions:
+                target_name = target_fn.split("(", 1)[0]
+                if target_name == name:
+                    continue
+                if re.search(r"\\b" + re.escape(target_name) + r"\\s*\\(", segment):
+                    edges.append({
+                        "kind": "internal",
+                        "from": name,
+                        "to_contract": model.name,
+                        "to_function": target_fn,
+                    })
+            for other_name in sorted(known):
+                if other_name == model.name or other_name not in segment:
+                    continue
+                for target in known[other_name].functions:
+                    target_name = target.split("(", 1)[0]
+                    if re.search(r"\\b" + re.escape(other_name) + r"\\s*\\([^;{}]{0,120}\\)\\s*\\.?\\s*" + re.escape(target_name) + r"\\s*\\(", segment):
+                        edges.append({
+                            "kind": "cross-contract",
+                            "from": name,
+                            "to_contract": other_name,
+                            "to_function": target,
+                        })
+        # De-duplicate while preserving discovery order.
+        seen: set[tuple[str, str, str, str]] = set()
+        model.calls = []
+        for edge in edges:
+            key = (
+                str(edge.get("kind")),
+                str(edge.get("from")),
+                str(edge.get("to_contract")),
+                str(edge.get("to_function")),
+            )
+            if key not in seen:
+                seen.add(key)
+                model.calls.append(edge)
+
     return sorted(models, key=lambda m: (m.name.lower(), m.source))
 
 
