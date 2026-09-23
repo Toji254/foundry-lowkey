@@ -11,19 +11,17 @@ Lowkey does not replace Forge or Cast. It orchestrates them and adds the local a
 ## Start here
 
 ~~~bash
-anvil
-
 lk -h
 lk doctor
-lk actor
 
-lk actor 0 Alice
-lk actor 1 Bob
-lk actor 2 attacker
+# Clone and prepare a project for auditing
+lk clone https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git ConfidencePoolFactory
 
-lk target 0x...
-lk status
+# Equivalent spelling
+lk git clone https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git ConfidencePoolFactory
 ~~~
+
+`lk clone` is the recommended project entry point. It clones submodules, verifies the project is a Foundry project, builds it, runs the connected Lowkey audit pipeline, starts a disposable local Anvil when needed, and prepares the local audit lab. The second argument is the contract you intend to investigate; it guides target discovery and lab setup.
 
 Lowkey automatically detects a local Anvil RPC on the common ports. For the default Anvil mnemonic it binds actors to account numbers and derives the corresponding key only when a signed local transaction is needed.
 
@@ -130,17 +128,23 @@ The generated test records account accesses and storage accesses, including prev
 
 ## Local audit lab
 
-Start a disposable local audit environment without manually copying contract addresses into Lowkey:
+Once a project has been onboarded, start or rebuild its local attack environment with:
 
 ~~~bash
 lk lab
 ~~~
 
-Lowkey first checks for an optional project-specific lab adapter. If none exists, it falls back to a generic deployment from the current Foundry build artifacts. A focused finding/function is used to choose the relevant contract when possible.
+Lowkey automatically reuses an existing Anvil, or starts a disposable project-local Anvil when none is running. It first checks for a project-specific lab adapter, then falls back to a generic deployment from the current Foundry build artifacts.
 
-Project-specific adapters are optional. They are useful for protocols that require several mocks, registries, proxies, or initialization steps that Lowkey cannot safely guess.
+The generic path deliberately refuses to call an upgradeable-style contract "ready" when it exposes `initialize()`. Complex protocols may require a proxy, registries, mocks, or initialization data that cannot be safely guessed. In those cases Lowkey reports the missing lab layer instead of giving a misleading live target.
 
-The resulting target and actor are stored in the current project's .audit/ context, so commands such as lk changes and lk trace work without manually setting the target address.
+Stop an Anvil started by Lowkey with:
+
+~~~bash
+lk lab stop
+~~~
+
+The resulting target and actor are stored in the current project's `.audit/` context, so commands such as `lk changes` and `lk trace` work without manually copying addresses.
 
 ## Attack lab
 
