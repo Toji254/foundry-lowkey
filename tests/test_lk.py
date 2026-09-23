@@ -536,6 +536,22 @@ class LowkeyCastTests(unittest.TestCase):
 
 
 
+
+    def test_decode_calldata_auto_resolves_loaded_abi(self):
+        config={"target":"0x"+"1"*40}
+        abi=[{"type":"function","name":"ping","inputs":[{"type":"uint256"}]}]
+        with patch.object(lk,"load_abi",return_value=abi), \
+             patch.object(lk,"abi_selector",return_value="0x773acdef"), \
+             patch.object(lk,"run_cast",return_value=lk.CommandResult("7",0)) as run:
+            output=io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(lk.run_cast_deep(config,["decode-calldata","0x773acdef"+"0"*63+"7"]),0)
+        self.assertEqual(
+            run.call_args.args[0][:3],
+            ["decode-calldata","ping(uint256)","0x773acdef"+"0"*63+"7"],
+        )
+        self.assertIn("Signature: ping(uint256)",output.getvalue())
+
     def test_cast_deep_commands(self):
         target="0x"+"1"*40
         config={"target":target,"abi_paths":{target:"/tmp/abi.json"}}
