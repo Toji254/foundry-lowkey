@@ -115,9 +115,14 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
 
         if source_file_matches:
             matches = source_file_matches
+        elif requested_source.exists():
+            # The requested source exists, but none of its artifacts match a
+            # declaration in that source. Do not fall back to a stale artifact
+            # from another compilation/source tree with the requested filename.
+            return None
         else:
-            # Fall back to a direct Solidity symbol match when there is no
-            # trustworthy source-file artifact.
+            # No matching source file exists, so a direct Solidity symbol match
+            # is still useful as a fallback for contracts supplied by artifact name.
             exact = [
                 item for item in matches
                 if item[1].get("contractName") == contract_name
@@ -126,22 +131,14 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
             if exact:
                 matches = exact
             else:
-                source_matches = []
-                for path, payload in matches:
-                    source = source_for_artifact(path)
-                    if source and source.stem == contract_name and payload.get("bytecode", {}).get("object"):
-                        source_matches.append((path, payload))
-                if source_matches:
-                    matches = source_matches
-                else:
-                    stem_matches = [
-                        item for item in matches
-                        if item[0].stem == contract_name
-                        and item[1].get("bytecode", {}).get("object")
-                    ]
-                    if not stem_matches:
-                        return None
-                    matches = stem_matches
+                stem_matches = [
+                    item for item in matches
+                    if item[0].stem == contract_name
+                    and item[1].get("bytecode", {}).get("object")
+                ]
+                if not stem_matches:
+                    return None
+                matches = stem_matches
 
     # Deployment generation needs an actual deployable source artifact where possible.
     deployable = [
