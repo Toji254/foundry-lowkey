@@ -479,8 +479,6 @@ def project_context_target(root=None):
         return target
     if artifact and path_is_within(artifact, project_root):
         return target
-    if contract and artifact:
-        return target
     return None
 
 def active_project_target(config, root=None):
