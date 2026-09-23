@@ -1466,6 +1466,20 @@ def run_doctor():
         else:
             print(f"FAIL  {name}: {path} ({version})")
             failures+=1
+    slither=shutil.which("slither")
+    if slither:
+        try:
+            result=subprocess.run([slither,"--version"],capture_output=True,text=True)
+            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
+            if result.returncode==0:
+                print(f"PASS  slither: {slither} ({version})")
+            else:
+                print(f"WARN  slither: {slither} ({version})")
+        except OSError as error:
+            print(f"WARN  slither: {error}")
+    else:
+        print("NOTE  slither: not found (optional static analyzer)")
+
     forge=shutil.which("forge")
     if forge:
         try:
@@ -3357,6 +3371,7 @@ RECON → UNDERSTAND THE CONTRACT
   lk ask <function>                  Show its parameters
   lk abi                               Show the loaded ABI
   lk deps [dir|file]                  Imports + inheritance
+  lk slither [args...]                 Slither static analysis (auto-saves JSON + SARIF)
   lk layout <Contract>                Forge storage layout
   lk risk                              Function review-surface hints
   lk seams                             Cross-surface audit hotspots
