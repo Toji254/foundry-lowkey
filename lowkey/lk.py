@@ -789,17 +789,27 @@ def run_cast(args,config,capture=False):
     for flag in ["--preview","--dry-run","--confirm","--yes"]:
         while flag in remaining: remaining.remove(flag)
     cmd.extend(remaining)
-    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","index","selectors"}
+    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","index","selectors","rpc","tx-pool"}
     active_rpc=effective_rpc(config)
     if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
     actor=config.get("actor")
+    actor_entry=config.get("wallets",{}).get(actor) if actor else None
     actor_key=resolve_wallet_key(config) if cast_cmd=="send" else None
-    if cast_cmd=="send" and actor and actor in config.get("wallets",{}) and not actor_key:
+    if cast_cmd=="send" and isinstance(actor_entry,dict) and actor_entry.get("source")=="anvil-impersonated":
+        address=actor_entry.get("address")
+        if not is_address(address):
+            return fail("Error: impersonated actor has no valid address.")
+        if "--from" not in cmd and not any(arg.startswith("--from=") for arg in cmd):
+            cmd.extend(["--from",address])
+        if "--unlocked" not in cmd:
+            cmd.append("--unlocked")
+    elif cast_cmd=="send" and actor and actor in config.get("wallets",{}) and not actor_key:
         entry=config.get("wallets",{}).get(actor)
         if isinstance(entry,dict) and entry.get("source")=="anvil-default":
-            return fail("Error: current Anvil actor cannot be used safely on this RPC. Make sure the selected actor belongs to the detected Anvil node.")
+            return fail("Error: current Anvil actor cannot be used on this RPC. Make sure the selected actor belongs to the detected Anvil node.")
         return fail(f"Error: signer profile '{actor}' has no usable private key. Check its environment variable.")
-    if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd): cmd.extend(["--private-key",actor_key])
+    if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd):
+        cmd.extend(["--private-key",actor_key])
     safe_cmd=redact_secrets(shlex.join(cmd))
     if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
     if cast_cmd=="send" and preview:
@@ -2064,6 +2074,31 @@ def run_wizard(config,args):
     else: run_cast(["call",signature,*values],config)
 
 
+
+def run_impersonate(config,args):
+    if not args or not is_address(args[0]):
+        return fail("Usage: lk impersonate <address> [name]")
+    address=args[0]
+    name=args[1] if len(args)>1 else f"actor_{address[-6:]}"
+    rpc=effective_rpc(config)
+    info=anvil_rpc_info(config)
+    if not rpc or not info:
+        return fail("Error: an Anvil RPC is required for impersonation.")
+    if assigned_anvil_address(config,address) and assigned_anvil_address(config,address)!=name:
+        return fail(f"Error: address {address} is already assigned to '{assigned_anvil_address(config,address)}'.")
+    result=run_cast(["rpc","anvil_impersonateAccount",address],config,capture=True)
+    if result.code!=0:
+        return fail(f"Error: Anvil impersonation failed: {result.text or 'unknown error'}", result.code or 1)
+    config.setdefault("wallets",{})[name]={
+        "source":"anvil-impersonated",
+        "address":address,
+    }
+    config["actor"]=name
+    config.setdefault("labels",{})[address]=name
+    save_config(config)
+    print(f"Actor selected: {name} -> impersonated {address}")
+    return 0
+
 def run_as(config,args):
     if len(args)<2:
         return fail("Usage: lk as <actor> <command> [args...]")
@@ -2147,7 +2182,7 @@ def run_fork(args):
         return fail("Error: anvil was not found on PATH. Install Foundry first.")
     if local_port_open("127.0.0.1",port):
         return fail(f"Error: port {port} is already in use.")
-    command=["anvil","--fork-url",rpc,"--port",str(port),"--silent"]
+    command=["anvil","--fork-url",rpc,"--port",str(port),"--auto-impersonate","--silent"]
     if block is not None:
         command.extend(["--fork-block-number",block])
     command.extend(extra)
@@ -2209,6 +2244,7 @@ ACTORS → THINK LIKE ALICE / BOB / THE ATTACKER
   lk actor 2 attacker                 Bind Anvil #2 → attacker
   lk actor                             List accounts + assignments
   lk as attacker <command>            Run one command as attacker
+  lk impersonate <address> [name]     Make a fork actor act as an existing account
   lk actor reset                       Clear the current actor
   lk wallet list / remove <name>      Manage saved actors
 
@@ -2442,6 +2478,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="probe": return run_probe(config,args)
     elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
     elif cmd=="as": return run_as(config,args)
+    elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
     elif cmd=="fuzz": return run_fuzz(args)
     elif cmd=="invariant": return run_invariant(config,args)
     elif cmd=="mutate": return run_mutate(args)
