@@ -856,7 +856,12 @@ def run_trace(config,args=None):
     if grep:
         matched=[line for line in (output or "").splitlines() if grep.lower() in line.lower()]
         print("\n".join(matched) if matched else f"No trace lines matched '{grep}'.")
-    else: run_cast(["run",tx_hash]+args,config)
+    else:
+        result=run_cast(["run",tx_hash]+args,config)
+        root=audit_context.foundry_project_root()
+        audit_context.set_latest(root,tx_hash=tx_hash,trace=tx_hash)
+        audit_context.record_tool("trace",root,status="completed",summary=f"transaction trace {tx_hash[:10]}...",data={"tx_hash":tx_hash})
+        return result
 def decode_event_log(config,log):
     topics=log.get("topics",[]) if isinstance(log,dict) else []
     data=log.get("data","0x") if isinstance(log,dict) else "0x"
@@ -1595,6 +1600,8 @@ contract Exploit_Reproduction is Test {{
     filename=os.path.join("test",f"Exploit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
     Path(filename).write_text(test,encoding="utf-8")
     print(f"Exploit reproduction generated: {filename}")
+    root=audit_context.foundry_project_root()
+    audit_context.record_tool("generator",root,status="completed",summary="exploit reproduction generated",data={"mode":"test-gen","output":filename,"function":func,"target":target})
 def run_checklist(config,action=None,item=None):
     path=os.path.join(AUDIT_DIR,"CHECKLIST.md"); os.makedirs(AUDIT_DIR,exist_ok=True)
     if not os.path.exists(path): Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8")
@@ -2588,6 +2595,9 @@ contract LowkeyStateDiff is Test {{
         if parsed["gas"] is not None:
             print(f"Gas:       {parsed['gas']}")
         print(f"Storage:   {len(parsed['slots'])} change(s)")
+        root=audit_context.foundry_project_root()
+        audit_context.update(root, latest={"function":signature, "value":str(parsed["eth_sent"]), "calldata":calldata, "state_diff":"recorded"})
+        audit_context.record_tool("state-diff", root, status="completed", summary=f"{len(parsed['slots'])} storage change(s)", data={"function":signature, "generated_test":path})
 
         if not parsed["slots"]:
             if parsed["success"]:
