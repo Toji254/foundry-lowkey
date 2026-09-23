@@ -4552,6 +4552,7 @@ def run_audit_mode(config, args=None, interactive=None):
     args = list(args or [])
     auto_mode = any(str(item).lower() == "auto" for item in args)
     checks = "--checks" in args
+    walkthrough_mode = "--walkthrough" in args
     force_noninteractive = "--non-interactive" in args
     force_interactive = "--interactive" in args
     mode_args = ["--checks"] if checks else []
@@ -4606,6 +4607,12 @@ def run_audit_mode(config, args=None, interactive=None):
         _sync_audit_context(config, root)
 
     audit_code = run_audit(config, mode_args)
+    if walkthrough_mode:
+        walkthrough_args = ["--auto"] if auto_mode else []
+        walkthrough_args.append("--yes" if force_noninteractive or not sys.stdin.isatty() else "--interactive")
+        walkthrough_code = walkthrough.run(config, walkthrough_args, host=sys.modules[__name__])
+        if walkthrough_code != 0 and audit_code == 0:
+            audit_code = walkthrough_code
     if audit_code != 0:
         baseline_code = audit_code
     elif scan_code != 0:
@@ -4668,7 +4675,7 @@ def run_audit_mode(config, args=None, interactive=None):
         elif choice == "0":
             return baseline_code
         else:
-            print("Unknown option. Choose 0-8.")
+            print("Unknown option. Choose 0-9.")
 
 
 
