@@ -2447,7 +2447,7 @@ def parse_state_diff_output(output):
     slots=[]
     lines=[line.strip() for line in text_output.splitlines()]
     for index,line in enumerate(lines):
-        if line=="SLOT" and index+6<len(lines):
+        if line=="SLOT" and index+5<len(lines):
             slot=lines[index+1]
             if index+5<len(lines) and lines[index+2]=="FROM" and lines[index+4]=="TO":
                 before=lines[index+3]
