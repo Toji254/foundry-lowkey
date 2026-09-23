@@ -535,6 +535,68 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("ABI-ONLY:", output.getvalue())
 
 
+
+    def test_cast_deep_commands(self):
+        config={"target":"0x"+"1"*40,"abi_paths":{"0x"+"1"*40":"/tmp/abi.json"}}
+        calls=[]
+        def fake_run(args,cfg,capture=False):
+            calls.append(args)
+            return lk.CommandResult("ok",0)
+        with patch.object(lk,"run_cast",side_effect=fake_run), \
+             patch.object(lk,"auto_abi_path",return_value="/tmp/abi.json"), \
+             patch.object(lk,"resolve_function",return_value="ping(uint256)"):
+            self.assertEqual(lk.run_cast_deep(config,["4byte","0x12345678"]),0)
+            self.assertEqual(lk.run_cast_deep(config,["4byte-event","0x"+"a"*64]),0)
+            self.assertEqual(lk.run_cast_deep(config,["4byte-calldata","0x12345678"]),0)
+            self.assertEqual(lk.run_cast_deep(config,["access-list","ping","7"]),0)
+            self.assertEqual(lk.run_cast_deep(config,["interface"]),0)
+            self.assertEqual(lk.run_cast_deep(config,["constructor-args"]),0)
+            self.assertEqual(lk.run_cast_deep(config,["creation-code"]),0)
+            self.assertEqual(lk.run_cast_deep(config,["decode-calldata","0x12345678"]),0)
+            self.assertEqual(lk.run_cast_deep(config,["abi-encode","uint256","7"]),0)
+        self.assertTrue(any(x[0]=="interface" for x in calls))
+        self.assertTrue(any(x[0]=="constructor-args" for x in calls))
+        self.assertTrue(any(x[0]=="creation-code" for x in calls))
+        self.assertTrue(any(x[0]=="access-list" for x in calls))
+
+    def test_seams_command_surfaces_cross_signals(self):
+        config={"target":"0x"+"1"*40}
+        abi=[{
+            "type":"function","name":"withdraw",
+            "inputs":[{"name":"to","type":"address"}],
+            "stateMutability":"payable"
+        }]
+        output=io.StringIO()
+        with patch.object(lk,"load_abi",return_value=abi), redirect_stdout(output):
+            self.assertEqual(lk.run_seams(config),0)
+        rendered=output.getvalue()
+        self.assertIn("state-write + address input",rendered)
+        self.assertIn("state-write + state/value flow",rendered)
+
+    def test_matrix_test_executes_returned_generated_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old=lk.WORKSPACE_DIR
+            lk.WORKSPACE_DIR=tmp
+            try:
+                lk.run_matrix({},["init"])
+                paths=lk.workspace_paths()
+                lk.write_json_file(paths["matrix_actors"],{"Alice":{"address":"0x"+"1"*40}})
+                lk.write_json_file(paths["matrix_scenarios"],[{
+                    "name":"smoke","target":"0x"+"2"*40,
+                    "function":"ping()","actor":"Alice","expected":"success"
+                }])
+                output=io.StringIO()
+                with patch.object(lk,"run_foundry",return_value=0) as run, \
+                     patch.object(lk,"write_generated_test",return_value=os.path.join(tmp,"Matrix_smoke.t.sol")):
+                    with redirect_stdout(output):
+                        self.assertEqual(lk.run_matrix(
+                            {"target":"0x"+"2"*40,"abi_paths":{},"wallets":{}},
+                            ["test","smoke"]
+                        ),0)
+                self.assertEqual(run.call_args.args[0][0],"test")
+            finally:
+                lk.WORKSPACE_DIR=old
+
     def test_txpool_uses_rpc_methods_not_cast_flag(self):
         config={"rpc":"http://127.0.0.1:8545"}
         with patch.object(lk,"rpc_json",side_effect=[
