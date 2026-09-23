@@ -3333,6 +3333,14 @@ def run_audit(config, args):
 
     code = run_forge_audit(["--checks", *args])
     context = audit_context.load(root)
+    audit_context.record_tool(
+        "audit",
+        root,
+        status="completed" if code == 0 else "failed",
+        summary="connected audit pipeline",
+        data={"exit_code": code},
+    )
+    context = audit_context.load(root)
     open_signals = audit_context.signals(root, "open")
 
     print("\nAUDIT SUMMARY")
