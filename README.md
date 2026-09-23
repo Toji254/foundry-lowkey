@@ -57,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/Toji254/foundry-lowkey/master/insta
 Then:
 
 ```bash
-lk --help
+lk --h
 lk self-test
 lk doctor
 ```
@@ -71,38 +71,85 @@ The installer copies:
 
 ## Typical audit flow
 
-Lowkey auto-detects a running local Anvil node when no RPC is configured. For Anvil's default development accounts, actor keys are derived only when needed and are not stored in Lowkey config.
+Lowkey is designed around a local Foundry/Anvil audit workflow. You normally do **not** need to paste an ABI path or RPC URL when Anvil is running.
 
-A normal local workflow can therefore be:
+Anvil accounts are discovered automatically. For the default Anvil mnemonic, Lowkey derives the selected private key only when a transaction needs signing; it is not stored in Lowkey config. The selected account is locked to its actor name, so you cannot assign the same Anvil account number to a second actor until the first profile is removed.
 
 ```bash
+anvil
+
 lk --h
-lk actor                 # choose account 0 and name it Alice
-lk actor 1 Bob           # choose another Anvil account
-lk target 0x...          # point at the deployed contract
-lk status                # ABI is auto-discovered from local artifacts
+lk actor
+lk actor 0 Alice
+lk actor 1 Bob
+lk target 0x...
+lk status
+
 lk scan src/EthEscrow.sol
 lk deps
 lk functions
-lk risk
-lk recon
-lk forge inspect-audit Escrow
-lk c escrow 1
-lk s createescrow 1 0x... --preview
+lk fn release
+lk ask createEscrow
+
+lk c balances 0x...
+lk s createEscrow 1 0x... --preview
 lk trace
 lk logs --decode
+
+lk forge inspect-audit EthEscrow
 lk export
 ```
 
-The manual commands still exist for unusual setups:
+`lk deps` scans the whole Foundry project by default and can also inspect one file:
+
+```bash
+lk deps
+lk deps src/EthEscrow.sol
+```
+
+`lk functions` separates write functions, normal read functions, and public storage getters. A mapping such as `mapping(address => uint256) balances` still has an ABI getter (`balances(address)`), but it is shown under `STORAGE GETTERS` instead of being mixed into ordinary read functions.
+
+### Automatic ABI discovery
+
+After `lk target <address>`, Lowkey looks for the matching Foundry artifact in `out/` when a command needs an ABI. It uses the contract name from a deployment record when available, otherwise it can match deployed bytecode against local artifacts when an RPC is available.
+
+You can still manually override the ABI for unusual layouts:
+
+```bash
+lk abi out/EthEscrow.sol/EthEscrow.json
+```
+
+Manual ABI paths are an override, not the normal workflow.
+
+### Actors
+
+```bash
+lk actor
+lk actor 0 Alice
+lk actor 1 Bob
+lk actor reset
+```
+
+For a default Anvil node, `lk actor` shows the available account numbers and who already owns each one. Lowkey will refuse:
+
+```bash
+lk actor 0 Alice
+lk actor 0 Bob
+```
+
+because account `0` is already assigned to Alice.
+
+Lowkey verifies that an Anvil-derived key still matches the live account before using it. If you switch to a custom Anvil mnemonic or another RPC, use an environment-backed signer instead of the default development keys.
+
+### Manual RPC / wallets
 
 ```bash
 lk rpc http://127.0.0.1:8545
-lk abi out/EthEscrow.sol/Escrow.json
 lk wallet set-env attacker LK_ATTACKER_KEY
+lk wallet use attacker
 ```
 
-`lk functions` separates normal read/write functions from storage getter functions such as public mapping getters.
+Use these when you intentionally want a specific network or a non-default signer.
 
 For a historical transaction:
 
@@ -118,7 +165,6 @@ lk fork https://example-rpc.example
 # Start the printed Anvil command, then:
 lk rpc http://127.0.0.1:8545
 ```
-
 ## Wallet security
 
 Prefer environment-backed signers:
