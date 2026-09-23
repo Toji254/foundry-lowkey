@@ -103,8 +103,8 @@ class ProjectTargetingTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             rendered = output.getvalue()
-            self.assertIn("LOWKEY BUILD FUNCTION", rendered)
-            self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address)", rendered)
+            self.assertIn("Built-project function matches", rendered)
+            self.assertIn("ConfidencePoolFactory::createPool(address,address)", rendered)
 
     def test_discover_audit_target_contract_prefers_higher_impact_source(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,6 +315,50 @@ class ProjectTargetingTests(unittest.TestCase):
                         ],
                     }
                 ),
+                encoding="utf-8",
+            )
+
+            interface_dir = root / "out" / "interfaces" / "IConfidencePoolFactory.sol"
+            interface_dir.mkdir(parents=True)
+            (interface_dir / "IConfidencePoolFactory.json").write_text(
+                json.dumps({
+                    "contractName": "IConfidencePoolFactory",
+                    "abi": [{
+                        "type": "function",
+                        "name": "createPool",
+                        "stateMutability": "nonpayable",
+                        "inputs": [
+                            {"name": "agreement", "type": "address"},
+                            {"name": "stakeToken", "type": "address"},
+                            {"name": "expiry", "type": "uint256"},
+                            {"name": "minStake", "type": "uint256"},
+                            {"name": "recoveryAddress", "type": "address"},
+                            {"name": "accounts", "type": "address[]"},
+                        ],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            mock_dir = root / "out" / "mocks" / "MockConfidencePoolFactoryV2.sol"
+            mock_dir.mkdir(parents=True)
+            (mock_dir / "MockConfidencePoolFactoryV2.json").write_text(
+                json.dumps({
+                    "contractName": "MockConfidencePoolFactoryV2",
+                    "abi": [{
+                        "type": "function",
+                        "name": "createPool",
+                        "stateMutability": "nonpayable",
+                        "inputs": [
+                            {"name": "agreement", "type": "address"},
+                            {"name": "stakeToken", "type": "address"},
+                            {"name": "expiry", "type": "uint256"},
+                            {"name": "minStake", "type": "uint256"},
+                            {"name": "recoveryAddress", "type": "address"},
+                            {"name": "accounts", "type": "address[]"},
+                        ],
+                    }],
+                }),
                 encoding="utf-8",
             )
 
