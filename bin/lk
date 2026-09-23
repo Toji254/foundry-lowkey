@@ -12,7 +12,7 @@ if [[ "${1:-}" == "slither" ]]; then
 fi
 
 case "${1:-}" in
-    build|test|script|inspect|coverage|lint|geiger|fmt|clone|lsp)
+    build|test|script|inspect|coverage|lint|geiger|fmt|lsp)
         exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
         ;;
     generate)
