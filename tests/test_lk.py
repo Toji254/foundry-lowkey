@@ -95,7 +95,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("<redacted>", value)
 
     def test_eth_humanization(self):
-        self.assertIn("1.0000 ETH", lk.humanize_value("1000000000000000000"))
+        self.assertIn("1.0000 ETH", lk.humanize_value("1000000000000000000", assume_wei=True))
 
     def test_private_key_normalization(self):
         raw = "b" * 64
@@ -534,6 +534,77 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(lk.run_symbolic(["emit"]), 0)
             self.assertEqual(run.call_args.args[0][:2], ["test", "--symbolic"])
             self.assertIn("--emit-regression", run.call_args.args[0])
+
+
+    def test_cheatcode_reference_and_brutalize(self):
+        output=io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(lk.run_cheatcodes(["store"]), 0)
+        self.assertIn("vm.store", output.getvalue())
+        with patch.object(lk, "run_foundry", return_value=0) as run:
+            self.assertEqual(lk.run_brutalize(["--match-test", "testFoo"]), 0)
+        self.assertEqual(run.call_args.args[0][:2], ["test", "--brutalize"])
+
+    def test_probe_all_configured_actors(self):
+        config={
+            "target":"0x"+"3"*40,
+            "actor":"Alice",
+            "wallets":{
+                "Alice":{"address":"0x"+"1"*40},
+                "Bob":{"address":"0x"+"2"*40},
+            },
+        }
+        captured={}
+        def fake_write(prefix,content):
+            captured["content"]=content
+            return "test/Lowkey_probe.t.sol"
+        with patch.object(lk, "encode_target_call", return_value=("ping()", "abcdef")), \
+             patch.object(lk, "write_generated_test", side_effect=fake_write), \
+             patch.object(lk, "run_foundry", return_value=0):
+            self.assertEqual(lk.run_probe(config, ["ping"]), 0)
+        self.assertIn("ACTOR Alice", captured["content"])
+        self.assertIn("ACTOR Bob", captured["content"])
+
+    def test_proxy_aware_abi_discovery(self):
+        target="0x"+"1"*40
+        implementation="0x"+"2"*40
+        artifact={
+            "contractName":"Impl",
+            "abi":[{"type":"function","name":"release","inputs":[],"stateMutability":"nonpayable"}],
+            "deployedBytecode":{"object":"0x60016000"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path=pathlib.Path(tmp)/"Impl.json"
+            path.write_text(json.dumps(artifact),encoding="utf-8")
+            with patch.object(lk,"local_artifact_paths",return_value=[str(path)]), \
+                 patch.object(lk,"effective_rpc",return_value="http://127.0.0.1:8545"), \
+                 patch.object(lk,"discover_deployments",return_value=[]), \
+                 patch.object(lk,"cast_output",side_effect=[
+                     (0,implementation,""),
+                     (0,"0x60016000",""),
+                 ]):
+                config={"target_contract":None,"abi_paths":{}}
+                result=lk.auto_abi_path(target,config)
+        self.assertEqual(result,str(path))
+        self.assertEqual(config["target_contract"],"Impl")
+        self.assertEqual(config["abi_paths"][target],str(path))
+
+    def test_fork_status_without_fork_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old=lk.FORK_FILE
+            lk.FORK_FILE=os.path.join(tmp,"fork.json")
+            try:
+                output=io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(lk.run_fork(["status"]),0)
+                self.assertIn("Fork: stopped",output.getvalue())
+            finally:
+                lk.FORK_FILE=old
+
+    def test_symbolic_emit_alias(self):
+        with patch.object(lk,"run_foundry",return_value=0) as run:
+            self.assertEqual(lk.run_symbolic(["emit","--match-test","testFoo"]),0)
+        self.assertIn("--emit-regression",run.call_args.args[0])
 
     def test_dispatch_exposes_lab_commands(self):
         config = {}
