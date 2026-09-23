@@ -2025,10 +2025,11 @@ def run_project_lab_script(config, root, script, rpc, accounts, key):
     print("Mode    : project lab adapter")
     print("Action  : deploying disposable local test environment...")
 
+    script_contract = Path(script).stem
     result = run_foundry(
         [
             "script",
-            f"{relative}:LocalAudit",
+            f"{relative}:{script_contract}",
             "--rpc-url",
             rpc,
             "--broadcast",
