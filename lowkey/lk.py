@@ -1899,7 +1899,7 @@ def discover_local_lab_script(root="."):
     return None
 
 def parse_lab_marker(output, marker="LOWKEY_TARGET"):
-    match = re.search(rf"(?m)^\\s*{re.escape(marker)}\\s+(0x[0-9a-fA-F]{{40}})\\s*$", str(output or ""))
+    match = re.search(rf"(?m)^\s*{re.escape(marker)}\s+(0x[0-9a-fA-F]{{40}})\s*$", str(output or ""))
     return match.group(1) if match else None
 
 def run_lab(config,args):
@@ -1960,7 +1960,7 @@ def run_lab(config,args):
     )
     output = result.text
     if result.code != 0:
-        tail = "\\n".join(output.splitlines()[-20:]) if output else "forge script failed"
+        tail = "\n".join(output.splitlines()[-20:]) if output else "forge script failed"
         return fail(f"Error: local lab deployment failed.\\n{tail}", result.code)
 
     target = parse_lab_marker(output)
