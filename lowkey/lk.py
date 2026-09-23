@@ -818,11 +818,42 @@ def run_functions(config,query=None):
         matches=project_artifact_function_matches(root,query)
         if not matches:
             return fail(f"Error: no built-project function matched '{query}'. Run 'forge build' first.")
-        print(f"Built-project function matches for '{query}':")
-        for index,(contract,signature,path) in enumerate(matches[:12],1):
-            print(f"  {index:>2}. {contract}::{signature}")
-            print(f"      ABI: {path}")
-        print("\nNo live target selected. Deploy a contract before using lk changes/trace against it.")
+        print("LOWKEY BUILD FUNCTION")
+        print("====================")
+        print(f"Query:   {query}")
+
+        def artifact_kind(contract, path):
+            lowered = f"{contract} {path}".lower()
+            if "/interfaces/" in lowered or str(contract).startswith("i") and "mock" not in lowered:
+                return "interface"
+            if "/mocks/" in lowered or str(contract).lower().startswith("mock"):
+                return "test mock"
+            return "implementation"
+
+        ranked = sorted(
+            matches,
+            key=lambda item: (
+                0 if artifact_kind(item[0], item[2]) == "implementation" else
+                1 if artifact_kind(item[0], item[2]) == "interface" else 2,
+                item[0].lower(),
+            ),
+        )
+        primary = next((item for item in ranked if artifact_kind(item[0], item[2]) == "implementation"), ranked[0])
+        contract, signature, path = primary
+
+        print(f"Found:   {contract}::{signature}")
+        print(f"ABI:     {path}")
+
+        others = [
+            f"{c} ({artifact_kind(c, p)})"
+            for c, s, p in ranked
+            if (c, s, p) != primary
+        ]
+        if others:
+            print(f"Other:   {', '.join(others)}")
+
+        print("Live:    none")
+        print("Next:    deploy a target before using lk changes/trace.")
         return 0
 
     functions=abi_functions(load_abi(target,config))
