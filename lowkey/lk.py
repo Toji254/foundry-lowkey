@@ -3633,39 +3633,26 @@ def run_audit(config, args):
 
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
-    print("LOWKEY CONNECTED AUDIT")
-    print("======================")
-    print(f"Project : {root}")
-    print("Pipeline: build -> Slither -> lint/geiger -> tests -> coverage")
 
     try:
         from forge_tools import run_audit as run_forge_audit
     except ImportError as exc:
         return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
 
-    code = run_forge_audit(["--checks", *args])
-    context = audit_context.load(root)
+    # Keep one owner for the audit presentation so the output is not duplicated.
+    forge_args = list(args)
+    if "--checks" not in forge_args:
+        forge_args.insert(0, "--checks")
+    return_code = run_forge_audit(forge_args)
+
     audit_context.record_tool(
         "audit",
         root,
-        status="completed" if code == 0 else "failed",
+        status="completed" if return_code == 0 else "failed",
         summary="connected audit pipeline",
-        data={"exit_code": code},
+        data={"exit_code": return_code},
     )
-    context = audit_context.load(root)
-    open_signals = audit_context.signals(root, "open")
-
-    print("\nAUDIT SUMMARY")
-    print("=============")
-    print(f"Result  : {'PASS' if code == 0 else 'FAILED'}")
-    print(f"Findings: {len(open_signals)} open")
-    for tool_name in ("forge", "slither", "generator"):
-        state = context.get("tools", {}).get(tool_name, {})
-        if isinstance(state, dict) and state.get("status"):
-            summary = f" — {state.get('summary')}" if state.get("summary") else ""
-            print(f"{tool_name.capitalize():<8}: {state.get('status')}{summary}")
-    print("\nNext: lk findings" if open_signals else "\nNext: review protocol properties and attack surfaces.")
-    return code
+    return return_code
 
 def run_context(config):
     root = audit_context.foundry_project_root()
