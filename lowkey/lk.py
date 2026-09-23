@@ -49,7 +49,7 @@ AUDIT_CHECKLIST = [
 DEFAULT_CONFIG = {
     "target": None, "target_contract": None, "aliases": {}, "targets": {}, "rpc": None,
     "rpc_profiles": {}, "actor": None, "wallets": {},
-    "abi_paths": {}, "labels": {}, "confirm_sends": False, "rpc_auto": False, "version": 4
+    "abi_paths": {}, "project_roots": {}, "labels": {}, "confirm_sends": False, "rpc_auto": False, "version": 4
 }
 
 _COMMAND_STATUS = 0
@@ -95,7 +95,7 @@ def load_config():
         return fresh_config()
     config = fresh_config()
     config.update(loaded)
-    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "labels"]:
+    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "project_roots", "labels"]:
         if not isinstance(config.get(key), dict): config[key] = {}
     return config
 
@@ -421,8 +421,8 @@ def log_session(command, result):
     with open(SESSION_FILE, "a") as f:
         f.write(f"[{timestamp}] CMD: {command}\nRES: {result}\n{'-'*40}\n")
 
-def local_artifact_paths():
-    return [p for p in artifact_json_files(".") if "out" in Path(p).parts]
+def local_artifact_paths(root="."):
+    return [p for p in artifact_json_files(root) if "out" in Path(p).parts]
 
 def artifact_contract_name(path, artifact):
     if isinstance(artifact,dict) and artifact.get("contractName"): return str(artifact["contractName"])
@@ -434,11 +434,98 @@ def read_artifact(path):
         return value if isinstance(value,dict) else None
     except (OSError,json.JSONDecodeError): return None
 
+def foundry_project_root(start="."):
+    try:
+        path=Path(start).expanduser().resolve()
+    except OSError:
+        return None
+    if path.is_file():
+        path=path.parent
+    for parent in [path,*path.parents]:
+        if (parent/"foundry.toml").is_file():
+            return str(parent)
+    return None
+
+def configured_project_root(target,config):
+    roots=config.get("project_roots",{}) if isinstance(config,dict) else {}
+    root=roots.get(target) if isinstance(roots,dict) else None
+    if not root and isinstance(target,str):
+        lowered=target.lower()
+        root=next(
+            (value for address,value in roots.items()
+             if isinstance(address,str) and address.lower()==lowered),
+            None,
+        )
+    if not root:
+        return None
+    try:
+        path=Path(os.path.expanduser(str(root)))
+        if not path.is_absolute():
+            path=Path.cwd()/path
+        path=path.resolve()
+        return str(path) if path.is_dir() else None
+    except OSError:
+        return None
+
+def remember_abi_path(config,target,path):
+    if not target or not path:
+        return path
+    try:
+        absolute=str(Path(os.path.expanduser(str(path))).resolve())
+    except OSError:
+        return path
+    if not os.path.exists(absolute):
+        return path
+
+    root=foundry_project_root(absolute)
+    stored=absolute
+    if root:
+        try:
+            stored=os.path.relpath(absolute,root)
+        except ValueError:
+            stored=absolute
+
+    changed=False
+    if config.setdefault("abi_paths",{}).get(target)!=stored:
+        config["abi_paths"][target]=stored
+        changed=True
+    if root and configured_project_root(target,config)!=root:
+        config.setdefault("project_roots",{})[target]=root
+        changed=True
+    if changed:
+        config["_config_dirty"]=True
+    return absolute
+
+def resolve_abi_path(config,target,path=None):
+    if path is None:
+        path=config.get("abi_paths",{}).get(target)
+    if not path:
+        return None
+
+    expanded=os.path.expanduser(str(path))
+    if os.path.exists(expanded):
+        return remember_abi_path(config,target,expanded)
+
+    if not os.path.isabs(expanded):
+        root=configured_project_root(target,config)
+        if root:
+            candidate=os.path.join(root,expanded)
+            if os.path.exists(candidate):
+                return remember_abi_path(config,target,candidate)
+    return None
+
 def auto_abi_path(target,config):
     if not target or not is_address(target):
         return None
 
-    paths=local_artifact_paths()
+    search_roots=["."]
+    remembered_root=configured_project_root(target,config)
+    if remembered_root and os.path.abspath(remembered_root)!=os.path.abspath("."):
+        search_roots.insert(0,remembered_root)
+
+    paths=[]
+    for root in search_roots:
+        paths.extend(local_artifact_paths(root))
     preferred=config.get("target_contract")
     candidate_addresses=[target]
 
@@ -471,7 +558,7 @@ def auto_abi_path(target,config):
             artifact=read_artifact(path)
             name=artifact_contract_name(path,artifact).lower()
             if name==preferred_lower or Path(path).stem.lower()==preferred_lower:
-                config.setdefault("abi_paths",{})[target]=path
+                remember_abi_path(config,target,path)
                 return path
 
     if rpc:
@@ -485,7 +572,7 @@ def auto_abi_path(target,config):
                 if isinstance(deployed,dict):
                     deployed=deployed.get("object")
                 if isinstance(deployed,str) and deployed.lower()==runtime.lower():
-                    config.setdefault("abi_paths",{})[target]=path
+                    remember_abi_path(config,target,path)
                     config["target_contract"]=artifact_contract_name(path,artifact)
                     return path
 
@@ -498,7 +585,8 @@ def load_abi(target,config):
     if not abi_path and isinstance(target,str):
         lowered=target.lower()
         abi_path=next((path for address,path in abi_paths.items() if isinstance(address,str) and address.lower()==lowered),None)
-    if not abi_path or not os.path.exists(abi_path):
+    abi_path=resolve_abi_path(config,target,abi_path)
+    if not abi_path:
         abi_path=auto_abi_path(target,config)
     if not abi_path or not os.path.exists(abi_path): return []
     try:
@@ -529,8 +617,8 @@ def source_public_storage_names(root="."):
 
 
 def storage_getter_names(target,config,abi):
-    path=config.get("abi_paths",{}).get(target)
-    if not path or not os.path.exists(path):
+    path=resolve_abi_path(config,target)
+    if not path:
         path=auto_abi_path(target,config)
 
     labels=set()
@@ -617,7 +705,7 @@ def run_abi(config):
         ("EVENTS", [item for item in abi if item.get("type")=="event"]),
         ("ERRORS", [item for item in abi if item.get("type")=="error"]),
     ]
-    path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
+    path=resolve_abi_path(config,target) or auto_abi_path(target,config)
     print(f"ABI: {path or 'not loaded'}")
     for group, items in groups:
         if items:
@@ -1933,7 +2021,7 @@ def storage_layout_details(config):
     target=config.get("target")
     paths=[]
     if target:
-        preferred_path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
+        preferred_path=resolve_abi_path(config,target) or auto_abi_path(target,config)
         if preferred_path:
             paths.append(preferred_path)
     contracts=[]
@@ -2473,7 +2561,7 @@ def run_cast_deep(config,args):
         target=config.get("target")
         if not target:
             return fail("Error: Set target or provide an ABI path.")
-        path=config.get("abi_paths",{}).get(target) or auto_abi_path(target,config)
+        path=resolve_abi_path(config,target) or auto_abi_path(target,config)
         if not path:
             return fail("Error: no local ABI found for the current target.")
         return run_cast(["interface",path],config)
@@ -3025,7 +3113,7 @@ def run_status(config):
     else:
         print("RPC    : none (no local Anvil detected)")
     print(f"Actor  : {actor_display(config)}")
-    abi=config.get("abi_paths",{}).get(target) if target else None
+    abi=resolve_abi_path(config,target) if target else None
     contract=config.get("target_contract") or "unknown"
     print(f"ABI    : {abi or 'auto/not found'}")
     print(f"Contract: {contract}")
@@ -3482,9 +3570,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
             path=os.path.expanduser(args[0])
             if not os.path.exists(path):
                 return fail(f"Error: ABI file not found: {path}")
-            config["abi_paths"][target]=path
+            remember_abi_path(config,target,path)
             config["target_contract"]=artifact_contract_name(path,read_artifact(path))
             save_config(config)
+            config.pop("_config_dirty",None)
             print(f"ABI override saved: {path}")
     elif cmd in {"read"}:
         return run_cast(["call",*args],config)
@@ -3599,6 +3688,8 @@ def main():
     config=load_config()
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+    if config.pop("_config_dirty",False):
+        save_config(config)
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 
