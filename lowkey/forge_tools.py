@@ -644,6 +644,16 @@ def run_audit(args: Sequence[str]) -> int:
             print(f"\nLowkeyForge: audit stopped at {label}.", file=sys.stderr)
             render_audit_dashboard(root, pipeline_code=code)
             return code
+    # Generate the initial PoC scaffold before rendering the dashboard so
+    # the displayed state matches what was actually written to the project.
+    try:
+        from generator import run_generate
+        poc_code = run_generate({}, ["poc"])
+        if poc_code != 0:
+            print("LowkeyForge: initial PoC scaffold was not generated.", file=sys.stderr)
+    except Exception as exc:
+        print(f"LowkeyForge: initial PoC scaffold skipped: {exc}", file=sys.stderr)
+
     render_audit_dashboard(root, pipeline_code=0)
     print("\nAUDIT SUMMARY")
     print("=============")
