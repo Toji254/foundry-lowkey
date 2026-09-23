@@ -1046,9 +1046,9 @@ class LowkeyCastTests(unittest.TestCase):
              patch.object(lk, "write_generated_test", side_effect=fake_write), \
              patch.object(lk, "run_foundry", return_value=lk.CommandResult("", 0)):
             self.assertEqual(lk.run_state_diff(config, ["ping"]), 0)
-        self.assertIn("vm.startStateDiffRecording()", captured["content"])
-        self.assertIn("vm.stopAndReturnStateDiff()", captured["content"])
-        self.assertIn("Vm.StorageAccess", captured["content"])
+        self.assertIn("vm.load(TARGET, slots[i])", captured["content"])
+        self.assertIn('console2.log("STORAGE_CHANGES", changed);', captured["content"])
+        self.assertIn('console2.log("SLOTS_SCANNED", slots.length);', captured["content"])
 
     def test_selector_compare_uses_runtime_and_abi(self):
         target = "0x" + "1" * 40
