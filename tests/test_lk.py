@@ -674,6 +674,51 @@ class LowkeyCastTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r"expects 2 argument\(s\), got 1"):
                 lk.encode_target_call(config,"createescrow",["1 ether"])
 
+    def test_split_lab_options_accepts_separated_eth_unit(self):
+        values, actor, value, keep = lk.split_lab_options(
+            ["release", "--actor", "Alice", "--value", "1", "ether"]
+        )
+        self.assertEqual(values, ["release"])
+        self.assertEqual(actor, "Alice")
+        self.assertEqual(value, "1 ether")
+        self.assertFalse(keep)
+
+    def test_encode_target_call_resolves_actor_name_for_address_argument(self):
+        config = {
+            "target": "0x" + "1" * 40,
+            "wallets": {
+                "Bob": {"address": "0x" + "2" * 40},
+            },
+        }
+        abi = [{
+            "type": "function",
+            "name": "createescrow",
+            "inputs": [
+                {"name": "amount", "type": "uint256"},
+                {"name": "recipient", "type": "address"},
+            ],
+            "stateMutability": "payable",
+        }]
+        with patch.object(lk, "load_abi", return_value=abi),              patch.object(lk, "cast_output", return_value=(0, "0xabcdef", "")) as cast:
+            signature, encoded = lk.encode_target_call(
+                config, "createescrow", ["1ether", "Bob"]
+            )
+        self.assertEqual(signature, "createescrow(uint256,address)")
+        self.assertEqual(encoded, "abcdef")
+        self.assertEqual(cast.call_args.args[0][-2:], ["1000000000000000000", "0x" + "2" * 40])
+
+    def test_local_foundry_test_args_uses_detected_anvil(self):
+        config = {"rpc": "http://127.0.0.1:8545"}
+        with patch.object(
+            lk, "anvil_rpc_info",
+            return_value={"url": config["rpc"], "accounts": []},
+        ):
+            args = lk.local_foundry_test_args(config, "test/X.t.sol")
+        self.assertEqual(
+            args[:3],
+            ["test", "--fork-url", "http://127.0.0.1:8545"],
+        )
+
     def test_split_lab_options(self):
         values, actor, value, keep = lk.split_lab_options(
             ["release", "1", "0x" + "1" * 40, "--actor", "Alice", "--value", "1ether", "--keep"]
