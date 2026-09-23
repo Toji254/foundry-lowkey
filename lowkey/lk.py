@@ -1080,6 +1080,8 @@ def run_mapping(config,*args):
     computed=str(computed).strip()
     if not re.fullmatch(r"0x[0-9a-fA-F]{64}",computed):
         return fail("Error: could not compute mapping slot.")
+    if run_mapping_human_view(config,slot,key_type,key,computed):
+        return 0
     print(f"Mapping slot: {computed}")
     return run_cast(["st",computed],config)
 def snapshot_path(config,chain=None):
@@ -1993,6 +1995,134 @@ def storage_type_label(types, type_id):
     if label.startswith("t_"):
         label=label[2:]
     return label
+
+
+def storage_slot_int(value):
+    text=str(value).strip()
+    try:
+        return int(text,16) if text.lower().startswith("0x") else int(text,10)
+    except (TypeError,ValueError):
+        return None
+
+
+def mapping_layout_entry(config, base_slot, key_type):
+    types,storage=storage_layout_details(config)
+    if not types or not storage:
+        return None, types
+
+    base_int=storage_slot_int(base_slot)
+    if base_int is None:
+        return None, types
+
+    for entry in storage:
+        entry_slot=storage_slot_int(entry.get("slot"))
+        if entry_slot != base_int:
+            continue
+        mapping_type=types.get(entry.get("type"),{})
+        if mapping_type.get("encoding")!="mapping":
+            continue
+        actual_key=storage_type_label(types,mapping_type.get("key"))
+        if actual_key == key_type or (
+            key_type=="uint256" and str(actual_key).startswith(("uint","int"))
+        ):
+            return entry, types
+    return None, types
+
+
+def decode_storage_member(raw, type_id, types, offset=0):
+    raw=str(raw).strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",raw):
+        return raw
+    info=types.get(type_id,{}) if isinstance(type_id,str) else {}
+    label=storage_type_label(types,type_id)
+    nbytes=info.get("numberOfBytes")
+    try:
+        width=int(str(nbytes),0) if nbytes is not None else 32
+    except (TypeError,ValueError):
+        width=32
+    try:
+        byte_offset=int(str(offset),0)
+    except (TypeError,ValueError):
+        byte_offset=0
+
+    raw_int=int(raw,16)
+    mask=(1 << (width*8))-1 if width < 32 else (1 << 256)-1
+    value_int=(raw_int >> (byte_offset*8)) & mask
+
+    lowered=label.lower()
+    if lowered=="address" or lowered.startswith("contract "):
+        if value_int==0:
+            return "none"
+        return f"0x{value_int:040x}"
+    if lowered=="bool":
+        return "true" if value_int else "false"
+    if lowered.startswith("uint") or lowered.startswith("int") or lowered.startswith("enum "):
+        return str(value_int)
+    return "0x"+format(value_int,"064x")
+
+
+def format_mapping_member(config, raw, member, types):
+    value=decode_storage_member(
+        raw,
+        member.get("type"),
+        types,
+        member.get("offset",0),
+    )
+    if value=="none":
+        return value
+    if is_address(value):
+        name=assigned_anvil_address(config,value)
+        return f"{name} ({value})" if name else value
+    if re.fullmatch(r"[0-9]+",str(value)):
+        label=str(member.get("label","")).lower()
+        if any(token in label for token in ("amount","value","balance")):
+            try:
+                wei=int(value)
+                if wei >= 10**9:
+                    return f"{wei} wei [~{wei/10**18:.4f} ETH]"
+            except ValueError:
+                pass
+        return value
+    return value
+
+
+def run_mapping_human_view(config, base_slot, key_type, key, mapped_slot):
+    entry,types=mapping_layout_entry(config,base_slot,key_type)
+    if not entry:
+        return False
+
+    mapping_type=types.get(entry.get("type"),{})
+    value_type=types.get(mapping_type.get("value"),{})
+    members=value_type.get("members",[]) if isinstance(value_type,dict) else []
+    if not members:
+        return False
+
+    mapping_name=entry.get("label","mapping")
+    key_display=display_storage_key(config,key)
+    print(f"Mapping:      {mapping_name}")
+    print(f"Key:          {key_display}")
+    print(f"Base slot:    {base_slot}")
+    print(f"Value slot:   {mapped_slot}")
+    print("Fields:")
+
+    for member in members:
+        try:
+            member_offset=int(str(member.get("slot","0")),0)
+        except (TypeError,ValueError):
+            member_offset=0
+        slot_int=storage_slot_int(mapped_slot)
+        if slot_int is None:
+            return False
+        full_slot="0x"+format(slot_int+member_offset,"064x")
+        raw=run_cast(["st",full_slot],config,capture=True)
+        code=getattr(raw,"code",0)
+        if code!=0:
+            print(f"  {member.get('label','field'):<16} <unreadable>")
+            continue
+        shown=format_mapping_member(config,str(raw),member,types)
+        print(f"  {member.get('label','field'):<16} {shown}")
+    print("  raw mapping slot  ", mapped_slot)
+    return True
 
 
 def lab_argument_candidates(config, signature, raw_values, actor_address_value=None):
