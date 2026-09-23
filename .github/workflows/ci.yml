@@ -61,6 +61,8 @@ jobs:
               function testSmoke() public {}
           }
           EOF
+          cd /tmp/lowkey-fixture
+          forge install foundry-rs/forge-std --no-commit
       - name: Run installed integration checks
         working-directory: /tmp/lowkey-fixture
         run: |
