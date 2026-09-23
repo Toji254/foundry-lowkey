@@ -239,6 +239,23 @@ def _human_observation(finding: dict, check: str) -> str:
     return "Static analysis found a code pattern that deserves manual security review."
 
 
+def _signal_function(finding: dict) -> str | None:
+    elements = finding.get("elements")
+    if not isinstance(elements, list):
+        return None
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        if str(element.get("type") or "").lower() == "function":
+            signature = (
+                element.get("type_specific_fields", {}).get("signature")
+                if isinstance(element.get("type_specific_fields"), dict)
+                else None
+            )
+            return str(signature or element.get("name") or "") or None
+    return None
+
+
 def _signal_from_finding(finding: dict) -> dict:
     check = str(finding.get("check") or "static-analysis")
     guidance = DETECTOR_GUIDANCE.get(check, {})
@@ -283,6 +300,7 @@ def _signal_from_finding(finding: dict) -> dict:
         "line": line,
         "column": column,
         "description": _human_observation(finding, check),
+        "function": _signal_function(finding),
         "meaning": guidance.get("meaning", ""),
         "why": guidance.get("why", ""),
         "next": guidance.get("next", ""),
