@@ -61,5 +61,21 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(forge_tools.run_inspect_audit(["Vault"]), 1)
         self.assertEqual(run.call_count, 6)
 
+    @patch("forge_tools.run_forge", return_value=0)
+    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, run):
+        self.assertEqual(forge_tools.run_audit(["--via-ir"]), 0)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["test", "-vvv", "--via-ir"],
+        )
+
+    @patch("forge_tools.run_forge", return_value=0)
+    def test_audit_respects_explicit_verbosity(self, run):
+        self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 0)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["test", "--verbosity", "4"],
+        )
+
 if __name__ == "__main__":
     unittest.main()
