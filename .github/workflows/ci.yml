@@ -117,6 +117,7 @@ jobs:
           lk status
           lk context
           lk signals
+          lk audit
           lk functions
           lk c ping 7
           lk encode ping 7
