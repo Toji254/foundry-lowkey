@@ -350,33 +350,32 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         print("Slither error details:", file=sys.stderr)
         print(result.stderr.rstrip(), file=sys.stderr)
 
+    detectors = []
     if json_path.exists():
         try:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
                 _summary(payload, root)
-
                 detectors = payload.get("results", {}).get("detectors", [])
                 if not isinstance(detectors, list):
                     detectors = []
-
                 for finding in detectors:
                     if isinstance(finding, dict):
                         audit_context.add_signal(_signal_from_finding(finding), root)
-
-                audit_context.record_tool(
-                    "slither",
-                    root,
-                    status="completed" if result.returncode == 0 else "failed",
-                    summary=f"{len(detectors)} static-analysis finding(s) reported",
-                    data={
-                        "json": str(json_path),
-                        "sarif": str(sarif_path),
-                        "finding_count": len(detectors),
-                    },
-                )
         except (OSError, json.JSONDecodeError) as exc:
             print(f"LowkeySlither: could not parse JSON evidence: {exc}", file=sys.stderr)
+
+    audit_context.record_tool(
+        "slither",
+        root,
+        status="completed" if result.returncode == 0 else "failed",
+        summary=f"{len(detectors)} static-analysis finding(s) reported",
+        data={
+            "json": str(json_path),
+            "sarif": str(sarif_path),
+            "finding_count": len(detectors),
+        },
+    )
 
     # Specialized commands such as --list-detectors or printers may not produce
     # detector JSON. Surface their stdout under a clear heading instead of
