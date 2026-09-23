@@ -3253,6 +3253,40 @@ def _sync_audit_context(config, root=None):
     )
 
 
+def run_audit(config, args):
+    if args and args[0].lower() in {"help", "-h", "--help"}:
+        print("Usage: lk audit")
+        print("Build, static-scan, test, and measure the current Foundry project.")
+        return 0
+
+    root = audit_context.foundry_project_root()
+    _sync_audit_context(config, root)
+    print("LOWKEY CONNECTED AUDIT")
+    print("======================")
+    print(f"Project : {root}")
+    print("Pipeline: build -> Slither -> lint/geiger -> tests -> coverage")
+
+    try:
+        from forge_tools import run_audit as run_forge_audit
+    except ImportError as exc:
+        return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
+
+    code = run_forge_audit(["--checks", *args])
+    context = audit_context.load(root)
+    open_signals = audit_context.signals(root, "open")
+
+    print("\nAUDIT SUMMARY")
+    print("=============")
+    print(f"Result  : {'PASS' if code == 0 else 'FAILED'}")
+    print(f"Findings: {len(open_signals)} open")
+    for tool_name in ("forge", "slither", "generator"):
+        state = context.get("tools", {}).get(tool_name, {})
+        if isinstance(state, dict) and state.get("status"):
+            summary = f" — {state.get('summary')}" if state.get("summary") else ""
+            print(f"{tool_name.capitalize():<8}: {state.get('status')}{summary}")
+    print("\nNext: lk findings" if open_signals else "\nNext: review protocol properties and attack surfaces.")
+    return code
+
 def run_context(config):
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
@@ -3556,159 +3590,69 @@ def run_fork(args, config=None):
     return 0
 def print_help():
     print("""
-LOWKEYCAST — YOUR FOUNDRY ATTACK + RESEARCH CONSOLE
-===================================================
+LOWKEY — SMART CONTRACT AUDITOR CONSOLE
+=======================================
 
-START HERE
-  lk -h / --h                         This menu
-  lk doctor                           Check your Foundry setup
-  lk status                           See target, actor, RPC, ABI
-  lk actor                            See Anvil actors/accounts
-  lk target <address>                 Set the contract under review
-  lk target <name>                    Auto-select named deployment from broadcast/
-  lk target <name> <address>          Save an explicit named target
-  lk target auto [name]                Auto-select latest or named broadcast deployment
+START
+  lk audit                         Run the connected audit pipeline
+  lk findings                      Show audit findings
+  lk focus <ID>                    Focus one finding
+  lk status                        Show target and audit state
+  lk doctor                        Check the toolchain
+  lk target <address|name>         Select the contract under review
+  lk actor <index> <name>          Name an Anvil account
 
-RECON → UNDERSTAND THE CONTRACT
-  lk recon                             Balance, code, codehash, nonce, proxy
-  lk functions                        Write / read / storage getters
-  lk fn <name>                        Find a function
-  lk ask <function>                  Show its parameters
-  lk abi                               Show the loaded ABI
-  lk deps [dir|file]                  Imports + inheritance
-  lk context                           Show shared project audit state
-  lk investigate <ID>                 Focus the audit on one signal
-  lk signals [open|investigating|proven|dismissed|all]   Show analyzer signals
-  lk signals set <ID> <status> [note]   Update a signal's audit status
-  lk slither [args...]                 Slither static analysis (auto-saves JSON + SARIF)
-  lk layout <Contract>                Forge storage layout
-  lk risk                              Function review-surface hints
-  lk seams                             Cross-surface audit hotspots
-  lk selectors [--compare]            Runtime vs ABI selectors
-  lk disasm [address|bytecode]        EVM disassembly
+UNDERSTAND
+  lk recon                         Inspect contract identity and runtime
+  lk functions                     List contract functions
+  lk fn <name>                     Find a function
+  lk ask <function>                Show a function's inputs
+  lk layout <Contract>             Show storage layout
+  lk risk                          Show review-surface hints
+  lk seams                         Show audit hotspots
 
-ACTORS → THINK LIKE ALICE / BOB / THE ATTACKER
-  lk actor 0 Alice                    Bind Anvil #0 → Alice
-  lk actor 1 Bob                      Bind Anvil #1 → Bob
-  lk actor 2 attacker                 Bind Anvil #2 → attacker
-  lk actor                             List accounts + assignments
-  lk as attacker <command>            Run one command as attacker
-  --as Alice                          Choose the caller for try/changes
-  --eth 1 ether                       Attach ETH; inferred from '1 ether' when omitted
-  lk impersonate <address> [name]     Make a fork actor act as an existing account
-  lk actor reset                       Clear the current actor
-  lk wallet list / remove <name>      Manage saved actors
+INTERACT
+  lk read <function> [args]         Call without changing state
+  lk send <function> [args]         Send a transaction
+  lk encode <function> [args]       Build calldata
+  lk trace [tx]                     Trace a transaction
+  lk logs                           Read contract logs
+  lk tx [tx]                        Inspect a transaction
 
-CALL → SEND → FORENSICS
-  lk read <function> [args]           Read the contract
-  lk send <function> [args]           Send a transaction
-  lk send <function> [args] --preview Preview the send
-  lk c / s ...                         Short aliases for read / send
-  lk encode <function> [args]         Build calldata
-  lk calldata <0x...>                 Decode/pretty-print calldata
-  lk decode-calldata <0x...>          Native Cast calldata decoder
-  lk 4byte <selector>                 Signature database lookup
-  lk 4byte-event <topic0>             Event signature lookup
-  lk 4byte-calldata <0x...>            Calldata signature database lookup
-  lk access-list <function> [args]    Build an EIP-2930 access list
-  lk interface [ABI|address]          Generate a Solidity interface
-  lk constructor-args [address]       Decode constructor arguments
-  lk creation-code [address]          Inspect creation bytecode
-  lk abi-encode <type> [args]          Raw ABI argument encoding
-  lk decode <function> <0x...>        Decode return data
-  lk decode-error <0x...>             Decode custom-error data
-  lk event <sig> <data> [topics...]   Decode an event
-  lk tx [<tx>]                        Transaction details + ABI decode
-  lk receipt [<tx>]                   Receipt
-  lk trace [<tx>]                     Execution trace
-  lk logs --decode                    Query + decode logs
-  lk txpool                           Inspect pending TxPool
+STORAGE
+  lk mapping <slot> <key>            Calculate and read a mapping slot
+  lk snapshot [slots]                Save storage values
+  lk diff                            Compare saved storage values
+  lk changes <function> [args]       Show storage changes from a call
 
-STORAGE / STATE
-  lk mapping <slot> <key>             Calculate + read a mapping slot
-  lk namespace <id>                   ERC-7201 namespace slot
-  lk proof <slot> [block]             Storage proof
-  lk snapshot [slots...]              Save raw slots
-  lk diff                              Compare the saved snapshot
-  lk changes <function> [args...]     Show storage changes from a call
+TEST / REPRODUCE
+  lk probe <function> [args]         Try a call without assertions
+  lk test-gen                        Turn the last send into a Forge test
+  lk fuzz                            Run Forge fuzz tests
+  lk invariant                       Run Forge invariant tests
+  lk symbolic                        Run Forge symbolic tests
+  lk mutate                          Run Forge mutation testing
+  lk brutalize                       Stress calldata/state assumptions
+  lk generate test <function> [...]  Generate a reusable Forge test
+  lk generate poc <function> [...]   Generate a PoC script
+  lk generate deployment <Contract> Generate a deployment script
 
-ATTACK / EXPERIMENT
-  lk try <function> [args...]         Try a call on a test copy
-  lk changes <function> [args...]     Show only storage changes
-  --as Alice                          Choose who calls it
-  --eth 1 ether                       Attach ETH; omitted = auto when clear
-  probe / state-diff                  Older aliases still supported
-  lk matrix init                      Start an attacker/state matrix
-  lk matrix actor <name> <address>    Add an actor to the matrix
-  lk matrix state <name> <desc>       Record a state
-  lk matrix add <name> <fn> <actor> <expected>
-  lk matrix test <name>                Generate + run the scenario
-  lk test-gen                          Turn the last send into a Forge test
-  lk generate deployment <Contract>  Generate advanced commented deployment script
-  lk generate poc [<function> args...] Generate advanced commented PoC script
-  lk generate test [<function> args...] Generate advanced commented Forge test
-  lk chisel                            Open the Solidity REPL
+STATIC ANALYSIS
+  lk slither                        Run Slither and save findings
 
-TIME / FORKING
-  lk fork <rpc> [block]               Start a local fork on :8546
-  lk fork status                      Show fork status
-  lk fork dump [file]                 Save full Anvil state
-  lk fork load <file>                  Restore full Anvil state
-  lk fork stop                        Stop the Lowkey fork
-  lk rpc <rpc>                         Point Lowkey at a specific RPC
+FORK / ACTORS
+  lk fork <rpc> [block]              Start a local fork
+  lk impersonate <address> [name]    Act as an existing account
+  lk rpc <url>                      Set the RPC endpoint
 
-PROVE IT WITH FOUNDRY
-  lk fuzz                              Run Forge fuzz tests
-  lk fuzz replay                      Replay persisted failures
-  lk fuzz failures                    Show persisted failure files
-  lk invariant                         Run invariant_* tests
-  lk invariant new <Contract>        Generate invariant starter
-  lk mutate                            Forge mutation testing
-  lk symbolic                          Forge symbolic testing
-  lk symbolic emit                    Symbolic + regression output
-  lk brutalize [args...]              Brutalize tests
-  lk cheatcodes                       Foundry cheatcode quick reference
-  lk forge test -vvvv                 Native Forge
-  lk forge inspect-audit <Contract>  Build + inspect ABI/methods/errors/events/storage
-  lk forge audit                      Build + traced tests + coverage
+RAW ACCESS
+  lk forge <forge-command> [args]    Use native Forge through LK
+  lk raw <cast-command> [args]       Use native Cast through LK
 
-SHORTCUTS / OVERRIDES
-  lk build                             forge build
-  lk test                              forge test
-  lk gas <function> [args]             Estimate gas
-  lk raw <cast-command> [args...]      Escape hatch to Cast
-  lk batch <file>                     Run a Lowkey command file
-  lk workspace init                    Create .audit workspace
-  lk finding <text>                    Save a finding
-  lk todo <text>                       Save a TODO
-  lk export                            Export audit-report/
-
-PLACEHOLDERS
-  <address>     0x1111...1111
-  <Contract>    EthEscrow
-  <function>    release
-  <file>        src/EthEscrow.sol
-  <dir>         src
-  <slot>        3
-  <key>         0x1111...1111
-  <tx>          0xaaa...aaa
-  <rpc>         http://127.0.0.1:8545
-
-ESCROW FLOW
-  anvil
-  lk actor 0 Alice
-  lk actor 1 Bob
-  lk actor 2 attacker
-  lk target escrow
-  lk functions
-  lk try release --as attacker
-  lk changes createescrow 1 ether Bob --as Alice
-  lk trace
-  lk test-gen
-
-RULE
-  Lowkey surfaces evidence and gives you attack/test tools.
-  It does not decide that a contract is vulnerable.
+NOTES
+  Primary commands are short and self-describing.
+  Legacy aliases still work: signals, investigate, try, c, s, state-diff.
+  Analyzer results are evidence to investigate, not proof by themselves.
 """)
 
 def dispatch_command(cmd,args,config,from_batch=False):
@@ -3825,9 +3769,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
             for index,param in enumerate(item.get("inputs",[]),1): print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
+    elif cmd=="audit": return run_audit(config,args)
     elif cmd=="context": return run_context(config)
-    elif cmd in {"investigate", "investigation"}: return run_investigate(config,args)
-    elif cmd in {"signals", "signal"}: return run_signals(config,args)
+    elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
+    elif cmd in {"findings", "signals", "signal"}: return run_signals(config,args)
     elif cmd=="chain": run_chain(config)
     elif cmd=="encode": run_encode(config,args)
     elif cmd=="sig": run_signature(args)
