@@ -1131,6 +1131,39 @@ Logs:
         self.assertEqual(len(parsed["slots"]), 1)
         self.assertEqual(parsed["slots"][0]["to"], "0x" + "0" * 63 + "1")
 
+    def test_source_mapping_declarations_parses_public_struct_mapping(self):
+        from tempfile import TemporaryDirectory
+
+        source = """pragma solidity ^0.8.20;
+contract Escrow {
+    mapping(address => uint256 amount) public balances;
+    mapping(uint256 value => Create Escrow) public escrow;
+
+    enum status { waiting, funded, rejected, released }
+
+    struct Create {
+        address creator;
+        address recipient;
+        uint256 amount;
+        status currentstatus;
+    }
+}
+"""
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "Escrow.sol"
+            path.write_text(source)
+            declarations = lk.source_mapping_declarations(directory)
+
+        self.assertEqual([item["label"] for item in declarations], ["balances", "escrow"])
+        self.assertEqual(declarations[0]["key_type"], "address")
+        self.assertEqual(declarations[0]["value_type"], "uint256")
+        self.assertEqual(declarations[1]["key_type"], "uint256")
+        self.assertEqual(declarations[1]["value_type"], "Create")
+        self.assertEqual(
+            [name for name, _ in declarations[1]["fields"]],
+            ["creator", "recipient", "amount", "currentstatus"],
+        )
+
     def test_storage_type_label_normalizes_internal_foundry_ids(self):
         types = {
             "t_address": {"label": "t_address"},
