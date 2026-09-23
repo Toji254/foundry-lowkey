@@ -648,7 +648,9 @@ contract Matrix_{identifier} is Test {{
         filename=base if not os.path.exists(base) else os.path.join("test",f"Matrix_{identifier}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
         Path(filename).write_text(template,encoding="utf-8")
         print(f"Matrix test skeleton generated: {filename}"); return
-    print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")def run_note(note):
+    print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
+
+def run_note(note):
     if not note:
         print("Usage: lk note \"your note\"")
         return
