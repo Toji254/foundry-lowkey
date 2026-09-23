@@ -523,15 +523,26 @@ def _storage_read(rpc: str, address: str, slot: str) -> str:
     return str(value or "0x" + "00" * 32)
 
 
-def _decode_word(word: str, typ: str) -> Any:
+def _extract_packed(word: str, offset: int = 0, size: int = 32) -> str:
     raw = (word or "").lower().removeprefix("0x").rjust(64, "0")
+    start = max(0, 64 - (offset + size) * 2)
+    end = 64 - offset * 2 if offset else 64
+    return "0x" + raw[start:end].rjust(size * 2, "0")
+
+
+def _decode_word(word: str, typ: str, offset: int = 0, size: int = 32) -> Any:
+    raw = _extract_packed(word, offset, size).removeprefix("0x").rjust(size * 2, "0")
     try:
         if typ == "address":
             return "0x" + raw[-40:]
         if typ == "bool":
-            return raw[-1] != "0"
+            return int(raw, 16) != 0
         if typ.startswith(("uint", "int")):
-            return int(raw, 16)
+            value = int(raw, 16)
+            bits = max(8, size * 8)
+            if typ.startswith("int") and value >= 1 << (bits - 1):
+                value -= 1 << bits
+            return value
         return "0x" + raw
     except Exception:
         return "0x" + raw
@@ -542,74 +553,113 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
     entries = model.storage.get("storage") or []
     types = model.storage.get("types") or {}
 
-    for entry in entries[:40]:
+    def type_info(type_id: str) -> dict[str, Any]:
+        return types.get(type_id, {}) if type_id else {}
+
+    def type_label(type_id: str) -> str:
+        info = type_info(type_id)
+        return str(info.get("label") or type_id or "bytes32")
+
+    for entry in entries[:64]:
         slot = str(entry.get("slot", "0"))
         typ = str(entry.get("type") or "")
-        info = types.get(typ, {})
+        info = type_info(typ)
         label = str(entry.get("label") or "slot")
         encoding = info.get("encoding")
         item = {
             "label": label,
             "slot": slot,
-            "type": info.get("label") or typ,
+            "type": type_label(typ),
             "encoding": encoding,
         }
+
         if encoding == "mapping":
             key_type = str(info.get("key") or "")
             value_type = str(info.get("value") or "")
-            item["mapping"] = {
-                "key_type": (types.get(key_type) or {}).get("label") or key_type,
-                "value_type": (types.get(value_type) or {}).get("label") or value_type,
+            value_info = type_info(value_type)
+            mapping = {
+                "key_type": type_label(key_type),
+                "value_type": type_label(value_type),
                 "rows": [],
             }
-            # Ask Cast to perform exact Solidity mapping indexing. This keeps
-            # key encoding correct for addresses/integers/bytes32.
-            for actor in actor_addresses[:4]:
-                if key_type.endswith("address"):
-                    key = actor
-                elif key_type.endswith("uint256") or key_type.endswith("uint"):
-                    key = "0"
-                elif key_type.endswith("bytes32"):
-                    key = "0x" + "00" * 32
-                else:
-                    continue
-                code, out, err = _cmd(["cast", "index", (types.get(key_type) or {}).get("label", key_type), key, slot], timeout=5)
+            keys: list[str] = []
+            key_label = type_label(key_type)
+            if key_label == "address":
+                keys = actor_addresses[:4]
+            elif key_label.startswith("uint") or key_label.startswith("int"):
+                keys = ["0", "1"]
+            elif key_label == "bytes32":
+                keys = ["0x" + "00" * 32]
+            for key in keys:
+                code, out, _err = _cmd(["cast", "index", key_label, key, slot], timeout=5)
                 if code != 0:
                     continue
                 mapped_slot = out.strip().splitlines()[-1].strip()
-                word = _storage_read(rpc, address, mapped_slot)
-                value_info = types.get(value_type, {})
-                decoded = _decode_word(word, value_info.get("label") or value_type)
-                item["mapping"]["rows"].append({
-                    "key": key,
-                    "slot": mapped_slot,
-                    "value": decoded,
-                })
-        else:
-            word = _storage_read(rpc, address, slot)
-            decoded = _decode_word(word, str(info.get("label") or "bytes32"))
-            item["value"] = decoded
+                row = {"key": key, "slot": mapped_slot}
+                if value_info.get("members"):
+                    fields = []
+                    for member in value_info.get("members", [])[:24]:
+                        member_slot = int(mapped_slot, 0) + int(member.get("slot", 0))
+                        member_info = type_info(str(member.get("type") or ""))
+                        member_word = _storage_read(rpc, address, str(member_slot))
+                        fields.append({
+                            "name": member.get("label") or member.get("name") or "field",
+                            "type": type_label(str(member.get("type") or "")),
+                            "slot": str(member_slot),
+                            "value": _decode_word(
+                                member_word,
+                                type_label(str(member.get("type") or "")),
+                                int(member.get("offset", 0)),
+                                int(member_info.get("numberOfBytes", 32) or 32),
+                            ),
+                        })
+                    row["struct"] = {"type": type_label(value_type), "fields": fields}
+                else:
+                    word = _storage_read(rpc, address, mapped_slot)
+                    row["value"] = _decode_word(
+                        word,
+                        type_label(value_type),
+                        0,
+                        int(value_info.get("numberOfBytes", 32) or 32),
+                    )
+                mapping["rows"].append(row)
+            item["mapping"] = mapping
 
+        elif encoding == "inplace":
+            word = _storage_read(rpc, address, slot)
+            item["value"] = _decode_word(
+                word,
+                type_label(typ),
+                int(entry.get("offset", 0) or 0),
+                int(info.get("numberOfBytes", 32) or 32),
+            )
             members = info.get("members") or []
             if members:
-                item["struct"] = {
-                    "type": info.get("label") or typ,
-                    "fields": [],
-                }
-                for member in members[:16]:
+                fields = []
+                for member in members[:24]:
                     member_slot = int(slot) + int(member.get("slot", 0))
-                    member_info = types.get(member.get("type"), {})
+                    member_type = str(member.get("type") or "")
+                    member_info = type_info(member_type)
                     member_word = _storage_read(rpc, address, str(member_slot))
-                    member_value = _decode_word(
-                        member_word,
-                        str(member_info.get("label") or member.get("type") or "bytes32"),
-                    )
-                    item["struct"]["fields"].append({
+                    fields.append({
                         "name": member.get("label") or member.get("name") or "field",
-                        "type": member_info.get("label") or member.get("type"),
+                        "type": type_label(member_type),
                         "slot": str(member_slot),
-                        "value": member_value,
+                        "offset": int(member.get("offset", 0) or 0),
+                        "value": _decode_word(
+                            member_word,
+                            type_label(member_type),
+                            int(member.get("offset", 0) or 0),
+                            int(member_info.get("numberOfBytes", 32) or 32),
+                        ),
                     })
+                item["struct"] = {"type": type_label(typ), "fields": fields}
+
+        else:
+            # Dynamic bytes/string/array values still expose their anchor slot.
+            word = _storage_read(rpc, address, slot)
+            item["value"] = word
+
         result.append(item)
     return result
 
@@ -794,21 +844,21 @@ def _render_system_graph(models: list[ContractModel], enabled: bool) -> str:
 
 def _render_storage(storage: list[dict[str, Any]], enabled: bool) -> str:
     out: list[str] = []
-    for item in storage[:12]:
+    for item in storage[:16]:
         encoding = item.get("encoding")
         if encoding == "mapping":
-            out.append(_box(
-                f"{MAPPING} MAPPING {item.get('label')}",
-                [
-                    f"key → {item.get('mapping', {}).get('key_type')}",
-                    f"value → {item.get('mapping', {}).get('value_type')}",
-                    *[
-                        f"{_addr(r.get('key'))} → {r.get('value')}  @ {r.get('slot')}"
-                        for r in item.get("mapping", {}).get("rows", [])[:4]
-                    ],
-                ],
-                width=78,
-            ))
+            lines = [
+                f"key   → {item.get('mapping', {}).get('key_type')}",
+                f"value → {item.get('mapping', {}).get('value_type')}",
+            ]
+            for row in item.get("mapping", {}).get("rows", [])[:4]:
+                if row.get("struct"):
+                    lines.append(f"{_addr(row.get('key'))}  @ {row.get('slot')}")
+                    for field in row["struct"].get("fields", [])[:8]:
+                        lines.append(f"  ├─ {field['name']:<14} = {field['value']}  [{field['type']}]")
+                else:
+                    lines.append(f"{_addr(row.get('key'))} → {row.get('value')}  @ {row.get('slot')}")
+            out.append(_box(f"{MAPPING} MAPPING {item.get('label')}", lines, width=82))
         elif item.get("struct"):
             fields = item["struct"]["fields"]
             out.append(_box(
@@ -820,23 +870,25 @@ def _render_storage(storage: list[dict[str, Any]], enabled: bool) -> str:
                         for f in fields
                     ],
                 ],
-                width=78,
+                width=82,
                 left="╔",
                 right="╗",
             ))
         elif isinstance(item.get("type"), str) and "[" in str(item.get("type")):
             out.append(_box(
                 f"{ARRAY} ARRAY {item.get('label')}",
-                [f"type: {item.get('type')}", f"slot: {item.get('slot')}", f"live word: {item.get('value')}"],
-                width=78,
+                [f"type: {item.get('type')}", f"slot: {item.get('slot')}", f"anchor: {item.get('value')}"],
+                width=82,
             ))
         else:
             out.append(_box(
                 f"{STORAGE} SLOT {item.get('slot')}",
                 [f"{item.get('label')}: {item.get('value')}", f"type: {item.get('type')}"],
-                width=78,
+                width=82,
             ))
-    return "\n\n".join(out) if out else "  <storage layout unavailable>"
+    return "
+
+".join(out) if out else "  <storage layout unavailable>"
 
 
 def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> str:
@@ -870,17 +922,35 @@ def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> st
     return _box("LIVE EXECUTION", lines, width=92)
 
 
-def _render_connections(model: ContractModel, enabled: bool) -> str:
-    lines = [_paint("CONNECTIONS", BOLD + WHITE, enabled)]
+def _render_connections(models: list[ContractModel], model: ContractModel, enabled: bool) -> str:
+    lines = [_paint("CONNECTION GRAPH", BOLD + WHITE, enabled)]
+    by_name = {m.name: m for m in models}
     for base in model.bases:
-        lines.append(f"  {base}  {DOTTED}  {model.name}   {DIM if enabled else ''}(parent → child){RESET if enabled else ''}")
-    for fn in model.functions[:16]:
-        low = fn.lower()
-        if any(x in low for x in ("call", "transfer", "send", "execute")):
-            lines.append(f"  {model.name}.{fn}  {EXTERNAL}  external boundary")
+        parent = by_name.get(base)
+        if parent:
+            shared = sorted(set(parent.functions) & set(model.functions))
+            if shared:
+                for fn in shared[:8]:
+                    lines.append(f"  {base}.{fn}  {DOTTED}  {model.name}.{fn}  (override)")
+            else:
+                lines.append(f"  {base}  {DOTTED}  {model.name}  (inheritance)")
+        else:
+            lines.append(f"  {base}  {DOTTED}  {model.name}  (inherited source)")
+    # Source-level qualified calls are shown as INFERRED. Runtime trace edges
+    # below are the execution authority.
+    names = {m.name for m in models if m.name != model.name}
+    for other in sorted(names):
+        source_path = Path(model.source)
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source_text = ""
+        if re.search(r"\b" + re.escape(other) + r"\b", source_text):
+            lines.append(f"  {model.name}  {EXTERNAL}  {other}  (source reference, INFERRED)")
     if len(lines) == 1:
-        lines.append("  No explicit source-level cross-contract edge inferred.")
-    return "\n".join(lines)
+        lines.append("  No explicit inheritance/source reference was resolved.")
+    return "
+".join(lines)
 
 
 def _render_event_log(step: Step, enabled: bool) -> str:
@@ -909,6 +979,13 @@ def _render_board(model: ContractModel, actors: list[Actor], steps: list[Step], 
         DIM,
         enabled,
     )
+    signal_file = Path(".audit") / "slither" / "latest.json"
+    signal_text = ""
+    if signal_file.is_file():
+        data = _json_file(signal_file) or {}
+        findings = data.get("results") or data.get("findings") or []
+        if isinstance(findings, list):
+            signal_text = f"  {WARNING} Slither evidence: {len(findings)} recorded finding(s)"
     board = [
         title,
         subtitle,
@@ -917,9 +994,10 @@ def _render_board(model: ContractModel, actors: list[Actor], steps: list[Step], 
         "",
         _render_actor_row(actors, enabled),
         "",
-        _render_system_graph([model], enabled),
+        _render_system_graph(models, enabled),
         "",
-        _render_connections(model, enabled),
+        _render_connections(models, model, enabled),
+        signal_text if signal_text else "  Slither evidence: not present in current project context",
     ]
     if current:
         board += ["", _render_step(current, storage, enabled)]
