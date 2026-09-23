@@ -583,3 +583,8 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     print(f"{kind.upper()} generated: {output}")
     print("Read the comments before running it; they are intentionally part of the learning workflow.")
     return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(run_generate({}, sys.argv[1:]))
