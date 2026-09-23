@@ -363,11 +363,10 @@ def run_receipt(config, tx_hash=None):
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
-    result=run_cast(["receipt", tx_hash, "--async"], config, capture=True)
+    code=run_cast(["receipt", tx_hash, "--async"], config)
     if record_evidence:
-        record_evidence("receipt", {"tx":tx_hash,"output":str(result)})
-    print(result)
-    return getattr(result,"code",0)
+        record_evidence("receipt", {"tx":tx_hash,"exit_code":code})
+    return code if isinstance(code,int) else 0
 
 def run_trace(config,args=None):
     args=list(args or [])
