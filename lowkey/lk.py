@@ -1755,7 +1755,7 @@ def resolve_lab_value(config, signature, raw_values, value_option):
 
 
 def local_foundry_test_args(config, path):
-    args=["test","--match-path",Path(path).as_posix(),"-vvvv"]
+    args=["test","--match-path",Path(path).as_posix(),"-vv"]
     rpc=effective_rpc(config)
     if rpc and anvil_rpc_info(config):
         args[1:1]=["--fork-url",rpc]
@@ -1868,30 +1868,37 @@ contract LowkeyStateDiff is Test {{
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
         vm.stopPrank();
 
-        console2.log("FUNCTION", "{signature}");
+        console2.log("CALL", "{signature}");
         console2.log("SUCCESS", success);
-        if (!success) console2.logBytes(data);
-        console2.log("ACCOUNT_ACCESSES", accesses.length);
+        console2.log("ETH_SENT", VALUE);
+        if (!success) {{
+            console2.log("REVERT_DATA");
+            console2.logBytes(data);
+            return;
+        }}
 
+        uint256 changed=0;
         for (uint256 i = 0; i < accesses.length; i++) {{
-            Vm.AccountAccess memory access = accesses[i];
-            console2.log("ACCOUNT", access.account);
-            console2.log("ACCESSOR", access.accessor);
-            console2.log("KIND", uint256(access.kind));
-            console2.log("DEPTH", uint256(access.depth));
-            console2.log("VALUE", access.value);
-            console2.log("REVERTED", access.reverted);
-            for (uint256 j = 0; j < access.storageAccesses.length; j++) {{
-                Vm.StorageAccess memory item = access.storageAccesses[j];
-                console2.log("  STORAGE_ACCOUNT", item.account);
-                console2.log("  SLOT");
-                console2.logBytes32(item.slot);
-                console2.log("  WRITE", item.isWrite);
-                console2.log("  REVERTED", item.reverted);
-                console2.log("  PREVIOUS");
-                console2.logBytes32(item.previousValue);
-                console2.log("  NEW");
-                console2.logBytes32(item.newValue);
+            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
+                Vm.StorageAccess memory item = accesses[i].storageAccesses[j];
+                if (item.isWrite && !item.reverted && item.previousValue != item.newValue) {{
+                    changed++;
+                }}
+            }}
+        }}
+
+        console2.log("STORAGE_CHANGES", changed);
+        for (uint256 i = 0; i < accesses.length; i++) {{
+            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
+                Vm.StorageAccess memory item = accesses[i].storageAccesses[j];
+                if (item.isWrite && !item.reverted && item.previousValue != item.newValue) {{
+                    console2.log("SLOT");
+                    console2.logBytes32(item.slot);
+                    console2.log("FROM");
+                    console2.logBytes32(item.previousValue);
+                    console2.log("TO");
+                    console2.logBytes32(item.newValue);
+                }}
             }}
         }}
     }}
@@ -2757,13 +2764,15 @@ STORAGE / STATE
   lk proof <slot> [block]             Storage proof
   lk snapshot [slots...]              Save raw slots
   lk diff                              Compare the saved snapshot
-  lk changes <function> [args...]     Show what storage changed
+  lk changes <function> [args...]     Show storage changes from a call
 
-THE ATTACK LAB
-  lk try <function> [args...]          Try a call without touching Anvil state
-  lk changes ...                       Show storage changes from that call
-  (probe / state-diff are old aliases)
-  lk matrix init                       Start an attacker/state matrix
+ATTACK / EXPERIMENT
+  lk try <function> [args...]         Try a call on a test copy
+  lk changes <function> [args...]     Show only storage changes
+  --as Alice                          Choose who calls it
+  --eth 1 ether                       Attach ETH; omitted = auto when clear
+  probe / state-diff                  Older aliases still supported
+  lk matrix init                      Start an attacker/state matrix
   lk matrix actor <name> <address>    Add an actor to the matrix
   lk matrix state <name> <desc>       Record a state
   lk matrix add <name> <fn> <actor> <expected>
@@ -2821,23 +2830,12 @@ ESCROW FLOW
   lk actor 0 Alice
   lk actor 1 Bob
   lk actor 2 attacker
-  lk target <address>
+  lk target escrow
   lk functions
-  lk as attacker probe release
-  lk state-diff release
+  lk try release --as attacker
+  lk changes createescrow 1 ether Bob --as Alice
   lk trace
   lk test-gen
-
-CHEATCODE MINDSET
-  prank   = change caller
-  deal    = give ETH
-  warp    = move time
-  roll    = move block
-  store   = manufacture storage
-  load    = inspect storage
-  etch    = replace code
-  mock    = fake dependency responses
-  state-diff = see exactly what changed
 
 RULE
   Lowkey surfaces evidence and gives you attack/test tools.
