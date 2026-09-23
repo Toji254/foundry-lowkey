@@ -754,7 +754,7 @@ def _generate_replay_script(root: Path, model: ContractModel, target: str, steps
         else:
             call = f"        (bool ok, ) = TARGET.call(abi.encodeWithSignature({json.dumps(step.function)}));"
         lines.append(call)
-        lines.append("        require(ok, "walkthrough replay step reverted");")
+        lines.append('        require(ok, "walkthrough replay step reverted");')
     if current_actor is not None:
         lines.append("        vm.stopBroadcast();")
     lines += [
