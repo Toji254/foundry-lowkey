@@ -146,6 +146,33 @@ class LowkeyCastTests(unittest.TestCase):
             path = str(root / "out" / "Address.sol" / "Address.json")
             self.assertIsNone(lk.artifact_source_name(artifact, path))
 
+    def test_application_artifact_recovers_missing_source_name_from_project_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "ConfidencePoolFactory.sol").write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePoolFactory { }",
+                encoding="utf-8",
+            )
+            (root / "foundry.toml").write_text(
+                '[profile.default]\\nsrc = "src"\\n',
+                encoding="utf-8",
+            )
+            artifact = {
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "contractName": "ConfidencePoolFactory",
+            }
+            path = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+
+            self.assertEqual(
+                lk.artifact_source_name(artifact, str(path), root),
+                "src/ConfidencePoolFactory.sol",
+            )
+            self.assertTrue(lk.artifact_is_project_application(root, str(path), artifact))
+
     def test_application_artifact_requires_existing_source_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
