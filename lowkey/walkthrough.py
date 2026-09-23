@@ -376,12 +376,23 @@ def _phase_score(name: str) -> tuple[int, int]:
     return 3, -999
 
 
-def _arg_for(param: dict[str, Any], actors: list[Actor], target: str, now: int) -> Any:
+def _arg_for(
+    param: dict[str, Any],
+    actors: list[Actor],
+    target: str,
+    now: int,
+    observed: dict[str, Any] | None = None,
+) -> Any:
     ptype = _canonical_type(param)
     name = str(param.get("name") or "arg").lower()
+    observed = observed or {}
+    compact = re.sub(r"[^a-z0-9]", "", name)
     alice = actors[0].address if actors else target
     bob = actors[1].address if len(actors) > 1 else alice
     attacker = actors[2].address if len(actors) > 2 else bob
+
+    if compact in {"staketoken", "safeharborregistry", "poolimplementation", "defaultoutcomemoderator", "outcomemoderator"} and observed.get(compact):
+        return observed[compact]
 
     if ptype.startswith("address[]"):
         return [alice, bob]
@@ -390,7 +401,7 @@ def _arg_for(param: dict[str, Any], actors: list[Actor], target: str, now: int) 
             return attacker
         if any(x in name for x in ("recipient", "receiver", "to", "user", "beneficiary")):
             return bob
-        return alice
+        return observed.get(compact, alice)
     if ptype.startswith("uint") or ptype.startswith("int"):
         if any(x in name for x in ("deadline", "expiry", "expires")):
             return now + 3600
@@ -409,7 +420,7 @@ def _arg_for(param: dict[str, Any], actors: list[Actor], target: str, now: int) 
         return name + "-lowkey"
     if ptype.startswith("tuple"):
         return [
-            _arg_for(comp, actors, target, now)
+            _arg_for(comp, actors, target, now, observed)
             for comp in param.get("components", [])
         ]
     if ptype.endswith("[]"):
@@ -424,7 +435,15 @@ def _value_for(fn: dict[str, Any]) -> int:
     return 10**15 if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")) else 0
 
 
-def plan_workflow(model: ContractModel, actors: list[Actor], target: str, now: int, max_steps: int) -> list[Step]:
+def plan_workflow(
+    model: ContractModel,
+    actors: list[Actor],
+    target: str,
+    now: int,
+    max_steps: int,
+    observed: dict[str, Any] | None = None,
+) -> list[Step]:
+    observed = observed or {}
     candidates = [x for x in _mutators(model) if _lifecycle_candidate(str(x.get("name") or ""))]
     candidates.sort(key=lambda item: (_phase_score(str(item.get("name") or "")), str(item.get("name") or "")))
 
@@ -441,7 +460,7 @@ def plan_workflow(model: ContractModel, actors: list[Actor], target: str, now: i
         actor = actors[0] if actors else Actor("Alice", target, 0)
         if any(x in low for x in ("withdraw", "claim", "redeem", "release", "refund", "settle", "finalize", "cancel")) and len(actors) > 1:
             actor = actors[1]
-        args = [_arg_for(p, actors, target, now) for p in item.get("inputs", [])]
+        args = [_arg_for(p, actors, target, now, observed) for p in item.get("inputs", [])]
         sig = _signature(item)
         steps.append(Step(
             index=len(steps) + 1,
