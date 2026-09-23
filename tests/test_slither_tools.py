@@ -70,9 +70,16 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertIn("Impact      : Informational", rendered)
         self.assertIn("Confidence  : High", rendered)
         self.assertIn("Where       : src/EthEscrow.sol:61-69", rendered)
+        self.assertIn("Code area   : function release", rendered)
+        self.assertIn("Observed:", rendered)
+        self.assertIn("What it means:", rendered)
         self.assertIn("Why it matters:", rendered)
         self.assertIn("Next audit move:", rendered)
+        self.assertNotIn("Detector ID", rendered)
+        self.assertNotIn("low-level-calls", rendered)
         self.assertNotIn("[Informational/High]", rendered)
+        self.assertNotIn("https://", rendered)
+        self.assertNotIn("success,None", rendered)
 
 
     @patch("slither_tools.slither_path", return_value="/usr/bin/slither")
