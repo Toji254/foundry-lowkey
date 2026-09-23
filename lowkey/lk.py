@@ -2104,7 +2104,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     create_args = ["create", fqn]
     if values:
         create_args.extend(["--constructor-args", *values])
-    create_args.extend(["--rpc-url", rpc, "--private-key", key])
+    create_args.extend(["--rpc-url", rpc, "--private-key", key, "--broadcast"])
     result = run_foundry(create_args, capture=True)
     output = result.text
     if result.code != 0:
