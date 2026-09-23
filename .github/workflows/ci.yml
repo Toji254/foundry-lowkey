@@ -22,3 +22,57 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
         run: bash -n bin/lk install.sh
+
+  foundry-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Verify dependencies
+        run: |
+          forge --version
+          cast --version
+          anvil --version
+      - name: Install Lowkey
+        run: ./install.sh
+      - name: Build integration fixture
+        run: |
+          mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
+          cat > /tmp/lowkey-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          EOF
+          cat > /tmp/lowkey-fixture/src/Fixture.sol <<'EOF'
+          pragma solidity ^0.8.20;
+          contract Fixture {
+              event Ping(uint256 value);
+              function ping(uint256 value) external { emit Ping(value); }
+          }
+          EOF
+          cat > /tmp/lowkey-fixture/test/Fixture.t.sol <<'EOF'
+          pragma solidity ^0.8.20;
+          contract FixtureTest {
+              function testSmoke() public {}
+          }
+          EOF
+      - name: Run installed integration checks
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          lk --version
+          lk self-test
+          lk doctor
+          lk scan src
+          lk scan src/Fixture.sol
+          lk forge build
+          lk forge test
+          lk forge inspect-audit Fixture
+          lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
+          set +e
+          lk scan /tmp/lowkey-fixture/missing.sol
+          test $? -ne 0
+          lk event 'Ping(uint256)' 0xdeadbeef
+          test $? -ne 0
+          lk forge debug --help
+          test $? -ne 0

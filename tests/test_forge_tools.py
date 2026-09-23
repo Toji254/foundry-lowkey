@@ -56,5 +56,10 @@ class LowkeyForgeTests(unittest.TestCase):
                           ["inspect", "Vault", "events"],
                           ["inspect", "Vault", "storage-layout"]])
 
+    @patch("forge_tools.run_forge", side_effect=[0, 0, 1, 0, 2, 0])
+    def test_inspect_audit_aggregates_failures(self, run):
+        self.assertEqual(forge_tools.run_inspect_audit(["Vault"]), 1)
+        self.assertEqual(run.call_count, 6)
+
 if __name__ == "__main__":
     unittest.main()

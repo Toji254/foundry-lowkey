@@ -5,11 +5,17 @@ import sys
 import re
 import shlex
 import io
+import shutil
 from contextlib import redirect_stdout
 from datetime import datetime
 from urllib.parse import urlsplit
 from difflib import SequenceMatcher
 from pathlib import Path
+
+try:
+    from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
+except ImportError:
+    FORGE_NATIVE_COMMANDS = set()
 
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -795,6 +801,62 @@ def run_self_test():
     if failed:
         print("Self-test failed: "+", ".join(failed)); return 1
     print(f"Self-test passed ({len(checks)} checks)."); return 0
+
+def run_doctor():
+    failures=0
+    print("Lowkey doctor")
+    print("============")
+    for name in ("python3", "cast", "forge", "anvil"):
+        path=shutil.which(name)
+        if not path:
+            print(f"FAIL  {name}: not found")
+            failures+=1
+            continue
+        try:
+            result=subprocess.run([path,"--version"],capture_output=True,text=True)
+            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
+        except OSError as error:
+            print(f"FAIL  {name}: {error}")
+            failures+=1
+            continue
+        if result.returncode==0:
+            print(f"PASS  {name}: {path} ({version})")
+        else:
+            print(f"FAIL  {name}: {path} ({version})")
+            failures+=1
+    forge=shutil.which("forge")
+    if forge:
+        try:
+            result=subprocess.run([forge,"--help"],capture_output=True,text=True)
+            available={line.strip().split()[0] for line in result.stdout.splitlines() if line.startswith("  ") and line.strip() and not line.strip().startswith("-")}
+            advertised=set(FORGE_NATIVE_COMMANDS)
+            missing=sorted(advertised-available)
+            if missing:
+                print(f"FAIL  forge commands missing: {', '.join(missing)}")
+                failures+=1
+            else:
+                print(f"PASS  forge commands: {', '.join(sorted(advertised))}")
+        except OSError as error:
+            print(f"FAIL  forge command check: {error}")
+            failures+=1
+    for command,args in (("cast decode-event",["cast","decode-event","--help"]),
+                         ("cast receipt",["cast","receipt","--help"]),
+                         ("cast sig-event",["cast","sig-event","--help"]),
+                         ("forge inspect",["forge","inspect","--help"])):
+        if not shutil.which(args[0]):
+            print(f"FAIL  dependency command: {command} (binary not found)")
+            failures+=1
+            continue
+        try:
+            result=subprocess.run(args,capture_output=True,text=True)
+        except OSError:
+            result=None
+        if result is not None and result.returncode==0:
+            print(f"PASS  dependency command: {command}")
+        else:
+            print(f"FAIL  dependency command: {command}")
+            failures+=1
+    return 1 if failures else 0
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
         print("Error: No session history found."); return
@@ -997,6 +1059,10 @@ def run_layout(args):
     else: print(json.dumps(payload,indent=2))
 
 def source_sol_files(root):
+    if os.path.isfile(root):
+        return [root] if root.endswith(".sol") else []
+    if not os.path.isdir(root):
+        return []
     paths=[]
     for path,dirs,files in os.walk(root):
         dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib"}]
@@ -1259,6 +1325,7 @@ AUDIT OS
   lk export                           Build audit-report/
   lk batch <file>                     Run one lk command per line
   lk self-test                        Run regression checks
+    lk doctor                           Check Python, Foundry, Cast, and Anvil
 
 FORENSICS
   lk receipt [tx]                     Transaction receipt
@@ -1403,6 +1470,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="batch": run_batch(config,args)
     elif cmd=="audit": run_audit_mode(config)
     elif cmd=="self-test": raise SystemExit(run_self_test())
+    elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": run_receipt(config,args[0] if args else None)
     elif cmd=="trace": run_trace(config,args)
     elif cmd=="logs": run_logs(config,args)

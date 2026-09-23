@@ -59,6 +59,7 @@ Then:
 ```bash
 lk --help
 lk self-test
+lk doctor
 ```
 
 The installer copies:
@@ -156,7 +157,6 @@ unchanged.
 lk forge test -vvvv
 lk forge build
 lk forge inspect MyContract storage-layout
-lk forge debug ...
 lk forge script ...
 lk forge coverage
 lk forge lint
@@ -164,7 +164,7 @@ lk forge geiger
 ```
 
 The high-frequency commands `build`, `test`, `script`, `inspect`,
-`debug`, `coverage`, `lint`, `geiger`, and `fmt` also have direct
+`coverage`, `lint`, `geiger`, and `fmt` also have direct
 shortcuts such as `lk test` and `lk build`. Existing LowkeyCast commands
 remain unchanged.
 

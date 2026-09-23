@@ -207,10 +207,19 @@ class LowkeyCastTests(unittest.TestCase):
             path = pathlib.Path(tmp) / "Regression.sol"
             path.write_text(source, encoding="utf-8")
             result = self.run_cli("scan", tmp)
+            single_file_result = self.run_cli("scan", str(path))
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(single_file_result.returncode, 0, single_file_result.stderr)
         self.assertIn("REENTRANCY REVIEW", result.stdout)
         self.assertIn("DELEGATECALL", result.stdout)
         self.assertIn("TX.ORIGIN", result.stdout)
+        self.assertIn("REENTRANCY REVIEW", single_file_result.stdout)
+        self.assertIn("DELEGATECALL", single_file_result.stdout)
+        self.assertIn("TX.ORIGIN", single_file_result.stdout)
+
+    def test_doctor_reports_missing_dependencies(self):
+        with patch.object(lk.shutil, "which", return_value=None):
+            self.assertEqual(lk.run_doctor(), 1)
 
     def test_solidity_identifier(self):
         self.assertEqual(

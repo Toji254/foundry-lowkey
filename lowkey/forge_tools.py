@@ -10,8 +10,8 @@ NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
     "fmt", "lint", "geiger", "flatten", "verify-contract",
     "verify-check", "verify-bytecode", "tree", "install", "remove", "update",
-    "list", "init", "clean", "cache", "config", "remappings", "bind",
-    "bind-json", "doc", "generate", "compiler", "eip712", "soldeer",
+    "init", "clean", "cache", "config", "remappings", "bind",
+    "bind-json", "doc", "compiler", "eip712", "soldeer",
     "completions", "clone", "fuzz", "lsp",
 }
 
@@ -43,6 +43,9 @@ def command_available(command: str) -> bool:
         ).returncode == 0
     except OSError:
         return False
+
+def supported_native_commands() -> set[str]:
+    return {command for command in NATIVE_COMMANDS if command_available(command)}
 
 def run_audit(args: Sequence[str]) -> int:
     checks = "--checks" in args
@@ -79,6 +82,7 @@ def run_inspect_audit(args: Sequence[str]) -> int:
     code = run_forge(["build", *extra])
     if code != 0:
         return code
+    failures = 0
     for title, field in [
         ("ABI", "abi"), ("METHODS", "methods"), ("ERRORS", "errors"),
         ("EVENTS", "events"), ("STORAGE", "storage-layout")
@@ -87,7 +91,9 @@ def run_inspect_audit(args: Sequence[str]) -> int:
         code = run_forge(["inspect", contract, field, *extra])
         if code != 0:
             print(f"LowkeyForge: inspect field '{field}' failed; continuing.", file=sys.stderr)
-    return 0
+            if failures == 0:
+                failures = code
+    return failures
 
 def print_help() -> None:
     print("""LowkeyForge - audit-focused interface over native Forge
@@ -122,6 +128,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     if command in {"inspect-audit", "recon"}:
         return run_inspect_audit(rest)
     if command in NATIVE_COMMANDS:
+        if not command_available(command):
+            return die(f"Forge command '{command}' is not supported by the installed Forge.")
         return run_forge(args)
     return die(f"unknown Forge command '{command}'. Use 'lk forge --help'.")
 
