@@ -73,7 +73,7 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertEqual(linked, "src/EthEscrow.sol:3")
 
 
-    def test_source_location_returns_absolute_clickable_location(self):
+    def test_source_location_keeps_relative_label_and_targets_exact_line(self):
         finding = {
             "elements": [{
                 "type": "function",
@@ -87,11 +87,13 @@ class LowkeySlitherTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            location = slither_tools._source_location(finding, root)
-        self.assertEqual(
-            location,
-            f"{root / 'src' / 'EthEscrow.sol'}:61:11-69",
-        )
+            with patch.dict("os.environ", {"TERM_PROGRAM": "vscode"}):
+                location = slither_tools._source_location(finding, root)
+        label, linked = location
+        self.assertEqual(label, "src/EthEscrow.sol:61-69")
+        self.assertIn("src/EthEscrow.sol:61-69", linked)
+        self.assertIn("vscode://file/", linked)
+        self.assertIn(":61:11", linked)
 
 
     def test_human_report_explains_finding(self):
