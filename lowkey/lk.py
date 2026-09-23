@@ -2075,8 +2075,26 @@ def storage_layout_details(config):
     # trustworthy contract name we have for the selected target.
     if not contracts:
         return {}, []
+
+    # Forge inspect is project-relative. When the target artifact belongs to
+    # another Foundry project, execute inspect from that project's root rather
+    # than from whatever directory the auditor happens to be standing in.
+    inspect_cwd=configured_project_root(target,config)
+    if not inspect_cwd and paths:
+        inspect_cwd=foundry_project_root(paths[0])
+
     for contract in contracts:
-        code,out,_=cast_output(["forge","inspect",contract,"storage-layout","--json"])
+        try:
+            completed=subprocess.run(
+                ["forge","inspect",contract,"storage-layout","--json"],
+                capture_output=True,
+                text=True,
+                cwd=inspect_cwd or None,
+            )
+            code=completed.returncode
+            out=completed.stdout.strip()
+        except OSError:
+            continue
         if code!=0 or not out:
             continue
         try:
