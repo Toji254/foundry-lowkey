@@ -1695,7 +1695,15 @@ def run_cast_deep(config,args):
         target=values[0] if values else config.get("target")
         if not target:
             return fail(f"Usage: lk {command} <address>")
-        return run_cast([command,target,*values[1:]],config)
+        result=run_cast([command,target,*values[1:]],config,capture=True)
+        if result.code != 0 and effective_rpc(config) and anvil_rpc_info(config):
+            text=result.text.lower()
+            if "etherscan" in text or "constructor" in text or "creation" in text:
+                return fail(
+                    f"Error: {command} needs creation/deployment data that this local Anvil state may not contain."
+                )
+        print(result.text)
+        return result.code
     if command=="access-list":
         target=config.get("target")
         if values and is_address(values[0]):
@@ -1737,8 +1745,11 @@ def run_cast_deep(config,args):
         return run_cast(["decode-calldata",*values],config)
     if command=="abi-encode":
         if not values:
-            return fail("Usage: lk abi-encode <type> [args...]")
-        return run_cast(["abi-encode",*values],config)
+            return fail("Usage: lk abi-encode <type[,type...]> [args...]")
+        signature=values[0]
+        if "(" not in signature:
+            signature=f"lowkey({signature})"
+        return run_cast(["abi-encode",signature,*values[1:]],config)
     if command in {"4byte","4byte-calldata","4byte-event"}:
         if not values:
             return fail(f"Usage: lk {command} <value>")
