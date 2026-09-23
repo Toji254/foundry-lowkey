@@ -474,19 +474,24 @@ def run_coverage_audit(command: Sequence[str], root: Path) -> int:
             return None, str(exc)
 
         combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
-        if result.stdout:
-            visible_stdout = _strip_coverage_table(result.stdout)
-            if visible_stdout:
-                print(visible_stdout, end="" if visible_stdout.endswith("\n") else "\n")
-            coverage_report = _format_coverage_report(result.stdout)
-            if coverage_report:
-                print(coverage_report)
-        if result.stderr:
+
+        # Foundry can emit coverage output on either stdout or stderr depending
+        # on version/runtime. Treat the combined stream as the source of truth.
+        visible_stdout = _strip_coverage_table(result.stdout) if result.stdout else ""
+        visible_stderr = _strip_coverage_table(result.stderr) if result.stderr else ""
+        coverage_report = _format_coverage_report(combined)
+
+        if visible_stdout:
+            print(visible_stdout, end="" if visible_stdout.endswith("\n") else "\n")
+        if visible_stderr:
             print(
-                result.stderr,
+                visible_stderr,
                 file=sys.stderr,
-                end="" if result.stderr.endswith("\n") else "\n",
+                end="" if visible_stderr.endswith("\n") else "\n",
             )
+        if coverage_report:
+            print(coverage_report)
+
         return result, combined
 
     result, output = execute(command)
