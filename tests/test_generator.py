@@ -283,6 +283,48 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIn("instance = new Escrow();", text)
 
 
+    def test_generate_deployment_replaces_stale_lowkey_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir(parents=True)
+            (root / "src" / "EthEscrow.sol").write_text(
+                "pragma solidity ^0.8.20; contract Escrow {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "EthEscrow.sol" / "Escrow.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Escrow",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+
+            script_dir = root / "script"
+            script_dir.mkdir()
+            old_named = script_dir / "LowkeyDeploy_EthEscrow_20260923.s.sol"
+            old_named.write_text(
+                "// /// @title Lowkey-generated deployment for EthEscrow\n",
+                encoding="utf-8",
+            )
+            user_file = script_dir / "LowkeyDeploy_EthEscrow_Custom.s.sol"
+            user_file.write_text(
+                "// user-authored deployment script\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(generator.Path, "cwd", return_value=root):
+                with patch.object(generator, "_run", return_value=(0, "", "")):
+                    result = generator.run_generate({}, ["deployment", "EthEscrow"])
+
+            self.assertEqual(result, 0)
+            self.assertFalse(old_named.exists())
+            self.assertTrue(user_file.exists())
+            self.assertTrue((script_dir / "LowkeyDeploy_Escrow.s.sol").exists())
+
+
     def test_generate_deployment_writes_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
