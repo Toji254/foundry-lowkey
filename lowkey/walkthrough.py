@@ -85,6 +85,17 @@ class Actor:
 
 
 @dataclass
+class RuntimeContract:
+    address: str
+    model: str
+    label: str
+    relation: str = "target"
+    parent: str | None = None
+    discovered_at_step: int = 0
+    implementation: str | None = None
+
+
+@dataclass
 class Step:
     index: int
     actor: str
@@ -106,6 +117,9 @@ class Step:
     storage_changes: list[dict[str, Any]] = field(default_factory=list)
     balance_before: dict[str, str] = field(default_factory=dict)
     balance_after: dict[str, str] = field(default_factory=dict)
+    discovered_contracts: list[dict[str, Any]] = field(default_factory=list)
+    preflight: str | None = None
+    runtime_contracts: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _box(title: str, lines: Iterable[str], width: int = 72, left: str = "╭", right: str = "╮") -> str:
@@ -168,47 +182,43 @@ def _json_file(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _foundry_src_dir(root: Path) -> str:
+    try:
+        text = (root / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "src"
+    match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', text)
+    return match.group(1).strip().rstrip("/") if match else "src"
+
+
+def _source_kind(source_text: str, name: str) -> str:
+    if re.search(r"\binterface\s+" + re.escape(name) + r"\b", source_text):
+        return "interface"
+    if re.search(r"\blibrary\s+" + re.escape(name) + r"\b", source_text):
+        return "library"
+    if re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source_text):
+        return "abstract"
+    if re.search(r"\bcontract\s+" + re.escape(name) + r"\b", source_text):
+        return "contract"
+    return "unknown"
+
+
 def _artifact_models(root: Path) -> list[ContractModel]:
     models: list[ContractModel] = []
     out = root / "out"
     if not out.is_dir():
         return models
-
+    src_prefix = _foundry_src_dir(root).replace("\\","/").strip("/") or "src"
     for path in out.rglob("*.json"):
         if "build-info" in path.parts:
             continue
         data = _json_file(path)
         if not data or not isinstance(data.get("abi"), list):
             continue
-        name = data.get("contractName")
-        if not name:
-            name = path.stem
-        abi = data["abi"]
-        if not abi:
-            # Empty ABI artifacts can still be interfaces, but are not useful
-            # as execution targets.
+        name = str(data.get("contractName") or path.stem)
+        source = str(data.get("sourceName") or "").replace("\\","/").lstrip("./")
+        if not (source == src_prefix or source.startswith(src_prefix + "/")):
             continue
-        source = str(data.get("sourceName") or path)
-        if (
-            "/test/" in "/" + source + "/"
-            or source.startswith("test/")
-            or source.startswith("lib/")
-            or "/lib/" in "/" + source
-            or source.startswith("script/")
-        ):
-            continue
-
-        functions = [
-            _signature(item)
-            for item in abi
-            if item.get("type") == "function" and item.get("name")
-        ]
-        events = [
-            _signature(item)
-            for item in abi
-            if item.get("type") == "event" and item.get("name")
-        ]
-        storage = data.get("storageLayout") or {}
         source_text = ""
         source_path = root / source
         if source_path.is_file():
@@ -216,98 +226,47 @@ def _artifact_models(root: Path) -> list[ContractModel]:
                 source_text = source_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 pass
-
-        bases: list[str] = []
-        for match in re.finditer(
-            r"\b(?:contract|abstract\s+contract)\s+(\w+)\s+is\s+([^\{]+)\{",
-            source_text,
-        ):
-            clause = match.group(2)
-            if match.group(1) == name:
-                bases = [x.strip().split("(")[0].split()[-1] for x in clause.split(",") if x.strip()]
-
-        structs = _parse_structs(source_text)
-        mappings = _parse_mappings(source_text)
-        arrays = _parse_arrays(source_text)
-        modifiers = re.findall(r"\bmodifier\s+(\w+)", source_text)
-
-        # Avoid duplicate artifacts for the same contract name/source.
-        if any(m.name == name and m.source == source for m in models):
+        if _source_kind(source_text, name) in {"interface","library"}:
             continue
-        models.append(
-            ContractModel(
-                name=name,
-                source=source,
-                artifact=str(path.relative_to(root)),
-                abi=abi,
-                storage=storage,
-                bases=bases,
-                functions=functions,
-                modifiers=modifiers,
-                structs=structs,
-                mappings=mappings,
-                arrays=arrays,
-                events=events,
-            )
-        )
-    # Resolve source-level function connections after all application models
-    # are known. These edges are explicitly INFERRED; runtime traces remain the
-    # authority for what actually executed.
-    known = {m.name: m for m in models}
+        abi = data["abi"]
+        functions = [_signature(x) for x in abi if x.get("type")=="function" and x.get("name")]
+        events = [_signature(x) for x in abi if x.get("type")=="event" and x.get("name")]
+        bases=[]
+        for match in re.finditer(r"\b(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^\{]+)\{", source_text):
+            if match.group(1)==name:
+                bases=[re.sub(r"\s+","",x).split("(")[0] for x in match.group(2).split(",") if x.strip()]
+        if any(m.name==name and m.source==source for m in models):
+            continue
+        models.append(ContractModel(
+            name=name, source=source, artifact=str(path.relative_to(root)), abi=abi,
+            storage=data.get("storageLayout") or {}, bases=bases, functions=functions,
+            modifiers=re.findall(r"\bmodifier\s+(\w+)",source_text),
+            structs=_parse_structs(source_text), mappings=_parse_mappings(source_text),
+            arrays=_parse_arrays(source_text), events=events))
+    known={m.name:m for m in models}
     for model in models:
-        source_text = ""
-        source_path = root / model.source
-        if source_path.is_file():
-            try:
-                source_text = source_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
-        edges: list[dict[str, Any]] = []
+        try: source_text=(root/model.source).read_text(encoding="utf-8",errors="replace")
+        except OSError: source_text=""
+        edges=[]
         for fn in model.functions:
-            name = fn.split("(", 1)[0]
-            pos = source_text.find("function " + name)
-            if pos < 0:
-                continue
-            segment = source_text[pos : pos + 12000]
+            name=fn.split("(",1)[0]; pos=source_text.find("function "+name)
+            if pos<0: continue
+            segment=source_text[pos:pos+16000]
             for target_fn in model.functions:
-                target_name = target_fn.split("(", 1)[0]
-                if target_name == name:
-                    continue
-                if re.search(r"\b" + re.escape(target_name) + r"\s*\(", segment):
-                    edges.append({
-                        "kind": "internal",
-                        "from": name,
-                        "to_contract": model.name,
-                        "to_function": target_fn,
-                    })
-            for other_name in sorted(known):
-                if other_name == model.name or other_name not in segment:
-                    continue
-                for target in known[other_name].functions:
-                    target_name = target.split("(", 1)[0]
-                    if re.search(r"\b" + re.escape(other_name) + r"\s*\([^;{}]{0,120}\)\s*\.?\s*" + re.escape(target_name) + r"\s*\(", segment):
-                        edges.append({
-                            "kind": "cross-contract",
-                            "from": name,
-                            "to_contract": other_name,
-                            "to_function": target,
-                        })
-        # De-duplicate while preserving discovery order.
-        seen: set[tuple[str, str, str, str]] = set()
-        model.calls = []
+                target_name=target_fn.split("(",1)[0]
+                if target_name!=name and re.search(r"\b"+re.escape(target_name)+r"\s*\(",segment):
+                    edges.append({"kind":"internal","from":name,"to_contract":model.name,"to_function":target_fn})
+            for other_name,other in known.items():
+                if other_name==model.name or not re.search(r"\b"+re.escape(other_name)+r"\b",segment): continue
+                for target_fn in other.functions:
+                    target_name=target_fn.split("(",1)[0]
+                    if re.search(r"\.\s*"+re.escape(target_name)+r"\s*\(",segment):
+                        edges.append({"kind":"cross-contract","from":name,"to_contract":other_name,"to_function":target_fn})
+        seen=set(); model.calls=[]
         for edge in edges:
-            key = (
-                str(edge.get("kind")),
-                str(edge.get("from")),
-                str(edge.get("to_contract")),
-                str(edge.get("to_function")),
-            )
-            if key not in seen:
-                seen.add(key)
-                model.calls.append(edge)
-
-    return sorted(models, key=lambda m: (0 if str(m.source).startswith("src/") else 1, m.name.lower(), m.source))
-
+            key=(str(edge.get("kind")),str(edge.get("from")),str(edge.get("to_contract")),str(edge.get("to_function")))
+            if key not in seen: seen.add(key); model.calls.append(edge)
+    return sorted(models,key=lambda m:(m.name.lower(),m.source))
 
 def _parse_structs(source: str) -> dict[str, list[Field]]:
     result: dict[str, list[Field]] = {}
@@ -378,9 +337,18 @@ def _mutators(model: ContractModel) -> list[dict[str, Any]]:
         x for x in model.abi
         if x.get("type") == "function"
         and x.get("name")
-        and x.get("stateMutability") != "view"
-        and x.get("stateMutability") != "pure"
+        and x.get("stateMutability") not in {"view", "pure"}
     ]
+
+_ADMIN_TOKENS = ("upgrade","setadmin","transferownership","renounceownership","selfdestruct","pause","unpause","acceptownership")
+
+def _lifecycle_candidate(name: str) -> bool:
+    low=name.lower()
+    if any(token in low for token in _ADMIN_TOKENS):
+        return False
+    if low == "initialize" or low.startswith("initialize"):
+        return False
+    return True
 
 
 _PHASES = [
@@ -450,7 +418,7 @@ def _value_for(fn: dict[str, Any]) -> int:
 
 
 def plan_workflow(model: ContractModel, actors: list[Actor], target: str, now: int, max_steps: int) -> list[Step]:
-    candidates = _mutators(model)
+    candidates = [x for x in _mutators(model) if _lifecycle_candidate(str(x.get("name") or ""))]
     candidates.sort(key=lambda item: (_phase_score(str(item.get("name") or "")), str(item.get("name") or "")))
 
     steps: list[Step] = []
@@ -503,6 +471,20 @@ def plan_workflow(model: ContractModel, actors: list[Actor], target: str, now: i
             break
     return steps
 
+
+def _preflight(rpc: str, step: Step) -> tuple[bool, str]:
+    try:
+        code, out, err = _cmd(
+            ["cast","call",step.address,step.function,*[
+                json.dumps(x,separators=(",",":")) if isinstance(x,list) else str(x)
+                for x in step.args
+            ],"--rpc-url",rpc] + (["--value",str(step.value_wei)] if step.value_wei else []),
+            timeout=10,
+        )
+        text=(out or err or "").strip()
+        return code == 0, text[-1200:] or ("eth_call succeeded" if code==0 else "eth_call reverted")
+    except Exception as exc:
+        return False, str(exc)
 
 def _cast_json(host: Any, args: list[str], config: dict[str, Any]) -> Any:
     # Prefer the already-integrated Lowkey cast wrapper; fall back to subprocess.
@@ -752,6 +734,85 @@ def _trace_edges(rpc: str, tx: str) -> list[str]:
     return edges[-24:]
 
 
+def _trace_tree(rpc: str, tx: str) -> dict[str, Any] | None:
+    value = _rpc_call(rpc, "debug_traceTransaction", [tx, {"tracer": "callTracer", "timeout": "20s"}])
+    return value if isinstance(value, dict) else None
+
+
+def _artifact_runtime_code(root: Path, model: ContractModel) -> str:
+    data=_json_file(root/model.artifact) or {}
+    bytecode=data.get("deployedBytecode")
+    return str(bytecode.get("object") if isinstance(bytecode,dict) else bytecode or "")
+
+
+def _runtime_code(rpc: str, address: str) -> str:
+    return str(_rpc_call(rpc,"eth_getCode",[address,"latest"]) or "")
+
+
+def _normalize_code(value: str) -> str:
+    return re.sub(r"^0x","",str(value or "")).lower()
+
+
+def _clone_impl(code: str) -> str | None:
+    raw=_normalize_code(code)
+    if raw.startswith("363d3d373d3d3d363d73") and len(raw)>=60:
+        candidate=raw[20:60]
+        if re.fullmatch(r"[0-9a-f]{40}",candidate):
+            return "0x"+candidate
+    return None
+
+
+def _match_runtime_model(root: Path, rpc: str, models: list[ContractModel], address: str) -> tuple[str,str|None]:
+    code=_runtime_code(rpc,address)
+    if code in {"","0x"}: return "External",None
+    normalized=_normalize_code(code)
+    for model in models:
+        expected=_normalize_code(_artifact_runtime_code(root,model))
+        if expected and normalized==expected: return model.name,None
+    impl=_clone_impl(code)
+    if impl:
+        impl_code=_normalize_code(_runtime_code(rpc,impl))
+        for model in models:
+            expected=_normalize_code(_artifact_runtime_code(root,model))
+            if expected and impl_code==expected: return model.name,impl
+    return "External",impl
+
+
+def _trace_addresses(trace: dict[str,Any]|None) -> list[tuple[str,str,str|None]]:
+    found=[]
+    def walk(node):
+        if not isinstance(node,dict): return
+        typ=str(node.get("type") or "CALL").upper()
+        if typ in {"CREATE","CREATE2"}:
+            created=node.get("result") or node.get("to")
+            if isinstance(created,str) and re.fullmatch(r"0x[0-9a-fA-F]{40}",created):
+                found.append((created,typ,node.get("from")))
+        target=node.get("to")
+        if isinstance(target,str) and re.fullmatch(r"0x[0-9a-fA-F]{40}",target):
+            found.append((target,typ,node.get("from")))
+        for child in node.get("calls") or []: walk(child)
+    walk(trace); return found
+
+
+def _discover_runtime_contracts(root: Path, rpc: str, models: list[ContractModel], known: list[RuntimeContract], receipt: dict[str,Any]|None, trace: dict[str,Any]|None, step_index: int, parent: str) -> list[RuntimeContract]:
+    candidates=_trace_addresses(trace)
+    for log in (receipt or {}).get("logs",[]):
+        address=log.get("address")
+        if isinstance(address,str) and re.fullmatch(r"0x[0-9a-fA-F]{40}",address):
+            candidates.append((address,"EVENT",parent))
+    existing={x.address.lower() for x in known}; result=[]
+    for address,relation,origin in candidates:
+        if address.lower() in existing: continue
+        code=_runtime_code(rpc,address)
+        if code in {"","0x"}: continue
+        model_name,impl=_match_runtime_model(root,rpc,models,address)
+        siblings=sum(1 for x in known+result if x.model==model_name)
+        label=model_name if model_name!="External" else "External"
+        if model_name!="External" and siblings: label += f" #{siblings+1}"
+        result.append(RuntimeContract(address,model_name,label,"CLONE" if impl else relation,origin or parent,step_index,impl))
+        existing.add(address.lower())
+    return result
+
 def _event_rows(host: Any, config: dict[str, Any], receipt: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not receipt:
         return []
@@ -780,10 +841,14 @@ def _save_artifacts(root: Path, model_payload: dict[str, Any], steps: list[Step]
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "model.json").write_text(json.dumps(model_payload, indent=2, default=str) + "\n", encoding="utf-8")
     (directory / "latest.json").write_text(
-        json.dumps({"version": 1, "steps": [asdict(x) for x in steps]}, indent=2, default=str) + "\n",
+        json.dumps({
+            "version": model_payload.get("version", 2),
+            "steps": [asdict(x) for x in steps],
+            "runtime_contracts": model_payload.get("runtime_contracts", []),
+            "observed_inputs": model_payload.get("observed_inputs", {}),
+        }, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
-
 
 def _generate_replay_script(root: Path, model: ContractModel, target: str, steps: list[Step]) -> Path:
     path = root / "script" / f"LowkeyWalkthrough_{model.name}.s.sol"
