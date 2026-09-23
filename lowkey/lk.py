@@ -550,7 +550,7 @@ def project_context_target(root=None):
     # Older contexts may contain a global target copied from another project.
     # Accept an explicitly recorded project target, or legacy targets that still
     # point at a contract/artifact belonging to this project.
-    if source in {"manual", "auto", "project", "project-lab"}:
+    if source in {"manual", "auto", "project", "project-lab", "auto-detected"}:
         return target
     if artifact and path_is_within(artifact, project_root):
         return target
@@ -4334,17 +4334,214 @@ def _generate_connected_poc(config):
         return 1
 
 
-def run_audit_mode(config, args=None):
-    """Start an interactive audit session around the shared connected-audit pipeline."""
+def _bind_detected_anvil(config, info):
+    """Hydrate the current audit session from a detected Anvil without starting it."""
+    if not isinstance(info, dict):
+        return None
+
+    config["_auto_rpc_info"] = info
+    accounts = info.get("accounts", [])
+    if not isinstance(accounts, list) or not accounts:
+        return None
+
+    account0 = accounts[0]
+    current_actor = config.get("actor")
+    current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
+
+    # Never replace an explicitly configured key/env actor. Rebind only a stale
+    # Anvil-derived actor or an empty actor slot.
+    keep_actor = False
+    if isinstance(current_entry, dict):
+        source = current_entry.get("source")
+        recorded = str(current_entry.get("address", "")).lower()
+        keep_actor = source not in {"anvil-default", "anvil-impersonated"} or (
+            recorded and recorded in {str(address).lower() for address in accounts}
+        )
+
+    if not current_actor or not keep_actor:
+        config.setdefault("wallets", {})["lab-deployer"] = {
+            "source": "anvil-default",
+            "anvil_index": 0,
+            "address": account0,
+        }
+        config.setdefault("labels", {})[account0] = "lab-deployer"
+        config["actor"] = "lab-deployer"
+
+    return info
+
+
+def _set_audit_auto_target(config, root, address, contract=None, artifact=None, source="auto-detected"):
+    """Persist a project-scoped target selected by the audit bootstrap."""
+    if not is_address(address):
+        return None
+    config["target"] = address
+    if contract:
+        config["target_contract"] = contract
+    if artifact:
+        config.setdefault("abi_paths", {})[address] = artifact
+    if contract:
+        config.setdefault("aliases", {})[contract] = address
+        config.setdefault("targets", {})[contract] = address
+    audit_context.set_target(
+        root,
+        address=address,
+        contract=contract,
+        artifact=artifact,
+        source=source,
+    )
+    audit_context.update(root, actor=actor_display(config), rpc=effective_rpc(config))
+    save_config(config)
+    return address
+
+
+def _live_target_candidate(config, root, contract_name=None):
+    """Find a saved target matching a current-project contract and live on the detected Anvil."""
+    info = anvil_rpc_info(config)
+    rpc = info.get("url") if isinstance(info, dict) else effective_rpc(config)
+    if not rpc:
+        return None
+
+    artifacts_by_name = {}
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not isinstance(artifact, dict):
+            continue
+        name = artifact_contract_name(path, artifact)
+        if artifact_is_deployable(artifact):
+            artifacts_by_name[str(name).lower()] = (str(name), path)
+
+    aliases = target_aliases(config)
+    preferred = str(contract_name or "").strip().lower()
+
+    candidates = []
+    for alias, address in aliases.items():
+        key = str(alias).strip().lower()
+        artifact_info = artifacts_by_name.get(key)
+        if not artifact_info:
+            continue
+        try:
+            code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
+        except Exception:
+            continue
+        if code != 0 or not str(runtime or "").strip() or str(runtime).strip() == "0x":
+            continue
+        contract, artifact = artifact_info
+        priority = 0 if preferred and key == preferred else 1
+        if is_address(config.get("target")) and str(config.get("target")).lower() == str(address).lower():
+            priority -= 2
+        candidates.append((priority, contract.lower(), address.lower(), contract, address, artifact))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[:3])
+    best = candidates[0]
+    if len(candidates) > 1 and candidates[0][:3] == candidates[1][:3]:
+        return None
+    return {
+        "contract": best[3],
+        "address": best[4],
+        "artifact": best[5],
+    }
+
+
+def _bootstrap_audit_target(config, root, allow_deploy=False):
+    """Resolve a live project target without guessing across unrelated projects."""
+    existing = project_context_target(root)
+    if existing:
+        activate_project_target(config, root)
+        return existing.get("address")
+
+    preferred_contract = discover_audit_target_contract(root)
+    candidate = _live_target_candidate(config, root, preferred_contract)
+    if candidate:
+        return _set_audit_auto_target(
+            config,
+            root,
+            candidate["address"],
+            candidate["contract"],
+            candidate["artifact"],
+        )
+
+    # A broadcast deployment is deterministic and safe to reconnect to.
+    before = active_project_target(config, root)
+    if not before and discover_deployments(root):
+        code = run_auto_target(config, preferred_contract)
+        if code == 0 and is_address(config.get("target")):
+            return config.get("target")
+
+    if not allow_deploy:
+        if preferred_contract:
+            print(
+                f"Target not auto-selected: no live saved target or broadcast deployment matched {preferred_contract}."
+            )
+        else:
+            print("Target not auto-selected: choose one with 'lk target <name> <address>' or run 'lk lab'.")
+        return None
+
+    # Auto mode may provision a disposable local target. Never synthesize
+    # constructor arguments: project adapters are trusted, while generic
+    # deployment is only automatic when the selected artifact needs no args.
+    script = discover_local_lab_script(root)
+    if script:
+        code = run_lab(config, [])
+        if code == 0 and is_address(config.get("target")):
+            return config.get("target")
+        return None
+
+    candidate_contract = preferred_contract
+    generic = discover_generic_lab_contract(root, candidate_contract) if candidate_contract else discover_generic_lab_contract(root)
+    if generic:
+        _score, _contract, _path, _artifact, constructor_inputs, _fqn = generic
+        if not constructor_inputs:
+            code = run_lab(config, [])
+            if code == 0 and is_address(config.get("target")):
+                return config.get("target")
+        else:
+            print(
+                f"Auto target provisioning skipped: {generic[1]} requires "
+                f"{len(constructor_inputs)} constructor argument(s)."
+            )
+    else:
+        print("Auto target provisioning skipped: no safe deployable application contract was found.")
+
+    return None
+
+
+def run_audit_mode(config, args=None, interactive=None):
+    """Run the connected audit session with optional autonomous local bootstrap."""
     args = list(args or [])
+    auto_mode = any(str(item).lower() == "auto" for item in args)
     checks = "--checks" in args
+    force_noninteractive = "--non-interactive" in args
+    force_interactive = "--interactive" in args
     mode_args = ["--checks"] if checks else []
 
-    config["audit_project"] = os.getcwd()
+    root = audit_context.foundry_project_root()
+    if not root:
+        return fail("Error: 'lk audit' must be run inside a Foundry project.")
+
+    config["audit_project"] = root
     save_config(config)
 
-    # Preserve the audit-session behavior: initialize the project-local workspace,
-    # attacker-state matrix, checklist, and session before evidence collection.
+    # Plain audit is deliberately non-owning: it discovers an existing Anvil but
+    # never starts one. Auto mode owns a project Anvil only when none is detected.
+    info = anvil_rpc_info(config)
+    started = False
+    if auto_mode and not info and not config.get("rpc"):
+        info = ensure_project_anvil(config, root)
+        started = bool(info)
+
+    if info:
+        _bind_detected_anvil(config, info)
+        print(f"Anvil   : {'started by Lowkey' if started else 'detected; using existing node'}")
+        print(f"RPC     : {rpc_display(effective_rpc(config))}")
+        print(f"Actor   : {actor_display(config)}")
+    elif auto_mode and config.get("rpc"):
+        print("Anvil   : no Anvil detected at the configured RPC; Lowkey will not override the explicit RPC.")
+    else:
+        print("Anvil   : not detected; continuing static audit only.")
+
     run_workspace(config, ["init"])
     run_matrix(config, ["init"])
     run_checklist(config)
@@ -4353,12 +4550,16 @@ def run_audit_mode(config, args=None):
     else:
         run_session_lifecycle(config, "resume")
 
+    # Resolve a target before evidence collection so source/Slither findings can
+    # feed the PoC scaffold with a live target when one is available.
+    target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
+    if target:
+        _sync_audit_context(config, root)
+
     print("\n=== LOWKEYCAST AUDIT MODE ===")
     print("Starting connected audit baseline...")
     baseline_code = 0
 
-    # Source triage runs before the first PoC scaffold so the generator can carry
-    # source-level evidence into the initial investigation artifact.
     try:
         scan_code = run_scan([])
     except Exception as exc:
@@ -4374,8 +4575,19 @@ def run_audit_mode(config, args=None):
     if baseline_code != 0:
         print("\nBaseline completed with review-needed status; the investigation menu is still available.")
 
+    if force_noninteractive:
+        interactive = False
+    elif force_interactive:
+        interactive = True
+    elif interactive is None:
+        interactive = bool(sys.stdin.isatty()) and str(os.environ.get("CI", "")).lower() not in {"1", "true", "yes"}
+
+    if not interactive:
+        print("Non-interactive environment: audit menu skipped.")
+        return baseline_code
+
     while True:
-        context = audit_context.load(audit_context.foundry_project_root())
+        context = audit_context.load(root)
         target = context.get("target") if isinstance(context.get("target"), dict) else {}
         target_label = target.get("contract") or target.get("address") or config.get("target") or "none"
         print(f"\nTarget: {target_label} | RPC: {rpc_display(effective_rpc(config)) or 'none'}")
@@ -4413,7 +4625,7 @@ def run_audit_mode(config, args=None):
             return baseline_code
         else:
             print("Unknown option. Choose 0-8.")
-   
+
 
 
 def _signal_evidence(signal):
@@ -4561,8 +4773,10 @@ def _sync_audit_context(config, root=None):
 
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
-        print("Usage: lk audit")
-        print("Build, test, and measure the current Foundry project; use --checks for Slither and optional lint/geiger checks.")
+        print("Usage: lk audit [auto] [--checks] [--interactive|--non-interactive]")
+        print("Run the connected audit session. Plain 'lk audit' detects and uses an existing Anvil but never starts one.")
+        print("'lk audit auto' may start a Lowkey-managed project Anvil and bootstrap a safe local target.")
+        print("Use --checks for Slither and optional lint/geiger checks; non-interactive environments skip the menu.")
         return 0
 
     root = audit_context.foundry_project_root()
@@ -4917,9 +5131,11 @@ LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 =======================================
 
 START
-  lk audit                         Start interactive audit session + automatic baseline/PoC
+  lk audit                         Interactive audit; detects existing Anvil but never starts one
+  lk audit auto                    Autonomous local audit; starts Anvil if needed and bootstraps target
   lk audit --checks                Same audit session with Slither + optional lint/geiger checks
-  lk audit--checks                Legacy compact alias for audit --checks
+  lk audit auto --checks           Autonomous audit with Slither + optional lint/geiger checks
+  lk audit--checks                 Legacy compact alias for audit --checks
   lk findings                      Show audit findings
   lk focus <ID>                    Focus one finding and mark it investigating
   lk status                        Show target and audit state
