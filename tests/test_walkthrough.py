@@ -91,6 +91,28 @@ class WalkthroughTests(unittest.TestCase):
             models = walkthrough._artifact_models(root)
         self.assertEqual([model.name for model in models], ["App"])
 
+    def test_artifact_source_path_fallback_handles_missing_source_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            (root / "src" / "Fixture.sol").write_text(
+                "pragma solidity ^0.8.20; contract Fixture { function ping() external {} }",
+                encoding="utf-8",
+            )
+            out = root / "out" / "Fixture.sol"
+            out.mkdir(parents=True)
+            (out / "Fixture.json").write_text(
+                json.dumps({
+                    "contractName": "Fixture",
+                    "abi": [{"type": "function", "name": "ping", "stateMutability": "nonpayable", "inputs": [], "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            models = walkthrough._artifact_models(root)
+        self.assertEqual([model.name for model in models], ["Fixture"])
+        self.assertEqual(models[0].source, "src/Fixture.sol")
+
     def test_planner_excludes_setup_and_admin_controls(self):
         model = walkthrough.ContractModel(
             name="Factory",
