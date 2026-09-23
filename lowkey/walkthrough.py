@@ -1104,218 +1104,204 @@ def _render_trace(step: Step) -> str:
     return "\n".join(["  " + EXTERNAL + " " + x for x in step.trace_edges[-10:]])
 
 
-def _render_board(model: ContractModel, models: list[ContractModel], actors: list[Actor], steps: list[Step], current: Step | None,
-                  storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
-    title = _paint("LOWKEY  //  PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled)
-    subtitle = _paint(
-        "SOURCE + BUILD + LIVE EXECUTION  |  heuristics are INFERRED; state is LIVE",
-        DIM,
-        enabled,
-    )
-    signal_file = Path(".audit") / "slither" / "latest.json"
-    signal_text = ""
-    if signal_file.is_file():
-        data = _json_file(signal_file) or {}
-        findings = data.get("results") or data.get("findings") or []
-        if isinstance(findings, list):
-            signal_text = f"  {WARNING} Slither evidence: {len(findings)} recorded finding(s)"
-    board = [
-        title,
-        subtitle,
+def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
+    lines=[_paint("LIVE CONTRACT GRAPH",BOLD+WHITE,enabled)]
+    if not runtime:
+        return "\n".join(lines+["  <no live contracts>"])
+    for i,node in enumerate(runtime[:16]):
+        if i==0:
+            lines.append(f"  {ACTOR} {node.label:<24} {_addr(node.address)}")
+        else:
+            arrow=DOTTED if node.relation in {"CLONE","CREATE","CREATE2"} else EXTERNAL
+            parent=f"{_addr(node.parent)} " if node.parent else ""
+            lines.append(f"  {parent}{arrow} {node.label:<24} {_addr(node.address)} [{node.relation}]")
+            if node.implementation:
+                lines.append(f"      {DOTTED} implementation {_addr(node.implementation)}")
+    return "\n".join(lines)
+
+
+def _render_board(model: ContractModel, models: list[ContractModel], runtime: list[RuntimeContract], actors: list[Actor], steps: list[Step], current: Step | None, storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
+    board=[
+        _paint("LOWKEY  //  PROTOCOL WALKTHROUGH",BOLD+CYAN,enabled),
+        _paint("REALTIME: execute → observe → redraw → choose next interaction",DIM,enabled),
         "",
-        _box(f"{STATE} CONTRACT", [f"{model.name}", f"source: {model.source}", f"artifact: {model.artifact}"], width=92),
+        _box(f"{STATE} CONTRACT MODEL",[model.name,f"source: {model.source}",f"artifact: {model.artifact}"],width=92),
         "",
-        _render_actor_row(actors, enabled),
+        _render_actor_row(actors,enabled),
         "",
-        _render_system_graph(models, enabled),
+        _render_runtime_graph(runtime,enabled),
         "",
-        _render_connections(models, model, enabled),
-        signal_text if signal_text else "  Slither evidence: not present in current project context",
+        "  "+_slither_status(Path.cwd()),
     ]
     if current:
-        board += ["", _render_step(current, storage, enabled)]
-        if current.storage_changes:
-            board += ["", _paint("STATE DELTA  ⇣", BOLD + GREEN, enabled), _render_storage(current.storage_after, enabled)]
-        if current.events:
-            board += ["", _render_event_log(current, enabled)]
+        board += ["",_render_step(current,storage,enabled)]
         if current.trace_edges:
-            board += ["", _paint("CALL TRACE", BOLD + MAGENTA, enabled), _render_trace(current)]
-    board += ["", _paint(f"WORKFLOW  {len([x for x in steps if x.status == 'success'])}/{len(steps)} successful steps", BOLD + WHITE, enabled)]
+            board += ["",_paint("CALL TRACE ⇣",BOLD+MAGENTA,enabled),_render_trace(current)]
+        if current.events:
+            board += ["",_paint(f"{EVENT} EVENT STREAM ⇣",BOLD+YELLOW,enabled),_render_event_log(current,enabled)]
+        if storage:
+            board += ["",_paint("LIVE STATE ⇣",BOLD+GREEN,enabled),_render_storage(storage,enabled)]
+    board += ["",f"OBSERVED INTERACTIONS success={sum(1 for x in steps if x.status=='success')} blocked/reverted={sum(1 for x in steps if x.status in {'blocked','reverted'})} total={len(steps)}"]
     if static:
-        board.append(_paint("STATIC MODEL ONLY", YELLOW, enabled))
+        board.append(_paint("STATIC MODEL ONLY",YELLOW,enabled))
     return "\n".join(board)
 
 
 def _render_plan(model: ContractModel, steps: list[Step], enabled: bool) -> str:
-    lines = [
-        _paint("PLANNED PROTOCOL WORKFLOW", BOLD + CYAN, enabled),
-        "  " + f"{model.name} {ARROW} ",
-    ]
+    lines=[_paint("STATIC PROTOCOL HYPOTHESIS",BOLD+CYAN,enabled),f"  {model.name} {ARROW}"]
     for step in steps:
-        lines.append(
-            f"  {step.index:02d}  {ACTOR} {step.actor:<9} "
-            f"{ARROW} {FUNCTION} {step.function} "
-            f"{' + ' + str(step.value_wei) + ' wei' if step.value_wei else ''}"
-        )
-    lines.append("")
-    lines.append(_paint("These are source-guided hypotheses, not claims about developer intent.", YELLOW, enabled))
+        lines.append(f"  {step.index:02d} {ACTOR} {step.actor:<9} {ARROW} {FUNCTION} {step.function}")
+    lines += ["",_paint("Static ordering/arguments are hypotheses. Live mode does not pre-render them.",YELLOW,enabled)]
     return "\n".join(lines)
 
 
 def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None = None) -> int:
-    args = list(args or [])
-    host = host or sys.modules.get("__main__")
-    root = Path(getattr(host, "audit_context").foundry_project_root() if host and hasattr(host, "audit_context") else os.getcwd())
-    if not root or not (root / "foundry.toml").is_file():
-        print("Error: 'lk walkthrough' must be run inside a Foundry project.", file=sys.stderr)
+    args=list(args or [])
+    host=host or sys.modules.get("__main__")
+    root=Path(getattr(host,"audit_context").foundry_project_root() if host and hasattr(host,"audit_context") else os.getcwd())
+    if not root or not (root/"foundry.toml").is_file():
+        print("Error: 'lk walkthrough' must be run inside a Foundry project.",file=sys.stderr)
         return 2
+    auto="--auto" in args or "auto" in args
+    static="--static" in args or "--no-exec" in args
+    no_prompt="--yes" in args or "--non-interactive" in args or not sys.stdin.isatty()
+    contract=None; max_steps=8
+    for i,arg in enumerate(args):
+        if arg=="--contract" and i+1<len(args): contract=args[i+1]
+        elif arg=="--steps" and i+1<len(args):
+            try: max_steps=max(1,min(24,int(args[i+1])))
+            except ValueError: pass
 
-    auto = "--auto" in args or "auto" in args
-    static = "--static" in args or "--no-exec" in args
-    no_slither = "--no-slither" in args
-    no_prompt = "--yes" in args or "--non-interactive" in args or not sys.stdin.isatty()
-    contract = None
-    max_steps = 8
-    for i, arg in enumerate(args):
-        if arg == "--contract" and i + 1 < len(args):
-            contract = args[i + 1]
-        if arg == "--steps" and i + 1 < len(args):
-            try:
-                max_steps = max(1, min(24, int(args[i + 1])))
-            except ValueError:
-                pass
+    if hasattr(host,"_sync_audit_context"):
+        try: host._sync_audit_context(config,root)
+        except Exception: pass
 
-    print(_paint("LOWKEY PROTOCOL WALKTHROUGH", BOLD + CYAN, _ansi_enabled(static)))
-    print("  compile → model → plan → execute → diff → visualize → save evidence")
-    build_code, build_out, build_err = _cmd(["forge", "build"], cwd=root, timeout=120)
-    if build_code != 0:
-        print(build_out + build_err, file=sys.stderr)
-        return build_code or 1
+    print(_paint("LOWKEY PROTOCOL WALKTHROUGH",BOLD+CYAN,_ansi_enabled(static)))
+    print("  LIVE mode: each interaction is executed, observed, then rendered.")
+    code,out,err=_cmd(["forge","build"],cwd=root,timeout=120)
+    if code!=0:
+        print(out+err,file=sys.stderr); return code or 1
 
-    models = _artifact_models(root)
+    models=_artifact_models(root)
     if not models:
-        print("Error: no usable compiled contract artifacts found.", file=sys.stderr)
+        print("Error: no project application contracts found under the configured src directory.",file=sys.stderr)
         return 2
 
-    target, target_contract = _target_from_host(host, config, root, contract, auto)
-    model = _find_model(models, contract, target_contract)
+    target,target_contract=_target_from_host(host,config,root,contract,auto)
+    model=_find_model(models,contract,target_contract)
     if not model:
-        print("Error: unable to choose an executable contract model.", file=sys.stderr)
-        return 2
+        print("Error: unable to choose an executable application contract.",file=sys.stderr); return 2
+    actors=_actors(host,config,4) if host else []
 
-    target = target or config.get("target")
-    if not target and not static:
-        print("Error: no live target. Use 'lk target <address>' or 'lk walkthrough --auto'.", file=sys.stderr)
-        return 2
-
-    rpc = None
-    if host and hasattr(host, "effective_rpc"):
-        rpc = host.effective_rpc(config)
-    actors = _actors(host, config, 4) if host else []
-    now = _block_timestamp(rpc) if rpc else int(time.time())
-    plan = plan_workflow(model, actors, target or "0x" + "00" * 20, now, max_steps)
-
-    enabled = _ansi_enabled(static)
-    if not static and not actors:
-        print(_paint("△ no local Anvil actors detected; falling back to static model", YELLOW, enabled))
-        static = True
-
-    model_payload = {
-        "version": 1,
-        "mode": "source-guided-live" if not static else "source-guided-static",
-        "target": target,
-        "contract": asdict(model),
-        "contracts": _models_payload(models),
-        "actors": [asdict(x) for x in actors],
-        "workflow": [asdict(x) for x in plan],
-        "notes": [
-            "Compiler/build artifacts are authoritative for ABI/storage metadata.",
-            "Runtime values and events are captured from local chain execution.",
-            "Workflow order/arguments are heuristics and are marked INFERRED.",
-        ],
-    }
-
-    print()
-    print(_render_plan(model, plan, enabled))
     if static:
-        print()
-        print(_render_board(model, models, actors, plan, None, [], enabled, static=True))
-        _save_artifacts(root, model_payload, plan)
+        plan=plan_workflow(model,actors,target or "0x"+"00"*20,int(time.time()),max_steps)
+        runtime=[RuntimeContract(target or "0x"+"00"*20,model.name,model.name,"target")]
+        print("\n"+_render_plan(model,plan,_ansi_enabled(static)))
+        print("\n"+_render_board(model,models,runtime,actors,plan,None,[],_ansi_enabled(static),True))
+        _save_artifacts(root,{"version":2,"mode":"source-guided-static","target":target,"contract":asdict(model),"contracts":_models_payload(models),"actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in plan],"runtime_contracts":[asdict(x) for x in runtime]},plan)
         return 0
 
-    if not no_prompt:
-        try:
-            input("Press ENTER to start the live walkthrough  ")
-        except EOFError:
-            no_prompt = True
+    rpc=host.effective_rpc(config) if host and hasattr(host,"effective_rpc") else config.get("rpc")
+    if not rpc:
+        print("Error: no RPC. Use an existing local Anvil or 'lk walkthrough --auto'.",file=sys.stderr); return 2
+    if not actors:
+        print("Error: no local Anvil actors detected. Live walkthrough requires Anvil actors.",file=sys.stderr); return 2
+    target=target or config.get("target")
+    if not target:
+        print("Error: no live target. Use 'lk target <address>' or 'lk walkthrough --auto'.",file=sys.stderr); return 2
 
-    for step in plan:
-        try:
-            step_actor = next(a for a in actors if a.name == step.actor)
-        except StopIteration:
-            step.status = "reverted"
-            step.error = "actor unavailable"
-            continue
+    runtime=[RuntimeContract(target,model.name,model.name,"target")]
+    steps=[]
+    completed=set()
+    observed={}
+    pending=plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
 
-        before_storage = _snapshot_storage(model, rpc, target, [a.address for a in actors])
-        before_balances = {a.name: _balance(rpc, a.address) for a in actors}
-        tx, output = _send(host, config, step_actor, target, step.function, step.args, step.value_wei)
-        if not tx:
-            step.status = "reverted"
-            step.error = output or "transaction failed"
-            _save_artifacts(root, model_payload, plan)
-            print("\n" + _render_board(model, models, actors, plan, step, before_storage, enabled))
-            try:
-                input("\nPress ENTER for the next source-guided step…  ")
-            except EOFError:
-                break
-            continue
+    print("\n"+_render_board(model,models,runtime,actors,steps,None,[],_ansi_enabled(False)))
 
-        receipt = _receipt(rpc, tx)
-        after_storage = _snapshot_storage(model, rpc, target, [a.address for a in actors])
-        after_balances = {a.name: _balance(rpc, a.address) for a in actors}
-        step.tx_hash = tx
-        step.status = "success" if receipt and receipt.get("status") in (None, "0x1", 1) else "reverted"
-        try:
-            step.gas_used = int(receipt.get("gasUsed"), 16) if receipt and isinstance(receipt.get("gasUsed"), str) else None
-        except Exception:
-            step.gas_used = None
-        step.events = _event_rows(host, config, receipt)
-        step.trace_edges = _trace_edges(rpc, tx)
-        step.storage_before = before_storage
-        step.storage_after = after_storage
-        step.storage_changes = _storage_changed(before_storage, after_storage)
-        step.balance_before = before_balances
-        step.balance_after = after_balances
-        model_payload["workflow"] = [asdict(x) for x in plan]
-        _save_artifacts(root, model_payload, plan)
-        print("\033[2J\033[H" if enabled else "")
-        print(_render_board(model, models, actors, plan, step, after_storage, enabled))
-        print("")
-        print(_paint("STATE TRANSITION", BOLD + GREEN, enabled))
-        print(f"  {step.actor} {ARROW} {step.function} {ARROW} storage/events/trace captured")
-        if step.status != "success":
-            print(_paint("  execution reverted; the board preserves the actual failure.", RED, enabled))
-        if enabled:
-            time.sleep(0.35)
+    while pending and len(steps)<max_steps:
+        step=pending.pop(0)
+        step.index=len(steps)+1
+        current_model=next((m for m in models if m.name==step.contract),model)
+        abi_item=next((x for x in current_model.abi if x.get("type")=="function" and _signature(x)==step.function),None)
+        if abi_item:
+            step.args=[_arg_for(p,actors,step.address,_block_timestamp(rpc),observed) for p in abi_item.get("inputs",[])]
+            step.value_wei=_value_for(abi_item)
+
+        key=(step.contract,step.address.lower(),step.function)
+        if key in completed: continue
+
+        print("\n"+"="*92)
+        print(_paint("INTERACTION SELECTED",BOLD+CYAN,True))
+        print(f"  {ACTOR} {step.actor} {ARROW} {step.contract}.{step.function}")
+        print(f"  target : {step.address}")
+        print(f"  args   : {', '.join(repr(x) for x in step.args) or '∅'}")
+        print(f"  value  : {step.value_wei} wei")
+        print(f"  {WARNING} source-guided candidate; preflight will test the current state")
+
+        ok,preflight=_preflight(rpc,step)
+        step.preflight=preflight
+        if not ok:
+            step.status="blocked"
+            step.error="PRECONDITION BLOCKED: "+preflight
+            steps.append(step)
+            print(_render_board(model,models,runtime,actors,steps,step,[],_ansi_enabled(False)))
+        else:
+            print(_paint("  EXECUTING NOW…",BOLD+GREEN,True))
+            actor=next((a for a in actors if a.name==step.actor),actors[0])
+            before=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
+            tx,output=_send(host,config,actor,step.address,step.function,step.args,step.value_wei)
+            if not tx:
+                step.status="reverted"; step.error=output or "transaction failed"; steps.append(step)
+                print(_render_board(model,models,runtime,actors,steps,step,before,_ansi_enabled(False)))
+            else:
+                receipt=_receipt(rpc,tx)
+                trace=_trace_tree(rpc,tx)
+                step.tx_hash=tx
+                step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
+                step.events=_event_rows(host,config,receipt)
+                step.trace_edges=_trace_edges(rpc,tx)
+                step.status="success" if receipt and receipt.get("status") in (None,"0x1",1) else "reverted"
+                discovered=_discover_runtime_contracts(root,rpc,models,runtime,receipt,trace,step.index,step.address)
+                if discovered:
+                    runtime.extend(discovered); step.discovered_contracts=[asdict(x) for x in discovered]
+                after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
+                step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
+                step.runtime_contracts=[asdict(x) for x in runtime]
+                steps.append(step); completed.add(key)
+                print("\033[2J\033[H" if sys.stdout.isatty() else "")
+                print(_render_board(model,models,runtime,actors,steps,step,after,_ansi_enabled(False)))
+                if discovered:
+                    print("\n"+_paint("RUNTIME DISCOVERY",BOLD+MAGENTA,True))
+                    for node in discovered:
+                        print(f"  {DOTTED} {node.label} @ {node.address} via {node.relation}")
+                for node in discovered:
+                    child=next((m for m in models if m.name==node.model),None)
+                    if child:
+                        for candidate in reversed(plan_workflow(child,actors,node.address,_block_timestamp(rpc),max_steps,observed)):
+                            ckey=(candidate.contract,candidate.address.lower(),candidate.function)
+                            if ckey not in completed: pending.insert(0,candidate)
+                for candidate in reversed(plan_workflow(current_model,actors,step.address,_block_timestamp(rpc),max_steps,observed)):
+                    ckey=(candidate.contract,candidate.address.lower(),candidate.function)
+                    if ckey not in completed: pending.append(candidate)
+
+        _save_artifacts(root,{
+            "version":2,"mode":"source-guided-live","target":target,
+            "contract":asdict(model),"contracts":_models_payload(models),
+            "actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in steps],
+            "runtime_contracts":[asdict(x) for x in runtime],
+        },steps)
+
         if not no_prompt:
             try:
-                answer = input("\nPress ENTER for next step (q to stop)  ").strip().lower()
-                if answer == "q":
-                    break
-            except EOFError:
-                no_prompt = True
+                if input("\nPress ENTER for next interaction (q to stop)  ").strip().lower()=="q": break
+            except EOFError: no_prompt=True
 
-    replay = _generate_replay_script(root, model, target, plan)
-    model_payload["replay_script"] = str(replay.relative_to(root))
-    _save_artifacts(root, model_payload, plan)
-    print()
-    print(_paint("WALKTHROUGH COMPLETE", BOLD + GREEN, enabled))
-    print(f"  model    : .audit/walkthrough/model.json")
-    print(f"  evidence : .audit/walkthrough/latest.json")
+    replay=_generate_replay_script(root,model,target,steps)
+    print("\n"+_paint("WALKTHROUGH COMPLETE",BOLD+GREEN,_ansi_enabled(False)))
+    print("  Every state frame was produced after a live preflight or transaction.")
+    print("  model    : .audit/walkthrough/model.json")
+    print("  evidence : .audit/walkthrough/latest.json")
     print(f"  replay   : {replay.relative_to(root)}")
-    if no_slither:
-        print("  Slither  : skipped by flag")
-    else:
-        print("  Slither  : existing audit evidence retained; workflow execution does not replace static analysis")
+    print(f"  {_slither_status(Path.cwd())}")
     return 0
+
