@@ -315,6 +315,8 @@ def immediate_submodules(repo: Path) -> list[tuple[str, str, Path]]:
 def update_one_level(
     repo: Path,
     entries: list[tuple[str, str, Path]],
+    *,
+    depth: int,
     jobs: int,
     use_cache: bool,
 ) -> int:
@@ -332,8 +334,9 @@ def update_one_level(
             "-C", str(repo),
             "submodule", "update", "--init",
             "--jobs", str(jobs),
-            "--depth", "1",
         ]
+        if depth:
+            command.extend(["--depth", str(depth)])
         if use_cache and key != "__no_cache__":
             cache = ensure_cache_repo(group[0][0])
             command.extend(["--reference-if-able", str(cache)])
@@ -367,7 +370,13 @@ def populate_level_cache(
         print(f"[CACHE] Warmed {warmed}/{len(unique)} dependency object sets")
 
 
-def walk_submodules(root: Path, *, jobs: int, use_cache: bool) -> int:
+def walk_submodules(
+    root: Path,
+    *,
+    depth: int,
+    jobs: int,
+    use_cache: bool,
+) -> int:
     queue: list[Path] = [root]
     visited: set[Path] = set()
     total = 0
@@ -384,7 +393,13 @@ def walk_submodules(root: Path, *, jobs: int, use_cache: bool) -> int:
             continue
 
         total += len(entries)
-        code = update_one_level(repo, entries, jobs, use_cache)
+        code = update_one_level(
+            repo,
+            entries,
+            depth=depth,
+            jobs=jobs,
+            use_cache=use_cache,
+        )
         if code != 0:
             return code
 
@@ -433,7 +448,12 @@ def run_clone(args: Sequence[str]) -> int:
         f"[DEPS] Walking submodules incrementally "
         f"(parallel={jobs}, depth={depth or 'full'})..."
     )
-    code = walk_submodules(destination, jobs=jobs, use_cache=use_cache)
+    code = walk_submodules(
+        destination,
+        depth=depth,
+        jobs=jobs,
+        use_cache=use_cache,
+    )
     if code != 0:
         return die(
             "Submodule initialization failed. Re-run the same command to resume.",
