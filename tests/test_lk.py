@@ -1549,15 +1549,15 @@ Logs:
         previous = "0x" + "0" * 64
         new_value = "0x" + "0" * 63 + "7"
         output = (
-            "[PASS] test_state_diff() (gas: 123)\\n"
-            "Logs:\\n"
-            "  CALL ping(uint256)\\n"
-            "  SUCCESS true\\n"
-            "  ETH_SENT 0\\n"
-            "  STATE_DIFF_JSON_BEGIN\\n"
-            '  {"storageAccesses":[{"slot":"' + slot + '","isWrite":true,"previousValue":"' + previous + '","newValue":"' + new_value + '","reverted":false}]}\\n'
-            "  STATE_DIFF_JSON_END\\n"
-            "  STORAGE_CHANGES 0\\n"
+            "[PASS] test_state_diff() (gas: 123)\n"
+            "Logs:\n"
+            "  CALL ping(uint256)\n"
+            "  SUCCESS true\n"
+            "  ETH_SENT 0\n"
+            "  STATE_DIFF_JSON_BEGIN\n"
+            '  {"storageAccesses":[{"slot":"' + slot + '","isWrite":true,"previousValue":"' + previous + '","newValue":"' + new_value + '","reverted":false}]}\n'
+            "  STATE_DIFF_JSON_END\n"
+            "  STORAGE_CHANGES 0\n"
         )
         parsed = lk.parse_state_diff_output(output)
         self.assertTrue(parsed["state_diff_json"])
