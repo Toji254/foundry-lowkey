@@ -23,30 +23,30 @@ def source_link(
     line: int | None = None,
     column: int | None = None,
     root: Path | None = None,
+    display: str | None = None,
 ) -> str:
-    """Return a clean relative source label, clickable in the VS Code terminal."""
+    """Return a clean source label with an optional clickable VS Code target."""
     project_root = foundry_project_root(root)
     if not file:
         return "unknown location"
 
     path = Path(str(file))
-    if not path.is_absolute():
-        absolute = (project_root / path).resolve()
+    absolute = (project_root / path).resolve() if not path.is_absolute() else path.resolve()
+
+    if display:
+        label = display
     else:
-        absolute = path.resolve()
+        try:
+            label = absolute.relative_to(project_root).as_posix()
+        except ValueError:
+            label = path.as_posix()
 
-    try:
-        display = absolute.relative_to(project_root).as_posix()
-    except ValueError:
-        display = path.as_posix()
+        if line:
+            label += f":{int(line)}"
+        if column:
+            label += f":{int(column)}"
 
-    label = display
-    if line:
-        label += f":{int(line)}"
-    if column:
-        label += f":{int(column)}"
-
-    if str(os.environ.get("TERM_PROGRAM", "")).lower() != "vscode":
+    if os.environ.get("TERM_PROGRAM", "").lower() != "vscode":
         return label
 
     target = f"vscode://file/{quote(str(absolute), safe='/')}"
@@ -54,7 +54,9 @@ def source_link(
         target += f":{int(line)}"
         if column:
             target += f":{int(column)}"
+
     return f"\x1b]8;;{target}\x1b\\{label}\x1b]8;;\x1b\\"
+
 
 
 
