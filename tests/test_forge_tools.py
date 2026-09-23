@@ -41,26 +41,35 @@ class LowkeyForgeTests(unittest.TestCase):
         run.assert_called_once_with(["test", "-vvvv", "--match-test", "testFoo"])
 
     @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools.run_coverage_audit", return_value=0)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_sequence(self, _supports, _compat, run):
+    def test_audit_sequence(self, _supports, _compat, coverage, run):
         self.assertEqual(forge_tools.run_audit([]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
                          [["build", "--skip", "test", "--skip", "script"],
-                          ["test", "-vvv", "--no-match-path", "test/Lowkey_*"],
-                          ["coverage", "--no-match-path", "**/Lowkey_*"]])
+                          ["test", "-vvv", "--no-match-path", "test/Lowkey_*"]])
+        self.assertEqual(
+            coverage.call_args.args[0],
+            ["coverage", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"],
+        )
 
     @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools.run_coverage_audit", return_value=0)
     @patch("forge_tools.run_slither_preflight", return_value=0)
     @patch("forge_tools.command_available", return_value=False)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_checks_runs_slither_preflight(self, supports, compat, available, slither, run):
+    def test_audit_checks_runs_slither_preflight(self, supports, compat, available, slither, coverage, run):
         self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
         slither.assert_called_once()
         self.assertEqual(run.call_args_list[0].args[0], ["build", "--skip", "test", "--skip", "script"])
         self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv", "--no-match-path", "test/Lowkey_*"])
-        self.assertEqual(run.call_args_list[2].args[0], ["coverage", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"])
+        self.assertEqual(
+            coverage.call_args.args[0],
+            ["coverage", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"],
+        )
+        self.assertEqual(run.call_count, 2)
         self.assertEqual(available.call_count, 2)
 
     def test_filter_generated_diagnostics(self):
