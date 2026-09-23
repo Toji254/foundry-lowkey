@@ -719,6 +719,17 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(config["target_contract"],"Impl")
         self.assertEqual(config["abi_paths"][target],str(path))
 
+
+    def test_fork_state_dump_and_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=os.path.join(tmp,"state.json")
+            config={"rpc":"http://127.0.0.1:8545"}
+            with patch.object(lk,"anvil_rpc_info",return_value={"url":config["rpc"]}), \
+                 patch.object(lk,"rpc_json",side_effect=["0xabcdef",True]):
+                self.assertEqual(lk.run_fork_state(config,["dump",path]),0)
+                self.assertEqual(lk.run_fork_state(config,["load",path]),0)
+            self.assertEqual(pathlib.Path(path).read_text(), "0xabcdef")
+
     def test_fork_status_without_fork_is_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
             old=lk.FORK_FILE
