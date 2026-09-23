@@ -82,7 +82,7 @@ def _clean_description(value: object) -> str:
     return text.rstrip()
 
 
-def _source_location(finding: dict) -> str | None:
+def _source_location(finding: dict, project_root: Path) -> str | None:
     elements = finding.get("elements")
     if not isinstance(elements, list):
         return None
@@ -93,20 +93,42 @@ def _source_location(finding: dict) -> str | None:
         mapping = element.get("source_mapping")
         if not isinstance(mapping, dict):
             continue
+
         filename = (
-            mapping.get("filename_short")
-            or mapping.get("filename_relative")
+            mapping.get("filename_relative")
+            or mapping.get("filename_short")
             or mapping.get("filename_used")
         )
         lines = mapping.get("lines")
-        if filename and isinstance(lines, list) and lines:
-            first = lines[0]
-            last = lines[-1]
-            if first == last:
-                return f"{filename}:{first}"
-            return f"{filename}:{first}-{last}"
-        if filename:
-            return str(filename)
+        if not filename or not isinstance(lines, list) or not lines:
+            continue
+
+        try:
+            first = int(lines[0])
+            last = int(lines[-1])
+        except (TypeError, ValueError):
+            continue
+
+        column = mapping.get("starting_column")
+        try:
+            column = int(column) if column is not None else 1
+        except (TypeError, ValueError):
+            column = 1
+
+        # Emit the conventional terminal location format used by VS Code and
+        # other terminal linkifiers: file:line:column. This makes the location
+        # Ctrl+Click-able without depending on a specific terminal hyperlink
+        # protocol.
+        candidate = Path(str(filename))
+        if candidate.is_absolute():
+            absolute = candidate
+        else:
+            absolute = (project_root / candidate).resolve()
+
+        if first == last:
+            return f"{absolute}:{first}:{column}"
+        return f"{absolute}:{first}:{column}-{last}"
+
     return None
 
 
@@ -187,7 +209,7 @@ def _human_observation(finding: dict, check: str) -> str:
     return "Static analysis found a code pattern that deserves manual security review."
 
 
-def _human_finding(finding: dict, number: int, total: int) -> None:
+def _human_finding(finding: dict, number: int, total: int, project_root: Path) -> None:
     check = str(finding.get("check") or "unknown-detector")
     impact = str(finding.get("impact") or "Unknown")
     confidence = str(finding.get("confidence") or "Unknown")
@@ -204,7 +226,7 @@ def _human_finding(finding: dict, number: int, total: int) -> None:
     print(f"Impact      : {impact}")
     print(f"Confidence  : {confidence}")
 
-    location = _source_location(finding)
+    location = _source_location(finding, project_root)
     if location:
         print(f"Where       : {location}")
 
@@ -218,8 +240,8 @@ def _human_finding(finding: dict, number: int, total: int) -> None:
     print(f"\nNext audit move:\n  {guidance['next']}")
 
 
-def _summary(payload: dict) -> None:
-    results = payload.get("results")
+def _summary(payload: dict, project_root: Path | None = None) -> None:
+    project_root = (project_root or Path.cwd()).resolve()\n    results = payload.get("results")
     if not isinstance(results, dict):
         results = {}
     detectors = results.get("detectors", [])
@@ -262,7 +284,7 @@ def _summary(payload: dict) -> None:
             ),
         )
         for display_number, (_, finding) in enumerate(ranked, 1):
-            _human_finding(finding, display_number, len(detectors))
+            _human_finding(finding, display_number, len(detectors), project_root)
 
     print("\n" + "=" * 56)
     print("AUDITOR'S NOTE")
