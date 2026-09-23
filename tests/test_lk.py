@@ -1050,6 +1050,80 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn('console2.log("STORAGE_CHANGES", changed);', captured["content"])
         self.assertIn('console2.log("SLOTS_SCANNED", slots.length);', captured["content"])
 
+    def test_signal_evidence_attaches_and_deduplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc = \"src\"\n", encoding="utf-8")
+            signal = lk.audit_context.add_signal({
+                "tool": "slither",
+                "check": "reentrancy-eth",
+                "title": "ETH reentrancy review",
+                "file": "src/Escrow.sol",
+                "line": 42,
+            }, root)
+            evidence = {
+                "kind": "state-diff",
+                "function": "release()",
+                "success": True,
+                "storage_changes": [{
+                    "slot": "0x" + "ab" * 32,
+                    "label": "escrow[1].amount",
+                    "from": "0x" + "0" * 64,
+                    "to": "0x" + "1" * 64,
+                    "from_display": "0 ETH",
+                    "to_display": "1 ETH",
+                }],
+            }
+            first = lk.audit_context.attach_signal_evidence(signal["id"], evidence, root)
+            second = lk.audit_context.attach_signal_evidence(signal["id"], evidence, root)
+
+            self.assertEqual(len(first["evidence"]), 1)
+            self.assertEqual(second["evidence"][0]["storage_changes"][0]["label"], "escrow[1].amount")
+
+    def test_findings_and_focus_render_linked_storage_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc = \"src\"\n", encoding="utf-8")
+            signal = lk.audit_context.add_signal({
+                "tool": "slither",
+                "check": "low-level-calls",
+                "title": "Raw external call",
+                "file": "src/Escrow.sol",
+                "line": 18,
+                "function": "release",
+            }, root)
+            lk.audit_context.attach_signal_evidence(signal["id"], {
+                "kind": "state-diff",
+                "function": "release()",
+                "caller": "Alice",
+                "success": True,
+                "gas": 247291,
+                "storage_changes": [{
+                    "slot": "0x" + "cd" * 32,
+                    "label": "escrow[1].recipient",
+                    "from": "0x" + "2" * 64,
+                    "to": "0x" + "1" * 64,
+                    "from_display": "Bob (0x" + "2" * 40 + ")",
+                    "to_display": "Alice (0x" + "1" * 40 + ")",
+                }],
+            }, root)
+            old = os.getcwd()
+            os.chdir(root)
+            try:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(lk.run_signals({}, ["all"]), 0)
+                rendered = output.getvalue()
+                self.assertIn("Evidence   : 1 captured", rendered)
+                self.assertIn("slot: 0x" + "cd" * 32, rendered)
+
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(lk.run_investigate({}, [signal["id"]]), 0)
+                self.assertIn("Evidence (1):", output.getvalue())
+                self.assertIn("escrow[1].recipient", output.getvalue())
+            finally:
+                os.chdir(old)
     def test_selector_compare_uses_runtime_and_abi(self):
         target = "0x" + "1" * 40
         config = {
@@ -1547,6 +1621,56 @@ contract Escrow {
         self.assertEqual(parsed["slots"][0]["slot"], slot)
         self.assertEqual(parsed["slots"][0]["from"], "unknown")
 
+    def test_state_diff_links_evidence_to_active_focus(self):
+        config = {
+            "target": "0x" + "3" * 40,
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc = \"src\"\n", encoding="utf-8")
+            signal = lk.audit_context.add_signal({
+                "tool": "slither",
+                "check": "low-level-calls",
+                "title": "Raw external call",
+                "file": "src/Escrow.sol",
+                "line": 7,
+                "function": "release",
+            }, root)
+            lk.audit_context.update(root, focus={"signal_id": signal["id"], "title": signal["title"]})
+            output = (
+                "[PASS] test_state_diff() (gas: 123)\n"
+                "Logs:\n"
+                "  CALL release()\n"
+                "  SUCCESS true\n"
+                "  ETH_SENT 1000000000000000000\n"
+                "  STORAGE_CHANGES 1\n"
+                "  SLOT\n"
+                "  0x" + "a" * 64 + "\n"
+                "  FROM\n"
+                "  0x" + "0" * 64 + "\n"
+                "  TO\n"
+                "  0x" + "1" * 64 + "\n"
+            )
+            with patch.object(lk, "encode_target_call", return_value=("release()", "abcdef")), \
+                 patch.object(lk, "write_generated_test", return_value=str(root / "test" / "Lowkey_state_diff.t.sol")), \
+                 patch.object(lk, "run_foundry", return_value=lk.CommandResult(output, 0)), \
+                 patch.object(lk, "storage_layout_details", return_value=({}, [])), \
+                 patch.object(lk, "mapping_slot_matches", return_value={}):
+                old = os.getcwd()
+                os.chdir(root)
+                try:
+                    self.assertEqual(lk.run_state_diff(config, ["release"]), 0)
+                finally:
+                    os.chdir(old)
+
+            refreshed = lk.audit_context.load(root)
+            linked = next(item for item in refreshed["signals"] if item["id"] == signal["id"])
+            self.assertEqual(len(linked["evidence"]), 1)
+            self.assertEqual(linked["evidence"][0]["storage_changes"][0]["slot"], "0x" + "a" * 64)
+            self.assertEqual(linked["evidence"][0]["storage_changes"][0]["from"], "0x" + "0" * 64)
+            self.assertEqual(linked["evidence"][0]["storage_changes"][0]["to"], "0x" + "1" * 64)
     def test_state_diff_parser_extracts_json_storage_write(self):
         slot = "0x" + "a" * 64
         previous = "0x" + "0" * 64
