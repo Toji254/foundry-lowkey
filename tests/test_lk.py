@@ -1544,6 +1544,26 @@ Logs:
         self.assertEqual(len(parsed["slots"]), 1)
         self.assertEqual(parsed["slots"][0]["from"], "unknown")
 
+    def test_state_diff_parser_extracts_json_storage_write(self):
+        slot = "0x" + "a" * 64
+        previous = "0x" + "0" * 64
+        new_value = "0x" + "0" * 63 + "7"
+        output = (
+            "[PASS] test_state_diff() (gas: 123)\\n"
+            "Logs:\\n"
+            "  CALL ping(uint256)\\n"
+            "  SUCCESS true\\n"
+            "  ETH_SENT 0\\n"
+            "  STATE_DIFF_JSON_BEGIN\\n"
+            '  {"storageAccesses":[{"slot":"' + slot + '","isWrite":true,"previousValue":"' + previous + '","newValue":"' + new_value + '","reverted":false}]}\\n'
+            "  STATE_DIFF_JSON_END\\n"
+            "  STORAGE_CHANGES 0\\n"
+        )
+        parsed = lk.parse_state_diff_output(output)
+        self.assertTrue(parsed["state_diff_json"])
+        self.assertEqual(len(parsed["slots"]), 1)
+        self.assertEqual(parsed["slots"][0]["slot"], slot)
+
 
 if __name__ == "__main__":
     unittest.main()
