@@ -434,7 +434,67 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(cast.call_args.args[0][:2], ["forge", "inspect"])
         self.assertEqual(cast.call_args.args[0][2], "Escrow")
         self.assertIn("STORAGE GETTERS:", output.getvalue())
-        self.assertIn("escrow(uint256)  [public storage getter]", output.getvalue())
+        self.assertIn("escrow(uint256)  [public storage getter]", output.getvalue())    def test_functions_fallback_to_source_public_storage_names(self):
+        artifact = {
+            "contractName": "Escrow",
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "balances",
+                    "inputs": [{"type": "address"}],
+                    "stateMutability": "view",
+                },
+                {
+                    "type": "function",
+                    "name": "escrow",
+                    "inputs": [{"type": "uint256"}],
+                    "stateMutability": "view",
+                },
+                {
+                    "type": "function",
+                    "name": "status",
+                    "inputs": [],
+                    "stateMutability": "view",
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            (src / "EthEscrow.sol").write_text(
+                """
+                contract Escrow {
+                    mapping(address => uint256) public balances;
+                    mapping(uint256 => uint256) public escrow;
+                    uint256 public status;
+                }
+                """,
+                encoding="utf-8",
+            )
+            path = root / "Escrow.json"
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            config = {
+                "target": "0x" + "1" * 40,
+                "target_contract": "Escrow",
+                "abi_paths": {"0x" + "1" * 40: str(path)},
+            }
+            old = os.getcwd()
+            os.chdir(root)
+            try:
+                with patch.object(lk, "cast_output", return_value=(1, "", "")):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        lk.run_functions(config)
+            finally:
+                os.chdir(old)
+        rendered = output.getvalue()
+        self.assertIn("STORAGE GETTERS:", rendered)
+        self.assertIn("balances(address)  [public storage getter]", rendered)
+        self.assertIn("escrow(uint256)  [public storage getter]", rendered)
+        self.assertNotIn("status()", rendered.split("STORAGE GETTERS:", 1)[1].split("\n", 2)[-1])
+
+
 
     def test_deps_default_project_shows_project_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
