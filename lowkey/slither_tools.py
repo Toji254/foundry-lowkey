@@ -388,13 +388,13 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         str(root),
         "--exclude-dependencies",
         "--disable-color",
-        "--fail-none",
-        "--json",
-        str(json_path),
-        "--sarif",
-        str(sarif_path),
-        *extra,
     ]
+    fail_flags = {"--fail-pedantic", "--fail-low", "--fail-medium", "--fail-high", "--fail-none", "--no-fail-pedantic"}
+    if not any(flag in extra for flag in fail_flags):
+        command.append("--fail-none")
+    command.extend(["--json", str(json_path), "--sarif", str(sarif_path)])
+    command.extend(extra)
+
 
     print("=== LOWKEY SLITHER ===")
     print(f"Project : {root}")
@@ -464,17 +464,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args:
         return run_default(foundry_project_root())
 
-    # Explicit Slither arguments remain a transparent escape hatch. When
-    # the user starts with an option, automatically target the current Foundry
-    # project so option-first commands work naturally.
-    if args and args[0].startswith("-"):
-        args = [str(foundry_project_root()), *args]
-    command = [binary, *args]
-    try:
-        return subprocess.run(command).returncode
-    except OSError as exc:
-        print(f"LowkeySlither: could not execute slither: {exc}", file=sys.stderr)
-        return 1
+    # Explicit Slither options still flow through Lowkey's human-readable
+    # reporter and shared audit context. The project is supplied automatically.
+    return run_default(foundry_project_root(), args)
+
 
 
 if __name__ == "__main__":
