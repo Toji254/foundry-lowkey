@@ -142,6 +142,34 @@ after
         self.assertNotIn("╭----------+", visible)
 
 
+    @patch("forge_tools.audit_context.record_tool")
+    @patch("forge_tools.audit_context.emit")
+    @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
+    @patch("forge_tools.subprocess.run")
+    def test_coverage_renders_table_from_stderr(self, run, _path, _emit, _record):
+        result = type("Result", (), {
+            "returncode": 0,
+            "stdout": "",
+            "stderr": """╭--------------------------------------------+------------------+------------------+------------------+-----------------╮
+| File                                       | % Lines          | % Statements     | % Branches       | % Funcs         |
++=======================================================================================================================+
+| src/ConfidencePool.sol                     | 96.89% (312/322) | 97.01% (422/435) | 94.23% (98/104)  | 96.88% (31/32)  |
+╰--------------------------------------------+------------------+------------------+------------------+-----------------╯
+"""
+        })()
+        run.return_value = result
+
+        with patch("builtins.print") as printed:
+            self.assertEqual(
+                forge_tools.run_coverage_audit(["coverage"], pathlib.Path("/project")),
+                0,
+            )
+
+        output = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn("COVERAGE TABLE", output)
+        self.assertIn("312/322 (96.89%)", output)
+        self.assertNotIn("| src/ConfidencePool.sol", output)
+
     @patch("forge_tools._supports_option", return_value=True)
     @patch("forge_tools._coverage_needs_ir", return_value=True)
     def test_coverage_compatibility_flags_detect_via_ir(self, needs_ir, supports):
