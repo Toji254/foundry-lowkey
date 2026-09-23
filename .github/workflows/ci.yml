@@ -62,6 +62,9 @@ jobs:
           }
           EOF
           cd /tmp/lowkey-fixture
+          git init
+          git config user.email "ci@example.com"
+          git config user.name "Lowkey CI"
           forge install foundry-rs/forge-std --no-commit
       - name: Run installed integration checks
         working-directory: /tmp/lowkey-fixture
