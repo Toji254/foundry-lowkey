@@ -439,6 +439,93 @@ class LowkeyCastTests(unittest.TestCase):
             str(path),
         )
 
+    def test_saved_relative_abi_path_resolves_from_outside_project(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "project"
+            outside = pathlib.Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n", encoding="utf-8")
+            out = root / "out"
+            out.mkdir()
+            artifact_path = out / "Escrow.json"
+            artifact_path.write_text(json.dumps({
+                "contractName": "Escrow",
+                "abi": [{"type": "function", "name": "release", "inputs": [], "stateMutability": "nonpayable"}],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Escrow",
+                "abi_paths": {target: "out/Escrow.json"},
+                "project_roots": {target: str(root)},
+            }
+            old = os.getcwd()
+            os.chdir(outside)
+            try:
+                resolved = lk.resolve_abi_path(config, target)
+                self.assertEqual(resolved, str(artifact_path.resolve()))
+                abi = lk.load_abi(target, config)
+            finally:
+                os.chdir(old)
+        self.assertEqual(abi[0]["name"], "release")
+
+    def test_relative_abi_path_migrates_to_remembered_project_root(self):
+        target = "0x" + "2" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n", encoding="utf-8")
+            out = root / "out"
+            out.mkdir()
+            artifact_path = out / "Escrow.json"
+            artifact_path.write_text(json.dumps({
+                "contractName": "Escrow",
+                "abi": [],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Escrow",
+                "abi_paths": {target: "out/Escrow.json"},
+                "project_roots": {},
+            }
+            old = os.getcwd()
+            os.chdir(root)
+            try:
+                lk.load_abi(target, config)
+            finally:
+                os.chdir(old)
+        self.assertEqual(config["project_roots"][target], str(root.resolve()))
+        self.assertTrue(config.get("_config_dirty"))
+
+    def test_auto_abi_path_uses_remembered_project_root(self):
+        target = "0x" + "3" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            outside = root / "outside"
+            outside.mkdir(parents=True)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n", encoding="utf-8")
+            out = root / "out"
+            out.mkdir()
+            artifact_path = out / "Escrow.json"
+            artifact_path.write_text(json.dumps({
+                "contractName": "Escrow",
+                "abi": [],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Escrow",
+                "abi_paths": {},
+                "project_roots": {target: str(root)},
+            }
+            old = os.getcwd()
+            os.chdir(outside)
+            try:
+                with patch.object(lk, "effective_rpc", return_value=None):
+                    path = lk.auto_abi_path(target, config)
+            finally:
+                os.chdir(old)
+        self.assertEqual(path, str(artifact_path))
+        
     def test_functions_separate_storage_getters(self):
         artifact = {
             "contractName": "Escrow",
