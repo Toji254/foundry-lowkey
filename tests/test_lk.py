@@ -1,5 +1,9 @@
 import importlib.util
+import json
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 from contextlib import redirect_stdout
 import io
@@ -15,6 +19,18 @@ spec.loader.exec_module(lk)
 
 
 class LowkeyCastTests(unittest.TestCase):
+    def run_cli(self, *args):
+        with tempfile.TemporaryDirectory() as home:
+            env = os.environ.copy()
+            env["HOME"] = home
+            return subprocess.run(
+                [sys.executable, str(MODULE), *args],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
     def test_address_validation(self):
         self.assertTrue(lk.is_address("0x" + "1" * 40))
         self.assertFalse(lk.is_address("0x" + "1" * 64))
@@ -110,12 +126,91 @@ class LowkeyCastTests(unittest.TestCase):
 
     def test_event_command_does_not_use_topics_flag(self):
         with patch.object(lk, "cast_output", return_value=(0, "decoded", "")) as cast_output:
-            result = lk.run_event({}, ["Transfer(address,address,uint256)", "0x", "0x1"])
+            result = lk.run_event({}, ["Transfer(address,address,uint256)", "0x", "0x01"])
             self.assertEqual(result, 0)
             cast_output.assert_called_once_with([
                 "cast", "decode-event", "--sig",
-                "Transfer(address,address,uint256)", "0x", "0x1"
+                "Transfer(address,address,uint256)", "0x01"
             ])
+
+    def test_event_failure_returns_nonzero(self):
+        with patch.object(lk, "cast_output", return_value=(1, "", "decode failed")):
+            self.assertEqual(lk.run_event({}, ["Transfer(address,address,uint256)", "0xdeadbeef"]), 1)
+
+    def test_cli_successful_event(self):
+        result = self.run_cli(
+            "event",
+            "Ping(uint256)",
+            "0x000000000000000000000000000000000000000000000000000000000000002a",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("42", result.stdout)
+
+    def test_indexed_event_decoding_uses_abi_topics(self):
+        event = {
+            "type": "event",
+            "name": "Transfer",
+            "inputs": [
+                {"name": "from", "type": "address", "indexed": True},
+                {"name": "to", "type": "address", "indexed": True},
+                {"name": "amount", "type": "uint256", "indexed": False},
+            ],
+        }
+        topic0 = "0x" + "a" * 64
+        topics = [topic0, "0x" + "0" * 24 + "1" * 40, "0x" + "0" * 24 + "2" * 40]
+
+        def cast_result(args, input_text=None):
+            if args[1] == "sig-event":
+                return 0, topic0, ""
+            return 0, "42", ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            abi_path = pathlib.Path(tmp) / "abi.json"
+            abi_path.write_text(json.dumps({"abi": [event]}), encoding="utf-8")
+            output = io.StringIO()
+            with patch.object(lk, "cast_output", side_effect=cast_result):
+                with redirect_stdout(output):
+                    result = lk.run_event(
+                        {"target": "target", "abi_paths": {"target": str(abi_path)}},
+                        ["Transfer(address,address,uint256)", "0x" , *topics],
+                    )
+        self.assertEqual(result, 0)
+        self.assertIn("Indexed from", output.getvalue())
+        self.assertIn("Data: 42", output.getvalue())
+
+    def test_cli_failure_exit_codes(self):
+        cases = [
+            ("event", "Transfer(address,address,uint256)", "0xdeadbeef", "0x1"),
+            ("target", "not-an-address"),
+            ("receipt", "not-a-hash"),
+            ("scan", "/path/does/not/exist"),
+            ("definitely-not-a-command",),
+            ("raw", "definitely-not-a-cast-command"),
+            ("receipt", "0x" + "0" * 64),
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                result = self.run_cli(*args)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_scan_regression_markers(self):
+        source = """
+        contract Regression {
+            function f(address target) external payable {
+                target.call{value: 1 ether}(\"\");
+                target.delegatecall(\"\");
+                address caller = tx.origin;
+            }
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "Regression.sol"
+            path.write_text(source, encoding="utf-8")
+            result = self.run_cli("scan", tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("REENTRANCY REVIEW", result.stdout)
+        self.assertIn("DELEGATECALL", result.stdout)
+        self.assertIn("TX.ORIGIN", result.stdout)
 
     def test_solidity_identifier(self):
         self.assertEqual(

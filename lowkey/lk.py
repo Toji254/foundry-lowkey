@@ -4,6 +4,8 @@ import subprocess
 import sys
 import re
 import shlex
+import io
+from contextlib import redirect_stdout
 from datetime import datetime
 from urllib.parse import urlsplit
 from difflib import SequenceMatcher
@@ -39,6 +41,27 @@ DEFAULT_CONFIG = {
     "rpc_profiles": {}, "actor": None, "wallets": {},
     "abi_paths": {}, "labels": {}, "confirm_sends": False, "version": 2
 }
+
+_COMMAND_STATUS = 0
+
+class CommandResult(str):
+    def __new__(cls, output="", code=0):
+        result = super().__new__(cls, output or "")
+        result.code = code
+        return result
+
+def record_status(code):
+    global _COMMAND_STATUS
+    if isinstance(code, int) and code != 0 and _COMMAND_STATUS == 0:
+        _COMMAND_STATUS = code
+    return code
+
+def fail(message, code=2):
+    print(message, file=sys.stderr)
+    return record_status(code)
+
+def is_tx_hash(value):
+    return isinstance(value, str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{64}", value))
 
 def fresh_config():
     return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -224,9 +247,9 @@ def run_abi(config):
 
 def run_functions(config,query=None):
     target=config.get("target")
-    if not target: print("Error: Set target first."); return
+    if not target: return fail("Error: Set target first.")
     functions=abi_functions(load_abi(target,config))
-    if not functions: print("Error: No ABI functions loaded for the current target."); return
+    if not functions: return fail("Error: No ABI functions loaded for the current target.")
     if query:
         functions=sorted(functions,key=lambda item:function_score(item,query),reverse=True)[:8]
         print(f"Function matches for '{query}':")
@@ -236,8 +259,7 @@ def run_functions(config,query=None):
 def run_info(config):
     target = config.get("target")
     if not target:
-        print("Error: Set target first.")
-        return
+        return fail("Error: Set target first.")
     print(f"Target: {target}")
     run_chain(config)
     code = run_cast(["code", target], config, capture=True) or ""
@@ -247,22 +269,23 @@ def run_info(config):
 
 def run_encode(config,args):
     if not args:
-        print("Usage: lk encode <function> [args]"); return
+        return fail("Usage: lk encode <function> [args]")
     values=list(args)
     target=config.get("target")
     if target and ("(" not in values[0] or ")" not in values[0]):
         try: values[0]=resolve_function(values[0],target,config)
         except ValueError as error:
-            print(f"Error: {error}",file=sys.stderr); return
+            return fail(f"Error: {error}")
     run_cast(["calldata"]+values,config)
 def run_signature(args):
     if not args:
-        print("Usage: lk sig <function(signature)>"); return
+        return fail("Usage: lk sig <function(signature)>")
     code,out,err=cast_output(["cast","sig",args[0]])
     if out: print(out)
     if err: print(err,file=sys.stderr)
     if code!=0 and not err:
         print("Unable to resolve selector.",file=sys.stderr)
+    return record_status(code)
 def cast_output(args,input_text=None):
     result=subprocess.run(args,capture_output=True,text=True,input=input_text)
     return result.returncode,result.stdout.strip(),result.stderr.strip()
@@ -275,10 +298,10 @@ def decode_abi_input(signature,data):
     _,out,err=cast_output(["cast","decode-abi","--input",signature,"0x"+payload])
     return out or err
 def run_decode_error(config,args):
-    if not args: print("Usage: lk decode-error <revert-data>"); return
+    if not args: return fail("Usage: lk decode-error <revert-data>")
     data=args[0]
     if not re.fullmatch(r"0x[0-9a-fA-F]+",data or "") or len(data)<10:
-        print("Error: revert data must be hex calldata beginning with 0x."); return
+        return fail("Error: revert data must be hex calldata beginning with 0x.")
     for item in [x for x in load_abi(config.get("target"),config) if x.get("type")=="error"]:
         signature=format_signature(item)
         if (abi_selector(signature) or "").lower()==data[:10].lower():
@@ -288,11 +311,14 @@ def run_decode_error(config,args):
     run_cast(["decode-error",data],config)
 def run_tx(config,args):
     tx_hash=args[0] if args else last_transaction(config)
-    if not tx_hash: print("Usage: lk tx <transaction-hash> (or save a transaction first)"); return
+    if not tx_hash: return fail("Usage: lk tx <transaction-hash> (or save a transaction first)")
+    if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
     command=["cast","tx",tx_hash,"--json"]
     if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
     code,output,error=cast_output(command)
-    if code!=0 and not output: print(error or "cast tx failed",file=sys.stderr); return
+    if code!=0 and not output:
+        print(error or "cast tx failed",file=sys.stderr)
+        return record_status(code)
     try: transaction=json.loads(output)
     except json.JSONDecodeError: print(output or error); return
     if not isinstance(transaction,dict): print("Unexpected cast tx JSON."); return
@@ -324,19 +350,18 @@ def run_tx(config,args):
             if fourbyte: print(f"4byte:   {fourbyte}")
 def run_receipt(config, tx_hash=None):
     tx_hash = tx_hash or last_transaction(config)
-    if not tx_hash:
-        print("Error: No transaction hash supplied or saved.")
-        return
-    run_cast(["receipt", tx_hash, "--async"], config)
+    if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
+    if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
+    return run_cast(["receipt", tx_hash, "--async"], config)
 
 def run_trace(config,args=None):
     args=list(args or [])
     tx_hash=args.pop(0) if args and args[0].startswith("0x") else last_transaction(config)
-    if not tx_hash: print("Error: No transaction hash supplied or saved."); return
+    if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
     grep=None
     if "--grep" in args:
         i=args.index("--grep")
-        if i+1>=len(args): print("Usage: lk trace [tx] [--quick] [--decode-internal] [--trace-printer] [--grep text]"); return
+        if i+1>=len(args): return fail("Usage: lk trace [tx] [--quick] [--decode-internal] [--trace-printer] [--grep text]")
         grep=args[i+1]; del args[i:i+2]
     output=run_cast(["run",tx_hash]+args,config,capture=True) if grep else None
     if grep:
@@ -352,7 +377,17 @@ def decode_event_log(config,log):
         signature=format_signature(item)
         event_topic=cast_output(["cast","sig-event",signature])[1]
         if event_topic.lower().strip()==topic0:
-            decoded=run_cast(["decode-event","--sig",signature,data,*topics[1:]],config,capture=True)
+            if item.get("inputs"):
+                output=io.StringIO()
+                with redirect_stdout(output): code=decode_event_values(item,data,topics)
+                return signature,output.getvalue().strip() if code==0 else output.getvalue().strip()
+            try: payload=event_payload(data,topics)
+            except ValueError as error:
+                record_status(2)
+                return signature,str(error)
+            code,decoded,error=cast_output(["cast","decode-event","--sig",signature,payload])
+            record_status(code)
+            if error and not decoded: decoded=error
             return signature,decoded
     return None
 
@@ -363,7 +398,9 @@ def run_logs(config,args):
     command=["cast","logs","--json"]+args
     if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
     code,output,error=cast_output(command)
-    if code!=0: print(error or "cast logs failed",file=sys.stderr); return
+    if code!=0:
+        print(error or "cast logs failed",file=sys.stderr)
+        return record_status(code)
     try: payload=json.loads(output)
     except json.JSONDecodeError: print(output); return
     logs=payload if isinstance(payload,list) else payload.get("logs",payload.get("result",[]))
@@ -394,20 +431,29 @@ def is_nonzero_slot(value):
         return False
 
 def run_cast(args,config,capture=False):
-    if not args: return None
+    if not args:
+        result=CommandResult("",2)
+        record_status(result.code)
+        return result if capture else result.code
     action=args[0]; shortcut_map={"c":"call","s":"send","st":"storage"}; cast_cmd=shortcut_map.get(action,action)
     remaining=list(args[1:]); target=config.get("target")
     if cast_cmd in {"call","send","storage"}:
         if remaining and is_address(remaining[0]): target=remaining.pop(0)
         if not target:
-            if capture: return None
-            print("Error: no target set. Use lk target <address> or pass one explicitly.",file=sys.stderr); return None
+            result=CommandResult("Error: no target set. Use lk target <address> or pass one explicitly.",2)
+            record_status(result.code)
+            if capture: return result
+            print(str(result),file=sys.stderr); return result.code
         cmd=["cast",cast_cmd,target]
     else: cmd=["cast",cast_cmd]
     if cast_cmd in {"call","send"} and remaining:
         if "(" not in remaining[0] or ")" not in remaining[0]:
             try: remaining[0]=resolve_function(remaining[0],target,config)
-            except ValueError as error: print(f"Error: {error}",file=sys.stderr); return None
+            except ValueError as error:
+                result=CommandResult(f"Error: {error}",2)
+                record_status(result.code)
+                print(str(result),file=sys.stderr)
+                return result if capture else result.code
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
     bypass="--yes" in remaining
@@ -419,36 +465,43 @@ def run_cast(args,config,capture=False):
     actor=config.get("actor")
     actor_key=resolve_wallet_key(config)
     if cast_cmd=="send" and actor and actor in config.get("wallets",{}) and not actor_key:
-        print(f"Error: signer profile '{actor}' has no usable private key. Check its environment variable.",file=sys.stderr)
-        return None
+        return fail(f"Error: signer profile '{actor}' has no usable private key. Check its environment variable.")
     if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd): cmd.extend(["--private-key",actor_key])
     safe_cmd=redact_secrets(shlex.join(cmd))
     if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
     if cast_cmd=="send" and preview:
-        print(f"Preview: {safe_cmd}"); return None
+        print(f"Preview: {safe_cmd}"); return 0
     if cast_cmd=="send" and (confirm or (config.get("confirm_sends") and not bypass)):
         print(f"Preview: {safe_cmd}")
         try: answer=input("Send transaction? [y/N] ").strip().lower()
         except EOFError: answer=""
-        if answer not in {"y","yes"}: print("Transaction cancelled."); return None
+        if answer not in {"y","yes"}: print("Transaction cancelled."); return 0
     try:
         code,out,err=cast_output(cmd); final=out or err; log_session(safe_cmd,final)
         if cast_cmd=="send" and out:
             match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
             if match: config["last_tx"]=match.group(1); config["last_tx_block"]=None; save_config(config)
-        if capture: return final
+        result=CommandResult(final,code)
+        record_status(code)
+        if capture: return result
         if out: print(humanize_value(apply_labels(out,config)))
         if err:
             if code!=0 and "execution reverted" in err.lower(): err="REVERT: "+err
             print(apply_labels(err,config),file=sys.stderr)
-        return final
+        return code
     except FileNotFoundError:
         message="Error: cast was not found in PATH. Install/update Foundry first."
-        if capture: return message
+        result=CommandResult(message,127)
+        record_status(result.code)
+        if capture: return result
         print(message,file=sys.stderr)
+        return result.code
     except OSError as error:
-        print(f"Error executing cast: {error}",file=sys.stderr)
-    return None
+        result=CommandResult(f"Error executing cast: {error}",1)
+        record_status(result.code)
+        if capture: return result
+        print(str(result),file=sys.stderr)
+        return result.code
 def run_recon(config):
     target=config.get("target")
     if not target:
@@ -497,12 +550,16 @@ def run_proxy(config):
     print(f"Implementation: {implementation or 'Unknown'}")
     print(f"Admin:         {admin or 'Unknown'}")
 def run_mapping(config,*args):
-    if not config.get("target"): print("Error: Set target first."); return
+    if not config.get("target"): return fail("Error: Set target first.")
     if len(args)==2: slot,key=args; key_type="address" if is_address(key) else "uint256"
     elif len(args)==3: key_type,slot,key=args
-    else: print("Usage: lk mapping [key_type] <slot> <key>"); return
+    else: return fail("Usage: lk mapping [key_type] <slot> <key>")
+    if not re.fullmatch(r"(?:0x)?[0-9a-fA-F]+",str(slot)):
+        return fail(f"Error: invalid storage slot: {slot}")
+    if key_type=="address" and not is_address(key):
+        return fail(f"Error: invalid address mapping key: {key}")
     computed=run_cast(["index",key_type,key,slot],config,capture=True)
-    if not computed: print("Error: could not compute mapping slot."); return
+    if not computed: return fail("Error: could not compute mapping slot.")
     print(f"Mapping slot: {computed}"); run_cast(["st",computed],config)
 def snapshot_path(config):
     target=config.get("target") or "no-target"; chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
@@ -857,12 +914,59 @@ def run_decode(config,args):
     if not item.get("outputs"): print("Function has no outputs."); return
     run_cast(["decode-abi",format_output_signature(item),args[1]],config)
 
+def decode_event_values(event,data,topics):
+    if not topics or len(topics[0])!=66:
+        return fail("Error: event topics must include a 32-byte topic0.")
+    expected=cast_output(["cast","sig-event",format_signature(event)])[1].lower().strip()
+    if topics[0].lower()!=expected:
+        return fail("Error: topic0 does not match the event signature.")
+    indexed=[item for item in event.get("inputs",[]) if item.get("indexed")]
+    non_indexed=[item for item in event.get("inputs",[]) if not item.get("indexed")]
+    if len(topics)-1!=len(indexed):
+        return fail(f"Error: expected {len(indexed)} indexed topics, received {len(topics)-1}.")
+    print(f"Event: {format_signature(event)}")
+    status=0
+    for item,topic in zip(indexed,topics[1:]):
+        value=topic
+        item_type=canonical_type(item)
+        if not any(token in item_type for token in ("bytes", "string", "[", "tuple")):
+            code,decoded,error=cast_output(["cast","decode-abi",f"value()({item_type})",topic])
+            if code==0 and decoded: value=decoded
+            elif code!=0: status=code
+        print(f"Indexed {item.get('name') or '<anonymous>'}: {value}")
+    if non_indexed:
+        output_types=",".join(canonical_type(item) for item in non_indexed)
+        code,decoded,error=cast_output(["cast","decode-abi",f"event()({output_types})",data])
+        if code!=0:
+            if error: print(error,file=sys.stderr)
+            status=code
+        elif decoded:
+            print(f"Data: {decoded}")
+    return record_status(status)
+
 def run_event(config,args):
-    if len(args)<2: print("Usage: lk event <event-signature> <data> [topic ...]"); return
-    code,output,error=cast_output(["cast","decode-event","--sig",args[0],args[1],*args[2:]])
+    if len(args)<2:
+        return fail("Usage: lk event <event-signature> <data> [topic0 indexed-topic ...]")
+    signature,data,*topics=args
+    try: payload=event_payload(data,topics)
+    except ValueError as error: return fail(f"Error: {error}")
+    if topics:
+        abi=load_abi(config.get("target"),config)
+        event=next((item for item in abi if item.get("type")=="event" and format_signature(item)==signature),None)
+        if event:
+            return decode_event_values(event,data,topics)
+    code,output,error=cast_output(["cast","decode-event","--sig",signature,payload])
     if output: print(output)
     if error: print(error,file=sys.stderr)
-    return code
+    return record_status(code)
+
+def event_payload(data,topics):
+    parts=[]
+    for value in list(topics)+[data]:
+        if not re.fullmatch(r"0x[0-9a-fA-F]*",value or "") or len(value)%2:
+            raise ValueError(f"event data/topics must be even-length hex: {value}")
+        parts.append(value[2:])
+    return "0x"+"".join(parts)
 
 def run_namespace(config,args):
     if len(args)!=1: print("Usage: lk namespace <erc7201-namespace-id>"); return
@@ -874,13 +978,15 @@ def run_proof(config,args):
 
 def run_selectors(config,args):
     code=args[0] if args else run_cast(["code",config.get("target")],config,capture=True)
-    if not code or not str(code).startswith("0x"): print("Error: no runtime bytecode available."); return
+    if not code or not str(code).startswith("0x"): return fail("Error: no runtime bytecode available.")
     run_cast(["selectors",code],config)
 
 def run_layout(args):
-    if not args: print("Usage: lk layout <ContractName>"); return
+    if not args: return fail("Usage: lk layout <ContractName>")
     code,out,err=cast_output(["forge","inspect",args[0],"storage-layout","--json"])
-    if code!=0: print(err or "forge inspect failed",file=sys.stderr); return
+    if code!=0:
+        print(err or "forge inspect failed",file=sys.stderr)
+        return record_status(code)
     try: payload=json.loads(out)
     except json.JSONDecodeError: print(out); return
     storage=payload.get("storage",payload) if isinstance(payload,dict) else payload
@@ -900,7 +1006,9 @@ def source_sol_files(root):
 
 def run_scan(args):
     root=args[0] if args else "src"
-    if not os.path.exists(root): print(f"Path not found: {root}"); return
+    if not os.path.exists(root): return fail(f"Path not found: {root}")
+    if not os.path.isdir(root) and not root.endswith(".sol"):
+        return fail(f"Path is not a Solidity file or directory: {root}")
     patterns=[
         ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
         ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
@@ -962,12 +1070,12 @@ def run_gas(config,args):
             print(f"Error: {error}",file=sys.stderr); return
     run_cast(["estimate",target]+values,config)
 def run_raw(config,args):
-    if not args: print("Usage: lk raw <cast-subcommand> [args...]"); return
+    if not args: return fail("Usage: lk raw <cast-subcommand> [args...]")
     safe=redact_secrets(shlex.join(["cast"]+args)); print(f"DEBUG: Executing -> {safe}")
     code,out,err=cast_output(["cast"]+args); log_session(safe,out or err)
     if out: print(humanize_value(apply_labels(out,config)))
     if err: print(err,file=sys.stderr)
-    return code
+    return record_status(code)
 
 def run_batch(config,args):
     if len(args)!=1:
@@ -1099,7 +1207,8 @@ ABI / INTERACTION
   lk encode <func> [args]             Build calldata
   lk decode <function> <return-data>  Decode return values
   lk decode-error <revert-data>       Decode custom error
-  lk event <sig> <data> [topics...]   Decode event data
+    lk event <sig> <data> [topic0 indexed-topic ...]
+                                                                            Topics are prepended to one Cast DATA payload
   lk tx [hash]                        Inspect/decode transaction
   lk raw <cast-command> ...           Raw Cast bypass
 
@@ -1166,9 +1275,12 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if args[0]=="reset": config["target"]=None
         elif args[0]=="list": run_targets(config); return
         elif args[0]=="auto": run_auto_target(config,args[1] if len(args)>1 else None); return
-        elif len(args)==1: config["target"]=resolve_target_ref(config,args[0]) or args[0]
+        elif len(args)==1:
+            resolved=resolve_target_ref(config,args[0])
+            if not resolved: return fail("Error: target must be a valid address or saved alias.")
+            config["target"]=resolved
         elif len(args)==2 and is_address(args[1]): config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]
-        else: print("Usage: lk target <address> | lk target <name> <address> | lk target auto"); return
+        else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
     elif cmd in {"targets","target-list"}: run_targets(config)
     elif cmd=="use":
@@ -1183,8 +1295,9 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if sub=="reset": config["rpc"]=None
         elif sub=="set" and len(args)==3: config["rpc_profiles"][args[1]]=args[2]; config["rpc"]=args[2]
         elif sub=="use" and len(args)==2 and args[1] in config["rpc_profiles"]: config["rpc"]=config["rpc_profiles"][args[1]]
+        elif sub=="use": return fail(f"Error: unknown RPC profile: {args[1] if len(args)>1 else ''}")
         elif len(args)==1: config["rpc"]=args[0]
-        else: print("Usage: lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset"); return
+        else: return fail("Usage: lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset")
         save_config(config)
     elif cmd=="wallet":
         if args and args[0]=="list":
@@ -1198,11 +1311,12 @@ def dispatch_command(cmd,args,config,from_batch=False):
             config["wallets"][args[1]]={"env":args[2]}; config["actor"]=args[1]; save_config(config)
             print(f"Wallet profile '{args[1]}' now reads from environment variable {args[2]}.")
         elif len(args)==2 and args[0]=="use" and args[1] in config.get("wallets",{}): config["actor"]=args[1]; save_config(config)
+        elif len(args)==2 and args[0]=="use": return fail(f"Error: unknown wallet profile: {args[1]}")
         elif len(args)==2 and args[0]=="remove":
             config["wallets"].pop(args[1],None)
             if config.get("actor")==args[1]: config["actor"]=None
             save_config(config)
-        else: print("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
+        else: return fail("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
     elif cmd=="actor":
         if args and args[0]=="reset": config["actor"]=None; save_config(config)
         elif args: config["actor"]=args[0]; save_config(config)
@@ -1303,10 +1417,13 @@ def dispatch_command(cmd,args,config,from_batch=False):
     else: run_cast([cmd]+args,config)
 
 def main():
+    global _COMMAND_STATUS
+    _COMMAND_STATUS = 0
     config=load_config()
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
     if isinstance(result,int): raise SystemExit(result)
+    if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 
 if __name__ == "__main__":
     main()

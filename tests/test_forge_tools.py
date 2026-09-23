@@ -13,8 +13,16 @@ spec.loader.exec_module(forge_tools)
 
 class LowkeyForgeTests(unittest.TestCase):
     def test_native_commands(self):
-        for command in ("build", "test", "inspect", "debug", "script", "coverage", "snapshot", "lint", "geiger"):
+        for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "geiger", "clone", "fuzz", "lsp"):
             self.assertIn(command, forge_tools.NATIVE_COMMANDS)
+        self.assertNotIn("debug", forge_tools.NATIVE_COMMANDS)
+
+    def test_unsupported_debug_is_rejected(self):
+        with patch("forge_tools.forge_path", return_value="/usr/bin/forge"):
+            with patch("forge_tools.subprocess.run") as run:
+                run.return_value.returncode = 0
+                self.assertEqual(forge_tools.main(["debug"]), 2)
+                run.assert_not_called()
 
     @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
     @patch("forge_tools.subprocess.run")

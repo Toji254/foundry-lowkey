@@ -8,11 +8,11 @@ from typing import Iterable, Sequence
 
 NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
-    "fmt", "lint", "geiger", "debug", "flatten", "verify-contract",
+    "fmt", "lint", "geiger", "flatten", "verify-contract",
     "verify-check", "verify-bytecode", "tree", "install", "remove", "update",
     "list", "init", "clean", "cache", "config", "remappings", "bind",
     "bind-json", "doc", "generate", "compiler", "eip712", "soldeer",
-    "completions",
+    "completions", "clone", "fuzz", "lsp",
 }
 
 def die(message: str, code: int = 2) -> int:

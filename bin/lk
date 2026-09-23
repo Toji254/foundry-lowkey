@@ -7,7 +7,7 @@ if [[ "${1:-}" == "forge" ]]; then
 fi
 
 case "${1:-}" in
-    build|test|script|inspect|debug|coverage|lint|geiger|fmt)
+    build|test|script|inspect|coverage|lint|geiger|fmt|clone|fuzz|lsp)
         exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
         ;;
 esac
