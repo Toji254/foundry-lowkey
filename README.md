@@ -29,6 +29,8 @@ Lowkey automatically detects a local Anvil RPC on the common ports. For the defa
 
 ## Everyday audit flow
 
+Primary UX rule: a command name should make its action obvious before you read its description.
+
 The primary commands are deliberately short and self-describing:
 
 ~~~bash
