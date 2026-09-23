@@ -453,6 +453,39 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertEqual(brief["evidence"]["candidate"]["id"], "SLITHER-ABC")
             self.assertEqual(brief["evidence"]["tools"]["slither_findings"], 1)
 
+    def test_full_signature_without_args_creates_placeholder_scaffold(self):
+        target = "0x" + "3" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            context = {
+                "focus": {"signal_id": "SLITHER-SIG"},
+                "signals": [{
+                    "id": "SLITHER-SIG",
+                    "status": "investigating",
+                    "impact": "Medium",
+                    "confidence": "Medium",
+                    "check": "reentrancy-eth",
+                    "title": "ETH reentrancy",
+                    "file": "src/Factory.sol",
+                    "line": 10,
+                    "function": "createPool(address,address,uint256,uint256,address,address[])",
+                    "description": "External call path needs reproduction.",
+                }],
+                "latest": {},
+                "tools": {},
+            }
+            with patch.object(generator.Path, "cwd", return_value=root):
+                with patch.object(generator.audit_context, "load", return_value=context):
+                    result = generator.run_generate(
+                        {"target": target},
+                        ["test", "createPool(address,address,uint256,uint256,address,address[])"],
+                    )
+            self.assertEqual(result, 0)
+            generated = next((root / "test").glob("LowkeyTest_*.t.sol"))
+            source = generated.read_text(encoding="utf-8")
+            self.assertIn("PLACEHOLDER", source)
+            self.assertIn("createPool(address,address,uint256,uint256,address,address[])", source)
+
     def test_generate_poc_allows_focused_signal_without_concrete_send(self):
         target = "0x" + "2" * 40
         with tempfile.TemporaryDirectory() as tmp:
