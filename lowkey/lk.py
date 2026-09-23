@@ -796,13 +796,64 @@ def run_session_lifecycle(config, action):
         save_config(config)
         with open(paths["session"], "a") as f:
             f.write(f"\nSESSION START {config['session_started']}\n")
+        if record_evidence:
+            record_evidence("session_start", {
+                "project": os.getcwd(),
+                "target": config.get("target"),
+                "rpc": rpc_display(config.get("rpc")),
+                "started": config["session_started"],
+            })
         print("Audit session started.")
     elif action == "resume":
         config["session_active"] = True
         save_config(config)
+        if record_evidence:
+            record_evidence("session_resume", {
+                "project": os.getcwd(),
+                "target": config.get("target"),
+                "rpc": rpc_display(config.get("rpc")),
+                "resumed": datetime.now().isoformat(timespec="seconds"),
+            })
         print(f"Audit session resumed: {paths['root']}")
     else:
         print("Usage: lk session start|resume")
+
+def run_audit_startup(config):
+    """Create/resume the project audit workspace and run the automatic baseline."""
+    paths = workspace_paths()
+    run_workspace(config, ["init"])
+    run_matrix(config, ["init"])
+    run_checklist(config)
+
+    if not config.get("session_active"):
+        run_session_lifecycle(config, "start")
+    else:
+        run_session_lifecycle(config, "resume")
+
+    context = {
+        "project": os.getcwd(),
+        "target": config.get("target"),
+        "rpc": rpc_display(config.get("rpc")),
+        "started": datetime.now().isoformat(timespec="seconds"),
+        "workspace": paths["root"],
+    }
+    if record_evidence:
+        record_evidence("audit_start", context)
+
+    print("\n=== LOWKEY AUDIT STARTUP ===")
+    print("Workspace initialized.")
+    print("Evidence collection enabled.")
+    print("Running baseline: build -> tests -> coverage -> Slither -> source triage.")
+
+    baseline_code = run_audit_pipeline(".", [], False) if run_audit_pipeline else 0
+
+    if generate_poc:
+        print("\n=== LOWKEY AUDIT POC ===")
+        generate_poc(".", None, None)
+
+    print(f"\nBaseline status: {'PASS' if baseline_code == 0 else 'REVIEW NEEDED'}")
+    return baseline_code
+
 
 def run_export(config):
     paths=workspace_paths(); export_dir=os.path.join(os.getcwd(),"audit-report"); os.makedirs(export_dir,exist_ok=True)
@@ -1235,6 +1286,15 @@ def run_batch(config,args):
         else: dispatch_command(command,command_args,config,from_batch=True)
 def run_audit_mode(config):
     print("\n=== LOWKEYCAST AUDIT MODE ===")
+    if not config.get("audit_bootstrapped"):
+        run_audit_startup(config)
+        config["audit_bootstrapped"] = True
+        save_config(config)
+    else:
+        run_workspace(config, ["init"])
+        if not config.get("session_active"):
+            run_session_lifecycle(config, "resume")
+        print("Audit workspace resumed; evidence collection remains active.")
     while True:
         print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
         print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   7) full evidence pass   8) generate PoC   0) exit")
@@ -1248,7 +1308,11 @@ def run_audit_mode(config):
         elif choice=="6": run_deployments(config)
         elif choice=="7" and run_audit_pipeline: run_audit_pipeline(".")
         elif choice=="8" and generate_poc: generate_poc(".")
-        elif choice=="0": return
+        elif choice=="0":
+            if generate_poc:
+                print("\nRefreshing PoC before leaving audit mode...")
+                generate_poc(".", None, None)
+            return
         else: print("Unknown option.")
 
 def actor_display(config):
