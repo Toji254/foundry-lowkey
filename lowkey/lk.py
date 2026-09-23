@@ -1611,9 +1611,27 @@ def encode_target_call(config, function, values):
     if not target:
         raise ValueError("Set a target first.")
     values=list(values)
+    if any(str(value).strip()=="..." for value in values):
+        raise ValueError("Replace '...' with real argument values. Use 'lk ask <function>' to see the required parameters.")
+
     signature=function
     if "(" not in signature or ")" not in signature:
         signature=resolve_function(signature,target,config)
+
+    abi=load_abi(target,config)
+    matches=matching_functions(abi,signature) if abi else []
+    if len(matches)==1:
+        inputs=matches[0].get("inputs",[])
+        if len(values)!=len(inputs):
+            expected=", ".join(
+                f"{item.get('name') or 'arg'+str(index+1)}:{canonical_type(item)}"
+                for index,item in enumerate(inputs)
+            )
+            suffix=f" Expected: {expected}." if expected else ""
+            raise ValueError(
+                f"{format_signature(matches[0])} expects {len(inputs)} argument(s), got {len(values)}.{suffix}"
+            )
+
     code,encoded,error=cast_output(["cast","calldata",signature,*values])
     if code!=0 or not encoded:
         raise ValueError(error or "cast calldata failed")
@@ -2568,6 +2586,9 @@ START HERE
   lk status                           See target, actor, RPC, ABI
   lk actor                            See Anvil actors/accounts
   lk target <address>                 Set the contract under review
+  lk target <name>                    Auto-select named deployment from broadcast/
+  lk target <name> <address>           Save an explicit named target
+  lk target auto [name]                Auto-select latest or named broadcast deployment
 
 RECON → UNDERSTAND THE CONTRACT
   lk recon                             Balance, code, codehash, nonce, proxy
