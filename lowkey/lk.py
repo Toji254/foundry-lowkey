@@ -550,7 +550,7 @@ def project_context_target(root=None):
     # Older contexts may contain a global target copied from another project.
     # Accept an explicitly recorded project target, or legacy targets that still
     # point at a contract/artifact belonging to this project.
-    if source in {"manual", "auto", "project"}:
+    if source in {"manual", "auto", "project", "project-lab"}:
         return target
     if artifact and path_is_within(artifact, project_root):
         return target
