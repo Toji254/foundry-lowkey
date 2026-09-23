@@ -261,7 +261,8 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
     # Specialized commands such as --list-detectors or printers may not produce
     # detector JSON. Surface their stdout under a clear heading instead of
     # silently discarding it.
-    if result.stdout.strip() and not json_path.exists():
+    show_specialized_output = any(option in extra for option in ("--print", "--list-detectors", "--list-printers", "--checklist"))
+    if result.stdout.strip() and (show_specialized_output or not json_path.exists()):
         print("\n=== SLITHER TOOL OUTPUT ===")
         print(result.stdout.rstrip())
 
