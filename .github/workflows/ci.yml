@@ -55,7 +55,11 @@ jobs:
           pragma solidity ^0.8.20;
           contract Fixture {
               event Ping(uint256 value);
-              function ping(uint256 value) external { emit Ping(value); }
+              uint256 public count;
+              function ping(uint256 value) external {
+                  count += value;
+                  emit Ping(value);
+              }
           }
           EOF
           cat > test/Fixture.t.sol <<'EOF'
@@ -141,7 +145,9 @@ jobs:
           lk as whale s ping 8
           lk txpool
           lk probe ping 7
-          lk state-diff ping 7
+          CHANGES=$(lk state-diff ping 7)
+          printf '%s\n' "$CHANGES"
+          grep -q "Storage:   1 change(s)" <<<"$CHANGES"
           lk matrix init
           lk matrix actor Alice 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
           lk matrix add smoke ping Alice "success"
