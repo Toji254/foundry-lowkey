@@ -1986,10 +1986,15 @@ def discover_audit_target_contract(root):
         return None
 
     ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].lower()))
+    artifacts = {}
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if artifact_is_deployable(artifact):
+            name = artifact_contract_name(path, artifact)
+            artifacts[str(name).lower()] = str(name)
     for contract, _score in ranked:
-        candidate = discover_generic_lab_contract(root, contract)
-        if candidate:
-            return contract
+        if str(contract).lower() in artifacts:
+            return artifacts[str(contract).lower()]
     return None
 
 def discover_generic_lab_contract(root, query=None):
