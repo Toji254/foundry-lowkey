@@ -398,15 +398,16 @@ def set_target(
     address: str | None = None,
     contract: str | None = None,
     artifact: str | None = None,
+    source: str | None = None,
 ) -> dict[str, Any]:
-    return update(
-        root,
-        target={
-            "address": address,
-            "contract": contract,
-            "artifact": artifact,
-        },
-    )
+    target = {
+        "address": address,
+        "contract": contract,
+        "artifact": artifact,
+    }
+    if source:
+        target["source"] = source
+    return update(root, target=target)
 
 
 def set_latest(
