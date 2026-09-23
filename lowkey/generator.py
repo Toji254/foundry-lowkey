@@ -642,7 +642,8 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             return 2
 
         artifact_path, artifact = result
-        contract = str(artifact.get("contractName") or request.contract or artifact_path.stem)
+        # Foundry artifacts may omit contractName; the artifact filename is then the Solidity symbol.
+        contract = str(artifact.get("contractName") or artifact_path.stem or request.contract or "Contract")
         content, env_help = render_deployment(root, contract, artifact_path, artifact)
         output = _write(
             root,
