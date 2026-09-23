@@ -1508,6 +1508,44 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("lk changes withdraw()",rendered)
 
 
+    def test_investigate_quotes_full_abi_signatures_for_shell(self):
+        signal={
+            "id":"SLITHER-ABC123",
+            "tool":"slither",
+            "title":"Reentrancy risk",
+            "impact":"Medium",
+            "confidence":"Medium",
+            "file":"src/Vault.sol",
+            "line":42,
+            "function":"createPool(address,address,uint256,uint256,address,address[])",
+            "description":"External call path",
+        }
+        root=pathlib.Path.cwd()
+        with patch.object(lk.audit_context,"set_focus",return_value=signal) as set_focus,              patch.object(lk.audit_context,"foundry_project_root",return_value=root):
+            output=io.StringIO()
+            with redirect_stdout(output):
+                result=lk.run_investigate({},["SLITHER-ABC123"])
+        self.assertEqual(result,0)
+        set_focus.assert_called_once_with("SLITHER-ABC123",root)
+        rendered=output.getvalue()
+        self.assertIn("lk fn 'createPool(address,address,uint256,uint256,address,address[])'",rendered)
+        self.assertIn("lk ask 'createPool(address,address,uint256,uint256,address,address[])'",rendered)
+        self.assertIn("lk changes 'createPool(address,address,uint256,uint256,address,address[])'",rendered)
+        self.assertIn("lk generate test 'createPool(address,address,uint256,uint256,address,address[])'",rendered)
+
+    def test_audit_mode_restores_menu_and_runs_automatic_poc_path(self):
+        config={"target":"0x"+"1"*40,"session_active":True}
+        choices=iter(["0"])
+        with patch.object(lk,"save_config"),              patch.object(lk,"run_workspace"),              patch.object(lk,"run_matrix"),              patch.object(lk,"run_checklist"),              patch.object(lk,"run_session_lifecycle"),              patch.object(lk,"run_scan",return_value=0) as scan,              patch.object(lk,"run_audit",return_value=0) as audit,              patch("builtins.input",side_effect=lambda prompt: next(choices)),              patch.object(lk.audit_context,"load",return_value={"target":{"address":config["target"]}}):
+            output=io.StringIO()
+            with redirect_stdout(output):
+                result=lk.run_audit_mode(config,[])
+        self.assertEqual(result,0)
+        scan.assert_called_once_with([])
+        audit.assert_called_once_with(config,[])
+        rendered=output.getvalue()
+        self.assertIn("7) full evidence pass   8) generate PoC   0) exit",rendered)
+
     def test_dispatch_uses_simple_audit_commands(self):
         with patch.object(lk, "run_audit", return_value=0) as audit,              patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as findings,              patch.object(lk, "run_investigate", return_value=0) as focus:
             self.assertEqual(lk.dispatch_command("audit", [], {}), 0)
