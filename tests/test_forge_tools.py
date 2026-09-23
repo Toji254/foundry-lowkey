@@ -48,7 +48,7 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in run.call_args_list],
                          [["build", "--skip", "test", "--skip", "script"],
                           ["test", "-vvv", "--no-match-path", "test/Lowkey_*"],
-                          ["coverage", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"]])
+                          ["coverage", "--no-match-path", "**/Lowkey_*"]])
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_slither_preflight", return_value=0)
