@@ -142,3 +142,51 @@ foundry-lowkey/
 ├── README.md
 └── .gitignore
 ```
+
+
+## LowkeyForge audit layer
+
+LowkeyCast now includes a deliberately thin Forge layer. It removes repetitive
+typing without hiding Forge behavior: native commands are passed through
+unchanged.
+
+### Native Forge passthrough
+
+```bash
+lk forge test -vvvv
+lk forge build
+lk forge inspect MyContract storage-layout
+lk forge debug ...
+lk forge script ...
+lk forge coverage
+lk forge lint
+lk forge geiger
+```
+
+The high-frequency commands `build`, `test`, `script`, `inspect`,
+`debug`, `coverage`, `lint`, `geiger`, and `fmt` also have direct
+shortcuts such as `lk test` and `lk build`. Existing LowkeyCast commands
+remain unchanged.
+
+### Audit shortcuts
+
+```bash
+lk forge test-audit
+lk forge test-audit --match-test testWithdraw
+lk forge inspect-audit MyContract
+lk forge audit
+lk forge audit --checks
+```
+
+- `test-audit` runs native `forge test` with `-vvvv` unless you provide
+  your own verbosity.
+- `inspect-audit` builds first, then collects ABI, method identifiers, errors,
+  events, and storage layout.
+- `audit` runs build, traced tests, and coverage. `--checks` additionally
+  runs `forge lint` and `forge geiger` when those commands exist in the
+  installed Forge version.
+- Use `lk forge <command> --help` whenever you need the exact native Forge
+  behavior or options.
+
+These helpers automate workflow only. They do not detect, rank, score, or
+declare vulnerabilities.
