@@ -552,6 +552,7 @@ contract Poc_{slug} is Test {{
         },
         "evidence": {
             "slither_findings": len(findings),
+            "source_triage_markers": len(triage_markers),
             "matrix_scenarios": len(matrix),
             "notes_findings_todos": _notes(root),
             "last_tx": config.get("last_tx"),
