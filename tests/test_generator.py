@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -12,6 +13,7 @@ MODULE = ROOT / "lowkey" / "generator.py"
 
 spec = importlib.util.spec_from_file_location("lowkey_generator", MODULE)
 generator = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = generator
 spec.loader.exec_module(generator)
 
 
