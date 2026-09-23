@@ -97,6 +97,7 @@ def load_config():
     config.update(loaded)
     for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "project_roots", "labels"]:
         if not isinstance(config.get(key), dict): config[key] = {}
+    # ABI paths are normalized lazily after helper definitions are loaded.
     return config
 
 def save_config(config):
@@ -497,21 +498,25 @@ def remember_abi_path(config,target,path):
     return absolute
 
 def resolve_abi_path(config,target,path=None):
+    if not target:
+        return None
     if path is None:
         path=config.get("abi_paths",{}).get(target)
     if not path:
         return None
 
     expanded=os.path.expanduser(str(path))
+    if os.path.isabs(expanded):
+        return remember_abi_path(config,target,expanded)
+
     if os.path.exists(expanded):
         return remember_abi_path(config,target,expanded)
 
-    if not os.path.isabs(expanded):
-        root=configured_project_root(target,config)
-        if root:
-            candidate=os.path.join(root,expanded)
-            if os.path.exists(candidate):
-                return remember_abi_path(config,target,candidate)
+    root=configured_project_root(target,config)
+    if root:
+        candidate=os.path.join(root,expanded)
+        if os.path.exists(candidate):
+            return remember_abi_path(config,target,candidate)
     return None
 
 def auto_abi_path(target,config):
