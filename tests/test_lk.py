@@ -155,6 +155,70 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertTrue(hasattr(lk, "Path"))
         self.assertTrue(lk.AUDIT_CHECKLIST)
 
+    def test_mapping_human_view_decodes_struct_fields(self):
+        target = "0x" + "1" * 40
+        alice = "0x" + "2" * 40
+        bob = "0x" + "3" * 40
+        mapped_slot = "0x" + "ab" * 32
+        types = {
+            "t_mapping": {
+                "encoding": "mapping",
+                "key": "t_uint256",
+                "value": "t_struct",
+            },
+            "t_uint256": {
+                "label": "uint256",
+                "encoding": "inplace",
+                "numberOfBytes": "32",
+            },
+            "t_address": {
+                "label": "address",
+                "encoding": "inplace",
+                "numberOfBytes": "20",
+            },
+            "t_struct": {
+                "label": "struct Escrow.Create",
+                "members": [
+                    {"label": "creator", "slot": "0", "offset": 0, "type": "t_address"},
+                    {"label": "recipient", "slot": "1", "offset": 0, "type": "t_address"},
+                    {"label": "amount", "slot": "2", "offset": 0, "type": "t_uint256"},
+                ],
+            },
+        }
+        storage = [{"label": "escrow", "slot": "1", "type": "t_mapping"}]
+        config = {
+            "target": target,
+            "wallets": {
+                "Alice": {"address": alice},
+                "Bob": {"address": bob},
+            },
+        }
+
+        def word(address):
+            return "0x" + "0" * 24 + address[2:]
+
+        reads = [
+            lk.CommandResult(word(alice), 0),
+            lk.CommandResult(word(bob), 0),
+            lk.CommandResult("0x" + format(10**18, "064x"), 0),
+        ]
+        output = io.StringIO()
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)),              patch.object(lk, "run_cast", side_effect=reads):
+            with redirect_stdout(output):
+                result = lk.run_mapping_human_view(
+                    config, "1", "uint256", "1", mapped_slot
+                )
+
+        self.assertTrue(result)
+        rendered = output.getvalue()
+        self.assertIn("Mapping:      escrow", rendered)
+        self.assertIn("Key:          1", rendered)
+        self.assertIn("creator", rendered)
+        self.assertIn("Alice (0x" + "2" * 40 + ")", rendered)
+        self.assertIn("Bob (0x" + "3" * 40 + ")", rendered)
+        self.assertIn("1000000000000000000 wei [~1.0000 ETH]", rendered)
+        self.assertIn("raw mapping slot", rendered)
+
     def test_local_cast_commands_do_not_receive_rpc_url(self):
         config = {"rpc": "http://127.0.0.1:8545"}
         expected_commands = [
