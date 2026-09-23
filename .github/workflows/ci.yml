@@ -123,6 +123,8 @@ jobs:
           lk context
           lk signals
           lk audit
+          test -f script/LowkeyPoC_Fixture.s.sol
+          test -f .audit/poc/LowkeyPoc_Fixture.json
           lk audit --checks
           lk audit--checks
           lk findings
