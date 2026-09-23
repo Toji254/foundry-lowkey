@@ -147,12 +147,12 @@ class LowkeySlitherTests(unittest.TestCase):
             (evidence / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
             with patch("slither_tools._default_paths", return_value=(evidence / "latest.json", evidence / "latest.sarif")):
                 result = slither_tools.run_default(root)
-        self.assertEqual(result, 0)
-        context_path = root / ".audit" / "context.json"
-        self.assertTrue(context_path.exists())
-        context = json.loads(context_path.read_text(encoding="utf-8"))
-        self.assertEqual(context["tools"]["slither"]["finding_count"], 0)
-        command = run.call_args.args[0]
+            self.assertEqual(result, 0)
+            context_path = root / ".audit" / "context.json"
+            self.assertTrue(context_path.exists())
+            context = json.loads(context_path.read_text(encoding="utf-8"))
+            self.assertEqual(context["tools"]["slither"]["finding_count"], 0)
+            command = run.call_args.args[0]
         self.assertIn("--exclude-dependencies", command)
         self.assertIn("--fail-none", command)
         self.assertIn("--json", command)
