@@ -98,7 +98,7 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
             declared_symbols = {
                 match.group(2)
                 for match in re.finditer(
-                    r"(?m)^\s*(?:abstract\s+)?(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                    r"\b(?:abstract\s+)?(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
                     source_text,
                 )
             }
@@ -109,7 +109,7 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
                 if (
                     source == requested_source
                     and payload.get("bytecode", {}).get("object")
-                    and (not declared_symbols or artifact_symbol in declared_symbols)
+                    and artifact_symbol in declared_symbols
                 ):
                     source_file_matches.append((path, payload))
 
