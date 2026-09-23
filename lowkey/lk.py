@@ -3179,6 +3179,47 @@ def run_audit_mode(config):
         else: print("Unknown option.")
 
 
+def run_investigate(config, args):
+    if not args:
+        return fail("Usage: lk investigate <SIGNAL_ID>")
+
+    root = audit_context.foundry_project_root()
+    signal = audit_context.set_focus(args[0], root)
+    if not signal:
+        return fail(f"Error: signal '{args[0]}' was not found.")
+
+    print("LOWKEY INVESTIGATION FOCUS")
+    print("==========================")
+    print(f"Signal     : {signal.get('id')}")
+    print(f"Issue      : {signal.get('title')}")
+    print(f"Impact     : {signal.get('impact', 'Unknown')}")
+    print(f"Confidence : {signal.get('confidence', 'Unknown')}")
+    location = signal.get("file") or "unknown"
+    if signal.get("line"):
+        location += f":{signal.get('line')}"
+    print(f"Location   : {location}")
+    if signal.get("function"):
+        print(f"Function   : {signal.get('function')}")
+    if signal.get("description"):
+        print(f"Observed   : {signal.get('description')}")
+    if signal.get("meaning"):
+        print(f"Meaning    : {signal.get('meaning')}")
+    if signal.get("why"):
+        print(f"Why        : {signal.get('why')}")
+    if signal.get("next"):
+        print(f"Next move  : {signal.get('next')}")
+
+    print("\nExisting LK tools to use next:")
+    function = signal.get("function")
+    if function:
+        print(f"  lk fn {function}")
+        print(f"  lk ask {function}")
+        print(f"  lk state-diff {function}")
+        print(f"  lk generate test {function} ...")
+    print("  lk context")
+    print("  lk signals")
+    return 0
+
 def run_context(config):
     root = audit_context.foundry_project_root()
     audit_context.update(
@@ -3268,6 +3309,9 @@ def run_status(config):
     context = audit_context.load(root)
     open_signals = len(audit_context.signals(root, "open"))
     print(f"Signals: {open_signals} open")
+    focus = context.get("focus")
+    if isinstance(focus, dict) and focus.get("signal_id"):
+        print(f"Focus  : {focus.get('signal_id')} — {focus.get('title') or 'audit signal'}")
     for tool_name in ("slither", "forge", "generator"):
         state = context.get("tools", {}).get(tool_name, {})
         if isinstance(state, dict) and state.get("status"):
@@ -3509,6 +3553,7 @@ RECON → UNDERSTAND THE CONTRACT
   lk abi                               Show the loaded ABI
   lk deps [dir|file]                  Imports + inheritance
   lk context                           Show shared project audit state
+  lk investigate <ID>                 Focus the audit on one signal
   lk signals [open|investigating|proven|dismissed|all]   Show analyzer signals
   lk signals set <ID> <status> [note]   Update a signal's audit status
   lk slither [args...]                 Slither static analysis (auto-saves JSON + SARIF)
@@ -3757,6 +3802,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
     elif cmd=="context": return run_context(config)
+    elif cmd in {"investigate", "investigation"}: return run_investigate(config,args)
     elif cmd in {"signals", "signal"}: return run_signals(config,args)
     elif cmd=="chain": run_chain(config)
     elif cmd=="encode": run_encode(config,args)
