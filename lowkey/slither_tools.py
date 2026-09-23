@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import quote
 
 
 def slither_path() -> str | None:
@@ -82,7 +84,18 @@ def _clean_description(value: object) -> str:
     return text.rstrip()
 
 
-def _source_location(finding: dict, project_root: Path) -> str | None:
+def _terminal_link(label: str, absolute: Path, line: int, column: int = 1) -> str:
+    """Return visible relative text with a VS Code-clickable terminal link."""
+    # OSC 8 keeps the displayed path clean while attaching a richer URI target.
+    if str(os.environ.get("TERM_PROGRAM", "")).lower() != "vscode":
+        return label
+
+    encoded = quote(str(absolute), safe="/:")
+    target = f"vscode://file/{encoded}:{line}:{column}"
+    return f"\x1b]8;;{target}\x1b\\{label}\x1b]8;;\x1b\\"
+    
+
+def _source_location(finding: dict, project_root: Path) -> tuple[str, str] | None:
     elements = finding.get("elements")
     if not isinstance(elements, list):
         return None
@@ -115,19 +128,31 @@ def _source_location(finding: dict, project_root: Path) -> str | None:
         except (TypeError, ValueError):
             column = 1
 
-        # Emit the conventional terminal location format used by VS Code and
-        # other terminal linkifiers: file:line:column. This makes the location
-        # Ctrl+Click-able without depending on a specific terminal hyperlink
-        # protocol.
-        candidate = Path(str(filename))
-        if candidate.is_absolute():
-            absolute = candidate
+        # Keep the visible text relative to the project, while the hidden
+        # hyperlink target points to the exact local file/line/column.
+        display_path = Path(str(filename))
+        if display_path.is_absolute():
+            try:
+                display_path = display_path.relative_to(project_root)
+            except ValueError:
+                pass
         else:
-            absolute = (project_root / candidate).resolve()
+            display_path = Path(*display_path.parts)
 
+        relative_text = display_path.as_posix()
         if first == last:
-            return f"{absolute}:{first}:{column}"
-        return f"{absolute}:{first}:{column}-{last}"
+            label = f"{relative_text}:{first}"
+        else:
+            label = f"{relative_text}:{first}-{last}"
+
+        absolute = Path(str(filename))
+        if not absolute.is_absolute():
+            absolute = (project_root / absolute).resolve()
+        else:
+            absolute = absolute.resolve()
+
+        linked = _terminal_link(label, absolute, first, column)
+        return label, linked
 
     return None
 
