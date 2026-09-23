@@ -495,6 +495,7 @@ class LowkeyCastTests(unittest.TestCase):
             finally:
                 os.chdir(old)
         self.assertEqual(config["project_roots"][target], str(root.resolve()))
+        self.assertEqual(config["abi_paths"][target], str(artifact_path.resolve()))
         self.assertTrue(config.get("_config_dirty"))
 
     def test_auto_abi_path_uses_remembered_project_root(self):
