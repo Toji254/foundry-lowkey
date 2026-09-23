@@ -64,25 +64,64 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
             continue
         if not isinstance(payload, dict) or not isinstance(payload.get("abi"), list):
             continue
-        if contract_name and payload.get("contractName") != contract_name and path.stem != contract_name:
-            continue
         matches.append((path, payload))
     if not matches:
         return None
 
-    # Test/script artifacts can also appear under out/. Prefer a real src/ artifact
-    # so generated filenames stay tied to the protocol contract rather than its tests.
+    def source_for_artifact(path: Path) -> Path | None:
+        try:
+            relative = path.relative_to(root / "out")
+            parts = list(relative.parts)[:-1]
+            if not parts:
+                return None
+            source = root / "src" / Path(*parts)
+            return source if source.exists() else None
+        except (ValueError, OSError):
+            return None
+
+    if contract_name:
+        # First prefer an exact Solidity contract symbol.
+        exact = [
+            item for item in matches
+            if item[1].get("contractName") == contract_name
+        ]
+        if exact:
+            matches = exact
+        else:
+            # Foundry commonly stores artifacts as:
+            # out/EthEscrow.sol/Escrow.json
+            # The requested name may refer to the source file while the Solidity
+            # symbol is Escrow. Resolve that source file and use its real artifact name.
+            source_matches = []
+            for path, payload in matches:
+                source = source_for_artifact(path)
+                if source and source.stem == contract_name and payload.get("bytecode", {}).get("object"):
+                    source_matches.append((path, payload))
+            if source_matches:
+                matches = source_matches
+            else:
+                stem_matches = [
+                    item for item in matches
+                    if item[0].stem == contract_name
+                ]
+                if not stem_matches:
+                    return None
+                matches = stem_matches
+
+    # Deployment generation needs an actual deployable source artifact where possible.
+    deployable = [
+        item for item in matches
+        if item[1].get("bytecode", {}).get("object")
+    ]
+    if deployable:
+        matches = deployable
+
+    # When no contract was specified, prefer source-backed artifacts over test/script artifacts.
     if contract_name is None:
         source_matches = []
         for path, payload in matches:
-            try:
-                relative = path.relative_to(root / "out")
-                parts = list(relative.parts)[:-1]
-                source = root / "src" / Path(*parts)
-                if source.exists() and payload.get("bytecode", {}).get("object"):
-                    source_matches.append((path, payload))
-            except (ValueError, OSError):
-                continue
+            if source_for_artifact(path):
+                source_matches.append((path, payload))
         if source_matches:
             matches = source_matches
 
