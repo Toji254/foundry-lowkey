@@ -246,7 +246,8 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         print(f"LowkeySlither: could not execute slither: {exc}", file=sys.stderr)
         return 1
 
-    if result.stderr:
+    if result.stderr and result.returncode != 0:
+        print("Slither error details:", file=sys.stderr)
         print(result.stderr.rstrip(), file=sys.stderr)
 
     if json_path.exists():
@@ -257,8 +258,15 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         except (OSError, json.JSONDecodeError) as exc:
             print(f"LowkeySlither: could not parse JSON evidence: {exc}", file=sys.stderr)
 
-    print(f"\nSlither exit code: {result.returncode}")
-    print("Use the detector output as evidence to investigate; a detector finding is not by itself a proven vulnerability.")
+    # Specialized commands such as --list-detectors or printers may not produce
+    # detector JSON. Surface their stdout under a clear heading instead of
+    # silently discarding it.
+    if result.stdout.strip() and not json_path.exists():
+        print("\n=== SLITHER TOOL OUTPUT ===")
+        print(result.stdout.rstrip())
+
+    print(f"\nSlither status: {'completed successfully' if result.returncode == 0 else 'failed'}")
+    print("Auditor's note: a static-analysis result is evidence to investigate, not automatic proof of a vulnerability.")
     return result.returncode
 
 
