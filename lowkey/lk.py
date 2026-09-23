@@ -2571,15 +2571,81 @@ def format_storage_value(config, raw, type_id, types, label, eth_sent_wei=None):
     return value
 
 
+def _extract_state_diff_json_slots(text_output):
+    begin="STATE_DIFF_JSON_BEGIN"
+    end="STATE_DIFF_JSON_END"
+    start=text_output.find(begin)
+    if start<0:
+        return []
+    start=text_output.find("\n",start)
+    if start<0:
+        return []
+    finish=text_output.find(end,start)
+    if finish<0:
+        return []
+    raw=text_output[start:finish].strip()
+    if not raw:
+        return []
+    try:
+        payload=json.loads(raw)
+    except json.JSONDecodeError:
+        first=raw.find("{")
+        last=raw.rfind("}")
+        if first<0 or last<=first:
+            return []
+        try:
+            payload=json.loads(raw[first:last+1])
+        except json.JSONDecodeError:
+            return []
+
+    slots=[]
+
+    def valid_slot(value):
+        return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{64}",value))
+
+    def valid_value(value):
+        return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{64}",value))
+
+    def visit(node):
+        if isinstance(node,dict):
+            # AccountAccess / StorageAccess shaped records.
+            slot=node.get("slot")
+            before=node.get("previousValue",node.get("previous",node.get("oldValue",node.get("original"))))
+            after=node.get("newValue",node.get("new",node.get("current")))
+            is_write=node.get("isWrite")
+            reverted=node.get("reverted",False)
+            if valid_slot(slot) and valid_value(before) and valid_value(after):
+                if (is_write is True or is_write is None) and not reverted and before.lower()!=after.lower():
+                    slots.append({"slot":slot,"from":before,"to":after})
+
+            # Some JSON state-diff formats use the slot itself as the dictionary key.
+            for key,value in node.items():
+                if valid_slot(key) and isinstance(value,dict):
+                    nested_before=value.get("previousValue",value.get("previous",value.get("oldValue",value.get("original"))))
+                    nested_after=value.get("newValue",value.get("new",value.get("current")))
+                    if valid_value(nested_before) and valid_value(nested_after) and nested_before.lower()!=nested_after.lower():
+                        slots.append({"slot":key,"from":nested_before,"to":nested_after})
+                visit(value)
+        elif isinstance(node,list):
+            for item in node:
+                visit(item)
+
+    visit(payload)
+    unique={}
+    for item in slots:
+        unique[item["slot"].lower()]=item
+    return list(unique.values())
+
+
 def parse_state_diff_output(output):
     text_output=str(output or "")
     gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",text_output)
     call_match=re.search(r"CALL ([^\r\n]+)",text_output)
-    success_match=re.search(r"SUCCESS (true|false)",text_output,re.I)
-    eth_match=re.search(r"ETH_SENT ([0-9]+)",text_output)
-    change_match=re.search(r"STORAGE_CHANGES ([0-9]+)",text_output)
-    fallback_match=re.search(r"FALLBACK_WRITES ([0-9]+)",text_output)
-    slots=[]
+    success_match=re.search(r"SUCCESS\s+(true|false)",text_output,re.I)
+    eth_match=re.search(r"ETH_SENT\s+([0-9]+)",text_output)
+    change_match=re.search(r"STORAGE_CHANGES\s+([0-9]+)",text_output)
+    fallback_match=re.search(r"FALLBACK_WRITES\s+([0-9]+)",text_output)
+    slots=_extract_state_diff_json_slots(text_output)
     lines=[line.strip() for line in text_output.splitlines()]
     for index,line in enumerate(lines):
         if line=="SLOT" and index+5<len(lines):
@@ -2600,6 +2666,7 @@ def parse_state_diff_output(output):
         "eth_sent":int(eth_match.group(1)) if eth_match else 0,
         "changes_expected":int(change_match.group(1)) if change_match else len(dedup),
         "fallback_writes":int(fallback_match.group(1)) if fallback_match else 0,
+        "state_diff_json":bool(_extract_state_diff_json_slots(text_output)),
         "slots":list(dedup.values()),
         "raw":text_output,
     }
@@ -2671,6 +2738,7 @@ contract LowkeyStateDiff is Test {{
         vm.startStateDiffRecording();
         (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
 
+        string memory stateDiffJson = vm.getStateDiffJson();
         (bytes32[] memory recordedReads, bytes32[] memory recordedWrites) = vm.accesses(TARGET);
         Vm.StorageAccess[] memory storageAccesses = vm.getStorageAccesses();
         Vm.AccountAccess[] memory accountAccesses = vm.stopAndReturnStateDiff();
@@ -2683,6 +2751,9 @@ contract LowkeyStateDiff is Test {{
         console2.log("STORAGE_ACCESSES", storageAccesses.length);
         console2.log("RECORDED_READS", recordedReads.length);
         console2.log("RECORDED_WRITES", recordedWrites.length);
+        console2.log("STATE_DIFF_JSON_BEGIN");
+        console2.log(stateDiffJson);
+        console2.log("STATE_DIFF_JSON_END");
         if (!success) {{
             console2.log("REVERT_DATA");
             console2.logBytes(data);
