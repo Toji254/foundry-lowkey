@@ -2330,10 +2330,48 @@ def fork_running(state):
     except OSError:
         return False
 
+
+def run_fork_state(config,args):
+    if not args or args[0] in {"help","-h","--help"}:
+        print("Usage: lk fork dump [file] | lk fork load <file>")
+        return 0
+    rpc=effective_rpc(config)
+    if not rpc or not anvil_rpc_info(config):
+        return fail("Error: a running Anvil RPC is required.")
+    action=args[0]
+    if action=="dump":
+        path=os.path.expanduser(args[1] if len(args)>1 else "anvil-state.json")
+        state=rpc_json(rpc,"anvil_dumpState",[])
+        if not isinstance(state,str):
+            return fail("Error: Anvil did not return a state snapshot.")
+        Path(path).write_text(state,encoding="utf-8")
+        print(f"Anvil state dumped: {path}")
+        return 0
+    if action=="load":
+        if len(args)!=2:
+            return fail("Usage: lk fork load <file>")
+        path=os.path.expanduser(args[1])
+        if not os.path.exists(path):
+            return fail(f"Error: state file not found: {path}")
+        try:
+            state=Path(path).read_text(encoding="utf-8").strip()
+        except OSError as error:
+            return fail(f"Error reading state file: {error}")
+        if not re.fullmatch(r"0x[0-9a-fA-F]+",state):
+            return fail("Error: state file does not contain an Anvil hex snapshot.")
+        result=rpc_json(rpc,"anvil_loadState",[state])
+        if result is not True:
+            return fail("Error: Anvil rejected the state snapshot.")
+        print(f"Anvil state loaded: {path}")
+        return 0
+    return fail("Usage: lk fork dump [file] | lk fork load <file>")
+
 def run_fork(args):
     values=list(args)
     if not values:
         return fail("Usage: lk fork <rpc-url> [block] [--port PORT] | lk fork status | lk fork stop")
+    if values[0] in {"dump","load"}:
+        return run_fork_state(config,values)
     if values[0]=="status":
         state=fork_state()
         if state and fork_running(state):
@@ -2497,6 +2535,8 @@ THE ATTACK LAB
 TIME / FORKING
   lk fork <rpc> [block]               Start a local fork on :8546
   lk fork status                      Show fork status
+  lk fork dump [file]                 Save full Anvil state
+  lk fork load <file>                  Restore full Anvil state
   lk fork stop                        Stop the Lowkey fork
   lk rpc <rpc>                         Point Lowkey at a specific RPC
 
