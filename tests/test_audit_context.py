@@ -24,6 +24,22 @@ class AuditContextTests(unittest.TestCase):
             self.assertEqual(context["target"]["contract"], None)
             self.assertEqual(context["signals"], [])
 
+    def test_source_link_preserves_relative_label_and_targets_exact_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            with patch.dict("os.environ", {"TERM_PROGRAM": "vscode"}):
+                linked = audit_context.source_link(
+                    "src/Vault.sol",
+                    42,
+                    7,
+                    root,
+                )
+        self.assertIn("src/Vault.sol:42:7", linked)
+        self.assertIn("vscode://file/", linked)
+        self.assertIn(":42:7", linked)
+
+
     def test_update_and_reload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
