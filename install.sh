@@ -24,7 +24,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py clone_tools.py; do
+for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py clone_tools.py walkthrough.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
@@ -83,7 +83,7 @@ installed = {
     str(lowkey_dir / "generator.py"): sha256(lowkey_dir / "generator.py"),
     str(lowkey_dir / "slither_tools.py"): sha256(lowkey_dir / "slither_tools.py"),
     str(lowkey_dir / "audit_context.py"): sha256(lowkey_dir / "audit_context.py"),
-    str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),
+    str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),\n    str(lowkey_dir / "walkthrough.py"): sha256(lowkey_dir / "walkthrough.py"),
     str(bin_dir / "lk"): sha256(bin_dir / "lk"),
 }
 
