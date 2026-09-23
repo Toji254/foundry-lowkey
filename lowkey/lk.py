@@ -956,7 +956,7 @@ def run_cast(args,config,capture=False):
     for flag in ["--preview","--dry-run","--confirm","--yes"]:
         while flag in remaining: remaining.remove(flag)
     cmd.extend(remaining)
-    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","index","selectors","rpc","access-list","constructor-args","creation-code"}
+    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","rpc","access-list"}
     active_rpc=effective_rpc(config)
     if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
     actor=actor_override or config.get("actor")
@@ -1074,8 +1074,14 @@ def run_mapping(config,*args):
     if key_type=="address" and not is_address(key):
         return fail(f"Error: invalid address mapping key: {key}")
     computed=run_cast(["index",key_type,key,slot],config,capture=True)
-    if not computed: return fail("Error: could not compute mapping slot.")
-    print(f"Mapping slot: {computed}"); run_cast(["st",computed],config)
+    result_code=getattr(computed,"code",0 if computed else 1)
+    if result_code != 0:
+        return fail("Error: could not compute mapping slot.")
+    computed=str(computed).strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",computed):
+        return fail("Error: could not compute mapping slot.")
+    print(f"Mapping slot: {computed}")
+    return run_cast(["st",computed],config)
 def snapshot_path(config,chain=None):
     target=config.get("target") or "no-target"
     chain=chain or run_cast(["chain-id"],config,capture=True) or "unknown-chain"
