@@ -82,6 +82,11 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
 
+    def test_solidity_identifier(self):
+        self.assertEqual(
+            lk.solidity_identifier("unauthorized release #1"),
+            "unauthorized_release__1",
+        )
 
 if __name__ == "__main__":
     unittest.main()
