@@ -2273,7 +2273,8 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     if not target:
         return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
 
-    contract = requested or "local-lab-target"
+    remembered = project_context_target(root) or {}
+    contract = requested or remembered.get("contract") or "local-lab-target"
     artifact = os.path.join(root, "out", f"{contract}.sol", f"{contract}.json") if contract else None
     if not artifact or not os.path.isfile(artifact):
         artifact = None
