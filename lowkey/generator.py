@@ -439,11 +439,54 @@ def _write(root: Path, requested: Path | None, default: Path, content: str, forc
     path = requested or default
     path = path if path.is_absolute() else root / path
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Default generator outputs are deterministic. When the exact file is one of
+    # Lowkey's own generated artifacts, regenerate it in place instead of forcing
+    # users to manually delete it or accumulating timestamped copies.
     if path.exists() and not force:
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+        if "Lowkey-generated " in existing:
+            path.write_text(content, encoding="utf-8")
+            return path
+
+        # Never overwrite a non-Lowkey file unless the user explicitly asks for --force.
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
+
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _cleanup_generated_deployments(root: Path, *idents: str) -> list[Path]:
+    """Remove old Lowkey deployment files for the same logical contract.
+
+    Only files containing Lowkey's own generated marker are removed. User-created
+    scripts, even when similarly named, are left untouched.
+    """
+    script_dir = root / "script"
+    if not script_dir.is_dir():
+        return []
+
+    wanted = {f"LowkeyDeploy_{_id(ident)}" for ident in idents if ident}
+    removed: list[Path] = []
+    for path in script_dir.glob("LowkeyDeploy_*.s.sol"):
+        if path.stem not in wanted and not any(path.stem.startswith(f"{name}_") for name in wanted):
+            continue
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "Lowkey-generated deployment" not in existing:
+            continue
+        try:
+            path.unlink()
+            removed.append(path)
+        except OSError:
+            continue
+    return removed
 
 
 def _template_poc(contract: str, target: str, function: str, value: str, calldata: str) -> str:
