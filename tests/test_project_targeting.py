@@ -120,7 +120,7 @@ class ProjectTargetingTests(unittest.TestCase):
             "foundry-lowkey",
         )
 
-    def test_dispatch_accepts_git_clone_alias(self):
+    def test_clone_requires_only_repo(self):
         original = lk.run_clone
         calls = []
 
@@ -135,18 +135,15 @@ class ProjectTargetingTests(unittest.TestCase):
                 config = {"target": None}
                 with patch_cwd(root):
                     result = lk.dispatch_command(
-                        "git",
-                        ["clone", "https://example.com/repo.git", "Escrow"],
+                        "clone",
+                        ["https://example.com/repo.git"],
                         config,
                     )
         finally:
             lk.run_clone = original
 
         self.assertEqual(result, 0)
-        self.assertEqual(
-            calls[0][1],
-            ["https://example.com/repo.git", "Escrow"],
-        )
+        self.assertEqual(calls[0][1], ["https://example.com/repo.git"])
 
     def test_upgradeable_artifact_has_initializer(self):
         artifact = {
