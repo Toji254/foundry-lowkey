@@ -6,6 +6,8 @@ import re
 import shlex
 import io
 import shutil
+import socket
+from urllib import request as urllib_request
 from contextlib import redirect_stdout
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -43,9 +45,9 @@ AUDIT_CHECKLIST = [
 ]
 
 DEFAULT_CONFIG = {
-    "target": None, "aliases": {}, "targets": {}, "rpc": None,
+    "target": None, "target_contract": None, "aliases": {}, "targets": {}, "rpc": None,
     "rpc_profiles": {}, "actor": None, "wallets": {},
-    "abi_paths": {}, "labels": {}, "confirm_sends": False, "version": 2
+    "abi_paths": {}, "labels": {}, "confirm_sends": False, "rpc_auto": False, "version": 3
 }
 
 _COMMAND_STATUS = 0
