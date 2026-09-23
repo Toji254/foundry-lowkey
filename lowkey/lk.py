@@ -352,7 +352,7 @@ def decode_event_log(config,log):
         signature=format_signature(item)
         event_topic=cast_output(["cast","sig-event",signature])[1]
         if event_topic.lower().strip()==topic0:
-            decoded=run_cast(["decode-event","--sig",signature,data,"--topics"]+topics[1:],config,capture=True)
+            decoded=run_cast(["decode-event","--sig",signature,data,*topics[1:]],config,capture=True)
             return signature,decoded
     return None
 
@@ -859,7 +859,10 @@ def run_decode(config,args):
 
 def run_event(config,args):
     if len(args)<2: print("Usage: lk event <event-signature> <data> [topic ...]"); return
-    run_cast(["decode-event","--sig",args[0],args[1],"--topics"]+args[2:],config)
+    code,output,error=cast_output(["cast","decode-event","--sig",args[0],args[1],*args[2:]])
+    if output: print(output)
+    if error: print(error,file=sys.stderr)
+    return code
 
 def run_namespace(config,args):
     if len(args)!=1: print("Usage: lk namespace <erc7201-namespace-id>"); return
@@ -899,7 +902,7 @@ def run_scan(args):
     root=args[0] if args else "src"
     if not os.path.exists(root): print(f"Path not found: {root}"); return
     patterns=[
-        ("REENTRANCY REVIEW",re.compile(r"\.(call|delegatecall|staticcall)\s*(\{|\(")),
+        ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()"),
         ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
         ("TX.ORIGIN",re.compile(r"\btx\.origin\b")),("DELEGATECALL",re.compile(r"\bdelegatecall\b")),
         ("SELFDESTRUCT",re.compile(r"\bselfdestruct\s*\(")),("UNCHECKED",re.compile(r"\bunchecked\s*\{")),
@@ -1302,7 +1305,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
 def main():
     config=load_config()
     if len(sys.argv)<2: print_help(); return
-    dispatch_command(sys.argv[1],sys.argv[2:],config)
+    result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+    if isinstance(result,int): raise SystemExit(result)
 
 if __name__ == "__main__":
     main()
