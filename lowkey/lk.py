@@ -2210,20 +2210,22 @@ def run_clone(config, args):
     print(f"Directory  : {destination}")
 
     try:
+        # Stream Git's progress directly so a slow submodule clone does not
+        # look frozen to the user.
         completed = subprocess.run(
             [git, "clone", "--recurse-submodules", clone_url, str(destination)],
-            capture_output=True,
             text=True,
         )
+    except KeyboardInterrupt:
+        shutil.rmtree(destination, ignore_errors=True)
+        return fail("Error: clone cancelled; partial directory removed.", 130)
     except OSError as error:
+        shutil.rmtree(destination, ignore_errors=True)
         return fail(f"Error cloning repository: {error}")
 
-    clone_output = "\n".join(
-        part.strip() for part in (completed.stdout or "", completed.stderr or "") if part and part.strip()
-    )
     if completed.returncode != 0:
-        tail = "\n".join(clone_output.splitlines()[-20:]) if clone_output else "git clone failed"
-        return fail(f"Error: git clone failed.\n{tail}", completed.returncode)
+        shutil.rmtree(destination, ignore_errors=True)
+        return fail("Error: git clone failed.", completed.returncode)
 
     if not (destination / "foundry.toml").is_file():
         return fail(f"Error: {destination} is not a Foundry project (foundry.toml missing).")
