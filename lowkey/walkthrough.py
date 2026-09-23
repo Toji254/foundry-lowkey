@@ -264,7 +264,7 @@ def _parse_structs(source: str) -> dict[str, list[Field]]:
 def _parse_mappings(source: str) -> list[dict[str, Any]]:
     found = []
     rx = re.compile(
-        r"mapping\s*\(([^=]+?)\s*=>\s*([^\)]+?)\)\s+(\w+)\s*(?:;|=)",
+        r"mapping\s*\(([^=]+?)\s*=>\s*([^\)]+?)\)\s+"\n        r"(?:(?:public|private|internal|external|constant)\s+)*(\w+)\s*(?:;|=)",
         re.S,
     )
     for match in rx.finditer(source):
