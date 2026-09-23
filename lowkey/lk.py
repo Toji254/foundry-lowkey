@@ -1096,7 +1096,7 @@ contract Matrix_{identifier} is Test {{
 }}
 '''
         filename=write_generated_test("matrix_"+identifier,template)
-        return run_foundry(["test","--match-path",pathlib.Path(filename).as_posix(),"-vvvv"])
+        return run_foundry(["test","--match-path",Path(filename).as_posix(),"-vvvv"])
     print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
 
 def run_note(note):
@@ -1655,7 +1655,7 @@ contract LowkeyStateDiff is Test {{
 }}
 '''
         path=write_generated_test("state-diff_"+signature.split("(",1)[0],body)
-        code=run_foundry(["test","--match-path",pathlib.Path(path).as_posix(),"-vvvv"])
+        code=run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
         if not _keep:
             try: os.remove(path)
             except OSError: pass
