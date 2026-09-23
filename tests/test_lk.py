@@ -1352,6 +1352,18 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("lk state-diff withdraw()",rendered)
 
 
+    def test_dispatch_uses_simple_audit_commands(self):
+        with patch.object(lk, "run_audit", return_value=0) as audit,              patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as findings,              patch.object(lk, "run_investigate", return_value=0) as focus:
+            self.assertEqual(lk.dispatch_command("audit", [], {}), 0)
+            self.assertEqual(lk.dispatch_command("findings", [], {}), 0)
+            self.assertEqual(lk.dispatch_command("focus", ["SIG-1"], {}), 0)
+            self.assertEqual(lk.dispatch_command("context", [], {}), 0)
+        audit.assert_called_once()
+        findings.assert_called_once()
+        focus.assert_called_once()
+        context.assert_called_once()
+
+
     def test_dispatch_exposes_shared_audit_commands(self):
         with patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as signals:
             lk.dispatch_command("context", [], {})
