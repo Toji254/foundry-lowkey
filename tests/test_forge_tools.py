@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "forge_tools.py"
 spec = importlib.util.spec_from_file_location("forge_tools", MODULE)
 forge_tools = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = forge_tools
 spec.loader.exec_module(forge_tools)
 
 class LowkeyForgeTests(unittest.TestCase):
