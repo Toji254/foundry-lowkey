@@ -1108,6 +1108,72 @@ class LowkeyCastTests(unittest.TestCase):
             {"calldata", "probe", "state-diff", "fuzz", "invariant", "mutate", "symbolic"},
         )
 
+    def test_parse_state_diff_output_extracts_changed_slots(self):
+        output = """
+[PASS] test_state_diff() (gas: 247291)
+Logs:
+  CALL createescrow(uint256,address)
+  SUCCESS true
+  ETH_SENT 1000000000000000000
+  STORAGE_CHANGES 1
+  SLOT
+  0x""" + "1" * 64 + """
+  FROM
+  0x""" + "0" * 64 + """
+  TO
+  0x""" + "0" * 63 + "1" + """
+"""
+        parsed = lk.parse_state_diff_output(output)
+        self.assertEqual(parsed["gas"], 247291)
+        self.assertEqual(parsed["call"], "createescrow(uint256,address)")
+        self.assertTrue(parsed["success"])
+        self.assertEqual(parsed["eth_sent"], 10**18)
+        self.assertEqual(len(parsed["slots"]), 1)
+        self.assertEqual(parsed["slots"][0]["to"], "0x" + "0" * 63 + "1")
+
+    def test_mapping_slot_match_decodes_struct_field_name(self):
+        address = "0x" + "1" * 40
+        changed_slot = "0x" + "2" * 64
+        types = {
+            "t_address": {"label": "address", "encoding": "inplace"},
+            "t_uint256": {"label": "uint256", "encoding": "inplace"},
+            "t_struct(Create)_storage": {
+                "encoding": "inplace",
+                "members": [
+                    {"label": "creator", "slot": "0", "type": "t_address"},
+                    {"label": "amount", "slot": "1", "type": "t_uint256"},
+                ],
+            },
+            "t_mapping(uint256,t_struct(Create)_storage)": {
+                "encoding": "mapping",
+                "key": "t_uint256",
+                "value": "t_struct(Create)_storage",
+            },
+        }
+        storage = [{
+            "label": "escrow",
+            "slot": "1",
+            "type": "t_mapping(uint256,t_struct(Create)_storage)",
+        }]
+        with patch.object(
+            lk, "storage_layout_details", return_value=(types, storage)
+        ), patch.object(
+            lk, "configured_actor_addresses", return_value=[("Alice", address)]
+        ), patch.object(
+            lk, "cast_output", return_value=(0, changed_slot, "")
+        ):
+            labels = lk.mapping_slot_matches(
+                {"target": "0x" + "9" * 40, "wallets": {"Alice": {"address": address}}},
+                "createescrow(uint256,address)",
+                ["1 ether", "Bob"],
+                address,
+                [changed_slot],
+            )
+        self.assertEqual(
+            labels[changed_slot.lower()],
+            ("escrow[0].creator", "t_address"),
+        )
+
     def test_dispatch_exposes_simple_audit_aliases(self):
         config={}
         calls={}
