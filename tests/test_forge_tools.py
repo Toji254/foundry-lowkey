@@ -24,7 +24,7 @@ class LowkeyForgeTests(unittest.TestCase):
                 "slither": {"status": "completed", "summary": "2 finding(s)", "finding_count": 2},
                 "forge-tests": {"status": "completed", "summary": "tests audit step"},
                 "forge-coverage": {"status": "completed", "summary": "coverage audit step"},
-                "generator": {"status": "completed", "summary": "poc generated"},
+                "generator": {"status": "completed", "summary": "poc generated", "placeholder": True, "candidate_signal": "SLITHER-ABC"},
             },
         }
         with patch("forge_tools.audit_context.load", return_value=context):
@@ -38,6 +38,8 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("PASS", rendered)
         self.assertIn("2 finding(s)", rendered)
         self.assertIn("PoC scaffold", rendered)
+        self.assertIn("scaffold generated (placeholder)", rendered)
+        self.assertIn("SLITHER-ABC", rendered)
 
     def test_audit_bootstraps_poc_before_dashboard(self):
         import types
