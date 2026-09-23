@@ -595,7 +595,7 @@ def print_help() -> None:
 
 Usage:
   lk forge <forge-command> [args...]
-  lk forge audit [--checks]
+  lk forge audit [--checks] [--verbose]
   lk forge test-audit [forge test args...]
   lk forge inspect-audit <ContractName> [forge options]
 
@@ -605,6 +605,9 @@ Examples:
   lk forge inspect-audit BountyArena
   lk forge audit
   lk forge audit --checks
+  lk forge audit --checks --verbose
+
+Audit is quiet by default; use --verbose for native Forge/Slither output.
 
 Native commands are passed through to Forge unchanged.
 Audit helpers are workflow shortcuts, not vulnerability scanners.
