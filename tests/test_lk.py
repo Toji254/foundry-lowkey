@@ -335,6 +335,63 @@ class LowkeyCastTests(unittest.TestCase):
             .split("STORAGE GETTERS:", 1)[0],
         )
 
+    def test_functions_fallback_to_forge_storage_layout(self):
+        artifact = {
+            "contractName": "Escrow",
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "release",
+                    "inputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                {
+                    "type": "function",
+                    "name": "escrow",
+                    "inputs": [{"type": "uint256"}],
+                    "stateMutability": "view",
+                },
+                {
+                    "type": "function",
+                    "name": "status",
+                    "inputs": [],
+                    "stateMutability": "view",
+                },
+            ],
+        }
+        forge_layout = {
+            "storage": [
+                {"label": "escrow", "slot": "1", "type": "t_mapping(t_uint256,t_struct(Create))"}
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "Escrow.json"
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            config = {
+                "target": "0x" + "1" * 40,
+                "target_contract": "Escrow",
+                "abi_paths": {"0x" + "1" * 40: str(path)},
+            }
+            with patch.object(
+                lk,
+                "cast_output",
+                return_value=(0, json.dumps(forge_layout), ""),
+            ):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    lk.run_functions(config)
+        rendered = output.getvalue()
+        self.assertIn("STORAGE GETTERS:", rendered)
+        self.assertIn("escrow(uint256)  [public storage getter]", rendered)
+        self.assertIn("READ FUNCTIONS:", rendered)
+        self.assertIn("status()", rendered)
+        self.assertNotIn(
+            "escrow(uint256)",
+            rendered.split("READ FUNCTIONS:", 1)[1]
+            .split("STORAGE GETTERS:", 1)[0],
+        )
+
+
     def test_deps_default_project_shows_project_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
