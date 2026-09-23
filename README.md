@@ -429,6 +429,71 @@ lk export
 
 Exported evidence goes into audit-report/.
 
+## Protocol walkthrough
+
+Lowkey also has a visual, source-guided protocol walkthrough for understanding an unfamiliar system as one connected execution rather than a pile of isolated calls.
+
+```bash
+lk walkthrough
+lk walkthrough --auto
+lk walkthrough --static
+lk walkthrough --contract ConfidencePoolFactory --steps 10
+```
+
+The walkthrough pipeline is:
+
+```text
+Foundry build
+    ↓
+ABI + storage layout + source model
+    ↓
+actor assignment (Alice / Bob / Attacker / ...)
+    ↓
+source-guided workflow planning
+    ↓
+REAL local-Anvil transactions
+    ↓
+receipt + events + trace + storage/balance deltas
+    ↓
+terminal protocol board
+    ↓
+replayable Forge script + JSON evidence
+```
+
+The terminal renderer deliberately uses different visual shapes for different Solidity concepts:
+
+```text
+▣ MAPPING          ╔─ key → value ─────────────────────╗
+                   │ Alice → 1000   @ computed slot     │
+                   ╰─────────────────────────────────────╯
+
+▤ STRUCT           ╔═ STRUCT Position ══════════════════╗
+                   │ owner  = 0x…   [address] @ slot 2 │
+                   │ amount = 1000   [uint256] @ slot 3│
+                   ╚════════════════════════════════════╝
+
+⟦ FUNCTION ⟧       Alice ────▶ deposit(uint256)
+
+EVENT              ✦ PoolCreated(...)
+TRACE              ⇢ Factory ────▶ Pool
+INHERITANCE        Parent ⋯⋯⋯▶ Child
+STATE              ◆ slot / balance / transition
+```
+
+`LIVE` values come from the compiler artifacts and local chain execution. Workflow ordering and generated arguments are explicitly marked `INFERRED`; Lowkey does not pretend source code reveals developer intent perfectly.
+
+Walkthrough evidence is kept project-scoped:
+
+```text
+.audit/walkthrough/
+├── model.json          compiled/source protocol model
+└── latest.json         executed steps, state deltas, events and traces
+script/
+└── LowkeyWalkthrough_<Contract>.s.sol
+```
+
+By default the interactive runner pauses after each transaction so you can watch the protocol state evolve. `--yes` or `--non-interactive` removes prompts for automation/CI.
+
 ## Install
 
 From a machine that already has Foundry:
