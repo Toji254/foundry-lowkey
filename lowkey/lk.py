@@ -1056,57 +1056,58 @@ def run_fork(args):
 
 def print_help():
     print("""
-LowkeyCast (lk) - Foundry auditor interface
+LowkeyCast - Foundry auditor interface
 
-TARGETS / STATE
-  lk target <addr>                    Set current target
+CORE
+  lk target <addr>                    Set target
   lk target <name> <addr>             Save + select target
-  lk target list                      List numbered targets
-  lk target auto [name]               Use latest Foundry broadcast deployment
+  lk target list                      List saved targets
+  lk target auto [name]               Use latest broadcast deployment
   lk use <name|number>                Switch target
-  lk deployments                      Discover broadcast deployments
+  lk deployments                      List deployments
   lk status                           Show target/RPC/actor/ABI/last tx
   lk rpc <url>                        Set RPC
   lk rpc set <name> <url>             Save RPC profile
   lk rpc use <name>                   Select RPC profile
-  lk wallet list                      List profiles without keys
-  lk wallet set <name> <private-key>  Save a local test key
-  lk wallet set-env <name> <ENV_VAR>  Read signing key from an environment variable
+  lk wallet list                      List signer profiles
+  lk wallet set <name> <private-key>  Save local test key (plaintext on disk)
+  lk wallet set-env <name> <ENV_VAR>  Use environment-backed signer
   lk wallet use <name>                Select signer
   lk wallet remove <name>             Remove signer
   lk actor reset                      Clear signer
 
 ABI / INTERACTION
   lk abi <path>                       Load ABI
-  lk abi auto                         Auto-load ABI from broadcast deployment
-  lk functions [query]                List/fuzzy-search functions
-  lk fn <query>                       Fuzzy-search functions
+  lk abi auto                         Auto-load ABI
+  lk functions [query]                List/fuzzy-find functions
+  lk fn <query>                       Fuzzy-find functions
   lk ask <function>                   Show argument names/types
+  lk wizard <function> [mode]         Prompt for call/send/encode arguments
   lk c <func> [args]                  Read
   lk s <func> [args]                  Send
-  lk s <func> ... --preview           Preview resolved transaction
-  lk s <func> ... --confirm           Preview + ask before send
+  lk s ... --preview                  Preview without sending
+  lk s ... --confirm                  Preview + confirmation prompt
   lk encode <func> [args]             Build calldata
-  lk decode <function> <return-data>  Decode return data
+  lk decode <function> <return-data>  Decode return values
   lk decode-error <revert-data>       Decode custom error
   lk event <sig> <data> [topics...]   Decode event data
   lk tx [hash]                        Inspect/decode transaction
-  lk raw <cast-command> ...           Run cast without LowkeyCast injection
+  lk raw <cast-command> ...           Raw Cast bypass
 
 INSPECTION
   lk info                             Target/chain/code/ABI/proxy
-  lk recon                            Quick reconnaissance
-  lk proxy                            EIP-1967 proxy inspection
+  lk recon                            Balance/codehash/codesize/nonce
+  lk proxy                            Proxy + implementation/admin
   lk implementation                   Resolve implementation
   lk admin                            Resolve proxy admin
-  lk selectors                        Extract bytecode selectors
+  lk selectors                        Extract runtime selectors
   lk mapping <slot> <key>             Compute/read mapping slot
-  lk mapping <type> <slot> <key>      Explicit mapping key type
-  lk namespace <id>                   Compute ERC-7201 slot
+  lk mapping <type> <slot> <key>      Explicit key type
+  lk namespace <id>                   ERC-7201 namespace slot
   lk proof <slot> [block]             Storage proof
-  lk snapshot [slot ...]              Target+chain-scoped storage snapshot
+  lk snapshot [slot ...]              Save target/chain-scoped storage
   lk diff                             Compare snapshot
-  lk ens <name|address>               ENS forward/reverse lookup
+  lk ens <name|address>               ENS lookup
   lk token <token>                    ERC20 metadata
   lk token balance <token> <holder>   ERC20 balance
 
@@ -1114,39 +1115,39 @@ SOURCE TRIAGE
   lk scan [src]                       High-signal Solidity review markers
   lk deps [src]                       Import/inheritance map
   lk layout <ContractName>            Forge storage layout
-  lk risk                             ABI-level function surface heuristic
+  lk risk                             ABI-level function risk heuristic
   lk gas <func> [args]                Estimate gas
-  lk trace [tx] [flags]               Replay and trace transaction
+  lk trace [tx] [flags]               Replay/trace transaction
+  lk replay <tx> [flags...]            Explicit replay alias
+  lk fork <rpc-url> [block]           Print Anvil fork command
   lk logs [args...]                   Query logs
-  lk logs --decode [args...]          Query + decode logs
+  lk logs --decode [args...]          Query + decode ABI events
 
 AUDIT OS
-  lk audit                            Interactive audit dashboard
+  lk audit                            Interactive dashboard
   lk finding <note>                   Record observation
   lk finding add <severity> <title> <text>
-  lk checklist                       View checklist
-  lk checklist done <text>            Mark checklist item
-  lk checklist reset                  Reset checklist
+  lk checklist                       View/mark/reset checklist
   lk matrix init                      Initialize attacker-state matrix
-  lk matrix actor <name> <addr>       Save actor
-  lk matrix state <name> <desc>       Save state definition
+  lk matrix actor <name> <addr>       Add actor
+  lk matrix state <name> <desc>       Add state definition
   lk matrix add <name> <func> <actor> <expected>
   lk matrix list                      List scenarios
   lk matrix test <name>               Generate Forge test skeleton
   lk test-gen                         Reproduce latest send as Forge test
-  lk note <text>                      Save note
-  lk todo <text>                      Add TODO
+  lk note <text>                      Save audit note
+  lk todo <text>                      Add audit TODO
   lk session [start|resume|end]       Audit session lifecycle
   lk export                           Build audit-report/
-  lk batch <file>                     Execute lk commands from a file
-  lk self-test                        Built-in regression checks
+  lk batch <file>                     Run one lk command per line
+  lk self-test                        Run regression checks
 
-FORENSICS / SHORTCUTS
+FORENSICS
   lk receipt [tx]                     Transaction receipt
   lk last [tx|trace|logs]             Reuse latest transaction
-  lk c ...                             cast call shortcut
-  lk s ...                             cast send shortcut
-  lk st ...                            cast storage shortcut
+  lk c ...                            Cast call shortcut
+  lk s ...                            Cast send shortcut
+  lk st ...                           Cast storage shortcut
 """)
 def dispatch_command(cmd,args,config,from_batch=False):
     if cmd in {"--help","-h","help"}: print_help()
