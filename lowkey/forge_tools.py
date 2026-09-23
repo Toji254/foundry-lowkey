@@ -305,81 +305,141 @@ def _coverage_gap(metric: tuple[str, int, int] | None) -> str:
     return str(max(total - covered, 0))
 
 
+def _coverage_cell(metric: tuple[str, int, int] | None) -> str:
+    if metric is None:
+        return "—"
+    percent, covered, total = metric
+    return f"{covered}/{total} ({percent}%)"
+
+
+def _coverage_uncovered(metric: tuple[str, int, int] | None) -> str:
+    if metric is None:
+        return "—"
+    _, covered, total = metric
+    return str(max(total - covered, 0))
+
+
 def _format_coverage_report(output: str) -> str:
-    """Turn Foundry's dense coverage table into an audit-focused summary."""
+    """Render Foundry coverage as a readable table without hiding coverage data."""
     rows = _parse_coverage_table(output)
     if not rows:
         return ""
 
-    production = [
-        row for row in rows
-        if str(row["file"]).startswith("src/") and "/mocks/" not in str(row["file"])
-    ]
-    shown = production or rows
-
-    header = [
-        "\nCOVERAGE SUMMARY",
-        "================",
-        "Coverage = code exercised by tests. The last column shows what remains untested.",
+    lines = [
+        "\nCOVERAGE TABLE",
+        "==============",
+        "What this means:",
+        "  Lines      = source-code lines executed by tests",
+        "  Statements = executable statements executed by tests",
+        "  Branches   = decision paths exercised by tests",
+        "  Functions  = functions reached by tests",
+        "  Each cell is: tested / total (percentage). 'Not exercised' shows the gap.",
         "",
-        f"{'File':<45} {'Lines':>15} {'Statements':>18} {'Branches':>16} {'Functions':>15} {'Not exercised L/S/B/F':>22}",
-        "-" * 123,
     ]
-    for row in shown:
-        metrics = []
-        for key in ("lines", "statements", "branches", "functions"):
-            metric = row[key]
-            if metric is None:
-                metrics.append("N/A")
-            else:
-                percent, covered, total = metric  # type: ignore[misc]
-                metrics.append(f"{percent}% ({covered}/{total})")
-        gap_labels = ("L", "S", "B", "F")
-        gap_keys = ("lines", "statements", "branches", "functions")
-        gap_text = " ".join(
-            f"{label}{_coverage_gap(row[key])}"
-            for label, key in zip(gap_labels, gap_keys)
-            if row[key] is not None
-        ) or "N/A"
-        header.append(
-            f"{str(row['file'])[:45]:<45} "
-            f"{metrics[0]:>15} {metrics[1]:>18} {metrics[2]:>16} {metrics[3]:>15} {gap_text:>22}"
+
+    widths = {
+        "file": 44,
+        "lines": 18,
+        "statements": 22,
+        "branches": 19,
+        "functions": 19,
+        "gap": 26,
+    }
+    header = (
+        f"{'File':<{widths['file']}} "
+        f"{'Lines':>{widths['lines']}} "
+        f"{'Statements':>{widths['statements']}} "
+        f"{'Branches':>{widths['branches']}} "
+        f"{'Functions':>{widths['functions']}} "
+        f"{'Not exercised (L/S/B/F)':>{widths['gap']}}"
+    )
+    separator = "-" * (
+        widths["file"] + widths["lines"] + widths["statements"] +
+        widths["branches"] + widths["functions"] + widths["gap"] + 5
+    )
+    lines.extend([header, separator])
+
+    for row in rows:
+        cells = {
+            "lines": _coverage_cell(row["lines"]),
+            "statements": _coverage_cell(row["statements"]),
+            "branches": _coverage_cell(row["branches"]),
+            "functions": _coverage_cell(row["functions"]),
+        }
+        gaps = " / ".join(
+            _coverage_uncovered(row[key])
+            for key in ("lines", "statements", "branches", "functions")
+        )
+        lines.append(
+            f"{str(row['file']):<{widths['file']}} "
+            f"{cells['lines']:>{widths['lines']}} "
+            f"{cells['statements']:>{widths['statements']}} "
+            f"{cells['branches']:>{widths['branches']}} "
+            f"{cells['functions']:>{widths['functions']}} "
+            f"{gaps:>{widths['gap']}}"
         )
 
     total = next((row for row in rows if str(row["file"]).strip() == "Total"), None)
     if total:
-        header.append("-" * 123)
-        metrics = []
-        for key in ("lines", "statements", "branches", "functions"):
-            metric = total[key]
-            if metric is None:
-                metrics.append("N/A")
-            else:
-                percent, covered, total_count = metric  # type: ignore[misc]
-                metrics.append(f"{percent}% ({covered}/{total_count})")
-        header.append(
-            f"{'All reported files':<45} "
-            f"{metrics[0]:>15} {metrics[1]:>18} {metrics[2]:>16} {metrics[3]:>15}"
+        lines.append(separator)
+        total_cells = [
+            _coverage_cell(total[key])
+            for key in ("lines", "statements", "branches", "functions")
+        ]
+        lines.append(
+            f"{'All reported files':<{widths['file']}} "
+            f"{total_cells[0]:>{widths['lines']}} "
+            f"{total_cells[1]:>{widths['statements']}} "
+            f"{total_cells[2]:>{widths['branches']}} "
+            f"{total_cells[3]:>{widths['functions']}}"
         )
 
-    return "\n".join(header)
+    lines.extend([
+        "",
+        "Read it like this: 312/322 (96.89%) means 312 lines were exercised and 10 were not.",
+        "High coverage improves test confidence, but it does not prove the behavior is secure.",
+    ])
+    return "\n".join(lines)
 
 
 def _strip_coverage_table(output: str) -> str:
-    """Remove Foundry's raw coverage box before Lowkey prints its clearer summary."""
+    """Remove only Foundry's raw coverage box; Lowkey prints the readable table instead."""
     lines = str(output or "").splitlines()
     kept: list[str] = []
     in_table = False
+    saw_header = False
+
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("| File") and "% Lines" in stripped and "% Statements" in stripped:
+
+        if stripped.startswith("╭") and "──" not in stripped:
+            # Foundry's coverage box starts immediately before the File header.
             in_table = True
             continue
+
+        if stripped.startswith("| File") and "% Lines" in stripped and "% Statements" in stripped:
+            in_table = True
+            saw_header = True
+            continue
+
         if in_table:
-            if stripped.startswith("|") or stripped.startswith("+") or stripped.startswith("╭") or stripped.startswith("╰") or stripped.startswith("├"):
+            if (
+                stripped.startswith("|")
+                or stripped.startswith("+")
+                or stripped.startswith("╭")
+                or stripped.startswith("╰")
+                or stripped.startswith("├")
+            ):
                 continue
-            in_table = False
+            if saw_header:
+                in_table = False
+                saw_header = False
+            else:
+                # Keep non-table text from before the coverage header.
+                in_table = False
+
         kept.append(line)
+
     return "\n".join(kept).strip()
 
 
