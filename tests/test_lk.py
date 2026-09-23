@@ -1260,6 +1260,42 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(config["abi_paths"][target],str(path))
 
 
+    def test_storage_layout_inspection_uses_target_project_root(self):
+        target = "0x" + "4" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "project"
+            outside = pathlib.Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "foundry.toml").write_text("[profile.default]\nsrc = 'src'\n", encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Escrow",
+                "abi_paths": {target: str(root / "out" / "Escrow.json")},
+                "project_roots": {target: str(root)},
+            }
+            forge_layout = {
+                "storage": [{"label": "escrow", "slot": "1", "type": "t_mapping"}],
+                "types": {"t_mapping": {"encoding": "mapping", "key": "t_uint256", "value": "t_uint256"}},
+            }
+            old = os.getcwd()
+            os.chdir(outside)
+            try:
+                with patch.object(
+                    lk, "read_artifact", return_value={"contractName": "Escrow", "storageLayout": {}}
+                ), patch.object(
+                    lk.subprocess, "run",
+                    return_value=subprocess.CompletedProcess(
+                        ["forge"], 0, json.dumps(forge_layout), ""
+                    ),
+                ) as run:
+                    types, storage = lk.storage_layout_details(config)
+            finally:
+                os.chdir(old)
+        self.assertEqual(storage, forge_layout["storage"])
+        self.assertEqual(types, forge_layout["types"])
+        self.assertEqual(run.call_args.kwargs["cwd"], str(root))
+
     def test_fork_state_dump_and_load(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=os.path.join(tmp,"state.json")
