@@ -90,7 +90,7 @@ class LowkeyGeneratorTests(unittest.TestCase):
             generated = root / "script" / "LowkeyDeploy_Vault.s.sol"
             self.assertTrue(generated.exists())
             self.assertIn("Lowkey-generated deployment", generated.read_text(encoding="utf-8"))
-            self.assertEqual(run.call_args.args[2], ["build", "--skip", "test"])
+            self.assertEqual(run.call_args.args[2], ["build", "--skip", "test", "--skip", "script"])
 
     def test_generate_test_uses_supplied_calldata(self):
         target = "0x" + "1" * 40
