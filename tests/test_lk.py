@@ -1458,7 +1458,7 @@ contract Escrow {
         self.assertEqual(lk.storage_type_label(types, "t_address"), "address")
         self.assertEqual(lk.storage_type_label(types, "t_uint256"), "uint256")
 
-        def test_mapping_slot_match_decodes_struct_field_name(self):
+    def test_mapping_slot_match_decodes_struct_field_name(self):
         address = "0x" + "1" * 40
         changed_slot = "0x" + "2" * 64
         types = {
