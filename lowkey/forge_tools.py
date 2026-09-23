@@ -238,7 +238,7 @@ def _coverage_needs_ir(root: Path, args: Sequence[str]) -> bool:
 
 def _coverage_compatibility_flags(root: Path, args: Sequence[str]) -> list[str]:
     """Add coverage-only compiler compatibility flags without editing project config."""
-    if _has_flag(args, "--ir-minimum", "--via-ir"):
+    if _has_flag(args, "--ir-minimum", "--via-ir", "--no-via-ir"):
         return []
     if not _coverage_needs_ir(root, args):
         return []
@@ -298,7 +298,7 @@ def run_coverage_audit(command: Sequence[str], root: Path) -> int:
     if (
         result.returncode != 0
         and _is_stack_too_deep(output)
-        and not _has_flag(command, "--ir-minimum", "--via-ir")
+        and not _has_flag(command, "--ir-minimum", "--via-ir", "--no-via-ir")
     ):
         if _supports_option("coverage", "--ir-minimum"):
             retry = [*command, "--ir-minimum"]
