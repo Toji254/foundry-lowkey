@@ -389,7 +389,7 @@ def _summary(payload: dict, project_root: Path | None = None) -> None:
     print("source review, traces, state changes, and Foundry tests.")
 
 
-def run_default(root: Path, extra: Sequence[str] = ()) -> int:
+def run_default(root: Path, extra: Sequence[str] = (), quiet: bool = False) -> int:
     binary = slither_path()
     if not binary:
         print("LowkeySlither: slither was not found on PATH. Install Slither first.", file=sys.stderr)
@@ -397,31 +397,23 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
 
     json_path, sarif_path = _default_paths(root)
     audit_context.record_tool(
-        "slither",
-        root,
-        status="running",
-        summary="static analysis started",
+        "slither", root, status="running", summary="static analysis started",
         data={"json": str(json_path), "sarif": str(sarif_path)},
     )
-    command = [
-        binary,
-        str(root),
-        "--exclude-dependencies",
-        "--disable-color",
-    ]
+    command = [binary, str(root), "--exclude-dependencies", "--disable-color"]
     fail_flags = {"--fail-pedantic", "--fail-low", "--fail-medium", "--fail-high", "--fail-none", "--no-fail-pedantic"}
     if not any(flag in extra for flag in fail_flags):
         command.append("--fail-none")
     command.extend(["--json", str(json_path), "--sarif", str(sarif_path)])
     command.extend(extra)
 
-
-    print("=== LOWKEY SLITHER ===")
-    print(f"Project : {root}")
-    print("Mode    : all detectors, dependencies excluded")
-    print("Failure : analysis findings do not abort the workflow; use --fail-high/medium/low for CI gates")
-    print(f"JSON    : {json_path}")
-    print(f"SARIF   : {sarif_path}")
+    if not quiet:
+        print("=== LOWKEY SLITHER ===")
+        print(f"Project : {root}")
+        print("Mode    : all detectors, dependencies excluded")
+        print("Failure : analysis findings do not abort the workflow; use --fail-high/medium/low for CI gates")
+        print(f"JSON    : {json_path}")
+        print(f"SARIF   : {sarif_path}")
 
     try:
         result = subprocess.run(command, cwd=root, text=True, capture_output=True)
@@ -438,7 +430,8 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         try:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
-                _summary(payload, root)
+                if not quiet:
+                    _summary(payload, root)
                 detectors = payload.get("results", {}).get("detectors", [])
                 if not isinstance(detectors, list):
                     detectors = []
@@ -449,30 +442,20 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
             print(f"LowkeySlither: could not parse JSON evidence: {exc}", file=sys.stderr)
 
     audit_context.record_tool(
-        "slither",
-        root,
-        status="completed" if result.returncode == 0 else "failed",
+        "slither", root, status="completed" if result.returncode == 0 else "failed",
         summary=f"{len(detectors)} static-analysis finding(s) reported",
-        data={
-            "json": str(json_path),
-            "sarif": str(sarif_path),
-            "finding_count": len(detectors),
-        },
+        data={"json": str(json_path), "sarif": str(sarif_path), "finding_count": len(detectors)},
     )
 
-    # Specialized commands such as --list-detectors or printers may not produce
-    # detector JSON. Surface their stdout under a clear heading instead of
-    # silently discarding it.
     show_specialized_output = any(option in extra for option in ("--print", "--list-detectors", "--list-printers", "--checklist"))
-    if result.stdout.strip() and (show_specialized_output or not json_path.exists()):
+    if result.stdout.strip() and not quiet and (show_specialized_output or not json_path.exists()):
         print("\n=== SLITHER TOOL OUTPUT ===")
         print(result.stdout.rstrip())
 
-    print(f"\nSlither status: {'completed successfully' if result.returncode == 0 else 'failed'}")
-    print("Auditor's note: static-analysis results are evidence to investigate, not automatic proof of a vulnerability.")
+    if not quiet:
+        print(f"\nSlither status: {'completed successfully' if result.returncode == 0 else 'failed'}")
+        print("Auditor's note: static-analysis results are evidence to investigate, not automatic proof of a vulnerability.")
     return result.returncode
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     binary = slither_path()
@@ -480,12 +463,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("LowkeySlither: slither was not found on PATH. Install Slither first.", file=sys.stderr)
         return 1
 
-    if not args:
-        return run_default(foundry_project_root())
+    quiet = "--quiet" in args
+    filtered = [arg for arg in args if arg != "--quiet"]
+
+    if not filtered:
+        return run_default(foundry_project_root(), quiet=quiet)
 
     # Explicit Slither options still flow through Lowkey's human-readable
     # reporter and shared audit context. The project is supplied automatically.
-    return run_default(foundry_project_root(), args)
+    return run_default(foundry_project_root(), filtered, quiet=quiet)
 
 
 
