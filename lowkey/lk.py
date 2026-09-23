@@ -4784,14 +4784,12 @@ START
   lk audit                         Run the connected audit pipeline
   lk audit --checks                Run audit with Slither + optional lint/geiger checks
   lk audit--checks                Legacy compact alias for audit --checks
-  lk audit --checks                Run audit with Slither + optional lint/geiger checks
-  lk audit--checks                Legacy compact alias for audit --checks
   lk findings                      Show audit findings
   lk focus <ID>                    Focus one finding and mark it investigating
   lk status                        Show target and audit state
   lk doctor                        Check the toolchain
   lk target <address|name>         Select the contract under review
-  lk clone <repo> <contract> [dir] Clone and prepare a Foundry project for auditing
+  lk clone <repo> [dir] [options] Clone and prepare a Foundry project for auditing
   lk lab [Contract]                 Start a local audit lab and auto-target it
   lk lab stop                       Stop an Anvil started by Lowkey
   lk actor <index> <name>          Name an Anvil account
