@@ -381,6 +381,144 @@ def _request_from_latest(root: Path) -> Request | None:
                    calldata=calldata.removeprefix("0x"))
 
 
+def _detector_mode(check: str) -> str:
+    value = str(check or "").lower().replace("_", "-")
+    if "reentrancy" in value:
+        return "reentrancy"
+    if any(token in value for token in ("arbitrary-send", "controlled-delegatecall", "low-level-calls")):
+        return "external-call"
+    if any(token in value for token in ("tx-origin", "suicidal", "selfdestruct", "unprotected-upgrade", "unprotected-setter")):
+        return "authorization"
+    if any(token in value for token in ("unchecked-lowlevel", "unused-return")):
+        return "unchecked-call"
+    if any(token in value for token in ("timestamp", "weak-prng", "block-hash")):
+        return "time"
+    if any(token in value for token in ("encode-packed", "hash-collision")):
+        return "encoding"
+    return "generic"
+
+
+def _audit_candidate(root: Path) -> dict[str, Any]:
+    """Select the current investigation signal and summarize the evidence bus."""
+    context = audit_context.load(root)
+    signals = context.get("signals", [])
+    if not isinstance(signals, list):
+        signals = []
+
+    focus = context.get("focus")
+    focused_id = focus.get("signal_id") if isinstance(focus, dict) else None
+    candidate = next(
+        (item for item in signals if isinstance(item, dict) and item.get("id") == focused_id),
+        None,
+    )
+
+    if candidate is None:
+        impact_order = {"high": 0, "medium": 1, "low": 2, "informational": 3, "unknown": 4}
+        confidence_order = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
+        open_signals = [
+            item for item in signals
+            if isinstance(item, dict) and item.get("status") in {"open", "investigating"}
+        ]
+        candidate = min(
+            open_signals,
+            key=lambda item: (
+                impact_order.get(str(item.get("impact") or "unknown").lower(), 4),
+                confidence_order.get(str(item.get("confidence") or "unknown").lower(), 3),
+                str(item.get("check") or ""),
+            ),
+            default=None,
+        )
+
+    tools = context.get("tools", {})
+    if not isinstance(tools, dict):
+        tools = {}
+
+    slither = tools.get("slither", {}) if isinstance(tools.get("slither"), dict) else {}
+    source = tools.get("source-triage", {}) if isinstance(tools.get("source-triage"), dict) else {}
+    risk = tools.get("risk", {}) if isinstance(tools.get("risk"), dict) else {}
+    trace = tools.get("trace", {}) if isinstance(tools.get("trace"), dict) else {}
+    receipt = tools.get("receipt", {}) if isinstance(tools.get("receipt"), dict) else {}
+    latest = context.get("latest", {})
+    if not isinstance(latest, dict):
+        latest = {}
+
+    candidate_data = {
+        "id": candidate.get("id") if candidate else None,
+        "tool": candidate.get("tool") if candidate else None,
+        "check": candidate.get("check") if candidate else None,
+        "title": candidate.get("title") if candidate else None,
+        "impact": candidate.get("impact") if candidate else None,
+        "confidence": candidate.get("confidence") if candidate else None,
+        "file": candidate.get("file") if candidate else None,
+        "line": candidate.get("line") if candidate else None,
+        "column": candidate.get("column") if candidate else None,
+        "function": candidate.get("function") if candidate else None,
+        "description": candidate.get("description") if candidate else None,
+        "next": candidate.get("next") if candidate else None,
+        "actions": candidate.get("actions", []) if candidate else [],
+        "mode": _detector_mode(candidate.get("check")) if candidate else "generic",
+        "evidence_count": len(candidate.get("evidence", []))
+        if candidate and isinstance(candidate.get("evidence"), list) else 0,
+    }
+
+    return {
+        "candidate": candidate_data,
+        "focused_signal": focused_id,
+        "latest": latest,
+        "tools": {
+            "slither_findings": slither.get("finding_count"),
+            "source_triage_markers": source.get("count"),
+            "risk_functions": len(risk.get("functions", []))
+            if isinstance(risk.get("functions"), list) else None,
+            "trace": trace.get("summary") or trace.get("tx_hash") or None,
+            "receipt": receipt.get("tx_hash") or None,
+            "forge_build": tools.get("forge-build", {}).get("status")
+            if isinstance(tools.get("forge-build"), dict) else None,
+            "forge_tests": tools.get("forge-tests", {}).get("status")
+            if isinstance(tools.get("forge-tests"), dict) else None,
+            "forge_coverage": tools.get("forge-coverage", {}).get("status")
+            if isinstance(tools.get("forge-coverage"), dict) else None,
+        },
+        "open_signals": sum(
+            1 for item in signals
+            if isinstance(item, dict) and item.get("status") == "open"
+        ),
+    }
+
+
+def _context_comment_block(evidence: dict[str, Any]) -> str:
+    candidate = evidence.get("candidate", {})
+    lines = [
+        "",
+        "// LOWKEY AUDIT CONTEXT",
+        f"// Signal       : {candidate.get('id') or 'none selected'}",
+        f"// Issue        : {candidate.get('title') or 'no focused signal'}",
+        f"// Detector     : {candidate.get('check') or 'manual/none'}",
+        f"// Mode         : {candidate.get('mode') or 'generic'}",
+        f"// Impact       : {candidate.get('impact') or 'unknown'}",
+        f"// Confidence   : {candidate.get('confidence') or 'unknown'}",
+        f"// Location     : {candidate.get('file') or 'unknown'}:{candidate.get('line') or '?'}",
+        f"// Function     : {candidate.get('function') or 'not resolved'}",
+        f"// Description  : {str(candidate.get('description') or 'none').replace(chr(10), ' ')[:500]}",
+        f"// Slither      : {evidence.get('tools', {}).get('slither_findings') if evidence.get('tools', {}).get('slither_findings') is not None else 'not recorded'} finding(s)",
+        f"// Source scan  : {evidence.get('tools', {}).get('source_triage_markers') if evidence.get('tools', {}).get('source_triage_markers') is not None else 'not recorded'} review marker(s)",
+        f"// Risk map     : {evidence.get('tools', {}).get('risk_functions') if evidence.get('tools', {}).get('risk_functions') is not None else 'not recorded'} function row(s)",
+        f"// Trace        : {evidence.get('tools', {}).get('trace') or 'not recorded'}",
+        f"// Latest tx    : {evidence.get('latest', {}).get('tx_hash') or 'none'}",
+        f"// Open signals : {evidence.get('open_signals', 0)}",
+    ]
+    if candidate.get("next"):
+        lines.append(f"// Next move    : {str(candidate['next']).replace(chr(10), ' ')[:500]}")
+    actions = candidate.get("actions") or []
+    if actions:
+        lines.append(f"// Suggested LK : {', '.join(str(item) for item in actions[:8])}")
+    lines.extend([
+        "// NOTE: this context is evidence for investigation, not proof that the detector is exploitable.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def _value(value: str) -> str:
     value = (value or "0").strip()
     match = re.fullmatch(r"(\d+(?:\.\d+)?)(ether|gwei|wei)", value, re.IGNORECASE)
@@ -756,10 +894,22 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     except ValueError as exc:
         print(f"Error: {exc}")
         return 2
+    evidence = _audit_candidate(root)
+    candidate = evidence.get("candidate", {})
+    placeholder_request = False
+
+    if not request.function and not request.calldata and candidate.get("function"):
+        request.function = str(candidate.get("function"))
+        placeholder_request = True
+
     if not request.function and not request.calldata:
-        print("Error: no function supplied and no recorded cast send was found.")
-        return 2
-    if not request.calldata:
+        # A focused signal is enough to create a compile-ready investigation scaffold.
+        placeholder_request = bool(candidate.get("id"))
+        if not placeholder_request:
+            print("Error: no function supplied and no recorded cast send was found.")
+            return 2
+
+    if not request.calldata and not placeholder_request:
         code, encoded, error = _run(
             root,
             "cast",
@@ -782,14 +932,33 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         contract = "Target"
     ident = _id(contract, "Target")
     if kind == "poc":
-        content = _template_poc(contract, request.target, request.function or "raw-call", request.value, request.calldata)
+        content = _context_comment_block(evidence) + _template_poc(contract, request.target, request.function or "raw-call", request.value, request.calldata or "")
         default = Path("script") / f"LowkeyPoC_{ident}.s.sol"
     else:
-        content = _template_test(contract, request.target, request.function or "raw-call", request.value, request.calldata)
+        content = _context_comment_block(evidence) + _template_test(contract, request.target, request.function or "raw-call", request.value, request.calldata or "")
         default = Path("test") / f"LowkeyTest_{ident}.t.sol"
 
     output = _write(root, request.output, default, content, request.force)
+
+    brief_dir = root / ".audit" / "poc"
+    brief_dir.mkdir(parents=True, exist_ok=True)
+    brief_path = brief_dir / f"Lowkey{kind.title()}_{ident}.json"
+    brief = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "kind": kind,
+        "output": str(output),
+        "target": request.target,
+        "function": request.function,
+        "value": request.value,
+        "calldata": request.calldata,
+        "evidence": evidence,
+        "status": "scaffold",
+        "note": "Audit context is carried forward for investigation. Validate the security property before treating this as a confirmed finding.",
+    }
+    brief_path.write_text(json.dumps(brief, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
     print(f"{kind.upper()} generated: {output}")
+    print(f"Evidence brief: {brief_path}")
     print("Read the comments before running it; they are intentionally part of the learning workflow.")
     audit_context.record_tool(
         "generator",
@@ -802,6 +971,9 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             "function": request.function,
             "output": str(output),
             "target": request.target,
+            "evidence_brief": str(brief_path),
+            "candidate_signal": evidence.get("candidate", {}).get("id"),
+            "candidate_mode": evidence.get("candidate", {}).get("mode"),
         },
     )
     return 0
