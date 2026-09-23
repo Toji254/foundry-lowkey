@@ -57,15 +57,44 @@ jobs:
               function testSmoke() public {}
           }
           EOF
+      - name: Start Anvil
+        run: |
+          anvil --silent > /tmp/lowkey-anvil.log 2>&1 &
+          for i in $(seq 1 20); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat /tmp/lowkey-anvil.log
+          exit 1
       - name: Run installed integration checks
         working-directory: /tmp/lowkey-fixture
         run: |
+          lk --h
           lk --version
           lk self-test
           lk doctor
           lk scan src
           lk scan src/Fixture.sol
           lk forge build
+          TARGET=0x0000000000000000000000000000000000000001
+          CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
+          cast rpc anvil_setCode "$TARGET" "$CODE"
+          lk actor 0 Alice
+          lk actor 1 Bob
+          set +e
+          lk actor 0 Bob
+          test $? -ne 0
+          set -e
+          lk actor
+          lk target "$TARGET"
+          lk status
+          lk functions
+          lk c ping 7
+          lk s ping 7
+          lk logs --decode
+          lk deps
           lk forge test
           lk forge inspect-audit Fixture
           lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a

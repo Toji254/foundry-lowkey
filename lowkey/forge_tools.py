@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """LowkeyForge: a thin, audit-focused interface over the native Forge CLI."""
 from __future__ import annotations
+import re
 import shutil
 import subprocess
 import sys
@@ -47,11 +48,18 @@ def command_available(command: str) -> bool:
 def supported_native_commands() -> set[str]:
     return {command for command in NATIVE_COMMANDS if command_available(command)}
 
+def has_verbosity(args: Sequence[str]) -> bool:
+    return any(
+        arg == "--verbosity"
+        or bool(re.fullmatch(r"-v+", arg))
+        for arg in args
+    )
+
 def run_audit(args: Sequence[str]) -> int:
     checks = "--checks" in args
     forwarded = [a for a in args if a != "--checks"]
     test_cmd = ["test", *forwarded]
-    if not any(a.startswith("-v") for a in forwarded):
+    if not has_verbosity(forwarded):
         test_cmd.insert(1, "-vvv")
     steps = [("build", ["build"]), ("tests", test_cmd), ("coverage", ["coverage"])]
     if checks:
@@ -71,7 +79,7 @@ def run_audit(args: Sequence[str]) -> int:
 
 def run_test_audit(args: Sequence[str]) -> int:
     forwarded = list(args)
-    if not any(a.startswith("-v") for a in forwarded):
+    if not has_verbosity(forwarded):
         forwarded.insert(0, "-vvvv")
     return run_forge(["test", *forwarded])
 
