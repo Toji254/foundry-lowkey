@@ -216,13 +216,16 @@ class ProjectTargetingTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
-            original = lk.subprocess
+            original_subprocess = lk.subprocess
+            original_tool_path = lk.tool_path
             lk.subprocess = FakeSubprocess
+            lk.tool_path = lambda name: "/usr/bin/forge" if name == "forge" else None
             try:
                 with patch_cwd(root):
                     result = lk.run_foundry(["create", "src/Test.sol:Test"], capture=True)
             finally:
-                lk.subprocess = original
+                lk.subprocess = original_subprocess
+                lk.tool_path = original_tool_path
 
         self.assertEqual(result.code, 0)
         self.assertIn("compile warning", result.text)
