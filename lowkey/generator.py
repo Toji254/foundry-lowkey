@@ -105,7 +105,10 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
 
             for path, payload in matches:
                 source = source_for_artifact(path)
-                artifact_symbol = str(payload.get("contractName") or "")
+                # Foundry artifact JSON does not always include a top-level
+                # contractName field. In that case the artifact filename is the
+                # contract symbol (for example Escrow.json -> Escrow).
+                artifact_symbol = str(payload.get("contractName") or path.stem or "")
                 if (
                     source == requested_source
                     and artifact_symbol in declared_symbols
