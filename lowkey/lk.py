@@ -775,6 +775,12 @@ def run_note(note):
     os.makedirs(paths["root"], exist_ok=True)
     with open(paths["notes"], "a") as f:
         f.write(f"- [{datetime.now().strftime('%Y-%m-%d %H:%M')}] {note}\n")
+    if record_evidence:
+        record_evidence("note_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"), {
+            "note": note,
+            "target": load_config().get("target"),
+            "source": "lk note",
+        })
     print("Note saved.")
 
 def run_todo(todo):
@@ -785,6 +791,12 @@ def run_todo(todo):
     os.makedirs(paths["root"], exist_ok=True)
     with open(paths["todos"], "a") as f:
         f.write(f"- [ ] {todo}\n")
+    if record_evidence:
+        record_evidence("todo_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"), {
+            "todo": todo,
+            "target": load_config().get("target"),
+            "source": "lk todo",
+        })
     print("TODO saved.")
 
 def run_session_lifecycle(config, action):
@@ -1286,9 +1298,17 @@ def run_batch(config,args):
         else: dispatch_command(command,command_args,config,from_batch=True)
 def run_audit_mode(config):
     print("\n=== LOWKEYCAST AUDIT MODE ===")
+    project = os.getcwd()
+    if config.get("audit_project") != project:
+        config["audit_bootstrapped"] = False
+        config["audit_project"] = project
+        config["session_active"] = False
+        save_config(config)
+
     if not config.get("audit_bootstrapped"):
         run_audit_startup(config)
         config["audit_bootstrapped"] = True
+        config["audit_project"] = project
         save_config(config)
     else:
         run_workspace(config, ["init"])
@@ -1684,6 +1704,29 @@ def main():
     config=load_config()
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+
+    # Keep the PoC scaffold synchronized with evidence gathered by any
+    # command during an active audit session. The generator only writes
+    # local files; it does not make network calls or assert a vulnerability.
+    evidence_commands={
+        "scan","rg","slither","recon","proxy","implementation","admin","mapping",
+        "namespace","proof","snapshot","diff","risk","trace","replay","logs","tx",
+        "receipt","finding","matrix","note","todo","test-gen","workspace","deployments",
+        "target","use","rpc","abi","functions","fn","c","s","st","raw","gas","selectors",
+        "layout","export","fork","token","ens","decode","decode-error","returns","event",
+        "checklist","session"
+    }
+    if (
+        config.get("audit_bootstrapped")
+        and sys.argv[1] in evidence_commands
+        and sys.argv[1] not in {"audit","poc"}
+        and generate_poc
+    ):
+        try:
+            generate_poc(".", None, None)
+        except Exception as error:
+            print(f"Lowkey PoC refresh warning: {error}", file=sys.stderr)
+
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 
