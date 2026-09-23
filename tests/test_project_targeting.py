@@ -106,6 +106,22 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertIn("LOWKEY BUILD FUNCTION", rendered)
             self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address)", rendered)
 
+    def test_parse_lab_marker(self):
+        self.assertEqual(
+            lk.parse_lab_marker("LOWKEY_TARGET 0x" + "a" * 40),
+            "0x" + "a" * 40,
+        )
+        self.assertIsNone(lk.parse_lab_marker("LOWKEY_TARGET not-an-address"))
+
+    def test_discover_local_lab_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            script_dir = root / "script"
+            script_dir.mkdir()
+            local_script = script_dir / "LocalAudit.s.sol"
+            local_script.write_text("// local lab", encoding="utf-8")
+            self.assertEqual(lk.discover_local_lab_script(root), str(local_script))
+
     def test_fn_searches_current_build_artifacts_without_live_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
