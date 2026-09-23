@@ -368,6 +368,119 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIn("vm.prank(attacker)", text)
             self.assertIn("vm.snapshot()", text)
 
+    def test_audit_candidate_prefers_focused_signal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            context = {
+                "focus": {"signal_id": "SLITHER-FOCUSED"},
+                "signals": [
+                    {
+                        "id": "SLITHER-OTHER",
+                        "status": "open",
+                        "impact": "High",
+                        "confidence": "High",
+                        "check": "reentrancy-eth",
+                    },
+                    {
+                        "id": "SLITHER-FOCUSED",
+                        "status": "investigating",
+                        "impact": "Low",
+                        "confidence": "Low",
+                        "check": "tx-origin",
+                        "title": "tx.origin used for authorization",
+                        "file": "src/Vault.sol",
+                        "line": 42,
+                        "function": "withdraw(address)",
+                        "description": "Authorization path uses tx.origin.",
+                        "next": "Build a proxy-contract reproduction.",
+                    },
+                ],
+                "latest": {"tx_hash": "0x" + "a" * 64},
+                "tools": {
+                    "slither": {"finding_count": 2},
+                    "source-triage": {"count": 4},
+                    "risk": {"functions": [{}, {}]},
+                    "trace": {"summary": "transaction trace 0xdead..."},
+                },
+            }
+            with patch.object(generator.audit_context, "load", return_value=context):
+                evidence = generator._audit_candidate(root)
+            self.assertEqual(evidence["candidate"]["id"], "SLITHER-FOCUSED")
+            self.assertEqual(evidence["candidate"]["mode"], "authorization")
+            self.assertEqual(evidence["tools"]["slither_findings"], 2)
+            self.assertEqual(evidence["tools"]["source_triage_markers"], 4)
+
+    def test_generate_test_writes_evidence_brief(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            context = {
+                "focus": {"signal_id": "SLITHER-ABC"},
+                "signals": [{
+                    "id": "SLITHER-ABC",
+                    "status": "investigating",
+                    "impact": "Medium",
+                    "confidence": "High",
+                    "check": "tx-origin",
+                    "title": "Authorization review",
+                    "file": "src/Vault.sol",
+                    "line": 12,
+                    "function": "withdraw(address)",
+                    "description": "Authorization depends on transaction origin.",
+                    "next": "Test with a proxy caller.",
+                    "actions": ["probe", "matrix", "generate test"],
+                }],
+                "latest": {"tx_hash": None},
+                "tools": {
+                    "slither": {"finding_count": 1},
+                    "source-triage": {"count": 2},
+                    "risk": {"functions": [{"signature": "withdraw(address)"}]},
+                },
+            }
+            with patch.object(generator.Path, "cwd", return_value=root):
+                with patch.object(generator.audit_context, "load", return_value=context):
+                    result = generator.run_generate({}, ["test", "withdraw(address)", "--calldata", "0xdeadbeef"])
+            self.assertEqual(result, 0)
+            generated = next((root / "test").glob("LowkeyTest_*.t.sol"))
+            source = generated.read_text(encoding="utf-8")
+            self.assertIn("SLITHER-ABC", source)
+            self.assertIn("Authorization review", source)
+
+            briefs = list((root / ".audit" / "poc").glob("LowkeyTest_*.json"))
+            self.assertEqual(len(briefs), 1)
+            brief = json.loads(briefs[0].read_text(encoding="utf-8"))
+            self.assertEqual(brief["evidence"]["candidate"]["id"], "SLITHER-ABC")
+            self.assertEqual(brief["evidence"]["tools"]["slither_findings"], 1)
+
+    def test_generate_poc_allows_focused_signal_without_concrete_send(self):
+        target = "0x" + "2" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            context = {
+                "focus": {"signal_id": "SLITHER-DEF"},
+                "signals": [{
+                    "id": "SLITHER-DEF",
+                    "status": "investigating",
+                    "impact": "Medium",
+                    "confidence": "Medium",
+                    "check": "reentrancy-eth",
+                    "title": "ETH reentrancy",
+                    "file": "src/Vault.sol",
+                    "line": 20,
+                    "description": "External ETH call needs reentrancy review.",
+                }],
+                "latest": {},
+                "tools": {},
+            }
+            with patch.object(generator.Path, "cwd", return_value=root):
+                with patch.object(generator.audit_context, "load", return_value=context):
+                    result = generator.run_generate({"target": target}, ["poc"])
+            self.assertEqual(result, 0)
+            generated = next((root / "script").glob("LowkeyPoC_*.s.sol"))
+            source = generated.read_text(encoding="utf-8")
+            self.assertIn("SLITHER-DEF", source)
+            self.assertIn("PLACEHOLDER", source)
+
     def test_help_mentions_all_generation_modes(self):
         output = io.StringIO()
         with redirect_stdout(output):
