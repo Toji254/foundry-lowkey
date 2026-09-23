@@ -936,7 +936,7 @@ def run_diff(config):
     path=snapshot_path(config)
     if not os.path.exists(path): print("No snapshot for the current target/chain."); return
     try: old=json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError,json.JSONDecodeError): print("Error: invalid snapshot."); return
+    except (OSError,json.JSONDecodeError): return fail("Error: invalid snapshot.")
     old_slots=old.get("slots",old); print(f"Snapshot block: {old.get('block','unknown')}")
     changed=0
     for slot,old_val in old_slots.items():
@@ -1005,10 +1005,10 @@ def run_matrix(config,args):
             if not os.path.exists(path): write_json_file(path,default)
         print("Attacker-state matrix initialized."); return
     if not os.path.exists(paths["matrix_scenarios"]):
-        print("Error: Run lk matrix init first."); return
+        return fail("Error: Run lk matrix init first.")
     if action=="actor" and len(args)==3:
         if not is_address(args[2]):
-            print("Error: actor address must be a 20-byte hex address."); return
+            return fail("Error: actor address must be a 20-byte hex address.")
         actors=read_json_file(paths["matrix_actors"],{})
         actors[args[1]]={"address":args[2],"label":args[1]}
         write_json_file(paths["matrix_actors"],actors)
@@ -1016,7 +1016,7 @@ def run_matrix(config,args):
     if action=="add" and len(args)>=5:
         name=args[1]
         if name in {item.get("name") for item in read_json_file(paths["matrix_scenarios"],[])}:
-            print(f"Error: Scenario already exists: {name}"); return
+            return fail(f"Error: Scenario already exists: {name}")
         scenario={
             "name":name,"target":config.get("target"),"function":args[2],"actor":args[3],
             "expected":" ".join(args[4:]),
@@ -1245,11 +1245,11 @@ def run_doctor():
     return 1 if failures else 0
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
-        print("Error: No session history found."); return
+        return fail("Error: No session history found.")
     lines=Path(SESSION_FILE).read_text(encoding="utf-8").splitlines()
     last_send=next((line.split("CMD: ",1)[1].strip() for line in reversed(lines) if "CMD: cast send " in line),None)
     if not last_send:
-        print("Error: No send transaction found in session."); return
+        return fail("Error: No send transaction found in session.")
     try:
         parts=shlex.split(last_send)
         send_index=parts.index("send")
@@ -1263,10 +1263,10 @@ def run_test_gen(config):
             positional.append(parts[index]); index+=1
         code,encoded,error=cast_output(["cast","calldata",func,*positional])
         if code!=0 and not encoded:
-            print(f"Error generating calldata: {error}"); return
+            return fail(f"Error generating calldata: {error}")
         calldata=encoded.removeprefix("0x")
     except (ValueError,IndexError) as error:
-        print(f"Error generating test: {error}"); return
+        return fail(f"Error generating test: {error}")
     value_expression=value
     for unit in ["ether","gwei","wei"]:
         if unit in value_expression and " " not in value_expression:
@@ -1355,7 +1355,7 @@ def run_token(config,args):
     for action in ["name","symbol","decimals","total-supply"]: run_cast(["erc20-token",action,args[0]],config)
 
 def run_decode(config,args):
-    if len(args)<2: print("Usage: lk decode <function> <return-data>"); return
+    if len(args)<2: return fail("Usage: lk decode <function> <return-data>")
     matches=matching_functions(load_abi(config.get("target"),config),args[0])
     if len(matches)!=1: print("Error: function must resolve to exactly one ABI entry."); return
     item=matches[0]
@@ -1417,11 +1417,11 @@ def event_payload(data,topics):
     return "0x"+"".join(parts)
 
 def run_namespace(config,args):
-    if len(args)!=1: print("Usage: lk namespace <erc7201-namespace-id>"); return
+    if len(args)!=1: return fail("Usage: lk namespace <erc7201-namespace-id>")
     run_cast(["index-erc7201",args[0]],config)
 
 def run_proof(config,args):
-    if not args: print("Usage: lk proof <slot> [block]"); return
+    if not args: return fail("Usage: lk proof <slot> [block]")
     run_cast(["proof",config.get("target"),args[0]]+(["--block",args[1]] if len(args)>1 else []),config)
 
 
@@ -2072,18 +2072,17 @@ def run_status(config):
     print(f"Last tx: {config.get('last_tx') or 'none'}")
 def run_wizard(config,args):
     if not args:
-        print("Usage: lk wizard <function> [call|send|encode]")
-        return
+        return fail("Usage: lk wizard <function> [call|send|encode]")
     mode=args[1].lower() if len(args)>1 else "call"
     if mode not in {"call","send","encode"}:
-        print("Mode must be call, send, or encode."); return
+        return fail("Mode must be call, send, or encode.")
     target=config.get("target")
     if not target:
         return fail("Error: Set target first.")
     funcs=abi_functions(load_abi(target,config))
     matches=matching_functions(funcs,args[0])
     if len(matches)!=1:
-        print("Function must resolve to exactly one ABI entry.")
+        return fail("Error: Function must resolve to exactly one ABI entry.")
         for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]:
             print(" ",format_signature(item))
         return
@@ -2092,9 +2091,9 @@ def run_wizard(config,args):
     for index,param in enumerate(item.get("inputs",[]),1):
         label=param.get("name") or f"arg{index}"
         try: value=input(f"{label} ({canonical_type(param)}): ").strip()
-        except EOFError: print("Wizard cancelled."); return
+        except EOFError: print("Wizard cancelled."); return 0
         if not value:
-            print("Argument values are required."); return
+            return fail("Argument values are required.")
         values.append(value)
     if mode=="encode": run_cast(["calldata",signature,*values],config)
     elif mode=="send": run_cast(["send",signature,*values,"--confirm"],config)
@@ -2473,7 +2472,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="replay": run_replay(config,args)
     elif cmd=="fork": run_fork(args)
     elif cmd=="ask":
-        if not args: print("Usage: lk ask <function>"); return
+        if not args: return fail("Usage: lk ask <function>")
         funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
         if len(matches)!=1:
             for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]: print(" ",format_signature(item))
