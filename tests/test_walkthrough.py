@@ -100,6 +100,38 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(steps[0].function, "create()")
         self.assertEqual(steps[1].function, "deposit()")
 
+    def test_source_call_edges_are_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "out" / "Demo.sol").mkdir(parents=True)
+            (root / "src" / "Demo.sol").write_text(
+                """
+                pragma solidity ^0.8.20;
+                contract Demo {
+                    function start() external { finish(1); }
+                    function finish(uint256 value) internal {}
+                }
+                """,
+                encoding="utf-8",
+            )
+            artifact = {
+                "contractName": "Demo",
+                "sourceName": "src/Demo.sol",
+                "abi": [
+                    {"type": "function", "name": "start", "stateMutability": "nonpayable",
+                     "inputs": [], "outputs": []},
+                    {"type": "function", "name": "finish", "stateMutability": "internal",
+                     "inputs": [{"name": "value", "type": "uint256"}], "outputs": []},
+                ],
+            }
+            (root / "out" / "Demo.sol" / "Demo.json").write_text(json.dumps(artifact), encoding="utf-8")
+            model = walkthrough._artifact_models(root)[0]
+        self.assertTrue(any(
+            edge["from"] == "start" and edge["to_function"] == "finish(uint256)"
+            for edge in model.calls
+        ))
+
     def test_visual_renderer_has_distinct_protocol_shapes(self):
         storage = [
             {
