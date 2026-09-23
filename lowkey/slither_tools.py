@@ -244,6 +244,63 @@ def _signal_from_finding(finding: dict) -> dict:
     }
 
 
+def _human_observation(finding: dict, check: str) -> str:
+    elements = finding.get("elements")
+    first_function = None
+    first_enum = None
+    first_pragma = None
+
+    if isinstance(elements, list):
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            kind = str(element.get("type") or "").lower()
+            name = str(element.get("name") or "").strip()
+            if kind == "function" and name and first_function is None:
+                first_function = name
+            elif kind == "enum" and name and first_enum is None:
+                first_enum = name
+            elif kind == "pragma" and name and first_pragma is None:
+                first_pragma = name
+
+    if check == "low-level-calls":
+        return (
+            f"The function {first_function}() makes a raw external call that can execute code "
+            "in the receiving address."
+            if first_function
+            else "The contract makes a raw external call that can execute code in the receiving address."
+        )
+    if check == "naming-convention":
+        return (
+            f"The enum '{first_enum}' uses a naming style that does not match the project's "
+            "expected Solidity convention."
+            if first_enum
+            else "A Solidity identifier does not follow the expected naming convention."
+        )
+    if check == "solc-version":
+        return (
+            f"The project accepts Solidity compiler versions allowed by '{first_pragma}', "
+            "including releases that Slither flags for known compiler issues."
+            if first_pragma
+            else "The project accepts Solidity compiler versions that Slither flags for known compiler issues."
+        )
+    if check == "reentrancy-eth":
+        return (
+            f"The function {first_function}() contains an ETH transfer path that needs a reentrancy review."
+            if first_function
+            else "An ETH transfer path needs a reentrancy review."
+        )
+    if check == "reentrancy-no-eth":
+        return (
+            f"The function {first_function}() contains an external call in a path that may be re-entered."
+            if first_function
+            else "An external call occurs in a path that may be re-entered."
+        )
+    if check == "tx-origin":
+        return "The contract uses the original transaction signer for logic where caller-based authorization should be reviewed."
+    return "Static analysis found a code pattern that deserves manual security review."
+
+
 def _human_finding(finding: dict, number: int, total: int, project_root: Path) -> None:
     check = str(finding.get("check") or "unknown-detector")
     impact = str(finding.get("impact") or "Unknown")
