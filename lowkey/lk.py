@@ -1978,15 +1978,15 @@ def run_lab(config,args):
         config.setdefault("abi_paths", {})[target] = artifact
     config.setdefault("aliases", {})[contract] = target
     config.setdefault("targets", {})[contract] = target
-    # Keep the investigation actor separate from the deployer unless no actor exists yet.
-    if not config.get("actor"):
-        config["actor"] = "lab-deployer"
-        config.setdefault("wallets", {})["lab-deployer"] = {
-            "source": "anvil-default",
-            "anvil_index": 0,
-            "address": accounts[0],
-        }
-        config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    # A local lab is self-contained: the deployer is the default caller so factory
+    # authorization checks work immediately. The user can switch actors later with lk actor.
+    config["actor"] = "lab-deployer"
+    config.setdefault("wallets", {})["lab-deployer"] = {
+        "source": "anvil-default",
+        "anvil_index": 0,
+        "address": accounts[0],
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
     save_config(config)
 
     audit_context.set_target(
