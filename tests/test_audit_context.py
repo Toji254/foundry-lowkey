@@ -59,6 +59,31 @@ class AuditContextTests(unittest.TestCase):
             self.assertEqual(len(audit_context.signals(root)), 1)
             self.assertEqual(second["status"], "open")
 
+    def test_update_signal_status_records_triage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            signal = audit_context.add_signal({
+                "tool": "slither",
+                "check": "tx-origin",
+                "title": "tx.origin used for authorization",
+                "impact": "Medium",
+                "confidence": "High",
+                "file": "src/Auth.sol",
+                "line": 20,
+            }, root)
+            updated = audit_context.update_signal_status(
+                signal["id"],
+                "investigating",
+                root,
+                note="Checking the caller boundary",
+            )
+            self.assertEqual(updated["status"], "investigating")
+            self.assertEqual(updated["triage_note"], "Checking the caller boundary")
+            events = audit_context.events_path(root).read_text(encoding="utf-8")
+            self.assertIn("signal-status", events)
+
+
     def test_emit_creates_append_only_events(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
