@@ -18,9 +18,9 @@ except ImportError:
     FORGE_NATIVE_COMMANDS = set()
 
 try:
-    from audit_engine import run_slither, run_rg, run_audit_pipeline, generate_poc
+    from audit_engine import run_slither, run_rg, run_audit_pipeline, generate_poc, record_evidence
 except ImportError:
-    run_slither = run_rg = run_audit_pipeline = generate_poc = None
+    run_slither = run_rg = run_audit_pipeline = generate_poc = record_evidence = None
 
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -363,7 +363,11 @@ def run_receipt(config, tx_hash=None):
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
-    return run_cast(["receipt", tx_hash, "--async"], config)
+    result=run_cast(["receipt", tx_hash, "--async"], config, capture=True)
+    if record_evidence:
+        record_evidence("receipt", {"tx":tx_hash,"output":str(result)})
+    print(result)
+    return getattr(result,"code",0)
 
 def run_trace(config,args=None):
     args=list(args or [])
@@ -374,11 +378,15 @@ def run_trace(config,args=None):
         i=args.index("--grep")
         if i+1>=len(args): return fail("Usage: lk trace [tx] [--quick] [--decode-internal] [--trace-printer] [--grep text]")
         grep=args[i+1]; del args[i:i+2]
-    output=run_cast(["run",tx_hash]+args,config,capture=True) if grep else None
+    output=run_cast(["run",tx_hash]+args,config,capture=True)
+    output_text=str(output)
+    if record_evidence:
+        record_evidence("trace", {"tx":tx_hash,"args":args,"grep":grep,"output":output_text})
     if grep:
-        matched=[line for line in (output or "").splitlines() if grep.lower() in line.lower()]
+        matched=[line for line in output_text.splitlines() if grep.lower() in line.lower()]
         print("\n".join(matched) if matched else f"No trace lines matched '{grep}'.")
-    else: run_cast(["run",tx_hash]+args,config)
+    else:
+        print(output_text)
 def decode_event_log(config,log):
     topics=log.get("topics",[]) if isinstance(log,dict) else []
     data=log.get("data","0x") if isinstance(log,dict) else "0x"
@@ -416,11 +424,19 @@ def run_logs(config,args):
     except json.JSONDecodeError: print(output); return
     logs=payload if isinstance(payload,list) else payload.get("logs",payload.get("result",[]))
     if not isinstance(logs,list): print(output); return
-    if not logs: print("No logs found."); return
+    if not logs:
+        print("No logs found.")
+        if record_evidence: record_evidence("logs", {"args":args,"logs":[]})
+        return
+    decoded=[]
     for log in logs:
         print(json.dumps(log,indent=2))
         event=decode_event_log(config,log)
-        if event: print(f"Event: {event[0]}\nDecoded: {event[1]}")
+        if event:
+            decoded.append({"signature":event[0],"decoded":event[1]})
+            print(f"Event: {event[0]}\nDecoded: {event[1]}")
+    if record_evidence:
+        record_evidence("logs", {"args":args,"logs":logs,"decoded":decoded})
 def apply_labels(text, config):
     labels = config.get("labels", {})
     for addr, label in labels.items():
@@ -604,6 +620,8 @@ def run_snapshot(config,slots=None):
     chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
     payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().isoformat(timespec="seconds"),"slots":state}
     path=snapshot_path(config,chain); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
+    if record_evidence:
+        record_evidence("snapshot", payload)
     print(f"Snapshot saved: {path}")
 def run_diff(config):
     path=snapshot_path(config)
@@ -612,10 +630,13 @@ def run_diff(config):
     except (OSError,json.JSONDecodeError): print("Error: invalid snapshot."); return
     old_slots=old.get("slots",old); print(f"Snapshot block: {old.get('block','unknown')}")
     changed=0
+    changes=[]
     for slot,old_val in old_slots.items():
         new_val=run_cast(["st",slot],config,capture=True)
         if str(new_val).lower()!=str(old_val).lower():
-            changed+=1; print(f"Slot {slot}: {old_val} -> {new_val}")
+            changed+=1; changes.append({"slot":slot,"before":old_val,"after":str(new_val)}); print(f"Slot {slot}: {old_val} -> {new_val}")
+    if record_evidence:
+        record_evidence("storage_diff", {"snapshot_block":old.get("block"),"changes":changes})
     if not changed: print("No changes detected in snapshotted slots.")
 def run_finding(config, note):
     os.makedirs(AUDIT_DIR, exist_ok=True)
@@ -626,6 +647,12 @@ def run_finding(config, note):
     if os.path.isdir(WORKSPACE_DIR):
         with open(workspace_finding, "a") as f:
             f.write(line)
+    if record_evidence:
+        record_evidence("finding_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"), {
+            "note": note,
+            "target": config.get("target"),
+            "last_tx": config.get("last_tx"),
+        })
     print("Finding recorded.")
 
 def workspace_paths():
@@ -1112,27 +1139,37 @@ def run_scan(args):
         ("PREVRANDAO",re.compile(r"\bblock\.prevrandao\b")),("ECRECOVER",re.compile(r"\becrecover\s*\(")),
         ("CREATE2",re.compile(r"\bcreate2\b"))]
     hits=0
+    markers=[]
     for path in source_sol_files(root):
         try: lines=Path(path).read_text(encoding="utf-8").splitlines()
         except OSError: continue
         for lineno,line in enumerate(lines,1):
             for label,pattern in patterns:
                 if pattern.search(line):
-                    hits+=1; print(f"{path}:{lineno}: [{label}] {line.strip()}")
+                    hits+=1
+                    marker={"file":path,"line":lineno,"label":label,"text":line.strip()}
+                    markers.append(marker)
+                    print(f"{path}:{lineno}: [{label}] {line.strip()}")
+    if record_evidence:
+        record_evidence("source_scan", {"root":root,"count":hits,"markers":markers})
     print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
 
 def run_deps(args):
     root=args[0] if args else "src"; files=source_sol_files(root)
     if not files: print(f"No Solidity files found under {root}."); return
     print("Dependency / inheritance map:")
+    imports=[]; inherits=[]
     for path in files:
         try: text_content=Path(path).read_text(encoding="utf-8")
         except OSError: continue
         rel=os.path.relpath(path,root)
-        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content): print(f"  {rel} -> import {imported}")
+        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
+            item={"file":rel,"import":imported}; imports.append(item); print(f"  {rel} -> import {imported}")
         for contract in re.finditer(r"\b(contract|interface|library)\s+(\w+)(?:\s+is\s+([^{]+))?",text_content):
             for parent in [p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]:
-                print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+                item={"file":rel,"contract":contract.group(2),"inherits":parent}; inherits.append(item); print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+    if record_evidence:
+        record_evidence("dependencies", {"root":root,"imports":imports,"inherits":inherits})
 
 def run_risk(config):
     target=config.get("target")
