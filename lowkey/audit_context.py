@@ -58,6 +58,7 @@ def _default_context(root: Path) -> dict[str, Any]:
         },
         "actor": None,
         "rpc": None,
+        "focus": None,
         "latest": {
             "tx_hash": None,
             "function": None,
@@ -257,6 +258,34 @@ def signals(root: Path | None = None, status: str | None = None) -> list[dict[st
     if status is None:
         return found
     return [item for item in found if item.get("status") == status]
+
+
+def set_focus(signal_id: str, root: Path | None = None) -> dict[str, Any] | None:
+    context = load(root)
+    for signal in context.setdefault("signals", []):
+        if signal.get("id") != signal_id:
+            continue
+        focus = {
+            "signal_id": signal_id,
+            "title": signal.get("title"),
+            "tool": signal.get("tool"),
+            "file": signal.get("file"),
+            "line": signal.get("line"),
+            "column": signal.get("column"),
+            "function": signal.get("function"),
+            "updated_at": _now(),
+        }
+        context["focus"] = focus
+        save(context, root)
+        emit(
+            "focus-changed",
+            root,
+            tool="lowkey",
+            summary=f"investigation focus: {signal_id}",
+            data=focus,
+        )
+        return signal
+    return None
 
 
 def set_target(
