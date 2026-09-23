@@ -169,6 +169,30 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(captured["args"], ["--checks"])
         self.assertEqual(output.getvalue().count("LOWKEY CONNECTED AUDIT"), 1)
+    def test_compact_audit_checks_dispatch(self):
+        with patch.object(lk, "run_audit", return_value=0) as runner:
+            result = lk.dispatch_command("audit--checks", [], {"target": None})
+        self.assertEqual(result, 0)
+        runner.assert_called_once_with({"target": None}, ["--checks"])
+
+    def test_version_reports_runtime_state(self):
+        with patch.object(
+            lk,
+            "runtime_sync_status",
+            return_value={
+                "status": "ok",
+                "detail": "installed runtime abc123",
+                "source_repo": "/tmp/lowkey",
+            },
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk.run_version()
+        rendered = output.getvalue()
+        self.assertIn("LowkeyCast 2.1", rendered)
+        self.assertIn("Runtime: OK", rendered)
+        self.assertIn("installed runtime abc123", rendered)
+
     def test_runtime_fixes(self):
         self.assertTrue(hasattr(lk, "Path"))
         self.assertTrue(lk.AUDIT_CHECKLIST)
