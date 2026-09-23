@@ -79,6 +79,7 @@ jobs:
           test -f test/LowkeyTest_Fixture.t.sol
           lk generate poc ping 42 --calldata 0xdeadbeef
           test -f script/LowkeyPoC_Fixture.s.sol
+          forge build
           lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
           set +e
           lk scan /tmp/lowkey-fixture/missing.sol
