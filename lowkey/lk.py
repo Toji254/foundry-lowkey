@@ -4340,6 +4340,19 @@ def run_audit_mode(config, args=None):
     checks = "--checks" in args
     mode_args = ["--checks"] if checks else []
 
+    config["audit_project"] = os.getcwd()
+    save_config(config)
+
+    # Preserve the audit-session behavior: initialize the project-local workspace,
+    # attacker-state matrix, checklist, and session before evidence collection.
+    run_workspace(config, ["init"])
+    run_matrix(config, ["init"])
+    run_checklist(config)
+    if not config.get("session_active"):
+        run_session_lifecycle(config, "start")
+    else:
+        run_session_lifecycle(config, "resume")
+
     print("\n=== LOWKEYCAST AUDIT MODE ===")
     print("Starting connected audit baseline...")
     baseline_code = 0
