@@ -2017,6 +2017,9 @@ def parse_deployed_address(output):
     return None
 
 def artifact_source_name(artifact, path):
+    if isinstance(artifact, dict) and artifact.get("sourceName"):
+        return str(artifact.get("sourceName")).replace("\\", "/").lstrip("./")
+
     metadata = artifact.get("metadata") if isinstance(artifact, dict) else None
     if isinstance(metadata, str):
         try:
