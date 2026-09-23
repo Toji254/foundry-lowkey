@@ -1257,7 +1257,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     observed={}
     pending=plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
 
-    print("\n"+_render_board(model,models,runtime,actors,steps,None,[],_ansi_enabled(False)))
+    print("\n"+_render_board(root,model,models,runtime,actors,steps,None,[],_ansi_enabled(False)))
 
     while pending and len(steps)<max_steps:
         step=pending.pop(0)
