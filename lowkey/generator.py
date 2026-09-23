@@ -426,7 +426,7 @@ contract LowkeyPoC_{ident} is Script {{
         console2.logBytes(returndata);
 
         // Raw write-slot addresses are useful first evidence. Decode mapping/struct slots after that.
-        for (uint256 i = 0; i < writes.length; i++) {
+        for (uint256 i = 0; i < writes.length; i++) {{
             console2.logBytes32(writes[i]);
         }
 
