@@ -69,7 +69,9 @@ class LowkeyCloneTests(unittest.TestCase):
             )
         ]
         self.assertEqual(
-            clone_tools.update_one_level(repo, entries, jobs=8, use_cache=True),
+            clone_tools.update_one_level(
+                repo, entries, depth=1, jobs=8, use_cache=True
+            ),
             0,
         )
         command = run_git.call_args.args[0]
