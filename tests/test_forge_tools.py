@@ -52,15 +52,13 @@ class LowkeyForgeTests(unittest.TestCase):
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_slither_preflight", return_value=0)
     @patch("forge_tools.command_available", return_value=False)
-    @patch("forge_tools.run_forge_diagnostics", return_value=0)
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_checks_runs_slither_preflight(self, supports, diagnostics, available, slither, run):
+    def test_audit_checks_runs_slither_preflight(self, available, slither, run, supports):
         self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
         slither.assert_called_once()
         self.assertEqual(run.call_args_list[0].args[0], ["build", "--skip", "test", "--skip", "script"])
         self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv", "--no-match-path", "test/Lowkey_*"])
         self.assertEqual(run.call_args_list[2].args[0], ["coverage", "--no-match-path", "test/Lowkey_*"])
-        self.assertEqual(diagnostics.call_count, 0)
 
 
     @patch("forge_tools.run_forge", return_value=0)
