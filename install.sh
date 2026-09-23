@@ -4,8 +4,11 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_LOWKEY_DIR="$HOME/.lowkey"
 TARGET_BIN_DIR="$HOME/.foundry/bin"
+STAGE_DIR="$TARGET_LOWKEY_DIR/.install-stage"
 
 mkdir -p "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR"
+rm -rf "$STAGE_DIR"
+mkdir -p "$STAGE_DIR"
 
 copy_or_skip_same() {
     local source="$1"
@@ -26,6 +29,7 @@ copy_or_skip_same "$REPO_DIR/lowkey/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_to
 copy_or_skip_same "$REPO_DIR/lowkey/generator.py" "$TARGET_LOWKEY_DIR/generator.py"
 copy_or_skip_same "$REPO_DIR/lowkey/slither_tools.py" "$TARGET_LOWKEY_DIR/slither_tools.py"
 copy_or_skip_same "$REPO_DIR/lowkey/audit_context.py" "$TARGET_LOWKEY_DIR/audit_context.py"
+copy_or_skip_same "$REPO_DIR/lowkey/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
 copy_or_skip_same "$REPO_DIR/bin/lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -38,6 +42,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/generator.py
   - $TARGET_LOWKEY_DIR/slither_tools.py
   - $TARGET_LOWKEY_DIR/audit_context.py
+  - $TARGET_LOWKEY_DIR/clone_tools.py
   - $TARGET_BIN_DIR/lk
 
 Run:
