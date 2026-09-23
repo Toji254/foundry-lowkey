@@ -8,6 +8,11 @@ import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+import audit_context
+
 NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
     "fmt", "lint", "geiger", "flatten", "verify-contract",
@@ -28,10 +33,35 @@ def run_forge(args: Sequence[str]) -> int:
     binary = forge_path()
     if not binary:
         return die("forge was not found on PATH. Install Foundry first.")
+    root = audit_context.foundry_project_root()
     try:
-        return subprocess.run([binary, *args]).returncode
+        code = subprocess.run([binary, *args]).returncode
     except OSError as exc:
+        audit_context.emit(
+            "forge-command",
+            root,
+            tool="forge",
+            status="failed",
+            summary=args[0] if args else "forge",
+        )
         return die(f"could not execute forge: {exc}", 1)
+
+    audit_context.emit(
+        "forge-command",
+        root,
+        tool="forge",
+        status="completed" if code == 0 else "failed",
+        summary=f"forge {args[0] if args else ''}".strip(),
+        data={"command": args[0] if args else None, "exit_code": code},
+    )
+    audit_context.record_tool(
+        "forge",
+        root,
+        status="completed" if code == 0 else "failed",
+        summary=f"forge {args[0] if args else ''}".strip(),
+        data={"last_command": args[0] if args else None, "last_exit_code": code},
+    )
+    return code
 
 def command_available(command: str) -> bool:
     binary = forge_path()
