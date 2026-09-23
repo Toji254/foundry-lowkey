@@ -1303,3 +1303,6 @@ def main():
     config=load_config()
     if len(sys.argv)<2: print_help(); return
     dispatch_command(sys.argv[1],sys.argv[2:],config)
+
+if __name__ == "__main__":
+    main()
