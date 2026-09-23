@@ -330,6 +330,7 @@ def _body(mode: str) -> str:
     bodies = {
         "external-call": '''
     function test_poc_external_call_control() external {
+        vm.skip(true); // REMOVE after filling the proven exploit path.
         vm.deal(address(this), 10 ether);
         bytes memory payload = hex"";
         (bool ok, bytes memory data) = TARGET.call{value: 1 ether}(payload);
@@ -339,6 +340,7 @@ def _body(mode: str) -> str:
 ''',
         "authorization": '''
     function test_poc_unauthorized() external {
+        vm.skip(true); // REMOVE after filling the proven exploit path.
         address attacker = makeAddr("attacker");
         vm.startPrank(attacker);
         bytes memory payload = hex"";
@@ -350,6 +352,7 @@ def _body(mode: str) -> str:
 ''',
         "unchecked-call": '''
     function test_poc_unchecked_call() external {
+        vm.skip(true); // REMOVE after filling the proven exploit path.
         bytes memory payload = hex"";
         (bool ok, ) = TARGET.call(payload);
         // TODO: force the underlying external call to fail and assert bad post-state.
@@ -358,6 +361,7 @@ def _body(mode: str) -> str:
 ''',
         "time": '''
     function test_poc_time_dependency() external {
+        vm.skip(true); // REMOVE after filling the proven exploit path.
         vm.warp(block.timestamp + 1 days);
         vm.roll(block.number + 1);
         bytes memory payload = hex"";
@@ -368,6 +372,7 @@ def _body(mode: str) -> str:
 ''',
         "encoding": '''
     function test_poc_encoding_collision() external {
+        vm.skip(true); // REMOVE after filling the proven exploit path.
         bytes memory a = hex"";
         bytes memory b = hex"";
         // TODO: replace with two distinct logical inputs that hash identically.
@@ -377,6 +382,7 @@ def _body(mode: str) -> str:
     }
     return bodies.get(mode, '''
     function test_poc_candidate() external {
+        vm.skip(true); // REMOVE after filling the proven exploit path.
         bytes memory payload = hex"";
         (bool ok, bytes memory data) = TARGET.call(payload);
         assertTrue(ok, string(data));
@@ -522,6 +528,7 @@ contract PocAttacker {
         constructor = "constructor() { attacker = new PocAttacker(TARGET); }"
         reentrancy_body = '''
     function test_poc_reentrancy() external {
+        vm.skip(true); // REMOVE after filling the proven exploit path.
         bytes memory entryCall = hex"";
         vm.deal(address(attacker), 10 ether);
         attacker.attack(entryCall, 1 ether);
