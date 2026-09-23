@@ -276,7 +276,7 @@ def _parse_mappings(source: str) -> list[dict[str, Any]]:
 
 def _parse_arrays(source: str) -> list[dict[str, Any]]:
     found = []
-    rx = re.compile(r"\b([A-Za-z_][\w]*(?:\[[^\]]*\])+)\s+(\w+)\s*(?:;|=)")
+    rx = re.compile(r"\b([A-Za-z_][\w]*(?:\[[^\]]*\])+)\s+(?:(?:public|private|internal|constant)\s+)*(\w+)\s*(?:;|=)")
     for match in rx.finditer(source):
         found.append({"name": match.group(2), "type": match.group(1)})
     return found
