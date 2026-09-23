@@ -137,15 +137,19 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk, "cast_output", return_value=(1, "", "decode failed")):
             self.assertEqual(lk.run_event({}, ["Transfer(address,address,uint256)", "0xdeadbeef"]), 1)
 
-    def test_cli_successful_event(self):
+    def test_event_success(self):
+        output=io.StringIO()
         with patch.object(lk, "cast_output", return_value=(0, "42", "")):
-            result = self.run_cli(
-                "event",
-                "Ping(uint256)",
-                "0x000000000000000000000000000000000000000000000000000000000000002a",
-            )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("42", result.stdout)
+            with redirect_stdout(output):
+                result=lk.run_event(
+                    {},
+                    [
+                        "Ping(uint256)",
+                        "0x000000000000000000000000000000000000000000000000000000000000002a",
+                    ],
+                )
+        self.assertEqual(result, 0)
+        self.assertIn("42", output.getvalue())
 
     def test_indexed_event_decoding_uses_abi_topics(self):
         event = {
@@ -191,6 +195,14 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(info["url"], "http://127.0.0.1:8545")
         self.assertEqual(info["accounts"], [address])
 
+    def test_effective_rpc_auto_detects_anvil(self):
+        address="0x"+"1"*40
+        info={"url":"http://127.0.0.1:8545","client":"anvil/v1.8.1","accounts":[address]}
+        config={"rpc":None}
+        with patch.object(lk, "detect_anvil_rpc", return_value=info):
+            self.assertEqual(lk.effective_rpc(config), "http://127.0.0.1:8545")
+            self.assertEqual(config["_auto_rpc_info"], info)
+
     def test_default_anvil_actor_selection_and_unique_assignment(self):
         address = "0x" + "1" * 40
         config = {"wallets": {}, "actor": None}
@@ -205,14 +217,20 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(lk.select_anvil_actor(config, 0, "Bob"), 2)
 
     def test_anvil_actor_key_is_not_stored(self):
-        config = {
-            "wallets": {
-                "Alice": {"source": "anvil-default", "anvil_index": 0}
+        address="0x"+"1"*40
+        config={
+            "wallets":{
+                "Alice":{
+                    "source":"anvil-default",
+                    "anvil_index":0,
+                    "address":address,
+                }
             },
-            "actor": "Alice",
+            "actor":"Alice",
         }
-        with patch.object(lk, "derive_default_anvil_key", return_value="0x" + "b" * 64):
-            self.assertEqual(lk.resolve_wallet_key(config), "0x" + "b" * 64)
+        info={"url":"http://127.0.0.1:8545","accounts":[address]}
+        with patch.object(lk, "anvil_rpc_info", return_value=info),              patch.object(lk, "derive_default_anvil_key", return_value="0x"+"b"*64):
+            self.assertEqual(lk.resolve_wallet_key(config), "0x"+"b"*64)
         self.assertNotIn("private_key", config["wallets"]["Alice"])
 
     def test_load_abi_auto_from_local_artifact(self):
