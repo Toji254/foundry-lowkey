@@ -238,6 +238,25 @@ FINDING
 
 The context is deliberately project-scoped. Lowkey configuration under `~/.lowkey/` remains for reusable user settings, wallets, aliases, and RPC preferences; `.audit/` is the audit evidence shared by the tools working on the current Foundry project.
 
+### Connected investigation evidence
+
+When a Slither signal is focused, concrete evidence produced by `lk changes` is attached directly to that signal. The link is automatic, so the investigation keeps the detector context and the actual state mutation together:
+
+~~~bash
+lk slither
+lk findings
+lk focus SLITHER-XXXXXXXXXX
+
+# Investigate the focused signal
+lk changes release --as attacker
+
+# The exact slot + before/after values now appear with the signal
+lk findings investigating
+lk focus SLITHER-XXXXXXXXXX
+~~~
+
+Stored state-diff evidence includes the function, caller, result, gas, calldata, and every decoded storage change with its raw 32-byte slot and before/after values. Re-running the same evidence updates the existing evidence record instead of creating duplicates.
+
 ## Slither static analysis
 
 Lowkey treats Slither as the static-analysis layer of the audit workflow. It runs the current project through Slither's detectors, excludes dependency-only findings by default, and saves machine-readable evidence under `.audit/slither/`.
