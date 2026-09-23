@@ -735,6 +735,25 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
     return result
 
 
+def _snapshot_runtime(
+    runtime: list[RuntimeContract],
+    models: list[ContractModel],
+    rpc: str,
+    actor_addresses: list[str],
+) -> list[dict[str, Any]]:
+    by_name = {model.name: model for model in models}
+    result: list[dict[str, Any]] = []
+    for node in runtime:
+        model = by_name.get(node.model)
+        if not model:
+            continue
+        for item in _snapshot_storage(model, rpc, node.address, actor_addresses):
+            item["contract"] = node.model
+            item["address"] = node.address
+            result.append(item)
+    return result
+
+
 def _storage_changed(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key = {(str(x.get("slot")), str(x.get("label"))): x for x in before}
     changes = []
