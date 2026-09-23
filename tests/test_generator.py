@@ -254,6 +254,35 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIsNone(generator.find_artifact(root, "EthEscrow"))
 
 
+    def test_generate_deployment_uses_artifact_stem_without_contract_name_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "EthEscrow.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Escrow {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "EthEscrow.sol" / "Escrow.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+            with patch.object(generator.Path, "cwd", return_value=root):
+                with patch.object(generator, "_run", return_value=(0, "", "")):
+                    result = generator.run_generate({}, ["deployment", "EthEscrow"])
+            self.assertEqual(result, 0)
+            generated = root / "script" / "LowkeyDeploy_Escrow.s.sol"
+            self.assertTrue(generated.exists())
+            text = generated.read_text(encoding="utf-8")
+            self.assertIn("import { Escrow }", text)
+            self.assertIn("instance = new Escrow();", text)
+
+
     def test_generate_deployment_writes_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
