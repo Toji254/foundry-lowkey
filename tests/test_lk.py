@@ -381,6 +381,18 @@ class LowkeyCastTests(unittest.TestCase):
             ("definitely-not-a-command",),
             ("raw", "definitely-not-a-cast-command"),
             ("receipt", "0x" + "0" * 64),
+            ("functions",),
+            ("abi",),
+            ("recon",),
+            ("proxy",),
+            ("snapshot",),
+            ("gas",),
+            ("namespace",),
+            ("proof",),
+            ("decode",),
+            ("wizard",),
+            ("test-gen",),
+            ("matrix", "test", "missing-scenario"),
         ]
         for args in cases:
             with self.subTest(args=args):
