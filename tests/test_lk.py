@@ -558,7 +558,7 @@ class LowkeyCastTests(unittest.TestCase):
         calls=[]
         def fake_run(args,cfg,capture=False):
             calls.append(args)
-            return lk.CommandResult("ok",0)
+            return 0
         with patch.object(lk,"run_cast",side_effect=fake_run), \
              patch.object(lk,"auto_abi_path",return_value="/tmp/abi.json"), \
              patch.object(lk,"resolve_function",return_value="ping(uint256)"):
@@ -588,7 +588,7 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(lk.run_seams(config),0)
         rendered=output.getvalue()
         self.assertIn("state-write + address input",rendered)
-        self.assertIn("state-write + state/value flow",rendered)
+        self.assertIn("state-write + asset/value flow",rendered)
 
     def test_matrix_test_executes_returned_generated_path(self):
         with tempfile.TemporaryDirectory() as tmp:
