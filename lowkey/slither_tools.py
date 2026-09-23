@@ -396,6 +396,13 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         return 1
 
     json_path, sarif_path = _default_paths(root)
+    audit_context.record_tool(
+        "slither",
+        root,
+        status="running",
+        summary="static analysis started",
+        data={"json": str(json_path), "sarif": str(sarif_path)},
+    )
     command = [
         binary,
         str(root),
