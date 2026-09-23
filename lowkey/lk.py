@@ -2196,6 +2196,61 @@ def storage_layout_details(config):
     return {}, []
 
 
+def source_mapping_declarations(root):
+    """Return generic mapping declarations discovered in Solidity source files."""
+    base = Path(root)
+    if not base.exists():
+        return []
+
+    structs = {}
+    struct_pattern = re.compile(r"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([\s\S]*?)\}")
+    field_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+
+    for path in sorted(base.rglob("*.sol")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in struct_pattern.finditer(source):
+            fields = []
+            for field in field_pattern.finditer(match.group(2)):
+                fields.append((field.group(2), field.group(1)))
+            structs[match.group(1)] = fields
+
+    mapping_pattern = re.compile(
+        r"\bmapping\s*\(\s*([^=)]+?)\s*=>\s*([^)]*?)\)\s*"
+        r"(?:public|private|internal|external)?\s*"
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*;"
+    )
+
+    declarations = []
+    for path in sorted(base.rglob("*.sol")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        for match in mapping_pattern.finditer(source):
+            key_raw = " ".join(match.group(1).split())
+            value_raw = " ".join(match.group(2).split())
+            name = match.group(3)
+
+            key_parts = key_raw.split()
+            value_parts = value_raw.split()
+            key_type = key_parts[0] if key_parts else key_raw
+            value_type = value_parts[-1] if value_parts else value_raw
+
+            declarations.append({
+                "file": str(path),
+                "label": name,
+                "key_type": key_type,
+                "value_type": value_type,
+                "fields": list(structs.get(value_type, [])),
+            })
+
+    return declarations
+
+
 def storage_type_label(types, type_id):
     if not isinstance(type_id,str):
         return ""
