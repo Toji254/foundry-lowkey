@@ -22,6 +22,7 @@ copy_if_needed() {
 copy_if_needed "$REPO_DIR/lowkey/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
 copy_if_needed "$REPO_DIR/lowkey/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
 copy_if_needed "$REPO_DIR/lowkey/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
+copy_if_needed "$REPO_DIR/lowkey/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
 copy_if_needed "$REPO_DIR/bin/lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -32,6 +33,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/lk.py
   - $TARGET_LOWKEY_DIR/forge_tools.py
   - $TARGET_LOWKEY_DIR/audit_engine.py
+  - $TARGET_LOWKEY_DIR/clone_tools.py
   - $TARGET_BIN_DIR/lk
 
 Run:
