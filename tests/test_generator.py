@@ -378,5 +378,15 @@ class LowkeyGeneratorTests(unittest.TestCase):
         self.assertIn("lk generate test", output.getvalue())
 
 
+
+    def test_validate_calldata_rejects_shell_text(self):
+        with self.assertRaises(ValueError):
+            generator._validate_calldata("~/Smart-contract-development-journey/ETH\\ Escrow")
+
+    def test_validate_value_rejects_shell_text(self):
+        with self.assertRaises(ValueError):
+            generator._validate_value("cd ~/Smart-contract-development-journey")
+
+
 if __name__ == "__main__":
     unittest.main()
