@@ -148,6 +148,8 @@ class LowkeySlitherTests(unittest.TestCase):
             with patch("slither_tools._default_paths", return_value=(evidence / "latest.json", evidence / "latest.sarif")):
                 result = slither_tools.run_default(root)
         self.assertEqual(result, 0)
+        context = slither_tools.audit_context.load(root)
+        self.assertEqual(context["tools"]["slither"]["finding_count"], 0)
         command = run.call_args.args[0]
         self.assertIn("--exclude-dependencies", command)
         self.assertIn("--fail-none", command)
