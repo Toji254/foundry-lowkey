@@ -41,23 +41,44 @@ class LowkeyForgeTests(unittest.TestCase):
         run.assert_called_once_with(["test", "-vvvv", "--match-test", "testFoo"])
 
     @patch("forge_tools.run_forge", return_value=0)
-    def test_audit_sequence(self, run):
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_audit_sequence(self, run, _supports):
         self.assertEqual(forge_tools.run_audit([]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
-                         [["build"], ["test", "-vvv"], ["coverage"]])
+                         [["build", "--skip", "test", "--skip", "script"],
+                          ["test", "-vvv", "--no-match-path", "test/Lowkey_*"],
+                          ["coverage", "--no-match-path", "test/Lowkey_*"]])
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_slither_preflight", return_value=0)
     @patch("forge_tools.command_available", return_value=False)
-    def test_audit_checks_runs_slither_preflight(self, available, slither, run):
+    @patch("forge_tools.run_forge_diagnostics", return_value=0)
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_audit_checks_runs_slither_preflight(self, supports, diagnostics, available, slither, run):
         self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
         slither.assert_called_once()
-        self.assertEqual(run.call_args_list[0].args[0], ["build"])
-        self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv"])
-        self.assertEqual(run.call_args_list[2].args[0], ["coverage"])
+        self.assertEqual(run.call_args_list[0].args[0], ["build", "--skip", "test", "--skip", "script"])
+        self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv", "--no-match-path", "test/Lowkey_*"])
+        self.assertEqual(run.call_args_list[2].args[0], ["coverage", "--no-match-path", "test/Lowkey_*"])
+        self.assertEqual(diagnostics.call_count, 0)
 
 
     @patch("forge_tools.run_forge", return_value=0)
+
+    def test_filter_generated_diagnostics(self):
+        output = """note[custom-errors]: use custom errors
+  ╭▸ src/Escrow.sol:10:5
+  ╰ help: https://example.invalid
+
+note[low-level-calls]: generated helper
+  ╭▸ test/Lowkey_probe_release_abcd.t.sol:20:9
+  ╰ help: https://example.invalid
+"""
+        visible, filtered = forge_tools._filter_generated_diagnostics(output)
+        self.assertIn("src/Escrow.sol:10:5", visible)
+        self.assertNotIn("test/Lowkey_probe_release_abcd.t.sol", visible)
+        self.assertEqual(filtered, 1)
+
     def test_inspect_audit_sequence(self, run):
         self.assertEqual(forge_tools.run_inspect_audit(["Vault"]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
@@ -73,19 +94,21 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(run.call_count, 6)
 
     @patch("forge_tools.run_forge", return_value=0)
-    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, run):
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, run, _supports):
         self.assertEqual(forge_tools.run_audit(["--via-ir"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
-            ["test", "-vvv", "--via-ir"],
+            ["test", "-vvv", "--via-ir", "--no-match-path", "test/Lowkey_*"],
         )
 
     @patch("forge_tools.run_forge", return_value=0)
-    def test_audit_respects_explicit_verbosity(self, run):
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_audit_respects_explicit_verbosity(self, run, _supports):
         self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
-            ["test", "--verbosity", "4"],
+            ["test", "--verbosity", "4", "--no-match-path", "test/Lowkey_*"],
         )
 
 if __name__ == "__main__":
