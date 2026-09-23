@@ -2674,6 +2674,7 @@ START HERE
   lk target <address>                 Set the contract under review
   lk target <name>                    Auto-select named deployment from broadcast/
   lk target <name> <address>           Save an explicit named target
+  lk target <name> <address>           Save an explicit named target
   lk target auto [name]                Auto-select latest or named broadcast deployment
 
 RECON → UNDERSTAND THE CONTRACT
@@ -2700,8 +2701,8 @@ ACTORS → THINK LIKE ALICE / BOB / THE ATTACKER
   lk wallet list / remove <name>      Manage saved actors
 
 CALL → SEND → FORENSICS
-  lk c <function> [args]              Read
-  lk s <function> [args]              Send
+  lk c <function> [args]              Read (actor names work for address args)
+  lk s <function> [args]              Send (actor names work for address args)
   lk s <function> [args] --preview    See calldata/signing command first
   lk encode <function> [args]         Build calldata
   lk calldata <0x...>                 Decode/pretty-print calldata
@@ -2732,7 +2733,7 @@ STORAGE / STATE
   lk state-diff <function> [args...]  Run call + show account/storage diffs
 
 THE ATTACK LAB
-  lk probe <function> [args...]        Probe the call as configured actors
+  lk probe <function> [args...]        Probe as configured actors; use Alice/Bob in address args
   lk matrix init                       Start an attacker/state matrix
   lk matrix actor <name> <address>    Add an actor to the matrix
   lk matrix state <name> <desc>       Record a state
