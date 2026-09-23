@@ -5162,7 +5162,7 @@ def main():
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks"
     }
-    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings"}:
+    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks"}:
         try:
             refresh_generated_poc(config)
         except Exception as error:
