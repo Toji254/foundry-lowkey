@@ -1097,8 +1097,8 @@ contract Matrix_{identifier} is Test {{
     }}
 }}
 '''
-        filename=write_generated_test("matrix_"+identifier,template)
-        return run_foundry(["test","--match-path",Path(filename).as_posix(),"-vvvv"])
+        path=write_generated_test("matrix_"+identifier,template)
+        return run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
     return fail("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
 
 def run_note(note):
@@ -1164,6 +1164,7 @@ def run_self_test():
         ("output signature",format_output_signature({"name":"f","inputs":[{"type":"address"}],"outputs":[{"type":"uint256"}]})=="f(address)(uint256)"),
         ("target alias resolution",resolve_target_ref({"aliases":{"one":"0x"+"1"*40},"targets":{}},"one")=="0x"+"1"*40),
         ("safe solidity identifier",solidity_identifier("unauthorized release #1")=="unauthorized_release__1"),
+        ("solidity address literal","address(uint160(0x00" in solidity_address_literal("0x"+"1"*40)),
         ("lab options",split_lab_options(["release","1","--actor","Alice","--value","1ether"])[1:] == ("Alice","1ether",False)),
     ]
     failed=[name for name,passed in checks if not passed]
@@ -1597,9 +1598,6 @@ contract LowkeyProbe is Test {{
 '''
         path=write_generated_test("probe_"+signature.split("(",1)[0],body)
         code=run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
-        if not _keep:
-            try: os.remove(path)
-            except OSError: pass
         return code
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
