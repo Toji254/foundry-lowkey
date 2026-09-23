@@ -4126,18 +4126,18 @@ def run_scan(args):
         return fail(f"Path is not a Solidity file or directory: {root}")
     patterns = [
         ("REENTRANCY REVIEW", re.compile(r"\\.(?:call|delegatecall|staticcall)\\s*(?:\\{|\\()")),
-        ("ETH TRANSFER REVIEW", re.compile(r"\\.(transfer|send)\\s*\\(")),
-        ("TX.ORIGIN", re.compile(r"\\btx\\.origin\\b")),
-        ("DELEGATECALL", re.compile(r"\\bdelegatecall\\b")),
-        ("SELFDESTRUCT", re.compile(r"\\bselfdestruct\\s*\\(")),
-        ("UNCHECKED", re.compile(r"\\bunchecked\\s*\\{")),
-        ("ASSEMBLY", re.compile(r"\\bassembly\\s*\\{")),
-        ("ENCODE_PACKED", re.compile(r"\\babi\\.encodePacked\\s*\\(")),
-        ("TIMESTAMP", re.compile(r"\\bblock\\.timestamp\\b")),
-        ("BLOCKHASH", re.compile(r"\\bblock\\.hash\\s*\\(|\\bblockhash\\s*\\(")),
-        ("PREVRANDAO", re.compile(r"\\bblock\\.prevrandao\\b")),
-        ("ECRECOVER", re.compile(r"\\becrecover\\s*\\(")),
-        ("CREATE2", re.compile(r"\\bcreate2\\b")),
+        ("ETH TRANSFER REVIEW", re.compile(r"\.(transfer|send)\s*\(")),
+        ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
+        ("DELEGATECALL", re.compile(r"\bdelegatecall\b")),
+        ("SELFDESTRUCT", re.compile(r"\bselfdestruct\s*\(")),
+        ("UNCHECKED", re.compile(r"\bunchecked\s*\{")),
+        ("ASSEMBLY", re.compile(r"\bassembly\s*\{")),
+        ("ENCODE_PACKED", re.compile(r"\babi\.encodePacked\s*\(")),
+        ("TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
+        ("BLOCKHASH", re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
+        ("PREVRANDAO", re.compile(r"\bblock\.prevrandao\b")),
+        ("ECRECOVER", re.compile(r"\becrecover\s*\(")),
+        ("CREATE2", re.compile(r"\bcreate2\b")),
     ]
     markers = []
     for path in source_sol_files(root):
