@@ -508,6 +508,25 @@ def load_abi(target,config):
         return abi if isinstance(abi,list) else []
     except (OSError,json.JSONDecodeError): return []
 
+def source_public_storage_names(root="."):
+    names=set()
+    for path in source_sol_files(root):
+        try:
+            source=Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for statement in source.split(";"):
+            lowered=statement.lower()
+            if any(token in lowered for token in ("function ", "event ", "error ", "modifier ", "constructor(")):
+                continue
+            if re.search(r"\b(?:constant|immutable)\b", statement):
+                continue
+            match=re.search(r"\bpublic\s+([A-Za-z_]\w*)\s*(?:=|$)", statement)
+            if match:
+                names.add(match.group(1))
+    return names
+
+
 def storage_getter_names(target,config,abi):
     path=config.get("abi_paths",{}).get(target)
     if not path or not os.path.exists(path):
@@ -561,6 +580,9 @@ def storage_getter_names(target,config,abi):
                 if labels:
                     break
 
+    if not labels:
+        labels.update(source_public_storage_names("."))
+    
     return {
         item.get("name")
         for item in abi
