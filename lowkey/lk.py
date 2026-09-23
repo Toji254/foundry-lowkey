@@ -1519,7 +1519,7 @@ def encode_target_call(config, function, values):
 def solidity_address_literal(address):
     if not is_address(address):
         raise ValueError(f"invalid Solidity address literal: {address}")
-    return f"address(uint160(0x{address[2:]}))"
+    return f"address(uint160(0x00{address[2:]}))"
 
 def generated_test_path(prefix):
     os.makedirs("test",exist_ok=True)
