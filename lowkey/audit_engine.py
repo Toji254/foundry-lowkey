@@ -536,7 +536,9 @@ contract Poc_{slug} is Test {{
 }}
 '''
     out = poc_dir(root)
-    sol_path = out / f"Poc_{slug}.t.sol"
+    test_dir = Path(root) / "test"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    sol_path = test_dir / f"Poc_{slug}.t.sol"
     write_text(sol_path, solidity)
 
     brief = {
@@ -559,6 +561,7 @@ contract Poc_{slug} is Test {{
             "last_tx": config.get("last_tx"),
             "rpc": config.get("rpc"),
         },
+        "poс_file": str(sol_path.relative_to(Path(root).resolve())),
         "refinement_checklist": [
             "Resolve exact function/signature and calldata.",
             "Set attacker identities, balances, and pre-state.",
