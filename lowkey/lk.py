@@ -17,6 +17,11 @@ try:
 except ImportError:
     FORGE_NATIVE_COMMANDS = set()
 
+try:
+    from audit_engine import run_slither, run_rg, run_audit_pipeline, generate_poc
+except ImportError:
+    run_slither = run_rg = run_audit_pipeline = generate_poc = None
+
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 SNAPSHOT_DIR = os.path.join(CONFIG_DIR, "snapshots")
@@ -640,7 +645,7 @@ def workspace_paths():
 def run_workspace(config,args):
     paths=workspace_paths(); action=args[0] if args else "init"
     if action!="init": print("Usage: lk workspace init"); return
-    for directory in [paths["root"],os.path.join(paths["root"],"abi"),os.path.join(paths["root"],"transactions"),os.path.join(paths["root"],"traces"),os.path.join(paths["root"],"storage"),os.path.join(paths["root"],"findings"),os.path.join(paths["root"],"history"),paths["matrix"]]:
+    for directory in [paths["root"],os.path.join(paths["root"],"abi"),os.path.join(paths["root"],"transactions"),os.path.join(paths["root"],"traces"),os.path.join(paths["root"],"storage"),os.path.join(paths["root"],"findings"),os.path.join(paths["root"],"history"),os.path.join(paths["root"],"evidence"),os.path.join(paths["root"],"poc"),paths["matrix"]]:
         os.makedirs(directory,exist_ok=True)
     for key in ["notes","todos","findings"]:
         if not os.path.exists(paths[key]): open(paths[key],"w",encoding="utf-8").close()
@@ -781,6 +786,14 @@ def run_export(config):
     for name,source in [("notes.md",paths["notes"]),("TODO.md",paths["todos"]),("session.log",paths["session"]),("matrix_actors.json",paths["matrix_actors"]),("matrix_states.json",paths["matrix_states"]),("matrix_scenarios.json",paths["matrix_scenarios"])]:
         if os.path.exists(source): Path(os.path.join(export_dir,name)).write_text(Path(source).read_text(encoding="utf-8"),encoding="utf-8")
     Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
+    evidence_dir=os.path.join(WORKSPACE_DIR,"evidence")
+    poc_dir=os.path.join(WORKSPACE_DIR,"poc")
+    if os.path.isdir(evidence_dir):
+        import shutil as _shutil
+        _shutil.copytree(evidence_dir,os.path.join(export_dir,"evidence"),dirs_exist_ok=True)
+    if os.path.isdir(poc_dir):
+        import shutil as _shutil
+        _shutil.copytree(poc_dir,os.path.join(export_dir,"poc"),dirs_exist_ok=True)
     print(f"Audit report exported: {export_dir}")
 def run_self_test():
     checks=[
@@ -806,7 +819,7 @@ def run_doctor():
     failures=0
     print("Lowkey doctor")
     print("============")
-    for name in ("python3", "cast", "forge", "anvil"):
+    for name in ("python3", "cast", "forge", "anvil", "rg", "slither"):
         path=shutil.which(name)
         if not path:
             print(f"FAIL  {name}: not found")
@@ -1297,6 +1310,8 @@ INSPECTION
 
 SOURCE TRIAGE
   lk scan [src]                       High-signal Solidity review markers
+  lk rg <pattern> [path]              Ripgrep search + evidence capture
+  lk slither [args...]                Slither static analysis + normalized evidence
   lk deps [src]                       Import/inheritance map
   lk layout <ContractName>            Forge storage layout
   lk risk                             ABI-level function risk heuristic
@@ -1309,6 +1324,9 @@ SOURCE TRIAGE
 
 AUDIT OS
   lk audit                            Interactive dashboard
+  lk audit run [--slither ARG...]     Build -> tests -> coverage -> Slither
+  lk audit run --poc                  Same pipeline + first PoC scaffold
+  lk poc [--finding N]                Generate PoC from accumulated evidence
   lk finding <note>                   Record observation
   lk finding add <severity> <title> <text>
   lk checklist                       View/mark/reset checklist
@@ -1463,12 +1481,64 @@ def dispatch_command(cmd,args,config,from_batch=False):
         else: run_matrix(config,args)
     elif cmd=="risk": run_risk(config)
     elif cmd=="scan": run_scan(args)
+    elif cmd=="rg":
+        if not args:
+            print("Usage: lk rg <pattern> [path] [rg flags...]")
+        elif run_rg is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            path=args[1] if len(args)>1 and not args[1].startswith("-") else "."
+            extra=args[2:] if len(args)>1 and not args[1].startswith("-") else args[1:]
+            run_rg(args[0],path,extra)
+    elif cmd=="slither":
+        if run_slither is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            run_slither(".",args)
+    elif cmd in {"poc","poc-gen"}:
+        if generate_poc is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            index=None; name=None; rest=list(args)
+            if "--finding" in rest:
+                i=rest.index("--finding")
+                if i+1>=len(rest):
+                    fail("Usage: lk poc [--finding N] [--name NAME]")
+                    return
+                try: index=int(rest[i+1])
+                except ValueError:
+                    fail("--finding must be an integer")
+                    return
+                del rest[i:i+2]
+            if "--name" in rest:
+                i=rest.index("--name")
+                if i+1>=len(rest):
+                    fail("Usage: lk poc [--finding N] [--name NAME]")
+                    return
+                name=rest[i+1]
+            generate_poc(".",index,name)
     elif cmd=="deps": run_deps(args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": run_raw(config,args)
     elif cmd=="batch": run_batch(config,args)
-    elif cmd=="audit": run_audit_mode(config)
+    elif cmd=="audit":
+        action=args[0] if args else None
+        if action in {"run","full"}:
+            if run_audit_pipeline is None:
+                fail("Audit engine is not installed. Reinstall Lowkey.")
+            else:
+                extra=args[1:]
+                generate="--poc" in extra
+                slither_args=[x for x in extra if x!="--poc"]
+                run_audit_pipeline(".",slither_args,generate)
+        elif action in {"poc","poc-gen"}:
+            if generate_poc is None:
+                fail("Audit engine is not installed. Reinstall Lowkey.")
+            else:
+                generate_poc(".",None,None)
+        else:
+            run_audit_mode(config)
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": run_receipt(config,args[0] if args else None)
