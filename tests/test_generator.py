@@ -84,12 +84,13 @@ class LowkeyGeneratorTests(unittest.TestCase):
             artifact.parent.mkdir(parents=True)
             artifact.write_text(json.dumps({"contractName": "Vault", "abi": []}), encoding="utf-8")
             with patch.object(generator.Path, "cwd", return_value=root):
-                with patch.object(generator, "_run", return_value=(0, "", "")):
+                with patch.object(generator, "_run", return_value=(0, "", "")) as run:
                     result = generator.run_generate({}, ["deployment", "Vault"])
             self.assertEqual(result, 0)
             generated = root / "script" / "LowkeyDeploy_Vault.s.sol"
             self.assertTrue(generated.exists())
             self.assertIn("Lowkey-generated deployment", generated.read_text(encoding="utf-8"))
+            self.assertEqual(run.call_args.args[2], ["build", "--skip", "test"])
 
     def test_generate_test_uses_supplied_calldata(self):
         target = "0x" + "1" * 40
