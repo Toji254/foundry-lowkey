@@ -138,11 +138,12 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(lk.run_event({}, ["Transfer(address,address,uint256)", "0xdeadbeef"]), 1)
 
     def test_cli_successful_event(self):
-        result = self.run_cli(
-            "event",
-            "Ping(uint256)",
-            "0x000000000000000000000000000000000000000000000000000000000000002a",
-        )
+        with patch.object(lk, "cast_output", return_value=(0, "42", "")):
+            result = self.run_cli(
+                "event",
+                "Ping(uint256)",
+                "0x000000000000000000000000000000000000000000000000000000000000002a",
+            )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("42", result.stdout)
 
