@@ -11,6 +11,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 from difflib import SequenceMatcher
 from pathlib import Path
+from urllib import request as urllib_request
 
 try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
@@ -43,9 +44,9 @@ AUDIT_CHECKLIST = [
 ]
 
 DEFAULT_CONFIG = {
-    "target": None, "aliases": {}, "targets": {}, "rpc": None,
+    "target": None, "target_contract": None, "aliases": {}, "targets": {}, "rpc": None,
     "rpc_profiles": {}, "actor": None, "wallets": {},
-    "abi_paths": {}, "labels": {}, "confirm_sends": False, "version": 2
+    "abi_paths": {}, "labels": {}, "confirm_sends": False, "rpc_auto": False, "version": 3
 }
 
 _COMMAND_STATUS = 0
@@ -109,16 +110,82 @@ def normalize_private_key(value):
         return value if value.startswith("0x") else "0x"+value
     return None
 
+DEFAULT_ANVIL_MNEMONIC = "test test test test test test test test test test test junk"
+
+
 def resolve_wallet_key(config,wallet_name=None):
     name=wallet_name or config.get("actor")
     if not name: return None
     entry=config.get("wallets",{}).get(name)
     if isinstance(entry,dict):
+        if entry.get("source") == "anvil-default" and entry.get("anvil_index") is not None:
+            return derive_default_anvil_key(int(entry["anvil_index"]))
         if entry.get("env"): return normalize_private_key(os.environ.get(entry["env"]))
         return normalize_private_key(entry.get("private_key"))
     if isinstance(entry,str): return normalize_private_key(entry)
     if isinstance(name,str) and name.startswith("env:"): return normalize_private_key(os.environ.get(name[4:]))
     return normalize_private_key(name)
+
+
+def rpc_json(url, method, params=None):
+    if not url: return None
+    try:
+        payload=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params or []}).encode()
+        req=urllib_request.Request(url, data=payload, headers={"Content-Type":"application/json"})
+        with urllib_request.urlopen(req, timeout=0.8) as response:
+            body=json.loads(response.read().decode("utf-8"))
+        if isinstance(body,dict) and body.get("error"): return None
+        return body.get("result") if isinstance(body,dict) else None
+    except Exception:
+        return None
+
+
+def detect_anvil_rpc(preferred=None):
+    candidates=[]
+    if preferred: candidates.append(preferred)
+    env_rpc=os.environ.get("ETH_RPC_URL")
+    if env_rpc and env_rpc not in candidates: candidates.append(env_rpc)
+    for local in ("http://127.0.0.1:8545", "http://localhost:8545", "http://127.0.0.1:8546", "http://localhost:8546"):
+        if local not in candidates: candidates.append(local)
+    for url in candidates:
+        client=rpc_json(url,"web3_clientVersion",[])
+        if not client or "anvil" not in str(client).lower(): continue
+        accounts=rpc_json(url,"eth_accounts",[])
+        if not isinstance(accounts,list): accounts=[]
+        return {"url":url,"client":str(client),"accounts":[x for x in accounts if is_address(x)]}
+    return None
+
+
+def derive_default_anvil_key(index):
+    try:
+        code,out,err=cast_output(["cast","wallet","private-key",DEFAULT_ANVIL_MNEMONIC,str(index)])
+    except Exception:
+        return None
+    if code != 0: return None
+    match=re.search(r"0x[0-9a-fA-F]{64}",out or "")
+    return normalize_private_key(match.group(0)) if match else None
+
+
+def wallet_entry_kind(entry):
+    if isinstance(entry,dict):
+        if entry.get("source") == "anvil-default": return f"anvil #{entry.get('anvil_index','?')}"
+        if entry.get("env"): return "env"
+        if entry.get("private_key"): return "key"
+    return "key"
+
+
+def assigned_anvil_index(config,index):
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and entry.get("source")=="anvil-default" and str(entry.get("anvil_index"))==str(index):
+            return name
+    return None
+
+
+def assigned_anvil_address(config,address):
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and str(entry.get("address","")).lower()==str(address).lower():
+            return name
+    return None
 def rpc_display(url):
     if not url: return None
     try:
@@ -210,18 +277,87 @@ def log_session(command, result):
     with open(SESSION_FILE, "a") as f:
         f.write(f"[{timestamp}] CMD: {command}\nRES: {result}\n{'-'*40}\n")
 
+def local_artifact_paths():
+    return [p for p in artifact_json_files(".") if "out" in Path(p).parts]
+
+
+def artifact_contract_name(path, artifact):
+    if isinstance(artifact,dict) and artifact.get("contractName"): return str(artifact["contractName"])
+    return Path(path).stem
+
+
+def read_artifact(path):
+    try:
+        with open(path,"r",encoding="utf-8") as f: value=json.load(f)
+        return value if isinstance(value,dict) else None
+    except (OSError,json.JSONDecodeError): return None
+
+
+def auto_abi_path(target,config):
+    if not target or not is_address(target): return None
+    preferred=config.get("target_contract")
+    if not preferred:
+        for record in discover_deployments("."):
+            if str(record.get("address","")).lower()==target.lower():
+                preferred=record.get("contract")
+                if preferred: config["target_contract"]=preferred
+                break
+    paths=local_artifact_paths()
+    if preferred:
+        preferred_lower=str(preferred).lower()
+        for path in paths:
+            artifact=read_artifact(path)
+            if artifact_contract_name(path,artifact).lower()==preferred_lower:
+                config.setdefault("abi_paths",{})[target]=path
+                return path
+            if Path(path).stem.lower()==preferred_lower:
+                config.setdefault("abi_paths",{})[target]=path
+                return path
+    rpc=config.get("rpc")
+    if rpc:
+        code, runtime, _=cast_output(["cast","code",target,"--rpc-url",rpc])
+        if code==0 and runtime and runtime.startswith("0x") and runtime!="0x":
+            normalized_runtime=runtime.lower()
+            for path in paths:
+                artifact=read_artifact(path)
+                deployed=artifact.get("deployedBytecode") if isinstance(artifact,dict) else None
+                if isinstance(deployed,dict): deployed=deployed.get("object")
+                if isinstance(deployed,str) and deployed.lower()==normalized_runtime:
+                    config.setdefault("abi_paths",{})[target]=path
+                    config["target_contract"]=artifact_contract_name(path,artifact)
+                    return path
+    return None
+
+
 def load_abi(target,config):
+    if not target: return []
     abi_paths=config.get("abi_paths",{})
     abi_path=abi_paths.get(target)
     if not abi_path and isinstance(target,str):
         lowered=target.lower()
         abi_path=next((path for address,path in abi_paths.items() if isinstance(address,str) and address.lower()==lowered),None)
+    if not abi_path or not os.path.exists(abi_path):
+        abi_path=auto_abi_path(target,config)
     if not abi_path or not os.path.exists(abi_path): return []
     try:
         with open(abi_path,"r",encoding="utf-8") as f: artifact=json.load(f)
         abi=artifact.get("abi",[]) if isinstance(artifact,dict) else artifact
+        if isinstance(artifact,dict) and artifact.get("contractName") and not config.get("target_contract"):
+            config["target_contract"]=artifact.get("contractName")
         return abi if isinstance(abi,list) else []
     except (OSError,json.JSONDecodeError): return []
+
+
+def storage_getter_names(target,config,abi):
+    path=config.get("abi_paths",{}).get(target)
+    if not path or not os.path.exists(path):
+        path=auto_abi_path(target,config)
+    if not path or not os.path.exists(path): return set()
+    artifact=read_artifact(path) or {}
+    layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
+    storage=layout.get("storage",[]) if isinstance(layout,dict) else []
+    labels={entry.get("label") for entry in storage if isinstance(entry,dict) and entry.get("label")}
+    return {item.get("name") for item in abi if item.get("type")=="function" and item.get("stateMutability") in {"view","pure"} and item.get("name") in labels}
 def run_chain(config):
     chain_id = run_cast(["chain-id"], config, capture=True)
     block = run_cast(["block-number"], config, capture=True)
@@ -238,8 +374,10 @@ def run_abi(config):
     if not abi:
         print("Error: No ABI loaded for the current target.")
         return
+    getter_names=storage_getter_names(target,config,abi)
     groups = {
-        "READ": [item for item in abi if item.get("type") == "function" and item.get("stateMutability") in ["view", "pure"]],
+        "READ": [item for item in abi if item.get("type") == "function" and item.get("stateMutability") in ["view", "pure"] and item.get("name") not in getter_names],
+        "STORAGE GETTERS": [item for item in abi if item.get("type") == "function" and item.get("name") in getter_names],
         "WRITE": [item for item in abi if item.get("type") == "function" and item.get("stateMutability") not in ["view", "pure"]],
         "EVENTS": [item for item in abi if item.get("type") == "event"],
         "ERRORS": [item for item in abi if item.get("type") == "error"],
@@ -254,14 +392,27 @@ def run_abi(config):
 def run_functions(config,query=None):
     target=config.get("target")
     if not target: return fail("Error: Set target first.")
-    functions=abi_functions(load_abi(target,config))
+    abi=load_abi(target,config)
+    functions=abi_functions(abi)
     if not functions: return fail("Error: No ABI functions loaded for the current target.")
+    getter_names=storage_getter_names(target,config,abi)
     if query:
         functions=sorted(functions,key=lambda item:function_score(item,query),reverse=True)[:8]
         print(f"Function matches for '{query}':")
-    else: print("Functions:")
-    for index,item in enumerate(functions,1):
-        print(f"{index:>2}. {item.get('stateMutability','unknown').upper():10} {format_signature(item)}")
+        for index,item in enumerate(functions,1):
+            kind="STORAGE GETTER" if item.get("name") in getter_names else ("WRITE" if item.get("stateMutability") not in {"view","pure"} else "READ")
+            print(f"{index:>2}. {kind:<15} {format_signature(item)}")
+        return
+    groups=[
+        ("WRITE FUNCTIONS",[x for x in functions if x.get("stateMutability") not in {"view","pure"} and x.get("name") not in getter_names]),
+        ("READ FUNCTIONS",[x for x in functions if x.get("stateMutability") in {"view","pure"} and x.get("name") not in getter_names]),
+        ("STORAGE GETTERS",[x for x in functions if x.get("name") in getter_names]),
+    ]
+    for title,items in groups:
+        if not items: continue
+        print(f"{title}:")
+        for index,item in enumerate(items,1):
+            print(f"  {index:>2}. {item.get('stateMutability','unknown').upper():10} {format_signature(item)}")
 def run_info(config):
     target = config.get("target")
     if not target:
@@ -951,7 +1102,7 @@ def run_auto_target(config,name=None):
     records=discover_deployments(".")
     if not records: print("No deployment found in broadcast/."); return
     record=records[0]; alias=name or record["contract"]
-    config["aliases"][alias]=record["address"]; config["targets"][alias]=record["address"]; config["target"]=record["address"]
+    config["aliases"][alias]=record["address"]; config["targets"][alias]=record["address"]; config["target"]=record["address"]; config["target_contract"]=record["contract"]
     for path in artifact_json_files("."):
         if os.path.join(".","out") in path and os.path.basename(path)==f"{record['contract']}.json":
             config["abi_paths"][record["address"]]=path; print(f"ABI auto-loaded: {path}"); break
@@ -1095,17 +1246,27 @@ def run_scan(args):
     print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
 
 def run_deps(args):
-    root=args[0] if args else "src"; files=source_sol_files(root)
-    if not files: print(f"No Solidity files found under {root}."); return
-    print("Dependency / inheritance map:")
+    root=args[0] if args else "."
+    files=source_sol_files(root)
+    if not files:
+        print(f"No Solidity files found under {root}.")
+        return
+    print(f"Dependency / inheritance map: {root}")
+    hits=0
     for path in files:
         try: text_content=Path(path).read_text(encoding="utf-8")
         except OSError: continue
-        rel=os.path.relpath(path,root)
-        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content): print(f"  {rel} -> import {imported}")
+        rel=os.path.relpath(path,root) if root!="." else os.path.relpath(path,".")
+        file_hits=0
+        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
+            print(f"  {rel} -> imports {imported}"); file_hits+=1; hits+=1
         for contract in re.finditer(r"\b(contract|interface|library)\s+(\w+)(?:\s+is\s+([^{]+))?",text_content):
-            for parent in [p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]:
-                print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+            parents=[p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]
+            for parent in parents:
+                print(f"  {contract.group(2)} -> inherits {parent} [{rel}]"); file_hits+=1; hits+=1
+        if file_hits==0:
+            print(f"  {rel} -> no imports or inheritance")
+    print(f"\nFiles checked: {len(files)} | relationships found: {hits}")
 
 def run_risk(config):
     target=config.get("target")
@@ -1178,6 +1339,81 @@ def run_audit_mode(config):
         elif choice=="0": return
         else: print("Unknown option.")
 
+def run_accounts(config):
+    info=detect_anvil_rpc(config.get("rpc"))
+    if not info:
+        return fail("No Anvil node detected on the usual local RPC ports.")
+    print(f"Anvil: {info['url']}")
+    if not info["accounts"]:
+        print("No accounts exposed by this node.")
+        return 0
+    for index,address in enumerate(info["accounts"]):
+        assigned=assigned_anvil_address(config,address) or assigned_anvil_index(config,index)
+        balance=rpc_json(info["url"],"eth_getBalance",[address,"latest"])
+        eth="?"
+        if isinstance(balance,str) and balance.startswith("0x"):
+            try: eth=f"{int(balance,16)/10**18:.2f} ETH"
+            except ValueError: pass
+        label=f"{assigned}" if assigned else "available"
+        print(f"  {index:>2}. {address}  {eth:<10}  {label}")
+    print("\nTip: lk actor 0 Alice  -> use account 0 as Alice")
+    return 0
+
+
+def select_anvil_actor(config,index,name=None):
+    info=detect_anvil_rpc(config.get("rpc"))
+    if not info: return fail("No Anvil node detected.")
+    try: index=int(index)
+    except (TypeError,ValueError): return fail("Account must be a number, e.g. lk actor 0 Alice")
+    if index<0 or index>=len(info["accounts"]): return fail(f"Account {index} does not exist on the detected Anvil node.")
+    address=info["accounts"][index]
+    assigned=assigned_anvil_address(config,address) or assigned_anvil_index(config,index)
+    if assigned and assigned != name:
+        return fail(f"Account {index} is already assigned to {assigned}. Choose another account or switch to that actor.")
+    key=derive_default_anvil_key(index)
+    if not key:
+        return fail("This Anvil account is visible, but its private key could not be derived automatically. Use lk wallet set-env for custom Anvil mnemonics.")
+    code,derived,_=cast_output(["cast","wallet","address","--private-key",key])
+    if code!=0 or not derived or derived.strip().lower()!=address.lower():
+        return fail("The detected account does not match Anvil's default development mnemonic; Lowkey will not guess the private key.")
+    actor_name=name or (assigned or f"account{index}")
+    current=config.get("wallets",{}).get(actor_name)
+    if current and isinstance(current,dict) and current.get("source")!="anvil-default":
+        return fail(f"Wallet profile '{actor_name}' already exists. Choose a different name or remove it first.")
+    config["wallets"][actor_name]={"source":"anvil-default","anvil_index":index,"address":address}
+    config["actor"]=actor_name
+    save_config(config)
+    print(f"Actor selected: {actor_name} -> Anvil account #{index} ({address})")
+    print("Private key: derived automatically for this local Anvil account; not stored in Lowkey config.")
+    return 0
+
+
+def run_actor(config,args=None):
+    args=list(args or [])
+    if not args:
+        info=detect_anvil_rpc(config.get("rpc"))
+        if info and info["accounts"]:
+            run_accounts(config)
+            try: index=input("Select account: ").strip()
+            except EOFError: return 0
+            if not index: return 0
+            try: name=input("Name it (e.g. Alice): ").strip()
+            except EOFError: name=""
+            return select_anvil_actor(config,index,name or None)
+        print(f"Actor: {actor_display(config)}")
+        if config.get("wallets"):
+            print("Saved actors:")
+            for name,entry in config["wallets"].items(): print(f"  {name}: {wallet_entry_kind(entry)}")
+        return 0
+    if args[0]=="reset":
+        config["actor"]=None; save_config(config); print("Actor reset."); return 0
+    if args[0].isdigit():
+        return select_anvil_actor(config,args[0]," ".join(args[1:]).strip() or None)
+    if args[0] in config.get("wallets",{}):
+        config["actor"]=args[0]; save_config(config); print(f"Actor selected: {args[0]}"); return 0
+    config["actor"]=args[0]; save_config(config); print(f"Actor set: {args[0]}"); return 0
+
+
 def actor_display(config):
     actor=config.get("actor")
     if not actor: return "none"
@@ -1186,10 +1422,14 @@ def actor_display(config):
     return str(actor)
 
 def run_status(config):
-    print(f"Target : {config.get('target') or 'none'}")
+    target=config.get("target")
+    contract=config.get("target_contract") or "unknown"
+    print(f"Target : {contract} -> {target or 'none'}")
     print(f"RPC    : {rpc_display(config.get('rpc')) or 'none'}")
     print(f"Actor  : {actor_display(config)}")
-    print(f"ABI    : {config.get('abi_paths',{}).get(config.get('target')) or 'not loaded'}")
+    abi_path=config.get('abi_paths',{}).get(target) if target else None
+    if not abi_path and target: auto_abi_path(target,config); abi_path=config.get('abi_paths',{}).get(target)
+    print(f"ABI    : {abi_path or 'auto-detect when needed'}")
     print(f"LastTX : {config.get('last_tx') or 'none'}")
 
 def run_wizard(config,args):
@@ -1237,116 +1477,164 @@ def run_fork(args):
     print("  "+redact_secrets(shlex.join(command)))
     print("Then point LowkeyCast at it:")
     print("  lk rpc http://127.0.0.1:8545")
+
 def print_help():
     print("""
-LowkeyCast - Foundry auditor interface
+Lowkey — your Solidity audit sidekick
 
-CORE
-  lk target <addr>                    Set target
-  lk target <name> <addr>             Save + select target
-  lk target list                      List saved targets
-  lk target auto [name]               Use latest broadcast deployment
-  lk use <name|number>                Switch target
-  lk deployments                      List deployments
-  lk status                           Show target/RPC/actor/ABI/last tx
-  lk rpc <url>                        Set RPC
-  lk rpc set <name> <url>             Save RPC profile
-  lk rpc use <name>                   Select RPC profile
-  lk wallet list                      List signer profiles
-  lk wallet set <name> <private-key>  Save local test key (plaintext on disk)
-  lk wallet set-env <name> <ENV_VAR>  Use environment-backed signer
-  lk wallet use <name>                Select signer
-  lk wallet remove <name>             Remove signer
-  lk actor reset                      Clear signer
+START HERE
+  lk --h                         Show this menu
+  lk doctor                     Check Foundry, Cast, Anvil, Python
+  lk status                     Show target, RPC, actor, ABI
+  lk accounts                   Show Anvil accounts + who owns each
+  lk actor                      Pick an Anvil account interactively
 
-ABI / INTERACTION
-  lk abi <path>                       Load ABI
-  lk abi auto                         Auto-load ABI
-  lk functions [query]                List/fuzzy-find functions
-  lk fn <query>                       Fuzzy-find functions
-  lk ask <function>                   Show argument names/types
-  lk wizard <function> [mode]         Prompt for call/send/encode arguments
-  lk c <func> [args]                  Read
-  lk s <func> [args]                  Send
-  lk s ... --preview                  Preview without sending
-  lk s ... --confirm                  Preview + confirmation prompt
-  lk encode <func> [args]             Build calldata
-  lk decode <function> <return-data>  Decode return values
-  lk decode-error <revert-data>       Decode custom error
-    lk event <sig> <data> [topic0 indexed-topic ...]
-                                                                            Topics are prepended to one Cast DATA payload
-  lk tx [hash]                        Inspect/decode transaction
-  lk raw <cast-command> ...           Raw Cast bypass
+  Example:
+    lk actor                    -> choose 0 and name it Alice
+    lk actor 1 Bob              -> use Anvil account 1 as Bob
 
-INSPECTION
-  lk info                             Target/chain/code/ABI/proxy
-  lk recon                            Balance/codehash/codesize/nonce
-  lk proxy                            Proxy + implementation/admin
-  lk implementation                   Resolve implementation
-  lk admin                            Resolve proxy admin
-  lk selectors                        Extract runtime selectors
-  lk mapping <slot> <key>             Compute/read mapping slot
-  lk mapping <type> <slot> <key>      Explicit key type
-  lk namespace <id>                   ERC-7201 namespace slot
-  lk proof <slot> [block]             Storage proof
-  lk snapshot [slot ...]              Save target/chain-scoped storage
-  lk diff                             Compare snapshot
-  lk ens <name|address>               ENS lookup
-  lk token <token>                    ERC20 metadata
-  lk token balance <token> <holder>   ERC20 balance
+AUDIT A CONTRACT
+  lk scan <file|dir>            Find high-signal Solidity review markers
+  lk deps [dir]                 Show imports/inheritance across the project
+  lk layout <Contract>          Show storage slots
+  lk risk                       Rank functions by review surface
+  lk functions                  Show write/read/storage-getter functions
+  lk fn <word>                  Fuzzy-find a function
+  lk ask <function>             Show its arguments
 
-SOURCE TRIAGE
-  lk scan [src]                       High-signal Solidity review markers
-  lk deps [src]                       Import/inheritance map
-  lk layout <ContractName>            Forge storage layout
-  lk risk                             ABI-level function risk heuristic
-  lk gas <func> [args]                Estimate gas
-  lk trace [tx] [flags]               Replay/trace transaction
-  lk replay <tx> [flags...]            Explicit replay alias
-  lk fork <rpc-url> [block]           Print Anvil fork command
-  lk logs [args...]                   Query logs
-  lk logs --decode [args...]          Query + decode ABI events
+  Your ETH Escrow examples:
+    lk scan src/EthEscrow.sol
+    lk deps
+    lk layout Escrow
+    lk functions
+    lk fn release
+    lk ask createescrow
 
-AUDIT OS
-  lk audit                            Interactive dashboard
-  lk finding <note>                   Record observation
-  lk finding add <severity> <title> <text>
-  lk checklist                       View/mark/reset checklist
-  lk matrix init                      Initialize attacker-state matrix
-  lk matrix actor <name> <addr>       Add actor
-  lk matrix state <name> <desc>       Add state definition
+CONTRACT SETUP
+  lk target <address>           Select a deployed contract
+  lk target <name> <address>    Save + select it
+  lk target auto                Use the newest Foundry broadcast deployment
+  lk deployments                List local Foundry deployments
+  lk use <name|number>          Switch saved target
+
+  Example:
+    lk target escrow 0xAbCd...  -> save the deployed Escrow
+    lk target auto              -> pick the latest broadcast automatically
+
+ABI
+  ABI paths are normally automatic.
+  lk abi                       Show the ABI currently being used
+  lk abi auto                  Re-run local ABI discovery
+  lk abi <path>                Manually override only when needed
+
+  Example:
+    lk abi out/EthEscrow.sol/Escrow.json
+
+READ / WRITE
+  lk c <function> [args]        Read the current contract
+  lk s <function> [args]        Send a transaction
+  lk s <function> --preview     Preview a send without broadcasting
+  lk wizard <function> [mode]   Ask for arguments interactively
+  lk encode <function> [args]   Build calldata
+  lk decode <function> <data>   Decode return data
+
+  ETH Escrow examples:
+    lk c escrow 1
+    lk c balances 0xAlice...
+    lk s createescrow 1 0xBob... --preview
+    lk wizard createescrow send
+
+CHAIN / FORENSICS
+  lk recon                      Address balance/code/nonce/codehash
+  lk selectors                  Extract runtime selectors
+  lk mapping <slot> <key>       Read a mapping slot
+  lk mapping <type> <slot> <key>
+  lk proof <slot> [block]       Get a storage proof
+  lk gas <function> [args]      Estimate gas
+  lk receipt [tx]               Inspect a transaction receipt
+  lk tx [hash]                  Inspect/decode a transaction
+  lk trace [tx] [flags]         Replay a transaction with a trace
+  lk logs [args]                Query logs
+  lk logs --decode [args]       Query + decode ABI events
+  lk last [tx|trace|logs]       Reuse the latest transaction
+
+  ETH Escrow examples:
+    lk recon
+    lk gas release
+    lk logs --decode
+    lk last trace
+
+PROXY / TOKENS / ENS
+  lk proxy                      Inspect a proxy
+  lk implementation             Find proxy implementation
+  lk admin                      Find proxy admin
+  lk token <address>             Show ERC20 metadata
+  lk token balance <token> <holder>
+  lk ens <name|address>          Resolve ENS
+
+AUDIT NOTEBOOK
+  lk audit                      Interactive audit dashboard
+  lk finding <note>             Record an observation
+  lk finding add <sev> <title> <text>
+  lk checklist                  Track audit checks
+  lk checklist done <text>      Mark a check complete
+  lk matrix init                Start attacker-state testing
+  lk matrix actor <name> <addr> Add an actor
+  lk matrix state <name> <desc> Add a state definition
   lk matrix add <name> <func> <actor> <expected>
-  lk matrix list                      List scenarios
-  lk matrix test <name>               Generate Forge test skeleton
-  lk test-gen                         Reproduce latest send as Forge test
-  lk note <text>                      Save audit note
-  lk todo <text>                      Add audit TODO
-  lk session [start|resume|end]       Audit session lifecycle
-  lk export                           Build audit-report/
-  lk batch <file>                     Run one lk command per line
-  lk self-test                        Run regression checks
-    lk doctor                           Check Python, Foundry, Cast, and Anvil
+  lk matrix test <name>         Generate a Forge test skeleton
+  lk test-gen                   Reproduce the latest send as a test
+  lk note <text>                Save an audit note
+  lk todo <text>                Add an audit TODO
+  lk session <start|resume|end> Manage audit sessions
+  lk export                     Build audit-report/
+  lk batch <file>               Run one lk command per line
 
-FORENSICS
-  lk receipt [tx]                     Transaction receipt
-  lk last [tx|trace|logs]             Reuse latest transaction
-  lk c ...                            Cast call shortcut
-  lk s ...                            Cast send shortcut
-  lk st ...                           Cast storage shortcut
+FORGE SHORTCUTS
+  lk build                      Same job as: forge build
+  lk test                       Same job as: forge test
+  lk script <...>               Same job as: forge script ...
+  lk coverage                   Same job as: forge coverage
+  lk lint                       Same job as: forge lint
+  lk fmt                        Same job as: forge fmt
+  lk forge <command> [args]     Pass a native Forge command through
+
+  Audit helpers:
+    lk forge test-audit
+    lk forge inspect-audit Escrow
+    lk forge audit --checks
+
+RAW ESCAPE HATCH
+  lk raw <cast-command> [args]  Run Cast directly when Lowkey has no shortcut
+  Example:
+    lk raw code 0xAbCd...
+
+NOTES
+  <...> means "put your value here".
+  Example: <Contract> -> Escrow
+  Example: <function> -> release
+  Example: <address> -> 0x1234...
+  Example: <slot> -> 0
+  Example: <tx> -> 0x1234...abcd
+
+  Lowkey automates workflow and surfaces review signals.
+  It does not declare a contract safe or vulnerable.
 """)
 def dispatch_command(cmd,args,config,from_batch=False):
-    if cmd in {"--help","-h","help"}: print_help()
+    if cmd in {"--help","--h","-h","help"}: print_help()
     elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.0")
     elif cmd=="target":
         if not args: print(f"Current target: {config.get('target') or 'none'}"); return
-        if args[0]=="reset": config["target"]=None
+        if args[0]=="reset": config["target"]=None; config["target_contract"]=None
         elif args[0]=="list": run_targets(config); return
         elif args[0]=="auto": run_auto_target(config,args[1] if len(args)>1 else None); return
         elif len(args)==1:
             resolved=resolve_target_ref(config,args[0])
             if not resolved: return fail("Error: target must be a valid address or saved alias.")
             config["target"]=resolved
-        elif len(args)==2 and is_address(args[1]): config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]
+        elif len(args)==2 and is_address(args[1]):
+            config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]; config["target_contract"]=args[0]
+            load_abi(args[1],config)
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
     elif cmd in {"targets","target-list"}: run_targets(config)
@@ -1354,7 +1642,9 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if not args: run_targets(config); return
         resolved=resolve_target_ref(config,args[0])
         if not resolved: print(f"Unknown target: {args[0]}"); return
-        config["target"]=resolved; save_config(config)
+        config["target"]=resolved
+        if not is_address(args[0]): config["target_contract"]=args[0]
+        load_abi(resolved,config); save_config(config)
     elif cmd=="deployments": run_deployments(config)
     elif cmd=="rpc":
         if not args: print(f"RPC: {rpc_display(config.get('rpc')) or 'none'}"); return
@@ -1368,7 +1658,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
         save_config(config)
     elif cmd=="wallet":
         if args and args[0]=="list":
-            for name,entry in config.get("wallets",{}).items(): print(f"{name}: {'env' if isinstance(entry,dict) and entry.get('env') else 'key'}")
+            if not config.get("wallets"):
+                print("No saved actors. Run 'lk actor' with Anvil running.")
+            else:
+                for name,entry in config.get("wallets",{}).items(): print(f"{name}: {wallet_entry_kind(entry)}")
         elif len(args)==3 and args[0]=="set":
             key=normalize_private_key(args[2])
             if not key: print("Invalid private key format."); return
@@ -1384,20 +1677,16 @@ def dispatch_command(cmd,args,config,from_batch=False):
             if config.get("actor")==args[1]: config["actor"]=None
             save_config(config)
         else: return fail("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
-    elif cmd=="actor":
-        if args and args[0]=="reset": config["actor"]=None; save_config(config)
-        elif args: config["actor"]=args[0]; save_config(config)
-        else: print(f"Actor: {actor_display(config)}")
+    elif cmd=="accounts": run_accounts(config)
+    elif cmd=="actor": run_actor(config,args)
     elif cmd=="abi":
         target=config.get("target")
         if not target: print("Error: Set target first."); return
         if args:
             if args[0]=="auto":
-                records=discover_deployments("."); match=next((x for x in records if x["address"]==target),None)
-                if match:
-                    for path in artifact_json_files("."):
-                        if os.path.join(".","out") in path and os.path.basename(path)==f"{match['contract']}.json":
-                            config["abi_paths"][target]=path; break
+                path=auto_abi_path(target,config)
+                if path: print(f"ABI auto-loaded: {path}")
+                else: print("No local ABI artifact matched the current target.")
             else: config["abi_paths"][target]=args[0]
             save_config(config)
         else: run_abi(config)
@@ -1484,10 +1773,19 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else: run_cast([cmd]+args,config)
 
+def auto_configure_runtime(config):
+    if config.get("rpc"): return
+    info=detect_anvil_rpc(None)
+    if info:
+        config["rpc"]=info["url"]
+        config["rpc_auto"]=True
+
+
 def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
     config=load_config()
+    auto_configure_runtime(config)
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
     if isinstance(result,int): raise SystemExit(result)
