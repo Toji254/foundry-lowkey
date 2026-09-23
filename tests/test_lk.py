@@ -37,6 +37,17 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertFalse(lk.is_address("0x" + "1" * 64))
         self.assertFalse(lk.is_address(None))
 
+    def test_receipt_records_audit_evidence(self):
+        tx_hash = "0x" + "1" * 64
+        with patch.object(lk, "run_cast", return_value=0) as run_cast:
+            with patch.object(lk, "audit_context") as ctx:
+                result = lk.run_receipt({"last_tx": tx_hash})
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], {"last_tx": tx_hash})
+        ctx.set_latest.assert_called_once()
+        ctx.record_tool.assert_called_once()
+        self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
+
     def test_tuple_canonicalization(self):
         self.assertEqual(
             lk.canonical_type({
@@ -316,6 +327,20 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk, "run_cast") as run_cast:
             lk.run_receipt(config)
             run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
+
+    def test_scan_records_source_triage_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "X.sol"
+            source.write_text(
+                'contract X { function f() external { (bool ok,) = msg.sender.call{value: 1}(""); require(ok); } }',
+                encoding="utf-8",
+            )
+            with patch.object(lk, "audit_context") as ctx:
+                lk.run_scan([str(root)])
+            ctx.foundry_project_root.assert_called_once()
+            ctx.record_tool.assert_called_once()
+            self.assertEqual(ctx.record_tool.call_args.args[0], "source-triage")
 
     def test_scan_smoke(self):
         source = "contract X { function f() external { (bool ok,) = msg.sender.call{value: 1}(\"\"); require(ok); } function g() external { address a = tx.origin; } }"
