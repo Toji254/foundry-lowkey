@@ -4631,7 +4631,8 @@ def run_audit_mode(config, args=None, interactive=None):
         target_label = target.get("contract") or target.get("address") or config.get("target") or "none"
         print(f"\nTarget: {target_label} | RPC: {rpc_display(effective_rpc(config)) or 'none'}")
         print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments")
-        print("7) full evidence pass   8) generate PoC   9) protocol walkthrough   0) exit")
+        print("7) full evidence pass   8) generate PoC   0) exit")
+        print("9) protocol walkthrough")
         try:
             choice = input("lk> ").strip()
         except EOFError:
