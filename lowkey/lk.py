@@ -2639,7 +2639,7 @@ def _extract_state_diff_json_slots(text_output):
 
 def parse_state_diff_output(output):
     text_output=str(output or "")
-    clean_output=re.sub(r"\x1b\\[[0-9;]*m","",text_output)
+    clean_output=re.sub(r"\x1b\[[0-9;]*m","",text_output)
 
     gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",clean_output)
     call_match=re.search(r"(?m)^\s*CALL\s+(.+)$",clean_output)
