@@ -1174,7 +1174,7 @@ def run_doctor():
     failures=0
     print("Lowkey doctor")
     print("============")
-    for name in ("python3", "cast", "forge", "anvil"):
+    for name in ("python3", "cast", "forge", "anvil", "chisel"):
         path=shutil.which(name)
         if not path:
             print(f"FAIL  {name}: not found")
@@ -1207,10 +1207,28 @@ def run_doctor():
         except OSError as error:
             print(f"FAIL  forge command check: {error}")
             failures+=1
+    if forge:
+        try:
+            help_result=subprocess.run([forge,"test","--help"],capture_output=True,text=True)
+            help_text=(help_result.stdout or "")+(help_result.stderr or "")
+            for label,flag in (("forge mutation","--mutate"),("forge symbolic","--symbolic"),("forge brutalize","--brutalize"),("forge rerun","--rerun")):
+                if flag in help_text:
+                    print(f"PASS  {label}: {flag}")
+                else:
+                    print(f"FAIL  {label}: {flag} not advertised by this Forge")
+                    failures+=1
+        except OSError as error:
+            print(f"FAIL  forge test feature check: {error}")
+            failures+=1
+
     for command,args in (("cast decode-event",["cast","decode-event","--help"]),
                          ("cast receipt",["cast","receipt","--help"]),
                          ("cast sig-event",["cast","sig-event","--help"]),
-                         ("forge inspect",["forge","inspect","--help"])):
+                         ("forge inspect",["forge","inspect","--help"]),
+                         ("cast pretty-calldata",["cast","pretty-calldata","--help"]),
+                         ("cast tx-pool",["cast","tx-pool","--help"]),
+                         ("cast disassemble",["cast","disassemble","--help"]),
+                         ("chisel",["chisel","--help"])):
         if not shutil.which(args[0]):
             print(f"FAIL  dependency command: {command} (binary not found)")
             failures+=1
@@ -1530,11 +1548,12 @@ def run_probe(config,args):
         signature,calldata=encode_target_call(config,values[0],values[1:])
         target=config.get("target")
         actors=[]
-        if actor:
-            address=actor_address(config,actor)
+        selected=actor or config.get("actor")
+        if selected:
+            address=actor_address(config,selected)
             if not address:
-                raise ValueError(f"unknown actor: {actor}")
-            actors=[(actor,address)]
+                raise ValueError(f"unknown actor: {selected}")
+            actors=[(selected,address)]
         else:
             actors=configured_actor_addresses(config)
         if not actors:
@@ -1565,7 +1584,11 @@ contract LowkeyProbe is Test {{
 }}
 '''
         write_generated_test("probe_"+signature.split("(",1)[0],body)
-        return run_foundry(["test","--match-path",pathlib.Path(path).as_posix(),"-vvvv"])
+        code=run_foundry(["test","--match-path",pathlib.Path(path).as_posix(),"-vvvv"])
+        if not _keep:
+            try: os.remove(path)
+            except OSError: pass
+        return code
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
 
@@ -1632,7 +1655,11 @@ contract LowkeyStateDiff is Test {{
 }}
 '''
         path=write_generated_test("state-diff_"+signature.split("(",1)[0],body)
-        return run_foundry(["test","--match-path",pathlib.Path(path).as_posix(),"-vvvv"])
+        code=run_foundry(["test","--match-path",pathlib.Path(path).as_posix(),"-vvvv"])
+        if not _keep:
+            try: os.remove(path)
+            except OSError: pass
+        return code
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
 
@@ -1972,7 +1999,7 @@ def run_risk(config):
         print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
 def run_gas(config,args):
     if not args:
-        print("Usage: lk gas <function> [args]"); return
+        return fail("Usage: lk gas <function> [args]")
     target=config.get("target")
     if not target:
         return fail("Error: Set target first.")
@@ -2172,7 +2199,9 @@ def run_fork(args):
         if token=="--port":
             if index+1>=len(values):
                 return fail("Usage: lk fork <rpc-url> [block] [--port PORT]")
-            port=int(values[index+1]); index+=2; continue
+            try: port=int(values[index+1])
+            except ValueError: return fail("Error: fork port must be a number.")
+            index+=2; continue
         if block is None and not token.startswith("-"):
             block=token; index+=1; continue
         extra.append(token); index+=1
@@ -2189,8 +2218,8 @@ def run_fork(args):
     log_path=os.path.join(AUDIT_DIR,"fork.log")
     os.makedirs(AUDIT_DIR,exist_ok=True)
     try:
-        log=open(log_path,"a",encoding="utf-8")
-        process=subprocess.Popen(command,stdout=log,stderr=log,start_new_session=True)
+        with open(log_path,"a",encoding="utf-8") as log:
+            process=subprocess.Popen(command,stdout=log,stderr=log,start_new_session=True)
     except (OSError,ValueError) as error:
         return fail(f"Error starting fork: {error}",1)
     for _ in range(30):
