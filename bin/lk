@@ -10,6 +10,10 @@ case "${1:-}" in
     build|test|script|inspect|coverage|lint|geiger|fmt|clone|lsp)
         exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
         ;;
+    generate)
+        shift
+        exec python3 "$HOME/.lowkey/generator.py" "${@}"
+        ;;
 esac
 
 exec python3 "$HOME/.lowkey/lk.py" "$@"
