@@ -1063,7 +1063,17 @@ def run_receipt(config, tx_hash=None):
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
-    return run_cast(["receipt", tx_hash, "--async"], config)
+    code = run_cast(["receipt", tx_hash, "--async"], config)
+    root = audit_context.foundry_project_root()
+    audit_context.set_latest(root, tx_hash=tx_hash)
+    audit_context.record_tool(
+        "receipt",
+        root,
+        status="completed" if code == 0 else "failed",
+        summary=f"transaction receipt {tx_hash[:10]}...",
+        data={"tx_hash": tx_hash, "exit_code": code},
+    )
+    return code
 
 def run_trace(config,args=None):
     args=list(args or [])
@@ -4109,29 +4119,54 @@ def source_sol_files(root):
     return sorted(paths)
 
 def run_scan(args):
-    root=args[0] if args else "src"
-    if not os.path.exists(root): return fail(f"Path not found: {root}")
+    root = args[0] if args else "src"
+    if not os.path.exists(root):
+        return fail(f"Path not found: {root}")
     if not os.path.isdir(root) and not root.endswith(".sol"):
         return fail(f"Path is not a Solidity file or directory: {root}")
-    patterns=[
-        ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
-        ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
-        ("TX.ORIGIN",re.compile(r"\btx\.origin\b")),("DELEGATECALL",re.compile(r"\bdelegatecall\b")),
-        ("SELFDESTRUCT",re.compile(r"\bselfdestruct\s*\(")),("UNCHECKED",re.compile(r"\bunchecked\s*\{")),
-        ("ASSEMBLY",re.compile(r"\bassembly\s*\{")),("ENCODE_PACKED",re.compile(r"\babi\.encodePacked\s*\(")),
-        ("TIMESTAMP",re.compile(r"\bblock\.timestamp\b")),("BLOCKHASH",re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
-        ("PREVRANDAO",re.compile(r"\bblock\.prevrandao\b")),("ECRECOVER",re.compile(r"\becrecover\s*\(")),
-        ("CREATE2",re.compile(r"\bcreate2\b"))]
-    hits=0
+    patterns = [
+        ("REENTRANCY REVIEW", re.compile(r"\\.(?:call|delegatecall|staticcall)\\s*(?:\\{|\\()")),
+        ("ETH TRANSFER REVIEW", re.compile(r"\\.(transfer|send)\\s*\\(")),
+        ("TX.ORIGIN", re.compile(r"\\btx\\.origin\\b")),
+        ("DELEGATECALL", re.compile(r"\\bdelegatecall\\b")),
+        ("SELFDESTRUCT", re.compile(r"\\bselfdestruct\\s*\\(")),
+        ("UNCHECKED", re.compile(r"\\bunchecked\\s*\\{")),
+        ("ASSEMBLY", re.compile(r"\\bassembly\\s*\\{")),
+        ("ENCODE_PACKED", re.compile(r"\\babi\\.encodePacked\\s*\\(")),
+        ("TIMESTAMP", re.compile(r"\\bblock\\.timestamp\\b")),
+        ("BLOCKHASH", re.compile(r"\\bblock\\.hash\\s*\\(|\\bblockhash\\s*\\(")),
+        ("PREVRANDAO", re.compile(r"\\bblock\\.prevrandao\\b")),
+        ("ECRECOVER", re.compile(r"\\becrecover\\s*\\(")),
+        ("CREATE2", re.compile(r"\\bcreate2\\b")),
+    ]
+    markers = []
     for path in source_sol_files(root):
-        try: lines=Path(path).read_text(encoding="utf-8").splitlines()
-        except OSError: continue
-        for lineno,line in enumerate(lines,1):
-            for label,pattern in patterns:
+        try:
+            lines = Path(path).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for lineno, line in enumerate(lines, 1):
+            for label, pattern in patterns:
                 if pattern.search(line):
-                    hits+=1; print(f"{path}:{lineno}: [{label}] {line.strip()}")
-    print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
-
+                    item = {
+                        "file": os.path.relpath(path, os.path.dirname(root) if os.path.isfile(root) else "."),
+                        "line": lineno,
+                        "label": label,
+                        "text": line.strip(),
+                    }
+                    markers.append(item)
+                    print(f"{path}:{lineno}: [{label}] {line.strip()}")
+    print(f"\nReview markers: {len(markers)}")
+    print("These are source-level review markers, not vulnerability verdicts.")
+    audit_root = audit_context.foundry_project_root()
+    audit_context.record_tool(
+        "source-triage",
+        audit_root,
+        status="completed",
+        summary=f"{len(markers)} source review marker(s)",
+        data={"count": len(markers), "markers": markers},
+    )
+    return 0
 def run_deps(args):
     root=args[0] if args else "."
     if not os.path.exists(root):
@@ -4217,6 +4252,7 @@ def run_risk(config):
     if not funcs:
         print("Error: No ABI functions loaded."); return
     print("Function review-surface heuristic:")
+    rows = []
     for item in funcs:
         name=item.get("name","").lower(); signals=[]
         if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
@@ -4224,7 +4260,19 @@ def run_risk(config):
         if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
         if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
         if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
-        print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+        signature = format_signature(item)
+        row = {"signature": signature, "signals": signals}
+        rows.append(row)
+        print(f"{signature:55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+    root = audit_context.foundry_project_root()
+    audit_context.record_tool(
+        "risk",
+        root,
+        status="completed",
+        summary=f"{len(rows)} ABI function(s) reviewed",
+        data={"target": target, "functions": rows},
+    )
+
 def run_gas(config,args):
     if not args:
         return fail("Usage: lk gas <function> [args]")
@@ -5108,17 +5156,6 @@ def main():
     _sync_audit_context(config, root)
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
-    evidence_commands={
-        "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
-        "mapping","snapshot","diff","risk","seams","matrix","finding","audit",
-        "audit--checks","audit-checks"
-    }
-    if sys.argv[1] in evidence_commands:
-        try:
-            refresh_generated_poc(config)
-        except Exception as error:
-            print(f"Warning: automatic PoC refresh failed: {error}", file=sys.stderr)
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
