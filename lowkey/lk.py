@@ -154,11 +154,6 @@ def artifact_json_files(root="."):
             for filename in files:
                 if filename.endswith(".json"): result.append(os.path.join(path,filename))
     return result
-def save_config(config):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4)
-    os.chmod(CONFIG_FILE, 0o600)
-
 def last_transaction(config):
     return config.get("last_tx")
 
@@ -167,24 +162,6 @@ def log_session(command, result):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(SESSION_FILE, "a") as f:
         f.write(f"[{timestamp}] CMD: {command}\nRES: {result}\n{'-'*40}\n")
-
-def resolve_function(func_name, target, config):
-    abi_path = config.get("abi_paths", {}).get(target)
-    if not abi_path or not os.path.exists(abi_path):
-        return func_name
-    try:
-        with open(abi_path, "r") as f:
-            abi = json.load(f)
-            if isinstance(abi, dict):
-                abi = abi.get("abi", [])
-            for item in abi:
-                if item.get("type") == "function" and item.get("name") == func_name:
-                    inputs = item.get("inputs", [])
-                    types = [i.get("type") for i in inputs]
-                    return f"{func_name}({','.join(types)})"
-    except Exception:
-        pass
-    return func_name
 
 def load_abi(target,config):
     abi_paths=config.get("abi_paths",{})
@@ -198,10 +175,6 @@ def load_abi(target,config):
         abi=artifact.get("abi",[]) if isinstance(artifact,dict) else artifact
         return abi if isinstance(abi,list) else []
     except (OSError,json.JSONDecodeError): return []
-def format_signature(item):
-    inputs = ",".join(value.get("type", "") for value in item.get("inputs", []))
-    return f"{item.get('name', '<anonymous>')}({inputs})"
-
 def run_chain(config):
     chain_id = run_cast(["chain-id"], config, capture=True)
     block = run_cast(["block-number"], config, capture=True)
@@ -419,9 +392,6 @@ def is_nonzero_slot(value):
         return int(value, 16) != 0
     except (TypeError, ValueError):
         return False
-
-def redact_secrets(text):
-    return re.sub(r"(--private-key\s+)(\S+)", r"\1<redacted>", text)
 
 def run_cast(args,config,capture=False):
     if not args: return None
