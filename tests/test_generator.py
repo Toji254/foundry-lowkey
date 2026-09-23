@@ -415,6 +415,7 @@ class LowkeyGeneratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             context = {
+                "target": {"address": target, "contract": "Target"},
                 "focus": {"signal_id": "SLITHER-ABC"},
                 "signals": [{
                     "id": "SLITHER-ABC",
