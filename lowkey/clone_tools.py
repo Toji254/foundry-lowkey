@@ -465,7 +465,7 @@ def run_clone(args: Sequence[str]) -> int:
     print("LOWKEY CLONE COMPLETE")
     print("=====================")
     print(f"Project : {destination}")
-    print("Next    : cd into the project and run `lk audit\`")
+    print("Next    : cd into the project and run `lk audit`")
     return 0
 
 
