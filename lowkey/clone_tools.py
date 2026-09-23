@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -128,33 +129,59 @@ def resolve_destination(url: str, destination: str | None) -> Path:
     return (Path.cwd() / repo_name_from_url(url)).resolve()
 
 
-def ensure_cache_repo() -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    if (CACHE_REPO / "HEAD").exists():
-        return CACHE_REPO
+def cache_key(url: str) -> str:
+    normalized = normalize_repo_url(url)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
 
-    result = run_git(["init", "--bare", str(CACHE_REPO)], capture=True)
+
+def cache_path_for_url(url: str) -> Path:
+    REPO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return REPO_CACHE_DIR / f"{cache_key(url)}.git"
+
+
+def ensure_cache_repo(url: str) -> Path:
+    path = cache_path_for_url(url)
+    if (path / "HEAD").exists():
+        return path
+    result = run_git(["init", "--bare", str(path)], capture=True)
     if result.returncode != 0:
         raise RuntimeError(
-            "Could not create dependency cache:\\n"
-            + (result.stderr or result.stdout or "unknown git error")
+            f"Could not create dependency cache {path}: "
+            f"{result.stderr or result.stdout or 'unknown git error'}"
         )
-    return CACHE_REPO
+    return path
 
 
-def cache_has_objects(repo: Path) -> bool:
-    result = run_git(["-C", str(repo), "count-objects", "-v"], capture=True)
-    if result.returncode != 0:
-        return False
-    values = {}
-    for line in result.stdout.splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            values[key.strip()] = value.strip()
+def cache_has_commit(path: Path, commit: str) -> bool:
+    result = run_git(
+        ["-C", str(path), "cat-file", "-e", f"{commit}^{{commit}}"],
+        capture=True,
+    )
+    return result.returncode == 0
+
+
+def cache_submodule(url: str, worktree: Path, commit: str) -> bool:
     try:
-        return int(values.get("count", "0")) > 0 or int(values.get("in-pack", "0")) > 0
-    except ValueError:
+        cache = ensure_cache_repo(url)
+    except RuntimeError as exc:
+        print(f"[CACHE] Warning: {exc}", file=sys.stderr)
         return False
+
+    if cache_has_commit(cache, commit):
+        return True
+
+    result = run_git(
+        ["-C", str(cache), "fetch", "--no-tags", "--quiet", str(worktree), commit],
+        capture=True,
+    )
+    if result.returncode != 0:
+        print(
+            f"[CACHE] Warning: could not cache {normalize_repo_url(url)} "
+            f"at {commit[:12]}: {result.stderr.strip() or result.stdout.strip()}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def git_repo_ready(path: Path) -> bool:
@@ -228,86 +255,147 @@ def sync_submodules(destination: Path) -> int:
     ).returncode
 
 
-def update_submodules(
-    destination: Path,
-    *,
-    depth: int,
-    jobs: int,
-    use_cache: bool,
-) -> int:
-    command = [
-        "-C",
-        str(destination),
-        "submodule",
-        "update",
-        "--init",
-        "--recursive",
-        "--jobs",
-        str(jobs),
-    ]
-    if depth:
-        command += ["--depth", str(depth)]
-    if use_cache:
-        cache = ensure_cache_repo()
-        if cache_has_objects(cache):
-            command += ["--reference-if-able", str(cache)]
-    return run_git(command).returncode
-
-
-def populate_cache(destination: Path) -> int:
-    try:
-        cache = ensure_cache_repo()
-    except RuntimeError as exc:
-        print(f"[CACHE] Warning: {exc}", file=sys.stderr)
-        return 0
-
-    # Import objects from the local submodules into one shared bare repository.
-    # This is local-only: no network call is made while populating the cache.
-    probe = run_git(
+def gitmodules_entries(repo: Path) -> dict[str, tuple[str, str]]:
+    result = run_git(
         [
-            "-C",
-            str(destination),
-            "submodule",
-            "foreach",
-            "--recursive",
-            'printf "%s\\t%s\\t%s\\n" "$path" "$sha1" "$PWD"',
+            "-C", str(repo), "config", "--file", ".gitmodules",
+            "--get-regexp", r"^submodule\..*\.path$"
         ],
         capture=True,
     )
-    if probe.returncode != 0:
-        print(
-            "[CACHE] Warning: could not enumerate submodules; "
-            "checkout itself completed.",
-            file=sys.stderr,
-        )
-        return 0
+    if result.returncode != 0:
+        return {}
 
-    records = []
-    for line in probe.stdout.splitlines():
-        parts = line.split("\\t", 2)
-        if len(parts) == 3 and parts[1]:
-            records.append((parts[1], parts[2]))
-
-    if not records:
-        print("[CACHE] No submodules to cache.")
-        return 0
-
-    print(f"[CACHE] Updating dependency cache ({len(records)} repositories)...")
-    failures = 0
-    for sha, worktree in records:
-        result = run_git(
-            ["-C", str(cache), "fetch", "--no-tags", "--quiet", worktree, sha],
+    entries: dict[str, tuple[str, str]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        key, path = parts
+        name = key[len("submodule."):-len(".path")]
+        url_result = run_git(
+            [
+                "-C", str(repo), "config", "--file", ".gitmodules",
+                "--get", f"submodule.{name}.url"
+            ],
             capture=True,
         )
-        if result.returncode != 0:
-            failures += 1
-            if result.stderr:
-                print(f"[CACHE] Warning: {result.stderr.strip()}", file=sys.stderr)
+        if url_result.returncode == 0 and url_result.stdout.strip():
+            entries[name] = (path.strip(), url_result.stdout.strip())
+    return entries
 
-    if failures:
-        print(f"[CACHE] {failures} cache entries could not be updated.", file=sys.stderr)
-    else:
-        print(f"[CACHE] Ready: {cache}")
+
+def immediate_submodules(repo: Path) -> list[tuple[str, str, Path]]:
+    result = run_git(["-C", str(repo), "submodule", "status"], capture=True)
+    if result.returncode != 0:
+        return []
+
+    configured = gitmodules_entries(repo)
+    by_path = {path: url for _, (path, url) in configured.items()}
+
+    records: list[tuple[str, str, Path]] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped[0] in "+-U":
+            stripped = stripped[1:].lstrip()
+        parts = stripped.split(None, 1)
+        if len(parts) != 2:
+            continue
+        commit, rest = parts
+        path = rest.split(None, 1)[0]
+        url = by_path.get(path)
+        if not url or not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+            continue
+        records.append((url, commit, repo / path))
+    return records
+
+
+def update_one_level(
+    repo: Path,
+    entries: list[tuple[str, str, Path]],
+    jobs: int,
+    use_cache: bool,
+) -> int:
+    pending = [(url, commit, path) for url, commit, path in entries if not git_repo_ready(path)]
+    if not pending:
+        return 0
+
+    groups: dict[str, list[tuple[str, str, Path]]] = {}
+    for url, commit, path in pending:
+        key = normalize_repo_url(url) if use_cache else "__no_cache__"
+        groups.setdefault(key, []).append((url, commit, path))
+
+    for key, group in groups.items():
+        command = [
+            "-C", str(repo),
+            "submodule", "update", "--init",
+            "--jobs", str(jobs),
+            "--depth", "1",
+        ]
+        if use_cache and key != "__no_cache__":
+            cache = ensure_cache_repo(group[0][0])
+            command.extend(["--reference-if-able", str(cache)])
+        command.extend(["--", *[str(path.relative_to(repo)) for _, _, path in group]])
+
+        result = run_git(command)
+        if result.returncode != 0:
+            return result.returncode
+    return 0
+
+
+def populate_level_cache(
+    entries: list[tuple[str, str, Path]],
+    *,
+    use_cache: bool,
+) -> None:
+    if not use_cache:
+        return
+
+    unique: dict[str, tuple[str, str, Path]] = {}
+    for url, commit, path in entries:
+        if git_repo_ready(path):
+            unique[f"{normalize_repo_url(url)}:{commit}"] = (url, commit, path)
+
+    warmed = 0
+    for url, commit, path in unique.values():
+        if cache_submodule(url, path, commit):
+            warmed += 1
+
+    if unique:
+        print(f"[CACHE] Warmed {warmed}/{len(unique)} dependency object sets")
+
+
+def walk_submodules(root: Path, *, jobs: int, use_cache: bool) -> int:
+    queue: list[Path] = [root]
+    visited: set[Path] = set()
+    total = 0
+    levels = 0
+
+    while queue:
+        repo = queue.pop(0).resolve()
+        if repo in visited:
+            continue
+        visited.add(repo)
+
+        entries = immediate_submodules(repo)
+        if not entries:
+            continue
+
+        total += len(entries)
+        code = update_one_level(repo, entries, jobs, use_cache)
+        if code != 0:
+            return code
+
+        populate_level_cache(entries, use_cache=use_cache)
+        levels += 1
+
+        for _, _, path in entries:
+            if git_repo_ready(path):
+                queue.append(path)
+
+    print(f"[DEPS] Processed {total} submodule entries across {levels} levels")
     return 0
 
 
@@ -351,15 +439,10 @@ def run_clone(args: Sequence[str]) -> int:
             print(f"[CACHE] Warning: {exc}", file=sys.stderr)
 
     print(
-        f"[DEPS] Initializing submodules recursively "
+        f"[DEPS] Walking submodules incrementally "
         f"(parallel={jobs}, depth={depth or 'full'})..."
     )
-    code = update_submodules(
-        destination,
-        depth=depth,
-        jobs=jobs,
-        use_cache=use_cache,
-    )
+    code = walk_submodules(destination, jobs=jobs, use_cache=use_cache)
     if code != 0:
         return die(
             "Submodule initialization failed. Re-run the same command to resume.",
