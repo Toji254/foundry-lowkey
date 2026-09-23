@@ -1038,7 +1038,7 @@ class LowkeyCastTests(unittest.TestCase):
         }
         captured = {}
 
-        def fake_write(prefix, content):
+        def fake_write(prefix, content, announce=True):
             captured["content"] = content
             return "test/Lowkey_state_diff.t.sol"
 
@@ -1458,7 +1458,7 @@ contract Escrow {
         self.assertEqual(lk.storage_type_label(types, "t_address"), "address")
         self.assertEqual(lk.storage_type_label(types, "t_uint256"), "uint256")
 
-    def test_mapping_slot_match_decodes_struct_field_name(self):
+        def test_mapping_slot_match_decodes_struct_field_name(self):
         address = "0x" + "1" * 40
         changed_slot = "0x" + "2" * 64
         types = {
@@ -1482,13 +1482,14 @@ contract Escrow {
             "slot": "1",
             "type": "t_mapping(uint256,t_struct(Create)_storage)",
         }]
-        with patch.object(
-            lk, "storage_layout_details", return_value=(types, storage)
-        ), patch.object(
-            lk, "configured_actor_addresses", return_value=[("Alice", address)]
-        ), patch.object(
-            lk, "cast_output", return_value=(0, changed_slot, "")
-        ):
+
+        def fake_index(args, input_text=None):
+            candidate = str(args[3])
+            if candidate == "1":
+                return 0, changed_slot, ""
+            return 0, "0x" + "3" * 64, ""
+
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)),              patch.object(lk, "configured_actor_addresses", return_value=[("Alice", address)]),              patch.object(lk, "cast_output", side_effect=fake_index):
             labels = lk.mapping_slot_matches(
                 {"target": "0x" + "9" * 40, "wallets": {"Alice": {"address": address}}},
                 "createescrow(uint256,address)",
@@ -1496,9 +1497,10 @@ contract Escrow {
                 address,
                 [changed_slot],
             )
+
         self.assertEqual(
             labels[changed_slot.lower()],
-            ("escrow[16].creator", "t_address"),
+            ("escrow[1].creator", "t_address"),
         )
 
     def test_dispatch_exposes_simple_audit_aliases(self):
