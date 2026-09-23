@@ -103,8 +103,8 @@ class ProjectTargetingTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             rendered = output.getvalue()
-            self.assertIn("Built-project function matches", rendered)
-            self.assertIn("ConfidencePoolFactory::createPool(address,address)", rendered)
+            self.assertIn("LOWKEY BUILD FUNCTION", rendered)
+            self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address)", rendered)
 
     def test_fn_searches_current_build_artifacts_without_live_target(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,9 +147,10 @@ class ProjectTargetingTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             rendered = output.getvalue()
-            self.assertIn("Built-project function matches", rendered)
-            self.assertIn("ConfidencePoolFactory::createPool(address,address,uint256,uint256,address,address[])", rendered)
-            self.assertIn("No live target selected", rendered)
+            self.assertIn("LOWKEY BUILD FUNCTION", rendered)
+            self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address,uint256,uint256,address,address[])", rendered)
+            self.assertIn("Other:   IConfidencePoolFactory (interface), MockConfidencePoolFactoryV2 (test mock)", rendered)
+            self.assertIn("Live:    none", rendered)
 
 
 class patch_cwd:
