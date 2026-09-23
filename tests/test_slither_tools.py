@@ -43,6 +43,36 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertIn("Medium", rendered)
         self.assertIn("Informational", rendered)
 
+    def test_vscode_terminal_link_keeps_relative_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            absolute = root / "src" / "EthEscrow.sol"
+            with patch.dict("os.environ", {"TERM_PROGRAM": "vscode"}):
+                linked = slither_tools._terminal_link(
+                    "src/EthEscrow.sol:3",
+                    absolute,
+                    3,
+                    1,
+                )
+        self.assertIn("src/EthEscrow.sol:3", linked)
+        self.assertIn("vscode://file/", linked)
+        self.assertIn(":3:1", linked)
+        self.assertNotIn(str(absolute), linked.split("src/EthEscrow.sol:3")[-1])
+
+
+    def test_non_vscode_terminal_gets_plain_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            absolute = pathlib.Path(tmp) / "src" / "EthEscrow.sol"
+            with patch.dict("os.environ", {"TERM_PROGRAM": "xterm"}):
+                linked = slither_tools._terminal_link(
+                    "src/EthEscrow.sol:3",
+                    absolute,
+                    3,
+                    1,
+                )
+        self.assertEqual(linked, "src/EthEscrow.sol:3")
+
+
     def test_source_location_returns_absolute_clickable_location(self):
         finding = {
             "elements": [{
