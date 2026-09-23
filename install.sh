@@ -8,6 +8,7 @@ TARGET_BIN_DIR="$HOME/.foundry/bin"
 mkdir -p "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR"
 
 cp "$REPO_DIR/lowkey/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
+cp "$REPO_DIR/lowkey/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
 cp "$REPO_DIR/bin/lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -16,8 +17,10 @@ LowkeyCast installed successfully.
 
 Files copied:
   - $TARGET_LOWKEY_DIR/lk.py
+  - $TARGET_LOWKEY_DIR/forge_tools.py
   - $TARGET_BIN_DIR/lk
 
 Run:
   lk --help
+  lk forge --help
 EOF
