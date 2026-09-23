@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -400,6 +401,22 @@ def _value(value: str) -> str:
     return value
 
 
+def _validate_calldata(value: str) -> str:
+    value = str(value or "").removeprefix("0x")
+    if not re.fullmatch(r"[0-9a-fA-F]*", value):
+        raise ValueError("calldata must contain only hexadecimal bytes")
+    if len(value) % 2:
+        raise ValueError("calldata must contain complete bytes")
+    return value
+
+
+def _validate_value(value: str) -> str:
+    normalized = _value(value)
+    if not re.fullmatch(r"\d+(?:\.\d+)?(?:\s*(?:ether|gwei|wei))?", normalized, re.IGNORECASE):
+        raise ValueError(f"invalid ETH value '{value}'")
+    return normalized
+
+
 def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]) -> Request:
     request = Request(kind, args=[])
     positional: list[str] = []
@@ -733,6 +750,13 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     if not request.target:
         print("Error: set a target with lk target <address> or generate from a recorded send.")
         return 2
+    try:
+        request.value = _validate_value(request.value)
+        if request.calldata:
+            request.calldata = _validate_calldata(request.calldata)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 2
     if not request.function and not request.calldata:
         print("Error: no function supplied and no recorded cast send was found.")
         return 2
@@ -745,7 +769,11 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         if code != 0 or not encoded:
             print(f"Error generating calldata: {error or 'cast calldata failed'}")
             return code or 2
-        request.calldata = encoded.removeprefix("0x")
+        try:
+            request.calldata = _validate_calldata(encoded)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 2
 
     artifact = find_artifact(root)
     if artifact:
