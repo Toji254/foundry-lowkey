@@ -414,7 +414,27 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         try:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
-                _summary(payload)
+                _summary(payload, root)
+
+                detectors = payload.get("results", {}).get("detectors", [])
+                if not isinstance(detectors, list):
+                    detectors = []
+
+                for finding in detectors:
+                    if isinstance(finding, dict):
+                        audit_context.add_signal(_signal_from_finding(finding), root)
+
+                audit_context.record_tool(
+                    "slither",
+                    root,
+                    status="completed" if result.returncode == 0 else "failed",
+                    summary=f"{len(detectors)} static-analysis finding(s) reported",
+                    data={
+                        "json": str(json_path),
+                        "sarif": str(sarif_path),
+                        "finding_count": len(detectors),
+                    },
+                )
         except (OSError, json.JSONDecodeError) as exc:
             print(f"LowkeySlither: could not parse JSON evidence: {exc}", file=sys.stderr)
 
