@@ -616,9 +616,140 @@ contract Poc_{slug} is Test {{
     return 0, [sol_path, json_path]
 
 
+def _evidence_data(root: str, name: str) -> dict[str, Any]:
+    payload = read_json(evidence_dir(root) / f"{name}.json", {})
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    return data if isinstance(data, dict) else {}
+
+
+def _format_step_status(root: str, name: str, detail: str = "") -> tuple[str, str]:
+    data = _evidence_data(root, name)
+    if not data:
+        return "NOT RUN", detail or "no evidence recorded"
+    code = data.get("exit_code")
+    if code == 0:
+        status = "PASS"
+    elif code == 127:
+        status = "SKIPPED"
+    elif isinstance(code, int):
+        status = "FAIL"
+    else:
+        status = "REVIEW"
+    return status, detail or str(data.get("reason") or "completed")
+
+
+def _fit_cell(value: Any, width: int) -> str:
+    text = str(value).replace("\n", " ")
+    return text if len(text) <= width else text[: max(0, width - 3)] + "..."
+
+
+def _dashboard_row(columns: Sequence[Any], widths: Sequence[int]) -> None:
+    print("| " + " | ".join(_fit_cell(value, width).ljust(width) for value, width in zip(columns, widths)) + " |")
+
+
+def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) -> int:
+    """Render a stable, human-readable summary from the evidence workspace."""
+    config = _config()
+    manifest = read_json(manifest_path(root), {})
+    context = _evidence_data(root, "context")
+    rows: list[tuple[str, str, str]] = []
+
+    for name, label in (("build", "Forge build"), ("tests", "Forge tests"), ("coverage", "Coverage")):
+        status, detail = _format_step_status(root, name)
+        data = _evidence_data(root, name)
+        stdout = str(data.get("stdout", ""))
+        if name == "tests":
+            match = re.search(r"Tests:\s*(\d+) passed", stdout)
+            if match:
+                detail = f"{match.group(1)} tests passed"
+        elif name == "coverage":
+            for pattern in (r"\bTotal coverage:\s*([^\n]+)", r"\bLines:\s*([^\n]+)"):
+                match = re.search(pattern, stdout)
+                if match:
+                    detail = match.group(1).strip()
+                    break
+        rows.append((label, status, detail))
+
+    slither = _evidence_data(root, "slither")
+    if not slither:
+        rows.append(("Slither", "NOT RUN", "no evidence recorded"))
+    elif not slither.get("available", True):
+        rows.append(("Slither", "SKIPPED", "slither not found on PATH"))
+    else:
+        code = slither.get("exit_code")
+        status = "PASS" if code == 0 else "FAIL"
+        summary = slither.get("summary", {}) or {}
+        findings = slither.get("finding_count", 0)
+        detail = f"{findings} findings"
+        if summary:
+            detail += " | " + ", ".join(
+                f"{key}: {value}"
+                for key, value in sorted(summary.items(), key=lambda item: IMPACT_ORDER.get(item[0], 99))
+            )
+        rows.append(("Slither", status, detail))
+
+    triage = _evidence_data(root, "source_triage")
+    rows.append((
+        "Source triage",
+        "PASS" if triage else "NOT RUN",
+        f"{triage.get('count', 0)} review markers" if triage else "no evidence recorded",
+    ))
+
+    for name in ("lint", "geiger"):
+        if (evidence_dir(root) / f"{name}.json").exists():
+            status, detail = _format_step_status(root, name)
+            rows.append((f"Forge {name}", status, detail))
+
+    poc_count = len(list(poc_dir(root).glob("*.json"))) + len(list(poc_dir(root).glob("*.t.sol")))
+    rows.append(("PoC scaffold", "READY" if poc_count else "NOT RUN", f"{poc_count} artifact(s)" if poc_count else "none generated"))
+
+    target = config.get("target") or context.get("target") or "not configured"
+    rpc = config.get("rpc") or context.get("rpc") or "not configured"
+    git_sha = context.get("git_sha") or "unknown"
+    git_branch = context.get("git_branch") or "unknown"
+
+    mandatory = [_evidence_data(root, name).get("exit_code") for name in ("build", "tests", "coverage")]
+    mandatory_pass = all(code == 0 for code in mandatory)
+    overall = "PASS" if mandatory_pass and pipeline_code in (None, 0) else "REVIEW NEEDED"
+
+    print("\n=== LOWKEY AUDIT DASHBOARD ===")
+    print("=" * 88)
+    print(f"Target : {target}")
+    print(f"RPC    : {rpc}")
+    print(f"Git    : {git_branch} @ {git_sha}")
+    print(f"Overall: {overall}")
+    print("\n+------------------+------------+------------------------------------------------+")
+    _dashboard_row(("Step", "Status", "Details"), (16, 10, 46))
+    print("+------------------+------------+------------------------------------------------+")
+    for row in rows:
+        _dashboard_row(row, (16, 10, 46))
+    print("+------------------+------------+------------------------------------------------+")
+    pipeline = manifest.get("pipeline", {}) if isinstance(manifest, dict) else {}
+    if isinstance(pipeline, dict) and pipeline.get("completed_at"):
+        print(f"Evidence: .audit/evidence/ | completed: {pipeline['completed_at']}")
+    else:
+        print("Evidence: .audit/evidence/ | pipeline not finalized")
+    print("Heuristic findings are review leads, not vulnerability verdicts.")
+    return 0 if overall == "PASS" else 1
+
+
+def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, generate: bool) -> int:
+    manifest = read_json(manifest_path(root), {})
+    manifest["pipeline"] = {
+        "completed_at": now_stamp(),
+        "status": "pass" if code == 0 else "failed",
+        "steps": results,
+    }
+    write_json(manifest_path(root), manifest)
+    if generate:
+        generate_poc(root)
+    render_audit_dashboard(root, pipeline_code=code)
+    return code
+
+
 def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
-    results = []
+    results: list[dict[str, Any]] = []
     git_code, git_sha, _ = run_command(["git", "rev-parse", "HEAD"], root)
     branch_code, branch, _ = run_command(["git", "branch", "--show-current"], root)
     config = _config()
@@ -629,6 +760,7 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
         "git_branch": branch.strip() if branch_code == 0 else None,
         "started_at": now_stamp(),
     }, root)
+
     for label, command, timeout in (
         ("build", ["forge", "build"], 300),
         ("tests", ["forge", "test", "-vvvv"], 600),
@@ -649,7 +781,7 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
             print(stderr.rstrip())
         results.append({"label": label, "code": code})
         if code != 0:
-            return code
+            return _finalize_pipeline(root, results, code, generate)
 
     slither_code = run_slither(root, slither_args)
     results.append({"label": "slither", "code": slither_code})
@@ -672,11 +804,5 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                     "stderr": stderr[-20000:],
                 }, root)
                 results.append({"label": optional, "code": code})
-    manifest = read_json(manifest_path(root), {})
-    manifest["pipeline"] = {"completed_at": now_stamp(), "steps": results}
-    write_json(manifest_path(root), manifest)
 
-    if generate:
-        generate_poc(root)
-
-    return 0
+    return _finalize_pipeline(root, results, 0, generate)
