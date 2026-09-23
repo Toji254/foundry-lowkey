@@ -1642,6 +1642,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
             resolved=resolve_target_ref(config,args[0])
             if not resolved: return fail("Error: target must be a valid address or saved alias.")
             config["target"]=resolved
+            if is_address(args[0]): config["target_contract"]=None
+            load_abi(resolved,config)
         elif len(args)==2 and is_address(args[1]):
             config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]; config["target_contract"]=args[0]
             load_abi(args[1],config)
