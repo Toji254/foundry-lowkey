@@ -163,10 +163,20 @@ class LowkeySlitherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            evidence = root / ".audit" / "slither"
+            evidence.mkdir(parents=True)
+            (evidence / "latest.json").write_text(
+                json.dumps({"results": {"detectors": []}}),
+                encoding="utf-8",
+            )
             with patch.object(slither_tools.Path, "cwd", return_value=root):
                 result = slither_tools.main(["--detect", "tx-origin"])
         self.assertEqual(result, 0)
-        self.assertEqual(run.call_args.args[0][1:4], [str(root), "--detect", "tx-origin"])
+        command = run.call_args.args[0]
+        self.assertIn(str(root), command)
+        self.assertIn("--detect", command)
+        self.assertIn("tx-origin", command)
+        self.assertIn("--json", command)
 
 
     @patch("slither_tools.slither_path", return_value=None)
