@@ -189,7 +189,14 @@ class LowkeyGeneratorTests(unittest.TestCase):
             )
             artifact = root / "out" / "Vault.sol" / "Vault.json"
             artifact.parent.mkdir(parents=True)
-            artifact.write_text(json.dumps({"contractName": "Vault", "abi": []}), encoding="utf-8")
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Vault",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
             with patch.object(generator.Path, "cwd", return_value=root):
                 with patch.object(generator, "_run", return_value=(0, "", "")) as run:
                     result = generator.run_generate({}, ["deployment", "Vault"])
