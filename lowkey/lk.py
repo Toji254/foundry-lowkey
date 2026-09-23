@@ -4556,21 +4556,21 @@ def run_audit_mode(config, args=None, interactive=None):
     else:
         run_session_lifecycle(config, "resume")
 
-    # Resolve a target before evidence collection so source/Slither findings can
-    # feed the PoC scaffold with a live target when one is available.
-    target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
-    if target:
-        _sync_audit_context(config, root)
-
     print("\n=== LOWKEYCAST AUDIT MODE ===")
     print("Starting connected audit baseline...")
     baseline_code = 0
 
+    # Source triage comes first so a fresh project can use newly discovered
+    # signals to select the most relevant live target before the connected audit.
     try:
         scan_code = run_scan([])
     except Exception as exc:
         print(f"Warning: source triage failed: {exc}", file=sys.stderr)
         scan_code = 1
+
+    target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
+    if target:
+        _sync_audit_context(config, root)
 
     audit_code = run_audit(config, mode_args)
     if audit_code != 0:
