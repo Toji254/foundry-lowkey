@@ -542,7 +542,7 @@ class LowkeyCastTests(unittest.TestCase):
         abi=[{"type":"function","name":"ping","inputs":[{"type":"uint256"}]}]
         with patch.object(lk,"load_abi",return_value=abi), \
              patch.object(lk,"abi_selector",return_value="0x773acdef"), \
-             patch.object(lk,"run_cast",return_value=lk.CommandResult("7",0)) as run:
+             patch.object(lk,"run_cast",return_value=0) as run:
             output=io.StringIO()
             with redirect_stdout(output):
                 self.assertEqual(lk.run_cast_deep(config,["decode-calldata","0x773acdef"+"0"*63+"7"]),0)
@@ -559,9 +559,7 @@ class LowkeyCastTests(unittest.TestCase):
         def fake_run(args,cfg,capture=False):
             calls.append(args)
             return 0
-        with patch.object(lk,"run_cast",side_effect=fake_run), \
-             patch.object(lk,"auto_abi_path",return_value="/tmp/abi.json"), \
-             patch.object(lk,"resolve_function",return_value="ping(uint256)"):
+        with patch.object(lk,"run_cast",side_effect=fake_run),              patch.object(lk,"auto_abi_path",return_value="/tmp/abi.json"),              patch.object(lk,"load_abi",return_value=[{"type":"function","name":"ping","inputs":[{"type":"uint256"}]}]),              patch.object(lk,"abi_selector",return_value="0x12345678"),              patch.object(lk,"resolve_function",return_value="ping(uint256)"):
             self.assertEqual(lk.run_cast_deep(config,["4byte","0x12345678"]),0)
             self.assertEqual(lk.run_cast_deep(config,["4byte-event","0x"+"a"*64]),0)
             self.assertEqual(lk.run_cast_deep(config,["4byte-calldata","0x12345678"]),0)
