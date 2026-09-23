@@ -10,6 +10,7 @@ import socket
 from urllib import request as urllib_request
 from contextlib import redirect_stdout
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -856,6 +857,16 @@ def run_cast(args,config,capture=False):
                 record_status(result.code)
                 print(str(result),file=sys.stderr)
                 return result if capture else result.code
+        try:
+            abi=load_abi(target,config)
+            matches=matching_functions(abi,remaining[0]) if abi else []
+            if len(matches)==1:
+                remaining[1:]=resolve_argument_aliases(config,matches[0],remaining[1:])
+        except ValueError as error:
+            result=CommandResult(f"Error: {error}",2)
+            record_status(result.code)
+            print(str(result),file=sys.stderr)
+            return result if capture else result.code
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
     bypass="--yes" in remaining
@@ -1608,6 +1619,43 @@ def solidity_value(value):
     value=re.sub(r"(?i)(?<=\d)(ether|gwei|wei)\b", r" \1", value)
     return re.sub(r"\s+", " ", value).strip()
 
+def normalize_numeric_argument(value, item_type):
+    text=str(value).strip()
+    match=re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|ether)",text,re.I)
+    if not match or not (item_type.startswith("uint") or item_type.startswith("int")):
+        return value
+    try:
+        number=Decimal(match.group(1))
+        unit=match.group(2).lower()
+        scale={"wei":Decimal(1),"gwei":Decimal(10**9),"ether":Decimal(10**18)}[unit]
+        scaled=number*scale
+        if scaled != scaled.to_integral_value():
+            raise ValueError(f"non-integer value '{value}' cannot be passed to {item_type}")
+        return str(int(scaled))
+    except InvalidOperation as error:
+        raise ValueError(f"invalid numeric value '{value}'") from error
+
+
+def resolve_argument_aliases(config, function_item, values):
+    values=list(values)
+    inputs=function_item.get("inputs",[]) if isinstance(function_item,dict) else []
+    if len(values)!=len(inputs):
+        return values
+
+    resolved=[]
+    for item,value in zip(inputs,values):
+        item_type=canonical_type(item)
+        if item_type=="address":
+            name=str(value).strip()
+            if not is_address(name):
+                address=actor_address(config,name)
+                if address:
+                    value=address
+        value=normalize_numeric_argument(value,item_type)
+        resolved.append(value)
+    return resolved
+
+
 def encode_target_call(config, function, values):
     target=config.get("target")
     if not target:
@@ -1623,7 +1671,7 @@ def encode_target_call(config, function, values):
     abi=load_abi(target,config)
     matches=matching_functions(abi,signature) if abi else []
     if len(matches)==1:
-        values=resolve_actor_arguments(config,matches[0],values)
+        values=resolve_argument_aliases(config,matches[0],values)
         inputs=matches[0].get("inputs",[])
         if len(values)!=len(inputs):
             expected=", ".join(
