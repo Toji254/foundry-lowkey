@@ -1585,21 +1585,21 @@ def run_tool(name, args=None):
 def split_lab_options(args):
     values=[]
     actor=None
-    value="0"
+    value="auto"
     keep=False
     index=0
     raw=list(args or [])
     while index < len(raw):
         token=raw[index]
-        if token=="--actor":
+        if token in {"--actor","--as"}:
             if index+1>=len(raw):
-                raise ValueError("--actor needs an actor name")
+                raise ValueError(f"{token} needs an actor name")
             actor=raw[index+1]
             index+=2
             continue
-        if token=="--value":
+        if token in {"--value","--eth"}:
             if index+1>=len(raw):
-                raise ValueError("--value needs an ETH amount")
+                raise ValueError(f"{token} needs an ETH amount")
             value=raw[index+1]
             index+=2
             if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
@@ -1731,6 +1731,29 @@ def write_generated_test(prefix, content):
     print(f"Lowkey generated test: {path}")
     return path
 
+def resolve_lab_value(config, signature, raw_values, value_option):
+    if value_option not in {None, "", "auto"}:
+        return value_option
+
+    abi=load_abi(config.get("target"),config)
+    matches=matching_functions(abi,signature) if abi else []
+    if len(matches)!=1 or matches[0].get("stateMutability")!="payable":
+        return "0"
+
+    raw=list(raw_values or [])
+    for index,token in enumerate(raw):
+        text=str(token).strip()
+        if re.fullmatch(r"(?i)(?:[0-9]+(?:\\.[0-9]+)?)(?:ether|gwei|wei)",text):
+            return text
+        if (
+            re.fullmatch(r"[0-9]+(?:\\.[0-9]+)?",text)
+            and index+1<len(raw)
+            and str(raw[index+1]).lower() in {"ether","gwei","wei"}
+        ):
+            return f"{text} {raw[index+1]}"
+    return "0"
+
+
 def local_foundry_test_args(config, path):
     args=["test","--match-path",Path(path).as_posix(),"-vvvv"]
     rpc=effective_rpc(config)
@@ -1761,6 +1784,7 @@ def run_probe(config,args):
         if not values:
             raise ValueError("function is required")
         signature,calldata=encode_target_call(config,values[0],values[1:])
+        value=resolve_lab_value(config,signature,values[1:],value)
         target=config.get("target")
         actors=[]
         if actor:
@@ -1816,6 +1840,7 @@ def run_state_diff(config,args):
         if not values:
             raise ValueError("function is required")
         signature,calldata=encode_target_call(config,values[0],values[1:])
+        value=resolve_lab_value(config,signature,values[1:],value)
         target=config.get("target")
         selected_actor=actor or config.get("actor")
         address=actor_address(config,selected_actor)
@@ -2673,8 +2698,7 @@ START HERE
   lk actor                            See Anvil actors/accounts
   lk target <address>                 Set the contract under review
   lk target <name>                    Auto-select named deployment from broadcast/
-  lk target <name> <address>           Save an explicit named target
-  lk target <name> <address>           Save an explicit named target
+  lk target <name> <address>          Save an explicit named target
   lk target auto [name]                Auto-select latest or named broadcast deployment
 
 RECON → UNDERSTAND THE CONTRACT
@@ -2696,14 +2720,17 @@ ACTORS → THINK LIKE ALICE / BOB / THE ATTACKER
   lk actor 2 attacker                 Bind Anvil #2 → attacker
   lk actor                             List accounts + assignments
   lk as attacker <command>            Run one command as attacker
+  --as Alice                          Choose the caller for try/changes
+  --eth 1 ether                       Attach ETH; inferred from '1 ether' when omitted
   lk impersonate <address> [name]     Make a fork actor act as an existing account
   lk actor reset                       Clear the current actor
   lk wallet list / remove <name>      Manage saved actors
 
 CALL → SEND → FORENSICS
-  lk c <function> [args]              Read (actor names work for address args)
-  lk s <function> [args]              Send (actor names work for address args)
-  lk s <function> [args] --preview    See calldata/signing command first
+  lk read <function> [args]           Read the contract
+  lk send <function> [args]           Send a transaction
+  lk send <function> [args] --preview Preview the send
+  lk c / s ...                         Short aliases for read / send
   lk encode <function> [args]         Build calldata
   lk calldata <0x...>                 Decode/pretty-print calldata
   lk decode-calldata <0x...>          Native Cast calldata decoder
@@ -2730,10 +2757,12 @@ STORAGE / STATE
   lk proof <slot> [block]             Storage proof
   lk snapshot [slots...]              Save raw slots
   lk diff                              Compare the saved snapshot
-  lk state-diff <function> [args...]  Run call + show account/storage diffs
+  lk changes <function> [args...]     Show what storage changed
 
 THE ATTACK LAB
-  lk probe <function> [args...]        Probe as configured actors; use Alice/Bob in address args
+  lk try <function> [args...]          Try a call without touching Anvil state
+  lk changes ...                       Show storage changes from that call
+  (probe / state-diff are old aliases)
   lk matrix init                       Start an attacker/state matrix
   lk matrix actor <name> <address>    Add an actor to the matrix
   lk matrix state <name> <desc>       Record a state
@@ -2905,6 +2934,14 @@ def dispatch_command(cmd,args,config,from_batch=False):
             config["target_contract"]=artifact_contract_name(path,read_artifact(path))
             save_config(config)
             print(f"ABI override saved: {path}")
+    elif cmd in {"read"}:
+        return run_cast(["call",*args],config)
+    elif cmd in {"send"}:
+        return run_cast(["send",*args],config)
+    elif cmd in {"try","probe"}:
+        return run_probe(config,args)
+    elif cmd in {"changes","state-diff"}:
+        return run_state_diff(config,args)
     elif cmd=="functions": run_functions(config,args[0] if args else None)
     elif cmd=="fn": run_functions(config," ".join(args) if args else None)
     elif cmd=="wizard": run_wizard(config,args)
@@ -2943,7 +2980,6 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="disasm": return run_disasm(config,args)
     elif cmd=="txpool": return run_txpool(config,args)
     elif cmd=="chisel": return run_chisel(args)
-    elif cmd=="probe": return run_probe(config,args)
     elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
     elif cmd=="as": return run_as(config,args)
     elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
