@@ -6,6 +6,11 @@ import subprocess
 import sys
 from typing import Iterable, Sequence
 
+try:
+    from audit_engine import run_slither
+except ImportError:
+    run_slither = None
+
 NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
     "fmt", "lint", "geiger", "flatten", "verify-contract",
@@ -66,7 +71,16 @@ def run_audit(args: Sequence[str]) -> int:
         if code != 0:
             print(f"\nLowkeyForge: stopped after failed step: forge {' '.join(command)}", file=sys.stderr)
             return code
-    print("\nLowkeyForge: audit preflight completed. Review coverage and findings manually.")
+    print("\n=== LOWKEY FORGE: SLITHER ===")
+    if run_slither is None:
+        print("LowkeyForge: Slither integration module is not installed.")
+    else:
+        slither_code = run_slither(".")
+        if slither_code == 127:
+            print("LowkeyForge: Slither unavailable; continuing without static analysis.")
+        elif slither_code != 0:
+            print("LowkeyForge: Slither returned a non-zero status; inspect .audit/evidence/slither.json.", file=sys.stderr)
+    print("\nLowkeyForge: audit preflight completed. Review evidence and findings manually.")
     return 0
 
 def run_test_audit(args: Sequence[str]) -> int:
