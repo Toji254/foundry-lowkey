@@ -1044,7 +1044,7 @@ class LowkeyCastTests(unittest.TestCase):
 
         with patch.object(lk, "encode_target_call", return_value=("ping()", "abcdef")), \
              patch.object(lk, "write_generated_test", side_effect=fake_write), \
-             patch.object(lk, "run_foundry", return_value=0):
+             patch.object(lk, "run_foundry", return_value=lk.CommandResult("", 0)):
             self.assertEqual(lk.run_state_diff(config, ["ping"]), 0)
         self.assertIn("vm.startStateDiffRecording()", captured["content"])
         self.assertIn("vm.stopAndReturnStateDiff()", captured["content"])
@@ -1349,7 +1349,7 @@ class LowkeyCastTests(unittest.TestCase):
         set_focus.assert_called_once_with("SLITHER-ABC123",root)
         rendered=output.getvalue()
         self.assertIn("LOWKEY INVESTIGATION FOCUS",rendered)
-        self.assertIn("lk state-diff withdraw()",rendered)
+        self.assertIn("lk changes withdraw()",rendered)
 
 
     def test_dispatch_uses_simple_audit_commands(self):
