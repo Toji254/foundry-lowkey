@@ -61,6 +61,19 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertIn("--json", command)
         self.assertIn("--sarif", command)
 
+    @patch("slither_tools.slither_path", return_value="/usr/bin/slither")
+    @patch("slither_tools.subprocess.run")
+    def test_option_first_command_auto_targets_project(self, run, _path):
+        run.return_value.returncode = 0
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            with patch.object(slither_tools.Path, "cwd", return_value=root):
+                result = slither_tools.main(["--detect", "tx-origin"])
+        self.assertEqual(result, 0)
+        self.assertEqual(run.call_args.args[0][1:4], [str(root), "--detect", "tx-origin"])
+
+
     @patch("slither_tools.slither_path", return_value=None)
     def test_missing_slither_is_clean_failure(self, _path):
         self.assertEqual(slither_tools.run_default(pathlib.Path(".")), 1)
