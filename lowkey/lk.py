@@ -1412,13 +1412,42 @@ def run_deployments(config):
 
 def run_auto_target(config,name=None):
     records=discover_deployments(".")
-    if not records: print("No deployment found in broadcast/."); return
-    record=records[0]; alias=name or record["contract"]
-    config["aliases"][alias]=record["address"]; config["targets"][alias]=record["address"]; config["target"]=record["address"]
-    for path in artifact_json_files("."):
-        if os.path.join(".","out") in path and os.path.basename(path)==f"{record['contract']}.json":
-            config["abi_paths"][record["address"]]=path; print(f"ABI auto-loaded: {path}"); break
-    save_config(config); print(f"Target selected: {alias} -> {record['address']}")
+    if not records:
+        return fail("No deployment found in broadcast/. Run your Foundry deploy script with --broadcast first.")
+
+    record=None
+    if name:
+        requested=str(name).strip().lower()
+        record=next(
+            (item for item in records if str(item.get("contract","")).strip().lower()==requested),
+            None,
+        )
+        if record is None:
+            available=", ".join(dict.fromkeys(str(item.get("contract","Unknown")) for item in records))
+            return fail(
+                f"Error: no broadcast deployment found for '{name}'."
+                + (f" Available: {available}" if available else "")
+            )
+    else:
+        record=records[0]
+
+    alias=name or record["contract"]
+    config["aliases"][alias]=record["address"]
+    config["targets"][alias]=record["address"]
+    config["target"]=record["address"]
+
+    for path in local_artifact_paths():
+        artifact=read_artifact(path) or {}
+        contract_name=artifact_contract_name(path,artifact)
+        if contract_name.lower()==str(record["contract"]).lower():
+            config["abi_paths"][record["address"]]=path
+            print(f"ABI auto-loaded: {path}")
+            break
+
+    config["target_contract"]=record["contract"]
+    save_config(config)
+    print(f"Target selected: {alias} -> {record['address']}")
+    return 0
 
 def run_ens(config,args):
     if not args: print("Usage: lk ens <name|address>"); return
@@ -2688,8 +2717,12 @@ def dispatch_command(cmd,args,config,from_batch=False):
         elif args[0]=="auto": run_auto_target(config,args[1] if len(args)>1 else None); return
         elif len(args)==1:
             resolved=resolve_target_ref(config,args[0])
-            if not resolved: return fail("Error: target must be a valid address or saved alias.")
-            config["target"]=resolved
+            if resolved:
+                config["target"]=resolved
+            elif is_address(args[0]):
+                config["target"]=args[0]
+            else:
+                return run_auto_target(config,args[0])
         elif len(args)==2 and is_address(args[1]): config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
