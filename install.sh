@@ -29,13 +29,20 @@ for file in lk.py forge_tools.py audit_engine.py clone_tools.py; do
 done
 
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
-python3 -m py_compile   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/clone_tools.py"
+python3 -m py_compile \
+  "$STAGE_DIR/lk.py" \
+  "$STAGE_DIR/forge_tools.py" \
+  "$STAGE_DIR/audit_engine.py" \
+  "$STAGE_DIR/clone_tools.py"
+bash -n "$STAGE_DIR/bin-lk"
 
-copy_if_needed "$REPO_DIR/lowkey/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
-copy_if_needed "$REPO_DIR/lowkey/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
-copy_if_needed "$REPO_DIR/lowkey/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
-copy_if_needed "$REPO_DIR/lowkey/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
-copy_if_needed "$REPO_DIR/bin/lk" "$TARGET_BIN_DIR/lk"
+# Publish exactly the validated stage so the manifest always describes the
+# code that was syntax-checked.
+cp "$STAGE_DIR/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
+cp "$STAGE_DIR/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
+cp "$STAGE_DIR/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
+cp "$STAGE_DIR/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
+cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
 python3 - "$REPO_DIR" "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR" <<'PY'
