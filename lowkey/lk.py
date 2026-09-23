@@ -2019,6 +2019,227 @@ def set_lab_target(config, root, target, contract, artifact):
     )
     audit_context.update(root, actor=actor_display(config), rpc=effective_rpc(config))
 
+def repo_clone_url(value):
+    value = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
+        return f"https://github.com/{value}.git"
+    return value
+
+def repo_clone_name(value):
+    value = str(value or "").strip().rstrip("/")
+    tail = value.rsplit("/", 1)[-1]
+    if ":" in tail and not value.startswith(("http://", "https://", "ssh://")):
+        tail = tail.rsplit(":", 1)[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    return tail
+
+def project_anvil_state_path(root):
+    return os.path.join(root, ".audit", "anvil.json")
+
+def write_project_anvil_state(root, state):
+    path = project_anvil_state_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Path(path).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+def read_project_anvil_state(root):
+    path = project_anvil_state_path(root)
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+def stop_project_anvil(root):
+    state = read_project_anvil_state(root)
+    if not isinstance(state, dict) or not state.get("auto_started"):
+        print("Project Anvil: not managed by Lowkey.")
+        return 0
+    pid = state.get("pid")
+    if isinstance(pid, int):
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    try:
+        os.remove(project_anvil_state_path(root))
+    except OSError:
+        pass
+    print(f"Project Anvil stopped: PID {pid or 'unknown'}")
+    return 0
+
+def ensure_project_anvil(config, root):
+    info = anvil_rpc_info(config)
+    if info:
+        return info
+
+    if config.get("rpc"):
+        return None
+
+    existing = read_project_anvil_state(root)
+    if isinstance(existing, dict):
+        pid = existing.get("pid")
+        rpc = existing.get("rpc")
+        if isinstance(pid, int) and isinstance(rpc, str) and local_port_open("127.0.0.1", int(rpc.rsplit(":", 1)[-1])):
+            info = detect_anvil_rpc(rpc)
+            if info:
+                config["_auto_rpc_info"] = info
+                return info
+        try:
+            os.remove(project_anvil_state_path(root))
+        except OSError:
+            pass
+
+    binary = tool_path("anvil")
+    if not binary:
+        return None
+
+    port = None
+    for candidate in range(8545, 8556):
+        if not local_port_open("127.0.0.1", candidate):
+            port = candidate
+            break
+    if port is None:
+        return None
+
+    rpc = f"http://127.0.0.1:{port}"
+    log_path = os.path.join(root, ".audit", "anvil.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    try:
+        log = open(log_path, "a", encoding="utf-8")
+        process = subprocess.Popen(
+            [binary, "--port", str(port), "--silent"],
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+        log.close()
+    except (OSError, ValueError) as error:
+        try:
+            log.close()
+        except Exception:
+            pass
+        print(f"Warning: Lowkey could not start project Anvil: {error}", file=sys.stderr)
+        return None
+
+    for _ in range(40):
+        info = detect_anvil_rpc(rpc)
+        if info:
+            state = {
+                "auto_started": True,
+                "pid": process.pid,
+                "rpc": rpc,
+                "started": datetime.now().isoformat(timespec="seconds"),
+            }
+            write_project_anvil_state(root, state)
+            config["_auto_rpc_info"] = info
+            return info
+        if process.poll() is not None:
+            return None
+        import time
+        time.sleep(0.1)
+
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    return None
+
+def run_clone(config, args):
+    if not args or args[0].lower() in {"help", "-h", "--help"}:
+        print("Usage: lk clone <repo> <contract> [directory]")
+        print("Clone a Foundry project and prepare it for auditing.")
+        print("Lowkey will clone submodules, build, run the connected audit pipeline,")
+        print("start a disposable local Anvil when needed, and prepare the audit lab.")
+        return 0
+
+    repo = args[0]
+    contract = str(args[1]).strip() if len(args) > 1 else ""
+    if not contract:
+        return fail("Usage: lk clone <repo> <contract> [directory]")
+    if len(args) > 3:
+        return fail("Usage: lk clone <repo> <contract> [directory]")
+
+    destination_name = args[2] if len(args) == 3 else repo_clone_name(repo)
+    if not destination_name:
+        return fail("Error: could not determine the clone directory.")
+    destination = Path(destination_name).expanduser()
+    if not destination.is_absolute():
+        destination = Path.cwd() / destination
+    destination = destination.resolve()
+    if destination.exists():
+        return fail(f"Error: clone destination already exists: {destination}")
+
+    clone_url = repo_clone_url(repo)
+    git = tool_path("git")
+    if not git:
+        return fail("Error: git was not found on PATH.")
+
+    print("LOWKEY PROJECT ONBOARDING")
+    print("=========================")
+    print(f"Repository : {clone_url}")
+    print(f"Target     : {contract}")
+    print(f"Directory  : {destination}")
+
+    try:
+        completed = subprocess.run(
+            [git, "clone", "--recurse-submodules", clone_url, str(destination)],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        return fail(f"Error cloning repository: {error}")
+
+    clone_output = "\n".join(
+        part.strip() for part in (completed.stdout or "", completed.stderr or "") if part and part.strip()
+    )
+    if completed.returncode != 0:
+        tail = "\n".join(clone_output.splitlines()[-20:]) if clone_output else "git clone failed"
+        return fail(f"Error: git clone failed.\n{tail}", completed.returncode)
+
+    if not (destination / "foundry.toml").is_file():
+        return fail(f"Error: {destination} is not a Foundry project (foundry.toml missing).")
+
+    root = str(destination)
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(destination)
+        print("\n[1/4] Building project...")
+        build = run_foundry(["build"], capture=True)
+        if build.code != 0:
+            tail = "\n".join(build.text.splitlines()[-20:]) if build.text else "forge build failed"
+            return fail(f"Error: build failed.\n{tail}", build.code)
+        print("PASS build")
+
+        print("\n[2/4] Running Lowkey audit pipeline...")
+        audit_code = run_audit(config, [])
+        if audit_code != 0:
+            print("Warning: static audit pipeline did not finish cleanly.", file=sys.stderr)
+
+        print("\n[3/4] Preparing local audit environment...")
+        info = ensure_project_anvil(config, root)
+        if not info:
+            print("LAB : deferred (no local Anvil could be started).", file=sys.stderr)
+            lab_code = 1
+        else:
+            lab_code = run_lab(config, [contract])
+
+        print("\n[4/4] Onboarding result")
+        print("======================")
+        print(f"Project : {root}")
+        print(f"Target  : {contract}")
+        if lab_code == 0:
+            print("Status  : READY FOR AUDIT")
+            print(f"Next    : cd {shlex.quote(root)}")
+            print("         lk findings")
+        else:
+            print("Status  : STATIC AUDIT READY; LIVE LAB NEEDS ATTENTION")
+            print(f"Next    : cd {shlex.quote(root)}")
+            print("         lk lab")
+        return 0 if audit_code == 0 and lab_code == 0 else 1
+    finally:
+        os.chdir(previous_cwd)
+
 def run_project_lab_script(config, root, script, rpc, accounts, key):
     relative = os.path.relpath(script, root)
     print("LOWKEY LOCAL AUDIT LAB")
@@ -2127,8 +2348,8 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     print(f"Target  : {contract} -> {target}")
     print(f"ABI     : {path}")
     if any(item.get("name") == "initialize" for item in artifact.get("abi", []) if isinstance(item, dict)):
-        print("Note    : this contract exposes initialize(); generic deployment does not initialize it.")
-        print("Next    : use lk wizard initialize to configure it when its inputs are known.")
+        print("Note    : this contract exposes initialize(); direct implementation deployment is not a configured proxy lab.")
+        print("Next    : use a project lab adapter or a proxy-aware setup for runtime testing.")
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
@@ -4432,7 +4653,9 @@ START
   lk status                        Show target and audit state
   lk doctor                        Check the toolchain
   lk target <address|name>         Select the contract under review
+  lk clone <repo> <contract> [dir] Clone and prepare a Foundry project for auditing
   lk lab [Contract]                 Start a local audit lab and auto-target it
+  lk lab stop                       Stop an Anvil started by Lowkey
   lk actor <index> <name>          Name an Anvil account
   lk actor 0 Alice                  Name Anvil account #0 as Alice
 
@@ -4546,6 +4769,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if not resolved: print(f"Unknown target: {args[0]}"); return
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
+    elif cmd=="clone": return run_clone(config,args)
+    elif cmd=="git" and args and args[0].lower()=="clone": return run_clone(config,args[1:])
     elif cmd=="lab": return run_lab(config,args)
     elif cmd=="rpc":
         if not args:
