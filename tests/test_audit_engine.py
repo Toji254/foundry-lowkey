@@ -90,7 +90,7 @@ class AuditEngineTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertEqual(len(files), 2)
-            solidity = (root / ".audit" / "poc" / "Poc_reentrancy_eth.t.sol").read_text()
+            solidity = (root / "test" / "Poc_reentrancy_eth.t.sol").read_text()
             self.assertIn("PocAttacker", solidity)
             self.assertIn("reentrancy-eth", solidity)
             brief = json.loads((root / ".audit" / "poc" / "Poc_reentrancy_eth.json").read_text())
