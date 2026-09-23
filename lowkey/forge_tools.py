@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Iterable, Sequence
 
 NATIVE_COMMANDS = {
@@ -55,6 +56,22 @@ def has_verbosity(args: Sequence[str]) -> bool:
         for arg in args
     )
 
+
+def run_slither_preflight(root: Path) -> int:
+    binary = shutil.which("slither")
+    if not binary:
+        print("LowkeyForge: skipping Slither (not found on PATH).")
+        return 0
+
+    print("\n=== LOWKEY STATIC: SLITHER ===")
+    print(f"Project: {root}")
+    command = [binary, str(root), "--exclude-dependencies", "--disable-color"]
+    try:
+        return subprocess.run(command, cwd=root).returncode
+    except OSError as exc:
+        print(f"LowkeyForge: could not execute Slither: {exc}", file=sys.stderr)
+        return 1
+
 def run_audit(args: Sequence[str]) -> int:
     checks = "--checks" in args
     forwarded = [a for a in args if a != "--checks"]
@@ -68,6 +85,15 @@ def run_audit(args: Sequence[str]) -> int:
                 steps.append((optional, [optional]))
             else:
                 print(f"LowkeyForge: skipping unavailable command: forge {optional}")
+
+        # Slither is external to Forge, so keep it as a labeled static-analysis
+        # stage rather than pretending it is another forge subcommand.
+        root = Path.cwd().resolve()
+        slither_code = run_slither_preflight(root)
+        if slither_code != 0:
+            print("\nLowkeyForge: stopped after failed Slither static analysis.", file=sys.stderr)
+            return slither_code
+
     for label, command in steps:
         print(f"\n=== LOWKEY FORGE: {label.upper()} ===")
         code = run_forge(command)
