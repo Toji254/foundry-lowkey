@@ -933,9 +933,19 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     ident = _id(contract, "Target")
     if kind == "poc":
         content = _context_comment_block(evidence) + _template_poc(contract, request.target, request.function or "raw-call", request.value, request.calldata or "")
+        if placeholder_request:
+            content = content.replace(
+                'require(success, "Lowkey PoC: target call reverted");',
+                '// PLACEHOLDER: no concrete call was available yet; replace calldata/function before executing.\n        // require(success, "Lowkey PoC: target call reverted");'
+            )
         default = Path("script") / f"LowkeyPoC_{ident}.s.sol"
     else:
         content = _context_comment_block(evidence) + _template_test(contract, request.target, request.function or "raw-call", request.value, request.calldata or "")
+        if placeholder_request:
+            content = content.replace(
+                'assertTrue(success, "Lowkey reproduction: target call reverted");',
+                '// PLACEHOLDER: no concrete call was available yet; replace calldata/function before executing.\n        // assertTrue(success, "Lowkey reproduction: target call reverted");'
+            )
         default = Path("test") / f"LowkeyTest_{ident}.t.sol"
 
     output = _write(root, request.output, default, content, request.force)
