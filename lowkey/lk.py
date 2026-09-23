@@ -529,23 +529,37 @@ def storage_getter_names(target,config,abi):
     # authoritative layout when we are inside a Foundry project, so public
     # mapping/struct getters are still classified correctly.
     if not labels:
-        contract_name=config.get("target_contract")
-        if not contract_name and isinstance(artifact,dict):
-            contract_name=artifact.get("contractName")
+        # The artifact we loaded is the authority for the contract name. Do not
+        # let a stale target_contract config entry point Forge at another contract.
+        contract_name = artifact.get("contractName") if isinstance(artifact,dict) else None
+        if not contract_name:
+            contract_name = config.get("target_contract")
+
         if contract_name:
-            code,out,_=cast_output(["forge","inspect",str(contract_name),"storage-layout","--json"])
-            if code==0 and out:
+            inspect_commands = [
+                ["forge","inspect",str(contract_name),"storage-layout","--json"],
+                ["forge","inspect",str(contract_name),"storage-layout"],
+            ]
+            for command in inspect_commands:
+                code,out,_=cast_output(command)
+                if code!=0 or not out:
+                    continue
                 try:
                     payload=json.loads(out)
-                    layout=payload.get("storage",payload) if isinstance(payload,dict) else payload
-                    storage=layout if isinstance(layout,list) else []
-                    labels.update(
-                        entry.get("label")
-                        for entry in storage
-                        if isinstance(entry,dict) and entry.get("label")
-                    )
                 except json.JSONDecodeError:
-                    pass
+                    continue
+                if isinstance(payload,dict):
+                    layout=payload.get("storageLayout") or payload.get("storage") or payload
+                else:
+                    layout=payload
+                storage=layout if isinstance(layout,list) else []
+                labels.update(
+                    entry.get("label")
+                    for entry in storage
+                    if isinstance(entry,dict) and entry.get("label")
+                )
+                if labels:
+                    break
 
     return {
         item.get("name")
