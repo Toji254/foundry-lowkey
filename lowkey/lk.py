@@ -7,6 +7,7 @@ import shlex
 from datetime import datetime
 from urllib.parse import urlsplit
 from difflib import SequenceMatcher
+from pathlib import Path
 
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -14,6 +15,24 @@ SNAPSHOT_DIR = os.path.join(CONFIG_DIR, "snapshots")
 AUDIT_DIR = os.path.expanduser("~/.lowkey/audit")
 SESSION_FILE = os.path.join(AUDIT_DIR, "session_log.txt")
 WORKSPACE_DIR = os.path.join(os.getcwd(), ".audit")
+
+AUDIT_CHECKLIST = [
+    "Understand protocol purpose and trust assumptions",
+    "Map privileged roles and access-control boundaries",
+    "Review state transitions and invariants",
+    "Validate user-controlled inputs and edge cases",
+    "Review external calls and callback/reentrancy surfaces",
+    "Check ETH and token accounting and balance assumptions",
+    "Review oracle, price, and time-dependent logic",
+    "Review signatures, replay, nonce, and authorization flows",
+    "Review upgradeability, proxy, and initialization paths",
+    "Verify storage layout and collision risks",
+    "Check token/standard integration assumptions",
+    "Review denial-of-service and gas-sensitive paths",
+    "Review ordering, MEV, and front-running assumptions",
+    "Reproduce important observations with tests or traces",
+    "Record findings, impact, and recommended remediation",
+]
 
 DEFAULT_CONFIG = {
     "target": None, "aliases": {}, "targets": {}, "rpc": None,
@@ -308,7 +327,7 @@ def run_receipt(config, tx_hash=None):
     if not tx_hash:
         print("Error: No transaction hash supplied or saved.")
         return
-    run_cast(["receipt", tx_hash], config)
+    run_cast(["receipt", tx_hash, "--async"], config)
 
 def run_trace(config,args=None):
     args=list(args or [])
