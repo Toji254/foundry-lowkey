@@ -10,6 +10,12 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+MODULE_DIR = Path(__file__).resolve().parent
+import sys
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+import audit_context
+
 
 @dataclass
 class Request:
@@ -665,6 +671,13 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         return 2
 
     root = Path.cwd()
+    shared = audit_context.load(root)
+    shared_target = shared.get("target", {}) if isinstance(shared.get("target"), dict) else {}
+    if not config.get("target") and shared_target.get("address"):
+        config["target"] = shared_target.get("address")
+    if not config.get("target_contract") and shared_target.get("contract"):
+        config["target_contract"] = shared_target.get("contract")
+
     try:
         request = _parse_request(kind, root, config, args[1:])
     except ValueError as exc:
@@ -706,6 +719,13 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         print(f"Deployment script generated: {output}")
         for line in env_help:
             print(f"  {line}")
+        audit_context.record_tool(
+            "generator",
+            root,
+            status="completed",
+            summary=f"deployment script generated for {contract}",
+            data={"mode": "deployment", "contract": contract, "output": str(output)},
+        )
         print("Dry-run with forge script first; add --broadcast only when you intentionally want chain state changed.")
         return 0
 
@@ -739,6 +759,19 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     output = _write(root, request.output, default, content, request.force)
     print(f"{kind.upper()} generated: {output}")
     print("Read the comments before running it; they are intentionally part of the learning workflow.")
+    audit_context.record_tool(
+        "generator",
+        root,
+        status="completed",
+        summary=f"{kind} artifact generated",
+        data={
+            "mode": kind,
+            "contract": contract,
+            "function": request.function,
+            "output": str(output),
+            "target": request.target,
+        },
+    )
     return 0
 
 
