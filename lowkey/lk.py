@@ -1931,7 +1931,7 @@ def mapping_slot_matches(config, signature, raw_values, actor_address_value, cha
             if not members:
                 for changed in changed_slots:
                     if changed.lower().removeprefix("0x").zfill(64)==mapped_slot:
-                        labels[changed.lower()]="%s[%s]"%(entry.get("label","mapping"),key_display)
+                        labels[changed.lower()]=("%s[%s]"%(entry.get("label","mapping"),key_display),value_type_id)
             else:
                 try:
                     base_int=int(mapped_slot,16)
@@ -2167,14 +2167,12 @@ contract LowkeyStateDiff is Test {{
         print("\nStorage changes:")
         for item in parsed["slots"]:
             slot=item["slot"].lower()
-            label=labels.get(slot)
-            if not label:
-                label=f"slot {slot}"
-            # Use a layout member type when the label was decoded from a mapping.
-            type_id=None
-            for key_type_name in _storage:
-                if isinstance(key_type_name,dict) and key_type_name.get("label")==label:
-                    type_id=key_type_name.get("type")
+            decoded=labels.get(slot)
+            if isinstance(decoded,tuple):
+                label,type_id=decoded
+            else:
+                label=decoded or f"slot {slot}"
+                type_id=None
             before=format_storage_value(config,item["from"],type_id,types,label,eth_sent)
             after=format_storage_value(config,item["to"],type_id,types,label,eth_sent)
             print(f"  {label}")
