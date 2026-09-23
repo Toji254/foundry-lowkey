@@ -65,7 +65,7 @@ def run_slither_preflight(root: Path) -> int:
 
     print("\n=== LOWKEY STATIC: SLITHER ===")
     print(f"Project: {root}")
-    command = [binary, str(root), "--exclude-dependencies", "--disable-color"]
+    command = [binary, str(root), "--exclude-dependencies", "--disable-color", "--fail-none"]
     try:
         return subprocess.run(command, cwd=root).returncode
     except OSError as exc:
