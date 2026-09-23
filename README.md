@@ -129,7 +129,7 @@ lk probe release --value 1ether
 
 A probe is intentionally non-asserting. It is for discovering behavior.
 
-By default the temporary Forge test is deleted after the run. Add --keep when you want the generated test saved.
+Lowkey keeps the generated Forge test under test/ so the run itself becomes reusable evidence. --keep remains accepted for compatibility.
 
 ### Matrix
 
