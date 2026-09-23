@@ -3194,9 +3194,12 @@ def run_investigate(config, args):
     print(f"Issue      : {signal.get('title')}")
     print(f"Impact     : {signal.get('impact', 'Unknown')}")
     print(f"Confidence : {signal.get('confidence', 'Unknown')}")
-    location = signal.get("file") or "unknown"
-    if signal.get("line"):
-        location += f":{signal.get('line')}"
+    location = audit_context.source_link(
+        signal.get("file"),
+        signal.get("line"),
+        signal.get("column"),
+        root,
+    )
     print(f"Location   : {location}")
     if signal.get("function"):
         print(f"Function   : {signal.get('function')}")
@@ -3208,13 +3211,17 @@ def run_investigate(config, args):
         print(f"Why        : {signal.get('why')}")
     if signal.get("next"):
         print(f"Next move  : {signal.get('next')}")
+    actions = signal.get("actions", [])
+    if isinstance(actions, list) and actions:
+        print("Suggested  : " + " -> ".join(str(item) for item in actions))
 
     print("\nExisting LK tools to use next:")
     function = signal.get("function")
     if function:
         print(f"  lk fn {function}")
         print(f"  lk ask {function}")
-        print(f"  lk state-diff {function}")
+        print(f"  lk changes {function}")
+        print(f"  lk trace")
         print(f"  lk generate test {function} ...")
     print("  lk context")
     print("  lk signals")
@@ -3325,11 +3332,12 @@ def run_signals(config, args):
         return 0
 
     for index, signal in enumerate(selected, 1):
-        location = signal.get("file") or "unknown location"
-        if signal.get("line"):
-            location += f":{signal['line']}"
-        if signal.get("column"):
-            location += f":{signal['column']}"
+        location = audit_context.source_link(
+            signal.get("file"),
+            signal.get("line"),
+            signal.get("column"),
+            root,
+        )
 
         print(f"\n{index}. {signal.get('title') or 'Audit signal'}")
         print(f"   ID         : {signal.get('id')}")
