@@ -2159,9 +2159,16 @@ def run_lab(config,args):
     # No adapter? Use the focused finding/function to pick the most relevant artifact.
     if not requested:
         context = audit_context.load(root)
-        focus_id = context.get("focus")
+        focus = context.get("focus") or {}
+        focus_id = focus.get("signal_id") if isinstance(focus, dict) else None
         if focus_id:
-            signal = audit_context.get_signal(focus_id, root)
+            signal = next(
+                (
+                    item for item in audit_context.signals(root)
+                    if isinstance(item, dict) and item.get("id") == focus_id
+                ),
+                None,
+            )
             if isinstance(signal, dict) and signal.get("function"):
                 requested = str(signal.get("function")).split("(", 1)[0]
 
