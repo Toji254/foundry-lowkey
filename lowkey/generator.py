@@ -688,10 +688,18 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         # Foundry artifacts may omit contractName; the artifact filename is then the Solidity symbol.
         contract = str(artifact.get("contractName") or artifact_path.stem or request.contract or "Contract")
         content, env_help = render_deployment(root, contract, artifact_path, artifact)
+        default_output = Path("script") / f"LowkeyDeploy_{_id(contract)}.s.sol"
+
+        # Clean up prior Lowkey-generated names for both the user-facing request
+        # (EthEscrow) and the resolved Solidity symbol (Escrow). Never touch
+        # scripts that do not carry Lowkey's generated marker.
+        if request.output is None:
+            _cleanup_generated_deployments(root, request.contract or "", contract)
+
         output = _write(
             root,
             request.output,
-            Path("script") / f"LowkeyDeploy_{_id(contract)}.s.sol",
+            default_output,
             content,
             request.force,
         )
