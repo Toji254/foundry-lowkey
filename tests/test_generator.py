@@ -179,6 +179,30 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertEqual(payload["contractName"], "Escrow")
 
 
+    def test_find_artifact_rejects_only_stale_source_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "EthEscrow.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Escrow {}",
+                encoding="utf-8",
+            )
+
+            stale = root / "out" / "EthEscrow.sol" / "EthEscrow.json"
+            stale.parent.mkdir(parents=True)
+            stale.write_text(
+                json.dumps({
+                    "contractName": "EthEscrow",
+                    "abi": [],
+                    "bytecode": {"object": "0x6001"},
+                }),
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(generator.find_artifact(root, "EthEscrow"))
+
+
     def test_generate_deployment_writes_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
