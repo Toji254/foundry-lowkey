@@ -6,13 +6,23 @@ import subprocess
 import sys
 from typing import Iterable, Sequence
 
+try:
+    from audit_engine import run_slither
+except ImportError:
+    run_slither = None
+
+try:
+    from clone_tools import run_clone
+except ImportError:
+    run_clone = None
+
 NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
     "fmt", "lint", "geiger", "flatten", "verify-contract",
     "verify-check", "verify-bytecode", "tree", "install", "remove", "update",
     "init", "clean", "cache", "config", "remappings", "bind",
     "bind-json", "doc", "compiler", "eip712", "soldeer",
-    "completions", "clone", "fuzz", "lsp",
+    "completions", "fuzz", "lsp",
 }
 
 def die(message: str, code: int = 2) -> int:
@@ -66,7 +76,16 @@ def run_audit(args: Sequence[str]) -> int:
         if code != 0:
             print(f"\nLowkeyForge: stopped after failed step: forge {' '.join(command)}", file=sys.stderr)
             return code
-    print("\nLowkeyForge: audit preflight completed. Review coverage and findings manually.")
+    print("\n=== LOWKEY FORGE: SLITHER ===")
+    if run_slither is None:
+        print("LowkeyForge: Slither integration module is not installed.")
+    else:
+        slither_code = run_slither(".")
+        if slither_code == 127:
+            print("LowkeyForge: Slither unavailable; continuing without static analysis.")
+        elif slither_code != 0:
+            print("LowkeyForge: Slither returned a non-zero status; inspect .audit/evidence/slither.json.", file=sys.stderr)
+    print("\nLowkeyForge: audit preflight completed. Review evidence and findings manually.")
     return 0
 
 def run_test_audit(args: Sequence[str]) -> int:
@@ -110,8 +129,10 @@ Examples:
   lk forge inspect-audit BountyArena
   lk forge audit
   lk forge audit --checks
+  lk clone <repo-url> [directory] [options]
 
-Native commands are passed through to Forge unchanged.
+Native Forge commands are passed through unchanged. `lk clone` uses Lowkey's
+fast, shallow, parallel, cache-aware project onboarding.
 Audit helpers are workflow shortcuts, not vulnerability scanners.
 """)
 
@@ -123,6 +144,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     command, rest = args[0], args[1:]
     if command == "audit":
         return run_audit(rest)
+    if command == "clone":
+        if run_clone is None:
+            return die("Lowkey clone integration is not installed. Reinstall Lowkey.")
+        return run_clone(rest)
     if command in {"test-audit", "audit-test"}:
         return run_test_audit(rest)
     if command in {"inspect-audit", "recon"}:

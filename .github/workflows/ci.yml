@@ -16,8 +16,10 @@ jobs:
         with:
           python-version: "3.11"
           check-latest: true
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/audit_engine.py lowkey/clone_tools.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -34,6 +36,8 @@ jobs:
           forge --version
           cast --version
           anvil --version
+      - name: Install Slither
+        run: python -m pip install slither-analyzer
       - name: Install Lowkey
         run: ./install.sh
       - name: Build integration fixture
@@ -57,6 +61,11 @@ jobs:
               function testSmoke() public {}
           }
           EOF
+          cd /tmp/lowkey-fixture
+          git init
+          git config user.email "ci@example.com"
+          git config user.name "Lowkey CI"
+          forge install foundry-rs/forge-std --no-commit
       - name: Run installed integration checks
         working-directory: /tmp/lowkey-fixture
         run: |
@@ -65,6 +74,13 @@ jobs:
           lk doctor
           lk scan src
           lk scan src/Fixture.sol
+          lk rg 'function|event' src
+          lk slither
+          lk audit run | tee /tmp/lowkey-audit.txt
+          grep -q "LOWKEY AUDIT DASHBOARD" /tmp/lowkey-audit.txt
+          grep -q "Slither" /tmp/lowkey-audit.txt
+          grep -q "Forge build" /tmp/lowkey-audit.txt
+          lk poc
           lk forge build
           lk forge test
           lk forge inspect-audit Fixture

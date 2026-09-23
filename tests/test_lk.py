@@ -102,6 +102,24 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
 
+    def test_findings_command_is_handled_by_lowkey(self):
+        result = self.run_cli("findings")
+        self.assertNotIn("unrecognized subcommand 'findings'", result.stderr)
+        self.assertIn("LOWKEY FINDINGS", result.stdout)
+
+    def test_focus_command_is_handled_by_lowkey(self):
+        result = self.run_cli("focus")
+        self.assertNotIn("unrecognized subcommand 'focus'", result.stderr)
+        self.assertIn("Set target first.", result.stderr)
+
+    def test_audit_checks_flag_is_dispatched(self):
+        result = self.run_cli("audit", "--checks")
+        self.assertNotIn("unrecognized subcommand 'checks'", result.stderr)
+
+    def test_audit_compact_checks_alias_is_dispatched(self):
+        result = self.run_cli("audit--checks")
+        self.assertNotIn("unrecognized subcommand 'audit--checks'", result.stderr)
+
     def test_runtime_fixes(self):
         self.assertTrue(hasattr(lk, "Path"))
         self.assertTrue(lk.AUDIT_CHECKLIST)
@@ -216,6 +234,41 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("REENTRANCY REVIEW", single_file_result.stdout)
         self.assertIn("DELEGATECALL", single_file_result.stdout)
         self.assertIn("TX.ORIGIN", single_file_result.stdout)
+
+    def test_runtime_sync_detects_stale_source_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = pathlib.Path(tmp) / "install-manifest.json"
+            installed = pathlib.Path(tmp) / "lk.py"
+            installed.write_text("installed", encoding="utf-8")
+            digest = lk._sha256_file(str(installed))
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "git_sha": "old-" + "0" * 8,
+                        "source_repo": str(ROOT),
+                        "files": {str(installed): digest},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(lk, "INSTALL_MANIFEST", str(manifest_path)):
+                status = lk.runtime_sync_status()
+        self.assertEqual(status["status"], "stale")
+        self.assertIn("source checkout is", status["detail"])
+
+    def test_version_reports_runtime_state(self):
+        with patch.object(
+            lk,
+            "runtime_sync_status",
+            return_value={"status": "ok", "detail": "installed runtime abc123"},
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk.run_version()
+        rendered = output.getvalue()
+        self.assertIn("LowkeyCast 2.1", rendered)
+        self.assertIn("Runtime: OK", rendered)
+        self.assertIn("installed runtime abc123", rendered)
 
     def test_doctor_reports_missing_dependencies(self):
         with patch.object(lk.shutil, "which", return_value=None):

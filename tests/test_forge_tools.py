@@ -13,8 +13,9 @@ spec.loader.exec_module(forge_tools)
 
 class LowkeyForgeTests(unittest.TestCase):
     def test_native_commands(self):
-        for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "geiger", "clone", "fuzz", "lsp"):
+        for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "geiger", "fuzz", "lsp"):
             self.assertIn(command, forge_tools.NATIVE_COMMANDS)
+        self.assertNotIn("clone", forge_tools.NATIVE_COMMANDS)
         self.assertNotIn("debug", forge_tools.NATIVE_COMMANDS)
 
     def test_unsupported_debug_is_rejected(self):
@@ -55,6 +56,11 @@ class LowkeyForgeTests(unittest.TestCase):
                           ["inspect", "Vault", "errors"],
                           ["inspect", "Vault", "events"],
                           ["inspect", "Vault", "storage-layout"]])
+
+    @patch("forge_tools.run_clone", return_value=0)
+    def test_clone_dispatches_to_lowkey_onboarding(self, run_clone):
+        self.assertEqual(forge_tools.main(["clone", "https://github.com/owner/project.git"]), 0)
+        run_clone.assert_called_once_with(["https://github.com/owner/project.git"])
 
     @patch("forge_tools.run_forge", side_effect=[0, 0, 1, 0, 2, 0])
     def test_inspect_audit_aggregates_failures(self, run):

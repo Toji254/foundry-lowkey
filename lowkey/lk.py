@@ -6,6 +6,7 @@ import re
 import shlex
 import io
 import shutil
+import hashlib
 from contextlib import redirect_stdout
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -16,6 +17,11 @@ try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
 except ImportError:
     FORGE_NATIVE_COMMANDS = set()
+
+try:
+    from audit_engine import run_slither, run_rg, run_audit_pipeline, generate_poc, record_evidence
+except ImportError:
+    run_slither = run_rg = run_audit_pipeline = generate_poc = record_evidence = None
 
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -101,6 +107,83 @@ def save_config(config):
         if os.path.exists(tmp):
             try: os.remove(tmp)
             except OSError: pass
+
+INSTALL_MANIFEST = os.path.join(CONFIG_DIR, "install-manifest.json")
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def load_install_manifest():
+    try:
+        with open(INSTALL_MANIFEST, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def runtime_sync_status():
+    """Detect stale/corrupted installed Lowkey files without changing anything."""
+    manifest = load_install_manifest()
+    if not manifest:
+        return {"status": "unknown", "detail": "no install manifest; run install.sh"}
+
+    mismatches = []
+    for path, expected in (manifest.get("files") or {}).items():
+        actual = _sha256_file(path)
+        if actual is None:
+            mismatches.append(f"missing: {path}")
+        elif actual != expected:
+            mismatches.append(f"modified: {path}")
+
+    source_repo = manifest.get("source_repo")
+    installed_sha = manifest.get("git_sha")
+    source_sha = None
+    if source_repo and os.path.isdir(os.path.join(source_repo, ".git")):
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source_repo,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                source_sha = result.stdout.strip()
+        except OSError:
+            pass
+
+    if mismatches:
+        return {
+            "status": "corrupt",
+            "detail": "; ".join(mismatches[:4]),
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    if source_sha and installed_sha and source_sha != installed_sha:
+        return {
+            "status": "stale",
+            "detail": f"source checkout is {source_sha[:12]}, installed runtime is {installed_sha[:12]}",
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    return {
+        "status": "ok",
+        "detail": f"installed runtime {installed_sha[:12]}" if installed_sha else "installed runtime verified",
+        "installed_sha": installed_sha,
+        "source_sha": source_sha,
+        "source_repo": source_repo,
+    }
 
 def normalize_private_key(value):
     if not value: return None
@@ -358,7 +441,10 @@ def run_receipt(config, tx_hash=None):
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
-    return run_cast(["receipt", tx_hash, "--async"], config)
+    code=run_cast(["receipt", tx_hash, "--async"], config)
+    if record_evidence:
+        record_evidence("receipt", {"tx":tx_hash,"exit_code":code})
+    return code if isinstance(code,int) else 0
 
 def run_trace(config,args=None):
     args=list(args or [])
@@ -369,11 +455,15 @@ def run_trace(config,args=None):
         i=args.index("--grep")
         if i+1>=len(args): return fail("Usage: lk trace [tx] [--quick] [--decode-internal] [--trace-printer] [--grep text]")
         grep=args[i+1]; del args[i:i+2]
-    output=run_cast(["run",tx_hash]+args,config,capture=True) if grep else None
+    output=run_cast(["run",tx_hash]+args,config,capture=True)
+    output_text=str(output)
+    if record_evidence:
+        record_evidence("trace", {"tx":tx_hash,"args":args,"grep":grep,"output":output_text})
     if grep:
-        matched=[line for line in (output or "").splitlines() if grep.lower() in line.lower()]
+        matched=[line for line in output_text.splitlines() if grep.lower() in line.lower()]
         print("\n".join(matched) if matched else f"No trace lines matched '{grep}'.")
-    else: run_cast(["run",tx_hash]+args,config)
+    else:
+        print(output_text)
 def decode_event_log(config,log):
     topics=log.get("topics",[]) if isinstance(log,dict) else []
     data=log.get("data","0x") if isinstance(log,dict) else "0x"
@@ -411,11 +501,19 @@ def run_logs(config,args):
     except json.JSONDecodeError: print(output); return
     logs=payload if isinstance(payload,list) else payload.get("logs",payload.get("result",[]))
     if not isinstance(logs,list): print(output); return
-    if not logs: print("No logs found."); return
+    if not logs:
+        print("No logs found.")
+        if record_evidence: record_evidence("logs", {"args":args,"logs":[]})
+        return
+    decoded=[]
     for log in logs:
         print(json.dumps(log,indent=2))
         event=decode_event_log(config,log)
-        if event: print(f"Event: {event[0]}\nDecoded: {event[1]}")
+        if event:
+            decoded.append({"signature":event[0],"decoded":event[1]})
+            print(f"Event: {event[0]}\nDecoded: {event[1]}")
+    if record_evidence:
+        record_evidence("logs", {"args":args,"logs":logs,"decoded":decoded})
 def apply_labels(text, config):
     labels = config.get("labels", {})
     for addr, label in labels.items():
@@ -599,6 +697,8 @@ def run_snapshot(config,slots=None):
     chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
     payload={"target":config["target"],"rpc":rpc_display(config.get("rpc")),"block":current_block,"chain":chain,"saved_at":datetime.now().isoformat(timespec="seconds"),"slots":state}
     path=snapshot_path(config,chain); Path(path).write_text(json.dumps(payload,indent=4),encoding="utf-8")
+    if record_evidence:
+        record_evidence("snapshot", payload)
     print(f"Snapshot saved: {path}")
 def run_diff(config):
     path=snapshot_path(config)
@@ -607,10 +707,13 @@ def run_diff(config):
     except (OSError,json.JSONDecodeError): print("Error: invalid snapshot."); return
     old_slots=old.get("slots",old); print(f"Snapshot block: {old.get('block','unknown')}")
     changed=0
+    changes=[]
     for slot,old_val in old_slots.items():
         new_val=run_cast(["st",slot],config,capture=True)
         if str(new_val).lower()!=str(old_val).lower():
-            changed+=1; print(f"Slot {slot}: {old_val} -> {new_val}")
+            changed+=1; changes.append({"slot":slot,"before":old_val,"after":str(new_val)}); print(f"Slot {slot}: {old_val} -> {new_val}")
+    if record_evidence:
+        record_evidence("storage_diff", {"snapshot_block":old.get("block"),"changes":changes})
     if not changed: print("No changes detected in snapshotted slots.")
 def run_finding(config, note):
     os.makedirs(AUDIT_DIR, exist_ok=True)
@@ -621,7 +724,134 @@ def run_finding(config, note):
     if os.path.isdir(WORKSPACE_DIR):
         with open(workspace_finding, "a") as f:
             f.write(line)
+    if record_evidence:
+        record_evidence("finding_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"), {
+            "note": note,
+            "target": config.get("target"),
+            "last_tx": config.get("last_tx"),
+        })
     print("Finding recorded.")
+
+def _fit_text_for_cli(value, width):
+    value = str(value).replace("\n", " ")
+    return value if len(value) <= width else value[:max(0, width - 3)] + "..."
+
+
+def run_findings(config, args=None):
+    """Render stored Slither/manual findings without falling through to Cast."""
+    paths = workspace_paths()
+    evidence_path = os.path.join(paths["root"], "evidence", "slither.json")
+    slither = read_json_file(evidence_path, {})
+    findings = slither.get("findings", []) if isinstance(slither, dict) else []
+    findings = findings if isinstance(findings, list) else []
+
+    manual_path = paths["findings"] if os.path.exists(paths["findings"]) else os.path.join(AUDIT_DIR, "findings.md")
+    manual = []
+    if os.path.exists(manual_path):
+        try:
+            manual = [
+                line.strip()
+                for line in Path(manual_path).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except OSError:
+            manual = []
+
+    print("\n=== LOWKEY FINDINGS ===")
+    print("=" * 96)
+
+    print("\nSLITHER")
+    print("-" * 96)
+    if findings:
+        print(f"{'#':>3}  {'IMPACT':<12} {'CONFIDENCE':<11} {'DETECTOR':<34} LOCATION")
+        print("-" * 96)
+        for index, finding in enumerate(findings, 1):
+            locations = finding.get("locations") or []
+            location = locations[0] if locations else {}
+            source = location.get("source") or "unknown"
+            line = location.get("start") or "?"
+            detector = finding.get("check") or finding.get("detector") or "unknown"
+            impact = str(finding.get("impact") or "unknown").upper()
+            confidence = str(finding.get("confidence") or "unknown").upper()
+            print(
+                f"{index:>3}  {impact:<12} {confidence:<11} "
+                f"{_fit_text_for_cli(detector, 34):<34} {source}#{line}"
+            )
+    else:
+        print("No Slither findings recorded.")
+        print("Run lk audit --checks to refresh evidence.")
+
+    print("\nMANUAL / RECORDED")
+    print("-" * 96)
+    if manual:
+        for line in manual:
+            print(line)
+    else:
+        print("No manual findings recorded.")
+
+    print(f"\nEvidence: {evidence_path}")
+    return 0
+
+
+def run_focus(config, args=None):
+    """Show ABI functions with the strongest review-surface signals."""
+    args = list(args or [])
+    target = config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    funcs = abi_functions(load_abi(target, config))
+    if not funcs:
+        return fail("Error: No ABI functions loaded.")
+
+    query = " ".join(args).strip().lower()
+    rows = []
+    for item in funcs:
+        name = item.get("name", "").lower()
+        signals = []
+        if item.get("stateMutability") in {"nonpayable", "payable"}:
+            signals.append("state-write")
+        if item.get("stateMutability") == "payable":
+            signals.append("value-flow")
+        if any(x in name for x in ["owner", "admin", "role", "upgrade", "pause", "unpause"]):
+            signals.append("privileged-looking")
+        if any(x in name for x in ["withdraw", "transfer", "send", "execute", "call", "mint", "burn", "sweep"]):
+            signals.append("asset/action")
+        if any(canonical_type(i).startswith("address") for i in item.get("inputs", [])):
+            signals.append("address-input")
+        signature = format_signature(item)
+        if query and query not in signature.lower() and not any(query in s for s in signals):
+            continue
+        score = sum({
+            "state-write": 1,
+            "value-flow": 2,
+            "privileged-looking": 2,
+            "asset/action": 2,
+            "address-input": 1,
+        }.get(signal, 0) for signal in signals)
+        rows.append((score, signature, signals))
+
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    print("\n=== LOWKEY FOCUS ===")
+    print("=" * 96)
+    if not rows:
+        print("No matching focus surfaces.")
+        return 0
+
+    print(f"{'SCORE':>5}  {'FUNCTION':<58} SIGNALS")
+    print("-" * 96)
+    for score, signature, signals in rows:
+        print(
+            f"{score:>5}  {_fit_text_for_cli(signature, 58):<58} "
+            f"{', '.join(signals) or 'no heuristic signals'}"
+        )
+    print("\nUse lk fn <term> to inspect matching ABI functions.")
+    if record_evidence:
+        record_evidence("focus", {"target": target, "query": query, "functions": [
+            {"signature": signature, "score": score, "signals": signals}
+            for score, signature, signals in rows
+        ]})
+    return 0
+
 
 def workspace_paths():
     return {
@@ -640,7 +870,7 @@ def workspace_paths():
 def run_workspace(config,args):
     paths=workspace_paths(); action=args[0] if args else "init"
     if action!="init": print("Usage: lk workspace init"); return
-    for directory in [paths["root"],os.path.join(paths["root"],"abi"),os.path.join(paths["root"],"transactions"),os.path.join(paths["root"],"traces"),os.path.join(paths["root"],"storage"),os.path.join(paths["root"],"findings"),os.path.join(paths["root"],"history"),paths["matrix"]]:
+    for directory in [paths["root"],os.path.join(paths["root"],"abi"),os.path.join(paths["root"],"transactions"),os.path.join(paths["root"],"traces"),os.path.join(paths["root"],"storage"),os.path.join(paths["root"],"findings"),os.path.join(paths["root"],"history"),os.path.join(paths["root"],"evidence"),os.path.join(paths["root"],"poc"),paths["matrix"]]:
         os.makedirs(directory,exist_ok=True)
     for key in ["notes","todos","findings"]:
         if not os.path.exists(paths[key]): open(paths[key],"w",encoding="utf-8").close()
@@ -696,6 +926,8 @@ def run_matrix(config,args):
             "created":datetime.now().isoformat(timespec="seconds"),
         }
         scenarios=read_json_file(paths["matrix_scenarios"],[]); scenarios.append(scenario); write_json_file(paths["matrix_scenarios"],scenarios)
+        if record_evidence:
+            record_evidence("matrix_" + solidity_identifier(scenario["name"]), scenario)
         print(f"Scenario saved: {scenario['name']}"); return
     scenarios=read_json_file(paths["matrix_scenarios"],[])
     if action=="list":
@@ -729,6 +961,8 @@ contract Matrix_{identifier} is Test {{
         base=os.path.join("test",f"Matrix_{identifier}.t.sol")
         filename=base if not os.path.exists(base) else os.path.join("test",f"Matrix_{identifier}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
         Path(filename).write_text(template,encoding="utf-8")
+        if record_evidence:
+            record_evidence("generated_matrix_test_" + identifier, {"scenario":scenario,"file":filename})
         print(f"Matrix test skeleton generated: {filename}"); return
     print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
 
@@ -740,6 +974,12 @@ def run_note(note):
     os.makedirs(paths["root"], exist_ok=True)
     with open(paths["notes"], "a") as f:
         f.write(f"- [{datetime.now().strftime('%Y-%m-%d %H:%M')}] {note}\n")
+    if record_evidence:
+        record_evidence("note_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"), {
+            "note": note,
+            "target": load_config().get("target"),
+            "source": "lk note",
+        })
     print("Note saved.")
 
 def run_todo(todo):
@@ -750,6 +990,12 @@ def run_todo(todo):
     os.makedirs(paths["root"], exist_ok=True)
     with open(paths["todos"], "a") as f:
         f.write(f"- [ ] {todo}\n")
+    if record_evidence:
+        record_evidence("todo_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f"), {
+            "todo": todo,
+            "target": load_config().get("target"),
+            "source": "lk todo",
+        })
     print("TODO saved.")
 
 def run_session_lifecycle(config, action):
@@ -761,13 +1007,75 @@ def run_session_lifecycle(config, action):
         save_config(config)
         with open(paths["session"], "a") as f:
             f.write(f"\nSESSION START {config['session_started']}\n")
+        if record_evidence:
+            record_evidence("session_start", {
+                "project": os.getcwd(),
+                "target": config.get("target"),
+                "rpc": rpc_display(config.get("rpc")),
+                "started": config["session_started"],
+            })
         print("Audit session started.")
     elif action == "resume":
         config["session_active"] = True
         save_config(config)
+        if record_evidence:
+            record_evidence("session_resume", {
+                "project": os.getcwd(),
+                "target": config.get("target"),
+                "rpc": rpc_display(config.get("rpc")),
+                "resumed": datetime.now().isoformat(timespec="seconds"),
+            })
         print(f"Audit session resumed: {paths['root']}")
     else:
         print("Usage: lk session start|resume")
+
+def run_audit_startup(config):
+    """Create/resume the project audit workspace and run the automatic baseline."""
+    paths = workspace_paths()
+    runtime = runtime_sync_status()
+    if runtime["status"] == "stale":
+        print("WARNING: installed Lowkey runtime is stale relative to its source checkout.")
+        print(f"         {runtime['detail']}")
+        if runtime.get("source_repo"):
+            print(f"         Reinstall with: bash {runtime['source_repo']}/install.sh")
+    elif runtime["status"] == "corrupt":
+        print("WARNING: installed Lowkey runtime failed its install-manifest integrity check.")
+        print(f"         {runtime['detail']}")
+        if runtime.get("source_repo"):
+            print(f"         Reinstall with: bash {runtime['source_repo']}/install.sh")
+    run_workspace(config, ["init"])
+    run_matrix(config, ["init"])
+    run_checklist(config)
+
+    if not config.get("session_active"):
+        run_session_lifecycle(config, "start")
+    else:
+        run_session_lifecycle(config, "resume")
+
+    context = {
+        "project": os.getcwd(),
+        "target": config.get("target"),
+        "rpc": rpc_display(config.get("rpc")),
+        "started": datetime.now().isoformat(timespec="seconds"),
+        "workspace": paths["root"],
+    }
+    if record_evidence:
+        record_evidence("audit_start", context)
+
+    print("\n=== LOWKEY AUDIT STARTUP ===")
+    print("Workspace initialized.")
+    print("Evidence collection enabled.")
+    print("Running baseline: build -> tests -> coverage -> Slither -> source triage.")
+
+    baseline_code = run_audit_pipeline(".", [], False) if run_audit_pipeline else 0
+
+    if generate_poc:
+        print("\n=== LOWKEY AUDIT POC ===")
+        generate_poc(".", None, None)
+
+    print(f"\nBaseline status: {'PASS' if baseline_code == 0 else 'REVIEW NEEDED'}")
+    return baseline_code
+
 
 def run_export(config):
     paths=workspace_paths(); export_dir=os.path.join(os.getcwd(),"audit-report"); os.makedirs(export_dir,exist_ok=True)
@@ -781,6 +1089,14 @@ def run_export(config):
     for name,source in [("notes.md",paths["notes"]),("TODO.md",paths["todos"]),("session.log",paths["session"]),("matrix_actors.json",paths["matrix_actors"]),("matrix_states.json",paths["matrix_states"]),("matrix_scenarios.json",paths["matrix_scenarios"])]:
         if os.path.exists(source): Path(os.path.join(export_dir,name)).write_text(Path(source).read_text(encoding="utf-8"),encoding="utf-8")
     Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
+    evidence_dir=os.path.join(WORKSPACE_DIR,"evidence")
+    poc_dir=os.path.join(WORKSPACE_DIR,"poc")
+    if os.path.isdir(evidence_dir):
+        import shutil as _shutil
+        _shutil.copytree(evidence_dir,os.path.join(export_dir,"evidence"),dirs_exist_ok=True)
+    if os.path.isdir(poc_dir):
+        import shutil as _shutil
+        _shutil.copytree(poc_dir,os.path.join(export_dir,"poc"),dirs_exist_ok=True)
     print(f"Audit report exported: {export_dir}")
 def run_self_test():
     checks=[
@@ -824,6 +1140,20 @@ def run_doctor():
         else:
             print(f"FAIL  {name}: {path} ({version})")
             failures+=1
+
+    print("OPTIONAL AUDIT TOOLS")
+    for name in ("rg", "slither"):
+        path=shutil.which(name)
+        if not path:
+            print(f"INFO  {name}: not found (optional)")
+            continue
+        try:
+            result=subprocess.run([path,"--version"],capture_output=True,text=True)
+            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
+        except OSError as error:
+            print(f"WARN  {name}: {error}")
+            continue
+        print(f"PASS  {name}: {path} ({version})")
     forge=shutil.which("forge")
     if forge:
         try:
@@ -856,6 +1186,17 @@ def run_doctor():
         else:
             print(f"FAIL  dependency command: {command}")
             failures+=1
+    runtime = runtime_sync_status()
+    if runtime["status"] == "ok":
+        print(f"PASS  Lowkey runtime: {runtime['detail']}")
+    elif runtime["status"] == "stale":
+        print(f"WARN  Lowkey runtime: {runtime['detail']}")
+        print(f"      reinstall with: bash {runtime.get('source_repo') or '<source-repo>'}/install.sh")
+    elif runtime["status"] == "corrupt":
+        print(f"FAIL  Lowkey runtime: {runtime['detail']}")
+        failures += 1
+    else:
+        print(f"INFO  Lowkey runtime: {runtime['detail']}")
     return 1 if failures else 0
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
@@ -1085,27 +1426,37 @@ def run_scan(args):
         ("PREVRANDAO",re.compile(r"\bblock\.prevrandao\b")),("ECRECOVER",re.compile(r"\becrecover\s*\(")),
         ("CREATE2",re.compile(r"\bcreate2\b"))]
     hits=0
+    markers=[]
     for path in source_sol_files(root):
         try: lines=Path(path).read_text(encoding="utf-8").splitlines()
         except OSError: continue
         for lineno,line in enumerate(lines,1):
             for label,pattern in patterns:
                 if pattern.search(line):
-                    hits+=1; print(f"{path}:{lineno}: [{label}] {line.strip()}")
+                    hits+=1
+                    marker={"file":path,"line":lineno,"label":label,"text":line.strip()}
+                    markers.append(marker)
+                    print(f"{path}:{lineno}: [{label}] {line.strip()}")
+    if record_evidence:
+        record_evidence("source_scan", {"root":root,"count":hits,"markers":markers})
     print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
 
 def run_deps(args):
     root=args[0] if args else "src"; files=source_sol_files(root)
     if not files: print(f"No Solidity files found under {root}."); return
     print("Dependency / inheritance map:")
+    imports=[]; inherits=[]
     for path in files:
         try: text_content=Path(path).read_text(encoding="utf-8")
         except OSError: continue
         rel=os.path.relpath(path,root)
-        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content): print(f"  {rel} -> import {imported}")
+        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
+            item={"file":rel,"import":imported}; imports.append(item); print(f"  {rel} -> import {imported}")
         for contract in re.finditer(r"\b(contract|interface|library)\s+(\w+)(?:\s+is\s+([^{]+))?",text_content):
             for parent in [p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]:
-                print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+                item={"file":rel,"contract":contract.group(2),"inherits":parent}; inherits.append(item); print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+    if record_evidence:
+        record_evidence("dependencies", {"root":root,"imports":imports,"inherits":inherits})
 
 def run_risk(config):
     target=config.get("target")
@@ -1115,6 +1466,7 @@ def run_risk(config):
     if not funcs:
         print("Error: No ABI functions loaded."); return
     print("Function review-surface heuristic:")
+    rows=[]
     for item in funcs:
         name=item.get("name","").lower(); signals=[]
         if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
@@ -1122,7 +1474,10 @@ def run_risk(config):
         if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
         if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
         if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
+        rows.append({"signature":format_signature(item),"signals":signals})
         print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+    if record_evidence:
+        record_evidence("risk", {"target":target,"functions":rows})
 def run_gas(config,args):
     if not args:
         print("Usage: lk gas <function> [args]"); return
@@ -1164,9 +1519,16 @@ def run_batch(config,args):
         else: dispatch_command(command,command_args,config,from_batch=True)
 def run_audit_mode(config):
     print("\n=== LOWKEYCAST AUDIT MODE ===")
+    config["audit_project"] = os.getcwd()
+    save_config(config)
+
+    # Every explicit audit launch gets a fresh baseline against the
+    # current checkout, while the project-local evidence workspace persists.
+    run_audit_startup(config)
+
     while True:
         print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
-        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   0) exit")
+        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   7) full evidence pass   8) generate PoC   0) exit")
         try: choice=input("lk> ").strip()
         except EOFError: return
         if choice=="1": run_recon(config)
@@ -1175,8 +1537,23 @@ def run_audit_mode(config):
         elif choice=="4": run_checklist(config)
         elif choice=="5": run_targets(config)
         elif choice=="6": run_deployments(config)
-        elif choice=="0": return
+        elif choice=="7" and run_audit_pipeline: run_audit_pipeline(".")
+        elif choice=="8" and generate_poc: generate_poc(".", None, None)
+        elif choice=="0":
+            if generate_poc:
+                print("\nRefreshing PoC before leaving audit mode...")
+                generate_poc(".", None, None)
+            return
         else: print("Unknown option.")
+
+
+def run_version():
+    runtime = runtime_sync_status()
+    print("LowkeyCast 2.1")
+    print(f"Runtime: {runtime['status'].upper()} - {runtime['detail']}")
+    if runtime.get("source_repo"):
+        print(f"Source : {runtime['source_repo']}")
+
 
 def actor_display(config):
     actor=config.get("actor")
@@ -1297,6 +1674,8 @@ INSPECTION
 
 SOURCE TRIAGE
   lk scan [src]                       High-signal Solidity review markers
+  lk rg <pattern> [path]              Ripgrep search + evidence capture
+  lk slither [args...]                Slither static analysis + normalized evidence
   lk deps [src]                       Import/inheritance map
   lk layout <ContractName>            Forge storage layout
   lk risk                             ABI-level function risk heuristic
@@ -1309,6 +1688,13 @@ SOURCE TRIAGE
 
 AUDIT OS
   lk audit                            Interactive dashboard
+  lk audit --checks                   Run full evidence pass + checks + dashboard
+  lk audit--checks                   Legacy compact alias for audit --checks
+  lk findings                         Show stored Slither/manual findings
+  lk focus [query]                   Show high-signal ABI review surfaces
+  lk audit run [--slither ARG...]     Build -> tests -> coverage -> Slither
+  lk audit run --poc                  Same pipeline + first PoC scaffold
+  lk poc [--finding N]                Generate PoC from accumulated evidence
   lk finding <note>                   Record observation
   lk finding add <severity> <title> <text>
   lk checklist                       View/mark/reset checklist
@@ -1336,7 +1722,7 @@ FORENSICS
 """)
 def dispatch_command(cmd,args,config,from_batch=False):
     if cmd in {"--help","-h","help"}: print_help()
-    elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.0")
+    elif cmd in {"--version","-V","version"}: run_version()
     elif cmd=="target":
         if not args: print(f"Current target: {config.get('target') or 'none'}"); return
         if args[0]=="reset": config["target"]=None
@@ -1438,6 +1824,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"token","erc20"}: run_token(config,args)
     elif cmd=="snapshot": run_snapshot(config,args)
     elif cmd=="diff": run_diff(config)
+    elif cmd in {"findings","finding-list"}:
+        run_findings(config,args)
+    elif cmd=="focus":
+        run_focus(config,args)
     elif cmd=="finding":
         if args and args[0]=="add" and len(args)>=4: run_finding(config,f"[{args[1].upper()}] {args[2]}: {' '.join(args[3:])}")
         elif args: run_finding(config," ".join(args))
@@ -1463,12 +1853,74 @@ def dispatch_command(cmd,args,config,from_batch=False):
         else: run_matrix(config,args)
     elif cmd=="risk": run_risk(config)
     elif cmd=="scan": run_scan(args)
+    elif cmd=="rg":
+        if not args:
+            print("Usage: lk rg <pattern> [path] [rg flags...]")
+        elif run_rg is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            path=args[1] if len(args)>1 and not args[1].startswith("-") else "."
+            extra=args[2:] if len(args)>1 and not args[1].startswith("-") else args[1:]
+            run_rg(args[0],path,extra)
+    elif cmd=="slither":
+        if run_slither is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            run_slither(".",args)
+    elif cmd in {"poc","poc-gen"}:
+        if generate_poc is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            index=None; name=None; rest=list(args)
+            if "--finding" in rest:
+                i=rest.index("--finding")
+                if i+1>=len(rest):
+                    fail("Usage: lk poc [--finding N] [--name NAME]")
+                    return
+                try: index=int(rest[i+1])
+                except ValueError:
+                    fail("--finding must be an integer")
+                    return
+                del rest[i:i+2]
+            if "--name" in rest:
+                i=rest.index("--name")
+                if i+1>=len(rest):
+                    fail("Usage: lk poc [--finding N] [--name NAME]")
+                    return
+                name=rest[i+1]
+            generate_poc(".",index,name)
     elif cmd=="deps": run_deps(args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": run_raw(config,args)
     elif cmd=="batch": run_batch(config,args)
-    elif cmd=="audit": run_audit_mode(config)
+    elif cmd in {"audit--checks","audit-checks"}:
+        if run_audit_pipeline is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            run_audit_pipeline(".", [], False)
+    elif cmd=="audit":
+        action=args[0] if args else None
+        if action in {"--checks","checks"}:
+            if run_audit_pipeline is None:
+                fail("Audit engine is not installed. Reinstall Lowkey.")
+            else:
+                run_audit_pipeline(".", [], False)
+        elif action in {"run","full"}:
+            if run_audit_pipeline is None:
+                fail("Audit engine is not installed. Reinstall Lowkey.")
+            else:
+                extra=args[1:]
+                generate="--poc" in extra
+                slither_args=[x for x in extra if x!="--poc"]
+                run_audit_pipeline(".",slither_args,generate)
+        elif action in {"poc","poc-gen"}:
+            if generate_poc is None:
+                fail("Audit engine is not installed. Reinstall Lowkey.")
+            else:
+                generate_poc(".",None,None)
+        else:
+            run_audit_mode(config)
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": run_receipt(config,args[0] if args else None)
@@ -1490,6 +1942,29 @@ def main():
     config=load_config()
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+
+    # Keep the PoC scaffold synchronized with evidence gathered by any
+    # command during an active audit session. The generator only writes
+    # local files; it does not make network calls or assert a vulnerability.
+    evidence_commands={
+        "scan","rg","slither","recon","proxy","implementation","admin","mapping",
+        "namespace","proof","snapshot","diff","risk","trace","replay","logs","tx",
+        "receipt","finding","matrix","note","todo","test-gen","workspace","deployments",
+        "target","use","rpc","abi","functions","fn","c","s","st","raw","gas","selectors",
+        "layout","export","fork","token","ens","decode","decode-error","returns","event",
+        "checklist","session","forge"
+    }
+    if (
+        config.get("session_active")
+        and sys.argv[1] in evidence_commands
+        and sys.argv[1] not in {"audit","poc"}
+        and generate_poc
+    ):
+        try:
+            generate_poc(".", None, None)
+        except Exception as error:
+            print(f"Lowkey PoC refresh warning: {error}", file=sys.stderr)
+
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 

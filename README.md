@@ -132,7 +132,9 @@ foundry-lowkey/
 ├── bin/
 │   └── lk
 ├── lowkey/
-│   └── lk.py
+│   ├── lk.py
+│   ├── forge_tools.py
+│   └── audit_engine.py
 ├── tests/
 │   └── test_lk.py
 ├── .github/
@@ -177,6 +179,81 @@ lk forge inspect-audit MyContract
 lk forge audit
 lk forge audit --checks
 ```
+
+## Evidence-driven audit workflow
+
+For CTFs and learning projects, the fastest path is now a repeatable evidence pass:
+
+```bash
+lk audit run
+```
+
+That pass runs:
+
+```text
+forge build
+    -> forge test -vvvv
+    -> forge coverage
+    -> Slither --json
+```
+
+Lowkey stores machine-readable evidence under:
+
+```text
+.audit/
+├── evidence/
+│   ├── manifest.json
+│   ├── build.json
+│   ├── tests.json
+│   ├── coverage.json
+│   ├── slither.json
+│   └── slither.raw.json
+└── poc/
+```
+
+You can still interrogate the code directly:
+
+```bash
+lk scan src
+lk rg "delegatecall|tx.origin|call{" src
+lk deps src
+lk trace <tx>
+lk snapshot
+lk diff
+```
+
+### Evidence-backed PoC scaffolding
+
+`lk audit` is now the audit-session entrypoint. On the first run in a project it automatically initializes the project-local workspace, attacker matrix, checklist, session log, evidence store, then runs the baseline evidence pass and creates the initial PoC scaffold.
+
+```bash
+lk audit
+```
+
+After that, evidence-producing commands feed the same project session and Lowkey refreshes the PoC scaffold automatically. You can still regenerate it explicitly:
+
+```bash
+lk poc
+```
+
+Lowkey selects an actionable Slither finding when one exists, otherwise it can fall back to the first attacker-state matrix scenario. The generated Foundry scaffold is deliberately specialized by detector family (for example reentrancy, authorization, external-call control, unchecked calls, time dependence, or encoding collisions).
+
+The generator also writes a JSON brief containing the selected detector, impact/confidence, source locations, target, latest transaction, notes/TODOs, and a refinement checklist. It is a starting point for your PoC, not a claim that the detector represents a real vulnerability.
+
+For one specific Slither result:
+
+```bash
+lk poc --finding 2
+lk poc --finding 2 --name withdraw_reentrancy
+```
+
+To run the audit and create a scaffold in one pass:
+
+```bash
+lk audit run --poc
+```
+
+
 
 - `test-audit` runs native `forge test` with `-vvvv` unless you provide
   your own verbosity.
