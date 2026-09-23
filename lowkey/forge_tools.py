@@ -30,13 +30,26 @@ def die(message: str, code: int = 2) -> int:
 def forge_path() -> str | None:
     return shutil.which("forge")
 
-def run_forge(args: Sequence[str]) -> int:
+def run_forge(args: Sequence[str], quiet: bool = False) -> int:
+    """Run Forge, optionally hiding successful command output for compound audits."""
     binary = forge_path()
     if not binary:
         return die("forge was not found on PATH. Install Foundry first.")
     root = audit_context.foundry_project_root()
     try:
-        code = subprocess.run([binary, *args]).returncode
+        if quiet:
+            result = subprocess.run([binary, *args], cwd=root, capture_output=True, text=True)
+            code = result.returncode
+            if code != 0:
+                combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+                if combined:
+                    print(
+                        f"\nForge {args[0] if args else 'command'} failed:\n"
+                        + "\n".join(combined.splitlines()[-24:]),
+                        file=sys.stderr,
+                    )
+        else:
+            code = subprocess.run([binary, *args]).returncode
     except OSError as exc:
         audit_context.emit(
             "forge-command",
