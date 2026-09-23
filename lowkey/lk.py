@@ -2187,6 +2187,9 @@ def run_fork(args):
             os.remove(FORK_FILE)
         except OSError:
             pass
+        if config.get("rpc")==state.get("local_rpc"):
+            config["rpc"]=None
+            save_config(config)
         return 0
     rpc=values.pop(0)
     block=None
