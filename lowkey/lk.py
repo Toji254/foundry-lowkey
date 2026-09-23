@@ -479,12 +479,10 @@ def remember_abi_path(config,target,path):
         return path
 
     root=foundry_project_root(absolute)
+    # Persist the resolved artifact as an absolute path. The project root is
+    # still remembered separately for project-scoped operations, but artifact
+    # reads must never depend on the caller's current working directory.
     stored=absolute
-    if root:
-        try:
-            stored=os.path.relpath(absolute,root)
-        except ValueError:
-            stored=absolute
 
     changed=False
     if config.setdefault("abi_paths",{}).get(target)!=stored:
