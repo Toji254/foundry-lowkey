@@ -428,7 +428,7 @@ contract LowkeyPoC_{ident} is Script {{
         // Raw write-slot addresses are useful first evidence. Decode mapping/struct slots after that.
         for (uint256 i = 0; i < writes.length; i++) {{
             console2.logBytes32(writes[i]);
-        }
+        }}
 
         // A successful call only means it did not revert. It is NOT proof of a vulnerability.
         require(success, "Lowkey PoC: target call reverted");
