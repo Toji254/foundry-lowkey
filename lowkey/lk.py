@@ -187,7 +187,11 @@ def resolve_function(func_name, target, config):
     return func_name
 
 def load_abi(target,config):
-    abi_path=config.get("abi_paths",{}).get(target)
+    abi_paths=config.get("abi_paths",{})
+    abi_path=abi_paths.get(target)
+    if not abi_path and isinstance(target,str):
+        lowered=target.lower()
+        abi_path=next((path for address,path in abi_paths.items() if isinstance(address,str) and address.lower()==lowered),None)
     if not abi_path or not os.path.exists(abi_path): return []
     try:
         with open(abi_path,"r",encoding="utf-8") as f: artifact=json.load(f)
@@ -258,15 +262,12 @@ def run_encode(config, args):
 
 def run_signature(args):
     if not args:
-        print("Usage: lk sig <function(signature)>")
-        return
-    signature = args[0]
-    selector = subprocess.run(["cast", "sig", signature], capture_output=True, text=True)
-    if selector.stdout.strip():
-        print(selector.stdout.strip())
-    if selector.stderr.strip():
-        print(selector.stderr.strip(), file=sys.stderr)
-
+        print("Usage: lk sig <function(signature)>"); return
+    code,out,err=cast_output(["cast","sig",args[0]])
+    if out: print(out)
+    if err: print(err,file=sys.stderr)
+    if code!=0 and not err:
+        print("Unable to resolve selector.",file=sys.stderr)
 def cast_output(args,input_text=None):
     result=subprocess.run(args,capture_output=True,text=True,input=input_text)
     return result.returncode,result.stdout.strip(),result.stderr.strip()
@@ -941,10 +942,12 @@ def run_deps(args):
 
 def run_risk(config):
     target=config.get("target")
-    if not target: print("Error: Set target first."); return
+    if not target:
+        print("Error: Set target first."); return
     funcs=abi_functions(load_abi(target,config))
-    if not funcs: print("Error: No ABI functions loaded."); return
-    print("Function risk surface (heuristic only):")
+    if not funcs:
+        print("Error: No ABI functions loaded."); return
+    print("Function review-surface heuristic:")
     for item in funcs:
         name=item.get("name","").lower(); signals=[]
         if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
@@ -952,8 +955,7 @@ def run_risk(config):
         if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
         if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
         if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
-        print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'read-only / low surface'}")
-
+        print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
 def run_gas(config,args):
     if not args: print("Usage: lk gas <function> [args]"); return
     if not config.get("target"): print("Error: Set target first."); return
@@ -1047,13 +1049,13 @@ def run_replay(config,args):
 def run_fork(args):
     if not args:
         print("Usage: lk fork <rpc-url> [block-number]"); return
-    command=["anvil","--fork-url",args[0]]
+    rpc=args[0]
+    command=["anvil","--fork-url",rpc]
     if len(args)>1: command.extend(["--fork-block-number",args[1]])
     print("Start a local fork with:")
-    print("  "+shlex.join(command))
+    print("  "+redact_secrets(shlex.join(command)))
     print("Then point LowkeyCast at it:")
     print("  lk rpc http://127.0.0.1:8545")
-
 def print_help():
     print("""
 LowkeyCast - Foundry auditor interface
