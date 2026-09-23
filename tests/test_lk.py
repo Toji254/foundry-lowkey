@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "lk.py"
@@ -81,6 +82,17 @@ class LowkeyCastTests(unittest.TestCase):
         raw = "b" * 64
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
+
+    def test_runtime_fixes(self):
+        self.assertTrue(hasattr(lk, "Path"))
+        self.assertTrue(lk.AUDIT_CHECKLIST)
+
+    def test_receipt_uses_async(self):
+        tx_hash = "0x" + "1" * 64
+        config = {"last_tx": tx_hash}
+        with patch.object(lk, "run_cast") as run_cast:
+            lk.run_receipt(config)
+            run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
 
     def test_solidity_identifier(self):
         self.assertEqual(
