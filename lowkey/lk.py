@@ -510,13 +510,50 @@ def load_abi(target,config):
 
 def storage_getter_names(target,config,abi):
     path=config.get("abi_paths",{}).get(target)
-    if not path or not os.path.exists(path): path=auto_abi_path(target,config)
-    if not path or not os.path.exists(path): return set()
-    artifact=read_artifact(path) or {}
-    layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
-    storage=layout.get("storage",[]) if isinstance(layout,dict) else []
-    labels={entry.get("label") for entry in storage if isinstance(entry,dict) and entry.get("label")}
-    return {item.get("name") for item in abi if item.get("type")=="function" and item.get("stateMutability") in {"view","pure"} and item.get("name") in labels}
+    if not path or not os.path.exists(path):
+        path=auto_abi_path(target,config)
+
+    labels=set()
+    artifact={}
+    if path and os.path.exists(path):
+        artifact=read_artifact(path) or {}
+        layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
+        storage=layout.get("storage",[]) if isinstance(layout,dict) else []
+        labels.update(
+            entry.get("label")
+            for entry in storage
+            if isinstance(entry,dict) and entry.get("label")
+        )
+
+    # Foundry artifacts do not always contain storageLayout. Ask Forge for the
+    # authoritative layout when we are inside a Foundry project, so public
+    # mapping/struct getters are still classified correctly.
+    if not labels:
+        contract_name=config.get("target_contract")
+        if not contract_name and isinstance(artifact,dict):
+            contract_name=artifact.get("contractName")
+        if contract_name:
+            code,out,_=cast_output(["forge","inspect",str(contract_name),"storage-layout","--json"])
+            if code==0 and out:
+                try:
+                    payload=json.loads(out)
+                    layout=payload.get("storage",payload) if isinstance(payload,dict) else payload
+                    storage=layout if isinstance(layout,list) else []
+                    labels.update(
+                        entry.get("label")
+                        for entry in storage
+                        if isinstance(entry,dict) and entry.get("label")
+                    )
+                except json.JSONDecodeError:
+                    pass
+
+    return {
+        item.get("name")
+        for item in abi
+        if item.get("type")=="function"
+        and item.get("stateMutability") in {"view","pure"}
+        and item.get("name") in labels
+    }
 def run_chain(config):
     rpc=effective_rpc(config)
     chain_id = run_cast(["chain-id"], config, capture=True)
