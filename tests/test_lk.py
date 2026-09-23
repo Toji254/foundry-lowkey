@@ -1323,6 +1323,14 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(lk.run_symbolic(["emit","--match-test","testFoo"]),0)
         self.assertIn("--emit-regression",run.call_args.args[0])
 
+    def test_dispatch_exposes_shared_audit_commands(self):
+        with patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as signals:
+            lk.dispatch_command("context", [], {})
+            lk.dispatch_command("signals", [], {})
+        context.assert_called_once()
+        signals.assert_called_once()
+
+
     def test_dispatch_exposes_lab_commands(self):
         config = {}
         calls = {}
