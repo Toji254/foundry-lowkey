@@ -1323,6 +1323,34 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(lk.run_symbolic(["emit","--match-test","testFoo"]),0)
         self.assertIn("--emit-regression",run.call_args.args[0])
 
+    def test_investigate_sets_shared_focus_and_suggests_tools(self):
+        signal={
+            "id":"SLITHER-ABC123",
+            "tool":"slither",
+            "title":"Low-level external call",
+            "impact":"Informational",
+            "confidence":"High",
+            "file":"src/Vault.sol",
+            "line":42,
+            "function":"withdraw()",
+            "description":"External call path",
+            "meaning":"Review the external call boundary.",
+            "why":"The callee controls execution.",
+            "next":"Trace state changes.",
+        }
+        root=pathlib.Path.cwd()
+        with patch.object(lk.audit_context,"set_focus",return_value=signal) as set_focus, \
+             patch.object(lk.audit_context,"foundry_project_root",return_value=root):
+            output=io.StringIO()
+            with redirect_stdout(output):
+                result=lk.run_investigate({},["SLITHER-ABC123"])
+        self.assertEqual(result,0)
+        set_focus.assert_called_once_with("SLITHER-ABC123",root)
+        rendered=output.getvalue()
+        self.assertIn("LOWKEY INVESTIGATION FOCUS",rendered)
+        self.assertIn("lk state-diff withdraw()",rendered)
+
+
     def test_dispatch_exposes_shared_audit_commands(self):
         with patch.object(lk, "run_context", return_value=0) as context,              patch.object(lk, "run_signals", return_value=0) as signals:
             lk.dispatch_command("context", [], {})
