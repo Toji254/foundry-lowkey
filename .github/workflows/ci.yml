@@ -16,6 +16,8 @@ jobs:
         with:
           python-version: "3.11"
           check-latest: true
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
       - name: Compile
         run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/audit_engine.py
       - name: Unit tests
