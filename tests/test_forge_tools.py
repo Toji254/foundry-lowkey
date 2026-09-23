@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import pathlib
 import sys
 import unittest
@@ -31,6 +32,28 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(forge_tools.run_forge(["test", "-vvvv"]), 0)
         run.assert_called_once_with(["/usr/bin/forge", "test", "-vvvv"])
 
+    @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
+    @patch("forge_tools.subprocess.run")
+    def test_run_forge_quiet_suppresses_success_output(self, run, _path):
+        run.return_value = type("Result", (), {"returncode": 0, "stdout": "noisy forge", "stderr": ""})()
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            self.assertEqual(forge_tools.run_forge(["build"], quiet=True), 0)
+        self.assertEqual(output.getvalue(), "")
+
+    @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools.run_coverage_audit", return_value=0)
+    @patch("forge_tools._coverage_compatibility_flags", return_value=[])
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_run_audit_is_quiet_by_default(self, _supports, _compat, coverage, run):
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            self.assertEqual(forge_tools.run_audit([]), 0)
+        rendered = output.getvalue()
+        self.assertIn("Mode    : quiet", rendered)
+        self.assertNotIn("=== LOWKEY FORGE", rendered)
+        self.assertTrue(all(call.kwargs.get("quiet") is True for call in run.call_args_list))
+        self.assertTrue(coverage.call_args.kwargs.get("quiet") is True)
     @patch("forge_tools.forge_path", return_value=None)
     def test_missing_forge(self, _path):
         self.assertEqual(forge_tools.run_forge(["test"]), 2)
