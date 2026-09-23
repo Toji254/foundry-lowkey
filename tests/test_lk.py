@@ -565,6 +565,33 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("ACTOR Alice", captured["content"])
         self.assertIn("ACTOR Bob", captured["content"])
 
+
+    def test_impersonated_actor_configuration(self):
+        address="0x"+"1"*40
+        config={"wallets":{},"actor":None,"rpc":"http://127.0.0.1:8545"}
+        info={"url":"http://127.0.0.1:8545","client":"anvil/v1.8.3","accounts":[]}
+        with patch.object(lk,"anvil_rpc_info",return_value=info), \
+             patch.object(lk,"run_cast",return_value=lk.CommandResult("0x0",0)), \
+             patch.object(lk,"save_config"):
+            self.assertEqual(lk.run_impersonate(config,[address,"whale"]),0)
+        self.assertEqual(config["actor"],"whale")
+        self.assertEqual(config["wallets"]["whale"]["source"],"anvil-impersonated")
+
+    def test_run_cast_uses_unlocked_for_impersonated_actor(self):
+        target="0x"+"3"*40
+        actor="0x"+"1"*40
+        config={
+            "target":target,
+            "rpc":"http://127.0.0.1:8545",
+            "actor":"whale",
+            "wallets":{"whale":{"source":"anvil-impersonated","address":actor}},
+        }
+        with patch.object(lk,"cast_output",return_value=(0,"ok","")) as cast_output:
+            self.assertEqual(lk.run_cast(["send","ping()"],config),0)
+        sent_args=cast_output.call_args.args[0]
+        self.assertIn("--unlocked",sent_args)
+        self.assertIn(actor,sent_args)
+
     def test_proxy_aware_abi_discovery(self):
         target="0x"+"1"*40
         implementation="0x"+"2"*40
