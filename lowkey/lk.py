@@ -6,6 +6,7 @@ import re
 import shlex
 import io
 import shutil
+import hashlib
 from contextlib import redirect_stdout
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -106,6 +107,83 @@ def save_config(config):
         if os.path.exists(tmp):
             try: os.remove(tmp)
             except OSError: pass
+
+INSTALL_MANIFEST = os.path.join(CONFIG_DIR, "install-manifest.json")
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def load_install_manifest():
+    try:
+        with open(INSTALL_MANIFEST, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def runtime_sync_status():
+    """Detect stale/corrupted installed Lowkey files without changing anything."""
+    manifest = load_install_manifest()
+    if not manifest:
+        return {"status": "unknown", "detail": "no install manifest; run install.sh"}
+
+    mismatches = []
+    for path, expected in (manifest.get("files") or {}).items():
+        actual = _sha256_file(path)
+        if actual is None:
+            mismatches.append(f"missing: {path}")
+        elif actual != expected:
+            mismatches.append(f"modified: {path}")
+
+    source_repo = manifest.get("source_repo")
+    installed_sha = manifest.get("git_sha")
+    source_sha = None
+    if source_repo and os.path.isdir(os.path.join(source_repo, ".git")):
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source_repo,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                source_sha = result.stdout.strip()
+        except OSError:
+            pass
+
+    if mismatches:
+        return {
+            "status": "corrupt",
+            "detail": "; ".join(mismatches[:4]),
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    if source_sha and installed_sha and source_sha != installed_sha:
+        return {
+            "status": "stale",
+            "detail": f"source checkout is {source_sha[:12]}, installed runtime is {installed_sha[:12]}",
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    return {
+        "status": "ok",
+        "detail": f"installed runtime {installed_sha[:12]}" if installed_sha else "installed runtime verified",
+        "installed_sha": installed_sha,
+        "source_sha": source_sha,
+        "source_repo": source_repo,
+    }
 
 def normalize_private_key(value):
     if not value: return None
@@ -833,6 +911,17 @@ def run_session_lifecycle(config, action):
 def run_audit_startup(config):
     """Create/resume the project audit workspace and run the automatic baseline."""
     paths = workspace_paths()
+    runtime = runtime_sync_status()
+    if runtime["status"] == "stale":
+        print("WARNING: installed Lowkey runtime is stale relative to its source checkout.")
+        print(f"         {runtime['detail']}")
+        if runtime.get("source_repo"):
+            print(f"         Reinstall with: bash {runtime['source_repo']}/install.sh")
+    elif runtime["status"] == "corrupt":
+        print("WARNING: installed Lowkey runtime failed its install-manifest integrity check.")
+        print(f"         {runtime['detail']}")
+        if runtime.get("source_repo"):
+            print(f"         Reinstall with: bash {runtime['source_repo']}/install.sh")
     run_workspace(config, ["init"])
     run_matrix(config, ["init"])
     run_checklist(config)
@@ -976,6 +1065,17 @@ def run_doctor():
         else:
             print(f"FAIL  dependency command: {command}")
             failures+=1
+    runtime = runtime_sync_status()
+    if runtime["status"] == "ok":
+        print(f"PASS  Lowkey runtime: {runtime['detail']}")
+    elif runtime["status"] == "stale":
+        print(f"WARN  Lowkey runtime: {runtime['detail']}")
+        print(f"      reinstall with: bash {runtime.get('source_repo') or '<source-repo>'}/install.sh")
+    elif runtime["status"] == "corrupt":
+        print(f"FAIL  Lowkey runtime: {runtime['detail']}")
+        failures += 1
+    else:
+        print(f"INFO  Lowkey runtime: {runtime['detail']}")
     return 1 if failures else 0
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
@@ -1326,6 +1426,14 @@ def run_audit_mode(config):
         else: print("Unknown option.")
 
 
+def run_version():
+    runtime = runtime_sync_status()
+    print("LowkeyCast 2.1")
+    print(f"Runtime: {runtime['status'].upper()} - {runtime['detail']}")
+    if runtime.get("source_repo"):
+        print(f"Source : {runtime['source_repo']}")
+
+
 def actor_display(config):
     actor=config.get("actor")
     if not actor: return "none"
@@ -1489,7 +1597,7 @@ FORENSICS
 """)
 def dispatch_command(cmd,args,config,from_batch=False):
     if cmd in {"--help","-h","help"}: print_help()
-    elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.0")
+    elif cmd in {"--version","-V","version"}: run_version()
     elif cmd=="target":
         if not args: print(f"Current target: {config.get('target') or 'none'}"); return
         if args[0]=="reset": config["target"]=None
