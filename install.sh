@@ -12,7 +12,7 @@ copy_if_needed() {
   local destination="$2"
 
   # Avoid GNU cp's "same file" failure when a previous install used symlinks.
-  if [ -e "$destination" ] && [ "$(realpath "$source")" = "$(realpath "$destination")" ]; then
+  if [ -e "$destination" ] && [ "$source" -ef "$destination" ]; then
     return 0
   fi
 
