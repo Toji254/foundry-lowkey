@@ -819,7 +819,7 @@ def run_doctor():
     failures=0
     print("Lowkey doctor")
     print("============")
-    for name in ("python3", "cast", "forge", "anvil", "rg", "slither"):
+    for name in ("python3", "cast", "forge", "anvil"):
         path=shutil.which(name)
         if not path:
             print(f"FAIL  {name}: not found")
@@ -837,6 +837,20 @@ def run_doctor():
         else:
             print(f"FAIL  {name}: {path} ({version})")
             failures+=1
+
+    print("OPTIONAL AUDIT TOOLS")
+    for name in ("rg", "slither"):
+        path=shutil.which(name)
+        if not path:
+            print(f"INFO  {name}: not found (optional)")
+            continue
+        try:
+            result=subprocess.run([path,"--version"],capture_output=True,text=True)
+            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
+        except OSError as error:
+            print(f"WARN  {name}: {error}")
+            continue
+        print(f"PASS  {name}: {path} ({version})")
     forge=shutil.which("forge")
     if forge:
         try:
