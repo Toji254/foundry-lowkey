@@ -48,7 +48,8 @@ class LowkeyForgeTests(unittest.TestCase):
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_slither_preflight", return_value=0)
-    def test_audit_checks_runs_slither_preflight(self, slither, run):
+    @patch("forge_tools.command_available", return_value=False)
+    def test_audit_checks_runs_slither_preflight(self, available, slither, run):
         self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
         slither.assert_called_once()
         self.assertEqual(run.call_args_list[0].args[0], ["build"])
