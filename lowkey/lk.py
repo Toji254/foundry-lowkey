@@ -267,9 +267,6 @@ def run_decode_error(config,args):
             print(decode_abi_input(signature,data) if item.get("inputs") else "Arguments: none"); return
     print("Loaded ABI did not contain that custom error; asking Cast resolver:")
     run_cast(["decode-error",data],config)
-def abi_path_for_target(config,target):
-    return config.get("abi_paths",{}).get(target)
-
 def run_tx(config,args):
     tx_hash=args[0] if args else last_transaction(config)
     if not tx_hash: print("Usage: lk tx <transaction-hash> (or save a transaction first)"); return
@@ -357,20 +354,6 @@ def run_logs(config,args):
         print(json.dumps(log,indent=2))
         event=decode_event_log(config,log)
         if event: print(f"Event: {event[0]}\nDecoded: {event[1]}")
-def run_last(config, args):
-    action = args[0] if args else "receipt"
-    actions = {
-        "receipt": run_receipt,
-        "tx": run_receipt,
-        "trace": run_trace,
-        "logs": lambda current: run_logs(current, []),
-    }
-    handler = actions.get(action)
-    if not handler:
-        print("Usage: lk last [receipt|trace|logs]")
-        return
-    handler(config)
-
 def apply_labels(text, config):
     labels = config.get("labels", {})
     for addr, label in labels.items():
@@ -378,16 +361,11 @@ def apply_labels(text, config):
     return text
 
 def humanize_value(text):
-    wei_pattern = r'\b(0x)?(\d{18,})\b'
+    wei_pattern=r'\b(0x)?(\d{18,})\b'
     def replace_wei(match):
-        val = match.group(2)
-        try:
-            eth_val = int(val) / 10**18
-            return f"{match.group(0)} [~{eth_val:.4f} ETH]"
-        except:
-            return match.group(0)
-    return re.sub(wei_pattern, replace_wei, text)
-
+        eth_val=int(match.group(2))/10**18
+        return f"{match.group(0)} [~{eth_val:.4f} ETH]"
+    return re.sub(wei_pattern,replace_wei,text)
 def is_address(value):
     return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}",value))
 def is_nonzero_slot(value):
@@ -598,87 +576,79 @@ def write_json_file(path, value):
     with open(path, "w") as f:
         json.dump(value, f, indent=4)
 
-def run_matrix(config, args):
-    paths = workspace_paths()
-    action = args[0] if args else "init"
-    if action == "init":
-        run_workspace(config, ["init"])
-        for path, default in [(paths["matrix_actors"], {}), (paths["matrix_states"], {}), (paths["matrix_scenarios"], [])]:
-            if not os.path.exists(path):
-                write_json_file(path, default)
-        print("Attacker-state matrix initialized.")
-        return
+def solidity_identifier(value):
+    value=re.sub(r"[^A-Za-z0-9_]", "_", str(value))
+    if not value: value="scenario"
+    if value[0].isdigit(): value="_"+value
+    return value
+
+def run_matrix(config,args):
+    paths=workspace_paths()
+    action=args[0] if args else "init"
+    if action=="init":
+        run_workspace(config,["init"])
+        for path,default in [(paths["matrix_actors"],{}),(paths["matrix_states"],{}),(paths["matrix_scenarios"],[])]:
+            if not os.path.exists(path): write_json_file(path,default)
+        print("Attacker-state matrix initialized."); return
     if not os.path.exists(paths["matrix_scenarios"]):
-        print("Error: Run `lk matrix init` first.")
-        return
-    if action == "actor" and len(args) == 3:
+        print("Error: Run lk matrix init first."); return
+    if action=="actor" and len(args)==3:
         if not is_address(args[2]):
-            print("Error: actor address must be a 20-byte hex address.")
-            return
-        actors = read_json_file(paths["matrix_actors"], {})
-        actors[args[1]] = {"address": args[2], "label": args[1]}
-        write_json_file(paths["matrix_actors"], actors)
-        print(f"Matrix actor saved: {args[1]}")
-        return
-    if action == "add" and len(args) >= 5:
-        scenario = {
-            "name": args[1],
-            "target": config.get("target"),
-            "function": args[2],
-            "actor": args[3],
-            "expected": " ".join(args[4:]),
-            "evidence": {
-                "last_tx": config.get("last_tx"),
-                "snapshot": snapshot_path(config) if os.path.exists(snapshot_path(config)) else None,
-                "session": SESSION_FILE,
+            print("Error: actor address must be a 20-byte hex address."); return
+        actors=read_json_file(paths["matrix_actors"],{})
+        actors[args[1]]={"address":args[2],"label":args[1]}
+        write_json_file(paths["matrix_actors"],actors)
+        print(f"Matrix actor saved: {args[1]}"); return
+    if action=="add" and len(args)>=5:
+        name=args[1]
+        if name in {item.get("name") for item in read_json_file(paths["matrix_scenarios"],[])}:
+            print(f"Error: Scenario already exists: {name}"); return
+        scenario={
+            "name":name,"target":config.get("target"),"function":args[2],"actor":args[3],
+            "expected":" ".join(args[4:]),
+            "evidence":{
+                "last_tx":config.get("last_tx"),
+                "snapshot":snapshot_path(config) if os.path.exists(snapshot_path(config)) else None,
+                "session":SESSION_FILE,
             },
-            "created": datetime.now().isoformat(timespec="seconds"),
+            "created":datetime.now().isoformat(timespec="seconds"),
         }
-        scenarios = read_json_file(paths["matrix_scenarios"], [])
-        scenarios.append(scenario)
-        write_json_file(paths["matrix_scenarios"], scenarios)
-        print(f"Scenario saved: {scenario['name']}")
+        scenarios=read_json_file(paths["matrix_scenarios"],[]); scenarios.append(scenario); write_json_file(paths["matrix_scenarios"],scenarios)
+        print(f"Scenario saved: {scenario['name']}"); return
+    scenarios=read_json_file(paths["matrix_scenarios"],[])
+    if action=="list":
+        if not scenarios: print("No matrix scenarios yet."); return
+        for scenario in scenarios: print(f"{scenario['name']}: {scenario['function']} as {scenario['actor']} -> {scenario['expected']}")
         return
-    scenarios = read_json_file(paths["matrix_scenarios"], [])
-    if action == "list":
-        if not scenarios:
-            print("No matrix scenarios yet.")
-            return
-        for scenario in scenarios:
-            print(f"{scenario['name']}: {scenario['function']} as {scenario['actor']} -> {scenario['expected']}")
-        return
-    if action == "test" and len(args) == 2:
-        scenario = next((item for item in scenarios if item["name"] == args[1]), None)
+    if action=="test" and len(args)==2:
+        scenario=next((item for item in scenarios if item.get("name")==args[1]),None)
         if not scenario:
-            print(f"Error: Scenario not found: {args[1]}")
-            return
-        actor = read_json_file(paths["matrix_actors"], {}).get(scenario["actor"], {}).get("address")
-        actor_line = f"    address actor = {actor};\n" if actor else ""
-        prank_line = "        vm.prank(actor);\n" if actor else ""
-        function_call = scenario["function"]
-        template = f'''pragma solidity ^0.8.0;
+            print(f"Error: Scenario not found: {args[1]}"); return
+        identifier=solidity_identifier(scenario["name"])
+        actor=read_json_file(paths["matrix_actors"],{}).get(scenario["actor"],{}).get("address")
+        actor_line=f"    address actor = {actor};\n" if actor else ""
+        prank_line="        vm.prank(actor);\n" if actor else ""
+        target=scenario["target"] if is_address(scenario.get("target")) else "address(0)"
+        template=f'''pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 
-contract Matrix_{scenario["name"].replace("-", "_")} is Test {{
-    address target = {scenario["target"] or "address(0)"};
+contract Matrix_{identifier} is Test {{
+    address target = {target};
 {actor_line}
-    function test_{scenario["name"].replace("-", "_")}() public {{
+    function test_{identifier}() public {{
         // Arrange: establish the precondition described in the scenario.
-{prank_line}        // Act: call {function_call}
+{prank_line}        // Act: call {scenario["function"]}
         // TODO: encode arguments and invoke the target.
         // Assert: expected outcome: {scenario["expected"]}
     }}
 }}
 '''
-        os.makedirs("test", exist_ok=True)
-        filename = os.path.join("test", f"Matrix_{scenario['name']}.t.sol")
-        with open(filename, "w") as f:
-            f.write(template)
-        print(f"Matrix test skeleton generated: {filename}")
-        return
-    print("Usage: lk matrix init | actor <name> <address> | add <name> <function> <actor> <expected> | list | test <name>")
-
-def run_note(note):
+        os.makedirs("test",exist_ok=True)
+        base=os.path.join("test",f"Matrix_{identifier}.t.sol")
+        filename=base if not os.path.exists(base) else os.path.join("test",f"Matrix_{identifier}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
+        Path(filename).write_text(template,encoding="utf-8")
+        print(f"Matrix test skeleton generated: {filename}"); return
+    print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")def run_note(note):
     if not note:
         print("Usage: lk note \"your note\"")
         return
