@@ -82,6 +82,55 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.resolve_target_ref(config, "alpha"), first)
         self.assertEqual(lk.resolve_target_ref(config, "1"), first)
 
+    def test_target_named_deployment_auto_selects_matching_broadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp)
+            broadcast=root/"broadcast"
+            out=root/"out"/"EthEscrow.s.sol"/"EscrowContract"
+            broadcast.mkdir(parents=True)
+            out.mkdir(parents=True)
+            payload={
+                "transactions":[
+                    {
+                        "transactionType":"CREATE",
+                        "contractName":"Escrow",
+                        "contractAddress":"0x"+"e"*40,
+                        "hash":"0x"+"1"*64,
+                    }
+                ]
+            }
+            (broadcast/"EthEscrow.s.sol"/"31337").mkdir(parents=True)
+            (broadcast/"EthEscrow.s.sol"/"31337"/"run-latest.json").write_text(json.dumps(payload),encoding="utf-8")
+            artifact={"contractName":"Escrow","abi":[]}
+            artifact_path=out/"Escrow.json"
+            artifact_path.write_text(json.dumps(artifact),encoding="utf-8")
+            old=os.getcwd()
+            os.chdir(root)
+            try:
+                config={"target":None,"aliases":{},"targets":{},"abi_paths":{},"rpc":None}
+                with patch.object(lk,"save_config"):
+                    output=io.StringIO()
+                    with redirect_stdout(output):
+                        result=lk.run_auto_target(config,"escrow")
+            finally:
+                os.chdir(old)
+        self.assertEqual(result,0)
+        self.assertEqual(config["target"],"0x"+"e"*40)
+        self.assertEqual(config["aliases"]["escrow"],"0x"+"e"*40)
+        self.assertEqual(config["target_contract"],"Escrow")
+        self.assertIn("Target selected: escrow ->",output.getvalue())
+
+    def test_target_named_deployment_missing_is_error(self):
+        with patch.object(
+            lk,
+            "discover_deployments",
+            return_value=[{"contract":"Escrow","address":"0x"+"e"*40}],
+        ):
+            config={"aliases":{},"targets":{},"abi_paths":{}}
+            with patch.object(lk,"save_config"):
+                self.assertEqual(lk.run_auto_target(config,"Missing"),2)
+
+
     def test_secret_redaction(self):
         key = "0x" + "a" * 64
         redacted = lk.redact_secrets("--private-key " + key)
@@ -434,7 +483,9 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(cast.call_args.args[0][:2], ["forge", "inspect"])
         self.assertEqual(cast.call_args.args[0][2], "Escrow")
         self.assertIn("STORAGE GETTERS:", output.getvalue())
-        self.assertIn("escrow(uint256)  [public storage getter]", output.getvalue())    def test_functions_fallback_to_source_public_storage_names(self):
+        self.assertIn("escrow(uint256)  [public storage getter]", output.getvalue())
+
+    def test_functions_fallback_to_source_public_storage_names(self):
         artifact = {
             "contractName": "Escrow",
             "abi": [
