@@ -47,6 +47,16 @@ class LowkeyForgeTests(unittest.TestCase):
                          [["build"], ["test", "-vvv"], ["coverage"]])
 
     @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools.run_slither_preflight", return_value=0)
+    def test_audit_checks_runs_slither_preflight(self, slither, run):
+        self.assertEqual(forge_tools.run_audit(["--checks"]), 0)
+        slither.assert_called_once()
+        self.assertEqual(run.call_args_list[0].args[0], ["build"])
+        self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv"])
+        self.assertEqual(run.call_args_list[2].args[0], ["coverage"])
+
+
+    @patch("forge_tools.run_forge", return_value=0)
     def test_inspect_audit_sequence(self, run):
         self.assertEqual(forge_tools.run_inspect_audit(["Vault"]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
