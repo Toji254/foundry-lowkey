@@ -886,9 +886,7 @@ def _render_storage(storage: list[dict[str, Any]], enabled: bool) -> str:
                 [f"{item.get('label')}: {item.get('value')}", f"type: {item.get('type')}"],
                 width=82,
             ))
-    return "
-
-".join(out) if out else "  <storage layout unavailable>"
+    return "\n\n".join(out) if out else "  <storage layout unavailable>"
 
 
 def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> str:
@@ -949,8 +947,7 @@ def _render_connections(models: list[ContractModel], model: ContractModel, enabl
             lines.append(f"  {model.name}  {EXTERNAL}  {other}  (source reference, INFERRED)")
     if len(lines) == 1:
         lines.append("  No explicit inheritance/source reference was resolved.")
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 
 def _render_event_log(step: Step, enabled: bool) -> str:
