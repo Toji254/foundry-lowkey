@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """LowkeyForge: a thin, audit-focused interface over the native Forge CLI."""
 from __future__ import annotations
+import json
 import re
 import shutil
 import subprocess
@@ -186,6 +187,159 @@ def _supports_option(command: str, option: str) -> bool:
     return option in ((result.stdout or "") + (result.stderr or ""))
 
 
+
+def _profile_from_args(args: Sequence[str]) -> str | None:
+    """Return an explicitly selected Foundry profile, when present."""
+    for index, arg in enumerate(args):
+        if arg == "--profile" and index + 1 < len(args):
+            return str(args[index + 1])
+        if arg.startswith("--profile="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _resolved_forge_config(root: Path, args: Sequence[str] = ()) -> dict:
+    """Read Forge's effective configuration instead of guessing from foundry.toml."""
+    binary = forge_path()
+    if not binary:
+        return {}
+
+    command = [binary, "config", "--json"]
+    profile = _profile_from_args(args)
+    if profile:
+        command.extend(["--profile", profile])
+
+    try:
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+    except OSError:
+        return {}
+    if result.returncode != 0:
+        return {}
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _has_flag(args: Sequence[str], *names: str) -> bool:
+    return any(
+        arg in names or any(arg.startswith(name + "=") for name in names)
+        for arg in args
+    )
+
+
+def _coverage_needs_ir(root: Path, args: Sequence[str]) -> bool:
+    """Detect whether the effective project config relies on via-IR."""
+    config = _resolved_forge_config(root, args)
+    return bool(config.get("via_ir"))
+
+
+def _coverage_compatibility_flags(root: Path, args: Sequence[str]) -> list[str]:
+    """Add coverage-only compiler compatibility flags without editing project config."""
+    if _has_flag(args, "--ir-minimum", "--via-ir"):
+        return []
+    if not _coverage_needs_ir(root, args):
+        return []
+    if not _supports_option("coverage", "--ir-minimum"):
+        print(
+            "LowkeyForge: project uses via-IR, but this Forge does not expose "
+            "coverage --ir-minimum; coverage may use an incompatible compiler mode.",
+            file=sys.stderr,
+        )
+        return []
+
+    print(
+        "LowkeyForge: detected via_ir=true in the effective Foundry config; "
+        "using forge coverage --ir-minimum to match the project's compiler constraints."
+    )
+    return ["--ir-minimum"]
+
+
+def _is_stack_too_deep(output: str) -> bool:
+    text = str(output or "").lower()
+    return "stack too deep" in text or "stack-too-deep" in text
+
+
+def run_coverage_audit(command: Sequence[str], root: Path) -> int:
+    """Run coverage and retry once with IR minimum when coverage hits stack-too-deep."""
+    binary = forge_path()
+    if not binary:
+        return die("forge was not found on PATH. Install Foundry first.")
+
+    def execute(current: Sequence[str]):
+        try:
+            result = subprocess.run(
+                [binary, *current],
+                cwd=root,
+                text=True,
+                capture_output=True,
+            )
+        except OSError as exc:
+            return None, str(exc)
+
+        combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if result.stderr:
+            print(
+                result.stderr,
+                file=sys.stderr,
+                end="" if result.stderr.endswith("\n") else "\n",
+            )
+        return result, combined
+
+    result, output = execute(command)
+    if result is None:
+        return die(f"could not execute forge coverage: {output}", 1)
+
+    attempts = 1
+    if (
+        result.returncode != 0
+        and _is_stack_too_deep(output)
+        and not _has_flag(command, "--ir-minimum", "--via-ir")
+    ):
+        if _supports_option("coverage", "--ir-minimum"):
+            retry = [*command, "--ir-minimum"]
+            attempts = 2
+            print(
+                "LowkeyForge: coverage compilation hit stack too deep; retrying once "
+                "with --ir-minimum without modifying the project's foundry.toml."
+            )
+            result, retry_output = execute(retry)
+            if result is None:
+                return die(f"could not execute forge coverage retry: {retry_output}", 1)
+        else:
+            print(
+                "LowkeyForge: coverage hit stack too deep, but this Forge does not "
+                "support --ir-minimum; leaving coverage failed.",
+                file=sys.stderr,
+            )
+
+    status = "completed" if result.returncode == 0 else "failed"
+    audit_context.emit(
+        "forge-command",
+        root,
+        tool="forge",
+        status=status,
+        summary="forge coverage",
+        data={
+            "command": "coverage",
+            "exit_code": result.returncode,
+            "attempts": attempts,
+        },
+    )
+    audit_context.record_tool(
+        "forge-coverage",
+        root,
+        status=status,
+        summary=f"forge coverage ({attempts} attempt{'s' if attempts != 1 else ''})",
+        data={"exit_code": result.returncode, "attempts": attempts},
+    )
+    return result.returncode
+
+
 def _project_owned_tests(root: Path) -> list[Path]:
     test_root = root / "test"
     if not test_root.is_dir():
@@ -194,6 +348,7 @@ def _project_owned_tests(root: Path) -> list[Path]:
 
 
 def run_audit(args: Sequence[str]) -> int:
+    root = Path.cwd().resolve()
     checks = "--checks" in args
     forwarded = [a for a in args if a != "--checks"]
     test_cmd = ["test", *forwarded]
@@ -203,13 +358,13 @@ def run_audit(args: Sequence[str]) -> int:
         test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
 
     coverage_cmd = ["coverage", *forwarded]
+    coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded))
     if not _has_path_filter(forwarded) and _supports_option("coverage", "--no-match-path"):
         coverage_cmd.extend([
             "--no-match-path", "test/Lowkey_*",
             "--no-match-path", "script/Lowkey_*",
         ])
 
-    root = Path.cwd().resolve()
     steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
     if checks:
         steps.append(("slither", None))
@@ -229,6 +384,8 @@ def run_audit(args: Sequence[str]) -> int:
             code = run_slither_preflight(root)
         elif label in {"lint", "geiger"}:
             code = run_forge_diagnostics([label], label)
+        elif label == "coverage":
+            code = run_coverage_audit(command, root)
         else:
             code = run_forge(command)
         if code != 0:
