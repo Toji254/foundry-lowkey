@@ -732,6 +732,127 @@ def run_finding(config, note):
         })
     print("Finding recorded.")
 
+def _fit_text_for_cli(value, width):
+    value = str(value).replace("\n", " ")
+    return value if len(value) <= width else value[:max(0, width - 3)] + "..."
+
+
+def run_findings(config, args=None):
+    """Render stored Slither/manual findings without falling through to Cast."""
+    paths = workspace_paths()
+    evidence_path = os.path.join(paths["root"], "evidence", "slither.json")
+    slither = read_json_file(evidence_path, {})
+    findings = slither.get("findings", []) if isinstance(slither, dict) else []
+    findings = findings if isinstance(findings, list) else []
+
+    manual_path = paths["findings"] if os.path.exists(paths["findings"]) else os.path.join(AUDIT_DIR, "findings.md")
+    manual = []
+    if os.path.exists(manual_path):
+        try:
+            manual = [
+                line.strip()
+                for line in Path(manual_path).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except OSError:
+            manual = []
+
+    print("\n=== LOWKEY FINDINGS ===")
+    print("=" * 96)
+
+    print("\nSLITHER")
+    print("-" * 96)
+    if findings:
+        print(f"{'#':>3}  {'IMPACT':<12} {'CONFIDENCE':<11} {'DETECTOR':<34} LOCATION")
+        print("-" * 96)
+        for index, finding in enumerate(findings, 1):
+            locations = finding.get("locations") or []
+            location = locations[0] if locations else {}
+            source = location.get("source") or "unknown"
+            line = location.get("start") or "?"
+            detector = finding.get("check") or finding.get("detector") or "unknown"
+            impact = str(finding.get("impact") or "unknown").upper()
+            confidence = str(finding.get("confidence") or "unknown").upper()
+            print(
+                f"{index:>3}  {impact:<12} {confidence:<11} "
+                f"{_fit_text_for_cli(detector, 34):<34} {source}#{line}"
+            )
+    else:
+        print("No Slither findings recorded.")
+        print("Run lk audit --checks to refresh evidence.")
+
+    print("\nMANUAL / RECORDED")
+    print("-" * 96)
+    if manual:
+        for line in manual:
+            print(line)
+    else:
+        print("No manual findings recorded.")
+
+    print(f"\nEvidence: {evidence_path}")
+    return 0
+
+
+def run_focus(config, args=None):
+    """Show ABI functions with the strongest review-surface signals."""
+    args = list(args or [])
+    target = config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    funcs = abi_functions(load_abi(target, config))
+    if not funcs:
+        return fail("Error: No ABI functions loaded.")
+
+    query = " ".join(args).strip().lower()
+    rows = []
+    for item in funcs:
+        name = item.get("name", "").lower()
+        signals = []
+        if item.get("stateMutability") in {"nonpayable", "payable"}:
+            signals.append("state-write")
+        if item.get("stateMutability") == "payable":
+            signals.append("value-flow")
+        if any(x in name for x in ["owner", "admin", "role", "upgrade", "pause", "unpause"]):
+            signals.append("privileged-looking")
+        if any(x in name for x in ["withdraw", "transfer", "send", "execute", "call", "mint", "burn", "sweep"]):
+            signals.append("asset/action")
+        if any(canonical_type(i).startswith("address") for i in item.get("inputs", [])):
+            signals.append("address-input")
+        signature = format_signature(item)
+        if query and query not in signature.lower() and not any(query in s for s in signals):
+            continue
+        score = sum({
+            "state-write": 1,
+            "value-flow": 2,
+            "privileged-looking": 2,
+            "asset/action": 2,
+            "address-input": 1,
+        }.get(signal, 0) for signal in signals)
+        rows.append((score, signature, signals))
+
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    print("\n=== LOWKEY FOCUS ===")
+    print("=" * 96)
+    if not rows:
+        print("No matching focus surfaces.")
+        return 0
+
+    print(f"{'SCORE':>5}  {'FUNCTION':<58} SIGNALS")
+    print("-" * 96)
+    for score, signature, signals in rows:
+        print(
+            f"{score:>5}  {_fit_text_for_cli(signature, 58):<58} "
+            f"{', '.join(signals) or 'no heuristic signals'}"
+        )
+    print("\nUse lk fn <term> to inspect matching ABI functions.")
+    if record_evidence:
+        record_evidence("focus", {"target": target, "query": query, "functions": [
+            {"signature": signature, "score": score, "signals": signals}
+            for score, signature, signals in rows
+        ]})
+    return 0
+
+
 def workspace_paths():
     return {
         "root": WORKSPACE_DIR,
@@ -1567,6 +1688,10 @@ SOURCE TRIAGE
 
 AUDIT OS
   lk audit                            Interactive dashboard
+  lk audit --checks                   Run full evidence pass + checks + dashboard
+  lk audit--checks                   Legacy compact alias for audit --checks
+  lk findings                         Show stored Slither/manual findings
+  lk focus [query]                   Show high-signal ABI review surfaces
   lk audit run [--slither ARG...]     Build -> tests -> coverage -> Slither
   lk audit run --poc                  Same pipeline + first PoC scaffold
   lk poc [--finding N]                Generate PoC from accumulated evidence
@@ -1699,6 +1824,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"token","erc20"}: run_token(config,args)
     elif cmd=="snapshot": run_snapshot(config,args)
     elif cmd=="diff": run_diff(config)
+    elif cmd in {"findings","finding-list"}:
+        run_findings(config,args)
+    elif cmd=="focus":
+        run_focus(config,args)
     elif cmd=="finding":
         if args and args[0]=="add" and len(args)>=4: run_finding(config,f"[{args[1].upper()}] {args[2]}: {' '.join(args[3:])}")
         elif args: run_finding(config," ".join(args))
@@ -1765,9 +1894,19 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": run_raw(config,args)
     elif cmd=="batch": run_batch(config,args)
+    elif cmd in {"audit--checks","audit-checks"}:
+        if run_audit_pipeline is None:
+            fail("Audit engine is not installed. Reinstall Lowkey.")
+        else:
+            run_audit_pipeline(".", [], False)
     elif cmd=="audit":
         action=args[0] if args else None
-        if action in {"run","full"}:
+        if action in {"--checks","checks"}:
+            if run_audit_pipeline is None:
+                fail("Audit engine is not installed. Reinstall Lowkey.")
+            else:
+                run_audit_pipeline(".", [], False)
+        elif action in {"run","full"}:
             if run_audit_pipeline is None:
                 fail("Audit engine is not installed. Reinstall Lowkey.")
             else:
