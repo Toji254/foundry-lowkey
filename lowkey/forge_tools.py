@@ -506,6 +506,78 @@ def _project_owned_tests(root: Path) -> list[Path]:
     return [path for path in test_root.rglob("*.t.sol") if not path.name.startswith("Lowkey_")]
 
 
+def _dashboard_status(state: dict | None) -> tuple[str, str]:
+    if not isinstance(state, dict):
+        return "NOT RUN", "no evidence recorded"
+    status = str(state.get("status") or "").lower()
+    if status in {"completed", "pass", "passed"}:
+        return "PASS", str(state.get("summary") or "completed")
+    if status in {"skipped", "skip"}:
+        return "SKIPPED", str(state.get("summary") or "skipped")
+    if status in {"failed", "fail"}:
+        return "FAIL", str(state.get("summary") or "failed")
+    if status == "running":
+        return "RUNNING", str(state.get("summary") or "running")
+    return status.upper() or "UNKNOWN", str(state.get("summary") or "recorded")
+
+
+def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
+    """Render the compact evidence dashboard at the end of every connected audit."""
+    context = audit_context.load(root)
+    tools = context.get("tools", {}) if isinstance(context.get("tools"), dict) else {}
+    rows = []
+
+    for key, label in (
+        ("forge-build", "Forge build"),
+        ("slither", "Slither"),
+        ("forge-lint", "Forge lint"),
+        ("forge-geiger", "Forge geiger"),
+        ("forge-tests", "Forge tests"),
+        ("forge-coverage", "Coverage"),
+        ("generator", "PoC scaffold"),
+    ):
+        status, detail = _dashboard_status(tools.get(key))
+        if key == "slither" and isinstance(tools.get(key), dict):
+            count = tools[key].get("finding_count")
+            if count is not None:
+                detail = f"{count} finding(s)"
+        rows.append((label, status, detail))
+
+    signals = context.get("signals", [])
+    open_signals = sum(1 for item in signals if isinstance(item, dict) and item.get("status") == "open")
+    focused = context.get("focus") if isinstance(context.get("focus"), dict) else None
+
+    mandatory = [
+        tools.get("forge-build", {}).get("status") if isinstance(tools.get("forge-build"), dict) else None,
+        tools.get("forge-tests", {}).get("status") if isinstance(tools.get("forge-tests"), dict) else None,
+        tools.get("forge-coverage", {}).get("status") if isinstance(tools.get("forge-coverage"), dict) else None,
+    ]
+    overall = "PASS" if pipeline_code == 0 and all(x == "completed" for x in mandatory) else "REVIEW NEEDED"
+
+    print("\n=== LOWKEY AUDIT DASHBOARD ===")
+    print("=" * 88)
+    print(f"Target : {(context.get('target') or {}).get('contract') or (context.get('target') or {}).get('address') or 'not configured'}")
+    print(f"Actor  : {context.get('actor') or 'none'}")
+    print(f"Signals: {open_signals} open")
+    if focused:
+        print(f"Focus  : {focused.get('signal_id') or focused.get('title') or 'active'}")
+    print(f"Overall: {overall}")
+    print("\n+------------------+------------+------------------------------------------------+")
+    print("| Step             | Status     | Details                                        |")
+    print("+------------------+------------+------------------------------------------------+")
+    for label, status, detail in rows:
+        label = str(label)[:16]
+        status = str(status)[:10]
+        detail = str(detail).replace("\n", " ")
+        if len(detail) > 46:
+            detail = detail[:43] + "..."
+        print(f"| {label:<16} | {status:<10} | {detail:<46} |")
+    print("+------------------+------------+------------------------------------------------+")
+    print("Evidence: .audit/context.json + .audit/events.jsonl")
+    print("Heuristic/static results are investigation leads, not vulnerability verdicts.")
+    return 0 if overall == "PASS" else 1
+
+
 def run_audit(args: Sequence[str]) -> int:
     """Run the complete audit pipeline with concise output by default."""
     root = Path.cwd().resolve()
@@ -553,9 +625,26 @@ def run_audit(args: Sequence[str]) -> int:
             if isinstance(state, dict) and state.get("finding_count") is not None:
                 detail = f" — {state['finding_count']} finding(s)"
         print(f"{'PASS' if code == 0 else 'FAIL':<5} {label:<9}{detail}")
+        stable_key = {
+            "build": "forge-build",
+            "tests": "forge-tests",
+            "coverage": "forge-coverage",
+            "lint": "forge-lint",
+            "geiger": "forge-geiger",
+        }.get(label)
+        if stable_key:
+            audit_context.record_tool(
+                stable_key,
+                root,
+                status="completed" if code == 0 else "failed",
+                summary=f"{label} audit step",
+                data={"exit_code": code},
+            )
         if code != 0:
             print(f"\nLowkeyForge: audit stopped at {label}.", file=sys.stderr)
+            render_audit_dashboard(root, pipeline_code=code)
             return code
+    render_audit_dashboard(root, pipeline_code=0)
     print("\nAUDIT SUMMARY")
     print("=============")
     print("Result  : PASS")
