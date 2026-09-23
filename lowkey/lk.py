@@ -2074,13 +2074,9 @@ def artifact_source_name(artifact, path):
                     return next(iter(sources))
         except (json.JSONDecodeError, TypeError):
             pass
-    relative = Path(path).as_posix()
-    parts = Path(path).parts
-    if "out" in parts:
-        out_index = parts.index("out")
-        tail = Path(*parts[out_index + 1:])
-        if len(tail.parts) >= 2:
-            return str(Path("src") / tail.parent.name)
+    # Never guess a source path from the artifact directory. Foundry's
+    # output directory flattens dependency source roots, so e.g.
+    # out/Address.sol/Address.json does not imply src/Address.sol.
     return None
 
 def artifact_constructor_inputs(artifact):
@@ -2122,16 +2118,22 @@ def artifact_is_project_application(root, path, artifact):
         return False
 
     source_path = root_path / normalized
-    if source_path.is_file():
-        try:
-            source_text = source_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            source_text = ""
-        contract_name = artifact_contract_name(path, artifact)
-        if re.search(r"\blibrary\s+" + re.escape(contract_name) + r"\b", source_text):
-            return False
-        if re.search(r"\binterface\s+" + re.escape(contract_name) + r"\b", source_text):
-            return False
+    # A deployable artifact must resolve to an actual first-party source file.
+    # This is intentionally strict: a fabricated fallback such as
+    # src/Address.sol must never make a dependency look application-owned.
+    if not source_path.is_file():
+        return False
+
+    try:
+        source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+    contract_name = artifact_contract_name(path, artifact)
+    if re.search(r"\blibrary\s+" + re.escape(contract_name) + r"\b", source_text):
+        return False
+    if re.search(r"\binterface\s+" + re.escape(contract_name) + r"\b", source_text):
+        return False
     return True
 
 
