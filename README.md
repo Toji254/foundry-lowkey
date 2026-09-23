@@ -29,22 +29,34 @@ Lowkey automatically detects a local Anvil RPC on the common ports. For the defa
 
 ## Everyday audit flow
 
+The primary commands are deliberately short and self-describing:
+
 ~~~bash
+lk audit
+lk status
+lk findings
+lk focus <SIGNAL_ID>
+
 lk recon
-lk deps
 lk functions
-lk fn release
-lk ask createEscrow
+lk ask withdraw
 
-lk c balances 0x...
-lk s createEscrow 1 0x... --preview
-
-lk selectors --compare
-lk disasm
-lk calldata 0x...
+lk read balanceOf Alice
+lk send withdraw 1
 lk trace
-lk logs --decode
+
+lk mapping 3 Alice
+lk snapshot
+lk diff
+lk changes withdraw
+
+lk probe withdraw
+lk generate test withdraw 1
+lk fuzz
+lk invariant
 ~~~
+
+Legacy aliases such as `signals`, `investigate`, `try`, `c`, `s`, and `state-diff` remain supported, but the help menu presents the clearer primary forms.
 
 ## Actors
 
