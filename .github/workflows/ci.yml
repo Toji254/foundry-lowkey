@@ -38,6 +38,7 @@ jobs:
         run: ./install.sh
       - name: Build integration fixture
         run: |
+          cd /tmp/lowkey-fixture 2>/dev/null || true
           mkdir -p /tmp/lowkey-fixture/src /tmp/lowkey-fixture/test
           cat > /tmp/lowkey-fixture/foundry.toml <<'EOF'
           [profile.default]
