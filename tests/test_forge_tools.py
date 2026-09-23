@@ -188,7 +188,7 @@ note[low-level-calls]: generated helper
         )
         self.assertEqual(
             coverage.call_args.args[0],
-            ["coverage", "--via-ir", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"],
+            ["coverage", "--via-ir", "--no-match-path", "**/Lowkey_*"],
         )
 
     @patch("forge_tools.run_forge", return_value=0)
@@ -203,7 +203,7 @@ note[low-level-calls]: generated helper
         )
         self.assertEqual(
             coverage.call_args.args[0],
-            ["coverage", "--verbosity", "4", "--no-match-path", "test/Lowkey_*", "--no-match-path", "script/Lowkey_*"],
+            ["coverage", "--verbosity", "4", "--no-match-path", "**/Lowkey_*"],
         )
 
 if __name__ == "__main__":
