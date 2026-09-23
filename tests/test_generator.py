@@ -72,6 +72,46 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIn("vm.writeJson", output)
             self.assertIn("LOWKEY_CONSTRUCTOR_ARG_1", env_help[0])
 
+    def test_find_artifact_prefers_source_file_over_stale_symbol(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "EthEscrow.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Escrow {}",
+                encoding="utf-8",
+            )
+
+            source_artifact = root / "out" / "EthEscrow.sol" / "Escrow.json"
+            source_artifact.parent.mkdir(parents=True)
+            source_artifact.write_text(
+                json.dumps({
+                    "contractName": "Escrow",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+
+            stale = root / "out" / "Other.sol" / "EthEscrow.json"
+            stale.parent.mkdir(parents=True)
+            stale.write_text(
+                json.dumps({
+                    "contractName": "EthEscrow",
+                    "abi": [],
+                    "bytecode": {"object": "0x6001"},
+                }),
+                encoding="utf-8",
+            )
+
+            found = generator.find_artifact(root, "EthEscrow")
+
+            self.assertIsNotNone(found)
+            path, payload = found
+            self.assertEqual(path, source_artifact)
+            self.assertEqual(payload["contractName"], "Escrow")
+
+
     def test_find_artifact_resolves_source_filename_symbol(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
