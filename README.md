@@ -15,13 +15,10 @@ lk -h
 lk doctor
 
 # Clone and prepare a project for auditing
-lk clone https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git ConfidencePoolFactory
-
-# Equivalent spelling
-lk git clone https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git ConfidencePoolFactory
+lk clone https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git
 ~~~
 
-`lk clone` is the recommended project entry point. It clones submodules, verifies the project is a Foundry project, builds it, runs the connected Lowkey audit pipeline, starts a disposable local Anvil when needed, and prepares the local audit lab. The second argument is the contract you intend to investigate; it guides target discovery and lab setup.
+`lk clone` is the project entry point. Give Lowkey the repository; it derives the project directory and handles the audit setup automatically.
 
 Lowkey automatically detects a local Anvil RPC on the common ports. For the default Anvil mnemonic it binds actors to account numbers and derives the corresponding key only when a signed local transaction is needed.
 
