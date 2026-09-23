@@ -103,7 +103,7 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertEqual(result, 0)
             generated = next((root / "test").glob("LowkeyTest_*.t.sol"))
             text = generated.read_text(encoding="utf-8")
-            self.assertIn("0xdeadbeef", text)
+            self.assertIn('hex"deadbeef"', text)
             self.assertIn("vm.prank(attacker)", text)
             self.assertIn("vm.snapshot()", text)
 
