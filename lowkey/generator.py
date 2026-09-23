@@ -83,21 +83,45 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
         # Prefer an exact source filename match. A user-facing request such as
         # "EthEscrow" naturally refers to src/EthEscrow.sol, while the Solidity
         # symbol inside that file may be "Escrow".
-        source_file_matches = []
         requested_source = root / "src" / f"{contract_name}.sol"
+        source_file_matches = []
+
         if requested_source.exists():
+            try:
+                source_text = requested_source.read_text(encoding="utf-8")
+            except OSError:
+                source_text = ""
+
+            # Do not trust artifact filenames alone. Read the actual Solidity
+            # declarations so stale artifacts from an older contract name cannot
+            # cause a wrong import in the generated script.
+            declared_symbols = {
+                match.group(2)
+                for match in re.finditer(
+                    r"(?m)^\s*(?:abstract\s+)?(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                    source_text,
+                )
+            }
+
             for path, payload in matches:
                 source = source_for_artifact(path)
-                if source == requested_source and payload.get("bytecode", {}).get("object"):
+                artifact_symbol = str(payload.get("contractName") or "")
+                if (
+                    source == requested_source
+                    and payload.get("bytecode", {}).get("object")
+                    and (not declared_symbols or artifact_symbol in declared_symbols)
+                ):
                     source_file_matches.append((path, payload))
+
         if source_file_matches:
             matches = source_file_matches
         else:
-            # Only fall back to a direct Solidity symbol match when there is no
-            # matching source filename.
+            # Fall back to a direct Solidity symbol match when there is no
+            # trustworthy source-file artifact.
             exact = [
                 item for item in matches
                 if item[1].get("contractName") == contract_name
+                and item[1].get("bytecode", {}).get("object")
             ]
             if exact:
                 matches = exact
@@ -113,6 +137,7 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
                     stem_matches = [
                         item for item in matches
                         if item[0].stem == contract_name
+                        and item[1].get("bytecode", {}).get("object")
                     ]
                     if not stem_matches:
                         return None
