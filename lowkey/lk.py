@@ -3199,8 +3199,24 @@ def run_context(config):
 
 def run_signals(config, args):
     root = audit_context.foundry_project_root()
+
+    if args and args[0].lower() in {"set", "status"}:
+        if len(args) < 3:
+            return fail("Usage: lk signals set <SIGNAL_ID> <open|investigating|proven|dismissed> [note]")
+        signal_id = args[1]
+        status = args[2].lower()
+        note = " ".join(args[3:]) if len(args) > 3 else None
+        try:
+            signal = audit_context.update_signal_status(signal_id, status, root, note=note)
+        except ValueError as error:
+            return fail(f"Error: {error}")
+        if not signal:
+            return fail(f"Error: signal '{signal_id}' was not found.")
+        print(f"Signal updated: {signal_id} -> {status}")
+        return 0
+
     requested = args[0].lower() if args else "open"
-    status = requested if requested in {"open", "closed", "all"} else "open"
+    status = requested if requested in {"open", "closed", "all", "investigating", "proven", "dismissed"} else "open"
     selected = audit_context.signals(root, None if status == "all" else status)
 
     print("LOWKEY AUDIT SIGNALS")
@@ -3224,6 +3240,10 @@ def run_signals(config, args):
         print(f"   Location   : {location}")
         if signal.get("description"):
             print(f"   Observation: {signal['description']}")
+        if signal.get("next"):
+            print(f"   Next       : {signal['next']}")
+        if signal.get("triage_note"):
+            print(f"   Note       : {signal['triage_note']}")
         print(f"   Status     : {signal.get('status', 'open')}")
     return 0
 
@@ -3489,7 +3509,8 @@ RECON → UNDERSTAND THE CONTRACT
   lk abi                               Show the loaded ABI
   lk deps [dir|file]                  Imports + inheritance
   lk context                           Show shared project audit state
-  lk signals [open|closed|all]         Show analyzer signals
+  lk signals [open|investigating|proven|dismissed|all]   Show analyzer signals
+  lk signals set <ID> <status> [note]   Update a signal's audit status
   lk slither [args...]                 Slither static analysis (auto-saves JSON + SARIF)
   lk layout <Contract>                Forge storage layout
   lk risk                              Function review-surface hints
