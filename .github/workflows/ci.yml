@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -158,6 +158,15 @@ jobs:
           lk fork stop
           lk fork status
           lk forge inspect-audit Fixture
+          lk generate deployment Fixture
+          test -f script/LowkeyDeploy_Fixture.s.sol
+          forge build
+          lk target 0x1111111111111111111111111111111111111111
+          lk generate test ping 42 --calldata 0xdeadbeef
+          test -f test/LowkeyTest_Fixture.t.sol
+          lk generate poc ping 42 --calldata 0xdeadbeef
+          test -f script/LowkeyPoC_Fixture.s.sol
+          forge build
           lk event 'Ping(uint256)' 0x000000000000000000000000000000000000000000000000000000000000002a
           set +e
           lk scan /tmp/lowkey-fixture/missing.sol
