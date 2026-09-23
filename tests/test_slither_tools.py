@@ -38,7 +38,7 @@ class LowkeySlitherTests(unittest.TestCase):
         with patch("builtins.print") as printer:
             slither_tools._summary(payload)
         rendered = "\n".join(str(call.args[0]) for call in printer.call_args_list)
-        self.assertIn("Findings: 3", rendered)
+        self.assertIn("Findings discovered: 3", rendered)
         self.assertIn("High", rendered)
         self.assertIn("Medium", rendered)
         self.assertIn("Informational", rendered)
