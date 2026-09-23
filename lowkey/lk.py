@@ -1713,7 +1713,27 @@ def run_cast_deep(config,args):
         return run_cast(["access-list",target,function,*values[1:]],config)
     if command=="decode-calldata":
         if not values:
-            return fail("Usage: lk decode-calldata <0x...>")
+            return fail("Usage: lk decode-calldata <0x...> | lk decode-calldata '<signature>' <0x...>")
+        if len(values)==1:
+            data=values[0]
+            if not re.fullmatch(r"0x[0-9a-fA-F]*",data or "") or len(data)<10 or len(data)%2:
+                return fail("Error: calldata must be even-length hex beginning with 0x.")
+            target=config.get("target")
+            matches=[]
+            for item in abi_functions(load_abi(target,config)):
+                signature=format_signature(item)
+                selector=abi_selector(signature)
+                if selector and selector.lower()==data[:10].lower():
+                    matches.append(signature)
+            if len(matches)==1:
+                print(f"Signature: {matches[0]}")
+                return run_cast(["decode-calldata",matches[0],data],config)
+            if len(matches)>1:
+                print("Ambiguous selector; use an exact signature:")
+                for signature in matches:
+                    print(f"  {signature}")
+                return fail("Error: multiple ABI functions match this selector.")
+            return fail("Error: no unique ABI signature for this calldata. Use lk 4byte-calldata or provide the signature explicitly.")
         return run_cast(["decode-calldata",*values],config)
     if command=="abi-encode":
         if not values:
