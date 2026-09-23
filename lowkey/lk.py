@@ -1705,7 +1705,7 @@ def main():
         "receipt","finding","matrix","note","todo","test-gen","workspace","deployments",
         "target","use","rpc","abi","functions","fn","c","s","st","raw","gas","selectors",
         "layout","export","fork","token","ens","decode","decode-error","returns","event",
-        "checklist","session"
+        "checklist","session","forge"
     }
     if (
         config.get("session_active")
