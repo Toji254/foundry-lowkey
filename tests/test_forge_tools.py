@@ -101,6 +101,45 @@ note[low-level-calls]: generated helper
         self.assertEqual(forge_tools.run_inspect_audit(["Vault"]), 1)
         self.assertEqual(run.call_count, 6)
 
+
+    def test_coverage_table_is_parsed_and_summarised(self):
+        output = """\u001b[?25l
+╭--------------------------------------------+------------------+------------------+------------------+-----------------╮
+| File                                       | % Lines          | % Statements     | % Branches       | % Funcs         |
++=======================================================================================================================+
+| src/ConfidencePool.sol                     | 96.89% (312/322) | 97.01% (422/435) | 94.23% (98/104)  | 96.88% (31/32)  |
+| src/ConfidencePoolFactory.sol              | 92.16% (47/51)   | 92.98% (53/57)   | 100.00% (13/13) | 100.00% (12/12) |
+| src/mocks/MockERC20.sol                    | 100.00% (3/3)    | 100.00% (1/1)    | N/A (0/0)        | 100.00% (2/2)   |
+| Total                                      | 87.60% (431/492) | 89.83% (530/590) | 92.62% (113/122)| 85.00% (68/80) |
+╰--------------------------------------------+------------------+------------------+------------------+-----------------╯
+"""
+        rows = forge_tools._parse_coverage_table(output)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(rows[0]["file"], "src/ConfidencePool.sol")
+        self.assertEqual(rows[0]["branches"], ("94.23", 98, 104))
+        self.assertEqual(rows[2]["branches"], None)
+
+        report = forge_tools._format_coverage_report(output)
+        self.assertIn("COVERAGE SUMMARY", report)
+        self.assertIn("src/ConfidencePool.sol", report)
+        self.assertIn("L10 S13 B6 F1", report)
+        self.assertIn("All reported files", report)
+        self.assertNotIn("src/mocks/MockERC20.sol", report)
+
+    def test_raw_coverage_table_is_stripped_before_display(self):
+        output = """before
+╭----------+
+| File     | % Lines | % Statements | % Branches | % Funcs |
++----------+
+| src/A.sol | 50.00% (1/2) | 50.00% (1/2) | 50.00% (1/2) | 100.00% (1/1) |
+╰----------+
+after
+"""
+        visible = forge_tools._strip_coverage_table(output)
+        self.assertIn("before", visible)
+        self.assertIn("after", visible)
+        self.assertNotIn("| src/A.sol |", visible)
+
     @patch("forge_tools._supports_option", return_value=True)
     @patch("forge_tools._coverage_needs_ir", return_value=True)
     def test_coverage_compatibility_flags_detect_via_ir(self, needs_ir, supports):
