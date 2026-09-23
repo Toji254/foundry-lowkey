@@ -2639,14 +2639,17 @@ def _extract_state_diff_json_slots(text_output):
 
 def parse_state_diff_output(output):
     text_output=str(output or "")
-    gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",text_output)
-    call_match=re.search(r"CALL ([^\r\n]+)",text_output)
-    success_match=re.search(r"SUCCESS\s+(true|false)",text_output,re.I)
-    eth_match=re.search(r"ETH_SENT\s+([0-9]+)",text_output)
-    change_match=re.search(r"STORAGE_CHANGES\s+([0-9]+)",text_output)
-    fallback_match=re.search(r"FALLBACK_WRITES\s+([0-9]+)",text_output)
-    slots=_extract_state_diff_json_slots(text_output)
-    lines=[line.strip() for line in text_output.splitlines()]
+    clean_output=re.sub(r"\x1b\\[[0-9;]*m","",text_output)
+
+    gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",clean_output)
+    call_match=re.search(r"(?m)^\s*CALL\s+(.+)$",clean_output)
+    success_match=re.search(r"(?m)^\s*SUCCESS\s+(true|false)\s*$",clean_output,re.I)
+    eth_match=re.search(r"(?m)^\s*ETH_SENT\s+([0-9]+)\s*$",clean_output)
+    change_match=re.search(r"(?m)^\s*STORAGE_CHANGES\s+([0-9]+)\s*$",clean_output)
+    fallback_match=re.search(r"(?m)^\s*FALLBACK_WRITES\s+([0-9]+)\s*$",clean_output)
+
+    slots=_extract_state_diff_json_slots(clean_output)
+    lines=[line.strip() for line in clean_output.splitlines()]
     for index,line in enumerate(lines):
         if line=="SLOT" and index+5<len(lines):
             slot=lines[index+1]
@@ -2656,9 +2659,11 @@ def parse_state_diff_output(output):
                 if re.fullmatch(r"0x[0-9a-fA-F]{64}",slot) and re.fullmatch(r"0x[0-9a-fA-F]{64}",after):
                     if before=="unknown" or re.fullmatch(r"0x[0-9a-fA-F]{64}",before):
                         slots.append({"slot":slot,"from":before,"to":after})
+
     dedup={}
     for item in slots:
         dedup[item["slot"].lower()]=item
+
     return {
         "gas":int(gas_match.group(1)) if gas_match else None,
         "call":call_match.group(1).strip() if call_match else None,
@@ -2666,7 +2671,7 @@ def parse_state_diff_output(output):
         "eth_sent":int(eth_match.group(1)) if eth_match else 0,
         "changes_expected":int(change_match.group(1)) if change_match else len(dedup),
         "fallback_writes":int(fallback_match.group(1)) if fallback_match else 0,
-        "state_diff_json":bool(_extract_state_diff_json_slots(text_output)),
+        "state_diff_json":bool(_extract_state_diff_json_slots(clean_output)),
         "slots":list(dedup.values()),
         "raw":text_output,
     }
