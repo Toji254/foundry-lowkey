@@ -902,7 +902,7 @@ def run_scan(args):
     root=args[0] if args else "src"
     if not os.path.exists(root): print(f"Path not found: {root}"); return
     patterns=[
-        ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()"),
+        ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
         ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
         ("TX.ORIGIN",re.compile(r"\btx\.origin\b")),("DELEGATECALL",re.compile(r"\bdelegatecall\b")),
         ("SELFDESTRUCT",re.compile(r"\bselfdestruct\s*\(")),("UNCHECKED",re.compile(r"\bunchecked\s*\{")),
