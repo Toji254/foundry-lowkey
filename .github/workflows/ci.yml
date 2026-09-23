@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/clone_tools.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/clone_tools.py lowkey/walkthrough.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -108,6 +108,9 @@ jobs:
           lk scan src
           lk scan src/Fixture.sol
           lk forge build
+          lk walkthrough --static --steps 4
+          test -f .audit/walkthrough/model.json
+          test -f .audit/walkthrough/latest.json
           TARGET=0x1000000000000000000000000000000000000001
           CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
           cast rpc anvil_setCode "$TARGET" "$CODE"
