@@ -1099,7 +1099,7 @@ contract Matrix_{identifier} is Test {{
 '''
         filename=write_generated_test("matrix_"+identifier,template)
         return run_foundry(["test","--match-path",Path(filename).as_posix(),"-vvvv"])
-    print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
+    return fail("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
 
 def run_note(note):
     if not note:
@@ -1853,7 +1853,7 @@ pragma solidity ^0.8.20;
 import {{Test}} from "forge-std/Test.sol";
 
 contract Invariant_{solidity_identifier(contract)} is Test {{
-    address constant TARGET = {target};
+    address constant TARGET = {target_literal};
 
     function invariant_target_code_stable() public view {{
         if (TARGET != address(0)) {{
@@ -1863,8 +1863,10 @@ contract Invariant_{solidity_identifier(contract)} is Test {{
 }}
 '''
         path=write_generated_test("invariant_"+contract,body)
-        print("Edit this test to add a handler and protocol invariants.")
-        return 0
+        code=run_foundry(["test","--match-path",Path(path).as_posix()])
+        if code==0:
+            print("Invariant starter compiles. Edit it to add handlers and protocol invariants.")
+        return code
     match_present=any(values[index]=="--match-test" for index in range(len(values)))
     if not match_present:
         values=["--match-test","invariant_.*",*values]
