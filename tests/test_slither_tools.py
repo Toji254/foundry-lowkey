@@ -43,6 +43,27 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertIn("Medium", rendered)
         self.assertIn("Informational", rendered)
 
+    def test_source_location_returns_absolute_clickable_location(self):
+        finding = {
+            "elements": [{
+                "type": "function",
+                "name": "release",
+                "source_mapping": {
+                    "filename_relative": "src/EthEscrow.sol",
+                    "lines": [61, 69],
+                    "starting_column": 11,
+                },
+            }]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            location = slither_tools._source_location(finding, root)
+        self.assertEqual(
+            location,
+            f"{root / 'src' / 'EthEscrow.sol'}:61:11-69",
+        )
+
+
     def test_human_report_explains_finding(self):
         payload = {
             "results": {
