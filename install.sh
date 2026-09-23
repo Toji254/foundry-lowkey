@@ -46,6 +46,7 @@ cp "$STAGE_DIR/generator.py" "$TARGET_LOWKEY_DIR/generator.py"
 cp "$STAGE_DIR/slither_tools.py" "$TARGET_LOWKEY_DIR/slither_tools.py"
 cp "$STAGE_DIR/audit_context.py" "$TARGET_LOWKEY_DIR/audit_context.py"
 cp "$STAGE_DIR/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
+cp "$STAGE_DIR/walkthrough.py" "$TARGET_LOWKEY_DIR/walkthrough.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -112,6 +113,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/slither_tools.py
   - $TARGET_LOWKEY_DIR/audit_context.py
   - $TARGET_LOWKEY_DIR/clone_tools.py
+  - $TARGET_LOWKEY_DIR/walkthrough.py
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
 
