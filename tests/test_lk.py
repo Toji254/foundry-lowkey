@@ -133,6 +133,35 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen[1], "ConfidencePoolFactory")
 
+    def test_artifact_source_name_never_fabricates_src_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "out" / "Address.sol").mkdir(parents=True)
+            artifact = {
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "contractName": "Address",
+            }
+            path = str(root / "out" / "Address.sol" / "Address.json")
+            self.assertIsNone(lk.artifact_source_name(artifact, path))
+
+    def test_application_artifact_requires_existing_source_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            artifact = {
+                "abi": [],
+                "bytecode": {"object": "0x6000"},
+                "contractName": "Address",
+                "sourceName": "src/Address.sol",
+            }
+            path = root / "out" / "Address.sol" / "Address.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            self.assertFalse(lk.artifact_is_project_application(root, str(path), artifact))
+
     def test_project_context_rejects_stale_dependency_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
