@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -267,7 +268,7 @@ def run_default(root: Path, extra: Sequence[str] = ()) -> int:
         print(result.stdout.rstrip())
 
     print(f"\nSlither status: {'completed successfully' if result.returncode == 0 else 'failed'}")
-    print("Auditor's note: a static-analysis result is evidence to investigate, not automatic proof of a vulnerability.")
+    print("Auditor's note: a static-analysis results are evidence to investigate, not automatic proof of a vulnerability.")
     return result.returncode
 
 
