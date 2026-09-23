@@ -34,6 +34,7 @@ SESSION_FILE = os.path.join(AUDIT_DIR, "session_log.txt")
 FORK_FILE = os.path.join(CONFIG_DIR, "fork.json")
 WORKSPACE_DIR = os.path.join(os.getcwd(), ".audit")
 INSTALL_MANIFEST = os.path.join(CONFIG_DIR, "install-manifest.json")
+INSTALL_MANIFEST = os.path.join(CONFIG_DIR, "install-manifest.json")
 
 AUDIT_CHECKLIST = [
     "Understand protocol purpose and trust assumptions",
@@ -119,6 +120,80 @@ def save_config(config):
         if os.path.exists(tmp):
             try: os.remove(tmp)
             except OSError: pass
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def load_install_manifest():
+    try:
+        with open(INSTALL_MANIFEST, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def runtime_sync_status():
+    """Detect stale/corrupted installed Lowkey files without mutating them."""
+    manifest = load_install_manifest()
+    if not manifest:
+        return {"status": "unknown", "detail": "no install manifest; run install.sh"}
+
+    mismatches = []
+    for path, expected in (manifest.get("files") or {}).items():
+        actual = _sha256_file(path)
+        if actual is None:
+            mismatches.append(f"missing: {path}")
+        elif actual != expected:
+            mismatches.append(f"modified: {path}")
+
+    source_repo = manifest.get("source_repo")
+    installed_sha = manifest.get("git_sha")
+    source_sha = None
+    if source_repo and os.path.isdir(os.path.join(source_repo, ".git")):
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source_repo,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                source_sha = result.stdout.strip()
+        except OSError:
+            pass
+
+    if mismatches:
+        return {
+            "status": "corrupt",
+            "detail": "; ".join(mismatches[:4]),
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    if source_sha and installed_sha and source_sha != installed_sha:
+        return {
+            "status": "stale",
+            "detail": f"source checkout is {source_sha[:12]}, installed runtime is {installed_sha[:12]}",
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    return {
+        "status": "ok",
+        "detail": f"installed runtime {installed_sha[:12]}" if installed_sha else "installed runtime verified",
+        "installed_sha": installed_sha,
+        "source_sha": source_sha,
+        "source_repo": source_repo,
+    }
 
 def _sha256_file(path):
     digest = hashlib.sha256()
@@ -887,6 +962,11 @@ def run_abi(config):
 def run_functions(config,query=None):
     root=audit_context.foundry_project_root()
     target=active_project_target(config,root)
+    if not target:
+        explicit_target=config.get("target")
+        explicit_abi=config.get("abi_paths",{}).get(explicit_target) if isinstance(config.get("abi_paths"),dict) else None
+        if is_address(explicit_target) and explicit_abi and os.path.exists(os.path.expanduser(str(explicit_abi))):
+            target=explicit_target
     if not target:
         explicit_target=config.get("target")
         explicit_abi=config.get("abi_paths",{}).get(explicit_target) if isinstance(config.get("abi_paths"),dict) else None
@@ -4459,6 +4539,20 @@ def refresh_generated_poc(config):
         print(f"Warning: PoC scaffold refresh skipped: {exc}", file=sys.stderr)
         return 0
 
+def refresh_generated_poc(config):
+    """Refresh the connected PoC scaffold when a concrete send exists."""
+    root = audit_context.foundry_project_root()
+    latest = audit_context.load(root).get("latest", {})
+    if not isinstance(latest, dict) or not latest.get("tx_hash"):
+        return 0
+    try:
+        from generator import run_generate
+        return run_generate(config, ["poc"])
+    except Exception as exc:
+        print(f"Warning: PoC scaffold refresh skipped: {exc}", file=sys.stderr)
+        return 0
+
+
 def run_context(config):
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
@@ -4772,6 +4866,13 @@ def run_version():
     if runtime.get("source_repo"):
         print(f"Source : {runtime['source_repo']}")
 
+def run_version():
+    runtime = runtime_sync_status()
+    print("LowkeyCast 2.1 — Foundry Attack Lab")
+    print(f"Runtime: {runtime['status'].upper()} - {runtime['detail']}")
+    if runtime.get("source_repo"):
+        print(f"Source : {runtime['source_repo']}")
+
 def print_help():
     print("""
 LOWKEY — SMART CONTRACT AUDITOR CONSOLE
@@ -4779,6 +4880,8 @@ LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 
 START
   lk audit                         Run the connected audit pipeline
+  lk audit --checks                Run audit with Slither + optional lint/geiger checks
+  lk audit--checks                Legacy compact alias for audit --checks
   lk audit --checks                Run audit with Slither + optional lint/geiger checks
   lk audit--checks                Legacy compact alias for audit --checks
   lk findings                      Show audit findings
@@ -5009,6 +5112,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
     elif cmd in {"audit--checks","audit-checks"}: return run_audit(config, ["--checks", *args])
+    elif cmd in {"audit--checks","audit-checks"}: return run_audit(config, ["--checks", *args])
     elif cmd=="audit": return run_audit(config,args)
     elif cmd=="context": return run_context(config)
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
@@ -5105,6 +5209,17 @@ def main():
     _sync_audit_context(config, root)
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+    evidence_commands={
+        "scan","slither","changes","state-diff","trace","logs","tx","receipt",
+        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "mapping","snapshot","diff","risk","seams","matrix","finding","audit",
+        "audit--checks","audit-checks"
+    }
+    if sys.argv[1] in evidence_commands:
+        try:
+            refresh_generated_poc(config)
+        except Exception as error:
+            print(f"Warning: automatic PoC refresh failed: {error}", file=sys.stderr)
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
