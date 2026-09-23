@@ -4312,21 +4312,95 @@ def run_batch(config,args):
             command_args.append("--confirm")
         if command=="raw": run_raw(config,command_args)
         else: dispatch_command(command,command_args,config,from_batch=True)
-def run_audit_mode(config):
+def _full_evidence_pass(config):
+    """Run the extended audit pass and source triage as one investigation action."""
+    root = audit_context.foundry_project_root()
+    try:
+        scan_code = run_scan([])
+    except Exception as exc:
+        print(f"Warning: source triage failed: {exc}", file=sys.stderr)
+        scan_code = 1
+    audit_code = run_audit(config, ["--checks"])
+    return audit_code if audit_code != 0 else scan_code
+
+
+def _generate_connected_poc(config):
+    """Generate the current investigation PoC from the shared evidence context."""
+    try:
+        from generator import run_generate
+        return run_generate(config, ["poc"])
+    except Exception as exc:
+        print(f"Warning: connected PoC generation failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def run_audit_mode(config, args=None):
+    """Start an interactive audit session around the shared connected-audit pipeline."""
+    args = list(args or [])
+    checks = "--checks" in args
+    mode_args = ["--checks"] if checks else []
+
     print("\n=== LOWKEYCAST AUDIT MODE ===")
+    print("Starting connected audit baseline...")
+    baseline_code = 0
+
+    # Source triage runs before the first PoC scaffold so the generator can carry
+    # source-level evidence into the initial investigation artifact.
+    try:
+        scan_code = run_scan([])
+    except Exception as exc:
+        print(f"Warning: source triage failed: {exc}", file=sys.stderr)
+        scan_code = 1
+
+    audit_code = run_audit(config, mode_args)
+    if audit_code != 0:
+        baseline_code = audit_code
+    elif scan_code != 0:
+        baseline_code = scan_code
+
+    if baseline_code != 0:
+        print("\nBaseline completed with review-needed status; the investigation menu is still available.")
+
     while True:
-        print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
-        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   0) exit")
-        try: choice=input("lk> ").strip()
-        except EOFError: return
-        if choice=="1": run_recon(config)
-        elif choice=="2": run_functions(config)
-        elif choice=="3": run_risk(config)
-        elif choice=="4": run_checklist(config)
-        elif choice=="5": run_targets(config)
-        elif choice=="6": run_deployments(config)
-        elif choice=="0": return
-        else: print("Unknown option.")
+        context = audit_context.load(audit_context.foundry_project_root())
+        target = context.get("target") if isinstance(context.get("target"), dict) else {}
+        target_label = target.get("contract") or target.get("address") or config.get("target") or "none"
+        print(f"\nTarget: {target_label} | RPC: {rpc_display(effective_rpc(config)) or 'none'}")
+        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments")
+        print("7) full evidence pass   8) generate PoC   0) exit")
+        try:
+            choice = input("lk> ").strip()
+        except EOFError:
+            print()
+            return baseline_code
+
+        if choice == "1":
+            run_recon(config)
+        elif choice == "2":
+            run_functions(config)
+        elif choice == "3":
+            run_risk(config)
+        elif choice == "4":
+            run_checklist(config)
+        elif choice == "5":
+            run_targets(config)
+        elif choice == "6":
+            run_deployments(config)
+        elif choice == "7":
+            code = _full_evidence_pass(config)
+            if code == 0:
+                print("Full evidence pass completed.")
+            else:
+                print("Full evidence pass needs review.", file=sys.stderr)
+        elif choice == "8":
+            code = _generate_connected_poc(config)
+            if code == 0:
+                print("Connected PoC scaffold refreshed.")
+        elif choice == "0":
+            return baseline_code
+        else:
+            print("Unknown option. Choose 0-8.")
+   
 
 
 def _signal_evidence(signal):
@@ -4415,11 +4489,13 @@ def run_investigate(config, args):
     print("\nUseful commands:")
     function = signal.get("function")
     if function:
-        print(f"  lk fn {function}")
-        print(f"  lk ask {function}")
-        print(f"  lk changes {function}")
+        safe_function = shlex.quote(str(function))
+        print(f"  lk fn {safe_function}")
+        print(f"  lk ask {safe_function}")
+        print(f"  lk changes {safe_function}")
         print("  lk trace")
-        print(f"  lk generate test {function} ...")
+        print(f"  lk generate test {safe_function}")
+        print("    (add concrete arguments or --calldata when you are ready to reproduce it)")
     print("  lk findings")
     print("  lk context")
     return 0
@@ -4828,8 +4904,8 @@ LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 =======================================
 
 START
-  lk audit                         Run the connected audit pipeline
-  lk audit --checks                Run audit with Slither + optional lint/geiger checks
+  lk audit                         Start interactive audit session + automatic baseline/PoC
+  lk audit --checks                Same audit session with Slither + optional lint/geiger checks
   lk audit--checks                Legacy compact alias for audit --checks
   lk findings                      Show audit findings
   lk focus <ID>                    Focus one finding and mark it investigating
@@ -5058,8 +5134,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
-    elif cmd in {"audit--checks","audit-checks"}: return run_audit(config, ["--checks", *args])
-    elif cmd=="audit": return run_audit(config,args)
+    elif cmd in {"audit--checks","audit-checks"}: return run_audit_mode(config, ["--checks", *args])
+    elif cmd=="audit": return run_audit_mode(config,args)
     elif cmd=="context": return run_context(config)
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
     elif cmd in {"findings", "signals", "signal"}: return run_signals(config,args)
