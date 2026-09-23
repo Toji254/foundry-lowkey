@@ -1,3 +1,4 @@
+import hashlib
 import os
 import json
 import subprocess
@@ -1908,6 +1909,21 @@ def solidity_value(value):
     value=re.sub(r"(?i)(?<=\d)(ether|gwei|wei)\b", r" \1", value)
     return re.sub(r"\s+", " ", value).strip()
 
+def validate_solidity_value(value):
+    normalized=solidity_value(value)
+    if not re.fullmatch(r"\d+(?:\.\d+)?(?:\s*(?:ether|gwei|wei))?", normalized, re.I):
+        raise ValueError(f"invalid ETH value '{value}'")
+    return normalized
+
+
+def validate_calldata(value):
+    normalized=str(value or "").removeprefix("0x")
+    if not re.fullmatch(r"[0-9a-fA-F]*", normalized):
+        raise ValueError("calldata must contain only hexadecimal bytes")
+    if len(normalized) % 2:
+        raise ValueError("calldata must contain complete bytes")
+    return normalized
+
 def normalize_numeric_argument(value, item_type):
     text=str(value).strip()
     match=re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|ether)",text,re.I)
@@ -2009,17 +2025,30 @@ def solidity_address_literal(address):
         raise ValueError(f"invalid Solidity address literal: {address}")
     return f"address(uint160(0x00{address[2:]}))"
 
-def generated_test_path(prefix):
+def generated_test_path(prefix, content=None):
     os.makedirs("test",exist_ok=True)
     safe=solidity_identifier(prefix)
-    return os.path.join("test", f"Lowkey_{safe}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
+    suffix=(
+        hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
+        if content is not None
+        else datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    )
+    return os.path.join("test", f"Lowkey_{safe}_{suffix}.t.sol")
 
 def write_generated_test(prefix, content, announce=True):
-    path=generated_test_path(prefix)
-    Path(path).write_text(content, encoding="utf-8")
+    path=generated_test_path(prefix, content)
+    temporary=Path(path + ".tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
     if announce:
         print(f"Lowkey generated test: {path}")
     return path
+
+def discard_generated_test(path):
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
 
 def resolve_lab_value(config, signature, raw_values, value_option):
     if value_option not in {None, "", "auto"}:
@@ -2074,7 +2103,7 @@ def run_probe(config,args):
         if not values:
             raise ValueError("function is required")
         signature,calldata=encode_target_call(config,values[0],values[1:])
-        value=resolve_lab_value(config,signature,values[1:],value)
+        value=validate_solidity_value(resolve_lab_value(config,signature,values[1:],value))
         target=config.get("target")
         actors=[]
         if actor:
@@ -2118,6 +2147,8 @@ contract LowkeyProbe is Test {{
 '''
         path=write_generated_test("probe_"+signature.split("(",1)[0],body)
         code=run_foundry(local_foundry_test_args(config,path))
+        if code != 0:
+            discard_generated_test(path)
         return code
     except (ValueError,IndexError) as error:
         return fail(f"Error: {error}")
@@ -2547,26 +2578,31 @@ def parse_state_diff_output(output):
     success_match=re.search(r"SUCCESS (true|false)",text_output,re.I)
     eth_match=re.search(r"ETH_SENT ([0-9]+)",text_output)
     change_match=re.search(r"STORAGE_CHANGES ([0-9]+)",text_output)
+    fallback_match=re.search(r"FALLBACK_WRITES ([0-9]+)",text_output)
     slots=[]
     lines=[line.strip() for line in text_output.splitlines()]
     for index,line in enumerate(lines):
         if line=="SLOT" and index+5<len(lines):
             slot=lines[index+1]
-            if index+5<len(lines) and lines[index+2]=="FROM" and lines[index+4]=="TO":
+            if lines[index+2]=="FROM" and lines[index+4]=="TO":
                 before=lines[index+3]
                 after=lines[index+5]
-                if re.fullmatch(r"0x[0-9a-fA-F]{64}",slot) and re.fullmatch(r"0x[0-9a-fA-F]{64}",before) and re.fullmatch(r"0x[0-9a-fA-F]{64}",after):
-                    slots.append({"slot":slot,"from":before,"to":after})
+                if re.fullmatch(r"0x[0-9a-fA-F]{64}",slot) and re.fullmatch(r"0x[0-9a-fA-F]{64}",after):
+                    if before=="unknown" or re.fullmatch(r"0x[0-9a-fA-F]{64}",before):
+                        slots.append({"slot":slot,"from":before,"to":after})
+    dedup={}
+    for item in slots:
+        dedup[item["slot"].lower()]=item
     return {
         "gas":int(gas_match.group(1)) if gas_match else None,
         "call":call_match.group(1).strip() if call_match else None,
         "success":success_match.group(1).lower()=="true" if success_match else None,
         "eth_sent":int(eth_match.group(1)) if eth_match else 0,
-        "changes_expected":int(change_match.group(1)) if change_match else len(slots),
-        "slots":slots,
+        "changes_expected":int(change_match.group(1)) if change_match else len(dedup),
+        "fallback_writes":int(fallback_match.group(1)) if fallback_match else 0,
+        "slots":list(dedup.values()),
         "raw":text_output,
     }
-
 
 def format_lab_value(text_value, address_map=None):
     text_value=str(text_value)
@@ -2605,7 +2641,7 @@ def run_state_diff(config,args):
         if not values:
             raise ValueError("function is required")
         signature,calldata=encode_target_call(config,values[0],values[1:])
-        value=resolve_lab_value(config,signature,values[1:],value)
+        value=validate_solidity_value(resolve_lab_value(config,signature,values[1:],value))
         target=config.get("target")
         selected_actor=actor or config.get("actor")
         address=actor_address(config,selected_actor)
@@ -2629,14 +2665,24 @@ contract LowkeyStateDiff is Test {{
     function test_state_diff() public {{
         vm.deal(ACTOR, 100 ether);
         vm.startPrank(ACTOR);
+        // Keep both recording paths: state diff gives before/after values, while
+        // vm.record/accesses provides a fallback for Forge runtimes with limited diff detail.
+        vm.record();
         vm.startStateDiffRecording();
         (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
-        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+
+        (bytes32[] memory recordedReads, bytes32[] memory recordedWrites) = vm.accesses(TARGET);
+        Vm.StorageAccess[] memory storageAccesses = vm.getStorageAccesses();
+        Vm.AccountAccess[] memory accountAccesses = vm.stopAndReturnStateDiff();
         vm.stopPrank();
 
         console2.log("CALL", "{signature}");
         console2.log("SUCCESS", success);
         console2.log("ETH_SENT", VALUE);
+        console2.log("ACCOUNT_ACCESSES", accountAccesses.length);
+        console2.log("STORAGE_ACCESSES", storageAccesses.length);
+        console2.log("RECORDED_READS", recordedReads.length);
+        console2.log("RECORDED_WRITES", recordedWrites.length);
         if (!success) {{
             console2.log("REVERT_DATA");
             console2.logBytes(data);
@@ -2644,27 +2690,29 @@ contract LowkeyStateDiff is Test {{
         }}
 
         uint256 changed=0;
-        for (uint256 i = 0; i < accesses.length; i++) {{
-            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
-                Vm.StorageAccess memory item = accesses[i].storageAccesses[j];
-                if (item.isWrite && !item.reverted && item.previousValue != item.newValue) {{
-                    changed++;
-                }}
+        for (uint256 i = 0; i < storageAccesses.length; i++) {{
+            Vm.StorageAccess memory item = storageAccesses[i];
+            if (item.isWrite && !item.reverted && item.previousValue != item.newValue) {{
+                changed++;
+                console2.log("SLOT");
+                console2.logBytes32(item.slot);
+                console2.log("FROM");
+                console2.logBytes32(item.previousValue);
+                console2.log("TO");
+                console2.logBytes32(item.newValue);
             }}
         }}
 
         console2.log("STORAGE_CHANGES", changed);
-        for (uint256 i = 0; i < accesses.length; i++) {{
-            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
-                Vm.StorageAccess memory item = accesses[i].storageAccesses[j];
-                if (item.isWrite && !item.reverted && item.previousValue != item.newValue) {{
-                    console2.log("SLOT");
-                    console2.logBytes32(item.slot);
-                    console2.log("FROM");
-                    console2.logBytes32(item.previousValue);
-                    console2.log("TO");
-                    console2.logBytes32(item.newValue);
-                }}
+        if (changed == 0 && recordedWrites.length > 0) {{
+            console2.log("FALLBACK_WRITES", recordedWrites.length);
+            for (uint256 i = 0; i < recordedWrites.length; i++) {{
+                console2.log("SLOT");
+                console2.logBytes32(recordedWrites[i]);
+                console2.log("FROM");
+                console2.log("unknown");
+                console2.log("TO");
+                console2.logBytes32(vm.load(TARGET, recordedWrites[i]));
             }}
         }}
     }}
@@ -2675,6 +2723,7 @@ contract LowkeyStateDiff is Test {{
         output=result.text
         parsed=parse_state_diff_output(output)
         if result.code!=0:
+            discard_generated_test(path)
             tail="\n".join(output.splitlines()[-18:]) if output else "forge test failed"
             return fail(f"Error: changes could not run.\n{tail}",result.code)
 
