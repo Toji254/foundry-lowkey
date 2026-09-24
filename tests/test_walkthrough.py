@@ -232,6 +232,20 @@ class WalkthroughTests(unittest.TestCase):
         self.assertLess(hints["createPool"][0], hints["stake"][0])
         self.assertLess(hints["stake"][0], hints["withdraw"][0])
 
+    def test_system_live_core_is_protocol_agnostic(self):
+        config = {
+            "target": "0x" + "1" * 40,
+            "lab_system": {
+                "root": "0x" + "1" * 40,
+                "root_model": "DemoRouter",
+                "vault": "0x" + "2" * 40,
+                "vault_model": "DemoVault",
+            },
+        }
+        def fake_code(rpc, address):
+            return "0x6000" if address in {"0x" + "1" * 40, "0x" + "2" * 40} else "0x"
+        with patch.object(walkthrough, "_runtime_code", side_effect=fake_code):
+            self.assertTrue(walkthrough._system_has_live_core(config, "http://127.0.0.1:8545"))
     def test_failure_flow_summary_shows_first_blocker_and_unreached_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
