@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import hashlib
 import shlex
 import shutil
 import subprocess
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -1091,23 +1093,44 @@ def _write_step_evidence(root: str, label: str, command: Sequence[str], code: in
     record_evidence(label, payload, root)
 
 
-def _run_vyper_build(root: str) -> tuple[int, str, str, list[dict[str, Any]]]:
+def _project_dependency_paths(root: str, project: dict[str, Any] | None = None) -> list[Path]:
+    root_path = Path(root).resolve()
+    result: list[Path] = []
+    for item in (project or {}).get("submodules", []) if isinstance(project, dict) else []:
+        relative = str(item.get("path") or "")
+        if relative:
+            result.append((root_path / relative).resolve())
+    return result
+
+
+def _is_under_any(path: Path, roots: list[Path]) -> bool:
+    resolved = path.resolve()
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def _run_vyper_build(
+    root: str,
+    project: dict[str, Any] | None = None,
+) -> tuple[int, str, str, list[dict[str, Any]]]:
     project_root = Path(root).resolve()
     candidates = (
         project_source_files(project_root, {"vy"})
         if project_source_files
         else list(project_root.rglob("*.vy"))
     )
+    dependency_roots = _project_dependency_paths(root, project)
     files = []
     for path in candidates:
         relative_parts = {part.lower() for part in path.relative_to(project_root).parts}
         if relative_parts & {"test", "tests", "mocks"}:
             continue
+        if _is_under_any(path, dependency_roots):
+            continue
         files.append(path)
     files = sorted(files)
 
     if not files:
-        return 0, "No production Vyper .vy files found; source inventory completed.\n", "", []
+        return 0, "No project-owned production Vyper .vy files found; source inventory completed.\n", "", []
 
     all_stdout: list[str] = []
     all_stderr: list[str] = []
@@ -1117,7 +1140,12 @@ def _run_vyper_build(root: str) -> tuple[int, str, str, list[dict[str, Any]]]:
     for path in files:
         rel = path.relative_to(project_root)
         command = ["uv", "run", "vyper", str(rel), "-p", "."]
-        code, stdout, stderr = run_command(command, root, 300)
+        code, stdout, stderr = run_command(
+            command,
+            root,
+            300,
+            env=_project_solc_env(root, project),
+        )
         all_stdout.append(f"$ {' '.join(command)}\n{stdout}")
         all_stderr.append(f"$ {' '.join(command)}\n{stderr}")
         records.append({"file": str(rel), "command": command, "exit_code": code})
@@ -1142,7 +1170,37 @@ def _project_solc_env(root: str, project: dict[str, Any] | None = None) -> dict[
             if current_path
             else str(toolchain_bin)
         )
+
+    root_text = str(Path(root).resolve())
+    current_pythonpath = os.environ.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        f"{root_text}{os.pathsep}{current_pythonpath}"
+        if current_pythonpath
+        else root_text
+    )
     return env
+
+
+def _project_test_command(root: str, project: dict[str, Any] | None = None) -> list[str]:
+    root_path = Path(root).resolve()
+    test_roots = [
+        root_path / name
+        for name in ("tests", "test")
+        if (root_path / name).is_dir()
+    ]
+    command = ["uv", "run", "pytest"]
+    if test_roots:
+        command.extend(str(path.relative_to(root_path)) for path in test_roots)
+    else:
+        command.append(".")
+
+    for dependency_root in _project_dependency_paths(root, project):
+        try:
+            relative = dependency_root.relative_to(root_path)
+        except ValueError:
+            continue
+        command.extend(["--ignore", str(relative)])
+    return command
 
 
 def _run_project_vyper_tests(
@@ -1150,7 +1208,7 @@ def _run_project_vyper_tests(
     project: dict[str, Any] | None = None,
 ) -> tuple[int, str, str]:
     return run_command(
-        ["uv", "run", "pytest", "."],
+        _project_test_command(root, project),
         root,
         900,
         env=_project_solc_env(root, project),
@@ -1365,7 +1423,68 @@ def _pin_project_solc_binary(root: str, binary: Path) -> Path:
     return target
 
 
-def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] | None:
+def _github_release_solc(root: str, version: str) -> tuple[int, str, str, Path | None]:
+    cache_dir = Path(root).resolve() / ".audit" / "toolchain" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    binary = cache_dir / f"solc-{version}"
+    expected_sha256 = {
+        "0.8.18": "95e6ed4949a63ad89afb443ecba1fb8302dd2860ee5e9baace3e674a0f48aa77",
+    }.get(version)
+
+    def usable(path: Path) -> bool:
+        if not path.is_file() or not os.access(path, os.X_OK):
+            return False
+        try:
+            if expected_sha256:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                if digest != expected_sha256:
+                    return False
+            probe = subprocess.run(
+                [str(path), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return probe.returncode == 0 and version in probe.stdout
+
+    if usable(binary):
+        return 0, "", "cached GitHub release compiler", binary
+
+    url = (
+        "https://github.com/argotorg/solidity/"
+        f"releases/download/v{version}/solc-static-linux"
+    )
+    temporary = binary.with_suffix(".download")
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "LowkeyCast/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+        temporary.chmod(0o755)
+        if expected_sha256:
+            digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+            if digest != expected_sha256:
+                temporary.unlink(missing_ok=True)
+                return 1, "", f"SHA-256 mismatch for downloaded solc {version}", None
+        if not usable(temporary):
+            temporary.unlink(missing_ok=True)
+            return 1, "", f"Downloaded solc {version} failed version validation", None
+        temporary.replace(binary)
+        return 0, "", f"downloaded {url}", binary
+    except Exception as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return 1, "", str(exc), None
+
+
+ef _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] | None:
     compilers = project.get("solidity_compilers", []) if isinstance(project, dict) else []
     if len(compilers) != 1:
         return None
@@ -1391,6 +1510,23 @@ def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] |
         attempts.append({
             "method": "py-solc-x",
             "command": ["uv", "run", "python", "-c", "<install-solc>"],
+            "exit_code": code,
+            "stdout": stdout[-50000:],
+            "stderr": stderr[-20000:],
+            "binary": str(binary) if binary else None,
+        })
+        print(stdout.rstrip())
+        if stderr:
+            print(stderr.rstrip())
+        if binary is not None:
+            selected_binary = binary
+
+    if selected_binary is None:
+        print(f"\n=== LOWKEY EVIDENCE: SOLC GITHUB RELEASE ({version}) ===")
+        code, stdout, stderr, binary = _github_release_solc(root, version)
+        attempts.append({
+            "method": "github-solidity-release",
+            "command": [f"https://github.com/argotorg/solidity/releases/download/v{version}/solc-static-linux"],
             "exit_code": code,
             "stdout": stdout[-50000:],
             "stderr": stderr[-20000:],
@@ -1686,7 +1822,7 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                         f"{graph.get('summary', {}).get('unresolved_imports', 0)} unresolved"
                     )
                 print("\n=== LOWKEY EVIDENCE: VYPER BUILD ===")
-                build_code, build_stdout, build_stderr, files = _run_vyper_build(root)
+                build_code, build_stdout, build_stderr, files = _run_vyper_build(root, project)
                 evidence_name = "vyper_build"
                 _write_step_evidence(
                     root,
@@ -1735,7 +1871,7 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
             _write_step_evidence(
                 root,
                 evidence_name,
-                ["uv", "run", "pytest", "."],
+                _project_test_command(root, project),
                 test_code,
                 test_stdout,
                 test_stderr,
