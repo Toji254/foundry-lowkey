@@ -1442,11 +1442,18 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 if discovered:
                     runtime.extend(discovered); step.discovered_contracts=[asdict(x) for x in discovered]
 
+                # Record the actual protocol interaction before any environment
+                # preparation that it causes. This preserves create -> discover ->
+                # approve ordering in the live path and saved evidence.
+                steps.append(step); completed.add(key)
+
                 # Visible local-lab prerequisite: once a real pool clone exists,
                 # approve the recorded mock stake token for that clone.
                 token_address = observed.get("staketoken")
                 if token_address and discovered:
                     for node in discovered:
+                        if "pool" not in str(node.model).lower():
+                            continue
                         pool_key = (token_address.lower(), node.address.lower())
                         if pool_key in prepared_pools:
                             continue
@@ -1460,7 +1467,6 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
                 step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
                 step.runtime_contracts=[asdict(x) for x in runtime]
-                steps.append(step); completed.add(key)
                 draw(step, after)
                 for node in discovered:
                     child=next((m for m in models if m.name==node.model),None)
