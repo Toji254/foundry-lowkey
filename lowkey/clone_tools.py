@@ -436,7 +436,7 @@ def update_one_level(
         if use_cache and key != "__no_cache__":
             cache = ensure_cache_repo(group[0][0])
             if all(cache_has_commit(cache, commit) for _, commit, _ in group):
-                command.extend(["--reference-if-able", str(cache)])
+                command.extend(["--reference", str(cache)])
 
         command.extend(["--", *[str(path.relative_to(repo)) for _, _, path in group]])
 
