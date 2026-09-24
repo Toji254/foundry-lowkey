@@ -3940,7 +3940,26 @@ def _fixture_model(
         if score:
             ranked.append((score, model))
     ranked.sort(key=lambda item: (-item[0], item[1].name.lower()))
-    return ranked[0][1] if ranked else None
+    if ranked:
+        return ranked[0][1]
+
+    # Generic fallback: a plain application contract with no lifecycle naming
+    # is still a valid walkthrough target. Prefer a contract with state-changing
+    # ABI functions, then any concrete application contract.
+    mutating = [
+        item for item in models
+        if item.kind == "contract"
+        and any(
+            x.get("type") == "function"
+            and x.get("stateMutability") not in {"view", "pure"}
+            for x in item.abi
+        )
+    ]
+    if mutating:
+        return sorted(mutating, key=lambda item: item.name.lower())[0]
+
+    concrete = [item for item in models if item.kind == "contract"]
+    return sorted(concrete, key=lambda item: item.name.lower())[0] if concrete else None
 
 
 def _function_by_name(model: ContractModel | None, name: str) -> dict[str, Any] | None:
@@ -5511,11 +5530,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         print("Lowkey will not continue with misleading precondition failures.", file=sys.stderr)
         return 2
 
-    runtime=_lab_runtime(config,target,model,model_catalog)
     model_catalog = models + [
         item for item in support_models
         if item.name not in {x.name for x in models}
     ]
+    runtime=_lab_runtime(config,target,model,model_catalog)
     steps=[]
     completed=set()
     prepared_pools: set[tuple[str, str]] = set()
