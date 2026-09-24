@@ -406,7 +406,7 @@ def _arg_for(
         return alice
     if ptype.startswith("uint") or ptype.startswith("int"):
         if any(x in name for x in ("deadline", "expiry", "expires")):
-            return now + 3600
+            return now + 31 * 24 * 60 * 60
         if any(x in name for x in ("id", "index", "nonce", "count")):
             return 0
         if any(x in name for x in ("bps", "basis", "fee")):
@@ -437,6 +437,21 @@ def _value_for(fn: dict[str, Any]) -> int:
     return 10**15 if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")) else 0
 
 
+def _actor_for_function(name: str, actors: list[Actor], observed: dict[str, Any]) -> Actor:
+    if not actors:
+        return Actor("Alice", observed.get("target") or "0x" + "00" * 20, 0)
+    low = str(name or "").lower()
+    moderator = observed.get("defaultoutcomemoderator") or observed.get("outcomemoderator")
+    if moderator:
+        for actor in actors:
+            if actor.address.lower() == str(moderator).lower() and ("flag" in low or "outcome" in low or "moderator" in low):
+                return actor
+    if any(token in low for token in ("createpool", "setstake", "setrecovery", "transferownership")):
+        return actors[0]
+    if any(token in low for token in ("claim", "withdraw", "redeem", "refund", "sweep")) and len(actors) > 1:
+        return actors[1]
+    return actors[0]
+
 def plan_workflow(
     model: ContractModel,
     actors: list[Actor],
@@ -459,9 +474,7 @@ def plan_workflow(
         low = name.lower()
         if any(x in low for x in ("upgrade", "setadmin", "transferownership", "selfdestruct", "pause", "unpause")):
             continue
-        actor = actors[0] if actors else Actor("Alice", target, 0)
-        if any(x in low for x in ("withdraw", "claim", "redeem", "release", "refund", "settle", "finalize", "cancel")) and len(actors) > 1:
-            actor = actors[1]
+        actor = _actor_for_function(name, actors, observed)
         args = [_arg_for(p, actors, target, now, observed) for p in item.get("inputs", [])]
         sig = _signature(item)
         steps.append(Step(
