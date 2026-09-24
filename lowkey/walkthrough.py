@@ -1291,7 +1291,7 @@ def _render_interaction_graph_full(
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
     lines = [
-        _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
+        _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
         f"  │   { _human_action_summary(step, actors) }",
         f"  │   [{actor}] ── CALL {linked_function}({args}) ──▶ [{contract}]",
@@ -1386,24 +1386,17 @@ def _render_protocol_story_full(
         visible.append(current)
 
     for index, step in enumerate(visible):
-        last = index == len(visible) - 1
-        if current is step or last:
-            model = next((m for m in models if m.name == step.contract), None)
-            frame = _render_interaction_graph_full(root, step, actors, model, models, enabled)
-            if current is step:
-                frame += "\n  ◀ NOW  •  LIVE"
-            lines.append(frame)
-        else:
-            icon = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
-            status = "done" if step.status == "success" else "blocked" if step.status in {"blocked", "reverted"} else "checked"
-            args = ", ".join(_friendly_arg(x, actors) for x in step.args) or "∅"
-            fn = str(step.function or "").split("(", 1)[0]
-            step_model = next((m for m in models if m.name == step.contract), None)
-            linked = _function_link(root, step_model, fn)
-            value_note = f" • {_friendly_eth(step.value_wei)}" if step.value_wei else ""
-            lines.append(f"  STEP {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{linked}({args}){value_note} • {status}")
-            lines.append("       │")
-            lines.append("       ▼")
+        step_model = next((m for m in models if m.name == step.contract), None)
+        frame = _render_interaction_graph_full(
+            root, step, actors, step_model, models, enabled
+        )
+        if current is step:
+            frame += "\n  ◀ NOW  •  LIVE"
+        lines.append(frame)
+        if index != len(visible) - 1:
+            lines.append("                 │")
+            lines.append("                 ▼")
+
     return "\n".join(lines)
 
 
