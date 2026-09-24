@@ -28,6 +28,11 @@ try:
 except ImportError:
     run_walkthrough = None
 
+try:
+    import system_model
+except ImportError:
+    system_model = None
+
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 SNAPSHOT_DIR = os.path.join(CONFIG_DIR, "snapshots")
@@ -1248,7 +1253,10 @@ contract Exploit_Reproduction is Test {{
     os.makedirs("test",exist_ok=True)
     filename=os.path.join("test",f"Exploit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
     Path(filename).write_text(test,encoding="utf-8")
+    manifest_result = refresh_system_manifest(config, reason="exploit-reproduction")
     print(f"Exploit reproduction generated: {filename}")
+    if manifest_result:
+        print(f"System model updated: {manifest_result[1]}")
 def run_checklist(config,action=None,item=None):
     path=os.path.join(AUDIT_DIR,"CHECKLIST.md"); os.makedirs(AUDIT_DIR,exist_ok=True)
     if not os.path.exists(path): Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8")
@@ -1286,12 +1294,18 @@ def discover_deployments(root="."):
 
 def run_deployments(config):
     records=discover_deployments(".")
-    if not records: print("No Foundry broadcast deployments discovered."); return
+    if not records:
+        refresh_system_manifest(config, reason="deployments:empty")
+        print("No Foundry broadcast deployments discovered.")
+        return
     seen=set()
     for r in records:
         key=(r["contract"],r["address"])
         if key in seen: continue
         seen.add(key); print(f"{r['contract']:<24} {r['address']}  {r['file']}")
+    result = refresh_system_manifest(config, reason="deployments")
+    if result:
+        print(f"System model: {result[1]}")
 
 def run_auto_target(config,name=None):
     records=discover_deployments(".")
@@ -1301,7 +1315,9 @@ def run_auto_target(config,name=None):
     for path in artifact_json_files("."):
         if os.path.join(".","out") in path and os.path.basename(path)==f"{record['contract']}.json":
             config["abi_paths"][record["address"]]=path; print(f"ABI auto-loaded: {path}"); break
-    save_config(config); print(f"Target selected: {alias} -> {record['address']}")
+    save_config(config)
+    refresh_system_manifest(config, reason="target:auto")
+    print(f"Target selected: {alias} -> {record['address']}")
 
 def run_ens(config,args):
     if not args: print("Usage: lk ens <name|address>"); return
@@ -1574,6 +1590,46 @@ def run_status(config):
     print(f"ABI    : {config.get('abi_paths',{}).get(config.get('target')) or 'not loaded'}")
     print(f"LastTX : {config.get('last_tx') or 'none'}")
 
+def refresh_system_manifest(config=None, reason="lk"):
+    """Refresh the project-wide bootstrap model from existing evidence."""
+    if system_model is None:
+        return None
+    config = config or load_config()
+    try:
+        manifest, path = system_model.refresh_manifest(
+            ".",
+            rpc=config.get("rpc"),
+            config=config,
+            reason=reason,
+        )
+        return manifest, path
+    except Exception as exc:
+        print(f"Warning: system bootstrap manifest refresh failed: {exc}", file=sys.stderr)
+        return None
+
+
+def run_system(config, args=None):
+    args = list(args or [])
+    result = refresh_system_manifest(config, reason="lk system")
+    if result is None:
+        return fail("System model module is not installed. Run install.sh.")
+    manifest, path = result
+    summary = system_model.summarize_manifest(manifest)
+    print("LOWKEY SYSTEM MODEL")
+    print("=" * 72)
+    print(f"Manifest      : {path}")
+    print(f"Contracts     : {summary['contracts']}")
+    print(f"Deployments   : {summary['deployments']} ({summary['live']} live)")
+    print(f"Relationships : {summary['relationships']}")
+    print(f"Roles         : {summary['roles']}")
+    print(f"Initialization: {summary['initialization_steps']}")
+    print(f"Tests         : {summary['tests']}")
+    print(f"Adversarial   : {summary['adversarial_evidence']}")
+    if args and args[0] == "show":
+        print(json.dumps(manifest, indent=2, default=str))
+    return 0
+
+
 def run_wizard(config,args):
     if not args:
         print("Usage: lk wizard <function> [call|send|encode]")
@@ -1629,7 +1685,8 @@ CORE
   lk target list                      List saved targets
   lk target auto [name]               Use latest broadcast deployment
   lk use <name|number>                Switch target
-  lk deployments                      List deployments
+  lk deployments                      List deployments + refresh system model
+  lk system [show]                    Build/show reusable system bootstrap manifest
   lk status                           Show target/RPC/actor/ABI/last tx
   lk rpc <url>                        Set RPC
   lk rpc set <name> <url>             Save RPC profile
@@ -1749,6 +1806,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if not resolved: print(f"Unknown target: {args[0]}"); return
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
+    elif cmd=="system": return run_system(config,args)
     elif cmd=="rpc":
         if not args: print(f"RPC: {rpc_display(config.get('rpc')) or 'none'}"); return
         sub=args[0]
