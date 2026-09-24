@@ -68,6 +68,44 @@ class AuditEngineTests(unittest.TestCase):
                 ],
             )
 
+    def test_vyper_build_skips_submodule_sources(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            contracts = root / "contracts"
+            contracts.mkdir()
+            (contracts / "Oracle.vy").write_text(
+                "@external\ndef ping() -> uint256:\n    return 1\n",
+                encoding="utf-8",
+            )
+            dependency = root / "deps" / "legacy"
+            dependency.mkdir(parents=True)
+            (dependency / "Legacy.vy").write_text(
+                "# @version 0.3.10\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                audit_engine,
+                "project_source_files",
+                return_value=[contracts / "Oracle.vy", dependency / "Legacy.vy"],
+            ), patch.object(
+                audit_engine,
+                "run_command",
+                return_value=(0, "ok", ""),
+            ):
+                code, stdout, stderr, files = audit_engine._run_vyper_build(
+                    str(root),
+                    {"submodules": [{"path": "deps/legacy"}]},
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                [item["file"] for item in files],
+                ["contracts/Oracle.vy"],
+            )
+
     def test_parse_slither_payload_normalizes_detector(self):
         payload = {
             "results": {
@@ -97,6 +135,44 @@ class AuditEngineTests(unittest.TestCase):
         self.assertEqual(findings[0]["confidence"], "medium")
         self.assertEqual(findings[0]["locations"][0]["source"], "src/Vault.sol")
         self.assertEqual(findings[0]["locations"][0]["start"], 42)
+
+    def test_project_test_command_ignores_declared_dependencies(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "tests").mkdir()
+            dependency = root / "tests" / "vendor"
+            dependency.mkdir(parents=True)
+            project = {"submodules": [{"path": "tests/vendor"}]}
+
+            command = audit_engine._project_test_command(str(root), project)
+
+            self.assertEqual(command[:4], ["uv", "run", "pytest", "tests"])
+            self.assertEqual(command[4:], ["--ignore", "tests/vendor"])
+
+    def test_github_release_solc_rejects_invalid_cached_binary(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            cache = root / ".audit" / "toolchain" / "cache"
+            cache.mkdir(parents=True)
+            binary = cache / "solc-0.8.18"
+            binary.write_text("not-a-solc", encoding="utf-8")
+            binary.chmod(0o755)
+
+            with patch(
+                "audit_engine.urllib.request.urlopen",
+                side_effect=OSError("offline"),
+            ):
+                code, stdout, stderr, executable = audit_engine._github_release_solc(
+                    str(root), "0.8.18"
+                )
+
+            self.assertNotEqual(code, 0)
+            self.assertIsNone(executable)
+            self.assertIn("offline", stderr)
 
     def test_generate_poc_uses_slither_evidence_and_matrix(self):
         from tempfile import TemporaryDirectory
