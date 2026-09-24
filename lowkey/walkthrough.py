@@ -3015,6 +3015,14 @@ def _send(host: Any, config: dict[str, Any], actor: Actor, target: str, signatur
     return tx, (out or "").strip()
 
 
+def _model_uses_token_allowance(model: ContractModel | None) -> bool:
+    """Return True when a child model visibly interacts with ERC20 allowance/spend flows."""
+    if not model:
+        return False
+    names = {str(item.get("name") or "").lower() for item in model.abi if item.get("type") == "function"}
+    calls = {str(edge.get("to_function") or "").lower() for edge in model.calls if edge.get("kind") == "cross-contract"}
+    return bool({"transferfrom", "allowance"} & names) or "transferfrom" in calls
+
 def _prepare_lab_allowance(
     host: Any,
     config: dict[str, Any],
@@ -5892,12 +5900,14 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     lab = config.get("lab_system")
                     if isinstance(lab, dict):
                         for node in discovered:
+                            child_model = str(lab.get("child_model") or "").strip().lower()
                             if (
-                                node.model
+                                child_model
+                                and node.model
                                 and node.model != "External"
-                                and node.model.lower() == str(lab.get("child_model") or "ConfidencePool").lower()
+                                and node.model.lower() == child_model
                             ):
-                                lab["pool"] = node.address
+                                lab["child"] = node.address
                         config["lab_system"] = lab
                         if hasattr(host, "save_config"):
                             host.save_config(config)
@@ -5912,8 +5922,13 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 token_address = observed.get("staketoken")
                 use_pool_recipe = config.get("_walkthrough_recipe") == "confidence-pool"
                 if token_address and discovered and not use_pool_recipe:
+                    child_model_name = str(config.get("lab_system", {}).get("child_model") or "").strip().lower()
                     for node in discovered:
-                        if "pool" not in str(node.model).lower():
+                        if child_model_name and str(node.model).lower() != child_model_name:
+                            continue
+                        if not _model_uses_token_allowance(
+                            next((item for item in model_catalog if item.name.lower() == str(node.model).lower()), None)
+                        ):
                             continue
                         pool_key = (token_address.lower(), node.address.lower())
                         if pool_key in prepared_pools:
