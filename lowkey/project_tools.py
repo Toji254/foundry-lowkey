@@ -271,7 +271,7 @@ def _installed_package_root(root: Path, package: str) -> Path | None:
 
 
 def _solidity_imports(text: str) -> list[tuple[str, int, str]]:
-    pattern = re.compile(r'import\\s+(?:[^;]*?\\s+from\\s+)?["\\']([^"\\']+)["\\']\\s*;')
+    pattern = re.compile(r"""import\\s+(?:[^;]*?\\s+from\\s+)?["']([^"']+)["']\\s*;""")
     return [(match.group(1), text.count("\\n", 0, match.start()) + 1, match.group(0).strip()) for match in pattern.finditer(text)]
 
 
