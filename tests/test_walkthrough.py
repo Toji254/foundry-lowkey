@@ -2,6 +2,7 @@ import importlib.util
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -159,6 +160,86 @@ class WalkthroughTests(unittest.TestCase):
         )
         self.assertIsNone(args)
         self.assertIn("agreement", reason.lower())
+
+    def test_bootstrap_discovery_is_protocol_agnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            script_dir = root / "script"
+            test_dir = root / "test"
+            script_dir.mkdir()
+            test_dir.mkdir()
+
+            (script_dir / "Deploy.s.sol").write_text(
+                """
+                contract Deploy {
+                    function run() external {
+                        vm.startBroadcast();
+                        new Example();
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            (test_dir / "Example.t.sol").write_text(
+                """
+                contract ExampleTest {
+                    function setUp() public { new Example(); }
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            with patch.object(walk, "_code_size", return_value=0):
+                result = walk._discover_bootstrap(root, "http://127.0.0.1:8545")
+
+            self.assertEqual(result["scripts"][0]["path"], "script/Deploy.s.sol")
+            self.assertIn("broadcast", result["scripts"][0]["signals"])
+            self.assertIn("contract creation", result["scripts"][0]["signals"])
+            self.assertEqual(result["tests"][0]["path"], "test/Example.t.sol")
+            self.assertIn("setUp()", result["tests"][0]["signals"])
+
+    def test_walkthrough_target_prefers_live_config_then_broadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            configured = "0x" + "1" * 40
+            broadcasted = "0x" + "2" * 40
+            bootstrap = {
+                "live_deployments": [
+                    {
+                        "address": broadcasted,
+                        "contract": "Example",
+                        "broadcast": "broadcast/Deploy/31337/run-latest.json",
+                        "index": 1,
+                    }
+                ]
+            }
+
+            sizes = {
+                configured.lower(): 100,
+                broadcasted.lower(): 100,
+            }
+
+            with patch.object(
+                walk, "_code_size", side_effect=lambda _rpc, addr: sizes.get(addr.lower(), 0)
+            ):
+                target, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": configured, "targets": {}},
+                    "http://127.0.0.1:8545",
+                    bootstrap,
+                )
+            self.assertEqual(target, configured)
+            self.assertEqual(source, "configured target")
+
+            with patch.object(walk, "_code_size", return_value=0):
+                target, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": None, "targets": {}},
+                    "http://127.0.0.1:8545",
+                    bootstrap,
+                )
+            self.assertEqual(target, broadcasted)
+            self.assertTrue(source.startswith("broadcast "))
 
     def test_error_decoder_reports_static_custom_error(self):
         err = {"name": "StakingClosed", "inputs": []}
