@@ -1199,7 +1199,7 @@ def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
     elif lower.startswith("createpool"):
         lines.append("    ├─ factory checks: token allowed, expiry valid, agreement valid, caller owns agreement")
         lines.append("    ├─ factory deploys a child pool clone")
-        lines.append("    ├─ child pool.initialize(...) wires the agreement, token, registry, moderator, owner and scope")
+        lines.append("    ├─ child pool.initialize(...) wires the agreement, token, registry, moderator, owner and scope — the new pool is now initialized")
         lines.append("    └─ PoolCreated records the new pool in the factory")
     elif lower.startswith("flagoutcome"):
         lines.append("    ├─ outcome is recorded")
@@ -1440,11 +1440,12 @@ def _render_interaction_graph_full(
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
     lines = [
-        _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
+        _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
         f"  │   {ACTOR} {actor} {ARROW} [{contract}]",
         f"  │       {call_display}",
         f"  │       ↳ {_human_action_summary(step, actors)}",
+        f"  │   [technical] [{actor}] ── CALL {raw_call} ──▶ [{contract}]",
     ]
 
     input_lines = _input_story(step, model, actors) if model else []
