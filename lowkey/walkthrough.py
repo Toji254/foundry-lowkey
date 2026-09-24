@@ -759,6 +759,9 @@ def _find_model(models: list[ContractModel], name: str | None, target_contract: 
         matches = [m for m in models if query in m.name.lower()]
         if matches:
             return matches[0]
+    protocol_root = _infer_protocol_root(models) if models else None
+    if protocol_root:
+        return protocol_root
     deployable = [m for m in models if any(
         x.get("type") == "constructor" for x in m.abi
     ) or any(x.get("type") == "function" for x in m.abi)]
