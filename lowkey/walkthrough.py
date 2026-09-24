@@ -2088,6 +2088,7 @@ def _probe_source_dependency_result(
     edge: dict[str, Any],
     dependency_address: str,
     models: list[ContractModel],
+    caller_address: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Read the source-discovered dependency call and report its real return value."""
     target_name = str(edge.get("to_contract") or edge.get("interface") or "")
@@ -2143,8 +2144,15 @@ def _probe_source_dependency_result(
 
     rendered = " ".join((out or err or "").strip().split())[-240:] or "empty result"
     origin = None
-    if rendered.lower() == "false" or rendered.lower().endswith(" false"):
+    lowered = rendered.lower()
+    if lowered == "false" or lowered.endswith(" false"):
         origin = f"{concrete}.{fn_name} returned false"
+    elif caller_address and is_address(rendered):
+        if rendered.lower() != str(caller_address).lower():
+            origin = (
+                f"{concrete}.{fn_name} returned {_addr(rendered)}, "
+                f"which does not match caller {_addr(caller_address)}"
+            )
     return origin, f"{concrete}.{_signature(fn_item)} → {rendered}"
 
 def _diagnose_argument_contracts(
@@ -2152,6 +2160,7 @@ def _diagnose_argument_contracts(
     step: Step,
     model: ContractModel,
     models: list[ContractModel] | None = None,
+    caller_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
     """Trace source-discovered address dependencies and probe their real behavior."""
     origin = None
@@ -2181,7 +2190,13 @@ def _diagnose_argument_contracts(
             f"the source expects {target_desc}"
         )
         probe_origin, probe = _probe_source_dependency_result(
-            rpc, step, model, edge, candidate, model_catalog
+            rpc,
+            step,
+            model,
+            edge,
+            candidate,
+            model_catalog,
+            caller_address=caller_address,
         )
         if probe:
             diagnostics.append(f"dependency result: {probe}")
@@ -2202,7 +2217,9 @@ def _diagnose_failed_call(
     origin, diagnostics = _read_zero_address_diagnostics(rpc, step.address, model)
     source_lines = _source_guard_lines(model, step)
     diagnostics.extend(source_lines[:8])
-    arg_origin, arg_diagnostics = _diagnose_argument_contracts(rpc, step, model, models)
+    arg_origin, arg_diagnostics = _diagnose_argument_contracts(
+        rpc, step, model, models, caller_address=actor_address
+    )
     origin = origin or arg_origin
     diagnostics.extend(arg_diagnostics)
 
