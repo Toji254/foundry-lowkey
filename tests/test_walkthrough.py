@@ -355,7 +355,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("WEB / Factory", rendered)
         self.assertIn("FROM / who can affect or feed the hub", rendered)
         self.assertIn("TO / what the hub relies on or controls", rendered)
-        self.assertIn("CROSS-LINKS / supporting components", rendered)
+        self.assertIn("CROSS-LINKS / the web outside the hub", rendered)
         self.assertIn("checks ownership", rendered)
         self.assertIn("creates / initializes", rendered)
         self.assertIn("checks scope", rendered)
