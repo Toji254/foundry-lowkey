@@ -39,6 +39,7 @@ except ImportError:
     system_model = None
 
 ZERO = "0x" + "0" * 40
+EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+$")
 
@@ -772,6 +773,60 @@ def _discover_bootstrap(root: Path, rpc: str) -> dict[str, Any]:
     }
 
 
+def _eip1967_implementation(root: Path, rpc: str, address: str) -> str | None:
+    """Read the canonical ERC-1967 implementation slot from a deployed address."""
+    if not _is_address(address):
+        return None
+    try:
+        raw = str(
+            _rpc(
+                rpc,
+                "eth_getStorageAt",
+                [address, EIP1967_IMPLEMENTATION_SLOT, "latest"],
+            )
+            or ""
+        )
+    except Exception:
+        return None
+    match = re.search(r"0x([0-9a-fA-F]{64})", raw)
+    if not match:
+        return None
+    implementation = "0x" + match.group(1)[-40:]
+    if implementation.lower() == ZERO.lower():
+        return None
+    return implementation
+
+
+def _find_live_proxy_for_implementation(
+    root: Path,
+    rpc: str,
+    implementation: str,
+    live: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    """Return a live ERC-1967 proxy whose implementation slot points to implementation."""
+    if not _is_address(implementation):
+        return None
+    target = implementation.lower()
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for item in live:
+        address = str(item.get("address") or "")
+        if not _is_address(address) or address.lower() == target:
+            continue
+        resolved = _eip1967_implementation(root, rpc, address)
+        if resolved and resolved.lower() == target:
+            matches.append((address, item))
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda pair: (
+            str(pair[1].get("broadcast") or ""),
+            int(pair[1].get("index") or 0),
+        ),
+        reverse=True,
+    )
+    return matches[0]
+
+
 def _resolve_walkthrough_target(
     root: Path,
     config: dict[str, Any],
@@ -797,6 +852,14 @@ def _resolve_walkthrough_target(
 
     if _is_address(configured):
         expected = str(config.get("target_contract") or _target_label(config, configured) or "")
+
+        proxy = _find_live_proxy_for_implementation(root, rpc, configured, live)
+        if proxy:
+            proxy_address, proxy_item = proxy
+            return proxy_address, (
+                f"current broadcast proxy for implementation "
+                f"{proxy_item.get('contract') or expected or 'target'}"
+            )
         same = next(
             (
                 item for item in live
@@ -845,6 +908,13 @@ def _resolve_walkthrough_target(
             continue
         file_name = str(item.get("file") or "target")
         source = f"audit evidence '{file_name}'"
+        proxy = _find_live_proxy_for_implementation(root, rpc, address, live)
+        if proxy:
+            proxy_address, proxy_item = proxy
+            return proxy_address, (
+                f"current broadcast proxy for audit implementation "
+                f"{proxy_item.get('contract') or expected or file_name}"
+            )
         code = _code_size(rpc, address)
         if code > 0 and (
             not live or not expected or compatible(address, expected)
@@ -2534,7 +2604,7 @@ def _choose_caller(
     owner_fn = _function_by_name(fs, "owner")
     if owner_fn and any(x in n for x in ("set", "pause", "unpause", "upgrade", "authorize")):
         val, _ = _read_simple_getter(root, rpc, node, owner_fn)
-        if _is_address(val):
+        if _is_address(val) and val.lower() != ZERO.lower():
             return val, "Owner"
 
     if n in {"flagoutcome"}:
@@ -4125,6 +4195,13 @@ def _initializer_recovery_action(
         caller,
         all_errors,
     )
+
+    # Zero owner + zero initializer fields is not sufficient evidence that this
+    # address can actually be initialized. Implementations may deliberately
+    # disable initialization, and already-initialized components must be left
+    # alone. Only surface recovery when initialize() itself succeeds in simulation.
+    if not precheck["ok"]:
+        return None
 
     return {
         "node": node,
