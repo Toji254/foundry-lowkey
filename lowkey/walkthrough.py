@@ -2227,6 +2227,9 @@ def _system_test_targets(
     for key, address in system.items():
         if key not in known_names:
             continue
+        if key == "pool_implementation":
+            # The implementation is not a live protocol instance; the clone is.
+            continue
         add(key, address, known_names[key])
 
     return result
