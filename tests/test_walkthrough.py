@@ -735,6 +735,45 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("balances", public_entry.writes)
         self.assertIn("balances", public_entry.reads)
 
+    def test_shared_state_flow_ignores_static_only_contracts_when_live_nodes_are_supplied(self):
+        live = walk.LiveNode(
+            address="0x" + "1" * 40,
+            name="Vault",
+            artifact_contract="Vault",
+            code_size=100,
+        )
+        vault = walk.ContractInfo(
+            name="Vault",
+            source="src/Vault.sol",
+            line=1,
+            state_vars=[{"name": "balances", "type": "mapping(address => uint256)", "visibility": "private"}],
+        )
+        dead = walk.ContractInfo(
+            name="Unused",
+            source="src/Unused.sol",
+            line=1,
+            state_vars=[{"name": "other", "type": "mapping(address => uint256)", "visibility": "private"}],
+        )
+        fn = walk.FunctionInfo(
+            contract="Vault",
+            name="deposit",
+            inputs=[],
+            outputs=[],
+            mutability="nonpayable",
+            signature="deposit()",
+            visibility="external",
+            writes=["balances"],
+        )
+        rendered = "\n".join(
+            walk._render_shared_state_flow(
+                {"Vault": [fn]},
+                {"Vault": vault, "Unused": dead},
+                [live],
+            )
+        )
+        self.assertIn("Vault::balances", rendered)
+        self.assertNotIn("Unused::other", rendered)
+
     def test_shared_state_flow_shows_multiple_functions_converging_on_same_mapping(self):
         contract = walk.ContractInfo(
             name="Vault",
