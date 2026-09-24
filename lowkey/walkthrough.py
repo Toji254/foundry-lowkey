@@ -4035,7 +4035,12 @@ def _initializer_recovery_action(
     known: dict[str, str],
     all_errors: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Recover an evidently uninitialized Ownable-style component on local state."""
+    """Recover an evidently uninitialized focus component on a local chain.
+
+    A zero owner alone is not enough because ownership may have been deliberately
+    renounced. Require at least one critical initializer-owned address to still
+    be zero as well.
+    """
     node: LiveNode = blocked["node"]
     funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
     owner_fn = _function_by_name(funcs, "owner")
@@ -4047,9 +4052,39 @@ def _initializer_recovery_action(
     if not _is_address(owner) or owner.lower() != ZERO.lower():
         return None
 
+    critical_zero = False
+    for getter_name in (
+        "safeHarborRegistry",
+        "poolImplementation",
+        "defaultOutcomeModerator",
+    ):
+        getter = _function_by_name(funcs, getter_name)
+        if getter is None:
+            continue
+        value, _ = _read_simple_getter(root, rpc, node, getter)
+        if _is_address(value) and value.lower() == ZERO.lower():
+            critical_zero = True
+            break
+    if not critical_zero:
+        return None
+
     local_accounts = _eth_accounts(rpc)
     if not local_accounts:
-        return None
+        return {
+            "node": node,
+            "function": initialize,
+            "args": [],
+            "caller": None,
+            "actor_name": "Setup Signer",
+            "status": "BLOCKED",
+            "phase": "SETUP",
+            "what": f"Initialize {node.artifact_contract or node.name} before continuing the protocol walkthrough.",
+            "why": "The live component has zero ownership and at least one initializer-owned critical address is still zero.",
+            "semantic_reason": "derived from live zero-owner + zero-critical-state evidence",
+            "result": {"ok": False, "decoded_error": None, "raw": "no local RPC signer is available"},
+            "diagnosis": ["initializer appears required but eth_accounts returned no local signer"],
+            "setup_recovery": True,
+        }
 
     args, reason = _semantic_args(
         node,
@@ -4058,12 +4093,26 @@ def _initializer_recovery_action(
         nodes,
         actors,
         known,
-        int(time.time()),
+        _latest_timestamp(rpc),
         root,
         rpc,
     )
     if args is None:
-        return None
+        return {
+            "node": node,
+            "function": initialize,
+            "args": [],
+            "caller": local_accounts[0],
+            "actor_name": "Setup Signer",
+            "status": "BLOCKED",
+            "phase": "SETUP",
+            "what": f"Initialize {node.artifact_contract or node.name} before continuing the protocol walkthrough.",
+            "why": "The live component is evidently uninitialized, but Lowkey could not synthesize every initializer argument safely.",
+            "semantic_reason": reason or "initializer argument synthesis failed",
+            "result": {"ok": False, "decoded_error": None, "raw": reason or "initializer arguments unavailable"},
+            "diagnosis": [reason or "initializer arguments unavailable"],
+            "setup_recovery": True,
+        }
 
     caller = local_accounts[0]
     precheck = _preflight_failure(
@@ -4075,8 +4124,6 @@ def _initializer_recovery_action(
         caller,
         all_errors,
     )
-    if not precheck["ok"]:
-        return None
 
     return {
         "node": node,
@@ -4084,173 +4131,27 @@ def _initializer_recovery_action(
         "args": args,
         "caller": caller,
         "actor_name": "Setup Signer",
-        "status": "READY",
+        "status": "READY" if precheck["ok"] else "BLOCKED",
         "phase": "SETUP",
         "what": (
-            f"Initialize {node.artifact_contract or node.name} because its live owner is the zero address."
+            f"Initialize {node.artifact_contract or node.name} before continuing the protocol walkthrough."
         ),
         "why": (
-            "The live contract is evidently uninitialized: owner() == address(0), "
-            "while an initializer exists and its arguments can be recovered from live protocol components."
+            "The live component has owner() == address(0) and initializer-owned "
+            "critical state is still zero."
         ),
-        "semantic_reason": "derived from zero owner + initializer + live component argument synthesis",
+        "semantic_reason": (
+            "derived from live zero-owner + zero-critical-state evidence"
+            + (f"; {reason}" if reason else "")
+        ),
         "result": precheck,
         "diagnosis": [
             "owner() currently returns address(0)",
-            "initializer is present on the live contract",
-            "initialization arguments were synthesized from live protocol components",
+            "initializer-owned critical state is still zero",
+            f"local setup signer: {_short_address(caller)}",
         ],
         "setup_recovery": True,
     }
-
-
-def _prerequisite_from_blocked_action(
-    root: Path,
-    rpc: str,
-    blocked: dict[str, Any],
-    functions_by_contract: dict[str, list[FunctionInfo]],
-    nodes: list[LiveNode],
-    actors: dict[str, str],
-    known: dict[str, str],
-    all_errors: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Turn an evidence-backed protocol gate into its enabling transition.
-
-    This is deliberately generic: it looks for a source state read by the
-    blocked entry point and an external/public mutator that writes that same
-    state. It does not invent a prerequisite when no such relationship exists.
-    """
-    node: LiveNode = blocked["node"]
-    fn: FunctionInfo = blocked["function"]
-    result = blocked.get("result") or {}
-    decoded = str(result.get("decoded_error") or "").casefold()
-    funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
-
-    if not decoded:
-        return None
-
-    # Prefer a directly named "not allowed" gate. This catches common mapping
-    # guards such as allowedStakeToken[token] while remaining protocol-agnostic.
-    looks_like_allowance_gate = any(
-        token in decoded
-        for token in ("notallowed", "not_allowed", "notapproved", "notapproved")
-    )
-
-    state_names = list(dict.fromkeys(fn.reads or []))
-    for state_name in state_names:
-        writers = [
-            candidate for candidate in funcs
-            if candidate.name != fn.name
-            and candidate.visibility in {"external", "public"}
-            and candidate.mutability not in {"view", "pure"}
-            and state_name in (candidate.writes or [])
-        ]
-        if not writers:
-            continue
-
-        ranked = sorted(
-            writers,
-            key=lambda candidate: (
-                0 if candidate.name.lower().startswith(("set", "allow", "authorize", "enable")) else 1,
-                -len(candidate.writes or []),
-                candidate.name,
-            ),
-        )
-        writer = ranked[0]
-
-        # Don't reinterpret an arbitrary state gate as a setup action unless
-        # the revert or writer naming gives us reasonable evidence.
-        wn = writer.name.lower()
-        state_low = state_name.casefold()
-        state_specific = any(part in state_low for part in ("allow", "approv", "enabled", "active", "open"))
-        writer_specific = any(part in wn for part in ("allow", "approv", "enable", "authorize"))
-        if not (looks_like_allowance_gate or state_specific or writer_specific):
-            continue
-
-        blocked_inputs = {
-            str(item.get("name") or "").casefold(): value
-            for item, value in zip(fn.inputs, blocked.get("args") or [])
-        }
-        prereq_args: list[Any] = []
-
-        for item in writer.inputs:
-            pname = str(item.get("name") or "")
-            plow = pname.casefold()
-            typ = _canonical_abi_type(item)
-            value = None
-
-            # Carry the blocked call's keyed resource into the enabling setter.
-            # E.g. createPool(stakeToken=TOKEN) -> setStakeTokenAllowed(token=TOKEN,true).
-            for candidate_name, candidate_value in blocked_inputs.items():
-                if not _is_address(candidate_value):
-                    continue
-                if (
-                    candidate_name == plow
-                    or any(token in plow and token in candidate_name for token in ("token", "asset", "address", "resource"))
-                    or any(token in plow for token in ("token", "asset", "address"))
-                ):
-                    value = candidate_value
-                    break
-
-            if value is None and typ == "bool":
-                value = True if any(
-                    token in plow for token in ("allow", "approv", "enable", "enabled")
-                ) else False
-
-            if value is None:
-                value = _semantic_arg(
-                    item,
-                    node,
-                    functions_by_contract,
-                    nodes,
-                    actors,
-                    known,
-                    int(time.time()),
-                    root,
-                    rpc,
-                )
-
-            if value is None:
-                return None
-            prereq_args.append(value)
-
-        caller, actor_name = _choose_caller(
-            root, rpc, node, writer, actors, nodes, functions_by_contract
-        )
-        if not caller:
-            return None
-
-        precheck = _preflight_failure(
-            root, rpc, node, writer, prereq_args, caller, all_errors
-        )
-
-        return {
-            "node": node,
-            "function": writer,
-            "args": prereq_args,
-            "caller": caller,
-            "actor_name": actor_name,
-            "status": "READY" if precheck["ok"] else "BLOCKED",
-            "phase": "PREREQUISITE",
-            "what": (
-                f"Prepare {state_name} so {node.artifact_contract or node.name}.{fn.name}() "
-                "can execute."
-            ),
-            "why": (
-                f"{node.artifact_contract or node.name}.{fn.name}() is blocked by "
-                f"{result.get('decoded_error')}; this transition writes the state that gate reads."
-            ),
-            "semantic_reason": (
-                f"derived from {fn.name}() reading {state_name} and "
-                f"{writer.name}() writing the same state"
-            ),
-            "result": precheck,
-            "diagnosis": blocked.get("diagnosis") or [],
-            "prerequisite_for": f"{fn.contract}.{fn.name}()",
-            "prerequisite_state": state_name,
-        }
-
-    return None
 
 
 def _next_transition_action(
@@ -4261,6 +4162,7 @@ def _next_transition_action(
     actors: dict[str, str],
     known: dict[str, str],
     all_errors: list[dict[str, Any]],
+    require_local_signer: bool = False,
 ) -> dict[str, Any] | None:
     candidates = _candidate_actions(
         root, meta, functions_by_contract, nodes, actors, known, all_errors
@@ -4268,26 +4170,40 @@ def _next_transition_action(
     if not candidates:
         return None
 
+    # In live-send mode, execution authority is part of readiness. A simulated
+    # eth_call can impersonate address(0), so it must never make an impossible
+    # owner action look executable.
+    blocked = candidates[0]
+    if require_local_signer:
+        caller = str(blocked.get("caller") or "")
+        if not _sender_available_for_local_send(str(meta["rpc"]), caller):
+            recovery = _initializer_recovery_action(
+                root,
+                str(meta["rpc"]),
+                blocked,
+                functions_by_contract,
+                nodes,
+                actors,
+                known,
+                all_errors,
+            )
+            if recovery:
+                return recovery
+
     # Prefer an actually executable protocol transition.
-    ready = [action for action in candidates if action.get("status") == "READY"]
+    ready = [
+        action for action in candidates
+        if action.get("status") == "READY"
+        and (
+            not require_local_signer
+            or _sender_available_for_local_send(
+                str(meta["rpc"]),
+                str(action.get("caller") or ""),
+            )
+        )
+    ]
     if ready:
         return ready[0]
-
-    # A zero-owner local component with an initializer is a setup-state problem.
-    # Recover that state before attempting owner-gated prerequisites.
-    blocked = candidates[0]
-    recovery = _initializer_recovery_action(
-        root,
-        str(meta["rpc"]),
-        blocked,
-        functions_by_contract,
-        nodes,
-        actors,
-        known,
-        all_errors,
-    )
-    if recovery:
-        return recovery
 
     # When the core transition is blocked by a source-backed state gate, walk
     # backward one hop and execute the legitimate enabling transition first.
@@ -4369,7 +4285,14 @@ def _run_walkthrough(
             payload["model"] = meta
 
         action = _next_transition_action(
-            root, meta, fns, nodes, actors, known, errors
+            root,
+            meta,
+            fns,
+            nodes,
+            actors,
+            known,
+            errors,
+            require_local_signer=live_send,
         )
 
         if action is None:
