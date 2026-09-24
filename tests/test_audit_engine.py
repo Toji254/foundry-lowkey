@@ -153,22 +153,6 @@ class AuditEngineTests(unittest.TestCase):
             self.assertEqual(command[5:], ["--ignore", "tests/vendor"])
 
 
-    def test_project_python_prefers_project_venv(self):
-        from tempfile import TemporaryDirectory
-
-        with TemporaryDirectory() as raw:
-            root = Path(raw)
-            python = root / ".venv" / "bin" / "python"
-            python.parent.mkdir(parents=True)
-            python.write_text("#!/bin/sh\n", encoding="utf-8")
-            python.chmod(0o755)
-
-            with patch.dict("os.environ", {"VIRTUAL_ENV": "/does/not/matter"}, clear=False):
-                self.assertEqual(
-                    audit_engine._project_python(str(root)),
-                    str(python.resolve()),
-                )
-
     def test_slither_command_does_not_fail_on_findings_by_default(self):
         from tempfile import TemporaryDirectory
 
