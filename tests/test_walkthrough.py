@@ -484,7 +484,7 @@ class WalkthroughTests(unittest.TestCase):
                         {
                             "type": "CALL",
                             "to": "0x" + "2" * 40,
-                            "input": "0xabcdef12",
+                            "input": "0x23b872dd" ,
                         }
                     ],
                 },
