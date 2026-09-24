@@ -3299,14 +3299,17 @@ def _synthesize_local_protocol_fixture(
 
     # Wire the disposable registry/Agreement fixtures before the root creates a child.
     if system.get("attack_registry"):
-        _send_lab_control(
+        if not _send_lab_control(
             host, config, alice, system["safe_harbor_registry"],
             "setAttackRegistry(address)", [system["attack_registry"]],
-        )
-    _send_lab_control(
+        ):
+            return False, "failed to wire Safe Harbor Registry -> Attack Registry"
+
+    if not _send_lab_control(
         host, config, alice, system["safe_harbor_registry"],
         "setAgreementValid(address,bool)", [system["agreement"], True],
-    )
+    ):
+        return False, "failed to mark the synthetic Agreement valid in the Safe Harbor Registry"
 
     # Agreement scope is required by child.initialize in systems with the same
     # scope-validation pattern. Ignore the optional call for other fixtures.
@@ -3319,15 +3322,17 @@ def _synthesize_local_protocol_fixture(
         None,
     )
     if agreement_scope_fn:
-        _send_lab_control(
+        if not _send_lab_control(
             host, config, alice, system["agreement"],
             _signature(agreement_scope_fn), [alice.address, True],
-        )
+        ):
+            return False, "failed to add Alice to the Agreement scope"
         if bob.address.lower() != alice.address.lower():
-            _send_lab_control(
+            if not _send_lab_control(
                 host, config, alice, system["agreement"],
                 _signature(agreement_scope_fn), [bob.address, True],
-            )
+            ):
+                return False, "failed to add Bob to the Agreement scope"
 
     factory_impl = deploy_model(root_model)
     if not is_address(factory_impl):
@@ -3409,10 +3414,11 @@ def _synthesize_local_protocol_fixture(
         None,
     )
     if allow_fn:
-        _send_lab_control(
+        if not _send_lab_control(
             host, config, alice, root_target,
             _signature(allow_fn), [system["stake_token"], True],
-        )
+        ):
+            return False, "failed to allowlist the synthetic stake token on the protocol entry point"
 
     # Publish the complete discovered environment into the shared audit context.
     config["target"] = root_target
@@ -3458,20 +3464,24 @@ def _system_has_live_core(config: dict[str, Any], rpc: str | None) -> bool:
     # A synthesized/project lab is considered complete only when its recorded
     # concrete dependencies are still live. This prevents a stale implementation
     # address from masquerading as an initialized protocol.
-    dependency_keys = [
-        key for key in (
-            "stake_token", "agreement", "safe_harbor_registry",
-            "attack_registry", "moderator", "pool_implementation",
-        ) if key in system
-    ]
-    live = 0
-    for key in dependency_keys:
-        address = system.get(key)
-        if is_address(address) and _runtime_code(rpc, str(address)) not in {"", "0x"}:
-            live += 1
+    required_keys = (
+        "stake_token",
+        "agreement",
+        "safe_harbor_registry",
+        "pool_implementation",
+    )
+    # A persisted lab_system is trusted only when it contains the minimum concrete
+    # dependency set needed to be meaningful. A lone factory address is not a
+    # complete protocol instance and must be rebuilt or revalidated.
+    if not all(is_address(system.get(key)) for key in required_keys):
+        return False
 
-    if dependency_keys:
-        return live == len(dependency_keys)
+    for key in required_keys + ("attack_registry", "moderator"):
+        address = system.get(key)
+        if key in {"attack_registry", "moderator"} and not address:
+            continue
+        if not is_address(address) or _runtime_code(rpc, str(address)) in {"", "0x"}:
+            return False
     return True
 
 
@@ -3514,6 +3524,8 @@ def _target_from_host(
                 )
                 if synthesized:
                     system_ready = True
+                elif synthesis_reason:
+                    print(f"  Auto protocol lab synthesis: {synthesis_reason}")
 
             adapter = host.discover_local_lab_script(root) if hasattr(host, "discover_local_lab_script") else None
 
