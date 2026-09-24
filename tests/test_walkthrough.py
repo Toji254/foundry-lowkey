@@ -309,6 +309,96 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(walkthrough._friendly_arg(True, actors), "true")
         self.assertEqual(walkthrough._friendly_arg(False, actors), "false")
 
+    def test_target_from_host_prefers_factory_from_project_system_adapter(self):
+        factory = "0x" + "1" * 40
+        config = {
+            "target": "0x" + "9" * 40,
+            "target_contract": "ConfidencePool",
+            "rpc": "http://127.0.0.1:8545",
+            "lab_system": {
+                "factory": factory,
+                "pool": "0x" + "2" * 40,
+            },
+        }
+
+        class Host:
+            def anvil_rpc_info(self, _config):
+                return {"url": "http://127.0.0.1:8545", "accounts": ["0x" + "a" * 40]}
+
+            def _bind_detected_anvil(self, _config, _info):
+                return None
+
+            def discover_local_lab_script(self, _root):
+                return None
+
+            def _bootstrap_audit_target(self, _config, _root, allow_deploy=True):
+                return _config["target"]
+
+        with patch.object(walkthrough, "_runtime_code", return_value="0x6000"):
+            target, contract = walkthrough._target_from_host(
+                Host(), config, pathlib.Path("."), None, True
+            )
+        self.assertEqual(target, factory)
+        self.assertEqual(contract, "ConfidencePoolFactory")
+
+    def test_connection_renderer_explains_factory_lifecycle(self):
+        factory = walkthrough.ContractModel(
+            name="ConfidencePoolFactory",
+            source="src/ConfidencePoolFactory.sol",
+            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
+            functions=["createPool(address,address,uint256,uint256,address,address[])"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IBattleChainSafeHarborRegistry",
+                    "to_function": "isAgreementValid",
+                    "via": "safeHarborRegistry",
+                },
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "ConfidencePool",
+                    "to_function": "initialize",
+                    "via": "pool",
+                },
+            ],
+        )
+        rendered = walkthrough._render_connections(
+            pathlib.Path("/tmp/project"),
+            [factory],
+            factory,
+            enabled=False,
+        )
+        self.assertIn("checks who owns the Agreement", rendered)
+        self.assertIn("asks the Safe Harbor Registry whether the Agreement is valid", rendered)
+        self.assertIn("creates a new ConfidencePool clone", rendered)
+
+    def test_system_map_uses_readable_relationship_labels(self):
+        runtime = [
+            walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "ConfidencePoolFactory", "system"),
+            walkthrough.RuntimeContract(
+                "0x" + "2" * 40,
+                "Pool",
+                "ConfidencePool",
+                "CLONE",
+                "0x" + "1" * 40,
+                1,
+                "0x" + "3" * 40,
+            ),
+        ]
+        rendered = walkthrough._render_runtime_graph(runtime, enabled=False)
+        self.assertIn("protocol entry point", rendered)
+        self.assertIn("creates / clones", rendered)
+        self.assertIn("ConfidencePool", rendered)
+
     def test_protocol_story_connects_steps_with_arrows(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
