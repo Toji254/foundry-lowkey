@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -108,6 +109,7 @@ class Step:
     inferred: bool = True
     status: str = "planned"
     tx_hash: str | None = None
+    calldata: str | None = None
     gas_used: int | None = None
     error: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -998,59 +1000,124 @@ def _friendly_event_lines(step: Step) -> list[str]:
     return lines
 
 
+def _label_for_balance_address(address: str, step: Step, actors: list[Actor]) -> str:
+    actor = _actor_for_address(address, actors)
+    if actor:
+        return actor
+    if str(address).lower() == str(step.address).lower():
+        return _friendly_contract_name(step)
+    return _addr(address)
+
+
+def _render_interaction_graph(step: Step, actors: list[Actor], enabled: bool) -> str:
+    """Render one live interaction as a human-readable transaction graph."""
+    actor = step.actor or "Caller"
+    contract = _friendly_contract_name(step)
+    function = str(step.function or "").split("(", 1)[0]
+    args = ", ".join(_friendly_arg(x, actors) for x in step.args) or "∅"
+    ok = step.status == "success"
+    bad = step.status in {"blocked", "reverted"}
+    status = "✓ CONFIRMED" if ok else "✕ BLOCKED" if bad else "● CHECKING"
+    color = GREEN if ok else RED if bad else YELLOW
+
+    lines = [
+        _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
+        f"  │",
+        f"  │   [{actor}] ── CALL {function}({args}) ──▶ [{contract}]",
+        f"  │                                      │",
+    ]
+
+    if step.value_wei:
+        lines += [
+            f"  │                                      ├─ sends {_friendly_eth(step.value_wei)}",
+            f"  │                                      │      [{actor}] ── ETH ──▶ [{contract}]",
+        ]
+
+    related = [_actor_for_address(x, actors) for x in step.args if isinstance(x, str) and is_address(x)]
+    related = [x for x in related if x and x != actor]
+    if related:
+        lines.append(f"  │                                      ├─ references [{related[0]}]")
+
+    if ok:
+        token_lines = _friendly_token_balance_lines(step, actors)
+        if token_lines:
+            for item in token_lines[:3]:
+                lines.append(f"  │                                      ├─ {item.strip()}")
+        eth_lines = _friendly_balance_lines(step, actors)
+        if eth_lines:
+            for item in eth_lines[:3]:
+                lines.append(f"  │                                      ├─ {item.strip()}")
+
+        state_lines = _friendly_state_lines(step, actors)
+        if state_lines:
+            for item in state_lines[:6]:
+                lines.append(f"  │                                      ├─ WRITE {item.strip()[2:] if item.strip().startswith('◆ ') else item.strip()}")
+
+        event_lines = _friendly_event_lines(step)
+        if event_lines:
+            for item in event_lines[:3]:
+                lines.append(f"  │                                      └─ {item.strip()}")
+        else:
+            lines.append("  │                                      └─ state observed from live storage/chain")
+
+    elif bad:
+        reason = step.error_reason or _explain_failure(step, step.error, step.actor)
+        lines += [
+            f"  │                                      ├─ WHY IT FAILED: {reason}",
+            f"  │                                      └─ {status.replace('✕ ', '')}: {_short_error(step.error)}",
+        ]
+
+    lines.append("  │")
+    if step.reason:
+        marker = "INFERRED" if step.inferred else "LAB CONTROL"
+        lines.append(f"  │   WHY THIS STEP: {step.reason}  [{marker}]")
+    if step.tx_hash:
+        lines.append(f"  │   TX: {_addr(step.tx_hash)}" + (f"  • gas {step.gas_used}" if step.gas_used else ""))
+    lines.append(f"  ╰{'─' * 86}╯")
+    return "\n".join(lines)
+
+
 def _render_protocol_story(
     steps: list[Step],
     current: Step | None,
     actors: list[Actor],
     enabled: bool,
 ) -> str:
-    lines = [_paint("PROTOCOL FLOW", BOLD + CYAN, enabled)]
+    lines = [_paint("LIVE JOURNEY", BOLD + CYAN, enabled)]
     if not steps and not current:
         return "\n".join([
-            "PROTOCOL FLOW",
+            "LIVE JOURNEY",
             "  START",
-            "    │",
-            "    ▼",
-            "  Ready for the first live interaction.",
+            "   │",
+            "   ▼",
+            "  Ready — press Enter to execute the first live function.",
         ])
-    visible = list(steps[-8:])
-    if current is not None and (not visible or visible[-1] is not current):
+
+    visible = list(steps[-5:])
+    if current is not None and current not in visible:
         visible.append(current)
+
     for index, step in enumerate(visible):
-        ok = step.status == "success"
-        bad = step.status in {"blocked", "reverted"}
-        icon = "✓" if ok else "✕" if bad else "●"
-        color = GREEN if ok else RED if bad else YELLOW
-        title = f"{step.index:02d} {icon} {step.actor}"
-        if current is step:
-            title += "  ◀ NOW"
-        lines.append("")
-        lines.append(_paint(f"  ┌─ {title}", color, enabled))
-        lines.append(f"  │ {_human_action_summary(step, actors)}")
-        details = _friendly_action(step, actors)
-        for detail in details[1:]:
-            clean = detail.strip()
-            if clean:
-                lines.append(f"  │ {clean}")
-        if ok:
-            lines.append(f"  │ WHY: {_explain_success(step)}")
-            for detail in _friendly_token_balance_lines(step, actors)[:4]:
-                lines.append(f"  │ {detail.strip()}")
-            for detail in _friendly_state_lines(step, actors)[:6]:
-                lines.append(f"  │ {detail.strip()}")
-            for detail in _friendly_event_lines(step)[:3]:
-                lines.append(f"  │ {detail.strip()}")
-        elif bad:
-            reason = step.error_reason or _explain_failure(step, step.error, step.actor)
-            lines.append(f"  │ WHY IT FAILED: {reason}")
-            lines.append(f"  │ CONTRACT RESPONSE: {_short_error(step.error)}")
-        lines.append(f"  └{'─' * 84}┘")
-        if index != len(visible) - 1:
-            lines.append("                 │")
-            lines.append("                 ▼")
+        if current is step or index == len(visible) - 1:
+            lines.append("")
+            lines.append(_render_interaction_graph(step, actors, enabled))
+        else:
+            ok = step.status == "success"
+            bad = step.status in {"blocked", "reverted"}
+            icon = "✓" if ok else "✕" if bad else "●"
+            status = "done" if ok else "blocked" if bad else "checked"
+            args = ", ".join(_friendly_arg(x, actors) for x in step.args) or "∅"
+            lines.append(
+                f"  {step.index:02d} {icon} [{step.actor}] ──▶ "
+                f"{_friendly_contract_name(step)}.{str(step.function).split('(',1)[0]}({args})  • {status}"
+            )
+            lines.append("             │")
+            lines.append("             ▼")
     return "\n".join(lines)
 
 
+def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
+    return _render_protocol_story(steps, current, [], enabled)
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
     return _render_protocol_story(steps, current, [], enabled)
 
@@ -1212,6 +1279,7 @@ def _prepare_lab_allowance(
         inferred=False,
         status="success" if tx else "reverted",
         tx_hash=tx,
+        calldata=_transaction_input(rpc,tx) if tx else None,
         error=None if tx else (output or "token approval failed"),
     )
     steps.append(step)
@@ -1221,6 +1289,38 @@ def _extract_tx_hash(text: str) -> str | None:
     matches = re.findall(r"0x[0-9a-fA-F]{64}", text or "")
     return matches[-1] if matches else None
 
+
+def _transaction_input(rpc: str, tx: str) -> str | None:
+    """Return the exact calldata sent by a successful transaction."""
+    value = _rpc_call(rpc, "eth_getTransactionByHash", [tx])
+    if not isinstance(value, dict):
+        return None
+    data = value.get("input") or value.get("data")
+    if not isinstance(data, str) or not re.fullmatch(r"0x[0-9a-fA-F]*", data):
+        return None
+    return data
+
+def _quarantine_generated_replays(root: Path) -> int:
+    """Move stale generated walkthrough scripts out of script/ before forge build."""
+    script_dir = root / "script"
+    if not script_dir.is_dir():
+        return 0
+    candidates = sorted(script_dir.glob("LowkeyWalkthrough_*.s.sol"))
+    if not candidates:
+        return 0
+    archive = root / ".audit" / "walkthrough" / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for path in candidates:
+        target = archive / path.name
+        try:
+            if target.exists():
+                target = archive / f"{path.stem}_{int(time.time())}{path.suffix}"
+            shutil.move(str(path), str(target))
+            moved += 1
+        except OSError:
+            continue
+    return moved
 
 def _receipt(rpc: str, tx: str) -> dict[str, Any] | None:
     value = _rpc_call(rpc, "eth_getTransactionReceipt", [tx])
@@ -1549,40 +1649,94 @@ def _save_artifacts(root: Path, model_payload: dict[str, Any], steps: list[Step]
         encoding="utf-8",
     )
 
+def _sol_address_literal(value: Any) -> str:
+    """Emit an address literal without Solidity checksum rules."""
+    raw = str(value or "").strip()
+    if not is_address(raw):
+        return "address(0)"
+    return f"address(uint160(0x{raw[2:]}))"
+
+
+def _sol_literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_sol_literal(item) for item in value) + "]"
+    if isinstance(value, str):
+        if is_address(value):
+            return _sol_address_literal(value)
+        if value.startswith("0x") and len(value) == 66:
+            return f"bytes32(0x{value[2:]})"
+        return json.dumps(value)
+    return "0"
+
+
 def _generate_replay_script(root: Path, model: ContractModel, target: str, steps: list[Step]) -> Path:
     path = root / "script" / f"LowkeyWalkthrough_{model.name}.s.sol"
     path.parent.mkdir(parents=True, exist_ok=True)
+    contract_name = f"LowkeyWalkthrough_{re.sub(r'[^A-Za-z0-9_]', '_', model.name)}"
     lines = [
         "// SPDX-License-Identifier: MIT",
         "pragma solidity ^0.8.20;",
         "",
         'import "forge-std/Script.sol";',
         "",
-        f"contract LowkeyWalkthrough_{re.sub(r'[^A-Za-z0-9_]', '_', model.name)} is Script {{",
-        f"    address constant TARGET = {target};",
-        "",
-        "    // Generated from a real Lowkey local-Anvil walkthrough.",
-        "    // Actor keys are deliberately supplied through environment variables.",
+        f"contract {contract_name} is Script {{",
+        "    // Generated from successful observations captured by Lowkey on local Anvil.",
+        "    // The script replays the exact transaction calldata whenever available.",
         "    function run() external {",
     ]
-    current_actor = None
+
+    broadcast_actor = None
+    replay_index = 0
     for step in steps:
         if step.status != "success":
             continue
+
+        replay_index += 1
         env = "LOWKEY_" + re.sub(r"[^A-Za-z0-9]", "_", step.actor.upper()) + "_KEY"
-        if current_actor != env:
-            if current_actor is not None:
+        if broadcast_actor != env:
+            if broadcast_actor is not None:
                 lines.append("        vm.stopBroadcast();")
             lines.append(f'        vm.startBroadcast(vm.envUint("{env}"));')
-            current_actor = env
-        arg_text = ", ".join(_sol_literal(x) for x in step.args)
-        if arg_text:
-            call = f"        (bool ok, ) = TARGET.call(abi.encodeWithSignature({json.dumps(step.function)}, {arg_text}));"
+            broadcast_actor = env
+
+        target_literal = _sol_address_literal(step.address)
+        lines.append(f"        address target_{replay_index} = {target_literal};")
+
+        if step.calldata and re.fullmatch(r"0x[0-9a-fA-F]*", step.calldata):
+            calldata_literal = step.calldata[2:]
+            if len(calldata_literal) % 2:
+                calldata_literal = "0" + calldata_literal
+            call = (
+                f"        (bool ok_{replay_index}, ) = target_{replay_index}"
+                f".call{{value: {int(step.value_wei or 0)}}}(hex\"{calldata_literal}\");"
+            )
         else:
-            call = f"        (bool ok, ) = TARGET.call(abi.encodeWithSignature({json.dumps(step.function)}));"
+            arg_text = ", ".join(_sol_literal(x) for x in step.args)
+            if arg_text:
+                call = (
+                    f"        (bool ok_{replay_index}, ) = target_{replay_index}.call"
+                    f"(abi.encodeWithSignature({json.dumps(step.function)}, {arg_text}));"
+                )
+            else:
+                call = (
+                    f"        (bool ok_{replay_index}, ) = target_{replay_index}.call"
+                    f"(abi.encodeWithSignature({json.dumps(step.function)}));"
+                )
+            if step.value_wei:
+                call = call.replace(
+                    f"target_{replay_index}.call(",
+                    f"target_{replay_index}.call{{value: {int(step.value_wei)}}}(",
+                    1,
+                )
+
         lines.append(call)
-        lines.append('        require(ok, "walkthrough replay step reverted");')
-    if current_actor is not None:
+        lines.append(f'        require(ok_{replay_index}, "walkthrough replay step reverted");')
+
+    if broadcast_actor is not None:
         lines.append("        vm.stopBroadcast();")
     lines += [
         "    }",
@@ -1592,21 +1746,6 @@ def _generate_replay_script(root: Path, model: ContractModel, target: str, steps
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
-
-def _sol_literal(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, list):
-        return "[]"
-    if isinstance(value, str):
-        if value.startswith("0x") and len(value) == 42:
-            return value
-        if value.startswith("0x") and len(value) == 66:
-            return value
-        return json.dumps(value)
-    return "0"
 
 
 def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: str | None, auto: bool) -> tuple[str | None, str | None]:
@@ -1909,7 +2048,7 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = next live interaction   Q = stop",
+        "  ENTER = execute the next live function   Q = stop",
         "",
         _box("ACTORS", [
             "   ".join(f"{ACTOR} {actor.name} {_addr(actor.address)}" for actor in actors)
@@ -1958,6 +2097,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
 
     print(_paint("LOWKEY PROTOCOL WALKTHROUGH",BOLD+CYAN,_ansi_enabled(static)))
     print("  LIVE mode: each interaction is executed, observed, then rendered.")
+    archived = _quarantine_generated_replays(root)
+    if archived:
+        print(f"  refreshed {archived} previous generated walkthrough replay(s)")
     code,out,err=_cmd(["forge","build"],cwd=root,timeout=120)
     if code!=0:
         print(out+err,file=sys.stderr); return code or 1
@@ -2063,6 +2205,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 receipt=_receipt(rpc,tx)
                 trace=_trace_tree(rpc,tx)
                 step.tx_hash=tx
+                step.calldata=_transaction_input(rpc,tx)
                 step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx)
