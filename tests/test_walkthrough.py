@@ -33,6 +33,32 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("tuple(address,uint256)", items[1])
         self.assertEqual(items[2], "address[] accounts")
 
+    def test_source_parser_ignores_comment_and_natspec_noise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            (src / "Noise.sol").write_text(
+                """
+                /// natspec mentions foo.bar() and fake.member().
+                import "src/libraries/PoolStates.sol";
+                contract Noise {
+                    // fake.commentCall()
+                    address public token;
+                    function use() external {
+                        token.balanceOf(msg.sender);
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            contracts = walk._parse_solidity_sources(root)
+            self.assertIn("Noise", contracts)
+            edges = walk._system_edges([], { "Noise": contracts["Noise"].functions }, contracts)
+            self.assertFalse(any(e["to"] == "natspec" for e in edges))
+            self.assertFalse(any(e["to"] == "fake" for e in edges))
+            self.assertTrue(any(e["to"] == "token" for e in edges))
+
     def test_source_parser_sees_typed_external_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
