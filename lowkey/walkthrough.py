@@ -2100,6 +2100,79 @@ def _source_guard_lines(model: ContractModel, step: Step) -> list[str]:
         lines.append("state write candidate: " + str(item))
     return list(dict.fromkeys(lines))
 
+def _forge_build_with_info(root: Path) -> tuple[int, str, str]:
+    code, out, err = _cmd(["forge", "build", "--build-info"], cwd=root, timeout=180)
+    if code == 0:
+        return code, out, err
+    combined = (out + "\n" + err).lower()
+    if "unknown option" in combined or "unexpected argument" in combined or "unrecognized option" in combined:
+        return _cmd(["forge", "build"], cwd=root, timeout=180)
+    return code, out, err
+
+def _build_info_payloads(root: Path) -> list[dict[str, Any]]:
+    directory = root / "out" / "build-info"
+    if not directory.is_dir():
+        return []
+    result = []
+    for path in sorted(directory.glob("*.json")):
+        data = _json_file(path)
+        if isinstance(data, dict):
+            result.append(data)
+    return result
+
+def _build_info_function_abi(root: Path, contract_name: str, function_name: str) -> dict[str, Any] | None:
+    wanted_contract = str(contract_name or "").lower()
+    wanted_function = str(function_name or "").lower()
+    for payload in _build_info_payloads(root):
+        contracts = ((payload.get("output") or {}).get("contracts") or {})
+        if not isinstance(contracts, dict):
+            continue
+        for _source, contract_map in contracts.items():
+            if not isinstance(contract_map, dict):
+                continue
+            for name, data in contract_map.items():
+                if str(name).lower() != wanted_contract or not isinstance(data, dict):
+                    continue
+                abi = data.get("abi")
+                if not isinstance(abi, list):
+                    continue
+                for item in abi:
+                    if item.get("type") == "function" and str(item.get("name") or "").lower() == wanted_function:
+                        return item
+    return None
+
+def _output_signature(item: dict[str, Any]) -> str:
+    inputs = ",".join(_canonical_type(x) for x in item.get("inputs", []))
+    outputs = ",".join(_canonical_type(x) for x in item.get("outputs", []))
+    return f"{item.get('name', '<anonymous>')}({inputs})({outputs})"
+
+def _read_contract_getter(rpc: str, address: str, getter: dict[str, Any], args: list[Any] | None = None) -> tuple[bool, str]:
+    command = ["cast", "call", address, _output_signature(getter)]
+    command.extend(_cli_arg(value) for value in (args or []))
+    command.extend(["--rpc-url", rpc])
+    code, out, err = _cmd(command, timeout=8)
+    return code == 0, " ".join((out or err or "").strip().split())
+
+def _dependency_argument_values(step: Step, caller_model: ContractModel, dependency_fn: dict[str, Any]) -> list[Any]:
+    caller_inputs = _function_inputs(caller_model, step.function)
+    caller_values = {}
+    for index, param in enumerate(caller_inputs):
+        if index < len(step.args):
+            caller_values[str(param.get("name") or "").lower()] = step.args[index]
+    values = []
+    for param in dependency_fn.get("inputs") or []:
+        value = caller_values.get(str(param.get("name") or "").lower())
+        if value is None and len(dependency_fn.get("inputs") or []) == 1:
+            candidates = [
+                step.args[index] for index, source_param in enumerate(caller_inputs)
+                if index < len(step.args) and _canonical_type(source_param) == "address"
+            ]
+            if candidates:
+                value = candidates[0]
+        if value is not None:
+            values.append(value)
+    return values
+
 def _probe_source_dependency_result(
     rpc: str,
     step: Step,
