@@ -24,7 +24,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in lk.py forge_tools.py audit_engine.py clone_tools.py; do
+for file in lk.py forge_tools.py audit_engine.py clone_tools.py project_tools.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
@@ -33,7 +33,8 @@ python3 -m py_compile \
   "$STAGE_DIR/lk.py" \
   "$STAGE_DIR/forge_tools.py" \
   "$STAGE_DIR/audit_engine.py" \
-  "$STAGE_DIR/clone_tools.py"
+  "$STAGE_DIR/clone_tools.py" \
+  "$STAGE_DIR/project_tools.py"
 bash -n "$STAGE_DIR/bin-lk"
 
 # Publish exactly the validated stage so the manifest always describes the
@@ -42,6 +43,7 @@ cp "$STAGE_DIR/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
 cp "$STAGE_DIR/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
 cp "$STAGE_DIR/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
 cp "$STAGE_DIR/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
+cp "$STAGE_DIR/project_tools.py" "$TARGET_LOWKEY_DIR/project_tools.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -78,11 +80,12 @@ installed = {
     str(lowkey_dir / "forge_tools.py"): sha256(lowkey_dir / "forge_tools.py"),
     str(lowkey_dir / "audit_engine.py"): sha256(lowkey_dir / "audit_engine.py"),
     str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),
+    str(lowkey_dir / "project_tools.py"): sha256(lowkey_dir / "project_tools.py"),
     str(bin_dir / "lk"): sha256(bin_dir / "lk"),
 }
 
 manifest = {
-    "version": 1,
+    "version": 2,
     "installed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     "source_repo": str(repo),
     "git_sha": git_sha,
@@ -104,6 +107,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/forge_tools.py
   - $TARGET_LOWKEY_DIR/audit_engine.py
   - $TARGET_LOWKEY_DIR/clone_tools.py
+  - $TARGET_LOWKEY_DIR/project_tools.py
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
 
