@@ -39,9 +39,21 @@ LowkeyCast is a small auditor-oriented CLI that sits on top of Foundry Cast. It 
 
 ### Protocol walkthrough
 
+The reusable system model is also available directly:
+
+```bash
+lk system
+lk system show
+```
+
+`lk system` builds the project-local bootstrap manifest at `.audit/evidence/system_bootstrap.json`. Deployment discovery, audit/PoC generation, and walkthrough all refresh or consume this same artifact.
+
+The manifest combines source/script signals, Foundry broadcast deployments and constructor arguments, ABI/artifact metadata, actor aliases, role/ownership operations, initialization/configuration/funding/approval operations, tests/fuzz/invariant signals, adversarial PoC/exploit artifacts, and runtime bytecode checks. Evidence is kept separate from inference: observed facts are recorded directly, while inferred relationships are explicitly treated as inference.
+
 The system-aware walkthrough is invoked through Lowkey itself:
 
 ```bash
+lk system
 lk walkthrough --auto --steps 12
 lk walkthrough --bootstrap --auto --steps 12
 lk walkthrough test --cases 50 --seed 1337
@@ -50,7 +62,9 @@ lk walkthrough test --cases 50 --seed 1337 --send
 
 It builds a static + live contract graph, discovers runtime dependencies, synthesizes role-aware arguments, preflights state-changing calls, diagnoses observed reverts, and records replayable evidence under `.audit/evidence/walkthrough.json`. The `test` mode mutates ABI values and semantic actors; successful probes are observations, not vulnerability verdicts.
 
-Before asking for a manually configured target, walkthrough also inspects generic Foundry project entry points: live broadcast deployments under `broadcast/**/run-latest.json`, deployment scripts under `script/**/*.s.sol`, and test fixtures under `test/**/*.t.sol` / `tests/**/*.t.sol`. A live broadcast deployment is selected automatically when no configured target is usable. The `--bootstrap` flag prints the discovered deployment/test entry points and suggested local commands; it never guesses project-specific constructor or environment values and never executes an arbitrary script.
+Before asking for a manually configured target, walkthrough consumes the shared system bootstrap manifest first, then verifies it against live bytecode/getters and its own source/ABI model. A live configured/saved target is preferred; otherwise a live broadcast deployment can be selected automatically. The `--bootstrap` flag prints the manifest-backed deployment/test/adversarial context and suggested local commands. It never guesses project-specific constructor or environment values and never executes an arbitrary script.
+
+Deployment scripts are evidence about how a system was assembled, not the sole source of truth. Walkthrough combines them with source semantics, ABI/artifacts, runtime state, tests/fuzz evidence, and PoC/exploit evidence. This keeps the same architecture usable across unrelated Foundry projects.
 
 ### Audit workflow
 - Findings, notes, TODOs, sessions, checklist
@@ -149,7 +163,9 @@ foundry-lowkey/
 ├── lowkey/
 │   ├── lk.py
 │   ├── forge_tools.py
-│   └── audit_engine.py
+│   ├── audit_engine.py
+│   ├── walkthrough.py
+│   └── system_model.py
 ├── tests/
 │   └── test_lk.py
 ├── .github/
