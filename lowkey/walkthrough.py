@@ -501,6 +501,55 @@ def _cast_send(
     return _run(cmd, root, 60)
 
 
+def _debug_trace_call(
+    root: Path,
+    rpc: str,
+    address: str,
+    function: FunctionInfo,
+    args: list[Any],
+    caller: str | None,
+) -> dict[str, Any] | None:
+    """Best-effort callTracer evidence for opaque empty reverts."""
+    try:
+        code, calldata, _ = _run(
+            ["cast", "calldata", function.signature, *_arg_values_to_strings(args)],
+            root,
+            15,
+        )
+        if code != 0 or not calldata.strip():
+            return None
+        tx = {
+            "from": caller if _is_address(caller) else ZERO,
+            "to": address,
+            "data": calldata.strip(),
+        }
+        payload = _rpc(
+            rpc,
+            "debug_traceCall",
+            [tx, "latest", {"tracer": "callTracer"}],
+        )
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _trace_revert_frames(trace: Any) -> list[str]:
+    frames: list[str] = []
+
+    def visit(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        target = node.get("to") or node.get("from") or "unknown"
+        error = node.get("revertReason") or node.get("error")
+        if error:
+            frames.append(f"{target}: {error}")
+        for child in node.get("calls") or []:
+            visit(child)
+
+    visit(trace)
+    return frames
+
+
 def _parse_revert_blob(text: str) -> str | None:
     candidates = re.findall(
         r"0x[0-9a-fA-F]{8,}",
@@ -1066,6 +1115,11 @@ def _preflight_failure(
     combined = "\n".join(x for x in (err, out) if x)
     blob = _parse_revert_blob(combined)
     decoded = _decode_error(blob, all_errors)
+    trace = None
+    trace_revert_frames: list[str] = []
+    if code != 0 and not decoded and (not blob or blob == "0x"):
+        trace = _debug_trace_call(root, rpc, address, fn, args, caller)
+        trace_revert_frames = _trace_revert_frames(trace)
     return {
         "ok": code == 0,
         "exit_code": code,
@@ -1073,6 +1127,8 @@ def _preflight_failure(
         "stderr": err,
         "revert_data": blob,
         "decoded_error": decoded,
+        "trace": trace,
+        "trace_revert_frames": trace_revert_frames,
         "raw": combined[-2000:],
     }
 
@@ -1441,6 +1497,8 @@ def _render_story(
         if action.get("diagnosis"):
             for item in action["diagnosis"][:5]:
                 lines.append(f"       ↳ {item}")
+        for item in action.get("result", {}).get("trace_revert_frames", [])[:3]:
+            lines.append(f"       ↳ trace: {item}")
     return "\n".join(lines)
 
 
@@ -1826,9 +1884,13 @@ def _run_walkthrough(
         )
         if not flags["non_interactive"]:
             try:
-                input("\n  ⏎ next   q = stop   ")
+                command = input("\n  ⏎ next   q = stop   ").strip().lower()
             except EOFError:
-                pass
+                command = ""
+            if command == "q":
+                print("\nStopped.")
+                _persist(root, payload)
+                return 130
 
         # Re-check just before execution because another action may have changed state.
         node: LiveNode = action["node"]
