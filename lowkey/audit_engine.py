@@ -963,11 +963,12 @@ def _write_step_evidence(root: str, label: str, command: Sequence[str], code: in
 
 def _run_vyper_build(root: str) -> tuple[int, str, str, list[dict[str, Any]]]:
     project_root = Path(root).resolve()
+    candidates = (
+        project_source_files(project_root, {"vy"})
+        if project_source_files
+        else list(project_root.rglob("*.vy"))
+    )
     files = []
-    if project_source_files:
-        candidates = project_source_files(project_root, {"vy"})
-    else:
-        candidates = list(project_root.rglob("*.vy"))
     for path in candidates:
         relative_parts = {part.lower() for part in path.relative_to(project_root).parts}
         if relative_parts & {"test", "tests", "mocks"}:
@@ -1000,9 +1001,61 @@ def _run_project_vyper_tests(root: str) -> tuple[int, str, str]:
     return run_command(["uv", "run", "pytest", "."], root, 900)
 
 
+def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]]) -> None:
+    applicable = [
+        item for item in outcomes
+        if str(item.get("status") or "").lower() not in {"not_applicable", "not-applicable"}
+    ]
+    if not outcomes:
+        record_evidence(
+            name,
+            {
+                "status": "not_applicable",
+                "reason": "No compatible build/test/coverage adapter ran for this project.",
+            },
+            root,
+        )
+        return
+
+    if not applicable:
+        reasons = [item.get("reason") for item in outcomes if item.get("reason")]
+        record_evidence(
+            name,
+            {
+                "status": "not_applicable",
+                "reason": "; ".join(reasons) or "Not applicable to detected project type.",
+                "substeps": outcomes,
+            },
+            root,
+        )
+        return
+
+    failures = [item for item in applicable if item.get("code") != 0]
+    code = failures[0].get("code", 1) if failures else 0
+    summary = "; ".join(
+        f"{item.get('tool')}: {item.get('code')}"
+        for item in applicable
+    )
+    record_evidence(
+        name,
+        {
+            "exit_code": code,
+            "status": "failed" if failures else "passed",
+            "summary": summary,
+            "substeps": outcomes,
+        },
+        root,
+    )
+
+
 def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
     results: list[dict[str, Any]] = []
+    outcomes: dict[str, list[dict[str, Any]]] = {
+        "build": [],
+        "tests": [],
+        "coverage": [],
+    }
 
     project = detect_project(root) if detect_project else {
         "root": str(Path(root).resolve()),
@@ -1050,51 +1103,60 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
             f"{graph.get('summary', {}).get('unresolved_imports', 0)} unresolved"
         )
 
-    is_foundry = "foundry" in project.get("build_systems", [])
-    is_vyper = "vyper" in project.get("build_systems", [])
-    required_codes: list[int] = []
+    build_systems = set(project.get("build_systems", []))
+    is_foundry = "foundry" in build_systems
+    is_vyper = "vyper" in build_systems
 
     if is_foundry:
-        for label, command, timeout in (
+        for name, command, timeout in (
             ("build", ["forge", "build"], 300),
             ("tests", ["forge", "test", "-vvvv"], 600),
             ("coverage", ["forge", "coverage"], 600),
         ):
-            print(f"\n=== LOWKEY EVIDENCE: {label.upper()} ===")
+            print(f"\n=== LOWKEY EVIDENCE: FORGE {name.upper()} ===")
             code, stdout, stderr = run_command(command, root, timeout)
-            _write_step_evidence(root, label, command, code, stdout, stderr)
+            evidence_name = f"forge_{name}"
+            _write_step_evidence(root, evidence_name, command, code, stdout, stderr)
             print(stdout.rstrip())
             if stderr:
                 print(stderr.rstrip())
-            results.append({"label": label, "code": code, "tool": "foundry"})
-            required_codes.append(code)
+            outcomes[name].append({
+                "tool": "foundry",
+                "code": code,
+                "evidence": evidence_name,
+            })
+            results.append({"label": evidence_name, "code": code, "tool": "foundry"})
 
     if is_vyper:
         uv = command_path("uv")
         if not uv:
             code = 127
-            _write_step_evidence(
-                root, "build", ["uv"], code, "", "uv not found on PATH",
-                reason="Vyper project detected but uv is unavailable",
-            )
-            _write_step_evidence(
-                root, "tests", ["uv"], code, "", "uv not found on PATH",
-                reason="Vyper project detected but uv is unavailable",
-            )
-            record_evidence(
-                "coverage",
-                {
-                    "status": "not_applicable",
-                    "reason": "No universal Vyper coverage command was inferred.",
-                },
-                root,
-            )
-            required_codes.extend([code, code])
-            results.extend([
-                {"label": "build", "code": code, "tool": "uv"},
-                {"label": "tests", "code": code, "tool": "uv"},
-                {"label": "coverage", "code": 0, "tool": "uv", "status": "not_applicable"},
-            ])
+            reason = "Vyper project detected but uv is unavailable on PATH."
+            for name in ("build", "tests"):
+                evidence_name = f"vyper_{name}"
+                _write_step_evidence(
+                    root, evidence_name, ["uv"], code, "", "uv not found on PATH",
+                    reason=reason,
+                )
+                outcomes[name].append({
+                    "tool": "vyper",
+                    "code": code,
+                    "evidence": evidence_name,
+                    "reason": reason,
+                })
+                results.append({"label": evidence_name, "code": code, "tool": "vyper"})
+            outcomes["coverage"].append({
+                "tool": "vyper",
+                "code": 0,
+                "status": "not_applicable",
+                "reason": "No universal Vyper coverage command was inferred.",
+            })
+            results.append({
+                "label": "vyper_coverage",
+                "code": 0,
+                "tool": "vyper",
+                "status": "not_applicable",
+            })
         else:
             print("\n=== LOWKEY EVIDENCE: UV SYNC ===")
             sync_code, sync_stdout, sync_stderr = run_command(
@@ -1117,9 +1179,10 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
             if sync_code == 0:
                 print("\n=== LOWKEY EVIDENCE: VYPER BUILD ===")
                 build_code, build_stdout, build_stderr, files = _run_vyper_build(root)
+                evidence_name = "vyper_build"
                 _write_step_evidence(
                     root,
-                    "build",
+                    evidence_name,
                     ["uv", "run", "vyper", "<production-vyper-files>", "-p", "."],
                     build_code,
                     build_stdout,
@@ -1129,18 +1192,30 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                 print(build_stdout.rstrip())
                 if build_stderr:
                     print(build_stderr.rstrip())
-                required_codes.append(build_code)
+                outcomes["build"].append({
+                    "tool": "vyper",
+                    "code": build_code,
+                    "evidence": evidence_name,
+                })
+                results.append({"label": evidence_name, "code": build_code, "tool": "vyper"})
             else:
+                evidence_name = "vyper_build"
                 _write_step_evidence(
                     root,
-                    "build",
+                    evidence_name,
                     ["uv", "sync", "--locked"],
                     sync_code,
                     sync_stdout,
                     sync_stderr,
                     reason="dependency sync failed; Vyper compilation was not attempted",
                 )
-                required_codes.append(sync_code)
+                outcomes["build"].append({
+                    "tool": "vyper",
+                    "code": sync_code,
+                    "evidence": evidence_name,
+                    "reason": "dependency sync failed",
+                })
+                results.append({"label": evidence_name, "code": sync_code, "tool": "vyper"})
 
             print("\n=== LOWKEY EVIDENCE: VYPER TESTS ===")
             test_code, test_stdout, test_stderr = _run_project_vyper_tests(root)
@@ -1148,9 +1223,10 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                 test_code = sync_code
                 test_stdout = ""
                 test_stderr = "Skipped because uv dependency synchronization failed."
+            evidence_name = "vyper_tests"
             _write_step_evidence(
                 root,
-                "tests",
+                evidence_name,
                 ["uv", "run", "pytest", "."],
                 test_code,
                 test_stdout,
@@ -1160,32 +1236,46 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
             print(test_stdout.rstrip())
             if test_stderr:
                 print(test_stderr.rstrip())
-            required_codes.append(test_code)
+            outcomes["tests"].append({
+                "tool": "vyper",
+                "code": test_code,
+                "evidence": evidence_name,
+                "reason": "project-native Vyper test command",
+            })
+            outcomes["coverage"].append({
+                "tool": "vyper",
+                "code": 0,
+                "status": "not_applicable",
+                "reason": "Vyper coverage is repository/framework specific; Lowkey will not invent a misleading generic command.",
+            })
+            results.append({"label": evidence_name, "code": test_code, "tool": "vyper"})
+            results.append({
+                "label": "vyper_coverage",
+                "code": 0,
+                "tool": "vyper",
+                "status": "not_applicable",
+            })
 
-            record_evidence(
-                "coverage",
-                {
-                    "status": "not_applicable",
-                    "reason": "Vyper coverage is repository/framework specific; Lowkey will not invent a misleading generic command.",
-                },
-                root,
-            )
-            results.append({"label": "coverage", "code": 0, "tool": "vyper", "status": "not_applicable"})
+    for name in ("build", "tests", "coverage"):
+        _aggregate_pipeline_step(root, name, outcomes[name])
 
-    if not is_foundry and not is_vyper:
-        for label in ("build", "tests", "coverage"):
-            record_evidence(
-                label,
-                {
-                    "status": "not_applicable",
-                    "reason": f"No supported {label} adapter for '{project.get('kind', 'generic')}'.",
-                },
-                root,
-            )
-
-    if is_foundry or project.get("sources", {}).get("solidity", 0) > 0:
+    solidity_count = int(project.get("sources", {}).get("solidity", 0) or 0)
+    if is_foundry and solidity_count > 0:
         slither_code = run_slither(root, slither_args)
         results.append({"label": "slither", "code": slither_code})
+    elif solidity_count > 0:
+        record_evidence(
+            "slither",
+            {
+                "available": False,
+                "reason": "Solidity sources were detected, but automatic Slither execution is only enabled for Foundry projects to avoid crossing incompatible build systems.",
+                "findings": [],
+                "exit_code": 127,
+            },
+            root,
+        )
+        print("Slither: SKIPPED (Solidity detected outside a Foundry project).")
+        results.append({"label": "slither", "code": 127})
     else:
         record_evidence(
             "slither",
@@ -1212,9 +1302,16 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                     print(f"\n=== LOWKEY EVIDENCE: {optional.upper()} ===")
                     code, stdout, stderr = run_command(["forge", optional], root, 600)
                     _write_step_evidence(root, optional, ["forge", optional], code, stdout, stderr)
-                    results.append({"label": optional, "code": code})
+                    results.append({"label": optional, "code": code, "tool": "foundry"})
 
-    final_code = 0 if required_codes and all(code == 0 for code in required_codes) else (
-        required_codes[0] if required_codes else 0
+    required = []
+    for name in ("build", "tests", "coverage"):
+        data = _evidence_data(root, name)
+        if str(data.get("status") or "").lower() in {"not_applicable", "not-applicable"}:
+            continue
+        required.append(data.get("exit_code"))
+
+    final_code = 0 if required and all(code == 0 for code in required) else (
+        required[0] if required else 0
     )
     return _finalize_pipeline(root, results, final_code, generate)
