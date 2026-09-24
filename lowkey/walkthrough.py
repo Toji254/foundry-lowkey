@@ -766,6 +766,12 @@ def _resolve_walkthrough_target(
     """Resolve a target, preferring live runtime state over stale static state."""
     configured = str(config.get("target") or "").strip()
     configured_static: tuple[str, str] | None = None
+    artifact_files = _load_artifacts(root)[1]
+
+    def identity_supports(address: str, expected: str) -> bool:
+        identity = _runtime_identity(root, rpc, address, expected, artifact_files)
+        return identity in {"exact", "weak", "unknown"}
+
     live_deployments = [
         x for x in (bootstrap.get("live_deployments") or [])
         if isinstance(x, dict)
@@ -789,8 +795,9 @@ def _resolve_walkthrough_target(
     if _is_address(configured):
         expected = str(config.get("target_contract") or _target_label(config, configured) or "")
         current = current_broadcast_match(configured, expected) if expected else None
-        if current:
-            return configured, "current broadcast target"
+        if current and identity_supports(configured, expected):
+            identity = _runtime_identity(root, rpc, configured, expected, artifact_files)
+            return configured, f"current broadcast target ({identity})"
         # A live address that is identified by persisted evidence but does not
         # match the current deployment identity is stale-prone (especially on
         # a reset Anvil where CREATE addresses are reused). Prefer a current
@@ -800,9 +807,15 @@ def _resolve_walkthrough_target(
             for item in live_deployments:
                 actual_norm = re.sub(r"[^a-z0-9]", "", _clean_name(str(item.get("contract") or "")).lower())
                 if expected_norm and actual_norm and (expected_norm == actual_norm or expected_norm in actual_norm or actual_norm in expected_norm):
-                    return str(item["address"]), f"current broadcast deployment ({item.get('contract')})"
+                    address = str(item["address"])
+                    if identity_supports(address, expected):
+                        identity = _runtime_identity(root, rpc, address, expected, artifact_files)
+                        return address, f"current broadcast deployment ({item.get('contract')}, {identity})"
         if _code_size(rpc, configured) > 0:
-            return configured, "configured target"
+            if expected and _runtime_identity(root, rpc, configured, expected, artifact_files) == "mismatch":
+                configured_static = (configured, f"configured target (identity mismatch for {expected})")
+            else:
+                return configured, "configured target"
         configured_static = (configured, "configured target (no live bytecode)")
 
     saved_static: list[tuple[str, str]] = []
@@ -844,8 +857,9 @@ def _resolve_walkthrough_target(
         if _code_size(rpc, target) > 0:
             if not live_deployments:
                 return target, source
-            matched = current_broadcast_match(target, str(config.get("target_contract") or _target_label(config, target) or ""))
-            if matched:
+            expected = str(config.get("target_contract") or _target_label(config, target) or "")
+            matched = current_broadcast_match(target, expected)
+            if matched and identity_supports(target, expected):
                 return target, source
         audit_static.append((target, source + " (no live bytecode or stale identity)"))
 
@@ -1924,6 +1938,12 @@ def _build_live_graph(
                 if cname.lower() == label.lower():
                     artifact_contract = cname
                     break
+        if artifact_contract and size > 0:
+            identity = _runtime_identity(root, rpc, address, artifact_contract, artifact_files)
+            if identity == "mismatch":
+                identified = _identify_runtime_contract(root, rpc, address, artifact_files)
+                if identified:
+                    artifact_contract = identified
         node = LiveNode(
             address=address,
             name=artifact_contract or label,
