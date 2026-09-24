@@ -419,6 +419,141 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("NEXT", rendered)
         self.assertNotIn("import", rendered.lower())
 
+
+    def test_live_story_renders_execution_trace_instead_of_static_catalog(self):
+        node = walk.LiveNode(
+            address="0x" + "1" * 40,
+            name="Pool",
+            code_size=100,
+            artifact_contract="Pool",
+        )
+        stake = walk.FunctionInfo(
+            contract="Pool",
+            name="stake",
+            inputs=[{"type": "uint256", "name": "amount"}],
+            outputs=[],
+            mutability="nonpayable",
+            signature="stake(uint256)",
+            calls=[
+                {"kind": "internal-call", "function": "_assertDepositsAllowed"},
+            ],
+            reads=["scopeLocked"],
+            writes=["eligibleStake"],
+        )
+        helper = walk.FunctionInfo(
+            contract="Pool",
+            name="_assertDepositsAllowed",
+            inputs=[],
+            outputs=[],
+            mutability="internal",
+            signature="_assertDepositsAllowed()",
+        )
+        storage = {
+            "scopeLocked": {"name": "scopeLocked", "type": "bool", "visibility": "internal"},
+            "eligibleStake": {
+                "name": "eligibleStake",
+                "type": "mapping(address => uint256)",
+                "visibility": "internal",
+            },
+        }
+        contracts = {
+            "Pool": walk.ContractInfo(
+                name="Pool",
+                source="src/Pool.sol",
+                line=1,
+                kind="contract",
+                functions=[stake, helper],
+                state_vars=list(storage.values()),
+            )
+        }
+        action = {
+            "node": node,
+            "function": stake,
+            "args": [123],
+            "caller": "0x" + "a" * 40,
+            "actor_name": "Alice",
+            "status": "SUCCESS",
+            "phase": "PARTICIPATE",
+            "result": {
+                "ok": True,
+                "trace": {
+                    "type": "CALL",
+                    "to": node.address,
+                    "input": "0x12345678",
+                    "calls": [
+                        {
+                            "type": "CALL",
+                            "to": "0x" + "2" * 40,
+                            "input": "0xabcdef12",
+                        }
+                    ],
+                },
+            },
+        }
+        token = walk.LiveNode(
+            address="0x" + "2" * 40,
+            name="MockToken",
+            code_size=100,
+            artifact_contract="MockToken",
+        )
+        token_fn = walk.FunctionInfo(
+            contract="MockToken",
+            name="transferFrom",
+            inputs=[],
+            outputs=[],
+            mutability="nonpayable",
+            signature="transferFrom(address,address,uint256)",
+        )
+        contracts["MockToken"] = walk.ContractInfo(
+            name="MockToken",
+            source="src/MockToken.sol",
+            line=1,
+            kind="contract",
+            functions=[token_fn],
+        )
+
+        rendered = walk._render_story(
+            pathlib.Path("."),
+            [node, token],
+            {"Pool": [stake, helper], "MockToken": [token_fn]},
+            contracts,
+            [action],
+            {"Alice": "0x" + "a" * 40},
+            0,
+            False,
+            {"target": node.address, "bootstrap": {}},
+            live=True,
+        )
+
+        self.assertIn("EXECUTION / PARTICIPATE", rendered)
+        self.assertIn("EVM CALL TREE / OBSERVED", rendered)
+        self.assertIn("Pool.stake()", rendered)
+        self.assertIn("MockToken.transferFrom()", rendered)
+        self.assertIn("INTERNAL PATH / SOURCE-CORRELATED", rendered)
+        self.assertIn("stake() → _assertDepositsAllowed()", rendered)
+        self.assertIn("Pool::eligibleStake[Alice]", rendered)
+        self.assertNotIn("SYSTEM CONNECTION WEB", rendered)
+        self.assertNotIn("SHARED STATE FLOW / FUNCTIONS", rendered)
+
+    def test_send_transaction_hash_extracts_cast_hash(self):
+        result = walk._send_transaction_hash({
+            "stdout": "transactionHash 0x" + "1" * 64,
+            "stderr": "",
+        })
+        self.assertEqual(result, "0x" + "1" * 64)
+
+    def test_walkthrough_phase_marks_ownership_operations_as_admin(self):
+        fn = walk.FunctionInfo(
+            "Pool",
+            "renounceOwnership",
+            [],
+            [],
+            "nonpayable",
+            "renounceOwnership()",
+        )
+        self.assertEqual(walk._action_phase(fn), "ADMIN")
+        self.assertTrue(walk._walkthrough_is_setup_action(fn))
+
     def test_auto_bootstrap_uses_only_safe_local_setup_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
