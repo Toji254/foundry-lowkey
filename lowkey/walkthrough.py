@@ -369,6 +369,10 @@ _PHASES = [
 
 def _phase_score(name: str) -> tuple[int, int]:
     lower = name.lower()
+    if "flagoutcome" in lower or (lower.startswith("flag") and "outcome" in lower):
+        return 2, -1000
+    if lower.startswith("claim"):
+        return 4, -100
     for index, (_, names) in enumerate(_PHASES):
         for token in names:
             if lower.startswith(token) or token in lower:
@@ -585,6 +589,56 @@ def _send(host: Any, config: dict[str, Any], actor: Actor, target: str, signatur
     tx = _extract_tx_hash(out)
     return tx, (out or "").strip()
 
+
+def _prepare_lab_allowance(
+    host: Any,
+    config: dict[str, Any],
+    actor: Actor,
+    pool_address: str,
+    token_address: str,
+    rpc: str,
+    steps: list[Step],
+) -> Step | None:
+    """Make the local mock token usable and record that prerequisite as a live step."""
+    if not is_address(token_address) or not is_address(pool_address):
+        return None
+    code, out, _err = _cmd([
+        "cast", "call", token_address,
+        "allowance(address,address)",
+        actor.address, pool_address,
+        "--rpc-url", rpc,
+    ], timeout=10)
+    allowance_value = 0
+    if code == 0:
+        raw = (out or "").strip().splitlines()
+        if raw:
+            try:
+                allowance_value = int(raw[-1], 0)
+            except ValueError:
+                allowance_value = 0
+    if allowance_value > 0:
+        return None
+
+    amount = 2**256 - 1
+    tx, output = _send(
+        host, config, actor, token_address,
+        "approve(address,uint256)", [pool_address, amount], 0,
+    )
+    step = Step(
+        index=len(steps) + 1,
+        actor=actor.name,
+        contract="StakeToken",
+        address=token_address,
+        function="approve(address,uint256)",
+        args=[pool_address, amount],
+        reason="local lab prerequisite for pool staking",
+        inferred=False,
+        status="success" if tx else "reverted",
+        tx_hash=tx,
+        error=None if tx else (output or "token approval failed"),
+    )
+    steps.append(step)
+    return step
 
 def _extract_tx_hash(text: str) -> str | None:
     matches = re.findall(r"0x[0-9a-fA-F]{64}", text or "")
@@ -1329,6 +1383,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     runtime=[RuntimeContract(target,model.name,model.name,"target")]
     steps=[]
     completed=set()
+    prepared_pools: set[tuple[str, str]] = set()
     observed = dict(config.get("_walkthrough_observed") or {})
     pending=plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
 
@@ -1386,6 +1441,22 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 discovered=_discover_runtime_contracts(root,rpc,models,runtime,receipt,trace,step.index,step.address)
                 if discovered:
                     runtime.extend(discovered); step.discovered_contracts=[asdict(x) for x in discovered]
+
+                # Visible local-lab prerequisite: once a real pool clone exists,
+                # approve the recorded mock stake token for that clone.
+                token_address = observed.get("staketoken")
+                if token_address and discovered:
+                    for node in discovered:
+                        pool_key = (token_address.lower(), node.address.lower())
+                        if pool_key in prepared_pools:
+                            continue
+                        approval = _prepare_lab_allowance(
+                            host, config, actor, node.address, token_address, rpc, steps,
+                        )
+                        prepared_pools.add(pool_key)
+                        if approval:
+                            draw(approval)
+
                 after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
                 step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
                 step.runtime_contracts=[asdict(x) for x in runtime]
