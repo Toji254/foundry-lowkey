@@ -2467,6 +2467,141 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
 
     return origin, list(dict.fromkeys(diagnostics))
 
+def _is_local_rpc(rpc: str) -> bool:
+    try:
+        host = urlsplit(str(rpc)).hostname or ""
+        return host in {"127.0.0.1", "localhost", "::1"}
+    except ValueError:
+        return False
+
+def _function_body(root: Path, model: ContractModel, function_name: str) -> str:
+    try:
+        source = (root / model.source).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r"\\bfunction\\s+" + re.escape(function_name) + r"\\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
+    return _balanced_block(source, match.end() - 1) if match else ""
+
+def _find_mapping_setter(root: Path, model: ContractModel, mapping_name: str) -> dict[str, Any] | None:
+    normalized = re.sub(r"[^a-z0-9]", "", mapping_name.lower()).replace("allowed", "")
+    candidates = []
+    for item in model.abi:
+        if item.get("type") != "function" or item.get("stateMutability") in {"view", "pure"}:
+            continue
+        inputs = item.get("inputs") or []
+        if len(inputs) != 2 or _canonical_type(inputs[0]) != "address" or _canonical_type(inputs[1]) != "bool":
+            continue
+        name = str(item.get("name") or "")
+        compact = re.sub(r"[^a-z0-9]", "", name.lower()).replace("set", "", 1)
+        score = 0
+        if normalized and normalized in compact.replace("allowed", ""):
+            score += 100
+        if "allow" in name.lower() or "enable" in name.lower() or "active" in name.lower():
+            score += 25
+        body = _function_body(root, model, name)
+        if mapping_name and re.search(r"\\b" + re.escape(mapping_name) + r"\\s*\\[", body):
+            score += 100
+        if re.search(r"\\]\s*=", body):
+            score += 10
+        if score:
+            candidates.append((score, name.lower(), item))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return candidates[0][2] if candidates else None
+
+def _owner_actor_for_target(rpc: str, target: str, model: ContractModel, actors: list[Actor]) -> Actor | None:
+    owner = next((item for item in model.abi if item.get("type") == "function" and item.get("name") == "owner" and not item.get("inputs") and item.get("outputs") and _canonical_type(item["outputs"][0]) == "address"), None)
+    if not owner:
+        return None
+    ok, rendered = _read_contract_getter(rpc, target, owner)
+    value = rendered.splitlines()[-1].strip() if rendered else ""
+    if not ok or not is_address(value):
+        return None
+    return next((actor for actor in actors if actor.address.lower() == value.lower()), None)
+
+def _dependency_setter(root: Path, dependency_model: ContractModel | None, dependency_function: str) -> dict[str, Any] | None:
+    if not dependency_model:
+        return None
+    hint = re.sub(r"^(is|get|has|check)", "", dependency_function.lower())
+    candidates = []
+    for item in dependency_model.abi:
+        if item.get("type") != "function" or item.get("stateMutability") in {"view", "pure"}:
+            continue
+        inputs = item.get("inputs") or []
+        if len(inputs) != 2 or _canonical_type(inputs[0]) != "address" or _canonical_type(inputs[1]) != "bool":
+            continue
+        name = str(item.get("name") or "")
+        compact = re.sub(r"[^a-z0-9]", "", name.lower())
+        score = 0
+        if hint and hint in compact:
+            score += 100
+        if any(token in compact for token in ("valid", "allowed", "enabled", "active", "registered", "approved")):
+            score += 30
+        if compact.startswith("set") or compact.startswith("allow") or compact.startswith("enable"):
+            score += 15
+        if score:
+            candidates.append((score, compact, item))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return candidates[0][2] if candidates else None
+
+def _prepare_obvious_prerequisite(root: Path, rpc: str, host: Any, config: dict[str, Any], step: Step, model: ContractModel, models: list[ContractModel], actors: list[Actor]) -> str | None:
+    """Apply a source-proven, local-only prerequisite and return a human-readable action."""
+    if not _is_local_rpc(rpc):
+        return None
+    actor = next((item for item in actors if item.name == step.actor), actors[0] if actors else None)
+    if not actor:
+        return None
+    origin, diagnostics = _probe_source_guards(root, rpc, step, model, models, actor.address)
+    if not origin:
+        return None
+
+    # Missing public mapping permission → execute its obvious address/bool setter.
+    for mapping in model.mappings:
+        name = str(mapping.get("name") or "")
+        if not name:
+            continue
+        false_line = next((line for line in diagnostics if line.startswith("✕") and _pretty_identifier(name) in line and "= false" in line), None)
+        if not false_line:
+            continue
+        setter = _find_mapping_setter(root, model, name)
+        if not setter:
+            continue
+        key_name, key_value = _mapping_argument_for_function(_function_body(root, model, str(step.function).split("(",1)[0]), name, _function_inputs(model, step.function), step.args)
+        if key_name is None or not is_address(key_value):
+            continue
+        owner_actor = _owner_actor_for_target(rpc, step.address, model, actors) or actor
+        tx, output = _send(host, config, owner_actor, step.address, _signature(setter), [key_value, True], 0)
+        if tx:
+            return "PREREQUISITE ✓ " + _signature(setter) + " → enabled " + _pretty_identifier(name) + " for " + _friendly_arg(key_value, actors)
+        return "PREREQUISITE ✕ " + _signature(setter) + " failed: " + _short_error(output)
+
+    # Dependency boolean guard false → call an obvious local test-fixture setter.
+    for edge in _source_edges_for_step(model, step):
+        if edge.get("kind") != "cross-contract":
+            continue
+        via = str(edge.get("via") or "")
+        dep_address, _ = _source_dependency_address(rpc, model, edge, step)
+        if not via or not dep_address:
+            continue
+        dep_name = str(edge.get("interface") or edge.get("to_contract") or "")
+        dep_fn_name = str(edge.get("to_function") or "")
+        dep_model = next((item for item in models if item.name.lower() == dep_name.lower()), None)
+        if dep_model is None:
+            dep_model = next((item for item in models if item.name.lower().replace("mock", "") == dep_name.lower().lstrip("i")), None)
+        setter = _dependency_setter(root, dep_model, dep_fn_name)
+        if not setter:
+            continue
+        dep_owner_actor = _owner_actor_for_target(rpc, dep_address, dep_model, actors) if dep_model else None
+        setter_actor = dep_owner_actor or actor
+        dep_args = _dependency_argument_values(step, model, _function_by_name(dep_model, dep_fn_name) if dep_model else {})
+        if len(setter.get("inputs") or []) != 2 or not dep_args:
+            continue
+        tx, output = _send(host, config, setter_actor, dep_address, _signature(setter), [dep_args[0], True], 0)
+        if tx:
+            return "PREREQUISITE ✓ " + _signature(setter) + " → configured " + _pretty_identifier(dep_name)
+        return "PREREQUISITE ✕ " + _signature(setter) + " failed: " + _short_error(output)
+
+    return None
+
 def _diagnose_failed_call(
     root: Path,
     rpc: str,
