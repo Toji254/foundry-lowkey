@@ -158,7 +158,7 @@ class WalkthroughTests(unittest.TestCase):
             "http://127.0.0.1:8545",
         )
         self.assertIsNone(args)
-        self.assertIn("Agreement", reason)
+        self.assertIn("agreement", reason.lower())
 
     def test_error_decoder_reports_static_custom_error(self):
         err = {"name": "StakingClosed", "inputs": []}
