@@ -263,6 +263,66 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(target, broadcasted)
             self.assertTrue(source.startswith("broadcast "))
 
+    def test_stale_audit_target_does_not_override_live_broadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            stale = "0x" + "1" * 40
+            live = "0x" + "2" * 40
+            bootstrap = {
+                "audit_targets": [
+                    {"target": stale, "file": "audit_start.json"},
+                ],
+                "audit_evidence": [],
+                "live_deployments": [
+                    {
+                        "address": live,
+                        "contract": "Example",
+                        "broadcast": "broadcast/Deploy/31337/run-latest.json",
+                        "index": 1,
+                    }
+                ],
+            }
+            with patch.object(
+                walk, "_code_size",
+                side_effect=lambda _rpc, addr: 100 if addr.lower() == live.lower() else 0,
+            ):
+                target, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": None, "targets": {}},
+                    "http://127.0.0.1:8545",
+                    bootstrap,
+                )
+            self.assertEqual(target, live)
+            self.assertTrue(source.startswith("broadcast "))
+
+    def test_static_system_context_uses_setup_deployments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            (source_dir / "Factory.sol").write_text(
+                "contract Factory {}",
+                encoding="utf-8",
+            )
+            contracts = {
+                "Factory": walk.ContractInfo(
+                    name="Factory",
+                    source="src/Factory.sol",
+                    line=1,
+                    kind="contract",
+                )
+            }
+            bootstrap = {
+                "initialization": [
+                    {"source": "script/Deploy.s.sol", "line": 10, "kind": "deploy", "target": "Factory"},
+                    {"source": "script/Deploy.s.sol", "line": 11, "kind": "configuration", "target": "setAllowed"},
+                ]
+            }
+            view = walk._static_system_context(bootstrap, contracts)
+            self.assertEqual(view["deployed_contracts"], ["Factory"])
+            self.assertEqual(view["project_contracts"], ["Factory"])
+            self.assertEqual(len(view["script_flow"]["script/Deploy.s.sol"]), 2)
+
     def test_render_story_consumes_model_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
