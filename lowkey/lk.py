@@ -23,6 +23,16 @@ try:
 except ImportError:
     run_slither = run_rg = run_audit_pipeline = generate_poc = record_evidence = None
 
+try:
+    from project_tools import (
+        build_dependency_graph,
+        detect_project,
+        project_source_files,
+        render_project_map,
+    )
+except ImportError:
+    build_dependency_graph = detect_project = project_source_files = render_project_map = None
+
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 SNAPSHOT_DIR = os.path.join(CONFIG_DIR, "snapshots")
@@ -1399,56 +1409,154 @@ def run_layout(args):
             if isinstance(entry,dict): print(f"slot={entry.get('slot')} offset={entry.get('offset')} label={entry.get('label')} type={entry.get('type')}")
     else: print(json.dumps(payload,indent=2))
 
-def source_sol_files(root):
+def source_sol_files(root="."):
+    """Backward-compatible Solidity-only source listing."""
     if os.path.isfile(root):
-        return [root] if root.endswith(".sol") else []
-    if not os.path.isdir(root):
-        return []
-    paths=[]
-    for path,dirs,files in os.walk(root):
-        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib"}]
-        for filename in files:
-            if filename.endswith(".sol"): paths.append(os.path.join(path,filename))
-    return sorted(paths)
+        return [root] if str(root).lower().endswith(".sol") else []
+    if project_source_files:
+        return [str(path) for path in project_source_files(root, {"sol"})]
+    root_path = Path(root)
+    return sorted(
+        str(path)
+        for path in root_path.rglob("*.sol")
+        if not any(part in {".git", "out", "cache", "lib", ".audit"} for part in path.parts)
+    )
+
+
+def _source_files_for_scan(root):
+    if os.path.isfile(root):
+        return [Path(root)]
+    if project_source_files:
+        return list(project_source_files(root))
+    return [Path(path) for path in source_sol_files(root)]
+
 
 def run_scan(args):
-    root=args[0] if args else "src"
-    if not os.path.exists(root): return fail(f"Path not found: {root}")
-    if not os.path.isdir(root) and not root.endswith(".sol"):
-        return fail(f"Path is not a Solidity file or directory: {root}")
-    patterns=[
-        ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
-        ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
-        ("TX.ORIGIN",re.compile(r"\btx\.origin\b")),("DELEGATECALL",re.compile(r"\bdelegatecall\b")),
-        ("SELFDESTRUCT",re.compile(r"\bselfdestruct\s*\(")),("UNCHECKED",re.compile(r"\bunchecked\s*\{")),
-        ("ASSEMBLY",re.compile(r"\bassembly\s*\{")),("ENCODE_PACKED",re.compile(r"\babi\.encodePacked\s*\(")),
-        ("TIMESTAMP",re.compile(r"\bblock\.timestamp\b")),("BLOCKHASH",re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
-        ("PREVRANDAO",re.compile(r"\bblock\.prevrandao\b")),("ECRECOVER",re.compile(r"\becrecover\s*\(")),
-        ("CREATE2",re.compile(r"\bcreate2\b"))]
-    hits=0
-    markers=[]
-    for path in source_sol_files(root):
-        try: lines=Path(path).read_text(encoding="utf-8").splitlines()
-        except OSError: continue
-        for lineno,line in enumerate(lines,1):
-            for label,pattern in patterns:
+    root=args[0] if args else "."
+    if not os.path.exists(root):
+        return fail(f"Path not found: {root}")
+    if not os.path.isdir(root) and not str(root).lower().endswith((".sol", ".vy", ".vyi")):
+        return fail(f"Path is not a supported source file or directory: {root}")
+
+    patterns = {
+        ".sol": [
+            ("REENTRANCY REVIEW", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
+            ("ETH TRANSFER REVIEW", re.compile(r"\.(transfer|send)\s*\(")),
+            ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
+            ("DELEGATECALL", re.compile(r"\bdelegatecall\b")),
+            ("SELFDESTRUCT", re.compile(r"\bselfdestruct\s*\(")),
+            ("UNCHECKED", re.compile(r"\bunchecked\s*\{")),
+            ("ASSEMBLY", re.compile(r"\bassembly\s*\{")),
+            ("ENCODE_PACKED", re.compile(r"\babi\.encodePacked\s*\(")),
+            ("TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
+            ("BLOCKHASH", re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
+            ("PREVRANDAO", re.compile(r"\bblock\.prevrandao\b")),
+            ("ECRECOVER", re.compile(r"\becrecover\s*\(")),
+            ("CREATE2", re.compile(r"\bcreate2\b")),
+        ],
+        ".vy": [
+            ("RAW_CALL", re.compile(r"\braw_call\s*\(")),
+            ("EXTERNAL_CALL", re.compile(r"\b(?:extcall|staticcall)\b")),
+            ("ETH TRANSFER", re.compile(r"\bsend\s*\(")),
+            ("CREATE", re.compile(r"\bcreate_(?:minimal_proxy_to|forwarder_to|from_blueprint)\b")),
+            ("SELFDESTRUCT", re.compile(r"\bselfdestruct\s*\(")),
+            ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
+            ("TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
+            ("BLOCK NUMBER", re.compile(r"\bblock\.number\b")),
+            ("PREV HASH", re.compile(r"\bblock\.prevhash\b")),
+            ("RAW LOG", re.compile(r"\braw_log\s*\(")),
+        ],
+        ".vyi": [],
+    }
+
+    files = _source_files_for_scan(root)
+    hits = 0
+    markers = []
+    for path in files:
+        suffix = path.suffix.lower()
+        if suffix not in patterns:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for lineno, line in enumerate(lines, 1):
+            for label, pattern in patterns[suffix]:
                 if pattern.search(line):
-                    hits+=1
-                    marker={"file":path,"line":lineno,"label":label,"text":line.strip()}
+                    hits += 1
+                    marker = {
+                        "file": str(path.resolve()),
+                        "line": lineno,
+                        "language": "solidity" if suffix == ".sol" else "vyper",
+                        "label": label,
+                        "text": line.strip(),
+                    }
                     markers.append(marker)
-                    print(f"{path}:{lineno}: [{label}] {line.strip()}")
+                    print(
+                        f"{marker['file']}:{lineno}: "
+                        f"[{marker['language']}:{label}] {line.strip()}"
+                    )
+
     if record_evidence:
-        record_evidence("source_scan", {"root":root,"count":hits,"markers":markers})
-    print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
+        record_evidence(
+            "source_scan",
+            {
+                "root": str(Path(root).resolve()),
+                "project": detect_project(root) if detect_project else None,
+                "files_scanned": len(files),
+                "count": hits,
+                "markers": markers,
+            },
+        )
+    print(f"\nReview markers: {hits}")
+    print("These are source-level review markers, not vulnerability verdicts.")
+    return 0
+
 
 def run_deps(args):
-    root=args[0] if args else "src"; files=source_sol_files(root)
-    if not files: print(f"No Solidity files found under {root}."); return
+    root = args[0] if args else "."
+    if not os.path.exists(root):
+        return fail(f"Path not found: {root}")
+
+    if build_dependency_graph:
+        payload = build_dependency_graph(root)
+        summary = payload.get("summary", {})
+        print("LOWKEY SYSTEM GRAPH")
+        print("=" * 72)
+        print(
+            f"Files: {summary.get('files', 0)} | "
+            f"Imports: {summary.get('imports', 0)} | "
+            f"Inheritance: {summary.get('inheritance', 0)} | "
+            f"Call sites: {summary.get('external_call_sites', 0)} | "
+            f"Unresolved: {summary.get('unresolved_imports', 0)}"
+        )
+        for edge in payload.get("edges", []):
+            state = "OK" if edge.get("resolved") else "UNRESOLVED"
+            extra = f" [{', '.join(edge.get('symbols', []))}]" if edge.get("symbols") else ""
+            print(
+                f"  {state:<10} {edge.get('from')} -> {edge.get('to')} "
+                f"({edge.get('kind')}, line {edge.get('line')}){extra}"
+            )
+        unresolved = payload.get("unresolved", [])
+        if unresolved:
+            print("\nUnresolved/external imports:")
+            for edge in unresolved:
+                print(f"  {edge.get('from')}:{edge.get('line')} -> {edge.get('to')}")
+        if record_evidence:
+            record_evidence("dependencies", payload)
+        return 0
+
+    files = source_sol_files(root)
+    if not files:
+        print(f"No Solidity files found under {root}.")
+        return 0
     print("Dependency / inheritance map:")
     imports=[]; inherits=[]
     for path in files:
-        try: text_content=Path(path).read_text(encoding="utf-8")
-        except OSError: continue
+        try:
+            text_content=Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
         rel=os.path.relpath(path,root)
         for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
             item={"file":rel,"import":imported}; imports.append(item); print(f"  {rel} -> import {imported}")
@@ -1457,6 +1565,13 @@ def run_deps(args):
                 item={"file":rel,"contract":contract.group(2),"inherits":parent}; inherits.append(item); print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
     if record_evidence:
         record_evidence("dependencies", {"root":root,"imports":imports,"inherits":inherits})
+    return 0
+
+
+def run_project(args=None):
+    if render_project_map is None:
+        return fail("Project analysis module is not installed. Reinstall Lowkey.")
+    return 0 if render_project_map(args[0] if args else ".") else 0
 
 def run_risk(config):
     target=config.get("target")
@@ -1677,6 +1792,7 @@ SOURCE TRIAGE
   lk rg <pattern> [path]              Ripgrep search + evidence capture
   lk slither [args...]                Slither static analysis + normalized evidence
   lk deps [src]                       Import/inheritance map
+  lk project                           Detect project/toolchain + print whole-system graph
   lk layout <ContractName>            Forge storage layout
   lk risk                             ABI-level function risk heuristic
   lk gas <func> [args]                Estimate gas
@@ -1890,6 +2006,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 name=rest[i+1]
             generate_poc(".",index,name)
     elif cmd=="deps": run_deps(args)
+    elif cmd in {"project","project-map","system"}: run_project(args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": run_raw(config,args)
