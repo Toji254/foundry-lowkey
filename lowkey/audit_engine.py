@@ -1222,32 +1222,6 @@ def _project_test_command(root: str, project: dict[str, Any] | None = None) -> l
             continue
         command.extend(["--ignore", str(relative)])
     return command
-def _project_test_command(root: str, project: dict[str, Any] | None = None) -> list[str]:
-    root_path = Path(root).resolve()
-    test_roots = [
-        root_path / name
-        for name in ("tests", "test")
-        if (root_path / name).is_dir()
-    ]
-
-    project_python = _project_python(root)
-    if project_python:
-        command = [project_python, "-m", "pytest"]
-    else:
-        command = ["uv", "run", "python", "-m", "pytest"]
-
-    if test_roots:
-        command.extend(str(path.relative_to(root_path)) for path in test_roots)
-    else:
-        command.append(".")
-
-    for dependency_root in _project_dependency_paths(root, project):
-        try:
-            relative = dependency_root.relative_to(root_path)
-        except ValueError:
-            continue
-        command.extend(["--ignore", str(relative)])
-    return command
 
 
 def _run_project_vyper_tests(
