@@ -2209,6 +2209,90 @@ def _preflight_failure(
     }
 
 
+def _extract_guard_signals(fn: FunctionInfo) -> list[str]:
+    body = fn.body or ""
+    signals: list[str] = []
+    for match in re.finditer(r"\brequire\s*\((.{1,300})\)", body, flags=re.S):
+        expr = " ".join(match.group(1).split())
+        if expr:
+            signals.append(f"require({expr})")
+    for match in re.finditer(r"\bif\s*\((.{1,260})\)\s*\{(.{0,700})?\b(?:revert|return)\b", body, flags=re.S):
+        expr = " ".join(match.group(1).split())
+        if expr:
+            signals.append(f"if({expr})")
+    for match in re.finditer(r"\brevert\s+([A-Za-z_]\w*)\s*\(", body):
+        signals.append(f"revert {match.group(1)}()")
+    return list(dict.fromkeys(signals))
+
+
+def _state_transition_candidates(
+    fn: FunctionInfo,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+) -> list[tuple[str, str]]:
+    gate_states = [
+        state for state in (fn.reads or [])
+        if any(
+            token in state.lower()
+            for token in (
+                "state", "status", "phase", "stage", "active", "open",
+                "closed", "paused", "outcome", "expiry", "deadline",
+                "end", "until", "final",
+            )
+        )
+    ]
+    transitions: list[tuple[str, str]] = []
+    for state in gate_states:
+        writers = [
+            candidate.name
+            for candidate in functions_by_contract.get(fn.contract, [])
+            if candidate.name != fn.name and state in (candidate.writes or [])
+        ]
+        for writer in writers[:5]:
+            item = (state, writer)
+            if item not in transitions:
+                transitions.append(item)
+    return transitions
+
+
+def _focus_node(
+    meta: dict[str, Any],
+    nodes: list[LiveNode],
+    contracts: dict[str, ContractInfo],
+) -> LiveNode | None:
+    target = str(meta.get("target") or "")
+    live_nodes = [node for node in nodes if node.code_size > 0]
+    exact = next(
+        (node for node in live_nodes if node.address.lower() == target.lower()),
+        None,
+    )
+    if exact and (exact.artifact_contract or exact.name) in contracts:
+        return exact
+
+    expected = str(meta.get("target_contract") or "")
+    if expected:
+        match = next(
+            (
+                node for node in live_nodes
+                if (node.artifact_contract or node.name).lower() == expected.lower()
+                and (node.artifact_contract or node.name) in contracts
+            ),
+            None,
+        )
+        if match:
+            return match
+
+    pool = next(
+        (
+            node for node in live_nodes
+            if "pool" in (node.artifact_contract or node.name).lower()
+            and "factory" not in (node.artifact_contract or node.name).lower()
+            and (node.artifact_contract or node.name) in contracts
+        ),
+        None,
+    )
+    return pool or exact
+
+
 def _known_preconditions(
     root: Path,
     rpc: str,
@@ -2265,6 +2349,20 @@ def _known_preconditions(
                     f"agreement.owner() is {owner.group(0)}, but caller is {caller}"
                 )
 
+    for guard in _extract_guard_signals(fn)[:5]:
+        relevant = [
+            state for state in (fn.reads or [])
+            if re.search(rf"\b{re.escape(state)}\b", guard)
+        ]
+        if relevant:
+            findings.append(
+                f"source gate reads {', '.join(relevant[:3])}: {guard[:220]}"
+            )
+
+    for state, writer in _state_transition_candidates(fn, functions_by_contract)[:4]:
+        findings.append(
+            f"state transition path: {writer}() writes {state}, which {fn.name}() reads"
+        )
 
     return findings
 
@@ -2482,6 +2580,21 @@ def _target_label(config: dict[str, Any], target: str | None) -> str:
                 return str(v)
     return "Target"
 
+def _deployment_contract_label(
+    bootstrap: dict[str, Any] | None,
+    target: str | None,
+) -> str | None:
+    if not _is_address(target):
+        return None
+    for item in (bootstrap or {}).get("live_deployments") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("address") or "").lower() == target.lower():
+            contract = str(item.get("contract") or "").strip()
+            if contract:
+                return contract
+    return None
+
 
 def _pretty_error(result: dict[str, Any]) -> str:
     decoded = result.get("decoded_error")
@@ -2688,7 +2801,7 @@ def _render_action_card(
         lines.append(f"  NEXT   {_paint(rec, 'yellow')}")
         for item in action.get("diagnosis", [])[:2]:
             lines.append(f"         evidence: {item}")
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def _render_story(
@@ -2709,7 +2822,12 @@ def _render_story(
         (n for n in live_nodes if n.address.lower() == target.lower()),
         None,
     )
-    target_name = target_node.artifact_contract or target_node.name if target_node else "Not resolved"
+    focus = _focus_node(meta, nodes, contracts)
+    target_name = (
+        focus.artifact_contract or focus.name
+        if focus else
+        (target_node.artifact_contract or target_node.name if target_node else "Not resolved")
+    )
 
     lines = [
         _paint("╭────────────────────────────────────────────────────────────╮", "cyan"),
@@ -2748,8 +2866,8 @@ def _render_story(
         actions,
     )
 
-    if target_node:
-        cname = target_node.artifact_contract or target_node.name
+    if focus:
+        cname = focus.artifact_contract or focus.name
         contract = contracts.get(cname)
         funcs = functions_by_contract.get(cname, [])
         if contract:
@@ -2757,7 +2875,7 @@ def _render_story(
             lines.append(f"  {_contract_purpose(cname, funcs)}")
             lines.append("")
             lines += _render_live_state(
-                (meta.get("runtime_getters") or {}).get(target.lower(), {})
+                (meta.get("runtime_getters") or {}).get(focus.address.lower(), {})
             )
             lines.append("")
             lines += _render_contract_surface(contract, funcs)
@@ -2801,7 +2919,7 @@ def _render_story(
         _paint("YELLOW","yellow") + " next/warning  " +
         _paint("MAGENTA","magenta") + " actors",
     ]
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def _is_local_rpc(rpc: str) -> bool:
@@ -2945,6 +3063,9 @@ def _build_model(
 
     artifacts, artifact_files = _load_artifacts(root)
     label = _target_label(config, target)
+    deployment_label = _deployment_contract_label(bootstrap, target)
+    if deployment_label and label == "Target":
+        label = deployment_label
     configured = (config.get("abi_paths") or {}).get(target)
     if configured:
         try:
@@ -2993,6 +3114,9 @@ def _build_model(
         )
 
     label = _target_label(config, target)
+    deployment_label = _deployment_contract_label(bootstrap, target)
+    if deployment_label and label == "Target":
+        label = deployment_label
     configured = (config.get("abi_paths") or {}).get(target)
     if configured:
         try:
@@ -3066,6 +3190,7 @@ def _build_model(
     meta = {
         "rpc": rpc,
         "target": target,
+        "target_contract": _deployment_contract_label(bootstrap, target) or str(config.get("target_contract") or ""),
         "target_source": target_source,
         "chain_timestamp": _latest_timestamp(rpc),
         "contract_count": len(contracts),
@@ -3100,7 +3225,7 @@ def _walkthrough_is_setup_action(fn: FunctionInfo) -> bool:
     }
 
 
-def _plan_actions(
+def _candidate_actions(
     root: Path,
     meta: dict[str, Any],
     functions_by_contract: dict[str, list[FunctionInfo]],
@@ -3108,12 +3233,11 @@ def _plan_actions(
     actors: dict[str, str],
     known: dict[str, str],
     all_errors: list[dict[str, Any]],
-    steps: int,
 ) -> list[dict[str, Any]]:
     rpc = str(meta["rpc"])
     now = int(meta["chain_timestamp"])
-    actions: list[dict[str, Any]] = []
-    candidates: list[tuple[int, int, LiveNode, FunctionInfo]] = []
+    candidates: list[tuple[int, int, LiveNode, FunctionInfo, list[Any], str | None]] = []
+
     for node in nodes:
         if node.code_size == 0:
             continue
@@ -3123,41 +3247,31 @@ def _plan_actions(
             phase_priority, _ = _walkthrough_phase_priority(fn)
             if score <= 0 or phase_priority <= 0 or _walkthrough_is_setup_action(fn):
                 continue
-            candidates.append((phase_priority, score, node, fn))
-    candidates.sort(key=lambda x: (-x[0], -x[1], x[2].name, x[3].name, x[3].signature))
+            args, reason = _semantic_args(
+                node, fn, functions_by_contract, nodes, actors, known,
+                now, root, rpc,
+            )
+            if args is None:
+                continue
+            candidates.append((phase_priority, score, node, fn, args, reason))
 
+    candidates.sort(
+        key=lambda x: (-x[0], -x[1], x[2].name, x[3].name, x[3].signature)
+    )
+
+    actions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for _, _, node, fn in candidates:
+    for _, _, node, fn, args, reason in candidates:
         key = (node.address.lower(), fn.signature)
         if key in seen:
             continue
         seen.add(key)
-        args, reason = _semantic_args(
-            node,
-            fn,
-            functions_by_contract,
-            nodes,
-            actors,
-            known,
-            now,
-            root,
-            rpc,
-        )
-        if args is None:
-            continue
+
         caller, actor_name = _choose_caller(
-            root,
-            rpc,
-            node,
-            fn,
-            actors,
-            nodes,
-            functions_by_contract,
+            root, rpc, node, fn, actors, nodes, functions_by_contract
         )
 
-        # Factory-style creation often gates the caller against the owner of
-        # the referenced protocol contract. Resolve that owner from the exact
-        # semantic argument instead of assuming Alice is the caller.
+        # Factory creation gates are often against the owner of the supplied agreement.
         if ".owner()" in (fn.body or "") and "msg.sender" in (fn.body or ""):
             agreement_pos = next(
                 (
@@ -3168,11 +3282,7 @@ def _plan_actions(
             )
             if agreement_pos is not None and _is_address(args[agreement_pos]):
                 code, out, _ = _query_by_signature(
-                    root,
-                    rpc,
-                    args[agreement_pos],
-                    "owner()(address)",
-                    [],
+                    root, rpc, args[agreement_pos], "owner()(address)", []
                 )
                 if code == 0:
                     owner = re.search(r"0x[0-9a-fA-F]{40}", out)
@@ -3181,30 +3291,19 @@ def _plan_actions(
 
         if not caller:
             continue
+
         precheck = _preflight_failure(
-            root,
-            rpc,
-            node,
-            fn,
-            args,
-            caller,
-            all_errors,
+            root, rpc, node, fn, args, caller, all_errors
         )
-        diagnosis = []
-        if not precheck["ok"]:
-            diagnosis = _known_preconditions(
-                root,
-                rpc,
-                node,
-                fn,
-                args,
-                caller,
-                functions_by_contract,
-                nodes,
-                known,
-                actors,
+        diagnosis = (
+            []
+            if precheck["ok"]
+            else _known_preconditions(
+                root, rpc, node, fn, args, caller,
+                functions_by_contract, nodes, known, actors,
             )
-        action = {
+        )
+        actions.append({
             "node": node,
             "function": fn,
             "args": args,
@@ -3214,21 +3313,50 @@ def _plan_actions(
             "phase": _action_phase(fn),
             "what": _action_what(fn, node),
             "why": _action_why(fn, node),
-            "phase": _action_phase(fn),
-            "what": _action_what(fn, node),
-            "why": _action_why(fn, node),
             "semantic_reason": (
-                "ABI + source role synthesis"
-                if not reason
-                else reason
+                "ABI + source role synthesis" if not reason else reason
             ),
             "result": precheck,
             "diagnosis": diagnosis,
-        }
-        actions.append(action)
-        if len(actions) >= steps:
-            break
+        })
     return actions
+
+
+def _plan_actions(
+    root: Path,
+    meta: dict[str, Any],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    all_errors: list[dict[str, Any]],
+    steps: int,
+) -> list[dict[str, Any]]:
+    # Compatibility helper: callers receive an ordered state-aware candidate list.
+    return _candidate_actions(
+        root, meta, functions_by_contract, nodes, actors, known, all_errors
+    )[: max(1, int(steps))]
+
+
+def _next_transition_action(
+    root: Path,
+    meta: dict[str, Any],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    all_errors: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidates = _candidate_actions(
+        root, meta, functions_by_contract, nodes, actors, known, all_errors
+    )
+    if not candidates:
+        return None
+
+    # Prefer an actually executable transition. If none exists, surface the
+    # earliest lifecycle action so the blocker itself becomes the audit focus.
+    ready = [action for action in candidates if action.get("status") == "READY"]
+    return (ready or candidates)[0]
 
 
 def _run_walkthrough(
@@ -3252,9 +3380,7 @@ def _run_walkthrough(
         )
         if needs_bootstrap:
             bootstrap_ok, bootstrap_reason = _auto_bootstrap_local(
-                root,
-                config,
-                meta.get("bootstrap") or {},
+                root, config, meta.get("bootstrap") or {}
             )
             meta["auto_bootstrap"] = {
                 "status": "success" if bootstrap_ok else "not_executed",
@@ -3270,140 +3396,165 @@ def _run_walkthrough(
                 }
 
     errors = _all_errors(_load_artifacts(root)[0])
-    if flags.get("bootstrap") or not meta.get("target"):
-        _print_bootstrap_discovery(meta)
-    actions = _plan_actions(
-        root,
-        meta,
-        fns,
-        nodes,
-        actors,
-        known,
-        errors,
-        int(flags["steps"]),
-    )
-
     payload = {
         "mode": "walkthrough",
         "started_at": time.time(),
         "model": meta,
         "actions": [],
     }
-    current = 0
-    if not actions:
-        print(_render_story(root, nodes, fns, contracts, [], actors, None, flags.get("links", True), meta))
-        target = meta.get("target")
-        live_nodes = meta.get("live_nodes") or []
-        if target and not any(
-            isinstance(node, dict) and int(node.get("code_size") or 0) > 0
-            for node in live_nodes
-        ):
-            print("\nNo semantically executable actions were discovered.")
-            print("Target state is static-only: the persisted target has no live bytecode on the selected RPC.")
-        else:
-            print("\nNo semantically executable actions were discovered.")
-            print("That is intentional: Lowkey will not substitute EOAs for contract roles.")
-        _persist(root, payload)
-        return 0
 
-    print(_render_story(
-        root,
-        nodes,
-        fns,
-        contracts,
-        [],
-        actors,
-        None,
-        flags.get("links", True),
-        meta,
-    ))
-    print("")
-    for index, action in enumerate(actions):
-        current = index
-        print(_render_action_card(
-            root,
-            action,
-            index,
-            len(actions),
-            flags.get("links", True),
+    if flags.get("bootstrap") or not meta.get("target"):
+        _print_bootstrap_discovery(meta)
+
+    for step_index in range(max(1, int(flags["steps"]))):
+        if step_index > 0:
+            # A successful --send transition changes the world. Rebuild every
+            # layer instead of replaying actions planned from the old state.
+            meta, fns, nodes, getter_data, contracts, actors, known = _build_model(
+                root, config
+            )
+            errors = _all_errors(_load_artifacts(root)[0])
+
+        deployment_label = _deployment_contract_label(
+            meta.get("bootstrap"), meta.get("target")
+        )
+        if deployment_label and not meta.get("target_contract"):
+            meta["target_contract"] = deployment_label
+
+        action = _next_transition_action(
+            root, meta, fns, nodes, actors, known, errors
+        )
+
+        if action is None:
+            print(_render_story(
+                root, nodes, fns, contracts, [], actors, None,
+                flags.get("links", True), meta
+            ))
+            print("
+" + _paint(
+                "No semantically executable lifecycle transition is currently discoverable.",
+                "yellow",
+            ))
+            print(
+                "The important next audit step is state reconstruction, not random mutation."
+            )
+            break
+
+        payload["model"] = meta
+        payload["actions"].append({
+            **{k: v for k, v in action.items() if k not in {"node", "function"}},
+            "node": asdict(action["node"]),
+            "function": asdict(action["function"]),
+        })
+
+        # Show exactly the current transition, not a precomputed wall of stale steps.
+        print(_render_story(
+            root, nodes, fns, contracts, [action], 0, actors,
+            0, flags.get("links", True), meta
         ))
-        if not flags["non_interactive"]:
-            try:
-                command = input("\n  ⏎ next   q = stop   ").strip().lower()
-            except EOFError:
-                command = ""
-            if command == "q":
-                print("\nStopped.")
-                _persist(root, payload)
-                return 130
 
-        # Re-check just before execution because another action may have changed state.
+        if str(action.get("status")) == "BLOCKED":
+            print(
+                "
+"
+                + _paint(
+                    "Walkthrough stopped at the current state: the selected transition is blocked.",
+                    "red",
+                )
+            )
+            print(
+                _paint(
+                    "Use the diagnosis above to inspect the state gate and its legitimate transition path.",
+                    "yellow",
+                )
+            )
+            break
+
+        if not flags.get("send"):
+            action["status"] = "READY"
+            payload["actions"][-1]["status"] = "READY"
+            _persist(root, payload)
+            print(
+                "
+"
+                + _paint(
+                    "Simulation only: --auto does not mutate local state. Add --send to advance the protocol.",
+                    "yellow",
+                )
+            )
+            break
+
+        if not _is_local_rpc(str(meta["rpc"])):
+            action["status"] = "FAILED"
+            action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
+            payload["actions"][-1].update({
+                "status": "FAILED",
+                "send_skipped": action["send_skipped"],
+            })
+            _persist(root, payload)
+            print("
+" + _paint(action["send_skipped"], "red"))
+            break
+
         node: LiveNode = action["node"]
         fn: FunctionInfo = action["function"]
+        caller = str(action["caller"])
         pre = _preflight_failure(
-            root,
-            str(meta["rpc"]),
-            node,
-            fn,
-            action["args"],
-            action["caller"],
-            errors,
+            root, str(meta["rpc"]), node, fn, action["args"], caller, errors
         )
         action["result"] = pre
-        action["diagnosis"] = (
-            []
-            if pre["ok"]
-            else _known_preconditions(
-                root,
-                str(meta["rpc"]),
-                node,
-                fn,
-                action["args"],
-                action["caller"],
-                fns,
-                nodes,
-                known,
-                actors,
+        if not pre["ok"]:
+            action["status"] = "BLOCKED"
+            action["diagnosis"] = _known_preconditions(
+                root, str(meta["rpc"]), node, fn, action["args"], caller,
+                fns, nodes, known, actors
             )
+            payload["actions"][-1].update({
+                "status": "BLOCKED",
+                "result": pre,
+                "diagnosis": action["diagnosis"],
+            })
+            _persist(root, payload)
+            print("
+" + _paint(
+                "State changed between planning and execution; transition is now blocked.",
+                "red",
+            ))
+            break
+
+        code, out, err = _cast_send(
+            root, str(meta["rpc"]), node.address, fn,
+            _arg_values_to_strings(action["args"]), caller
         )
-        action["status"] = "READY" if pre["ok"] else "BLOCKED"
+        action["send"] = {
+            "exit_code": code,
+            "stdout": out,
+            "stderr": err,
+        }
+        action["status"] = "SUCCESS" if code == 0 else "FAILED"
+        payload["actions"][-1].update({
+            "status": action["status"],
+            "result": pre,
+            "send": action["send"],
+        })
+        _persist(root, payload)
 
-        # --auto prepares/analyzes local state; --send is required for mutations.
-        live_send = bool(flags.get("send"))
-        if live_send and pre["ok"]:
-            if not _is_local_rpc(str(meta["rpc"])):
-                action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
-            else:
-                code, out, err = _cast_send(
-                    root,
-                    str(meta["rpc"]),
-                    node.address,
-                    fn,
-                    _arg_values_to_strings(action["args"]),
-                    action["caller"],
-                )
-                action["send"] = {
-                    "exit_code": code,
-                    "stdout": out,
-                    "stderr": err,
-                }
-                action["status"] = "SUCCESS" if code == 0 else "FAILED"
-        else:
-            action["status"] = (
-                "READY" if pre["ok"] else "BLOCKED"
-            )
+        if code != 0:
+            print("
+" + _paint(
+                "The live transition failed; Lowkey will not invent the next state.",
+                "red",
+            ))
+            break
 
-        payload["actions"].append(
-            {
-                **{k: v for k, v in action.items() if k not in {"node", "function"}},
-                "node": asdict(node),
-                "function": asdict(fn),
-            }
-        )
+        print("
+" + _paint(
+            "Transition succeeded. Rebuilding the protocol model from the new chain state…",
+            "green",
+        ))
 
-    print("")
-    print(_render_story(root, nodes, fns, contracts, actions, actors, None, flags.get("links", True), meta))
-    print("\nEvidence: .audit/evidence/walkthrough.json")
+    print("
+Evidence: .audit/evidence/walkthrough.json")
     _persist(root, payload)
     return 0
 
