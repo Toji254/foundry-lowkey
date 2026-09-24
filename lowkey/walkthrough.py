@@ -1404,6 +1404,7 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                             (x for x in ("external","public","internal","private") if re.search(rf"\b{x}\b", tail)),
                             "unknown",
                         ),
+                    )
                 )
 
             function_names = {f.name for f in ci.functions}
