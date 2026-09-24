@@ -590,7 +590,7 @@ def _confidence_pool_recipe(config: dict[str, Any], actors: list[Actor]) -> list
              reason="LAB CONTROL: agreement enters UNDER_ATTACK",inferred=False),
         Step(0,alice.name,"ConfidencePool",pool,"pokeRiskWindow()",[],
              reason="pool observes and seals risk-window start",inferred=False),
-        Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[4],
+        Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[5],
              reason="LAB CONTROL: agreement reaches PRODUCTION",inferred=False),
         Step(0,alice.name,"MockConfidencePoolModerator",moderator,"flagSurvived(address)",[pool],
              reason="moderator records the survived outcome",inferred=False),
@@ -714,6 +714,27 @@ def _explain_failure(step: Step, raw: str | None, actor: str) -> str:
     return "the live call was not accepted"
 
 
+def _explain_success(step: Step) -> str:
+    function = str(step.function or "").split("(", 1)[0].lower()
+    if function == "approve":
+        return "the token contract accepted the allowance, so the pool can pull this actor's stake tokens"
+    if function == "stake":
+        return "the pool is unresolved and before expiry, the amount meets minStake, and the token transfer succeeded"
+    if function == "contributebonus":
+        return "the pool is unresolved and before expiry, and the bonus token transfer succeeded"
+    if function == "setagreementstate":
+        return "the local registry fixture accepted the new state; this is a lab-control action"
+    if function == "pokeriskwindow":
+        return "the registry reached an observable risk/terminal state, so the pool could seal its risk-window marker"
+    if function == "flagsurvived":
+        return "the moderator contract is authorized and the registry is in a terminal state accepted for SURVIVED"
+    if function == "claimsurvived":
+        return "the pool is resolved as SURVIVED and this staker has an outstanding eligible balance"
+    if function.startswith("claim"):
+        return "the pool is in the state required by this claim path and the caller has an eligible claim"
+    return "the live contract's preconditions were satisfied"
+
+
 def _human_action_summary(step: Step, actors: list[Actor]) -> str:
     actor = step.actor or "Caller"
     contract = _friendly_contract_name(step)
@@ -727,7 +748,7 @@ def _human_action_summary(step: Step, actors: list[Actor]) -> str:
         return f"{actor} deposits {amount} stake tokens into {contract}"
     if lower == "contributebonus":
         amount = _friendly_value(args[0]) if args else "the requested amount"
-        return f"{actor} adds {amount} stake tokens to the bonus pool"
+        return f"{actor} adds {amount} stake tokens to {contract}'s bonus pool"
     if lower == "withdraw":
         return f"{actor} withdraws their stake from {contract}"
     if lower.startswith("claim"):
@@ -1012,7 +1033,7 @@ def _render_protocol_story(
             if clean:
                 lines.append(f"  │ {clean}")
         if ok:
-            lines.append("  │ WHY: preflight passed and the live transaction was accepted")
+            lines.append(f"  │ WHY: {_explain_success(step)}")
             for detail in _friendly_token_balance_lines(step, actors)[:4]:
                 lines.append(f"  │ {detail.strip()}")
             for detail in _friendly_state_lines(step, actors)[:6]:
