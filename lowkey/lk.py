@@ -2895,6 +2895,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     system = parse_lab_system(output)
     if system:
+        system["pool"] = target
         config["lab_system"] = system
         config["_walkthrough_recipe"] = "confidence-pool"
         names = {
