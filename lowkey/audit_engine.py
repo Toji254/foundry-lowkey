@@ -1177,6 +1177,17 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                 print(sync_stderr.rstrip())
 
             if sync_code == 0:
+                if build_dependency_graph is not None:
+                    # Refresh after uv sync so imports such as Snekmate can be
+                    # resolved against the actual project environment.
+                    graph = build_dependency_graph(root)
+                    record_evidence("dependency_graph", graph, root)
+                    print(
+                        "System graph refreshed: "
+                        f"{graph.get('summary', {}).get('files', 0)} files, "
+                        f"{graph.get('summary', {}).get('imports', 0)} imports, "
+                        f"{graph.get('summary', {}).get('unresolved_imports', 0)} unresolved"
+                    )
                 print("\n=== LOWKEY EVIDENCE: VYPER BUILD ===")
                 build_code, build_stdout, build_stderr, files = _run_vyper_build(root)
                 evidence_name = "vyper_build"
