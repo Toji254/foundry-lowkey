@@ -19,9 +19,11 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/audit_engine.py lowkey/clone_tools.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/audit_engine.py lowkey/clone_tools.py lowkey/project_tools.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      - name: Project detector tests
+        run: python -m unittest tests.test_project_tools -v
       - name: Shell syntax
         run: bash -n bin/lk install.sh
 
