@@ -1793,6 +1793,7 @@ def _render_story(
     actors: dict[str, str],
     current: int | None = None,
     links: bool = True,
+    meta: dict[str, Any] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("LOWKEY // SYSTEM-AWARE PROTOCOL WALKTHROUGH")
@@ -1806,7 +1807,8 @@ def _render_story(
     lines.append("  " + "   ".join(actor_line))
     lines.append("")
     lines.append("BOOTSTRAP EVIDENCE")
-    bootstrap = (meta.get("bootstrap") if isinstance(meta, dict) else None) or {}
+    meta = meta if isinstance(meta, dict) else {}
+    bootstrap = meta.get("bootstrap") or {}
     manifest = (meta.get("system_manifest") if isinstance(meta, dict) else None) or {}
     initialization = bootstrap.get("initialization") or []
     roles = bootstrap.get("roles") or []
@@ -2327,7 +2329,7 @@ def _run_walkthrough(
     }
     current = 0
     if not actions:
-        print(_render_story(root, nodes, fns, contracts, [], actors, None, flags.get("links", True)))
+        print(_render_story(root, nodes, fns, contracts, [], actors, None, flags.get("links", True), meta))
         print("\nNo semantically executable actions were discovered.")
         print("That is intentional: Lowkey will not substitute EOAs for contract roles.")
         _persist(root, payload)
@@ -2346,6 +2348,7 @@ def _run_walkthrough(
                 actors,
                 current,
                 flags.get("links", True),
+                meta,
             )
         )
         if not flags["non_interactive"]:
@@ -2422,7 +2425,7 @@ def _run_walkthrough(
         )
 
     print("\033[2J\033[H", end="")
-    print(_render_story(root, nodes, fns, contracts, actions, actors, None, flags.get("links", True)))
+    print(_render_story(root, nodes, fns, contracts, actions, actors, None, flags.get("links", True), meta))
     print("\nEvidence: .audit/evidence/walkthrough.json")
     _persist(root, payload)
     return 0
