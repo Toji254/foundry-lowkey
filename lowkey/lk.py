@@ -5808,6 +5808,8 @@ START
   lk walkthrough --auto           Auto-provision a local Anvil target when needed
   lk walkthrough --static         Render the compiled protocol model without execution
   lk walkthrough --contract X     Focus the workflow model on contract X
+  lk walkthrough test --auto      Randomized live probes on isolated Anvil snapshots
+  lk walkthrough test --cases N   Run N randomized state/call probes
   lk walkthrough test              Randomized live probes with snapshot/revert isolation
   lk walkthrough test --cases 50  Run 50 adversarial probes and save evidence
   lk audit--checks                 Legacy compact alias for audit --checks
