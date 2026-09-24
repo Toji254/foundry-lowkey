@@ -385,7 +385,7 @@ def _extract_audit_targets(audit_evidence: list[dict[str, Any]]) -> list[dict[st
         if key in seen:
             continue
         seen.add(key)
-        result.append({"address": target, "source": file_name or "audit evidence"})
+        result.append({"target": target, "source": file_name or "audit evidence"})
     return result
 
 
