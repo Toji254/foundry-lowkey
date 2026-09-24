@@ -548,14 +548,36 @@ def project_context_target(root=None):
     artifact = target.get("artifact")
     contract = target.get("contract")
 
-    # Context is durable project memory, not proof that an address is live.
-    # Runtime safety is enforced by _bootstrap_audit_target before an auto audit
-    # trusts this target.
-    if source in {"manual", "auto", "project", "project-lab", "auto-detected"}:
+    # Manual targets are explicit user selections and may legitimately have
+    # no artifact metadata yet.
+    if source == "manual":
         return target
-    if artifact and path_is_within(artifact, project_root):
-        return target
-    return None
+
+    # Every automatic/project target must resolve to a real first-party
+    # application artifact. This prevents a stale dependency target such as
+    # OpenZeppelin Address from bypassing fresh discovery.
+    if not artifact:
+        return None
+    try:
+        artifact_path = Path(os.path.expanduser(str(artifact)))
+        if not artifact_path.is_absolute():
+            artifact_path = Path(project_root) / artifact_path
+        artifact_path = artifact_path.resolve()
+    except OSError:
+        return None
+
+    if not artifact_path.is_file():
+        return None
+    artifact_data = read_artifact(str(artifact_path))
+    if not artifact_data:
+        return None
+    if not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
+        return None
+
+    artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
+    if contract and str(contract).lower() != str(artifact_contract).lower():
+        return None
+    return target
 
 def active_project_target(config, root=None):
     """Resolve a target for the current Foundry project before using global config."""
