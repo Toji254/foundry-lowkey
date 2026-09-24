@@ -244,6 +244,25 @@ class WalkthroughTests(unittest.TestCase):
             for edge in model.calls
         ))
 
+    def test_cli_arg_normalizes_bool_and_arrays(self):
+        self.assertEqual(walkthrough._cli_arg(True), "true")
+        self.assertEqual(walkthrough._cli_arg(False), "false")
+        self.assertEqual(walkthrough._cli_arg(["0x" + "1" * 40, "0x" + "2" * 40]),
+                         '["0x' + "1" * 40 + '","0x' + "2" * 40 + '"]')
+
+    def test_live_path_renders_connected_interactions(self):
+        steps = [
+            walkthrough.Step(1, "Alice", "Factory", "0x" + "1" * 40,
+                              "createPool(address,address,uint256,uint256,address,address[])", 
+                              ["0x" + "2" * 40, "0x" + "3" * 40, 100, 1, "0x" + "4" * 40, ["0x" + "5" * 40]],
+                              status="success"),
+        ]
+        rendered = walkthrough._render_live_path(steps, [], enabled=False)
+        self.assertIn("Alice", rendered)
+        self.assertIn("createPool", rendered)
+        self.assertIn("───▶", rendered)
+        self.assertIn("✓", rendered)
+
     def test_visual_renderer_has_distinct_protocol_shapes(self):
         storage = [
             {
