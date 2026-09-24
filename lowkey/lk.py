@@ -5835,6 +5835,7 @@ START
   lk walkthrough --static         Render the compiled protocol model without execution
   lk walkthrough --contract X     Focus the workflow model on contract X
   lk walkthrough test --auto      Randomized live probes on isolated Anvil snapshots
+  lk walkthrough test --random    Same as randomized walkthrough test
   lk walkthrough test --cases N   Run N randomized state/call probes
   lk walkthrough test              Randomized live probes with snapshot/revert isolation
   lk walkthrough test --cases 50  Run 50 adversarial probes and save evidence
