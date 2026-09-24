@@ -606,6 +606,87 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIsNone(result["revert_data"])
 
 
+
+    def test_zero_owner_factory_can_recover_through_initializer(self):
+        node = walk.LiveNode(
+            "0x" + "1" * 40,
+            "ConfidencePoolFactory",
+            100,
+            "ConfidencePoolFactory",
+        )
+        owner_fn = walk.FunctionInfo(
+            "ConfidencePoolFactory", "owner", [], [{"type": "address", "name": ""}],
+            "view", "owner()",
+        )
+        init = walk.FunctionInfo(
+            "ConfidencePoolFactory",
+            "initialize",
+            [
+                {"type": "address", "name": "safeHarborRegistry"},
+                {"type": "address", "name": "poolImplementation"},
+                {"type": "address", "name": "defaultOutcomeModerator"},
+            ],
+            [],
+            "nonpayable",
+            "initialize(address,address,address)",
+            visibility="external",
+        )
+        blocked = {
+            "node": node,
+            "function": walk.FunctionInfo(
+                "ConfidencePoolFactory",
+                "createPool",
+                [],
+                [],
+                "nonpayable",
+                "createPool()",
+            ),
+            "args": [],
+            "caller": "0x" + "2" * 40,
+            "actor_name": "Agreement Owner",
+            "result": {"decoded_error": "StakeTokenNotAllowed()"},
+        }
+        safeharbor = walk.LiveNode("0x" + "2" * 40, "SafeHarborRegistry", 100, "SafeHarborRegistry")
+        pool = walk.LiveNode("0x" + "3" * 40, "ConfidencePool", 100, "ConfidencePool")
+        moderator = walk.LiveNode("0x" + "4" * 40, "MockConfidencePoolModerator", 100, "MockConfidencePoolModerator")
+        funcs = {
+            "ConfidencePoolFactory": [owner_fn, init],
+            "SafeHarborRegistry": [],
+            "ConfidencePool": [],
+            "MockConfidencePoolModerator": [],
+        }
+
+        def fake_getter(*_args, **_kwargs):
+            return walk.ZERO, "0x" + "0" * 40
+
+        def fake_preflight(*args, **kwargs):
+            return {"ok": True, "exit_code": 0, "stdout": "0x", "stderr": "", "decoded_error": None}
+
+        with patch.object(walk, "_read_simple_getter", side_effect=fake_getter), \
+             patch.object(walk, "_semantic_args", return_value=(
+                 [safeharbor.address, pool.address, moderator.address], None
+             )), \
+             patch.object(walk, "_preflight_failure", side_effect=fake_preflight):
+            result = walk._initializer_recovery_action(
+                pathlib.Path("."),
+                "http://127.0.0.1:8545",
+                blocked,
+                funcs,
+                [node, safeharbor, pool, moderator],
+                {"Alice": "0x" + "a" * 40},
+                {},
+                [],
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["function"].name, "initialize")
+        self.assertEqual(
+            result["args"],
+            [safeharbor.address, pool.address, moderator.address],
+        )
+        self.assertEqual(result["actor_name"], "Setup Signer")
+        self.assertTrue(result["setup_recovery"])
+
     def test_blocked_protocol_transition_yields_state_enabling_prerequisite(self):
         node = walk.LiveNode(
             "0x" + "1" * 40,
