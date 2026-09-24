@@ -407,12 +407,12 @@ def _build_info_ast_calls(root: Path, model: ContractModel) -> list[dict[str, An
         if isinstance(declaration, dict):
             desc = declaration.get("typeDescriptions") or {}
             type_string = str(desc.get("typeString") or "")
-            match = re.search(r"\\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
+            match = re.search(r"\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
             if match:
                 return match.group(1)
         desc = node.get("typeDescriptions") or {}
         type_string = str(desc.get("typeString") or "")
-        match = re.search(r"\\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
+        match = re.search(r"\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
         return match.group(1) if match else None
 
     source_text = ""
