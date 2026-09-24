@@ -593,32 +593,29 @@ def _confidence_pool_recipe(config: dict[str, Any], actors: list[Actor]) -> list
 
 
 def _render_shape_legend(enabled: bool) -> str:
-    return _box("DIAGRAM LEGEND",[
-        f"{FUNCTION} FUNCTION   executable interaction",
-        f"{MAPPING} MAPPING     keyed state",
-        f"{STRUCT} STRUCT      grouped state",
-        f"{ARRAY} ARRAY       ordered state",
-        f"{STATE} STATE       scalar/packed state",
-        f"{EXTERNAL} EXTERNAL   contract-to-contract call",
-        f"{DOTTED} INHERIT     implementation/parent link",
-    ],width=92)
+    return (
+        f"  {ACTOR} actor   {FUNCTION} function   {MAPPING} mapping   "
+        f"{STRUCT} struct   {ARRAY} array   {STATE} state   "
+        f"{EXTERNAL} external   {DOTTED} inherit/impl"
+    )
 
 
 def _render_contract_shapes(model: ContractModel, enabled: bool) -> str:
-    lines=[_paint("CONTRACT SHAPES",BOLD+WHITE,enabled)]
-    functions=[x for x in model.abi if x.get("type")=="function" and x.get("name")][:8]
-    for fn in functions:
-        lines.append(f"  {FUNCTION} {_signature(fn)}  [{fn.get('stateMutability','')}]" )
-    for item in model.mappings[:6]:
-        lines.append(f"  {MAPPING} {item.get('name')} [{item.get('key_type')}] → {item.get('value_type')}")
-    for name,fields in list(model.structs.items())[:3]:
-        lines.append(f"  {STRUCT} {name} {{")
-        for field_item in fields[:5]:
-            lines.append(f"      {field_item.name}: {field_item.type}")
-        lines.append("  }")
-    for item in model.arrays[:3]:
-        lines.append(f"  {ARRAY} {item.get('name')}: {item.get('type')}")
-    return "\n".join(lines)
+    functions=[x for x in model.abi if x.get("type")=="function" and x.get("name")][:5]
+    chunks=["  "+_paint("SHAPES",BOLD+WHITE,enabled)]
+    if functions:
+        chunks.append("  "+ "  ".join(f"{FUNCTION} {x.get('name')}()" for x in functions))
+    for item in model.mappings[:3]:
+        chunks.append(f"  {MAPPING} {item.get('name')}[{item.get('key_type')}] → {item.get('value_type')}")
+    for name,fields in list(model.structs.items())[:2]:
+        field_names=", ".join(f.name for f in fields[:4])
+        chunks.append(f"  {STRUCT} {name}{{{field_names}}}")
+    if model.arrays:
+        chunks.append(f"  {ARRAY} {model.arrays[0].get('name')}: {model.arrays[0].get('type')}")
+    if model.bases:
+        chunks.append("  "+f"inherit {DOTTED} " + ", ".join(model.bases[:3]))
+    return "\n".join(chunks)
+
 
 
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
@@ -1482,18 +1479,17 @@ def _render_board(root: Path, model: ContractModel, models: list[ContractModel],
     success=sum(1 for x in steps if x.status=="success")
     blocked=sum(1 for x in steps if x.status in {"blocked","reverted"})
     board=[
-        _paint("LOWKEY // PROTOCOL WALKTHROUGH",BOLD+CYAN,enabled),
-        _paint("LIVE CANVAS  execute → observe → redraw  |  ⏎ next  |  q stop",DIM,enabled),
+        _paint("LOWKEY // PROTOCOL CANVAS",BOLD+CYAN,enabled),
+        _paint(
+            f"  live  {success}✓  {blocked}!  {len(steps)} observed   |   ⏎ next   q stop",
+            DIM,enabled
+        ),
         "",
-        _box("PROTOCOL ROOT",[
+        _box("SYSTEM",[
             f"{STATE} {model.name}",
-            f"source   : {model.source}",
-            f"progress : {success} success / {blocked} blocked / {len(steps)} observed",
+            f"target  {_addr(runtime[-1].address) if runtime else _addr(current.address if current else None)}",
+            _render_shape_legend(enabled),
         ],width=92),
-        "",
-        _render_shape_legend(enabled),
-        "",
-        _render_actor_row(actors,enabled),
         "",
         _render_runtime_graph(runtime,enabled),
         "",
@@ -1501,25 +1497,21 @@ def _render_board(root: Path, model: ContractModel, models: list[ContractModel],
         "",
         _render_pseudocode_flow(steps,current,enabled),
     ]
+    if storage:
+        board += ["",_paint(f"{STATE} LIVE STATE",BOLD+GREEN,enabled),_render_storage(storage[:3],enabled)]
     if current:
-        board += ["",_box("CURRENT OBSERVATION",[
-            f"{STATE} {current.contract}.{current.function}",
+        board += ["",_box("OBSERVATION",[
+            f"{current.actor} {ARROW} {FUNCTION} {current.contract}.{current.function}",
             f"status : {current.status}",
-            f"tx     : {_addr(current.tx_hash) if current.tx_hash else 'preflight only'}",
-            f"trace  : {len(current.trace_edges)} edge(s)",
-            f"events : {len(current.events)}",
-            f"writes : {len(current.storage_changes)}",
+            f"preflight: {'PASS' if current.preflight and current.status=='success' else (current.preflight or 'pending')}",
+            f"trace/events/writes : {len(current.trace_edges)} / {len(current.events)} / {len(current.storage_changes)}",
         ],width=92)]
-        if current.trace_edges:
-            board += ["",_paint(f"{EXTERNAL} CALL TRACE",BOLD+MAGENTA,enabled),_render_trace(current)]
-        if current.events:
-            board += ["",_paint(f"{EVENT} EVENT STREAM",BOLD+YELLOW,enabled),_render_event_log(current,enabled)]
-        if storage:
-            board += ["",_paint(f"{STATE} LIVE STORAGE",BOLD+GREEN,enabled),_render_storage(storage,enabled)]
-    board += ["","  "+_slither_status(root)]
+    board += ["", "  "+_slither_status(root)]
     if static:
         board.append(_paint("STATIC MODEL ONLY",YELLOW,enabled))
     return "\n".join(board)
+
+
 
 def _render_plan(model: ContractModel, steps: list[Step], enabled: bool) -> str:
     lines=[_paint("STATIC PROTOCOL HYPOTHESIS",BOLD+CYAN,enabled),f"  {model.name} {ARROW}"]
