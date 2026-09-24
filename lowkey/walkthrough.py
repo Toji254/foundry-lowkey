@@ -294,7 +294,9 @@ def _render_connection_web(
     meaningful: list[dict[str, str]] = []
     seen: set[tuple[str, str, str, str]] = set()
     for edge in edges:
-        if edge.get("kind") == "import":
+        if edge.get("kind") in {
+            "import", "storage-write", "storage-read", "storage-readwrite"
+        }:
             continue
         source = _web_node_name(str(edge.get("from") or ""))
         destination = _web_node_name(str(edge.get("to") or ""))
@@ -1287,6 +1289,51 @@ def _analyze_function_source(
     return sorted(set(reads)), sorted(set(writes)), sorted(set(array_ops)), internal_calls
 
 
+def _propagate_internal_storage(functions: list[FunctionInfo]) -> None:
+    """Propagate storage effects through internal/private call paths.
+
+    Example:
+        external deposit() -> private _record() -> balances.write
+    is represented as deposit() -> balances.write as well as the explicit
+    deposit() -> _record() call edge.
+    """
+    by_name = {fn.name: fn for fn in functions}
+    memo: dict[str, tuple[set[str], set[str], set[str]]] = {}
+    visiting: set[str] = set()
+
+    def visit(fn: FunctionInfo) -> tuple[set[str], set[str], set[str]]:
+        if fn.name in memo:
+            return memo[fn.name]
+        if fn.name in visiting:
+            return set(fn.reads), set(fn.writes), set(fn.array_ops)
+        visiting.add(fn.name)
+
+        reads = set(fn.reads or [])
+        writes = set(fn.writes or [])
+        array_ops = set(fn.array_ops or [])
+        for call in fn.calls or []:
+            if call.get("kind") != "internal-call":
+                continue
+            callee = by_name.get(str(call.get("function") or ""))
+            if callee is None:
+                continue
+            callee_reads, callee_writes, callee_ops = visit(callee)
+            reads.update(callee_reads)
+            writes.update(callee_writes)
+            array_ops.update(callee_ops)
+
+        visiting.discard(fn.name)
+        result = (reads, writes, array_ops)
+        memo[fn.name] = result
+        return result
+
+    for fn in functions:
+        reads, writes, array_ops = visit(fn)
+        fn.reads = sorted(reads)
+        fn.writes = sorted(writes)
+        fn.array_ops = sorted(array_ops)
+
+
 def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
     contracts: dict[str, ContractInfo] = {}
     patterns = list(root.glob("src/**/*.sol")) + list(root.glob("contracts/**/*.sol"))
@@ -1428,6 +1475,8 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                 info.writes = writes
                 info.array_ops = array_ops
                 info.calls.extend(internal_calls)
+
+            _propagate_internal_storage(ci.functions)
 
             for em in re.finditer(
                 r"\berror\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*;",
@@ -2848,8 +2897,13 @@ def _render_shared_state_flow(
                 lines.append(
                     f"      {_paint(fn.name + '()', 'bold')} "
                     f"──[{_paint(mode, 'red' if mode == 'WRITE' else 'cyan')}]──▶ "
-                    f"{_paint(name, 'blue')}"
+                    f"{_paint(label, 'blue')}"
                     f"   {access}"
+                )
+            if len(touched) > 1:
+                lines.append(
+                    f"      {_paint('SHARED', 'blue')} "
+                    f"{len(touched)} function path(s) converge on this same storage"
                 )
             if len(touched) > 8:
                 lines.append(f"      … +{len(touched)-8} function/storage edge(s)")
@@ -2914,8 +2968,16 @@ def _render_component_surfaces(
                     f" → READ:{', '.join(fn.reads[:2])}"
                     if fn.reads else ""
                 )
+                call_chain = ""
+                internal = [
+                    str(call.get("function") or "")
+                    for call in fn.calls or []
+                    if call.get("kind") == "internal-call"
+                ]
+                if internal:
+                    call_chain = f"  ⤷ {', '.join(dict.fromkeys(internal[:2]))}"
                 entries.append(
-                    f"{fn.name} [{_function_access_label(fn, funcs)}]{writes}"
+                    f"{fn.name} [{_function_access_label(fn, funcs)}]{writes}{call_chain}"
                 )
             lines.append(f"      {_paint('ENTRY', 'magenta')} " + "; ".join(entries))
         else:
