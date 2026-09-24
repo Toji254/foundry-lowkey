@@ -2133,6 +2133,54 @@ def _adversarial_functions(model: ContractModel) -> list[dict[str, Any]]:
     ]
 
 
+
+def _system_test_targets(
+    config: dict[str, Any],
+    target: str,
+    model: ContractModel,
+    models: list[ContractModel],
+) -> list[tuple[str, str, ContractModel]]:
+    """Collect live application instances known to this audit lab."""
+    result: list[tuple[str, str, ContractModel]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(label: str, address: Any, contract_name: str | None) -> None:
+        if not is_address(address):
+            return
+        candidate = None
+        for item in models:
+            if contract_name and item.name.lower() == str(contract_name).lower():
+                candidate = item
+                break
+        if candidate is None and contract_name:
+            candidate = next((item for item in models if str(contract_name).lower() in item.name.lower()), None)
+        if candidate is None:
+            return
+        # Never fuzz implementation-only initializer bytecode as a live instance.
+        runtime_address = str(address)
+        key = (candidate.name.lower(), runtime_address.lower())
+        if key in seen:
+            return
+        seen.add(key)
+        result.append((label, runtime_address, candidate))
+
+    add(model.name, target, model.name)
+
+    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+    known_names = {
+        "factory": "ConfidencePoolFactory",
+        "pool": "ConfidencePool",
+        "pool_implementation": "ConfidencePool",
+    }
+    for key, address in system.items():
+        if key not in known_names:
+            continue
+        add(key, address, known_names[key])
+
+    return result
+
+
+
 def _run_adversarial_test(
     root: Path,
     config: dict[str, Any],
@@ -2144,12 +2192,14 @@ def _run_adversarial_test(
     rpc: str,
     total_cases: int,
     seed: int | None,
+    system_targets: list[tuple[str, str, ContractModel]] | None = None,
 ) -> int:
     actual_seed = seed if seed is not None else int(time.time())
     rng = random.Random(actual_seed)
-    functions = _adversarial_functions(model)
+    targets = system_targets or [(model.name, target, model)]
+    targets = [item for item in targets if _adversarial_functions(item[2])]
 
-    if not functions:
+    if not targets:
         print("No mutating functions available for adversarial testing.")
         return 0
 
@@ -2157,28 +2207,30 @@ def _run_adversarial_test(
     results: list[Step] = []
 
     print(_paint("LOWKEY // ADVERSARIAL WALKTHROUGH TEST", BOLD + MAGENTA, _ansi_enabled(False)))
-    print(f"  target : {model.name} {_addr(target)}")
-    print("  engine : random arguments → SEND → observe → restore")
+    print(f"  system : {len(targets)} application instance(s)")
+    print("  engine : random arguments → SEND → trace → diagnose → restore")
     print(f"  seed   : {actual_seed}")
     print("")
 
-    ordered_functions = list(functions)
-    rng.shuffle(ordered_functions)
+    schedules: list[tuple[str, str, ContractModel, dict[str, Any]]] = []
+    for label, address, target_model in targets:
+        functions = list(_adversarial_functions(target_model))
+        rng.shuffle(functions)
+        for fn in functions:
+            schedules.append((label, address, target_model, fn))
+    rng.shuffle(schedules)
 
     for index in range(1, total_cases + 1):
-        fn = ordered_functions[(index - 1) % len(ordered_functions)]
-        if index > len(ordered_functions):
-            # Refresh actor/argument randomness each cycle while preserving function coverage.
-            pass
-        actor = rng.choice(actors) if actors else Actor("Alice", target, 0)
-        args = [_random_sol_value(param, actors, target, rng) for param in fn.get("inputs", [])]
+        label, active_target, active_model, fn = schedules[(index - 1) % len(schedules)]
+        actor = rng.choice(actors) if actors else Actor("Alice", active_target, 0)
+        args = [_random_sol_value(param, actors, active_target, rng) for param in fn.get("inputs", [])]
         value = rng.choice([0, 1, 10**6, 10**15, 10**18]) if fn.get("stateMutability") == "payable" else 0
 
         step = Step(
             index=index,
             actor=actor.name,
-            contract=model.name,
-            address=target,
+            contract=active_model.name,
+            address=active_target,
             function=_signature(fn),
             args=args,
             value_wei=value,
@@ -2191,7 +2243,7 @@ def _run_adversarial_test(
             print("Error: Anvil did not provide an evm_snapshot; aborting adversarial test.", file=sys.stderr)
             return 1
 
-        tx, output = _send(host, config, actor, target, step.function, args, value)
+        tx, output = _send(host, config, actor, active_target, step.function, args, value)
         step.tx_hash = tx
 
         if tx:
@@ -2212,12 +2264,12 @@ def _run_adversarial_test(
 
         results.append(step)
 
-        linked = _function_link(root, model, str(step.function).split("(", 1)[0])
+        linked = _function_link(root, active_model, str(step.function).split("(", 1)[0])
         shown_args = ", ".join(_friendly_arg(value, actors) for value in args) or "∅"
         marker = "✓" if step.status == "success" else "✕"
         color = GREEN if step.status == "success" else RED
         print(_paint(
-            f"  {index:02d} {marker} [{actor.name}] ──▶ {model.name}.{linked}({shown_args})",
+            f"  {index:02d} {marker} {label}: [{actor.name}] ──▶ {active_model.name}.{linked}({shown_args})",
             color,
             _ansi_enabled(False),
         ))
