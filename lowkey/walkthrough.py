@@ -4377,7 +4377,59 @@ def _next_transition_action(
         known,
         all_errors,
     )
-    return prerequisite or blocked
+    if prerequisite is None:
+        return blocked
+
+    # A synthesized prerequisite is a real transition too. In --send mode it
+    # must pass the same local-signer check as the original protocol action.
+    # Otherwise eth_call impersonation can make an impossible prerequisite look
+    # READY and the live loop only discovers the problem one step too late.
+    if require_local_signer:
+        prerequisite_caller = str(prerequisite.get("caller") or "")
+        if not _sender_available_for_local_send(
+            str(meta["rpc"]),
+            prerequisite_caller,
+        ):
+            recovery = _initializer_recovery_action(
+                root,
+                str(meta["rpc"]),
+                prerequisite,
+                functions_by_contract,
+                nodes,
+                actors,
+                known,
+                all_errors,
+            )
+            if recovery:
+                return recovery
+
+            available = _eth_accounts(str(meta["rpc"]))
+            prerequisite["status"] = "BLOCKED"
+            existing_result = prerequisite.get("result") or {}
+            prerequisite["result"] = {
+                **existing_result,
+                "ok": False,
+                "raw": (
+                    f"selected prerequisite sender {prerequisite_caller} "
+                    "is not an unlocked local RPC account"
+                ),
+            }
+            prerequisite["diagnosis"] = list(
+                prerequisite.get("diagnosis") or []
+            ) + [
+                f"selected prerequisite sender {prerequisite_caller} is not exposed by eth_accounts",
+                (
+                    "local send requires an unlocked RPC account; "
+                    "eth_call alone can impersonate arbitrary addresses"
+                ),
+                "available local accounts: "
+                + (
+                    ", ".join(_short_address(x) for x in available)
+                    if available
+                    else "none"
+                ),
+            ]
+    return prerequisite
 
 
 def _run_walkthrough(
