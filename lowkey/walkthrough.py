@@ -277,11 +277,8 @@ def _balanced_block(source_text: str, opening_index: int) -> str:
 
 def _build_source_calls(model: ContractModel, models: list[ContractModel], source_text: str) -> list[dict[str, Any]]:
     by_name = {item.name: item for item in models}
-    implementations: dict[str, str] = {}
-    for item in models:
-        implementations.setdefault(item.name, item.name)
-        for base in item.bases:
-            implementations.setdefault(base, item.name)
+    implementations: dict[str, str] = {item.name: item.name for item in models}
+    implementations.update(_implementation_mapping(models))
 
     edges: list[dict[str, Any]] = []
     current_names = {sig.split("(", 1)[0] for sig in model.functions}
@@ -910,6 +907,134 @@ def _friendly_contract_name(step: Step) -> str:
     return str(step.contract or "Contract").replace("MockConfidencePoolModerator", "Moderator")
 
 
+_ERROR_SELECTOR_CACHE: dict[str, str] = {}
+
+
+def _error_signature(item: dict[str, Any]) -> str:
+    return f"{item.get('name', '<error>')}({','.join(_canonical_type(x) for x in item.get('inputs', []))})"
+
+
+def _error_selector(signature: str) -> str | None:
+    cached = _ERROR_SELECTOR_CACHE.get(signature)
+    if cached:
+        return cached
+    code, out, _err = _cmd(["cast", "sig", signature], timeout=5)
+    if code != 0:
+        return None
+    lines = (out or "").strip().splitlines()
+    selector = lines[-1].strip().lower() if lines else None
+    if selector and re.fullmatch(r"0x[0-9a-f]{8}", selector):
+        _ERROR_SELECTOR_CACHE[signature] = selector
+        return selector
+    return None
+
+
+def _extract_hex_payloads(value: Any) -> list[str]:
+    text = str(value or "")
+    found = re.findall(r"0x[0-9a-fA-F]{8,}", text)
+    return list(dict.fromkeys(found))
+
+
+def _decode_custom_error(value: Any, models: list[ContractModel]) -> str | None:
+    """Decode custom-error selectors from cast/revert/trace text using project ABIs."""
+    payloads = _extract_hex_payloads(value)
+    if not payloads:
+        return None
+
+    by_selector: dict[str, str] = {
+        "0x08c379a0": "Error(string)",
+        "0x4e487b71": "Panic(uint256)",
+    }
+    for model in models:
+        for item in model.abi:
+            if item.get("type") != "error" or not item.get("name"):
+                continue
+            signature = _error_signature(item)
+            selector = _error_selector(signature)
+            if selector:
+                by_selector.setdefault(selector, signature)
+
+    for payload in payloads:
+        selector = payload[:10].lower()
+        signature = by_selector.get(selector)
+        if signature:
+            return signature
+    return None
+
+
+def _read_zero_address_diagnostics(
+    rpc: str,
+    address: str,
+    model: ContractModel,
+) -> tuple[str | None, list[str]]:
+    """Inspect initializer-style configuration getters before blaming a dependency."""
+    if not any(
+        item.get("type") == "function"
+        and str(item.get("name") or "").lower().startswith("initialize")
+        for item in model.abi
+    ):
+        return None, []
+
+    preferred_terms = (
+        "owner", "registry", "implementation", "moderator", "token",
+        "agreement", "router", "manager", "oracle", "factory",
+    )
+    origin = None
+    diagnostics: list[str] = []
+
+    getters = []
+    for item in model.abi:
+        if item.get("type") != "function" or item.get("inputs"):
+            continue
+        outputs = item.get("outputs") or []
+        if len(outputs) != 1 or str(outputs[0].get("type") or "") != "address":
+            continue
+        name = str(item.get("name") or "")
+        lower = name.lower()
+        if lower == "owner" or any(term in lower for term in preferred_terms if term != "owner"):
+            getters.append(item)
+
+    seen = set()
+    for item in getters:
+        name = str(item.get("name") or "")
+        if name in seen:
+            continue
+        seen.add(name)
+        code, out, err = _cmd(
+            ["cast", "call", address, _signature(item), "--rpc-url", rpc],
+            timeout=6,
+        )
+        if code != 0:
+            continue
+        value = (out or err or "").strip().splitlines()
+        value = value[-1].strip() if value else ""
+        if not is_address(value):
+            continue
+        zero = value.lower() == "0x" + "00" * 20
+        diagnostics.append(
+            f"{name} = {_addr(value)} " + ("✕ unset" if zero else "✓ configured")
+        )
+        if zero and (name.lower() == "owner" or origin is None):
+            origin = f"{model.name}.{name}() is unset"
+    return origin, diagnostics
+
+
+def _implementation_mapping(models: list[ContractModel]) -> dict[str, str]:
+    """Map first-party interfaces to concrete first-party implementations."""
+    mapping: dict[str, str] = {}
+    for model in models:
+        for base in model.bases:
+            mapping.setdefault(base, model.name)
+        # An imported interface may be referenced by a contract without being
+        # inherited directly in source (common proxy/facade pattern). The ABI
+        # and source call graph still benefit from a concrete-name hint.
+        for imported in model.imports:
+            stem = Path(imported).stem
+            if stem.startswith("I") and len(stem) > 1:
+                mapping.setdefault(stem, model.name)
+    return mapping
+
+
 def _short_error(raw: str | None) -> str:
     text = " ".join(str(raw or "").split())
     for prefix in ("PRECONDITION BLOCKED: ", "Error: execution reverted: ", "execution reverted: ", "Error: "):
@@ -946,7 +1071,7 @@ def _explain_failure(step: Step, raw: str | None, actor: str) -> str:
     if "parsererror" in lower or "invalidboolean" in lower or "expectedhexdigits" in lower:
         return "Lowkey could not encode the argument for cast, so Solidity was never reached"
     if 'data:"0x"' in lower:
-        return "the call reverted without a decoded reason; an external dependency or protocol fixture may still be unconfigured"
+        return "the node returned an empty revert payload; Lowkey will inspect initialized dependencies and the traced call path next"
     if "executionreverted" in lower:
         return "the contract rejected this call under the current on-chain state"
     return "the live call was not accepted"
@@ -1055,9 +1180,10 @@ def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
         lines.append(f"    ├─ asset movement: {contract} ──▶ {actor}")
         lines.append("    └─ contract reduces / closes this actor's claimable position")
     elif lower.startswith("createpool"):
-        lines.append("    ├─ factory creates a new pool")
-        lines.append("    ├─ child pool is initialized")
-        lines.append(f"    └─ {contract} now owns the next step in the flow")
+        lines.append("    ├─ factory checks: token allowed, expiry valid, agreement valid, caller owns agreement")
+        lines.append("    ├─ factory deploys a child pool clone")
+        lines.append("    ├─ child pool.initialize(...) wires the agreement, token, registry, moderator, owner and scope")
+        lines.append("    └─ PoolCreated records the new pool in the factory")
     elif lower.startswith("flagoutcome"):
         lines.append("    ├─ outcome is recorded")
         lines.append("    └─ claim path is now determined by protocol state")
@@ -1287,7 +1413,9 @@ def _render_interaction_graph_full(
     function = str(step.function or "").split("(", 1)[0]
     args = ", ".join(_friendly_arg(x, actors) for x in step.args)
     linked_function = _function_link(root, model, function)
-    call_display = f"{linked_function}({args})" if args else f"{linked_function}()"
+    raw_call = f"{function}({args})" if args else f"{function}()"
+    call_target = _source_target(root, model.source, model.function_locations.get(function)) if model and model.function_locations.get(function) else None
+    call_display = _osc8(raw_call, call_target) if call_target else raw_call
     status = "✓ SUCCESS" if step.status == "success" else "✕ BLOCKED" if step.status in {"blocked", "reverted"} else "● CHECKING"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
@@ -1602,42 +1730,77 @@ def _diagnose_failed_call(
     step: Step,
     model: ContractModel,
     models: list[ContractModel],
+    actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
-    origin, diagnostics = _dependency_diagnostics(root, rpc, step, model)
+    origin, diagnostics = _read_zero_address_diagnostics(rpc, step.address, model)
+
     try:
-        code, calldata, _err = _cmd(
+        code, calldata, err = _cmd(
             ["cast", "calldata", step.function, *[_cli_arg(x) for x in step.args]],
             timeout=6,
         )
-        if code == 0 and calldata:
-            trace = _rpc_call(
-                rpc,
-                "debug_traceCall",
-                [{
-                    "from": step.address,
-                    "to": step.address,
-                    "data": calldata,
-                    "value": hex(int(step.value_wei or 0)),
-                }, {"tracer": "callTracer", "timeout": "10s"}],
+        if code != 0:
+            diagnostics.append("Lowkey could not encode the failing calldata for trace analysis")
+            decoded = _decode_custom_error(err, models)
+            if decoded:
+                diagnostics.append(f"decoded revert: {decoded}")
+            return origin, list(dict.fromkeys(diagnostics))
+
+        trace = _rpc_call(
+            rpc,
+            "debug_traceCall",
+            [{
+                "from": actor_address or "0x" + "00" * 20,
+                "to": step.address,
+                "data": calldata,
+                "value": hex(int(step.value_wei or 0)),
+            }, {"tracer": "callTracer", "timeout": "10s"}],
+        )
+
+        if isinstance(trace, dict):
+            root_output = trace.get("output")
+            root_error = trace.get("error") or trace.get("revertReason")
+            decoded = _decode_custom_error(root_output or root_error, models)
+            if decoded:
+                diagnostics.append(f"decoded revert: {decoded}")
+
+        edges = _trace_execution_edges(root, rpc, models, trace)
+        for edge in edges[:8]:
+            target = edge.get("to_contract") or _addr(edge.get("to_address"))
+            fn = edge.get("function") or edge.get("type")
+            diagnostics.append(
+                f"call path: {edge.get('from_contract') or 'caller'} ──▶ {target}.{fn} "
+                f"[{edge.get('type')}]"
             )
-            edges = _trace_execution_edges(root, rpc, models, trace)
-            for edge in edges[:8]:
-                target = edge.get("to_contract") or _addr(edge.get("to_address"))
-                fn = edge.get("function") or edge.get("type")
-                diagnostics.append(f"call path: {target}.{fn} [{edge.get('type')}]")
-            failed = next((edge for edge in reversed(edges) if edge.get("error") or edge.get("revert")), None)
-            if failed:
-                target = failed.get("to_contract") or _addr(failed.get("to_address"))
-                fn = failed.get("function") or "unknown()"
-                origin = origin or f"{model.name} → {target}.{fn}"
-                if failed.get("revert"):
-                    diagnostics.append(f"dependency returned: {failed.get('revert')}")
-        else:
-            diagnostics.append("revert tracing could not encode the failing calldata")
+
+        failed = next(
+            (edge for edge in reversed(edges) if edge.get("error") or edge.get("revert")),
+            None,
+        )
+        if failed:
+            target = failed.get("to_contract") or _addr(failed.get("to_address"))
+            fn = failed.get("function") or "unknown()"
+            origin = origin or f"{model.name} → {target}.{fn}"
+            raw = failed.get("revert") or failed.get("error")
+            decoded = _decode_custom_error(raw, models)
+            if decoded:
+                diagnostics.append(f"failed call decoded as {decoded}")
+            elif raw:
+                diagnostics.append(f"dependency returned: {raw}")
+
+        if isinstance(trace, dict) and not failed:
+            root_payload = trace.get("output") or trace.get("error") or trace.get("revertReason")
+            decoded = _decode_custom_error(root_payload, models)
+            if decoded:
+                diagnostics.append(f"root revert decoded as {decoded}")
+
+        if not edges and not diagnostics:
+            diagnostics.append("no internal call path was exposed by the local node")
+
     except Exception as exc:
         diagnostics.append(f"revert trace unavailable: {exc}")
-    return origin, list(dict.fromkeys(diagnostics))
 
+    return origin, list(dict.fromkeys(diagnostics))
 
 def _preflight(rpc: str, step: Step, actor_address: str | None = None) -> tuple[bool, str]:
     try:
@@ -2493,8 +2656,13 @@ def _generate_replay_script(root: Path, model: ContractModel, target: str, steps
 
 
 
-def _target_is_live_instance(root: Path, rpc: str, target: str, model: ContractModel) -> tuple[bool, str | None]:
-    """Reject implementation-only addresses for upgradeable contracts."""
+def _target_is_live_instance(
+    root: Path,
+    rpc: str,
+    target: str,
+    model: ContractModel,
+) -> tuple[bool, str | None]:
+    """Reject implementation-only or uninitialized initializer-style addresses."""
     has_initializer = any(
         item.get("type") == "function"
         and str(item.get("name") or "").lower().startswith("initialize")
@@ -2508,12 +2676,19 @@ def _target_is_live_instance(root: Path, rpc: str, target: str, model: ContractM
     expected = _normalize_code(implementation)
     if runtime and expected and runtime == expected:
         return False, (
-            f"{model.name} exposes initialize() and the live address matches its implementation bytecode; "
-            "this is an implementation contract, not a configured proxy instance"
+            f"{model.name} exposes initialize() and the live address matches its "
+            "implementation bytecode; this is not a configured protocol instance"
         )
+
+    origin, diagnostics = _read_zero_address_diagnostics(rpc, target, model)
+    zero_lines = [line for line in diagnostics if "✕ unset" in line]
+    if origin and (any("owner = " in line.lower() for line in zero_lines) or len(zero_lines) >= 2):
+        return False, (
+            f"{model.name} has initialize() but its live configuration is unset; "
+            + "; ".join(zero_lines[:4])
+        )
+
     return True, None
-
-
 
 def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: str | None, auto: bool) -> tuple[str | None, str | None]:
     # Auto mode always goes through the project bootstrap resolver so stale
@@ -2668,26 +2843,39 @@ def _render_connections(
 ) -> str:
     lines = [_paint("SYSTEM CONNECTIONS", BOLD + WHITE, enabled)]
     by_name = {item.name: item for item in models}
+    impls = _implementation_mapping(models)
+    seen: set[tuple[str, str, str, str]] = set()
 
-    for base in model.bases[:10]:
-        lines.append(f"  {model.name} {DOTTED} {base}  [INHERITS]")
+    for source_model in models:
+        for base in source_model.bases[:8]:
+            key = (source_model.name, "inherits", base, "")
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"  {source_model.name} {DOTTED} {base}  [INHERITS]")
 
-    for edge in model.calls[:24]:
-        target = by_name.get(str(edge.get("to_contract") or ""))
-        fn = str(edge.get("to_function") or "unknown()")
-        linked = _function_link(root, target, fn)
-        via = f"  via {edge.get('via')}" if edge.get("via") else ""
-        lines.append(
-            f"  {model.name}.{edge.get('from')} {EXTERNAL} "
-            f"{edge.get('to_contract')}.{linked}{via}  "
-            f"[{edge.get('certainty') or 'INFERRED'}]"
-        )
+        for edge in source_model.calls[:40]:
+            target_name = str(edge.get("to_contract") or "")
+            concrete = impls.get(target_name, target_name)
+            fn = str(edge.get("to_function") or "unknown()")
+            target_model = by_name.get(concrete) or by_name.get(target_name)
+            linked = _function_link(root, target_model, fn)
+            key = (source_model.name, str(edge.get("from") or ""), concrete, fn)
+            if key in seen:
+                continue
+            seen.add(key)
+            via = f"  via {edge.get('via')}" if edge.get("via") else ""
+            relation = "CONCRETE" if concrete != target_name else (edge.get("certainty") or "INFERRED")
+            lines.append(
+                f"  {source_model.name}.{edge.get('from')} {EXTERNAL} "
+                f"{concrete}.{linked}{via}  [{relation}]"
+            )
 
     if len(lines) == 1:
         lines.append("  no source-level cross-contract calls resolved")
-    return "\n".join(lines)
 
-
+    return "
+".join(lines)
 
 def _render_event_log(step: Step, enabled: bool) -> str:
     lines = [_paint(f"{EVENT} EVENT STREAM", BOLD + YELLOW, enabled)]
