@@ -2983,9 +2983,9 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     if has_initializer:
         print(f"Target  : {contract} -> {target}")
         print(f"ABI     : {path}")
-        print("Status  : CONFIGURATION REQUIRED")
-        print("Note    : this is an upgradeable-style implementation; generic deployment is not a live protocol instance.")
-        print("Next    : provide a project lab adapter/proxy bootstrap, then rerun lk walkthrough.")
+        print("Status  : NOT A LIVE TARGET")
+        print("Reason  : this artifact exposes initialize(); generic deployment created the implementation only.")
+        print("Next    : use the project-aware fixture/proxy bootstrap instead.")
         return 1
 
     config["actor"] = "lab-deployer"
@@ -3023,6 +3023,15 @@ def run_lab(config,args):
     # implementation-only deployment leaves initialize() unset and produces a
     # misleading walkthrough full of precondition failures.
     auto_selected = requested or discover_audit_target_contract(root)
+
+    # Prefer the complete local ConfidencePool fixture to implementation-only deployment.
+    if not requested or str(requested).lower() in {"confidencepool", "confidencepoolfactory", "confidencepooltest"}:
+        try:
+            generated = ensure_confidence_pool_lab_script(root)
+            if generated:
+                script = generated
+        except Exception as exc:
+            print(f"Warning: ConfidencePool fixture generation skipped: {exc}", file=sys.stderr)
     if auto_selected and str(auto_selected).lower() in {"confidencepool", "confidencepoolfactory"}:
         try:
             generated = ensure_confidence_pool_lab_script(root)
