@@ -43,11 +43,14 @@ The system-aware walkthrough is invoked through Lowkey itself:
 
 ```bash
 lk walkthrough --auto --steps 12
+lk walkthrough --bootstrap --auto --steps 12
 lk walkthrough test --cases 50 --seed 1337
 lk walkthrough test --cases 50 --seed 1337 --send
 ```
 
 It builds a static + live contract graph, discovers runtime dependencies, synthesizes role-aware arguments, preflights state-changing calls, diagnoses observed reverts, and records replayable evidence under `.audit/evidence/walkthrough.json`. The `test` mode mutates ABI values and semantic actors; successful probes are observations, not vulnerability verdicts.
+
+Before asking for a manually configured target, walkthrough also inspects generic Foundry project entry points: live broadcast deployments under `broadcast/**/run-latest.json`, deployment scripts under `script/**/*.s.sol`, and test fixtures under `test/**/*.t.sol` / `tests/**/*.t.sol`. A live broadcast deployment is selected automatically when no configured target is usable. The `--bootstrap` flag prints the discovered deployment/test entry points and suggested local commands; it never guesses project-specific constructor or environment values and never executes an arbitrary script.
 
 ### Audit workflow
 - Findings, notes, TODOs, sessions, checklist
