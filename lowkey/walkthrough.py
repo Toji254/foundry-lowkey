@@ -3273,6 +3273,30 @@ def _synthesize_local_protocol_fixture(
     if not all(is_address(system.get(k)) for k in ("stake_token", "safe_harbor_registry", "pool_implementation", "agreement")):
         return False, "one or more core protocol fixtures failed to deploy"
 
+    # Fund the named local actors when the project fixture exposes a mint() hook.
+    # The live ConfidencePool lifecycle needs enough tokens for Alice's bonus + stake
+    # and Bob's stake; other protocols simply skip this optional fixture capability.
+    mint_fn = next(
+        (
+            item for item in token.abi
+            if item.get("type") == "function"
+            and str(item.get("name") or "").lower() == "mint"
+            and len(item.get("inputs") or []) == 2
+        ),
+        None,
+    )
+    if mint_fn:
+        mint_signature = _signature(mint_fn)
+        for actor, amount in ((alice, 2 * 10**18), (bob, 2 * 10**18)):
+            _send_lab_control(
+                host,
+                config,
+                alice,
+                system["stake_token"],
+                mint_signature,
+                [actor.address, amount],
+            )
+
     # Wire the disposable registry/Agreement fixtures before the root creates a child.
     if system.get("attack_registry"):
         _send_lab_control(
@@ -3336,8 +3360,15 @@ def _synthesize_local_protocol_fixture(
                     "defaultoutcomemoderator": system.get("moderator"),
                     "outcomemoderator": system.get("moderator"),
                     "moderator": system.get("moderator"),
+                    "owner": alice.address,
+                    "owneraddress": alice.address,
+                    "admin": alice.address,
+                    "adminaddress": alice.address,
                 }
-                values.append(mapping.get(compact) or system.get(compact) or alice.address)
+                resolved = mapping.get(compact) or system.get(compact)
+                if not is_address(resolved):
+                    return False, f"initializer dependency '{name or 'address'}' could not be resolved safely"
+                values.append(resolved)
             elif ptype == "bool":
                 values.append(False)
             elif ptype.startswith("uint") or ptype.startswith("int"):
@@ -3390,6 +3421,8 @@ def _synthesize_local_protocol_fixture(
     config["lab_system"] = {
         **{key: value for key, value in system.items() if is_address(value)},
         "pool": None,
+        "factory_model": root_model.name,
+        "child_model": child.name,
     }
     if hasattr(host, "set_lab_target"):
         artifact_path = str(root / root_model.artifact)
@@ -4156,9 +4189,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                             if (
                                 node.model
                                 and node.model != "External"
-                                and node.model.lower() != str(lab.get("factory_model") or "ConfidencePoolFactory").lower()
+                                and node.model.lower() == str(lab.get("child_model") or "ConfidencePool").lower()
                             ):
-                                lab.setdefault("pool", node.address)
+                                lab["pool"] = node.address
                         config["lab_system"] = lab
                         if hasattr(host, "save_config"):
                             host.save_config(config)
