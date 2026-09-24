@@ -17,6 +17,87 @@ spec.loader.exec_module(walkthrough)
 
 class WalkthroughTests(unittest.TestCase):
 
+    def test_source_semantics_capture_guards_and_state_writes(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            storage={"storage": [{"label": "balance", "slot": "0", "type": "uint256"}]},
+        )
+        model.mappings = [{"name": "balances", "key_type": "address", "value_type": "uint256"}]
+        source = """
+        contract Demo {
+            mapping(address => uint256) balances;
+            function deposit(uint256 amount) external {
+                if (amount == 0) revert ZeroAmount();
+                balances[msg.sender] += amount;
+            }
+        }
+        """
+        model.functions = ["deposit(uint256)"]
+        model.calls = []
+        model.semantics = walkthrough._function_semantics(model, source)
+        self.assertIn("deposit()", model.semantics)
+        self.assertTrue(model.semantics["deposit()"]["guards"])
+        self.assertIn("balances", model.semantics["deposit()"]["writes"])
+
+    def test_protocol_observation_merge_prefers_live_dependency_roles(self):
+        config = {
+            "lab_system": {"stake_token": "0x" + "1" * 40},
+            "aliases": {"Agreement": "0x" + "2" * 40},
+        }
+        runtime = [
+            walkthrough.RuntimeContract("0x" + "3" * 40, "Pool", "Pool #1", "CLONE"),
+        ]
+        merged = walkthrough._merge_protocol_observations({}, config=config, runtime=runtime)
+        self.assertEqual(merged["staketoken"], "0x" + "1" * 40)
+        self.assertEqual(merged["agreement"], "0x" + "2" * 40)
+        self.assertEqual(merged["pool"], "0x" + "3" * 40)
+
+    def test_system_workflow_map_includes_source_and_live_edges(self):
+        factory = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["create()"],
+            calls=[{
+                "kind": "cross-contract",
+                "from": "create",
+                "to_contract": "Child",
+                "to_function": "initialize",
+                "via": "child",
+            }],
+        )
+        child = walkthrough.ContractModel(
+            name="Child",
+            source="src/Child.sol",
+            artifact="out/Child.sol/Child.json",
+        )
+        runtime = [walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "Factory", "system")]
+        rendered = walkthrough._render_system_workflow_graph(
+            pathlib.Path("/tmp/project"), [factory, child], runtime, factory, False
+        )
+        self.assertIn("create()", rendered)
+        self.assertIn("Child.initialize()", rendered)
+
+    def test_clickable_function_call_uses_source_target(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            functions=["setValue(uint256)"],
+            function_locations={"setValue": 17},
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        step = walkthrough.Step(
+            1, "Alice", "Demo", "0x" + "2" * 40, "setValue(uint256)", [7], status="planned"
+        )
+        rendered = walkthrough._render_interaction_graph(
+            pathlib.Path("/tmp/project"), step, actors, model, [model], False
+        )
+        self.assertIn("setValue(7)", rendered)
+        self.assertIn("file:///tmp/project/src/Demo.sol#L17", rendered)
+
     def test_cli_arg_lowercases_booleans(self):
         self.assertEqual(walkthrough._cli_arg(True), "true")
         self.assertEqual(walkthrough._cli_arg(False), "false")
@@ -701,6 +782,50 @@ class WalkthroughTests(unittest.TestCase):
             for edge in model.calls
         ))
 
+    def test_dependency_probe_reports_false_result(self):
+        source_model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function", "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [], "stateMutability": "nonpayable",
+            }],
+            functions=["createPool(address)"],
+            calls=[{
+                "kind": "cross-contract",
+                "from": "createPool",
+                "to_contract": "IRegistry",
+                "to_function": "isValid",
+                "via": "registry",
+            }],
+        )
+        registry = walkthrough.ContractModel(
+            name="Registry",
+            source="src/Registry.sol",
+            artifact="out/Registry.sol/Registry.json",
+            abi=[{
+                "type": "function", "name": "isValid",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [{"type": "bool"}], "stateMutability": "view",
+            }],
+        )
+        step = walkthrough.Step(
+            1, "Alice", "Factory", "0x" + "1" * 40,
+            "createPool(address)", ["0x" + "2" * 40], status="blocked"
+        )
+        def fake_cmd(args, timeout=8):
+            if args[:3] == ["cast", "call", "0x" + "3" * 40]:
+                return 0, "false\n", ""
+            return 1, "", "not found"
+        with patch.object(walkthrough, "_runtime_code", return_value="0x6000"), patch.object(walkthrough, "_cmd", side_effect=fake_cmd):
+            origin, rendered = walkthrough._probe_source_dependency_result(
+                "http://127.0.0.1:8545", step, source_model,
+                source_model.calls[0], "0x" + "3" * 40, [source_model, registry]
+            )
+        self.assertIn("false", rendered)
+        self.assertIn("returned false", origin)
     def test_friendly_renderer_has_no_host_dependency(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
