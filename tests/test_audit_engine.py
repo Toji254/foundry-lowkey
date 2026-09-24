@@ -168,10 +168,9 @@ class AuditEngineTests(unittest.TestCase):
 
             command = audit_engine._project_test_command(str(root), project)
 
-            self.assertEqual(command[:5], ["uv", "run", "--active", "python", "-c"])
-            self.assertEqual(command[5], "lowkey-pytest")
-            self.assertEqual(command[6], "tests")
-            self.assertEqual(command[7:], ["--ignore", "tests/vendor"])
+            self.assertEqual(command[:4], ["uv", "run", "--active", "pytest"])
+            self.assertEqual(command[4], "tests")
+            self.assertEqual(command[5:], ["--ignore", "tests/vendor"])
 
 
     def test_slither_command_does_not_fail_on_findings_by_default(self):
@@ -338,7 +337,13 @@ dependencies = ["vyper>=0.4.0"]
             evidence = root / ".audit" / "evidence"
             evidence.mkdir(parents=True)
             records = {
-                "context": {"target": "0x" + "1" * 40, "rpc": "http://127.0.0.1:8545", "git_sha": "abc123", "git_branch": "audit"},
+                "context": {
+                    "target": "0x" + "1" * 40,
+                    "rpc": "http://127.0.0.1:8545",
+                    "git_sha": "abc123",
+                    "git_branch": "audit",
+                    "project": {"kind": "foundry"},
+                },
                 "build": {"exit_code": 0, "stdout": "Compiler run successful", "stderr": ""},
                 "tests": {"exit_code": 0, "stdout": "Suite result: ok. 3 passed", "stderr": ""},
                 "coverage": {"exit_code": 0, "stdout": "Total coverage: 91.2%", "stderr": ""},
