@@ -187,7 +187,7 @@ def _contract_purpose(name: str, functions: list[FunctionInfo] | None = None) ->
     fn_names = {f.name.lower() for f in (functions or [])}
     if "factory" in low or "createpool" in fn_names:
         return "creates/configures protocol instances"
-    if "pool" in low:
+    if "pool" in low and "factory" not in low:
         return "holds participant state, stakes and settlement funds"
     if "agreement" in low:
         return "defines who/what is approved and in scope"
@@ -3187,6 +3187,28 @@ def _build_model(
     return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
 
 
+def _walkthrough_phase_priority(fn: FunctionInfo) -> tuple[int, str]:
+    phase = _action_phase(fn)
+    return {
+        "CREATE": 500,
+        "PARTICIPATE": 400,
+        "OUTCOME": 300,
+        "SETTLE": 200,
+        "INTERACTION": 100,
+        "SETUP": -100,
+        "ADMIN": -200,
+    }.get(phase, 0), phase
+
+
+def _walkthrough_is_setup_action(fn: FunctionInfo, meta: dict[str, Any]) -> bool:
+    name = fn.name.lower()
+    if name.startswith("initialize"):
+        return True
+    if name in {"setstaketokenallowed", "pause", "unpause", "upgrade"}:
+        return True
+    return False
+
+
 def _plan_actions(
     root: Path,
     meta: dict[str, Any],
@@ -3200,28 +3222,27 @@ def _plan_actions(
     rpc = str(meta["rpc"])
     now = int(meta["chain_timestamp"])
     actions: list[dict[str, Any]] = []
-    candidates: list[tuple[int, LiveNode, FunctionInfo]] = []
+    candidates: list[tuple[int, int, LiveNode, FunctionInfo]] = []
     for node in nodes:
         if node.code_size == 0:
             continue
         funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
         for fn in funcs:
             score = _rank_function(fn)
-            n = fn.name.lower()
-            already_configured = any(
-                str(item.get("target") or "").lower().find(n) >= 0
-                for item in (meta.get("bootstrap") or {}).get("initialization") or []
-                if isinstance(item, dict)
-            )
-            if already_configured and (n.startswith("initialize") or n.startswith("set") or n in {"pause", "unpause", "upgrade"}):
+            if score <= 0:
                 continue
-            if score > 0:
-                candidates.append((score, node, fn))
-    candidates.sort(key=lambda x: (-x[0], x[1].name, x[2].name))
+            name = fn.name.lower()
+            if _walkthrough_is_setup_action(fn, meta):
+                continue
+            phase_priority, _ = _walkthrough_phase_priority(fn)
+            if phase_priority <= 0:
+                continue
+            candidates.append((phase_priority, score, node, fn))
+    candidates.sort(key=lambda x: (-x[0], -x[1], x[2].name, x[3].name, x[3].signature))
 
     seen: set[tuple[str, str]] = set()
-    for _, node, fn in candidates:
-        key = (node.address.lower(), fn.signature)
+    for _, _, node, fn in candidates:
+        key = (node.address.lower(), fn.name.lower())
         if key in seen:
             continue
         seen.add(key)
@@ -3391,22 +3412,27 @@ def _run_walkthrough(
         _persist(root, payload)
         return 0
 
+    print(_render_story(
+        root,
+        nodes,
+        fns,
+        contracts,
+        [],
+        actors,
+        None,
+        flags.get("links", True),
+        meta,
+    ))
+    print("")
     for index, action in enumerate(actions):
         current = index
-        print("\033[2J\033[H", end="")
-        print(
-            _render_story(
-                root,
-                nodes,
-                fns,
-                contracts,
-                actions,
-                actors,
-                current,
-                flags.get("links", True),
-                meta,
-            )
-        )
+        print(_render_action_card(
+            root,
+            action,
+            index,
+            len(actions),
+            flags.get("links", True),
+        ))
         if not flags["non_interactive"]:
             try:
                 command = input("\n  ⏎ next   q = stop   ").strip().lower()
@@ -3448,7 +3474,7 @@ def _run_walkthrough(
         )
         action["status"] = "READY" if pre["ok"] else "BLOCKED"
 
-        live_send = bool(flags.get("send") or flags.get("auto"))
+        live_send = bool(flags.get("send"))
         if live_send and pre["ok"]:
             if not _is_local_rpc(str(meta["rpc"])):
                 action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
@@ -3480,7 +3506,7 @@ def _run_walkthrough(
             }
         )
 
-    print("\033[2J\033[H", end="")
+    print("")
     print(_render_story(root, nodes, fns, contracts, actions, actors, None, flags.get("links", True), meta))
     print("\nEvidence: .audit/evidence/walkthrough.json")
     _persist(root, payload)
