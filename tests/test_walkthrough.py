@@ -325,7 +325,9 @@ class WalkthroughTests(unittest.TestCase):
             self.assertIn("current broadcast deployment", source)
 
     def test_human_error_explains_and_recommends(self):
-        message, recommendation = walk._friendly_error("StakeTokenNotAllowed()", "")
+        debug = walk._friendly_error("StakeTokenNotAllowed()", "")
+        print("DEBUG_FRIENDLY", repr(walk.__file__), repr(debug), repr(walk._friendly_error.__code__.co_firstlineno))
+        message, recommendation = debug
         self.assertIn("not currently approved", message)
         self.assertIn("approve the token", recommendation)
 
