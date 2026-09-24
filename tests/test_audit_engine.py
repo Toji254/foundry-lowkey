@@ -7,6 +7,8 @@ from unittest.mock import patch
 from contextlib import redirect_stdout
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(ROOT / "lowkey"))
 SPEC = importlib.util.spec_from_file_location("audit_engine", ROOT / "lowkey" / "audit_engine.py")
 audit_engine = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit_engine)
