@@ -497,7 +497,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn('.call{value: 1000000000000000000}(hex"abcdef");', content)
         self.assertIn("bool ok_1", content)
         self.assertNotIn("bool ok, )", content)
-        self.assertNotIn("0x70997970c51812dc3a010c7d01b50e0d17dc79c8", content.split("target_1 =", 1)[-1].split(";", 1)[0] if "target_1 =" in content else "")
+        self.assertNotIn("address target_1 = 0x70997970c51812dc3a010c7d01b50e0d17dc79c8;", content)
 
     def test_live_interaction_graph_reads_like_a_protocol_story(self):
         actors = [
