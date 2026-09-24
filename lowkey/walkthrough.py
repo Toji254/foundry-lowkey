@@ -276,6 +276,31 @@ def _balanced_block(source_text: str, opening_index: int) -> str:
     return source_text[opening_index + 1:]
 
 
+def _simple_call_argument_names(text: str) -> list[str]:
+    """Extract obvious identifier arguments from a source call."""
+    text = str(text or "")
+    if not text:
+        return []
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(text):
+        if char in "([{<":
+            depth += 1
+        elif char in ")]}>":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    parts.append(text[start:].strip())
+    result: list[str] = []
+    for part in parts:
+        match = re.fullmatch(r"[A-Za-z_]\w*", part)
+        result.append(match.group(0) if match else "<expression>")
+    return result
+
+
+
 def _build_source_calls(model: ContractModel, models: list[ContractModel], source_text: str) -> list[dict[str, Any]]:
     by_name = {item.name: item for item in models}
     implementations: dict[str, str] = {item.name: item.name for item in models}
@@ -407,12 +432,12 @@ def _build_info_ast_calls(root: Path, model: ContractModel) -> list[dict[str, An
         if isinstance(declaration, dict):
             desc = declaration.get("typeDescriptions") or {}
             type_string = str(desc.get("typeString") or "")
-            match = re.search(r"\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
+            match = re.search(r"\b(?:contract|interface|library)\s+([A-Za-z_]\w*)", type_string)
             if match:
                 return match.group(1)
         desc = node.get("typeDescriptions") or {}
         type_string = str(desc.get("typeString") or "")
-        match = re.search(r"\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
+        match = re.search(r"\b(?:contract|interface|library)\s+([A-Za-z_]\w*)", type_string)
         return match.group(1) if match else None
 
     source_text = ""
@@ -463,6 +488,20 @@ def _build_info_ast_calls(root: Path, model: ContractModel) -> list[dict[str, An
                 called = str(expression.get("name") or called)
                 kind = "internal"
 
+            argument_names = []
+            for argument in call.get("arguments") or []:
+                if isinstance(argument, dict):
+                    if argument.get("nodeType") == "Identifier":
+                        argument_names.append(str(argument.get("name") or ""))
+                    elif argument.get("nodeType") == "Literal":
+                        argument_names.append("<literal>")
+                    else:
+                        argument_names.append(str(
+                            argument.get("name")
+                            or argument.get("memberName")
+                            or "<expression>"
+                        ))
+
             start = src_start(call)
             line = source_text.count("\n", 0, start if start is not None else fn_start) + 1 if source_text else None
             result.append({
@@ -472,11 +511,11 @@ def _build_info_ast_calls(root: Path, model: ContractModel) -> list[dict[str, An
                 "to_function": called,
                 "via": via,
                 "interface": interface,
+                "argument_names": argument_names,
                 "line": line,
                 "certainty": "AST",
                 "source": "compiler-ast",
             })
-
         for new_node in walk(body):
             if new_node.get("nodeType") != "NewExpression":
                 continue
