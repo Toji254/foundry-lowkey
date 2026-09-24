@@ -1770,13 +1770,17 @@ def _source_dependency_address(rpc: str, model: ContractModel, edge: dict[str, A
     direct = by_param.get(via.lower())
     if is_address(direct):
         return direct, via
-    getter = next((
-        (item for item in model.abi
-         if item.get("type") == "function" and not item.get("inputs")
-         and str(item.get("name") or "").lower() == via.lower()
-         and item.get("outputs")
-         and str(item["outputs"][0].get("type") or "") == "address"),
-        None)
+    getter = next(
+        (
+            item for item in model.abi
+            if item.get("type") == "function"
+            and not item.get("inputs")
+            and str(item.get("name") or "").lower() == via.lower()
+            and item.get("outputs")
+            and str(item["outputs"][0].get("type") or "") == "address"
+        ),
+        None,
+    )
     if not getter:
         return None, via
     code, out, _err = _cmd(["cast", "call", step.address, _signature(getter), "--rpc-url", rpc], timeout=6)
@@ -1830,8 +1834,10 @@ def _diagnose_argument_contracts(rpc: str, step: Step, model: ContractModel) -> 
             continue
         code = _runtime_code(rpc, candidate)
         if code in {"", "0x"}:
-            origin = origin or (f"{model.name}.{step.function.split("(", 1)[0]} -> " +
-                                f"{edge.get("interface") or edge.get("to_contract")}.{edge.get("to_function")}({label})")
+            origin = origin or (
+                f"{model.name}.{step.function.split('(', 1)[0]} -> "
+                f"{edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}({label})"
+            )
             diagnostics.append(
                 f"{_pretty_identifier(label)} = {_addr(candidate)} has no contract code; "
                 f"source calls {edge.get("interface") or edge.get("to_contract")}.{edge.get("to_function")}(), "
@@ -1840,7 +1846,7 @@ def _diagnose_argument_contracts(rpc: str, step: Step, model: ContractModel) -> 
         else:
             diagnostics.append(
                 f"{_pretty_identifier(label)} = {_addr(candidate)} has live contract code; "
-                f"source expects {edge.get("interface") or edge.get("to_contract")}.{edge.get("to_function")}()"
+                f"source expects {edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}()"
             )
     diagnostics.extend(_probe_boolean_getters(rpc, step, model))
     return origin, list(dict.fromkeys(diagnostics))
@@ -1884,7 +1890,9 @@ def _diagnose_failed_call(
         for edge in edges[:10]:
             target = edge.get("to_contract") or _addr(edge.get("to_address"))
             fn = edge.get("function") or edge.get("type")
-            diagnostics.append(f"actual call: {edge.get("from_contract") or "caller"} ──▶ {target}.{fn}")
+            diagnostics.append(
+                f"actual call: {edge.get('from_contract') or 'caller'} ──▶ {target}.{fn}"
+            )
 
         failed = next((edge for edge in reversed(edges) if edge.get("error") or edge.get("revert")), None)
         if failed:
