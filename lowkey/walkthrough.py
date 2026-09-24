@@ -1295,6 +1295,7 @@ def _render_interaction_graph_full(
         _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
         f"  │   {actor} {ARROW} {contract}.{call_display}",
+        f"  │   [technical] [{actor}] ── CALL {call_display} ──▶ [{contract}]",
         f"  │   ↳ {_human_action_summary(step, actors)}",
         "  │                              │",
     ]
@@ -1403,7 +1404,7 @@ def _render_protocol_story_full(
             root, step, actors, step_model, models, enabled
         )
         if current is step:
-            frame += "\n  ◀ NOW  •  LIVE"
+            frame += "\n  ◀ NOW  •  LIVE\n  ◀ LIVE"
         lines.append(frame)
         if index != len(visible) - 1:
             lines.append("                 │")
