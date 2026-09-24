@@ -334,8 +334,37 @@ class WalkthroughTests(unittest.TestCase):
     def test_cli_arg_normalizes_bool_and_arrays(self):
         self.assertEqual(walkthrough._cli_arg(True), "true")
         self.assertEqual(walkthrough._cli_arg(False), "false")
-        self.assertEqual(walkthrough._cli_arg(["0x" + "1" * 40, "0x" + "2" * 40]),
-                         '["0x' + "1" * 40 + '","0x' + "2" * 40 + '"]')
+        self.assertEqual(
+            walkthrough._cli_arg(["0x" + "1" * 40, "0x" + "2" * 40]),
+            "[0x" + "1" * 40 + ",0x" + "2" * 40 + "]",
+        )
+
+    def test_failure_explainer_is_plain_english(self):
+        step = walkthrough.Step(1, "Alice", "Pool", "0x" + "3"*40, "stake(uint256)", [1], status="blocked")
+        self.assertIn("staking deadline",
+                      walkthrough._explain_failure(step, "execution reverted: StakingClosed", "Alice"))
+        self.assertIn("not the configured outcome moderator",
+                      walkthrough._explain_failure(step, "execution reverted: NotModerator", "Alice"))
+
+    def test_protocol_flow_connects_steps_and_explains_failure(self):
+        actors=[walkthrough.Actor("Alice","0x"+"1"*40,0), walkthrough.Actor("Bob","0x"+"2"*40,1)]
+        bad=walkthrough.Step(1,"Alice","Pool","0x"+"3"*40,"stake(uint256)",[1],status="blocked",
+                             error="PRECONDITION BLOCKED: execution reverted: StakingClosed")
+        bad.error_reason=walkthrough._explain_failure(bad,bad.error,bad.actor)
+        good=walkthrough.Step(2,"Bob","Pool","0x"+"3"*40,"withdraw()",[],status="success")
+        rendered=walkthrough._render_protocol_story([bad,good],good,actors,False)
+        self.assertIn("WHY IT FAILED",rendered)
+        self.assertIn("staking deadline",rendered)
+        self.assertIn("▼",rendered)
+        self.assertIn("◀ NOW",rendered)
+
+    def test_token_balance_lines_show_real_deltas(self):
+        actor=walkthrough.Actor("Alice","0x"+"1"*40,0)
+        step=walkthrough.Step(1,"Alice","Pool","0x"+"2"*40,"stake(uint256)",[1],status="success")
+        step.token_balance_before={actor.address.lower():10}
+        step.token_balance_after={actor.address.lower():9}
+        self.assertIn("STAKE BALANCE Alice: -1",
+                      walkthrough._friendly_token_balance_lines(step,[actor]))
 
     def test_live_path_renders_connected_interactions(self):
         steps = [
