@@ -168,6 +168,31 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             )
             self.assertEqual(graph["summary"]["unresolved_imports"], 0)
 
+    def test_detect_project_reports_python_version_and_submodules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                ".python-version",
+                "3.12\n",
+            )
+            self.write(
+                root,
+                ".gitmodules",
+                "[submodule \"contracts/xdao\"]\n"
+                "\tpath = contracts/xdao\n"
+                "\turl = https://example.com/xdao.git\n",
+            )
+            submodule = root / "contracts/xdao"
+            submodule.mkdir(parents=True)
+            self.write(root, "contracts/xdao/README.md", "initialized")
+
+            project = project_tools.detect_project(root)
+
+            self.assertEqual(project["python"]["version_file"], "3.12")
+            self.assertEqual(len(project["submodules"]), 1)
+            self.assertTrue(project["submodules"][0]["initialized"])
+
     def test_source_inventory_excludes_audit_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
