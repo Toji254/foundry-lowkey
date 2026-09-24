@@ -750,6 +750,88 @@ class WalkthroughTests(unittest.TestCase):
 
         self.assertIs(result, recovery)
 
+    def test_send_mode_blocks_unsignable_synthesized_prerequisite(self):
+        node = walk.LiveNode(
+            "0x" + "1" * 40,
+            "Factory",
+            100,
+            "Factory",
+        )
+        create = walk.FunctionInfo(
+            "Factory",
+            "createPool",
+            [],
+            [],
+            "nonpayable",
+            "createPool()",
+            visibility="external",
+        )
+        prerequisite_fn = walk.FunctionInfo(
+            "Factory",
+            "setStakeTokenAllowed",
+            [],
+            [],
+            "nonpayable",
+            "setStakeTokenAllowed()",
+            visibility="external",
+        )
+        blocked = {
+            "node": node,
+            "function": create,
+            "args": [],
+            "caller": "0x" + "1" * 40,
+            "actor_name": "Agreement Owner",
+            "status": "BLOCKED",
+            "result": {"ok": False, "decoded_error": "StakeTokenNotAllowed()"},
+        }
+        prerequisite = {
+            "node": node,
+            "function": prerequisite_fn,
+            "args": [],
+            "caller": "0x" + "9" * 40,
+            "actor_name": "Owner",
+            "status": "READY",
+            "result": {"ok": True},
+        }
+
+        with patch.object(
+            walk,
+            "_candidate_actions",
+            return_value=[blocked],
+        ), patch.object(
+            walk,
+            "_initializer_recovery_action",
+            return_value=None,
+        ), patch.object(
+            walk,
+            "_prerequisite_from_blocked_action",
+            return_value=prerequisite,
+        ), patch.object(
+            walk,
+            "_sender_available_for_local_send",
+            return_value=False,
+        ), patch.object(
+            walk,
+            "_eth_accounts",
+            return_value=["0x" + "1" * 40],
+        ):
+            result = walk._next_transition_action(
+                pathlib.Path("."),
+                {"rpc": "http://127.0.0.1:8545"},
+                {"Factory": [create, prerequisite_fn]},
+                [node],
+                {"Alice": "0x" + "1" * 40},
+                {},
+                [],
+                require_local_signer=True,
+            )
+
+        self.assertIs(result, prerequisite)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertFalse(result["result"]["ok"])
+        self.assertIn("not exposed by eth_accounts", result["diagnosis"][-2])
+
+
     def test_blocked_protocol_transition_yields_state_enabling_prerequisite(self):
         node = walk.LiveNode(
             "0x" + "1" * 40,
