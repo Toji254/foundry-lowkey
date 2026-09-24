@@ -1130,10 +1130,176 @@ def _load_artifacts(root: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[s
     return by_contract, files
 
 
+def _extract_state_vars(segment: str, base_offset: int, source_text: str) -> list[dict[str, Any]]:
+    """Extract contract-level state declarations while ignoring function bodies."""
+    out: list[dict[str, Any]] = []
+    depth = 0
+    statement_start: int | None = None
+    quote: str | None = None
+    escape = False
+
+    for i, ch in enumerate(segment):
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\": 
+                escape = True
+            elif ch == quote:
+                quote = None
+            continue
+
+        if ch in {'"', "'"}:
+            quote = ch
+            continue
+
+        if ch == "{":
+            if depth == 0:
+                depth = 1
+                statement_start = i + 1
+            elif depth == 1:
+                statement_start = None
+                depth += 1
+            else:
+                depth += 1
+            continue
+
+        if ch == "}":
+            depth = max(0, depth - 1)
+            if depth == 0:
+                statement_start = None
+            elif depth == 1:
+                statement_start = i + 1
+            continue
+
+        if ch != ";" or depth != 1 or statement_start is None:
+            continue
+
+        statement = segment[statement_start:i].strip()
+        statement_start = i + 1
+        if not statement:
+            continue
+
+        lower = statement.lower()
+        if lower.startswith((
+            "function ", "event ", "error ", "modifier ", "using ",
+            "struct ", "enum ", "constructor", "fallback", "receive",
+        )):
+            continue
+
+        match = re.search(r"\b([A-Za-z_]\w*)\b\s*(?==|$)", statement)
+        if not match:
+            continue
+
+        name = match.group(1)
+        prefix = statement[:match.start()].strip()
+        if not prefix:
+            continue
+
+        modifiers = re.findall(
+            r"\b(public|private|internal|constant|immutable|override)\b",
+            prefix,
+        )
+        type_text = re.sub(
+            r"\b(public|private|internal|constant|immutable|override)\b",
+            " ",
+            prefix,
+        )
+        type_text = re.sub(r"\s+", " ", type_text).strip()
+        if not type_text or type_text in {"return", "if", "for", "while", "emit"}:
+            continue
+
+        absolute = base_offset + segment.find(statement)
+        out.append({
+            "name": name,
+            "type": type_text,
+            "visibility": next(
+                (x for x in modifiers if x in {"public", "private", "internal"}),
+                "internal",
+            ),
+            "constant": "constant" in modifiers,
+            "immutable": "immutable" in modifiers,
+            "line": source_text.count("\n", 0, absolute) + 1,
+        })
+
+    return out
+
+
+def _analyze_function_source(
+    body: str,
+    state_vars: list[dict[str, Any]],
+    function_names: set[str],
+    current_name: str,
+) -> tuple[list[str], list[str], list[str], list[dict[str, str]]]:
+    reads: list[str] = []
+    writes: list[str] = []
+    array_ops: list[str] = []
+    internal_calls: list[dict[str, str]] = []
+
+    for state in state_vars:
+        name = str(state.get("name") or "")
+        if not name or not re.search(rf"\b{re.escape(name)}\b", body):
+            continue
+
+        reads.append(name)
+
+        if (
+            re.search(
+                rf"\b{re.escape(name)}\b(?:\s*\[[^\]]+\])?\s*(?:\+=|-=|\*=|/=|%=|=|\+\+|--)",
+                body,
+            )
+            or re.search(rf"\bdelete\s+{re.escape(name)}\b", body)
+        ):
+            writes.append(name)
+
+        if re.search(
+            rf"\b{re.escape(name)}\b[^;{{}}]{{0,160}}\.\s*(push|pop)\s*\(",
+            body,
+        ):
+            writes.append(name)
+            match = re.search(
+                rf"\b{re.escape(name)}\b[^;{{}}]{{0,160}}\.\s*(push|pop)\s*\(",
+                body,
+            )
+            if match:
+                array_ops.append(f"{match.group(1)}() on {name}")
+
+        if re.search(
+            rf"\b{re.escape(name)}\b\s*\[[^\]]+\]",
+            body,
+        ):
+            array_ops.append(f"indexed access on {name}")
+
+        if re.search(
+            rf"\b{re.escape(name)}\b[^;{{}}]{{0,160}}\.\s*length\b",
+            body,
+        ):
+            array_ops.append(f"reads {name}.length")
+
+    for function_name in sorted(function_names):
+        if function_name == current_name:
+            continue
+        if re.search(
+            rf"(?<![\w.]){re.escape(function_name)}\s*\(",
+            body,
+        ):
+            internal_calls.append({
+                "kind": "internal-call",
+                "function": function_name,
+            })
+
+    return (
+        sorted(set(reads)),
+        sorted(set(writes)),
+        sorted(set(array_ops)),
+        internal_calls,
+    )
+
+
 def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
     contracts: dict[str, ContractInfo] = {}
     patterns = list(root.glob("src/**/*.sol")) + list(root.glob("contracts/**/*.sol"))
     seen: set[Path] = set()
+
     for path in patterns:
         if not path.is_file() or path in seen:
             continue
@@ -1145,7 +1311,10 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
 
         rel = path.relative_to(root).as_posix()
         scan_text = _strip_solidity_comments(text)
-        import_list = re.findall(r'\bimport\s+(?:[^;]*?from\s+)?["\']([^"\']+)["\']\s*;', scan_text)
+        import_list = re.findall(
+            r'\bimport\s+(?:[^;]*?from\s+)?["\']([^"\']+)["\']\s*;',
+            scan_text,
+        )
 
         for match in re.finditer(
             r"\b(contract|interface|library)\s+([A-Za-z_]\w*)",
@@ -1160,6 +1329,7 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                 kind=kind,
                 imports=import_list,
             )
+
             block_start = match.start()
             next_decl = re.search(
                 r"\b(?:contract|interface|library)\s+[A-Za-z_]\w*",
@@ -1170,69 +1340,82 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                 if next_decl
                 else len(text)
             )
+            segment = scan_text[block_start:block_end]
+
+            ci.state_vars = _extract_state_vars(
+                segment,
+                block_start,
+                text,
+            )
             ci.address_vars = [
-                x.group(1)
-                for x in re.finditer(
-                    r"\baddress(?:\s+[A-Za-z_]\w+)?\s+(?:public|private|internal|external)\s+([A-Za-z_]\w*)\s*(?:=|;)",
-                    scan_text[block_start:block_end],
-                )
+                str(item.get("name"))
+                for item in ci.state_vars
+                if str(item.get("type") or "").strip().startswith("address")
             ]
+
             for fmatch in re.finditer(
                 r"\bfunction\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*([^{;]*)(?:\{|;)",
-                scan_text[block_start:block_end],
+                segment,
                 flags=re.S,
             ):
                 fname, ptext, tail = fmatch.groups()
-                pitems = _split_params(ptext)
                 inputs: list[dict[str, Any]] = []
-                for raw in pitems:
+                for raw in _split_params(ptext):
                     typ, pname = _parse_decl_type(raw)
                     inputs.append({"type": typ, "name": pname})
-                floc = block_start + fmatch.start()
-                fline = scan_text.count("\n", 0, floc) + 1
+
                 absolute = block_start + fmatch.start()
+                fline = scan_text.count("\n", 0, absolute) + 1
                 brace = text.find("{", absolute, block_start + fmatch.end() + 1)
                 body = ""
                 if brace >= 0:
                     depth = 0
-                    end = brace
-                    for j in range(brace, min(len(text), brace + 30000)):
-                        if text[j] == "{":
+                    end_pos = brace
+                    masked_body = scan_text[brace: min(len(scan_text), brace + 30000)]
+                    for j, token in enumerate(masked_body):
+                        if token == "{":
                             depth += 1
-                        elif text[j] == "}":
+                        elif token == "}":
                             depth -= 1
                             if depth == 0:
-                                end = j + 1
+                                end_pos = brace + j + 1
                                 break
-                    body = text[brace:end]
+                    body = text[brace:end_pos]
+
+                visibility = next(
+                    (
+                        x for x in ("external", "public", "internal", "private")
+                        if re.search(rf"\b{x}\b", tail)
+                    ),
+                    "unknown",
+                )
                 modifiers = re.findall(
                     r"\b(only[A-Za-z_]\w*|when[A-Za-z_]\w*|nonReentrant|initializer|payable|view|pure)\b",
                     tail,
                 )
                 calls: list[dict[str, Any]] = []
-                for c in re.finditer(
+
+                for call in re.finditer(
                     r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(",
                     body,
                 ):
-                    calls.append(
-                        {
-                            "kind": "member-call",
-                            "receiver": c.group(1),
-                            "function": c.group(2),
-                        }
-                    )
-                for c in re.finditer(
+                    calls.append({
+                        "kind": "member-call",
+                        "receiver": call.group(1),
+                        "function": call.group(2),
+                    })
+
+                for call in re.finditer(
                     r"\b([A-Z][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\.\s*([A-Za-z_]\w*)\s*\(",
                     body,
                 ):
-                    calls.append(
-                        {
-                            "kind": "typed-call",
-                            "interface": c.group(1),
-                            "receiver": c.group(2),
-                            "function": c.group(3),
-                        }
-                    )
+                    calls.append({
+                        "kind": "typed-call",
+                        "interface": call.group(1),
+                        "receiver": call.group(2),
+                        "function": call.group(3),
+                    })
+
                 sig = f"{fname}({','.join(x['type'] for x in inputs)})"
                 ci.functions.append(
                     FunctionInfo(
@@ -1252,12 +1435,26 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                         body=body,
                         modifiers=modifiers,
                         calls=calls,
+                        visibility=visibility,
                     )
                 )
 
+            function_names = {f.name for f in ci.functions}
+            for info in ci.functions:
+                reads, writes, array_ops, internal_calls = _analyze_function_source(
+                    info.body or "",
+                    ci.state_vars or [],
+                    function_names,
+                    info.name,
+                )
+                info.reads = reads
+                info.writes = writes
+                info.array_ops = array_ops
+                info.calls.extend(internal_calls)
+
             for em in re.finditer(
                 r"\berror\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*;",
-                text[block_start:block_end],
+                segment,
                 flags=re.S,
             ):
                 err_name, err_args = em.groups()
@@ -1265,10 +1462,10 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                 for raw in _split_params(err_args):
                     typ, pname = _parse_decl_type(raw)
                     err_inputs.append({"type": typ, "name": pname})
-                ci.errors.append(
-                    {"name": err_name, "inputs": err_inputs}
-                )
+                ci.errors.append({"name": err_name, "inputs": err_inputs})
+
             contracts[name] = ci
+
     return contracts
 
 
