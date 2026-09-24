@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from urllib.parse import quote
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -76,6 +78,10 @@ class ContractModel:
     arrays: list[dict[str, Any]] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
+    kind: str = "contract"
+    function_locations: dict[str, int] = field(default_factory=dict)
+    type_bindings: dict[str, str] = field(default_factory=dict)
+    imports: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -125,6 +131,9 @@ class Step:
     discovered_contracts: list[dict[str, Any]] = field(default_factory=list)
     preflight: str | None = None
     runtime_contracts: list[dict[str, Any]] = field(default_factory=list)
+    execution_edges: list[dict[str, Any]] = field(default_factory=list)
+    failure_origin: str | None = None
+    diagnostics: list[str] = field(default_factory=list)
 
 
 def _box(title: str, lines: Iterable[str], width: int = 72, left: str = "╭", right: str = "╮") -> str:
@@ -213,77 +222,221 @@ def _source_kind(source_text: str, name: str) -> str:
     return "unknown"
 
 
+def _function_locations(source_text: str) -> dict[str, int]:
+    locations: dict[str, int] = {}
+    for match in re.finditer(r"\bfunction\s+(\w+)\s*\(", source_text):
+        locations.setdefault(match.group(1), source_text.count("\n", 0, match.start()) + 1)
+    return locations
+
+
+def _source_imports(source_text: str) -> list[str]:
+    return [
+        str(match.group(1)).replace("\\", "/")
+        for match in re.finditer(r'import(?:\s+[^"]+\s+from)?\s*"([^"]+)"\s*;', source_text)
+    ]
+
+
+def _type_bindings(source_text: str) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+
+    # Covers both state variables and local typed variables used for calls.
+    declaration = re.compile(
+        r"\b([A-Za-z_]\w*)\s+(?:public\s+|private\s+|internal\s+|external\s+|memory\s+|storage\s+|calldata\s+)*([A-Za-z_]\w*)\s*(?:=|;|,|\))"
+    )
+    primitive = {
+        "address", "bool", "string", "bytes", "uint", "uint8", "uint16",
+        "uint32", "uint64", "uint128", "uint256", "int", "int8", "int16",
+        "int32", "int64", "int128", "int256", "bytes32", "mapping",
+    }
+    for match in declaration.finditer(source_text):
+        typ, name = match.groups()
+        if typ not in primitive:
+            bindings.setdefault(name, typ)
+
+    # Explicit interface/contract casts.
+    for match in re.finditer(
+        r"\b([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\.\s*([A-Za-z_]\w+)\s*\(",
+        source_text,
+    ):
+        bindings.setdefault(match.group(2), match.group(1))
+    return bindings
+
+
+def _balanced_block(source_text: str, opening_index: int) -> str:
+    depth = 0
+    for index in range(opening_index, len(source_text)):
+        char = source_text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source_text[opening_index + 1:index]
+    return source_text[opening_index + 1:]
+
+
+def _build_source_calls(model: ContractModel, models: list[ContractModel], source_text: str) -> list[dict[str, Any]]:
+    by_name = {item.name: item for item in models}
+    implementations: dict[str, str] = {}
+    for item in models:
+        implementations.setdefault(item.name, item.name)
+        for base in item.bases:
+            implementations.setdefault(base, item.name)
+
+    edges: list[dict[str, Any]] = []
+    current_names = {sig.split("(", 1)[0] for sig in model.functions}
+
+    functions = list(re.finditer(r"\bfunction\s+(\w+)\s*\([^)]*\)[^{;]*\{", source_text, re.S))
+    for fn_match in functions:
+        caller = fn_match.group(1)
+        body = _balanced_block(source_text, fn_match.end() - 1)
+        line = source_text.count("\n", 0, fn_match.start()) + 1
+        bindings = model.type_bindings
+
+        # interface(addressVar).function(...)
+        for match in re.finditer(
+            r"\b([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\.\s*([A-Za-z_]\w+)\s*\(",
+            body,
+        ):
+            typ, variable, called = match.groups()
+            target = implementations.get(typ, typ)
+            edges.append({
+                "kind": "cross-contract" if target != model.name else "internal",
+                "from": caller,
+                "to_contract": target,
+                "to_function": called,
+                "via": variable,
+                "interface": typ,
+                "line": line + body[:match.start()].count("\n"),
+                "certainty": "INFERRED",
+            })
+
+        # typedVariable.function(...)
+        for match in re.finditer(r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w+)\s*\(", body):
+            variable, called = match.groups()
+            typ = bindings.get(variable)
+            if not typ:
+                continue
+            target = implementations.get(typ, typ)
+            if target == model.name and called in current_names:
+                continue
+            edges.append({
+                "kind": "cross-contract",
+                "from": caller,
+                "to_contract": target,
+                "to_function": called,
+                "via": variable,
+                "interface": typ,
+                "line": line + body[:match.start()].count("\n"),
+                "certainty": "INFERRED",
+            })
+
+        for called in current_names:
+            if called == caller:
+                continue
+            if re.search(r"(?<![.\w])" + re.escape(called) + r"\s*\(", body):
+                signature = next((sig for sig in model.functions if sig.startswith(called + "(")), called + "()")
+                edges.append({
+                    "kind": "internal",
+                    "from": caller,
+                    "to_contract": model.name,
+                    "to_function": signature,
+                    "line": line,
+                    "certainty": "INFERRED",
+                })
+
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for edge in edges:
+        key = (
+            edge.get("kind"),
+            edge.get("from"),
+            edge.get("to_contract"),
+            edge.get("to_function"),
+            edge.get("via"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(edge)
+    return unique
+
+
 def _artifact_models(root: Path) -> list[ContractModel]:
     models: list[ContractModel] = []
     out = root / "out"
     if not out.is_dir():
         return models
-    src_prefix = _foundry_src_dir(root).replace("\\","/").strip("/") or "src"
+    src_prefix = _foundry_src_dir(root).replace("\\", "/").strip("/") or "src"
+
     for path in out.rglob("*.json"):
         if "build-info" in path.parts:
             continue
         data = _json_file(path)
         if not data or not isinstance(data.get("abi"), list):
             continue
+
         name = str(data.get("contractName") or path.stem)
-        source = str(data.get("sourceName") or "").replace("\\","/").lstrip("./")
+        source = str(data.get("sourceName") or "").replace("\\", "/").lstrip("./")
         if not source:
-            try:
-                relative_artifact = path.relative_to(out)
-                if len(relative_artifact.parts) >= 2:
-                    source = str(Path(src_prefix) / relative_artifact.parent.name)
-            except ValueError:
-                source = ""
+            candidates = sorted((root / src_prefix).rglob(f"{name}.sol")) if (root / src_prefix).is_dir() else []
+            if candidates:
+                source = candidates[0].relative_to(root).as_posix()
+
         if not (source == src_prefix or source.startswith(src_prefix + "/")):
             continue
-        source_text = ""
+
         source_path = root / source
-        if source_path.is_file():
-            try:
-                source_text = source_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
-        if _source_kind(source_text, name) in {"interface","library"}:
+        if not source_path.is_file():
             continue
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        kind = _source_kind(source_text, name)
+        if kind == "library":
+            continue
+
         abi = data["abi"]
-        functions = [_signature(x) for x in abi if x.get("type")=="function" and x.get("name")]
-        events = [_signature(x) for x in abi if x.get("type")=="event" and x.get("name")]
-        bases=[]
-        for match in re.finditer(r"\b(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^\{]+)\{", source_text):
-            if match.group(1)==name:
-                bases=[re.sub(r"\s+","",x).split("(")[0] for x in match.group(2).split(",") if x.strip()]
-        if any(m.name==name and m.source==source for m in models):
+        functions = [_signature(x) for x in abi if x.get("type") == "function" and x.get("name")]
+        events = [_signature(x) for x in abi if x.get("type") == "event" and x.get("name")]
+        bases: list[str] = []
+        for match in re.finditer(r"\b(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\{", source_text):
+            if match.group(1) == name:
+                bases = [re.sub(r"\s+", "", value).split("(")[0] for value in match.group(2).split(",") if value.strip()]
+
+        model = ContractModel(
+            name=name,
+            source=source,
+            artifact=str(path.relative_to(root)),
+            abi=abi,
+            storage=data.get("storageLayout") or {},
+            bases=bases,
+            functions=functions,
+            modifiers=re.findall(r"\bmodifier\s+(\w+)", source_text),
+            structs=_parse_structs(source_text),
+            mappings=_parse_mappings(source_text),
+            arrays=_parse_arrays(source_text),
+            events=events,
+            kind=kind,
+            function_locations=_function_locations(source_text),
+            type_bindings=_type_bindings(source_text),
+            imports=_source_imports(source_text),
+        )
+        if any(m.name == name and m.source == source for m in models):
             continue
-        models.append(ContractModel(
-            name=name, source=source, artifact=str(path.relative_to(root)), abi=abi,
-            storage=data.get("storageLayout") or {}, bases=bases, functions=functions,
-            modifiers=re.findall(r"\bmodifier\s+(\w+)",source_text),
-            structs=_parse_structs(source_text), mappings=_parse_mappings(source_text),
-            arrays=_parse_arrays(source_text), events=events))
-    known={m.name:m for m in models}
+        models.append(model)
+
     for model in models:
-        try: source_text=(root/model.source).read_text(encoding="utf-8",errors="replace")
-        except OSError: source_text=""
-        edges=[]
-        for fn in model.functions:
-            name=fn.split("(",1)[0]; pos=source_text.find("function "+name)
-            if pos<0: continue
-            segment=source_text[pos:pos+16000]
-            for target_fn in model.functions:
-                target_name=target_fn.split("(",1)[0]
-                if target_name!=name and re.search(r"\b"+re.escape(target_name)+r"\s*\(",segment):
-                    edges.append({"kind":"internal","from":name,"to_contract":model.name,"to_function":target_fn})
-            for other_name,other in known.items():
-                if other_name==model.name or not re.search(r"\b"+re.escape(other_name)+r"\b",segment): continue
-                for target_fn in other.functions:
-                    target_name=target_fn.split("(",1)[0]
-                    if re.search(r"\.\s*"+re.escape(target_name)+r"\s*\(",segment):
-                        edges.append({"kind":"cross-contract","from":name,"to_contract":other_name,"to_function":target_fn})
-        seen=set(); model.calls=[]
-        for edge in edges:
-            key=(str(edge.get("kind")),str(edge.get("from")),str(edge.get("to_contract")),str(edge.get("to_function")))
-            if key not in seen: seen.add(key); model.calls.append(edge)
-    return sorted(models,key=lambda m:(m.name.lower(),m.source))
+        source_path = root / model.source
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        model.calls = _build_source_calls(model, models, source_text)
+
+    return sorted(models, key=lambda m: (m.name.lower(), m.source))
 
 def _parse_structs(source: str) -> dict[str, list[Field]]:
     result: dict[str, list[Field]] = {}
