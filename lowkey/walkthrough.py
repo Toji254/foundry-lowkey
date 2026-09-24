@@ -2981,6 +2981,131 @@ def _system_test_targets(
 
 
 
+def _generic_walkthrough_warmup(
+    root: Path,
+    config: dict[str, Any],
+    host: Any,
+    target: str,
+    model: ContractModel,
+    models: list[ContractModel],
+    actors: list[Actor],
+    rpc: str,
+    limit: int = 4,
+) -> list[str]:
+    """Execute a few semantically valid lifecycle steps before randomized probes."""
+    notes: list[str] = []
+    observed = _merge_protocol_observations(
+        config.get("_walkthrough_observed") or {},
+        config=config,
+    )
+    pending = plan_workflow(
+        model,
+        actors,
+        target,
+        _block_timestamp(rpc),
+        max(1, limit),
+        observed,
+    )
+    runtime = _lab_runtime(config, target, model)
+    successes = 0
+
+    for candidate in pending:
+        if successes >= limit:
+            break
+        active_model = next(
+            (item for item in models if item.name == candidate.contract),
+            model,
+        )
+        abi_item = next(
+            (
+                item for item in active_model.abi
+                if item.get("type") == "function"
+                and _signature(item) == candidate.function
+            ),
+            None,
+        )
+        if not abi_item:
+            continue
+
+        if candidate.inferred:
+            observed_now = _merge_protocol_observations(
+                observed, config=config, runtime=runtime
+            )
+            candidate.args = [
+                _arg_for(
+                    param,
+                    actors,
+                    candidate.address,
+                    _block_timestamp(rpc),
+                    observed_now,
+                    active_model,
+                    str(candidate.function).split("(", 1)[0],
+                )
+                for param in abi_item.get("inputs") or []
+            ]
+            candidate.value_wei = _value_for(abi_item)
+
+        valid, reason = _validate_step_arguments(candidate, active_model)
+        if not valid:
+            notes.append(f"{candidate.function}: skipped — {reason}")
+            continue
+
+        actor = next(
+            (item for item in actors if item.name == candidate.actor),
+            actors[0] if actors else None,
+        )
+        if not actor:
+            continue
+
+        ok, preflight = _preflight(rpc, candidate, actor.address)
+        if not ok:
+            notes.append(
+                f"{candidate.function}: preflight blocked — {_short_error(preflight)}"
+            )
+            continue
+
+        tx, output = _send(
+            host, config, actor, candidate.address,
+            candidate.function, candidate.args, candidate.value_wei,
+        )
+        if not tx:
+            notes.append(
+                f"{candidate.function}: send failed — {_short_error(output)}"
+            )
+            continue
+
+        successes += 1
+        notes.append(f"{candidate.function}: established")
+
+        receipt = _receipt(rpc, tx)
+        trace = _trace_tree(rpc, tx)
+        discovered = _discover_runtime_contracts(
+            root,
+            rpc,
+            models,
+            runtime,
+            receipt,
+            trace,
+            successes,
+            candidate.address,
+        )
+        runtime.extend(discovered)
+        for node in discovered:
+            records = config.setdefault("_walkthrough_runtime_instances", [])
+            records.append({
+                "address": node.address,
+                "contract": node.model,
+                "label": node.label,
+                "relation": node.relation,
+                "parent": node.parent,
+            })
+        observed = _merge_protocol_observations(
+            observed, config=config, runtime=discovered
+        )
+
+    return notes
+
+
 def _run_adversarial_test(
     root: Path,
     config: dict[str, Any],
@@ -3006,6 +3131,13 @@ def _run_adversarial_test(
         return 1
 
     warmup_notes: list[str] = []
+    if config.get("_walkthrough_recipe") != "confidence-pool":
+        warmup_notes.extend(
+            _generic_walkthrough_warmup(
+                root, config, host, target, model, models,
+                actors, rpc, limit=4,
+            )
+        )
     if (
         config.get("_walkthrough_recipe") == "confidence-pool"
         and model.name.lower() == "confidencepoolfactory"
@@ -4847,6 +4979,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             return 2
         if not target:
             print("Error: adversarial test mode needs a live target.", file=sys.stderr)
+            return 2
+        live_ok, live_reason = _target_is_live_instance(root, rpc, target, model)
+        if not live_ok:
+            print("Error: adversarial test target is not a configured protocol instance.", file=sys.stderr)
+            print(f"Reason: {live_reason}", file=sys.stderr)
             return 2
         system_targets = _system_test_targets(config, target, model, models)
         return _run_adversarial_test(
