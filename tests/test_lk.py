@@ -316,7 +316,8 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertIsNotNone(script)
             self.assertTrue(pathlib.Path(script).is_file())
             content = pathlib.Path(script).read_text(encoding="utf-8")
-            self.assertIn("factory.createPool(", content)
+            self.assertIn("stop before createPool()", content)
+            self.assertNotIn("factory.createPool(", content)
             self.assertIn("LOWKEY_TARGET", content)
 
     def test_walkthrough_empty_revert_explains_contract_argument(self):
@@ -2027,7 +2028,22 @@ class LowkeyCastTests(unittest.TestCase):
     def test_project_lab_target_survives_context_sync(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "out" / "Fixture.sol").mkdir(parents=True)
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            (root / "src" / "Fixture.sol").write_text(
+                "pragma solidity ^0.8.20; contract Fixture { }",
+                encoding="utf-8",
+            )
+            (root / "out" / "Fixture.sol" / "Fixture.json").write_text(
+                json.dumps({
+                    "contractName": "Fixture",
+                    "sourceName": "src/Fixture.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
             lk.audit_context.set_target(
                 root,
                 address="0x" + "1" * 40,
