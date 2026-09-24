@@ -5801,7 +5801,13 @@ START
   lk audit auto                    Autonomous local audit; starts Anvil if needed and bootstraps target
   lk audit --checks                Same audit session with Slither + optional lint/geiger checks
   lk audit auto --checks           Autonomous audit with Slither + optional lint/geiger checks
-  lk walkthrough [options]       Build and execute a visual whole-protocol workflow\n  lk walkthrough --auto           Auto-provision a local Anvil target when needed\n  lk walkthrough --static         Render the compiled protocol model without execution\n  lk walkthrough --contract X     Focus the workflow model on contract X\n  lk audit--checks                 Legacy compact alias for audit --checks
+  lk walkthrough [options]       Build and execute a visual whole-protocol workflow
+  lk walkthrough --auto           Auto-provision a local Anvil target when needed
+  lk walkthrough --static         Render the compiled protocol model without execution
+  lk walkthrough --contract X     Focus the workflow model on contract X
+  lk walkthrough test              Randomized live probes with snapshot/revert isolation
+  lk walkthrough test --cases 50  Run 50 adversarial probes and save evidence
+  lk audit--checks                 Legacy compact alias for audit --checks
   lk findings                      Show audit findings
   lk focus <ID>                    Focus one finding and mark it investigating
   lk status                        Show target and audit state
