@@ -118,6 +118,187 @@ def _is_address(value: Any) -> bool:
     return isinstance(value, str) and bool(ADDRESS_RE.fullmatch(value))
 
 
+def _short_address(value: Any) -> str:
+    if _is_address(value):
+        return value[:10] + "…" + value[-8:]
+    return str(value)
+
+
+def _clean_name(value: str) -> str:
+    name = re.sub(r"^I", "", str(value or ""))
+    name = name.replace("IBattleChain", "").replace("Upgradeable", "")
+    return name
+
+
+def _contract_purpose(name: str, functions: list[FunctionInfo] | None = None) -> str:
+    low = name.lower()
+    fn_names = {f.name.lower() for f in (functions or [])}
+    if "factory" in low or "createpool" in fn_names:
+        return "creates/configures protocol instances"
+    if "pool" in low:
+        return "holds participant state, stakes and settlement funds"
+    if "agreement" in low:
+        return "defines who/what is approved and in scope"
+    if "token" in low or "erc20" in low:
+        return "asset used by the protocol for value/staking"
+    if "safeharbor" in low or "registry" in low:
+        return "external source of protocol validity/state"
+    if "moderator" in low:
+        return "controls or reports outcome decisions"
+    if "proxy" in low:
+        return "forwards calls to an implementation contract"
+    if any(x in fn_names for x in ("owner", "transferownership", "pause", "unpause")):
+        return "administrative/control component"
+    return "protocol component"
+
+
+def _friendly_connection_phrase(edge: dict[str, str]) -> str:
+    kind = str(edge.get("kind") or "")
+    fn = str(edge.get("function") or "")
+    low = fn.lower()
+    if "createpool" in low and "owner" in low:
+        return "checks who owns the agreement"
+    if "createpool" in low and "initialize" in low:
+        return "creates/initializes a new pool"
+    if "initialize" in low and "isagreementvalid" in low:
+        return "checks that the agreement is valid"
+    if "getagreementstate" in low:
+        return "reads agreement/security state"
+    if "iscontractinscope" in low:
+        return "checks whether a contract is in scope"
+    if "flag" in low:
+        return "reports an outcome to the target component"
+    if kind.startswith("runtime:"):
+        return "reads a live dependency from the contract"
+    if kind == "member-call":
+        return "calls a configured dependency"
+    return "uses"
+
+
+def _connection_destination(edge: dict[str, str], nodes: list[LiveNode]) -> str:
+    raw = str(edge.get("to") or "")
+    clean = _clean_name(raw)
+    normalized = re.sub(r"[^a-z0-9]", "", clean.lower())
+    candidates = []
+    for node in nodes:
+        name = node.artifact_contract or node.name
+        n = re.sub(r"[^a-z0-9]", "", _clean_name(name).lower())
+        candidates.append((n, name))
+    for n, name in candidates:
+        if normalized and (normalized == n or normalized in n or n in normalized):
+            return name
+    return clean or raw
+
+
+def _action_phase(fn: FunctionInfo) -> str:
+    n = fn.name.lower()
+    if any(x in n for x in ("create", "initialize")):
+        return "SETUP" if "initialize" in n else "CREATE"
+    if any(x in n for x in ("stake", "deposit", "contribute")):
+        return "PARTICIPATE"
+    if any(x in n for x in ("flag", "resolve", "claim", "redeem", "release")):
+        return "OUTCOME"
+    if any(x in n for x in ("withdraw", "sweep")):
+        return "SETTLE"
+    if any(x in n for x in ("set", "pause", "unpause", "upgrade", "authorize")):
+        return "ADMIN"
+    return "INTERACTION"
+
+
+def _action_what(fn: FunctionInfo, node: LiveNode) -> str:
+    n = fn.name.lower()
+    if "createpool" in n:
+        return "Create a new pool using an approved agreement and stake token."
+    if n == "stake":
+        return "Put stake into the pool so this participant becomes part of the protocol state."
+    if "contribute" in n:
+        return "Add bonus/value to the pool for a later outcome or settlement."
+    if "flagoutcome" in n:
+        return "Report an outcome so the pool can move into an outcome-dependent state."
+    if "withdraw" in n:
+        return "Ask the pool to release this participant's withdrawable value."
+    if "sweepunclaimed" in n:
+        return "Move value that the protocol considers permanently unclaimed/corrupted."
+    if "initialize" in n:
+        return "Initialize one-time contract state; this is normally a deployment/setup action."
+    if "setstaketokenallowed" in n:
+        return "Tell the factory which stake token it is allowed to accept."
+    if "set" in n:
+        return "Change a piece of protocol configuration."
+    return f"Call {node.artifact_contract or node.name}.{fn.name} and observe its state transition."
+
+
+def _action_why(fn: FunctionInfo, node: LiveNode) -> str:
+    n = fn.name.lower()
+    if "createpool" in n:
+        return "This is the main bridge from the factory into a newly created pool."
+    if n == "stake":
+        return "This is a core user action: it changes who has value at risk in the pool."
+    if "withdraw" in n:
+        return "Withdrawal is a security boundary because it moves value out of the protocol."
+    if "contribute" in n:
+        return "This changes pool value and can affect later settlement outcomes."
+    if "flagoutcome" in n or "resolve" in n:
+        return "Outcome decisions usually unlock or restrict later claims/withdrawals."
+    if "setstaketokenallowed" in n or n.startswith("set"):
+        return "Lowkey normally keeps deployment/configuration actions out of the user journey unless needed to repair the environment."
+    if "initialize" in n:
+        return "Initialization defines the trusted starting state; repeating it is usually expected to fail."
+    return "Lowkey selected it because it can change protocol state or cross a security boundary."
+
+
+def _friendly_error(decoded: str | None, raw: str) -> tuple[str, str]:
+    text = str(decoded or raw or "").strip()
+    low = text.lower()
+    if "staketokennotalowed" in low:
+        return (
+            "The factory rejected the token because it is not currently approved for staking.",
+            "Use the legitimate factory setup/owner flow to approve the token, then retry pool creation.",
+        )
+    if "stakingclosed" in low:
+        return (
+            "The pool is not accepting new stakes in its current state.",
+            "Check the pool lifecycle and its setup/expiry state before treating staking as the next step.",
+        )
+    if "invalidinitialization" in low:
+        return (
+            "The contract says its one-time initialization has already been used.",
+            "Treat this as deployment/setup state, not as the normal user flow; inspect the existing initialized values.",
+        )
+    if "outcomenotset" in low:
+        return (
+            "There is no outcome recorded yet, so this action has nothing to settle against.",
+            "Find the outcome/flagging step first and then re-check this settlement path.",
+        )
+    if "outcomenoteligibleforsweep" in low:
+        return (
+            "The current outcome/state does not make these funds eligible for sweeping.",
+            "Inspect the conditions that make an outcome sweepable instead of forcing the call.",
+        )
+    if text and ("execution reverted" in low or low.startswith("error:")):
+        return (
+            "The chain rejected the call, but did not provide a useful decoded reason.",
+            "First verify the target contract identity and current state; then inspect the source check that guards this function.",
+        )
+    return (
+        text or "The simulated call could not be executed.",
+        "Inspect the current state and function preconditions before trying the action again.",
+    )
+
+
+def _step_status_word(action: dict[str, Any]) -> str:
+    status = str(action.get("status") or "PLANNED").upper()
+    if status == "SUCCESS":
+        return "DONE"
+    if status == "FAILED":
+        return "FAILED"
+    if status == "READY":
+        return "READY"
+    if status == "BLOCKED":
+        return "BLOCKED"
+    return "NEXT"
+
+
 def _checksumish(value: str) -> str:
     if not _is_address(value):
         return value
@@ -260,6 +441,12 @@ def _discover_bootstrap(root: Path, rpc: str) -> dict[str, Any]:
     seen_deployments: set[tuple[str, str]] = set()
 
     for path in sorted((root / "broadcast").glob("**/run-latest.json")):
+        rel_path = path.relative_to(root).as_posix()
+        # Foundry writes simulated runs under a "dry-run" path. Those files
+        # describe addresses that may never have been deployed and must not be
+        # treated as live deployment evidence.
+        if any(part.lower() == "dry-run" for part in path.relative_to(root).parts):
+            continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -377,7 +564,41 @@ def _resolve_walkthrough_target(
     """Resolve a target, preferring live runtime state over stale static state."""
     configured = str(config.get("target") or "").strip()
     configured_static: tuple[str, str] | None = None
+    live_deployments = [
+        x for x in (bootstrap.get("live_deployments") or [])
+        if isinstance(x, dict)
+        and not any(part.lower() == "dry-run" for part in str(x.get("broadcast") or "").split("/"))
+    ]
+
+    def current_broadcast_match(address: str, expected_name: str) -> dict[str, Any] | None:
+        expected = re.sub(r"[^a-z0-9]", "", _clean_name(expected_name).lower())
+        same_address = [
+            x for x in live_deployments
+            if str(x.get("address") or "").lower() == address.lower()
+        ]
+        for item in same_address:
+            actual = re.sub(r"[^a-z0-9]", "", _clean_name(str(item.get("contract") or "")).lower())
+            if expected and actual and (expected == actual or expected in actual or actual in expected):
+                return item
+        return same_address[0] if same_address else None
+
+    configured = str(config.get("target") or "").strip()
+    configured_static: tuple[str, str] | None = None
     if _is_address(configured):
+        expected = str(config.get("target_contract") or _target_label(config, configured) or "")
+        current = current_broadcast_match(configured, expected) if expected else None
+        if current:
+            return configured, "current broadcast target"
+        # A live address that is identified by persisted evidence but does not
+        # match the current deployment identity is stale-prone (especially on
+        # a reset Anvil where CREATE addresses are reused). Prefer a current
+        # deployment with the expected contract identity.
+        if live_deployments and expected:
+            expected_norm = re.sub(r"[^a-z0-9]", "", _clean_name(expected).lower())
+            for item in live_deployments:
+                actual_norm = re.sub(r"[^a-z0-9]", "", _clean_name(str(item.get("contract") or "")).lower())
+                if expected_norm and actual_norm and (expected_norm == actual_norm or expected_norm in actual_norm or actual_norm in expected_norm):
+                    return str(item["address"]), f"current broadcast deployment ({item.get('contract')})"
         if _code_size(rpc, configured) > 0:
             return configured, "configured target"
         configured_static = (configured, "configured target (no live bytecode)")
@@ -419,10 +640,14 @@ def _resolve_walkthrough_target(
         file_name = str(item.get("file") or "")
         source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
         if _code_size(rpc, target) > 0:
-            return target, source
-        audit_static.append((target, source + " (no live bytecode)"))
+            if not live_deployments:
+                return target, source
+            matched = current_broadcast_match(target, str(config.get("target_contract") or _target_label(config, target) or ""))
+            if matched:
+                return target, source
+        audit_static.append((target, source + " (no live bytecode or stale identity)"))
 
-    live = list(bootstrap.get("live_deployments") or [])
+    live = list(live_deployments)
     live.sort(
         key=lambda item: (
             str(item.get("broadcast") or ""),
@@ -1980,147 +2205,138 @@ def _render_story(
     links: bool = True,
     meta: dict[str, Any] | None = None,
 ) -> str:
-    lines: list[str] = []
-    lines.append("LOWKEY // SYSTEM-AWARE PROTOCOL WALKTHROUGH")
-    lines.append("")
-    lines.append("ACTORS")
-    actor_line = []
-    for name in ("Alice", "Bob", "Attacker"):
-        addr = actors.get(name)
-        if addr:
-            actor_line.append(f"◉ {name} {addr[:10]}…{addr[-8:]}")
-    lines.append("  " + "   ".join(actor_line))
-    lines.append("")
-    lines.append("BOOTSTRAP EVIDENCE")
+    """Render the walkthrough as a compact human-facing protocol story."""
     meta = meta if isinstance(meta, dict) else {}
-    bootstrap = meta.get("bootstrap") or {}
-    manifest = (meta.get("system_manifest") if isinstance(meta, dict) else None) or {}
-    initialization = bootstrap.get("initialization") or []
-    roles = bootstrap.get("roles") or []
-    adversarial = bootstrap.get("adversarial") or []
-    audit_evidence = bootstrap.get("audit_evidence") or []
-    lines.append(
-        "  source: "
-        + ("shared system bootstrap manifest" if manifest else "source/broadcast fallback")
-    )
-    if initialization:
-        lines.append(f"  initialization steps observed: {len(initialization)}")
-        for item in initialization[:6]:
-            lines.append(
-                f"    {item.get('source')}:{item.get('line')} "
-                f"[{item.get('kind')}] {item.get('target')}"
-            )
-    if roles:
-        lines.append(f"  role/ownership operations observed: {len(roles)}")
-        for item in roles[:4]:
-            lines.append(
-                f"    {item.get('source')}:{item.get('line')} "
-                f"[{item.get('kind')}] {item.get('target')}"
-            )
-    if adversarial:
-        lines.append(f"  adversarial artifacts observed: {len(adversarial)}")
-        for item in adversarial[:4]:
-            lines.append(f"    {item.get('path')}")
-    if audit_evidence:
-        lines.append(f"  audit evidence records observed: {len(audit_evidence)}")
-        for item in audit_evidence[:4]:
-            lines.append(f"    {item.get('file')}")
+    lines: list[str] = []
+    live_nodes = [n for n in nodes if n.code_size > 0]
+    target = meta.get("target")
+    target_name = _target_label({}, target) if target else "Not resolved"
+    if target:
+        for n in nodes:
+            if n.address.lower() == str(target).lower():
+                target_name = n.artifact_contract or n.name
+                break
+
+    lines.append("╭────────────────────────────────────────────────────────────╮")
+    lines.append("│ LOWKEY  /  SYSTEM WALKTHROUGH                              │")
+    lines.append("╰────────────────────────────────────────────────────────────╯")
+    lines.append(f"  Environment  Local RPC • {_short_address(str(target)) if target else 'no target'}")
+    lines.append(f"  System       {len(live_nodes)} live contract(s) • {len(actors)} actor(s)")
+    lines.append(f"  Focus        {target_name}")
+
+    if meta.get("auto_bootstrap"):
+        boot = meta["auto_bootstrap"]
+        if boot.get("status") == "success":
+            lines.append(f"  Bootstrap    ✓ Local setup loaded ({boot.get('reason', 'completed')})")
+        else:
+            lines.append(f"  Bootstrap    • {boot.get('reason', 'not needed')}")
+
     lines.append("")
-    lines.append("SYSTEM MAP")
-    static_system = meta.get("static_system") or {}
-    if nodes:
-        for i, node in enumerate(nodes):
-            prefix = "└─" if i == len(nodes) - 1 else "├─"
-            status = "CODE" if node.code_size else "NO CODE"
-            lines.append(
-                f"  {prefix} ● {node.artifact_contract or node.name:<28} {node.address} [{status}]"
-            )
-        if not any(node.code_size > 0 for node in nodes):
-            lines.append("  └─ runtime graph unavailable; showing static system evidence below")
+    lines.append("SYSTEM IN PLAIN ENGLISH")
+    if actors:
+        actor_bits = [name for name in ("Alice", "Bob", "Attacker") if actors.get(name)]
+        if actor_bits:
+            lines.append("  " + " / ".join(actor_bits) + " are the people Lowkey can use as test actors.")
+
+    role_nodes: dict[str, LiveNode] = {}
+    for n in live_nodes:
+        low = (n.artifact_contract or n.name).lower()
+        for key, tokens in {
+            "factory": ("factory",),
+            "pool": ("pool",),
+            "agreement": ("agreement",),
+            "token": ("token", "erc20"),
+            "registry": ("registry", "safeharbor"),
+            "moderator": ("moderator",),
+        }.items():
+            if key not in role_nodes and any(token in low for token in tokens):
+                role_nodes[key] = n
+
+    if role_nodes:
+        if role_nodes.get("factory"):
+            n = role_nodes["factory"]
+            lines.append(f"  {n.artifact_contract or n.name}  → {_contract_purpose(n.artifact_contract or n.name, functions_by_contract.get(n.artifact_contract or n.name))}")
+            if role_nodes.get("agreement"):
+                a = role_nodes["agreement"]
+                lines.append(f"     ├─ checks → {a.artifact_contract or a.name}  (agreement/permissions)")
+            if role_nodes.get("token"):
+                t = role_nodes["token"]
+                lines.append(f"     ├─ accepts → {t.artifact_contract or t.name}  (stake asset)")
+            if role_nodes.get("pool"):
+                p = role_nodes["pool"]
+                lines.append(f"     └─ creates/initializes → {p.artifact_contract or p.name}")
+        if role_nodes.get("pool"):
+            p = role_nodes["pool"]
+            lines.append(f"  {p.artifact_contract or p.name}  → {_contract_purpose(p.artifact_contract or p.name, functions_by_contract.get(p.artifact_contract or p.name))}")
+            if role_nodes.get("registry"):
+                r = role_nodes["registry"]
+                lines.append(f"     └─ consults → {r.artifact_contract or r.name}  (external validity/state)")
     else:
-        lines.append("  └─ no live runtime nodes discovered")
-    deployed_contracts = static_system.get("deployed_contracts") or []
-    if deployed_contracts:
-        lines.append("")
-        lines.append("  STATIC CONTRACTS FROM SETUP/DEPLOYMENT")
-        for i, name in enumerate(deployed_contracts[:24]):
-            prefix = "└─" if i == min(len(deployed_contracts), 24) - 1 else "├─"
-            lines.append(f"    {prefix} ○ {name} [SOURCE-DEFINED]")
-    elif static_system.get("project_contracts"):
-        lines.append("")
-        lines.append("  PROJECT CONTRACTS")
-        for i, name in enumerate(static_system["project_contracts"][:24]):
-            prefix = "└─" if i == min(len(static_system["project_contracts"]), 24) - 1 else "├─"
-            lines.append(f"    {prefix} ○ {name} [SOURCE]")
+        lines.append("  Lowkey found contracts, but could not confidently assign their protocol roles yet.")
+
     lines.append("")
-    lines.append("RELATIONSHIPS")
+    lines.append("CONNECTIONS")
     edges = _system_edges(nodes, functions_by_contract, contracts)
     shown: set[tuple[str, str, str]] = set()
-    for edge in edges:
-        key = (edge["from"], edge["to"], edge["kind"])
+    meaningful = [e for e in edges if e.get("kind") != "import"]
+    for edge in meaningful[:14]:
+        key = (edge.get("from", ""), edge.get("to", ""), edge.get("kind", ""))
         if key in shown:
             continue
         shown.add(key)
-        extra = f"  ({edge.get('function')})" if edge.get("function") else ""
-        lines.append(
-            f"  {edge['from']} --[{edge['kind']}]--> {edge['to']}{extra}"
-        )
+        source = str(edge.get("from") or "Unknown")
+        destination = _connection_destination(edge, nodes)
+        phrase = _friendly_connection_phrase(edge)
+        detail = f"  {source}  ── {phrase} ──>  {destination}"
+        if edge.get("function"):
+            detail += f"   [{edge['function']}]"
+        lines.append(detail)
     if not shown:
-        lines.append("  └─ no static/runtime relationship edges discovered")
-
-    script_flow = static_system.get("script_flow") or {}
-    if script_flow:
-        lines.append("")
-        lines.append("STATIC ASSEMBLY FLOW")
-        for source, items in list(script_flow.items())[:8]:
-            lines.append(f"  {source}")
-            for item in items[:10]:
-                kind = item.get("kind") or "step"
-                target_name = item.get("target") or ""
-                line = item.get("line")
-                suffix = f" :{line}" if line else ""
-                detail = f" {target_name}" if target_name else ""
-                lines.append(f"    {kind:<13}{detail}{suffix}")
+        lines.append("  No contract-to-contract calls were proven from the available evidence.")
 
     lines.append("")
-    lines.append("PROTOCOL STORY")
+    lines.append("WHAT LOWKEY IS DOING")
     if not actions:
-        if meta.get("target") and not any(node.code_size > 0 for node in nodes):
-            lines.append("  └─ live execution unavailable; static system flow is shown above")
-        else:
-            lines.append("  └─ no executable actions discovered")
-    for index, action in enumerate(actions):
-        mark = "◆" if current == index else "○"
-        status = action.get("status", "PLANNED")
-        node = action["node"]
-        fn: FunctionInfo = action["function"]
-        actor = action["actor_name"]
-        args = ", ".join(_render_value(x) for x in action.get("args", []))
-        label = f"{fn.name}({args})"
-        source = fn.source
-        line = fn.line
-        clickable = _source_link(root, source, line, label) if links else label
-        lines.append("")
-        lines.append(
-            f"  {mark} STEP {index + 1:02d} {status:<10} {actor} -> "
-            f"{node.artifact_contract or node.name}.{clickable}"
-        )
-        lines.append(
-            f"     caller: {action.get('caller') or 'unknown'}"
-        )
-        if action.get("semantic_reason"):
-            lines.append(f"     args:   {action['semantic_reason']}")
-        if action.get("result"):
-            result = action["result"]
+        lines.append("  No safe next action was found from the current state.")
+    else:
+        upto = len(actions) if current is None else min(len(actions), current + 1)
+        for index, action in enumerate(actions[:upto]):
+            fn: FunctionInfo = action["function"]
+            node: LiveNode = action["node"]
+            status = _step_status_word(action)
+            actor = str(action.get("actor_name") or "Unknown")
+            mark = "✓" if status == "DONE" else "!" if status in {"BLOCKED", "FAILED"} else "→"
+            lines.append("")
+            lines.append(f"  {mark} {index + 1:02d}  {action.get('phase', 'STEP')} / {status}")
+            label = f"{node.artifact_contract or node.name}.{fn.name}"
+            if links and fn.source and fn.line:
+                label = _source_link(root, fn.source, fn.line, label)
+            lines.append(f"      {actor} → {label}")
+            lines.append(f"      WHAT   {action.get('what') or _action_what(fn, node)}")
+            lines.append(f"      WHY    {action.get('why') or _action_why(fn, node)}")
+
+            result = action.get("result") or {}
             if result.get("ok"):
-                lines.append("     PRECHECK: PASS")
+                lines.append("      RESULT ✓ The chain accepts this action in simulation.")
             else:
-                lines.append(f"     PRECHECK: BLOCKED — {_pretty_error(result)}")
-        if action.get("diagnosis"):
-            for item in action["diagnosis"][:5]:
-                lines.append(f"       ↳ {item}")
-        for item in action.get("result", {}).get("trace_revert_frames", [])[:3]:
-            lines.append(f"       ↳ trace: {item}")
+                friendly, recommendation = _friendly_error(result.get("decoded_error"), result.get("raw", ""))
+                lines.append(f"      RESULT ! {friendly}")
+                lines.append(f"      NEXT   {recommendation}")
+                for item in action.get("diagnosis", [])[:2]:
+                    lines.append(f"             evidence: {item}")
+
+            if current is None and index >= 5 and len(actions) > 6:
+                lines.append(f"      … {len(actions) - index - 1} more candidate step(s) hidden")
+                break
+
+    lines.append("")
+    lines.append("LEGEND")
+    lines.append("  WHAT  = what the contract is being asked to do")
+    lines.append("  WHY   = why this action belongs in the protocol story")
+    lines.append("  RESULT = what the live chain actually said")
+    lines.append("  NEXT  = the practical thing to inspect/fix before retrying")
+    lines.append("")
+    lines.append("TIP  Run without --bootstrap for this clean view; use --bootstrap only when you need raw evidence.")
     return "\n".join(lines)
 
 
@@ -2417,6 +2633,14 @@ def _plan_actions(
         funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
         for fn in funcs:
             score = _rank_function(fn)
+            n = fn.name.lower()
+            already_configured = any(
+                str(item.get("target") or "").lower().find(n) >= 0
+                for item in (meta.get("bootstrap") or {}).get("initialization") or []
+                if isinstance(item, dict)
+            )
+            if already_configured and (n.startswith("initialize") or n.startswith("set") or n in {"pause", "unpause", "upgrade"}):
+                continue
             if score > 0:
                 candidates.append((score, node, fn))
     candidates.sort(key=lambda x: (-x[0], x[1].name, x[2].name))
@@ -2506,6 +2730,9 @@ def _plan_actions(
             "caller": caller,
             "actor_name": actor_name,
             "status": "READY" if precheck["ok"] else "BLOCKED",
+            "phase": _action_phase(fn),
+            "what": _action_what(fn, node),
+            "why": _action_why(fn, node),
             "semantic_reason": (
                 "ABI + source role synthesis"
                 if not reason
