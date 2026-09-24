@@ -235,7 +235,7 @@ class LowkeyCastTests(unittest.TestCase):
                 source="project-lab",
             )
 
-            self.assertIsNotNone(lk.project_context_target(root))
+            self.assertIsNone(lk.project_context_target(root))
             config = {"target": stale, "target_contract": "Address", "aliases": {}, "targets": {}, "abi_paths": {}, "rpc": None}
             with patch.object(lk, "discover_audit_target_contract", return_value=None),                  patch.object(lk, "_live_target_candidate", return_value=None),                  patch.object(lk, "discover_deployments", return_value=[]):
                 self.assertIsNone(lk._bootstrap_audit_target(config, root, allow_deploy=False))
@@ -318,6 +318,73 @@ class LowkeyCastTests(unittest.TestCase):
             content = pathlib.Path(script).read_text(encoding="utf-8")
             self.assertIn("factory.createPool(", content)
             self.assertIn("LOWKEY_TARGET", content)
+
+    def test_walkthrough_empty_revert_explains_contract_argument(self):
+        model = lk.walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function",
+                "name": "create",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+            calls=[{
+                "kind": "cross-contract",
+                "from": "create",
+                "to_contract": "IAgreement",
+                "to_function": "owner()",
+                "via": "agreement",
+                "interface": "IAgreement",
+            }],
+        )
+        agreement = "0x" + "2" * 40
+        step = lk.walkthrough.Step(
+            1, "Alice", "Factory", "0x" + "3" * 40,
+            "create(address)", [agreement],
+        )
+        with patch.object(lk.walkthrough, "_runtime_code", return_value="0x"):
+            origin, diagnostics = lk.walkthrough._diagnose_argument_contracts(
+                "http://127.0.0.1:8545", step, model
+            )
+        self.assertIsNotNone(origin)
+        self.assertTrue(any("no contract code" in item for item in diagnostics))
+
+    def test_walkthrough_function_story_keeps_function_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir(parents=True)
+            source = src / "Factory.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20;\ncontract Factory {\n    function create(address) external {}\n}\n",
+                encoding="utf-8",
+            )
+            model = lk.walkthrough.ContractModel(
+                name="Factory",
+                source="src/Factory.sol",
+                artifact="out/Factory.sol/Factory.json",
+                abi=[{
+                    "type": "function",
+                    "name": "create",
+                    "inputs": [{"name": "recipient", "type": "address"}],
+                    "outputs": [],
+                }],
+                function_locations={"create": 3},
+            )
+            step = lk.walkthrough.Step(
+                1, "Alice", "Factory", "0x" + "1" * 40,
+                "create(address)", ["0x" + "2" * 40],
+            )
+            rendered = lk.walkthrough._render_interaction_graph_full(
+                root, step,
+                [lk.walkthrough.Actor("Alice", "0x" + "2" * 40, 0)],
+                model, [model], False,
+            )
+            self.assertIn("create(Bob)", rendered)
+            self.assertIn("\x1b]8;;", rendered)
 
     def test_parse_lab_system(self):
         output = "\n".join([
