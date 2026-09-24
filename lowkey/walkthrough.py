@@ -442,9 +442,10 @@ def _action_why(fn: FunctionInfo, node: LiveNode) -> str:
 
 def _friendly_error(decoded: str | None, raw: str) -> tuple[str, str]:
     text = str(decoded or raw or "").strip()
-    normalized = re.sub(r"[^a-z0-9]", "", text.lower())
+    lower_text = text.lower()
+    normalized = re.sub(r"[^a-z0-9]", "", lower_text)
 
-    if normalized.startswith("staketokennotalowed"):
+    if lower_text.startswith("staketokennotalowed") or normalized.startswith("staketokennotalowed"):
         return (
             "The factory rejected the token because it is not currently approved for staking.",
             "Use the legitimate factory setup/owner flow to approve the token, then retry pool creation.",
@@ -3406,6 +3407,7 @@ def _run_walkthrough(
     if flags.get("bootstrap") or not meta.get("target"):
         _print_bootstrap_discovery(meta)
 
+    live_send = bool(flags.get("send"))
     for step_index in range(max(1, int(flags["steps"]))):
         if step_index > 0:
             # A successful --send transition changes the world. Rebuild every
@@ -3455,7 +3457,7 @@ def _run_walkthrough(
             meta,
         ))
 
-        if not flags.get("send"):
+        if not live_send:
             payload["actions"].append({
                 **{k: v for k, v in action.items() if k not in {"node", "function"}},
                 "node": asdict(action["node"]),
