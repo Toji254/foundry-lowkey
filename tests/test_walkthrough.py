@@ -198,12 +198,20 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(result["tests"][0]["path"], "test/Example.t.sol")
             self.assertIn("setUp()", result["tests"][0]["signals"])
 
-    def test_walkthrough_target_prefers_live_config_then_broadcast(self):
+    def test_walkthrough_target_prefers_live_config_then_audit_evidence_then_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             configured = "0x" + "1" * 40
-            broadcasted = "0x" + "2" * 40
+            evidenced = "0x" + "2" * 40
+            broadcasted = "0x" + "3" * 40
             bootstrap = {
+                "audit_evidence": [
+                    {"file": ".audit/evidence/context.json", "target": evidenced},
+                    {"file": ".audit/evidence/audit_start.json", "target": evidenced},
+                ],
+                "audit_targets": [
+                    {"target": evidenced, "file": "audit_start.json"},
+                ],
                 "live_deployments": [
                     {
                         "address": broadcasted,
@@ -211,11 +219,12 @@ class WalkthroughTests(unittest.TestCase):
                         "broadcast": "broadcast/Deploy/31337/run-latest.json",
                         "index": 1,
                     }
-                ]
+                ],
             }
 
             sizes = {
                 configured.lower(): 100,
+                evidenced.lower(): 100,
                 broadcasted.lower(): 100,
             }
 
@@ -231,15 +240,42 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(target, configured)
             self.assertEqual(source, "configured target")
 
-            with patch.object(walk, "_code_size", return_value=0):
+            with patch.object(walk, "_code_size", return_value=100):
                 target, source = walk._resolve_walkthrough_target(
                     root,
                     {"target": None, "targets": {}},
                     "http://127.0.0.1:8545",
                     bootstrap,
                 )
+            self.assertEqual(target, evidenced)
+            self.assertEqual(source, "audit evidence 'audit_start.json'")
+
+            with patch.object(
+                walk, "_code_size",
+                side_effect=lambda _rpc, addr: 100 if addr.lower() == broadcasted.lower() else 0,
+            ):
+                target, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": None, "targets": {}},
+                    "http://127.0.0.1:8545",
+                    {"audit_evidence": [], "live_deployments": bootstrap["live_deployments"]},
+                )
             self.assertEqual(target, broadcasted)
             self.assertTrue(source.startswith("broadcast "))
+
+    def test_walkthrough_target_is_safe_when_nothing_is_discovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(walk, "_code_size", return_value=0):
+                target, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": None, "targets": {}},
+                    "http://127.0.0.1:8545",
+                    {"audit_evidence": [], "audit_targets": [], "live_deployments": []},
+                )
+            self.assertIsNone(target)
+            self.assertEqual(source, "not discovered")
+            self.assertEqual(walk._target_label({}, target), "Target")
 
     def test_error_decoder_reports_static_custom_error(self):
         err = {"name": "StakingClosed", "inputs": []}
