@@ -3531,7 +3531,8 @@ def _render_story(
             _paint("CYAN","cyan") + " runtime call tree  " +
             _paint("GREEN","green") + " success  " +
             _paint("RED","red") + " revert/blocked  " +
-            _paint("YELLOW","yellow") + " source-correlated internal path  " +
+            _paint("YELLOW","yellow") + " source-correlated internal path" +
+            "  |  " +
             _paint("MAGENTA","magenta") + " actors",
         ]
         return "\n".join(lines)
