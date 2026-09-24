@@ -144,6 +144,26 @@ def _git_submodules(root: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _solidity_compiler_versions(root: Path) -> list[str]:
+    versions: set[str] = set()
+    for path in project_source_files(root, {"sol"}):
+        text = _read(path)
+        match = re.search(r"(?m)\bpragma\s+solidity\s+([^;]+);", text)
+        if not match:
+            continue
+        expression = match.group(1)
+        for version in re.findall(r"\b0\.(?:[0-9]+)\.(?:[0-9]+)\b", expression):
+            versions.add(version)
+
+    # Some projects pin the compiler in Python deployment/test code rather
+    # than Solidity pragmas. Capture that exact pin as additional evidence.
+    for path in _walk_files(root, {".py"}):
+        text = _read(path)
+        for version in re.findall(r"""(?m)\bsolc_version\s*[=:]\s*["'](0\.[0-9]+\.[0-9]+)["']""", text):
+            versions.add(version)
+    return sorted(versions)
+
+
 def detect_project(root: str | Path = ".") -> dict[str, Any]:
     root_path = project_root(root)
     pyproject = root_path / "pyproject.toml"
@@ -250,6 +270,7 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
             "declared_dependencies": _pyproject_dependencies(pyproject_text) if pyproject.exists() else [],
         },
         "submodules": _git_submodules(root_path),
+        "solidity_compilers": _solidity_compiler_versions(root_path),
         "sources": {
             "solidity": len(sol_files),
             "vyper": len(vy_files),
@@ -316,6 +337,11 @@ def _solidity_external_candidates(raw: str, root: Path) -> list[Path]:
         if alias:
             candidates.append(root / "node_modules" / alias / remainder)
             candidates.append(root / "lib" / alias / remainder)
+        if len(parts) >= 2:
+            versioned_name = parts[1].split("@", 1)[0].lower()
+            if "solidity" in versioned_name or "rlp" in versioned_name:
+                candidates.append(root / "node_modules" / versioned_name / remainder)
+                candidates.append(root / "lib" / versioned_name / remainder)
 
         candidates.append(root / "lib" / parts[0] / Path(*parts[1:]))
     return candidates
@@ -588,6 +614,9 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         f"Vyper {project['sources']['vyper']}"
     )
     print(f"Roots     : {', '.join(project['source_roots'])}")
+    compilers = project.get("solidity_compilers", [])
+    if compilers:
+        print(f"Solidity  : {', '.join(compilers)}")
     python = project.get("python", {})
     if python.get("version_file"):
         print(f"Python    : {python['version_file']}")
