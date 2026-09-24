@@ -23,6 +23,11 @@ try:
 except ImportError:
     run_slither = run_rg = run_audit_pipeline = generate_poc = record_evidence = None
 
+try:
+    from walkthrough import run as run_walkthrough
+except ImportError:
+    run_walkthrough = None
+
 CONFIG_DIR = os.path.expanduser("~/.lowkey")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 SNAPSHOT_DIR = os.path.join(CONFIG_DIR, "snapshots")
@@ -1694,6 +1699,8 @@ AUDIT OS
   lk focus [query]                   Show high-signal ABI review surfaces
   lk audit run [--slither ARG...]     Build -> tests -> coverage -> Slither
   lk audit run --poc                  Same pipeline + first PoC scaffold
+  lk walkthrough [options]            System-aware protocol walkthrough
+  lk walkthrough test [options]       Deterministic ABI/role-aware active probing
   lk poc [--finding N]                Generate PoC from accumulated evidence
   lk finding <note>                   Record observation
   lk finding add <severity> <title> <text>
@@ -1792,6 +1799,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="wizard": run_wizard(config,args)
     elif cmd=="replay": run_replay(config,args)
     elif cmd=="fork": run_fork(args)
+    elif cmd=="walkthrough":
+        if run_walkthrough is None:
+            return fail("Walkthrough engine is not installed. Reinstall Lowkey.")
+        return run_walkthrough(config, args)
     elif cmd=="ask":
         if not args: print("Usage: lk ask <function>"); return
         funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
@@ -1952,7 +1963,7 @@ def main():
         "receipt","finding","matrix","note","todo","test-gen","workspace","deployments",
         "target","use","rpc","abi","functions","fn","c","s","st","raw","gas","selectors",
         "layout","export","fork","token","ens","decode","decode-error","returns","event",
-        "checklist","session","forge"
+        "checklist","session","forge","walkthrough"
     }
     if (
         config.get("session_active")
