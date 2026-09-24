@@ -144,6 +144,64 @@ def _eth_accounts(url: str) -> list[str]:
         return []
 
 
+def _strip_solidity_comments(text: str) -> str:
+    """Mask // and /* */ comments without changing source offsets or line numbers."""
+    chars = list(text)
+    i = 0
+    n = len(chars)
+    state = "code"
+    quote = ""
+    while i < n:
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < n else ""
+        if state == "code":
+            if ch == "/" and nxt == "/":
+                chars[i] = " "
+                chars[i + 1] = " "
+                i += 2
+                state = "line_comment"
+                continue
+            if ch == "/" and nxt == "*":
+                chars[i] = " "
+                chars[i + 1] = " "
+                i += 2
+                state = "block_comment"
+                continue
+            if ch in {'"', "'"}:
+                quote = ch
+                state = "string"
+            i += 1
+            continue
+        if state == "line_comment":
+            if ch == "\n":
+                state = "code"
+            elif ch != "\r":
+                chars[i] = " "
+            i += 1
+            continue
+        if state == "block_comment":
+            if ch == "*" and nxt == "/":
+                chars[i] = " "
+                chars[i + 1] = " "
+                i += 2
+                state = "code"
+                continue
+            if ch not in "\r\n":
+                chars[i] = " "
+            i += 1
+            continue
+        # Solidity string literal: keep contents so call syntax inside strings
+        # is not converted into phantom source edges.
+        if state == "string":
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                state = "code"
+            i += 1
+    return "".join(chars)
+
+
 def _split_params(text: str) -> list[str]:
     items: list[str] = []
     start = 0
@@ -236,11 +294,12 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
             continue
 
         rel = path.relative_to(root).as_posix()
-        import_list = re.findall(r'\bimport\s+(?:[^;]*?from\s+)?["\']([^"\']+)["\']\s*;', text)
+        scan_text = _strip_solidity_comments(text)
+        import_list = re.findall(r'\bimport\s+(?:[^;]*?from\s+)?["\']([^"\']+)["\']\s*;', scan_text)
 
         for match in re.finditer(
             r"\b(contract|interface|library)\s+([A-Za-z_]\w*)",
-            text,
+            scan_text,
         ):
             kind, name = match.groups()
             line = text.count("\n", 0, match.start()) + 1
@@ -254,7 +313,7 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
             block_start = match.start()
             next_decl = re.search(
                 r"\b(?:contract|interface|library)\s+[A-Za-z_]\w*",
-                text[match.end():],
+                scan_text[match.end():],
             )
             block_end = (
                 match.end() + next_decl.start()
@@ -265,12 +324,12 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                 x.group(1)
                 for x in re.finditer(
                     r"\baddress(?:\s+[A-Za-z_]\w+)?\s+(?:public|private|internal|external)\s+([A-Za-z_]\w*)\s*(?:=|;)",
-                    text[block_start:block_end],
+                    scan_text[block_start:block_end],
                 )
             ]
             for fmatch in re.finditer(
                 r"\bfunction\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*([^{;]*)(?:\{|;)",
-                text[block_start:block_end],
+                scan_text[block_start:block_end],
                 flags=re.S,
             ):
                 fname, ptext, tail = fmatch.groups()
@@ -280,7 +339,7 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                     typ, pname = _parse_decl_type(raw)
                     inputs.append({"type": typ, "name": pname})
                 floc = block_start + fmatch.start()
-                fline = text.count("\n", 0, floc) + 1
+                fline = scan_text.count("\n", 0, floc) + 1
                 absolute = block_start + fmatch.start()
                 brace = text.find("{", absolute, block_start + fmatch.end() + 1)
                 body = ""
@@ -1368,14 +1427,22 @@ def _system_edges(
                         }
                     )
                 else:
-                    edges.append(
-                        {
-                            "from": cname,
-                            "to": call["receiver"],
-                            "kind": "member-call",
-                            "function": f"{fn.name} -> {call['function']}",
-                        }
+                    receiver = call["receiver"]
+                    state_or_input = set(ci.address_vars)
+                    state_or_input.update(
+                        str(p.get("name") or "")
+                        for p in fn.inputs
+                        if isinstance(p, dict)
                     )
+                    if receiver in state_or_input:
+                        edges.append(
+                            {
+                                "from": cname,
+                                "to": receiver,
+                                "kind": "member-call",
+                                "function": f"{fn.name} -> {call['function']}",
+                            }
+                        )
 
     # Runtime getter edges connect actual addresses.
     for node in nodes:
@@ -1633,6 +1700,11 @@ def _build_model(
     dict[str, str],
 ]:
     rpc = _rpc_url(config)
+    try:
+        _rpc(rpc, "eth_chainId", [])
+    except Exception as exc:
+        raise RuntimeError(f"RPC unavailable at {rpc}: {exc}") from exc
+
     target = str(config.get("target") or "").strip()
     if not _is_address(target):
         raise RuntimeError("Set a valid target before running walkthrough.")
