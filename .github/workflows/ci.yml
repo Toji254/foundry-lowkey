@@ -121,11 +121,6 @@ jobs:
           [tool.pytest.ini_options]
           pythonpath = ["."]
           EOF
-          cat > /tmp/lowkey-vyper-fixture/uv.lock <<'EOF'
-          version = 1
-          revision = 1
-          requires-python = ">=3.10"
-          EOF
           cat > /tmp/lowkey-vyper-fixture/contracts/Fixture.vy <<'EOF'
           value: public(uint256)
 
@@ -145,6 +140,8 @@ jobs:
           cat > /tmp/lowkey-vyper-fixture/.python-version <<'EOF'
           3.12
           EOF
+          cd /tmp/lowkey-vyper-fixture
+          uv lock
       - name: Run project-aware Vyper audit
         run: |
           cd /tmp/lowkey-vyper-fixture
