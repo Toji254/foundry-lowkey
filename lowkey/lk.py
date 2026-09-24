@@ -548,32 +548,13 @@ def project_context_target(root=None):
     artifact = target.get("artifact")
     contract = target.get("contract")
 
-    # Explicit manual targets are allowed to survive without an artifact.
-    if source == "manual":
+    # Context is durable project memory, not proof that an address is live.
+    # Runtime safety is enforced by _bootstrap_audit_target before an auto audit
+    # trusts this target.
+    if source in {"manual", "auto", "project", "project-lab", "auto-detected"}:
         return target
-
-    # Auto/project targets must still resolve to a real first-party application
-    # artifact. This prevents stale dependency targets (for example OpenZeppelin
-    # Address) from bypassing fresh project-scoped discovery.
-    artifact_path = None
-    if artifact:
-        try:
-            artifact_path = Path(os.path.expanduser(str(artifact)))
-            if not artifact_path.is_absolute():
-                artifact_path = project_root / artifact_path
-            artifact_path = artifact_path.resolve()
-        except OSError:
-            artifact_path = None
-
-    if artifact_path and artifact_path.is_file():
-        artifact_data = read_artifact(str(artifact_path))
-        if artifact_data and artifact_is_project_application(project_root, str(artifact_path), artifact_data):
-            artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
-            if not contract or str(contract).lower() == str(artifact_contract).lower():
-                return target
-
-    # Legacy contexts without an explicit source are accepted only when the
-    # remembered artifact is valid and first-party.
+    if artifact and path_is_within(artifact, project_root):
+        return target
     return None
 
 def active_project_target(config, root=None):
@@ -2349,7 +2330,22 @@ def discover_audit_target_contract(root):
 
     for path in local_artifact_paths(root):
         artifact = read_artifact(path)
-        if not artifact_is_project_application(root, path, artifact):
+        source = artifact_source_name(artifact, path)
+        if not source:
+            continue
+        normalized = str(source).replace("\\", "/").lstrip("./")
+        src_prefix = "src"
+        try:
+            foundry = (Path(root) / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+            match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', foundry)
+            if match:
+                src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
+        except OSError:
+            pass
+        source_path = Path(root) / normalized
+        if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
+            continue
+        if not source_path.is_file():
             continue
         name = artifact_contract_name(path, artifact)
         key = str(name).lower()
@@ -5088,8 +5084,24 @@ def _bootstrap_audit_target(config, root, allow_deploy=False):
                 "needs the project-aware local protocol fixture."
             )
         else:
-            activate_project_target(config, root)
-            return existing.get("address")
+            # A remembered target is only trusted when it is present on the live
+            # local node and its artifact identity matches a first-party application.
+            live_existing = _live_target_candidate(
+                config, root, existing.get("contract")
+            )
+            if live_existing:
+                return _set_audit_auto_target(
+                    config,
+                    root,
+                    live_existing["address"],
+                    live_existing["contract"],
+                    live_existing["artifact"],
+                )
+
+            # For explicit manual targets we preserve the old behavior.
+            if source == "manual":
+                activate_project_target(config, root)
+                return existing.get("address")
 
     # Whole-protocol bootstrap prefers an inferred protocol root (factory/router/etc.)
     # over a single focused finding's child implementation. The investigation focus still
