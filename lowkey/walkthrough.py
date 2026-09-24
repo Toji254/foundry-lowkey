@@ -235,6 +235,8 @@ def _friendly_connection_phrase(edge: dict[str, str]) -> str:
 
 def _connection_destination(edge: dict[str, str], nodes: list[LiveNode]) -> str:
     raw = str(edge.get("to") or "")
+    if "::" in raw:
+        return raw
     clean = _clean_name(raw)
     normalized = re.sub(r"[^a-z0-9]", "", clean.lower())
     candidates = []
@@ -268,6 +270,10 @@ def _web_connection_label(edge: dict[str, str]) -> str:
     if kind.startswith("runtime:"):
         getter = kind.split(":", 1)[1]
         return f"reads dependency via {getter}()"
+    if kind in {"storage-write", "storage-readwrite"}:
+        return "writes shared storage"
+    if kind == "storage-read":
+        return "reads shared storage"
     if kind == "member-call":
         return "uses configured dependency"
     if kind == "external-call":
@@ -2455,36 +2461,62 @@ def _system_edges(
 ) -> list[dict[str, str]]:
     edges: list[dict[str, str]] = []
 
-    # Static source/import edges.
+    # Static source/import edges and function-to-contract relationships.
     for cname, ci in contracts.items():
         for imp in ci.imports:
-            edges.append(
-                {
-                    "from": cname,
-                    "to": imp,
-                    "kind": "import",
-                }
-            )
-        for fn in ci.functions:
-            for call in fn.calls or []:
-                if call["kind"] == "typed-call":
-                    edges.append(
-                        {
-                            "from": cname,
-                            "to": call["interface"],
-                            "kind": "external-call",
-                            "function": f"{fn.name} -> {call['function']}",
-                        }
-                    )
-                elif call["kind"] == "internal-call":
+            edges.append({
+                "from": cname,
+                "to": imp,
+                "kind": "import",
+            })
+
+        functions = functions_by_contract.get(cname, [])
+        function_names = {f.name for f in functions}
+        for fn in functions:
+            # Shared storage is represented as a real graph node. Every function
+            # that reads/writes a state variable points at the same state node.
+            for state in fn.writes or []:
+                edges.append({
+                    "from": f"{cname}.{fn.name}()",
+                    "to": f"{cname}::{state}",
+                    "kind": "storage-write",
+                    "function": f"{fn.name}() -> {state}",
+                })
+            for state in fn.reads or []:
+                if state in (fn.writes or []):
                     edges.append({
-                        "from": cname,
-                        "to": f"{cname}.{call['function']}",
-                        "kind": "internal-call",
-                        "function": f"{fn.name} -> {call['function']}",
+                        "from": f"{cname}.{fn.name}()",
+                        "to": f"{cname}::{state}",
+                        "kind": "storage-readwrite",
+                        "function": f"{fn.name}() <-> {state}",
                     })
                 else:
-                    receiver = call["receiver"]
+                    edges.append({
+                        "from": f"{cname}.{fn.name}()",
+                        "to": f"{cname}::{state}",
+                        "kind": "storage-read",
+                        "function": f"{fn.name}() -> {state}",
+                    })
+
+            for call in fn.calls or []:
+                if call["kind"] == "typed-call":
+                    edges.append({
+                        "from": cname,
+                        "to": call["interface"],
+                        "kind": "external-call",
+                        "function": f"{fn.name} -> {call['function']}",
+                    })
+                elif call["kind"] == "internal-call":
+                    callee = str(call.get("function") or "")
+                    if callee in function_names:
+                        edges.append({
+                            "from": f"{cname}.{fn.name}()",
+                            "to": f"{cname}.{callee}()",
+                            "kind": "internal-call",
+                            "function": f"{fn.name} -> {callee}",
+                        })
+                else:
+                    receiver = str(call.get("receiver") or "")
                     state_or_input = set(ci.address_vars)
                     state_or_input.update(
                         str(p.get("name") or "")
@@ -2492,29 +2524,29 @@ def _system_edges(
                         if isinstance(p, dict)
                     )
                     if receiver in state_or_input:
-                        edges.append(
-                            {
-                                "from": cname,
-                                "to": receiver,
-                                "kind": "member-call",
-                                "function": f"{fn.name} -> {call['function']}",
-                            }
-                        )
+                        edges.append({
+                            "from": cname,
+                            "to": receiver,
+                            "kind": "member-call",
+                            "function": f"{fn.name} -> {call['function']}",
+                        })
 
-    # Runtime getter edges connect actual addresses.
+    # Runtime getter edges connect actual deployed components.
     for node in nodes:
         for other in nodes:
             if node.address.lower() == other.address.lower():
                 continue
-            if other.discovered_from and other.discovered_from.lower() == node.address.lower():
-                edges.append(
-                    {
-                        "from": node.artifact_contract or node.name,
-                        "to": other.artifact_contract or other.name,
-                        "kind": f"runtime:{other.getter or 'address-returning getter'}",
-                    }
-                )
+            if (
+                other.discovered_from
+                and other.discovered_from.lower() == node.address.lower()
+            ):
+                edges.append({
+                    "from": node.artifact_contract or node.name,
+                    "to": other.artifact_contract or other.name,
+                    "kind": f"runtime:{other.getter or 'address-returning getter'}",
+                })
     return edges
+
 
 
 def _static_system_context(
@@ -2713,10 +2745,16 @@ def _render_contract_surface(contract: ContractInfo, functions: list[FunctionInf
             lines.append(f"      {_paint('READS', 'cyan')}   " + ", ".join(fn.name for fn in readers[:4]))
         ops = []
         for fn in functions:
-            if name in (fn.reads or []) or name in (fn.writes or []):
-                ops.extend(fn.array_ops or [])
+            if name not in (fn.reads or []) and name not in (fn.writes or []):
+                continue
+            for op in fn.array_ops or []:
+                if re.search(rf"\bon\s+{re.escape(name)}\b", op):
+                    ops.append(op)
         if ops:
-            lines.append(f"      {_paint('DATA FLOW', 'blue')} " + ", ".join(sorted(set(ops))[:4]))
+            lines.append(
+                f"      {_paint('DATA FLOW', 'blue')} "
+                + ", ".join(sorted(set(ops))[:4])
+            )
 
     lines.append("")
     lines.append(_section("ACCESS / WHO CAN DO WHAT", "magenta"))
@@ -2755,6 +2793,70 @@ def _render_contract_surface(contract: ContractInfo, functions: list[FunctionInf
                 lines.append(f"      TOUCH   {', '.join(fn.writes[:5])}")
             if fn.calls:
                 lines.append(f"      CALLS   {', '.join(str(call.get('function')) for call in fn.calls[:5])}")
+    return lines
+
+
+def _render_shared_state_flow(
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    contracts: dict[str, ContractInfo],
+) -> list[str]:
+    lines = [_section("SHARED STATE FLOW / FUNCTIONS ↔ STORAGE", "blue")]
+    emitted = 0
+
+    for cname, contract in contracts.items():
+        functions = functions_by_contract.get(cname, [])
+        states = contract.state_vars or []
+        for state in states:
+            name = str(state.get("name") or "")
+            if not name:
+                continue
+            readers = [
+                fn for fn in functions
+                if name in (fn.reads or [])
+            ]
+            writers = [
+                fn for fn in functions
+                if name in (fn.writes or [])
+            ]
+            if not readers and not writers:
+                continue
+
+            kind = (
+                "MAPPING" if str(state.get("type") or "").lower().startswith("mapping")
+                else "ARRAY" if "[" in str(state.get("type") or "")
+                else "STATE"
+            )
+            label = f"{cname}::{name}"
+            lines.append(
+                f"  {_paint(kind, 'blue')} {_paint(label, 'blue')} "
+                f": {state.get('type') or 'unknown'}"
+            )
+
+            touched = []
+            seen_functions: set[str] = set()
+            for fn in writers:
+                marker_label = "WRITE"
+                touched.append((fn, marker_label))
+                seen_functions.add(fn.signature)
+            for fn in readers:
+                if fn.signature in seen_functions:
+                    continue
+                touched.append((fn, "READ"))
+
+            for fn, mode in touched[:8]:
+                access = _function_access_label(fn, functions)
+                lines.append(
+                    f"      {_paint(fn.name + '()', 'bold')} "
+                    f"──[{_paint(mode, 'red' if mode == 'WRITE' else 'cyan')}]──▶ "
+                    f"{_paint(name, 'blue')}"
+                    f"   {access}"
+                )
+            if len(touched) > 8:
+                lines.append(f"      … +{len(touched)-8} function/storage edge(s)")
+            emitted += 1
+
+    if not emitted:
+        lines.append("  No shared source-level storage relationships recovered.")
     return lines
 
 
@@ -2806,8 +2908,15 @@ def _render_component_surfaces(
         if mutating:
             entries = []
             for fn in mutating[:5]:
-                writes = f" → {', '.join(fn.writes[:2])}" if fn.writes else ""
-                entries.append(f"{fn.name} [{_function_access_label(fn, funcs)}]{writes}")
+                writes = (
+                    f" → WRITE:{', '.join(fn.writes[:2])}"
+                    if fn.writes else
+                    f" → READ:{', '.join(fn.reads[:2])}"
+                    if fn.reads else ""
+                )
+                entries.append(
+                    f"{fn.name} [{_function_access_label(fn, funcs)}]{writes}"
+                )
             lines.append(f"      {_paint('ENTRY', 'magenta')} " + "; ".join(entries))
         else:
             readables = [
@@ -2984,6 +3093,7 @@ def _render_story(
         _system_edges(nodes, functions_by_contract, contracts),
         actions,
     )
+    lines += [""] + _render_shared_state_flow(functions_by_contract, contracts)
     lines += [""] + _render_lifecycle_summary(functions_by_contract, nodes)
     lines += [""] + _render_component_surfaces(nodes, functions_by_contract, contracts)
 
