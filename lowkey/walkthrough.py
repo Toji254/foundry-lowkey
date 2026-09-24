@@ -2818,24 +2818,47 @@ def _random_sol_value(
     target: str,
     rng: random.Random,
     observed: dict[str, Any] | None = None,
+    model: ContractModel | None = None,
+    function_name: str | None = None,
 ) -> Any:
+    """Generate adversarial values while respecting known contract dependencies."""
     raw_type = str(param.get("type") or "")
     typ = _canonical_type(param)
     name = str(param.get("name") or "").lower()
+    observed = observed or {}
 
     if typ == "address":
-        observed_addresses = [
-            value for value in (observed or {}).values()
-            if is_address(value)
-        ]
+        requirement = _contract_requirement_for_parameter(
+            model, function_name or "", str(param.get("name") or "")
+        )
+        normalized = _normalize_observed_keys(observed)
+        observed_addresses = [value for value in normalized.values() if is_address(value)]
+
+        if requirement:
+            requirement_key = re.sub(r"[^a-z0-9]", "", requirement.lower())
+            requirement_key = requirement_key[1:] if requirement_key.startswith("i") else requirement_key
+            valid = [
+                value for key, value in normalized.items()
+                if is_address(value) and (
+                    requirement_key in key
+                    or key in requirement_key
+                )
+            ]
+            valid = list(dict.fromkeys(valid))
+            invalid = [a.address for a in actors if a.address.lower() not in {str(x).lower() for x in valid}]
+            pool = list(dict.fromkeys(valid + invalid + ["0x" + "00" * 20]))
+            return rng.choice(pool)
+
         pool = list(dict.fromkeys(
-            [a.address for a in actors] + [target, "0x" + "00" * 20] + observed_addresses
+            [a.address for a in actors]
+            + [target, "0x" + "00" * 20]
+            + observed_addresses
         ))
         if any(token in name for token in ("recipient", "receiver", "to", "user", "owner", "moderator")) and len(actors) > 1:
             pool = [actors[1].address, actors[0].address] + pool
         if any(token in name for token in ("attacker", "malicious")) and len(actors) > 2:
             pool.insert(0, actors[2].address)
-        return rng.choice(pool)
+        return rng.choice(list(dict.fromkeys(pool)))
 
     if typ == "bool":
         return rng.choice([False, True])
@@ -2863,7 +2886,7 @@ def _random_sol_value(
 
     if raw_type.startswith("tuple") and not raw_type.endswith("[]"):
         return [
-            _random_sol_value(component, actors, target, rng, observed)
+            _random_sol_value(component, actors, target, rng, observed, model, function_name)
             for component in param.get("components", [])
         ]
 
@@ -2871,7 +2894,7 @@ def _random_sol_value(
         base = dict(param)
         base["type"] = raw_type[:-2]
         return [
-            _random_sol_value(base, actors, target, rng, observed)
+            _random_sol_value(base, actors, target, rng, observed, model, function_name)
             for _ in range(rng.randint(0, 4))
         ]
 
@@ -3073,7 +3096,12 @@ def _run_adversarial_test(
                 actors,
                 active_target,
                 rng,
-                config.get("_walkthrough_observed") or config.get("lab_system") or {},
+                _merge_protocol_observations(
+                    config.get("_walkthrough_observed") or {},
+                    config=config,
+                ),
+                active_model,
+                str(fn.get("name") or ""),
             )
             for param in fn.get("inputs", [])
         ]
