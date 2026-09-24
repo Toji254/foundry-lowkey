@@ -198,19 +198,19 @@ def node_package_manager(path: Path) -> tuple[list[str], str] | None:
             return (["pnpm", "install", "--frozen-lockfile"], "pnpm")
         if shutil.which("corepack"):
             return (["corepack", "pnpm", "install", "--frozen-lockfile"], "corepack/pnpm")
-        return (["npm", "install"], "npm fallback (pnpm unavailable)")
+        return (["npm", "install", "--legacy-peer-deps"], "npm fallback (pnpm unavailable)")
 
     if (path / "yarn.lock").is_file():
         if shutil.which("yarn"):
             return (["yarn", "install", "--frozen-lockfile"], "yarn")
         if shutil.which("corepack"):
             return (["corepack", "yarn", "install", "--frozen-lockfile"], "corepack/yarn")
-        return (["npm", "install"], "npm fallback (yarn unavailable)")
+        return (["npm", "install", "--legacy-peer-deps"], "npm fallback (yarn unavailable)")
 
     if (path / "package-lock.json").is_file():
-        return (["npm", "ci"], "npm ci")
+        return (["npm", "ci", "--legacy-peer-deps"], "npm ci")
 
-    return (["npm", "install"], "npm")
+    return (["npm", "install", "--legacy-peer-deps"], "npm")
 
 
 def install_node_dependencies(path: Path) -> int:
