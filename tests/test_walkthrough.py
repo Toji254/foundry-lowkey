@@ -263,6 +263,18 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(target, broadcasted)
             self.assertTrue(source.startswith("broadcast "))
 
+    def test_extract_audit_targets_prefers_canonical_evidence(self):
+        target = "0x" + "1" * 40
+        other = "0x" + "2" * 40
+        evidence = [
+            {"file": ".audit/evidence/context.json", "target": target},
+            {"file": ".audit/evidence/audit_start.json", "target": target},
+            {"file": ".audit/evidence/risk.json", "target": other},
+        ]
+        result = walk._extract_audit_targets(evidence)
+        self.assertEqual(result[0], {"target": target, "file": "audit_start.json"})
+        self.assertEqual(result[1], {"target": other, "file": "risk.json"})
+
     def test_walkthrough_target_is_safe_when_nothing_is_discovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
