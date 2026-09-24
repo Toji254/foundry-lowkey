@@ -105,6 +105,34 @@ class SystemModelTests(unittest.TestCase):
         self.assertIn("audit_evidence", manifest)
 
 
+    def test_manifest_promotes_audit_evidence_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            evidence = root / ".audit" / "evidence"
+            evidence.mkdir(parents=True)
+            target = "0x" + "1" * 40
+            (evidence / "context.json").write_text(
+                json.dumps({
+                    "kind": "context",
+                    "data": {"target": target},
+                }),
+                encoding="utf-8",
+            )
+            (evidence / "audit_start.json").write_text(
+                json.dumps({
+                    "kind": "audit_start",
+                    "data": {"target": target},
+                }),
+                encoding="utf-8",
+            )
+
+            manifest = system_model.build_manifest(root)
+
+        self.assertEqual(
+            manifest["audit_targets"],
+            [{"target": target, "source": "audit_start.json"}],
+        )
+
     def test_manifest_links_deployment_arguments_to_known_contracts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
