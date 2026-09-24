@@ -102,6 +102,42 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
 
+    def test_system_command_is_handled_by_lowkey(self):
+        class FakeSystemModel:
+            def refresh_manifest(self, *args, **kwargs):
+                return (
+                    {
+                        "contracts": [],
+                        "deployments": [],
+                        "live_runtime": [],
+                        "relationships": [],
+                        "roles": [],
+                        "initialization": [],
+                        "tests": [],
+                        "adversarial_evidence": [],
+                    },
+                    pathlib.Path(".audit/evidence/system_bootstrap.json"),
+                )
+
+            def summarize_manifest(self, manifest):
+                return {
+                    "contracts": 0,
+                    "deployments": 0,
+                    "live": 0,
+                    "relationships": 0,
+                    "roles": 0,
+                    "initialization_steps": 0,
+                    "tests": 0,
+                    "adversarial_evidence": 0,
+                }
+
+        with patch.object(lk, "system_model", FakeSystemModel()):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_system({})
+        self.assertEqual(result, 0)
+        self.assertIn("LOWKEY SYSTEM MODEL", output.getvalue())
+
     def test_walkthrough_command_is_handled_by_lowkey(self):
         result = self.run_cli("walkthrough", "--help")
         self.assertEqual(result.returncode, 0, result.stderr)
