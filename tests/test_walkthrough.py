@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import json
 import pathlib
 import tempfile
@@ -760,7 +761,7 @@ class WalkthroughTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             source = root / "run.json"
             source.write_text("{}", encoding="utf-8")
-            self.assertTrue('live_send = bool(flags.get("send"))' in walk._run_walkthrough.__code__.co_consts)
+            self.assertIn('live_send = bool(flags.get("send"))', inspect.getsource(walk._run_walkthrough))
 
     def test_error_decoder_reports_static_custom_error(self):
         err = {"name": "StakingClosed", "inputs": []}
