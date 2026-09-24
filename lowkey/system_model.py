@@ -256,10 +256,47 @@ def _extract_broadcasts(root: Path, rpc: str | None) -> list[dict[str, Any]]:
 
 def _extract_test_and_poc_evidence(root: Path) -> dict[str, Any]:
     tests = []
+    adversarial = []
     for path in _project_files(
         root,
         "test/**/*.t.sol",
         "tests/**/*.t.sol",
+    ):
+        rel = path.relative_to(root).as_posix()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        masked = _mask_comments(raw)
+        signals: list[str] = []
+        if re.search(r"\bfunction\s+(?:test|invariant|echidna_)\w*\s*\(", masked):
+            signals.append("test/invariant function")
+        if "expectRevert" in masked:
+            signals.append("expected revert")
+        if "assertEq" in masked or "assertTrue" in masked or "assertFalse" in masked:
+            signals.append("assertion")
+        if "vm.prank" in masked or "vm.startPrank" in masked:
+            signals.append("actor control")
+        if "vm.warp" in masked or "vm.roll" in masked:
+            signals.append("time/block manipulation")
+        if "vm.deal" in masked:
+            signals.append("asset funding")
+        item = {
+            "path": rel,
+            "sha256": _sha256(path),
+            "kind": "test",
+            "signals": signals,
+            "functions": re.findall(
+                r"\bfunction\s+(test\w*|invariant\w*|echidna_\w*)\s*\(",
+                masked,
+            ),
+        }
+        tests.append(item)
+        if "Exploit" in path.name or "PoC" in path.name or "poc" in rel.lower():
+            adversarial.append({**item, "kind": "adversarial-test"})
+
+    for path in _project_files(
+        root,
         "script/**/*PoC*.s.sol",
         "script/**/*Exploit*.s.sol",
         ".audit/poc/*.json",
@@ -269,11 +306,7 @@ def _extract_test_and_poc_evidence(root: Path) -> dict[str, Any]:
         item = {
             "path": rel,
             "sha256": _sha256(path),
-            "kind": (
-                "poc-evidence"
-                if ("/poc/" in rel or "PoC" in path.name or "Exploit" in path.name)
-                else "test"
-            ),
+            "kind": "adversarial-script",
         }
         if path.suffix == ".json":
             try:
@@ -286,12 +319,43 @@ def _extract_test_and_poc_evidence(root: Path) -> dict[str, Any]:
                     }
             except (OSError, json.JSONDecodeError):
                 pass
-        tests.append(item)
-    return {
-        "tests": [x for x in tests if x["kind"] == "test"],
-        "adversarial": [x for x in tests if x["kind"] == "poc-evidence"],
-    }
+        adversarial.append(item)
 
+    evidence = []
+    for path in _project_files(root, ".audit/evidence/*.json"):
+        name = path.name
+        if name in {"manifest.json", "system_bootstrap.json"}:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        summary: dict[str, Any] = {
+            "file": path.relative_to(root).as_posix(),
+            "sha256": _sha256(path),
+        }
+        if isinstance(data, dict):
+            for key in (
+                "exit_code",
+                "finding_count",
+                "count",
+                "target",
+                "tx",
+                "git_sha",
+                "git_branch",
+            ):
+                if key in data:
+                    summary[key] = data[key]
+        evidence.append(summary)
+
+    dedup_tests = {(x["path"], x["sha256"]): x for x in tests}
+    dedup_adv = {(x["path"], x["sha256"]): x for x in adversarial}
+    return {
+        "tests": list(dedup_tests.values()),
+        "adversarial": list(dedup_adv.values()),
+        "audit_evidence": evidence,
+    }
 
 def _extract_actor_roles(config: dict[str, Any] | None) -> dict[str, Any]:
     config = config or {}
@@ -479,6 +543,7 @@ def build_manifest(
         "sources": sources,
         "tests": evidence["tests"],
         "adversarial_evidence": evidence["adversarial"],
+        "audit_evidence": evidence["audit_evidence"],
         "known_addresses": known_addresses,
         "deployed_contract_names": sorted(deployment_names),
         "confidence": {
