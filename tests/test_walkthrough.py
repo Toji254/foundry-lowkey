@@ -22,6 +22,60 @@ spec.loader.exec_module(walk)
 
 
 class WalkthroughTests(unittest.TestCase):
+    def test_eip1967_implementation_slot_decodes_address(self):
+        implementation = "0x" + "1" * 40
+        raw = "0x" + "00" * 12 + implementation[2:]
+        with patch.object(
+            walk,
+            "_rpc",
+            return_value=raw,
+        ) as rpc_mock:
+            result = walk._eip1967_implementation(
+                pathlib.Path("."),
+                "http://127.0.0.1:8545",
+                "0x" + "2" * 40,
+            )
+        self.assertEqual(result, implementation)
+        rpc_mock.assert_called_once()
+
+    def test_resolver_prefers_live_erc1967_proxy_for_configured_implementation(self):
+        implementation = "0x" + "1" * 40
+        proxy = "0x" + "2" * 40
+        live = [
+            {
+                "address": implementation,
+                "contract": "ConfidencePoolFactory",
+                "broadcast": "script/Deploy.s.sol",
+                "index": 0,
+            },
+            {
+                "address": proxy,
+                "contract": "ERC1967Proxy",
+                "broadcast": "script/Deploy.s.sol",
+                "index": 1,
+            },
+        ]
+        with patch.object(
+            walk,
+            "_load_artifacts",
+            return_value=({}, {}),
+        ), patch.object(
+            walk,
+            "_find_live_proxy_for_implementation",
+            return_value=(proxy, live[1]),
+        ):
+            result, source = walk._resolve_walkthrough_target(
+                pathlib.Path("."),
+                {
+                    "target": implementation,
+                    "target_contract": "ConfidencePoolFactory",
+                },
+                "http://127.0.0.1:8545",
+                {"live_deployments": live},
+            )
+        self.assertEqual(result, proxy)
+        self.assertIn("proxy for implementation", source)
+
     def test_address_classifier_does_not_confuse_actor_names(self):
         self.assertTrue(walk._is_address("0x" + "1" * 40))
         self.assertFalse(walk._is_address("Alice"))
