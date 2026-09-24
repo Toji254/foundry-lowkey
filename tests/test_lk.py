@@ -102,6 +102,12 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.normalize_private_key(raw), "0x" + raw)
         self.assertIsNone(lk.normalize_private_key("bad-key"))
 
+    def test_walkthrough_command_is_handled_by_lowkey(self):
+        result = self.run_cli("walkthrough", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("unrecognized subcommand 'walkthrough'", result.stderr)
+        self.assertIn("LOWKEY WALKTHROUGH", result.stdout)
+
     def test_findings_command_is_handled_by_lowkey(self):
         result = self.run_cli("findings")
         self.assertNotIn("unrecognized subcommand 'findings'", result.stderr)
