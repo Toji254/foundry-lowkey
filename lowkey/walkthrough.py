@@ -558,7 +558,11 @@ def _arg_for(
     bob = actors[1].address if len(actors) > 1 else alice
     attacker = actors[2].address if len(actors) > 2 else bob
 
-    if compact in {"staketoken", "safeharborregistry", "poolimplementation", "defaultoutcomemoderator", "outcomemoderator"} and observed.get(compact):
+    if compact in {
+        "staketoken", "safeharborregistry", "poolimplementation",
+        "defaultoutcomemoderator", "outcomemoderator", "agreement",
+        "factory", "registry", "moderator", "attackregistry",
+    } and observed.get(compact):
         return observed[compact]
 
     if ptype.startswith("address[]"):
@@ -574,8 +578,12 @@ def _arg_for(
     if ptype.startswith("uint") or ptype.startswith("int"):
         if any(x in name for x in ("deadline", "expiry", "expires")):
             return now + 31 * 24 * 60 * 60
-        if any(x in name for x in ("id", "index", "nonce", "count")):
+        if any(x in name for x in ("amount", "stake", "value", "price", "limit")):
+            return 10**18
+        if any(x in name for x in ("id", "index", "nonce")):
             return 0
+        if "count" in name:
+            return 2
         if any(x in name for x in ("bps", "basis", "fee")):
             return 100
         return 1
@@ -718,42 +726,85 @@ def _lab_runtime(config: dict[str, Any], target: str, model: ContractModel) -> l
 
 
 
-def _confidence_pool_recipe(config: dict[str, Any], actors: list[Actor]) -> list[Step]:
+def _confidence_pool_factory_recipe(
+    config: dict[str, Any],
+    actors: list[Actor],
+    now: int,
+) -> list[Step]:
     system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-    pool=system.get("pool") or config.get("target")
-    token=system.get("stake_token")
-    attack_registry=system.get("attack_registry")
-    moderator=system.get("moderator")
+    factory = system.get("factory") or config.get("target")
+    token = system.get("stake_token")
+    agreement = system.get("agreement")
+    if not factory or not token or not agreement:
+        return []
+
+    alice = actors[0] if actors else Actor("Alice", factory, 0)
+    bob = actors[1] if len(actors) > 1 else alice
+    expiry = now + 31 * 24 * 60 * 60
+    scope = [alice.address, bob.address]
+
+    return [
+        Step(
+            0, alice.name, "ConfidencePoolFactory", factory,
+            "setStakeTokenAllowed(address,bool)", [token, True],
+            reason="factory owner enables the stake token",
+            inferred=False,
+        ),
+        Step(
+            0, alice.name, "ConfidencePoolFactory", factory,
+            "createPool(address,address,uint256,uint256,address,address[])",
+            [agreement, token, expiry, 10**18, bob.address, scope],
+            reason="factory validates dependencies, clones the pool, and initializes it",
+            inferred=False,
+        ),
+    ]
+
+
+def _confidence_pool_recipe(
+    config: dict[str, Any],
+    actors: list[Actor],
+    pool_override: str | None = None,
+    now: int | None = None,
+) -> list[Step]:
+    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+    pool = pool_override or system.get("pool") or config.get("target")
+    token = system.get("stake_token")
+    attack_registry = system.get("attack_registry")
+    moderator = system.get("moderator")
     if not pool or not token or not attack_registry or not moderator:
         return []
-    alice=actors[0] if actors else Actor("Alice", system.get("alice") or pool, 0)
-    bob=actors[1] if len(actors)>1 else alice
-    amount=10**18
-    max_uint=2**256-1
+
+    timestamp = int(now if now is not None else time.time())
+    alice = actors[0] if actors else Actor("Alice", pool, 0)
+    bob = actors[1] if len(actors) > 1 else alice
+    amount = 10**18
+    max_uint = 2**256 - 1
+
     return [
-        Step(0,alice.name,"StakeToken",token,"approve(address,uint256)",[pool,max_uint],
-             reason="allow Alice to fund the pool",inferred=False),
-        Step(0,bob.name,"StakeToken",token,"approve(address,uint256)",[pool,max_uint],
-             reason="allow Bob to fund the pool",inferred=False),
-        Step(0,alice.name,"ConfidencePool",pool,"contributeBonus(uint256)",[amount],
-             reason="sponsor seeds the bonus pool",inferred=False),
-        Step(0,alice.name,"ConfidencePool",pool,"stake(uint256)",[amount],
-             reason="Alice joins the confidence pool",inferred=False),
-        Step(0,bob.name,"ConfidencePool",pool,"stake(uint256)",[amount],
-             reason="Bob joins the confidence pool",inferred=False),
-        Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[3],
-             reason="LAB CONTROL: agreement enters UNDER_ATTACK",inferred=False),
-        Step(0,alice.name,"ConfidencePool",pool,"pokeRiskWindow()",[],
-             reason="pool observes and seals risk-window start",inferred=False),
-        Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[5],
-             reason="LAB CONTROL: agreement reaches PRODUCTION",inferred=False),
-        Step(0,alice.name,"MockConfidencePoolModerator",moderator,"flagSurvived(address)",[pool],
-             reason="moderator records the survived outcome",inferred=False),
-        Step(0,alice.name,"ConfidencePool",pool,"claimSurvived()",[],
-             reason="Alice claims principal plus time-weighted bonus",inferred=False),
-        Step(0,bob.name,"ConfidencePool",pool,"claimSurvived()",[],
-             reason="Bob claims principal plus time-weighted bonus",inferred=False),
+        Step(0, alice.name, "StakeToken", token, "approve(address,uint256)", [pool, max_uint],
+             reason="Alice gives the pool permission to pull her stake tokens", inferred=False),
+        Step(0, bob.name, "StakeToken", token, "approve(address,uint256)", [pool, max_uint],
+             reason="Bob gives the pool permission to pull his stake tokens", inferred=False),
+        Step(0, alice.name, "ConfidencePool", pool, "contributeBonus(uint256)", [amount],
+             reason="Alice seeds the pool's bonus reserve", inferred=False),
+        Step(0, alice.name, "ConfidencePool", pool, "stake(uint256)", [amount],
+             reason="Alice deposits her stake", inferred=False),
+        Step(0, bob.name, "ConfidencePool", pool, "stake(uint256)", [amount],
+             reason="Bob deposits his stake", inferred=False),
+        Step(0, alice.name, "MockAttackRegistry", attack_registry, "setAgreementState(uint8)", [3],
+             reason="LAB CONTROL: agreement enters UNDER_ATTACK", inferred=False),
+        Step(0, alice.name, "ConfidencePool", pool, "pokeRiskWindow()",
+             [], reason="pool observes the external registry and seals the risk window", inferred=False),
+        Step(0, alice.name, "MockAttackRegistry", attack_registry, "setAgreementState(uint8)", [5],
+             reason="LAB CONTROL: agreement reaches PRODUCTION", inferred=False),
+        Step(0, alice.name, "MockConfidencePoolModerator", moderator, "flagSurvived(address)", [pool],
+             reason="moderator records the survived outcome", inferred=False),
+        Step(0, alice.name, "ConfidencePool", pool, "claimSurvived()",
+             [], reason="Alice claims principal plus her bonus share", inferred=False),
+        Step(0, bob.name, "ConfidencePool", pool, "claimSurvived()",
+             [], reason="Bob claims principal plus his bonus share", inferred=False),
     ]
+
 
 
 def _render_shape_legend(enabled: bool) -> str:
@@ -2838,7 +2889,13 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     observed=dict(config.get("_walkthrough_observed") or {})
     system=config.get("lab_system") if isinstance(config.get("lab_system"),dict) else {}
     observed.update({str(k).replace("_",""):v for k,v in system.items() if isinstance(v,str) and is_address(v)})
-    recipe=_confidence_pool_recipe(config,actors) if config.get("_walkthrough_recipe")=="confidence-pool" else []
+    recipe=[]
+    if config.get("_walkthrough_recipe")=="confidence-pool":
+        now=_block_timestamp(rpc)
+        if model.name.lower().endswith("factory"):
+            recipe=_confidence_pool_factory_recipe(config,actors,now)
+        elif model.name.lower()=="confidencepool":
+            recipe=_confidence_pool_recipe(config,actors,now=now)
     pending=recipe[:max_steps] if recipe else plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
 
     def draw(current=None, storage=None):
