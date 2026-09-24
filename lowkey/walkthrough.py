@@ -1434,10 +1434,20 @@ def _friendly_eth(value_wei: int | None) -> str:
     return f"{value / 10**18:g} ETH"
 
 
-def _friendly_arg(value: Any, actors: list[Actor]) -> str:
+def _friendly_arg(
+    value: Any,
+    actors: list[Actor],
+    runtime: list[RuntimeContract] | None = None,
+) -> str:
     if isinstance(value, str) and is_address(value):
         actor = _actor_for_address(value, actors)
-        return actor or _addr(value)
+        if actor:
+            return actor
+        if runtime:
+            for node in runtime:
+                if node.address.lower() == value.lower():
+                    return f"{node.label}({_addr(value)})"
+        return _addr(value)
     return _friendly_value(value)
 
 
@@ -1986,11 +1996,12 @@ def _render_interaction_graph_full(
     model: ContractModel | None,
     models: list[ContractModel],
     enabled: bool,
+    runtime: list[RuntimeContract] | None = None,
 ) -> str:
     actor = step.actor or "Caller"
     contract = _friendly_contract_name(step)
     function = str(step.function or "").split("(", 1)[0]
-    args = ", ".join(_friendly_arg(x, actors) for x in step.args)
+    args = ", ".join(_friendly_arg(x, actors, runtime) for x in step.args)
     raw_call = f"{function}({args})" if args else f"{function}()"
     call_target = (
         _source_target(root, model.source, model.function_locations.get(function))
@@ -2102,6 +2113,7 @@ def _render_protocol_story_full(
     actors: list[Actor],
     models: list[ContractModel],
     enabled: bool,
+    runtime: list[RuntimeContract] | None = None,
 ) -> str:
     lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
     if not steps and not current:
@@ -2119,7 +2131,7 @@ def _render_protocol_story_full(
     for index, step in enumerate(visible):
         step_model = next((m for m in models if m.name == step.contract), None)
         frame = _render_interaction_graph_full(
-            root, step, actors, step_model, models, enabled
+            root, step, actors, step_model, models, enabled, runtime
         )
         if current is step:
             frame += "\n  ◀ NOW  •  LIVE\n  ◀ LIVE"
@@ -2164,7 +2176,8 @@ def _render_protocol_story(
         enabled = kwargs.get("enabled", args[3] if len(args) > 3 else False)
         root = Path.cwd()
         models = []
-    return _render_protocol_story_full(root, steps, current, actors, models, enabled)
+        runtime = kwargs.get("runtime")
+    return _render_protocol_story_full(root, steps, current, actors, models, enabled, runtime)
 
 
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
@@ -5802,6 +5815,7 @@ def _render_board(
             actors,
             models + [m for m in (support_models or []) if m.name not in {x.name for x in models}],
             enabled,
+            runtime,
         ),
     ]
     if current and current.storage_after:
