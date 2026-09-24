@@ -833,13 +833,17 @@ def _resolve_walkthrough_target(
     rpc: str,
     bootstrap: dict[str, Any],
 ) -> tuple[str | None, str]:
-    artifact_files = _load_artifacts(root)[1]
+    artifacts, artifact_files = _load_artifacts(root)
     configured = str(config.get("target") or "").strip()
     configured_static: tuple[str, str] | None = None
     saved_static: list[tuple[str, str]] = []
+
     live = [
         x for x in (bootstrap.get("live_deployments") or [])
-        if isinstance(x, dict) and "dry-run" not in str(x.get("broadcast") or "").lower()
+        if isinstance(x, dict)
+        and "dry-run" not in str(x.get("broadcast") or "").lower()
+        and _is_address(str(x.get("address") or ""))
+        and bool(x.get("live", True))
     ]
 
     def names_match(actual: str, expected: str) -> bool:
@@ -848,45 +852,82 @@ def _resolve_walkthrough_target(
         return bool(a and b and (a == b or a in b or b in a))
 
     def compatible(address: str, expected: str) -> bool:
-        return _runtime_identity(root, rpc, address, expected, artifact_files) != "mismatch"
+        return _runtime_identity(
+            root, rpc, address, expected, artifact_files
+        ) != "mismatch"
 
+    def proxy_for(address: str) -> tuple[str, dict[str, Any]] | None:
+        return _find_live_proxy_for_implementation(root, rpc, address, live)
+
+    # 1. Explicit configured target is authoritative.
     if _is_address(configured):
-        expected = str(config.get("target_contract") or _target_label(config, configured) or "")
+        expected = str(
+            config.get("target_contract")
+            or _target_label(config, configured)
+            or ""
+        )
 
-        proxy = _find_live_proxy_for_implementation(root, rpc, configured, live)
+        proxy = proxy_for(configured)
         if proxy:
             proxy_address, proxy_item = proxy
             return proxy_address, (
-                f"current broadcast proxy for implementation "
+                f"current broadcast proxy for "
                 f"{proxy_item.get('contract') or expected or 'target'}"
             )
+
         same = next(
             (
                 item for item in live
                 if str(item.get("address") or "").lower() == configured.lower()
-                and (not expected or names_match(str(item.get("contract") or ""), expected))
+                and (
+                    not expected
+                    or names_match(str(item.get("contract") or ""), expected)
+                )
             ),
             None,
         )
         if same and (not expected or compatible(configured, expected)):
-            ident = _runtime_identity(root, rpc, configured, expected, artifact_files)
+            ident = _runtime_identity(
+                root, rpc, configured, expected, artifact_files
+            )
             return configured, f"current broadcast target ({ident})"
 
         if expected:
             for item in live:
                 address = str(item.get("address") or "")
-                if address and names_match(str(item.get("contract") or ""), expected) and compatible(address, expected):
-                    ident = _runtime_identity(root, rpc, address, expected, artifact_files)
-                    return address, f"current broadcast deployment ({item.get('contract')}, {ident})"
+                if (
+                    address
+                    and names_match(str(item.get("contract") or ""), expected)
+                    and compatible(address, expected)
+                ):
+                    proxy = proxy_for(address)
+                    if proxy:
+                        proxy_address, proxy_item = proxy
+                        return proxy_address, (
+                            f"current broadcast proxy for "
+                            f"{proxy_item.get('contract') or expected}"
+                        )
+                    ident = _runtime_identity(
+                        root, rpc, address, expected, artifact_files
+                    )
+                    return address, (
+                        f"current broadcast deployment "
+                        f"({item.get('contract')}, {ident})"
+                    )
 
         code = _code_size(rpc, configured)
         if code > 0 and (not expected or compatible(configured, expected)):
             return configured, "configured target"
         configured_static = (
             configured,
-            f"configured target ({'identity mismatch' if code > 0 else 'no live bytecode'})",
+            (
+                "configured target (identity mismatch)"
+                if code > 0
+                else "configured target (no live bytecode)"
+            ),
         )
 
+    # 2. Named saved targets are explicit project configuration.
     saved_targets = config.get("targets") or {}
     if isinstance(saved_targets, dict):
         for name, value in saved_targets.items():
@@ -895,51 +936,173 @@ def _resolve_walkthrough_target(
             if _code_size(rpc, value) > 0:
                 saved_static.append((value, f"saved target '{name}'"))
             else:
-                saved_static.append((value, f"saved target '{name}' (no live bytecode)"))
+                saved_static.append(
+                    (value, f"saved target '{name}' (no live bytecode)")
+                )
 
+    # 3. If a target contract name is configured, match it against live
+    # deployments before considering generic discovery.
+    expected = str(config.get("target_contract") or "").strip()
+    if expected:
+        for item in live:
+            address = str(item.get("address") or "")
+            contract = str(item.get("contract") or "")
+            if not address or not names_match(contract, expected):
+                continue
+            if not compatible(address, expected):
+                continue
+            proxy = proxy_for(address)
+            if proxy:
+                proxy_address, proxy_item = proxy
+                return proxy_address, (
+                    f"current broadcast proxy for "
+                    f"{proxy_item.get('contract') or expected}"
+                )
+            return address, (
+                f"current broadcast deployment "
+                f"({contract}, {_runtime_identity(root, rpc, address, expected, artifact_files)})"
+            )
+
+    # 4. Trust only high-confidence audit evidence before generic discovery.
+    # Older POC/walkthrough evidence can point at helper contracts from a prior
+    # run, so those files must not hijack the current protocol root.
     audit_targets = bootstrap.get("audit_targets") or _extract_audit_targets(
         bootstrap.get("audit_evidence") or []
     )
-    audit_static: list[tuple[str, str]] = []
-    expected = str(config.get("target_contract") or "")
+    audit_priority = {
+        "audit_start.json": 0,
+        "context.json": 1,
+        "session_resume.json": 2,
+        "risk.json": 3,
+    }
+    high_confidence_audit: list[dict[str, str]] = []
+    remaining_audit: list[dict[str, str]] = []
+
     for item in audit_targets:
-        address = item.get("target") if isinstance(item, dict) else None
+        address = item.get("target")
         if not _is_address(address):
             continue
+        file_name = Path(str(item.get("file") or "")).name
+        bucket = (
+            high_confidence_audit
+            if file_name in audit_priority
+            else remaining_audit
+        )
+        bucket.append({"target": address, "file": file_name})
+
+    def resolve_audit_candidate(
+        item: dict[str, str]
+    ) -> tuple[str, str] | None:
+        address = str(item.get("target") or "")
         file_name = str(item.get("file") or "target")
-        source = f"audit evidence '{file_name}'"
-        proxy = _find_live_proxy_for_implementation(root, rpc, address, live)
+        if not _is_address(address):
+            return None
+        if _code_size(rpc, address) == 0:
+            return None
+        if expected and not compatible(address, expected):
+            return None
+        proxy = proxy_for(address)
         if proxy:
             proxy_address, proxy_item = proxy
             return proxy_address, (
-                f"current broadcast proxy for audit implementation "
-                f"{proxy_item.get('contract') or expected or file_name}"
+                f"current broadcast proxy for audit target "
+                f"{proxy_item.get('contract') or file_name}"
             )
-        code = _code_size(rpc, address)
-        if code > 0 and (
-            not live or not expected or compatible(address, expected)
-        ):
-            return address, source
-        if code > 0:
-            audit_static.append((address, source + " (identity mismatch)"))
-        else:
-            audit_static.append((address, source + " (no live bytecode)"))
+        return address, f"audit evidence '{file_name}'"
+
+    for item in sorted(
+        high_confidence_audit,
+        key=lambda x: (
+            audit_priority.get(str(x.get("file") or ""), 50),
+            str(x.get("file") or ""),
+        ),
+    ):
+        resolved = resolve_audit_candidate(item)
+        if resolved:
+            return resolved
+
+    # 5. Generic live root discovery. Never use deployment ordering alone.
+    def live_root_score(item: dict[str, Any]) -> int:
+        contract = str(item.get("contract") or "")
+        cname = contract.lower()
+        abi = artifacts.get(contract) or []
+        names = {
+            str(x.get("name") or "").lower()
+            for x in abi
+            if isinstance(x, dict) and x.get("type") == "function"
+        }
+        score = 0
+
+        for name in names:
+            if name.startswith(("create", "deploy")):
+                score += 45
+            elif name in {"stake", "deposit", "contribute", "borrow"}:
+                score += 35
+            elif name in {"withdraw", "claim", "redeem", "release", "execute"}:
+                score += 30
+            elif name.startswith(("flag", "resolve", "settle", "sweep")):
+                score += 20
+            elif name in {"pause", "unpause", "set", "authorize"}:
+                score += 5
+
+        if "factory" in cname:
+            score += 28
+        elif "router" in cname or "manager" in cname:
+            score += 20
+        elif "pool" in cname:
+            score += 16
+
+        utility_names = {
+            "approve", "increaseallowance", "decreaseallowance",
+            "transfer", "transferfrom", "mint", "burn", "permit",
+            "balanceof", "allowance", "decimals", "totalsupply",
+        }
+        utility_only = names and names.issubset(
+            utility_names
+            | {"owner", "transferownership", "renounceownership"}
+        )
+        if utility_only:
+            score -= 100
+
+        if "moderator" in cname and score < 50:
+            score -= 35
+        if "token" in cname and utility_only:
+            score -= 40
+
+        return score
 
     if live:
-        live.sort(
-            key=lambda x: (
-                str(x.get("broadcast") or ""),
-                int(x.get("index") or 0),
+        ranked = sorted(
+            live,
+            key=lambda item: (
+                -live_root_score(item),
+                str(item.get("broadcast") or ""),
+                int(item.get("index") or 0),
+                str(item.get("address") or ""),
             ),
-            reverse=True,
         )
-        item = live[0]
-        return str(item.get("address")), f"broadcast {item.get('broadcast') or 'deployment'}"
+        item = ranked[0]
+        address = str(item.get("address") or "")
+        proxy = proxy_for(address)
+        if proxy:
+            proxy_address, proxy_item = proxy
+            return proxy_address, (
+                f"current broadcast proxy for protocol root "
+                f"{item.get('contract') or proxy_item.get('contract') or 'deployment'}"
+            )
+        return address, (
+            f"live protocol-root candidate "
+            f"{item.get('contract') or 'deployment'}"
+        )
+
+    # 6. Lower-confidence audit/saved fallbacks.
+    for item in remaining_audit:
+        resolved = resolve_audit_candidate(item)
+        if resolved:
+            return resolved
 
     if configured_static:
         return configured_static
-    if audit_static:
-        return audit_static[0]
     if saved_static:
         return saved_static[0]
     return None, "not discovered"
