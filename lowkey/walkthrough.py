@@ -4613,29 +4613,46 @@ def _synthesize_generic_protocol_fixture(
     system: dict[str, Any] = {}
     dependency_models: dict[str, ContractModel] = {}
 
-    for edge in root_model.calls:
-        if edge.get("kind") != "cross-contract":
+    # Walk the application dependency graph recursively. A root may depend on a
+    # child, which may depend on a token/registry/oracle, which may have another
+    # configured contract behind it. Stopping at one hop produces false "empty
+    # revert" failures; recursive discovery gives the lab a chance to wire the
+    # actual protocol chain.
+    dependency_queue: list[ContractModel] = [root_model, child]
+    visited_models: set[str] = set()
+
+    while dependency_queue:
+        source_model = dependency_queue.pop(0)
+        source_key = source_model.name.lower()
+        if source_key in visited_models:
             continue
-        interface_name = str(edge.get("to_contract") or edge.get("interface") or "")
-        if not interface_name:
-            continue
-        concrete_name = impls.get(interface_name, interface_name)
-        candidate = _find_generic_dependency_model(
-            concrete_name,
-            str(edge.get("to_function") or ""),
-            models,
-            support_models,
-            excluded,
-        )
-        if not candidate:
-            continue
-        dependency_models[candidate.name.lower()] = candidate
-        for key in _generic_dependency_keys(
-            interface_name,
-            str(edge.get("via") or ""),
-            candidate.name,
-        ):
-            system.setdefault(key, None)
+        visited_models.add(source_key)
+
+        for edge in source_model.calls:
+            if edge.get("kind") != "cross-contract":
+                continue
+            interface_name = str(edge.get("to_contract") or edge.get("interface") or "")
+            if not interface_name:
+                continue
+            concrete_name = impls.get(interface_name, interface_name)
+            candidate = _find_generic_dependency_model(
+                concrete_name,
+                str(edge.get("to_function") or ""),
+                models,
+                support_models,
+                excluded,
+            )
+            if not candidate:
+                continue
+            dependency_models[candidate.name.lower()] = candidate
+            for key in _generic_dependency_keys(
+                interface_name,
+                str(edge.get("via") or ""),
+                candidate.name,
+            ):
+                system.setdefault(key, None)
+            if candidate.name.lower() not in visited_models:
+                dependency_queue.append(candidate)
 
     def deploy(model: ContractModel, ctor_args: list[Any] | None = None) -> str | None:
         values = ctor_args
