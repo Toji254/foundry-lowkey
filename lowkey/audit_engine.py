@@ -1382,32 +1382,11 @@ def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] |
             "binary": str(selected_binary),
         })
 
-    if selected_binary is None:
-        if command_path("solc-select"):
-            command = ["solc-select", "use", version, "--always-install"]
-        elif command_path("uv"):
-            command = ["uv", "run", "solc-select", "use", version, "--always-install"]
-        else:
-            command = []
-
-        if command:
-            print(f"\n=== LOWKEY EVIDENCE: SOLC SELECT ({version}) ===")
-            code, stdout, stderr = run_command(command, root, 900)
-            attempts.append({
-                "method": "solc-select",
-                "command": command,
-                "exit_code": code,
-                "stdout": stdout[-50000:],
-                "stderr": stderr[-20000:],
-            })
-            print(stdout.rstrip())
-            if stderr:
-                print(stderr.rstrip())
-            if code == 0:
-                selected_binary = _solc_select_artifact(version)
-
+    # Prefer py-solc-x for a fresh project. It downloads the official
+    # compiler artifact directly instead of requiring solc-select's version
+    # discovery endpoint, which may be unavailable behind restrictive proxies.
     if selected_binary is None and command_path("uv"):
-        print(f"\n=== LOWKEY EVIDENCE: SOLC PY-SOLC-X FALLBACK ({version}) ===")
+        print(f"\n=== LOWKEY EVIDENCE: SOLC PY-SOLC-X ({version}) ===")
         code, stdout, stderr, binary = _py_solc_x_executable(root, version)
         attempts.append({
             "method": "py-solc-x",
@@ -1422,6 +1401,32 @@ def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] |
             print(stderr.rstrip())
         if binary is not None:
             selected_binary = binary
+
+    # Keep solc-select as a fallback for projects/environments where the
+    # project Python environment cannot install py-solc-x's compiler binary.
+    if selected_binary is None:
+        if command_path("solc-select"):
+            command = ["solc-select", "use", version, "--always-install"]
+        elif command_path("uv"):
+            command = ["uv", "run", "solc-select", "use", version, "--always-install"]
+        else:
+            command = []
+
+        if command:
+            print(f"\n=== LOWKEY EVIDENCE: SOLC SELECT FALLBACK ({version}) ===")
+            code, stdout, stderr = run_command(command, root, 900)
+            attempts.append({
+                "method": "solc-select",
+                "command": command,
+                "exit_code": code,
+                "stdout": stdout[-50000:],
+                "stderr": stderr[-20000:],
+            })
+            print(stdout.rstrip())
+            if stderr:
+                print(stderr.rstrip())
+            if code == 0:
+                selected_binary = _solc_select_artifact(version)
 
     if selected_binary is not None:
         pinned = _pin_project_solc_binary(root, selected_binary)
@@ -1462,7 +1467,6 @@ def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] |
         ),
         "version": version,
     }
-
 
 def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]]) -> None:
     applicable = [
