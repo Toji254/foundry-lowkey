@@ -385,7 +385,7 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                     "external": not bool(resolved),
                 }
                 edges.append(edge)
-                if not resolved:
+                if not resolved and not external_root:
                     unresolved.append(edge)
             for declaration in declarations:
                 for parent in declaration["inherits"]:
@@ -440,6 +440,10 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
             "imports": sum(1 for edge in edges if edge["kind"] == "import"),
             "inheritance": sum(1 for edge in edges if edge["kind"] == "inherits"),
             "unresolved_imports": len(unresolved),
+            "external_imports": sum(
+                1 for edge in edges
+                if edge["kind"] == "import" and edge.get("external")
+            ),
             "external_call_sites": sum(len(node.get("calls", [])) for node in nodes),
         },
     }
@@ -473,8 +477,17 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     for edge in graph["edges"]:
         marker = "OK" if edge.get("resolved") else "UNRESOLVED"
         print(f"  {marker:<10} {edge['from']} -> {edge['to']} ({edge['kind']})")
+    external_edges = [
+        edge for edge in graph["edges"]
+        if edge["kind"] == "import" and edge.get("external")
+    ]
+    if external_edges:
+        print("\nExternal imports:")
+        for edge in external_edges:
+            status = "RESOLVED" if edge.get("resolved") else "UNRESOLVED"
+            print(f"  {status:<10} {edge['from']}:{edge['line']} -> {edge['to']}")
     if graph["unresolved"]:
-        print("\nUnresolved/external imports:")
+        print("\nUnresolved imports:")
         for edge in graph["unresolved"]:
             print(f"  {edge['from']}:{edge['line']} -> {edge['to']}")
     return {"project": project, "graph": graph}
