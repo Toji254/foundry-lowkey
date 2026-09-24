@@ -82,6 +82,7 @@ class ContractModel:
     function_locations: dict[str, int] = field(default_factory=dict)
     type_bindings: dict[str, str] = field(default_factory=dict)
     imports: list[str] = field(default_factory=list)
+    semantics: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -292,10 +293,12 @@ def _build_source_calls(model: ContractModel, models: list[ContractModel], sourc
 
         # interface(addressVar).function(...)
         for match in re.finditer(
-            r"\b([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\.\s*([A-Za-z_]\w+)\s*\(",
+            r"\b([A-Za-z_]\w*)\s*\(\s*((?:[A-Za-z_]\w*|[A-Za-z_]\w*\(\s*[A-Za-z_]\w*\s*\)))\s*\)\s*\.\s*([A-Za-z_]\w+)\s*\(",
             body,
         ):
-            typ, variable, called = match.groups()
+            typ, expression, called = match.groups()
+            variable_match = re.search(r"([A-Za-z_]\w*)\s*\)?\s*$", expression)
+            variable = variable_match.group(1) if variable_match else expression
             target = implementations.get(typ, typ)
             edges.append({
                 "kind": "cross-contract" if target != model.name else "internal",
@@ -358,6 +361,68 @@ def _build_source_calls(model: ContractModel, models: list[ContractModel], sourc
         unique.append(edge)
     return unique
 
+
+def _function_semantics(model: ContractModel, source_text: str) -> dict[str, dict[str, Any]]:
+    """Build conservative, source-derived semantic notes for each function."""
+    semantics: dict[str, dict[str, Any]] = {}
+    state_names = {
+        str(item.get("label") or "")
+        for item in (model.storage.get("storage") or [])
+        if item.get("label")
+    }
+    state_names.update(str(x.get("name")) for x in model.mappings if x.get("name"))
+    state_names.update(str(x.get("name")) for x in model.arrays if x.get("name"))
+
+    functions = list(re.finditer(r"\bfunction\s+(\w+)\s*\([^)]*\)[^{;]*\{", source_text, re.S))
+    for match in functions:
+        name = match.group(1)
+        body = _balanced_block(source_text, match.end() - 1)
+        reads: list[str] = []
+        writes: list[str] = []
+        guards: list[str] = []
+        creates = re.findall(r"\bnew\s+([A-Za-z_]\w*)\s*\(", body)
+        emitted = re.findall(r"\bemit\s+([A-Za-z_]\w*)\s*\(", body)
+
+        for state_name in sorted(x for x in state_names if x):
+            if not re.search(r"\b" + re.escape(state_name) + r"\b", body):
+                continue
+            reads.append(state_name)
+            write_pattern = (
+                r"\b" + re.escape(state_name)
+                + r"\b[^;{}]*(?:=|\+=|-=|\*=|/=|\+\+|--)"
+            )
+            if re.search(write_pattern, body, re.S):
+                writes.append(state_name)
+
+        for expression in re.findall(r"\brequire\s*\((.*?)\)\s*;", body, re.S):
+            guards.append("require(" + " ".join(expression.split()) + ")")
+        for condition, error_name in re.findall(
+            r"\bif\s*\((.*?)\)\s*(?:\{\s*)?revert\s+([A-Za-z_]\w*)\s*\(",
+            body,
+            re.S,
+        ):
+            guards.append("if(" + " ".join(condition.split()) + ") -> revert " + error_name)
+        for error_name in re.findall(r"\brevert\s+([A-Za-z_]\w*)\s*\(", body):
+            if not any(error_name in item for item in guards):
+                guards.append("revert " + error_name + "(...)")
+
+        semantics[name + "()"] = {
+            "reads": list(dict.fromkeys(reads))[:12],
+            "writes": list(dict.fromkeys(writes))[:12],
+            "guards": list(dict.fromkeys(guards))[:12],
+            "creates": list(dict.fromkeys(creates))[:8],
+            "emits": list(dict.fromkeys(emitted))[:8],
+            "external_calls": _source_edges_for_name(model, name),
+            "line": source_text.count("\n", 0, match.start()) + 1,
+        }
+    return semantics
+
+
+def _source_edges_for_name(model: ContractModel, function_name: str) -> list[dict[str, Any]]:
+    return [
+        edge for edge in model.calls
+        if str(edge.get("from") or "") == function_name
+    ]
 
 def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractModel]:
     """Build models for application sources, plus optional project-local fixtures."""
@@ -439,6 +504,7 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
         except OSError:
             continue
         model.calls = _build_source_calls(model, models, source_text)
+        model.semantics = _function_semantics(model, source_text)
 
     return sorted(models, key=lambda m: (m.name.lower(), m.source))
 
