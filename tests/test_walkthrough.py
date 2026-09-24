@@ -208,6 +208,16 @@ class WalkthroughTests(unittest.TestCase):
             3700,
         )
 
+    def test_phase_order_puts_flag_before_claims(self):
+        self.assertLess(
+            walkthrough._phase_score("flagOutcome")[0],
+            walkthrough._phase_score("claimAttackerBounty")[0],
+        )
+        self.assertLess(
+            walkthrough._phase_score("flagOutcome")[1],
+            walkthrough._phase_score("claimAttackerBounty")[1],
+        )
+
     def test_planner_covers_multiple_phases(self):
         model = walkthrough.ContractModel(
             name="Pool",
