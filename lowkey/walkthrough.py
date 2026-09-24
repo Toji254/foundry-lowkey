@@ -2848,11 +2848,19 @@ def _render_contract_surface(contract: ContractInfo, functions: list[FunctionInf
 def _render_shared_state_flow(
     functions_by_contract: dict[str, list[FunctionInfo]],
     contracts: dict[str, ContractInfo],
+    nodes: list[LiveNode] | None = None,
 ) -> list[str]:
     lines = [_section("SHARED STATE FLOW / FUNCTIONS ↔ STORAGE", "blue")]
     emitted = 0
 
+    live_contracts = {
+        node.artifact_contract or node.name
+        for node in (nodes or [])
+        if node.code_size > 0
+    }
     for cname, contract in contracts.items():
+        if nodes is not None and cname not in live_contracts:
+            continue
         functions = functions_by_contract.get(cname, [])
         states = contract.state_vars or []
         for state in states:
@@ -3155,7 +3163,9 @@ def _render_story(
         _system_edges(nodes, functions_by_contract, contracts),
         actions,
     )
-    lines += [""] + _render_shared_state_flow(functions_by_contract, contracts)
+    lines += [""] + _render_shared_state_flow(
+        functions_by_contract, contracts, nodes
+    )
     lines += [""] + _render_lifecycle_summary(functions_by_contract, nodes)
     lines += [""] + _render_component_surfaces(nodes, functions_by_contract, contracts)
 
