@@ -37,6 +37,17 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(forge_tools.run_forge(["test"]), 2)
 
     @patch("forge_tools.run_forge", return_value=0)
+    def test_native_deployment_refreshes_system_manifest(self, run):
+        fake_model = type(
+            "FakeSystemModel",
+            (),
+            {"refresh_manifest": lambda *args, **kwargs: ({}, pathlib.Path(".audit/evidence/system_bootstrap.json"))},
+        )()
+        with patch.object(forge_tools, "system_model", fake_model),              patch.object(forge_tools, "command_available", return_value=True):
+            self.assertEqual(forge_tools.main(["script", "script/Deploy.s.sol", "--broadcast"]), 0)
+        run.assert_called_once_with(["script", "script/Deploy.s.sol", "--broadcast"])
+
+    @patch("forge_tools.run_forge", return_value=0)
     def test_test_audit_adds_trace(self, run):
         self.assertEqual(forge_tools.run_test_audit(["--match-test", "testFoo"]), 0)
         run.assert_called_once_with(["test", "-vvvv", "--match-test", "testFoo"])
