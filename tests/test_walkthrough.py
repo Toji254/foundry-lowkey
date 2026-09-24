@@ -210,8 +210,15 @@ class WalkthroughTests(unittest.TestCase):
             step = walkthrough.Step(1,"Bob","DemoFactory","0x"+"3"*40,"createPool(address,address,uint256)",
                                    ["0x"+"4"*40,"0x"+"5"*40,100],status="blocked")
             alice = "0x" + "1"*40
-            with patch.object(walkthrough,"_read_contract_getter",side_effect=[(True,alice),(True,"false")]),
-                 patch.object(walkthrough,"_block_timestamp",return_value=100):
+            with patch.object(
+                walkthrough,
+                "_read_contract_getter",
+                side_effect=[(True, alice), (True, "false")],
+            ), patch.object(
+                walkthrough,
+                "_block_timestamp",
+                return_value=100,
+            ):
                 origin, lines = walkthrough._probe_source_guards(root,"http://127.0.0.1:8545",step,model,[model],alice)
         self.assertIn("allowedToken", " ".join(lines))
         self.assertTrue(any(line.startswith("✕") and "allowedToken" in line for line in lines))
