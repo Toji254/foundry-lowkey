@@ -221,7 +221,7 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
 
 
 def _candidate_paths(importer: Path, raw: str, root: Path, language: str) -> list[Path]:
-    clean = raw.strip().strip('"\'').replace("\\\\", "/")
+    clean = raw.strip().strip('"\'').replace("\\", "/")
     while clean.startswith("./"):
         clean = clean[2:]
     relative = Path(clean)
@@ -248,7 +248,13 @@ def _candidate_paths(importer: Path, raw: str, root: Path, language: str) -> lis
             for suffix in (".sol", ".vy", ".vyi"):
                 expanded.append(candidate.with_suffix(suffix))
     seen: set[Path] = set()
-    return [path.resolve() for path in expanded if not (path.resolve() in seen or seen.add(path.resolve()))]
+    result: list[Path] = []
+    for path in expanded:
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            result.append(resolved)
+    return result
 
 
 def _resolve_local_import(importer: Path, raw: str, root: Path, language: str) -> Path | None:
@@ -258,21 +264,100 @@ def _resolve_local_import(importer: Path, raw: str, root: Path, language: str) -
     return None
 
 
+def _solidity_external_candidates(raw: str, root: Path) -> list[Path]:
+    clean = raw.strip().strip('"\'').replace("\\", "/")
+    parts = [part for part in clean.split("/") if part]
+    candidates: list[Path] = []
+    if parts:
+        package_end = 2 if parts[0].startswith("@") and len(parts) >= 2 else 1
+        package = "/".join(parts[:package_end])
+        remainder = Path(*parts[package_end:]) if len(parts) > package_end else Path()
+        candidates.append(root / "node_modules" / package / remainder)
+
+        alias = parts[package_end - 1].split("@", 1)[0].lower()
+        if alias:
+            candidates.append(root / "node_modules" / alias / remainder)
+            candidates.append(root / "lib" / alias / remainder)
+
+        candidates.append(root / "lib" / parts[0] / Path(*parts[1:]))
+    return candidates
+
+
+def _resolve_solidity_import(importer: Path, raw: str, root: Path) -> Path | None:
+    local = _resolve_local_import(importer, raw, root, "solidity")
+    if local:
+        return local
+    for candidate in _solidity_external_candidates(raw, root):
+        if candidate.is_file() and not any(part in {".git", ".audit", ".venv"} for part in candidate.parts):
+            return candidate.resolve()
+    return None
+
+
 def _installed_package_root(root: Path, package: str) -> Path | None:
     venv = root / ".venv"
     if not venv.is_dir() or not package:
         return None
-    site_packages = list(venv.glob("lib/python*/site-packages"))
-    for site in site_packages:
+    for site in venv.glob("lib/python*/site-packages"):
         candidate = site / package
         if candidate.exists():
-            return candidate
+            return candidate.resolve()
     return None
+
+
+def _imported_symbols(value: str | None) -> list[str]:
+    if not value:
+        return []
+    symbols: list[str] = []
+    for chunk in value.split(","):
+        token = chunk.strip().split()
+        if token and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token[0]):
+            symbols.append(token[0])
+    return symbols
+
+
+def _resolve_vyper_import(
+    importer: Path,
+    raw: str,
+    imported_names: str | None,
+    root: Path,
+) -> tuple[Path | None, Path | None]:
+    local = _resolve_local_import(importer, raw, root, "vyper")
+    if local:
+        return local, None
+
+    symbols = _imported_symbols(imported_names)
+    module = raw.replace("/", ".")
+    module_path = Path(*module.split(".")) if module else Path()
+    local_dirs = [
+        root / module_path,
+        root / "contracts" / module_path,
+        root / "interfaces" / module_path,
+        importer.parent / module_path,
+    ]
+    for directory in local_dirs:
+        if not directory.is_dir():
+            continue
+        for symbol in symbols:
+            for suffix in (".vy", ".vyi"):
+                candidate = directory / f"{symbol}{suffix}"
+                if candidate.is_file() and not any(part in EXCLUDED_DIRS for part in candidate.parts):
+                    return candidate.resolve(), None
+        for path in sorted(directory.glob("*")):
+            if path.suffix.lower() not in {".vy", ".vyi"} or not path.is_file():
+                continue
+            source = _read(path)
+            if any(d.get("name") in symbols for d in _declarations(source, "vyper", path)):
+                return path.resolve(), None
+
+    package = module.split(".", 1)[0] if module else ""
+    external_root = _installed_package_root(root, package)
+    return None, external_root
+
 
 
 def _solidity_imports(text: str) -> list[tuple[str, int, str]]:
     pattern = re.compile(r"""import\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']\s*;""")
-    return [(match.group(1), text.count("\\n", 0, match.start()) + 1, match.group(0).strip()) for match in pattern.finditer(text)]
+    return [(match.group(1), text.count("\n", 0, match.start()) + 1, match.group(0).strip()) for match in pattern.finditer(text)]
 
 
 def _vyper_imports(text: str) -> list[tuple[str, int, str, str | None]]:
@@ -280,14 +365,14 @@ def _vyper_imports(text: str) -> list[tuple[str, int, str, str | None]]:
     for match in re.finditer(r'(?m)^\s*from\s+([A-Za-z0-9_./.-]+)\s+import\s+([^#\n]+)', text):
         records.append((
             match.group(1).strip(),
-            text.count("\\n", 0, match.start()) + 1,
+            text.count("\n", 0, match.start()) + 1,
             match.group(0).strip(),
             match.group(2).strip(),
         ))
     for match in re.finditer(r'(?m)^\s*import\s+([A-Za-z0-9_./.-]+)', text):
         records.append((
             match.group(1).strip(),
-            text.count("\\n", 0, match.start()) + 1,
+            text.count("\n", 0, match.start()) + 1,
             match.group(0).strip(),
             None,
         ))
@@ -306,7 +391,7 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
                     for item in (match.group(3) or "").split(",")
                     if item.strip()
                 ],
-                "line": text.count("\\n", 0, match.start()) + 1,
+                "line": text.count("\n", 0, match.start()) + 1,
             })
     else:
         for match in re.finditer(r'(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(', text):
@@ -314,14 +399,14 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
                 "kind": "function",
                 "name": match.group(1),
                 "inherits": [],
-                "line": text.count("\\n", 0, match.start()) + 1,
+                "line": text.count("\n", 0, match.start()) + 1,
             })
         for match in re.finditer(r'(?m)^\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)\s*:', text):
             values.append({
                 "kind": "interface",
                 "name": match.group(1),
                 "inherits": [],
-                "line": text.count("\\n", 0, match.start()) + 1,
+                "line": text.count("\n", 0, match.start()) + 1,
             })
     return values
 
@@ -343,7 +428,7 @@ def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     for label, pattern in patterns:
         for match in pattern.finditer(text):
-            line = text.count("\\n", 0, match.start()) + 1
+            line = text.count("\n", 0, match.start()) + 1
             calls.append({"kind": label, "line": line, "text": match.group(0).strip()})
     calls.sort(key=lambda item: (item["line"], item["kind"]))
     return calls
@@ -361,32 +446,31 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
         text = _read(path)
         rel = _relative(path, root_path)
         declarations = _declarations(text, language, path)
-        node = {
+        nodes.append({
             "id": rel,
             "file": rel,
             "language": language,
             "declarations": declarations,
             "calls": _call_sites(text, language),
-        }
-        nodes.append(node)
+        })
 
         if language == "solidity":
-            imports = _solidity_imports(text)
-            for raw, line, statement in imports:
-                resolved = _resolve_local_import(path, raw, root_path, language)
-                target = _relative(resolved, root_path) if resolved else None
+            for raw, line, statement in _solidity_imports(text):
+                local = _resolve_local_import(path, raw, root_path, language)
+                resolved = _resolve_solidity_import(path, raw, root_path)
                 edge = {
                     "from": rel,
-                    "to": target or raw,
+                    "to": _relative(resolved, root_path) if resolved else raw,
                     "kind": "import",
                     "line": line,
                     "statement": statement,
                     "resolved": bool(resolved),
-                    "external": not bool(resolved),
+                    "external": local is None,
                 }
                 edges.append(edge)
-                if not resolved and not external_root:
+                if not edge["resolved"]:
                     unresolved.append(edge)
+
             for declaration in declarations:
                 for parent in declaration["inherits"]:
                     edges.append({
@@ -394,30 +478,33 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                         "to": parent,
                         "kind": "inherits",
                         "line": declaration["line"],
-                        "resolved": any(d.get("name") == parent for n in nodes for d in n.get("declarations", [])),
+                        "resolved": any(
+                            d.get("name") == parent
+                            for n in nodes
+                            for d in n.get("declarations", [])
+                        ),
                         "external": False,
                     })
         else:
             for raw, line, statement, imported_names in _vyper_imports(text):
-                resolved = _resolve_local_import(path, raw, root_path, language)
-                external_root = None if resolved else _installed_package_root(
-                    root_path, raw.split(".", 1)[0].split("/", 1)[0]
-                )
-                target = _relative(resolved, root_path) if resolved else (
-                    str(external_root) if external_root else raw
+                local = _resolve_local_import(path, raw, root_path, language)
+                resolved, external_root = _resolve_vyper_import(
+                    path, raw, imported_names, root_path
                 )
                 edge = {
                     "from": rel,
-                    "to": target,
+                    "to": _relative(resolved, root_path) if resolved else (
+                        str(external_root) if external_root else raw
+                    ),
                     "kind": "import",
                     "line": line,
                     "statement": statement,
                     "symbols": imported_names,
                     "resolved": bool(resolved or external_root),
-                    "external": not bool(resolved),
+                    "external": local is None and external_root is not None,
                 }
                 edges.append(edge)
-                if not resolved:
+                if not edge["resolved"]:
                     unresolved.append(edge)
 
     declaration_names = {
