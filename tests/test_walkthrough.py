@@ -237,6 +237,100 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(stdout.strip(), "walkthrough-ok")
         self.assertEqual(stderr, "")
 
+    def test_discovery_ignores_dry_run_deployment_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            dry = root / "broadcast" / "Setup.s.sol" / "31337" / "dry-run"
+            live = root / "broadcast" / "Setup.s.sol" / "31337"
+            dry.mkdir(parents=True)
+            live.mkdir(parents=True)
+            payload = {"transactions": [{"contractAddress": "0x" + "1" * 40, "contractName": "Fake"}]}
+            (dry / "run-latest.json").write_text(json.dumps(payload), encoding="utf-8")
+            payload2 = {"transactions": [{"contractAddress": "0x" + "2" * 40, "contractName": "Real"}]}
+            (live / "run-latest.json").write_text(json.dumps(payload2), encoding="utf-8")
+            with patch.object(walk, "_code_size", return_value=100):
+                result = walk._discover_bootstrap(root, "http://127.0.0.1:8545")
+            self.assertEqual(len(result["deployments"]), 1)
+            self.assertEqual(result["deployments"][0]["contract"], "Real")
+
+    def test_target_prefers_current_broadcast_identity_over_stale_address(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            stale = "0x" + "1" * 40
+            current = "0x" + "2" * 40
+            bootstrap = {
+                "audit_targets": [{"target": stale, "file": "audit_start.json"}],
+                "audit_evidence": [],
+                "live_deployments": [{
+                    "address": current,
+                    "contract": "ConfidencePoolFactory",
+                    "broadcast": "broadcast/LocalSetup.s.sol/31337/run-latest.json",
+                    "index": 6,
+                }],
+            }
+            with patch.object(walk, "_code_size", return_value=100):
+                target, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": stale, "target_contract": "ConfidencePoolFactory", "targets": {}},
+                    "http://127.0.0.1:8545",
+                    bootstrap,
+                )
+            self.assertEqual(target, current)
+            self.assertIn("current broadcast deployment", source)
+
+    def test_human_error_explains_and_recommends(self):
+        message, recommendation = walk._friendly_error("StakeTokenNotAllowed()", "")
+        self.assertIn("not currently approved", message)
+        self.assertIn("approve the token", recommendation)
+
+    def test_render_story_explains_steps_and_hides_import_noise(self):
+        node = walk.LiveNode(
+            address="0x" + "1" * 40,
+            name="ConfidencePoolFactory",
+            code_size=100,
+            artifact_contract="ConfidencePoolFactory",
+        )
+        fn = walk.FunctionInfo(
+            contract="ConfidencePoolFactory",
+            name="createPool",
+            inputs=[],
+            outputs=[],
+            mutability="nonpayable",
+            signature="createPool()",
+            source=None,
+            line=None,
+        )
+        action = {
+            "node": node,
+            "function": fn,
+            "args": [],
+            "caller": "0x" + "a" * 40,
+            "actor_name": "Alice",
+            "status": "BLOCKED",
+            "phase": "CREATE",
+            "what": "Create a new pool.",
+            "why": "This is the main bridge into a new pool.",
+            "result": {"ok": False, "decoded_error": "StakeTokenNotAllowed()", "raw": ""},
+            "diagnosis": [],
+        }
+        contracts = {
+            "ConfidencePoolFactory": walk.ContractInfo(
+                name="ConfidencePoolFactory", source="src/Factory.sol", line=1, kind="contract",
+                imports=["openzeppelin/contracts/access/Ownable.sol"], functions=[fn]
+            )
+        }
+        rendered = walk._render_story(
+            pathlib.Path("."), [node], {"ConfidencePoolFactory": [fn]}, contracts,
+            [action], {"Alice": "0x" + "a" * 40}, None, False,
+            {"target": node.address, "bootstrap": {}, "static_system": {}, "system_manifest": {},}
+        )
+        self.assertIn("SYSTEM IN PLAIN ENGLISH", rendered)
+        self.assertIn("CONNECTIONS", rendered)
+        self.assertIn("WHAT", rendered)
+        self.assertIn("WHY", rendered)
+        self.assertIn("NEXT", rendered)
+        self.assertNotIn("import", rendered.lower())
+
     def test_auto_bootstrap_uses_only_safe_local_setup_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
