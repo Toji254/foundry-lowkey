@@ -2874,8 +2874,7 @@ def _render_connections(
     if len(lines) == 1:
         lines.append("  no source-level cross-contract calls resolved")
 
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 def _render_event_log(step: Step, enabled: bool) -> str:
     lines = [_paint(f"{EVENT} EVENT STREAM", BOLD + YELLOW, enabled)]
