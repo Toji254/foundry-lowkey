@@ -1224,6 +1224,8 @@ def _human_action_summary(step: Step, actors: list[Actor]) -> str:
     if lower == "deposit":
         recipient = _friendly_arg(args[0], actors) if args else "the recipient"
         verb = "deposits" if step.status == "success" else "tries to deposit"
+        if step.value_wei:
+            return f"{actor} sends {_friendly_eth(step.value_wei)} to {contract} to fund the escrow for {recipient}"
         return f"{actor} {verb} funds into {contract} for {recipient}"
     if lower == "contributebonus":
         amount = _friendly_value(args[0]) if args else "the requested amount"
@@ -1545,8 +1547,7 @@ def _render_interaction_graph_full(
     lines = [
         _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
-        f"  │   {ACTOR} {actor} {ARROW} [{contract}]",
-        f"  │       {call_display}",
+        f"  │   {ACTOR} {actor} {ARROW} {contract}.{call_display}",
         f"  │       ↳ {_human_action_summary(step, actors)}",
         f"  │   [technical] [{actor}] ── CALL {raw_call} ──▶ [{contract}]",
     ]
@@ -1581,9 +1582,9 @@ def _render_interaction_graph_full(
     if step.value_wei:
         lines += ["  │", f"  │   ETH FLOW      {actor} ── {_friendly_eth(step.value_wei)} ──▶ {contract}"]
     if lower in {"stake", "deposit", "contributebonus", "fund", "contribute"} and step.args:
-        lines.append(f"  │   TOKEN FLOW    {actor} ── {_friendly_value(step.args[0])} ──▶ {contract}")
+        lines.append(f"  │   token flow: {actor} ── {_friendly_value(step.args[0])} ──▶ {contract}")
     elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
-        lines.append(f"  │   TOKEN FLOW    {contract} ──▶ {actor}")
+        lines.append(f"  │   token flow: {contract} ──▶ {actor}")
 
     if step.execution_edges:
         lines += ["  │", "  │   ACTUAL RUNTIME PATH", "  │      caller", "  │        │"]
@@ -3337,7 +3338,7 @@ def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
         for index, child in enumerate(kids[:10]):
             branch = "└──" if index == len(kids[:10]) - 1 else "├──"
             relation = relation_text.get(child.relation, child.relation)
-            lines.append(f"{indent}{branch} {relation} ──▶ {child.label} {_addr(child.address)}")
+            lines.append(f"{indent}{branch} {DOTTED} {relation} {DOTTED}▶ {child.label} {_addr(child.address)}")
 
     for index, node in enumerate(roots):
         render(node, "  ", index == len(roots) - 1)
