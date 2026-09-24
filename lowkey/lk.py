@@ -2090,23 +2090,12 @@ contract LowkeyAutoConfidencePoolLab is Script {
         token.mint(alice, 100 ether);
         token.mint(bob, 100 ether);
 
-        uint256 expiry = block.timestamp + 31 days;
-        address[] memory scope = new address[](2);
-        scope[0] = alice;
-        scope[1] = bob;
-
-        address pool = factory.createPool(
-            address(agreement),
-            address(token),
-            expiry,
-            1 ether,
-            alice,
-            scope
-        );
-
+        // Intentionally stop before createPool(). The walkthrough must observe the
+        // factory -> clone -> initialized-pool transition as a real user interaction,
+        // rather than hiding it inside environment bootstrap.
         vm.stopBroadcast();
 
-        console2.log("LOWKEY_TARGET", pool);
+        console2.log("LOWKEY_TARGET", address(factory));
         console2.log("LOWKEY_FACTORY", address(factory));
         console2.log("LOWKEY_POOL_IMPLEMENTATION", address(poolImplementation));
         console2.log("LOWKEY_STAKE_TOKEN", address(token));
@@ -2138,6 +2127,7 @@ def parse_lab_system(output):
     }
     system = {}
     text = str(output or "")
+    # Preserve the known protocol vocabulary for richer built-in recipes.
     for key, marker in labels.items():
         match = re.search(
             rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
@@ -2145,6 +2135,15 @@ def parse_lab_system(output):
         )
         if match:
             system[key] = match.group(1)
+
+    # Also accept arbitrary LOWKEY_<NAME> address markers from project adapters.
+    # This keeps the system model extensible beyond ConfidencePool.
+    for match in re.finditer(
+        r"(?m)^\s*LOWKEY_([A-Z][A-Z0-9_]*)\s*:?\s*(0x[0-9a-fA-F]{40})\s*$",
+        text,
+    ):
+        key = re.sub(r"[^a-z0-9]+", "_", match.group(1).lower()).strip("_")
+        system.setdefault(key, match.group(2))
     return system
 
 
@@ -2900,8 +2899,17 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
 
     system = parse_lab_system(output)
+    effective_target = target
     if system:
-        system["pool"] = target
+        # A system adapter may expose multiple live contracts. When it provides a
+        # factory, make that the walkthrough entry point so the child lifecycle is
+        # observed in realtime instead of being hidden during bootstrap.
+        if is_address(system.get("factory")):
+            effective_target = system["factory"]
+        elif is_address(system.get("pool")):
+            effective_target = system["pool"]
+        else:
+            system["pool"] = target
         config["lab_system"] = system
         config["_walkthrough_recipe"] = "confidence-pool"
         names = {
@@ -2923,7 +2931,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     # Let the live target drive ABI discovery. This is important for proxies:
     # the deployed address may be a proxy while the useful ABI lives on its implementation.
     config["target_contract"] = None
-    artifact = auto_abi_path(target, config)
+    artifact = auto_abi_path(effective_target, config)
     contract = config.get("target_contract") or "auto-detected"
 
     config["actor"] = "lab-deployer"
@@ -2933,9 +2941,9 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         "address": accounts[0],
     }
     config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
-    set_lab_target(config, root, target, contract, artifact)
+    set_lab_target(config, root, effective_target, contract, artifact)
 
-    print(f"Target  : {contract} -> {target}")
+    print(f"Target  : {contract} -> {effective_target}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     print("Ready   : lk changes <function> ... | lk trace")
     return 0
