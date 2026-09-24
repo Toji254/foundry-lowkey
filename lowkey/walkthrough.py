@@ -358,7 +358,7 @@ def _render_connection_web(
             if edge["function"]:
                 out.append(f"                              {edge['function']}")
 
-    actor_links: list[tuple[str, str, str]] = []
+    actor_paths: dict[tuple[str, str], list[str]] = {}
     for action in actions or []:
         actor = str(action.get("actor_name") or "")
         node = action.get("node")
@@ -366,22 +366,20 @@ def _render_connection_web(
         if not actor or not isinstance(node, LiveNode) or not isinstance(fn, FunctionInfo):
             continue
         target = _web_node_name(node.artifact_contract or node.name)
-        link = (actor, target, fn.name)
-        if link not in actor_links:
-            actor_links.append(link)
-    if actor_links:
-        out += ["", "  ACTORS / where the human side enters the web"]
-        for actor, target, fn_name in actor_links[:8]:
-            out.append(f"       {compact(actor):<22} ──[calls {fn_name}()]──▶  {compact(target)}")
+        actor_paths.setdefault((actor, target), []).append(fn.name)
 
-    out += [
-        "",
-        "  READ THIS AS:",
-        "    node       = component or actor",
-        "    [label]    = what crosses the connection",
-        "    function   = source/runtime evidence proving the relationship",
-        "    hub        = the component with the most observed relationships",
-    ]
+    if actor_paths:
+        out += ["", "  ACTORS / where people enter the web"]
+        for (actor, target), fn_names in list(actor_paths.items())[:5]:
+            unique = list(dict.fromkeys(fn_names))
+            label = ", ".join(f"{name}()" for name in unique[:3])
+            if len(unique) > 3:
+                label += f", … +{len(unique)-3}"
+            out.append(
+                f"       {_paint(compact(actor), 'magenta'):<22} "
+                f"──[{_paint(label, 'magenta')}]──▶  {compact(target)}"
+            )
+
     return out
 
 
@@ -3240,10 +3238,15 @@ def _run_walkthrough(
 
     if flags.get("auto") and _is_local_rpc(str(meta["rpc"])):
         live_nodes = meta.get("live_nodes") or []
-        if not any(
-            isinstance(node, dict) and int(node.get("code_size") or 0) > 0
-            for node in live_nodes
-        ):
+        target_source = str(meta.get("target_source") or "")
+        needs_bootstrap = (
+            "identity mismatch" in target_source.lower()
+            or not any(
+                isinstance(node, dict) and int(node.get("code_size") or 0) > 0
+                for node in live_nodes
+            )
+        )
+        if needs_bootstrap:
             bootstrap_ok, bootstrap_reason = _auto_bootstrap_local(
                 root,
                 config,
