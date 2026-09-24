@@ -454,6 +454,17 @@ def _code_size(url: str, address: str) -> int:
         return 0
 
 
+def _eth_accounts(url: str) -> list[str]:
+    """Return accounts exposed by the selected local JSON-RPC node."""
+    try:
+        result = _rpc(url, "eth_accounts", [])
+    except Exception:
+        return []
+    if not isinstance(result, list):
+        return []
+    return [str(item) for item in result if _is_address(item)]
+
+
 def _latest_timestamp(url: str) -> int:
     try:
         block = _rpc(url, "eth_getBlockByNumber", ["latest", False])
