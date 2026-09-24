@@ -735,6 +735,33 @@ class WalkthroughTests(unittest.TestCase):
             self.assertIn("\x1b[32m", walk._paint("ok", "green"))
             self.assertIn("\x1b[34m", walk._paint("storage", "blue"))
 
+    def test_runtime_identity_detects_contract_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            artifact = out / "Factory.json"
+            artifact.write_text(
+                json.dumps({"deployedBytecode": {"object": "0x6001600055"}}),
+                encoding="utf-8",
+            )
+            with patch.object(walk, "_rpc", return_value="0x6002600055"):
+                identity = walk._runtime_identity(
+                    root,
+                    "http://127.0.0.1:8545",
+                    "0x" + "1" * 40,
+                    "Factory",
+                    {"Factory": artifact},
+                )
+            self.assertEqual(identity, "mismatch")
+
+    def test_auto_mode_does_not_imply_mutating_send(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "run.json"
+            source.write_text("{}", encoding="utf-8")
+            self.assertTrue('live_send = bool(flags.get("send"))' in walk._run_walkthrough.__code__.co_consts)
+
     def test_error_decoder_reports_static_custom_error(self):
         err = {"name": "StakingClosed", "inputs": []}
         selector = walk._keccak_selector("StakingClosed()")
