@@ -190,6 +190,122 @@ def _connection_destination(edge: dict[str, str], nodes: list[LiveNode]) -> str:
     return clean or raw
 
 
+def _web_connection_label(edge: dict[str, str]) -> str:
+    """Return a compact human-readable relationship label."""
+    kind = str(edge.get("kind") or "")
+    fn = str(edge.get("function") or "")
+    low = fn.lower()
+    if "createpool" in low and "owner" in low:
+        return "checks ownership"
+    if "createpool" in low and "initialize" in low:
+        return "creates / initializes"
+    if "isagreementvalid" in low:
+        return "validates agreement"
+    if "getagreementstate" in low:
+        return "reads security state"
+    if "iscontractinscope" in low:
+        return "checks scope"
+    if "flagoutcome" in low:
+        return "reports outcome"
+    if kind.startswith("runtime:"):
+        getter = kind.split(":", 1)[1]
+        return f"reads dependency via {getter}()"
+    if kind == "member-call":
+        return "uses configured dependency"
+    if kind == "external-call":
+        return "calls external interface"
+    return "connects to"
+
+def _web_node_name(value: str) -> str:
+    return _clean_name(value).strip() or "Unknown"
+
+def _render_connection_web(
+    nodes: list[LiveNode],
+    edges: list[dict[str, str]],
+    actions: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """Render the system as a labeled graph with inbound, outbound and cross-links."""
+    meaningful = []
+    seen = set()
+    for edge in edges:
+        if edge.get("kind") == "import":
+            continue
+        source = _web_node_name(str(edge.get("from") or ""))
+        destination = _web_node_name(str(edge.get("to") or ""))
+        label = _web_connection_label(edge)
+        key = (source, destination, label, str(edge.get("function") or ""))
+        if source == destination or key in seen:
+            continue
+        seen.add(key)
+        meaningful.append({
+            "from": source,
+            "to": destination,
+            "label": label,
+            "function": str(edge.get("function") or ""),
+        })
+
+    if not meaningful:
+        return ["  └─ no proven contract-to-contract connections yet"]
+
+    names = []
+    for edge in meaningful:
+        for name in (edge["from"], edge["to"]):
+            if name not in names:
+                names.append(name)
+    degree = {name: 0 for name in names}
+    for edge in meaningful:
+        degree[edge["from"]] += 1
+        degree[edge["to"]] += 1
+    center = max(names, key=lambda name: (degree[name], -names.index(name)))
+    incoming = [e for e in meaningful if e["to"] == center]
+    outgoing = [e for e in meaningful if e["from"] == center]
+    cross = [e for e in meaningful if e not in incoming and e not in outgoing]
+
+    out = [f"  HUB  [{center}]  • {degree[center]} proven connection(s)"]
+    if incoming:
+        out += ["", "  INBOUND / who feeds or authorizes this component"]
+        for edge in incoming[:8]:
+            detail = f"  {edge['from']}  ──[{edge['label']}]──▶  [{center}]"
+            if edge["function"]:
+                detail += f"  {edge['function']}"
+            out.append(detail)
+    if outgoing:
+        out += ["", "  OUTBOUND / what this component reaches into"]
+        for edge in outgoing[:8]:
+            detail = f"  [{center}]  ──[{edge['label']}]──▶  {edge['to']}"
+            if edge["function"]:
+                detail += f"  {edge['function']}"
+            out.append(detail)
+    if cross:
+        out += ["", "  CROSS-LINKS / supporting components connected to each other"]
+        for edge in cross[:8]:
+            detail = f"  {edge['from']}  ──[{edge['label']}]──▶  {edge['to']}"
+            if edge["function"]:
+                detail += f"  {edge['function']}"
+            out.append(detail)
+
+    actor_links = []
+    for action in actions or []:
+        actor = str(action.get("actor_name") or "")
+        node = action.get("node")
+        fn = action.get("function")
+        if not actor or not isinstance(node, LiveNode) or not isinstance(fn, FunctionInfo):
+            continue
+        link = (actor, _web_node_name(node.artifact_contract or node.name), fn.name)
+        if link not in actor_links:
+            actor_links.append(link)
+    if actor_links:
+        out += ["", "  HUMAN ACTORS / entry points into the graph"]
+        for actor, target, fn_name in actor_links[:6]:
+            out.append(f"  {actor}  ──[calls {fn_name}()]──▶  {target}")
+
+    out += ["", "  RELATIONSHIP KEY"]
+    out.append("    ownership / validation = authorization or safety gate")
+    out.append("    reads state = dependency on another contract's state")
+    out.append("    creates / initializes = lifecycle dependency")
+    out.append("    reports outcome = outcome/control dependency")
+    return out
+
 def _action_phase(fn: FunctionInfo) -> str:
     n = fn.name.lower()
     if any(x in n for x in ("create", "initialize")):
@@ -2249,24 +2365,8 @@ def _render_story(
     lines.append("  ADMIN        deployment/configuration work; normally kept out of the user journey")
 
     lines.append("")
-    lines.append("CONNECTIONS")
-    edges = _system_edges(nodes, functions_by_contract, contracts)
-    shown: set[tuple[str, str, str]] = set()
-    meaningful = [e for e in edges if e.get("kind") != "import"]
-    for edge in meaningful[:14]:
-        key = (edge.get("from", ""), edge.get("to", ""), edge.get("kind", ""))
-        if key in shown:
-            continue
-        shown.add(key)
-        source = str(edge.get("from") or "Unknown")
-        destination = _connection_destination(edge, nodes)
-        phrase = _friendly_connection_phrase(edge)
-        detail = f"  {source}  ── {phrase} ──>  {destination}"
-        if edge.get("function"):
-            detail += f"   [{edge['function']}]"
-        lines.append(detail)
-    if not shown:
-        lines.append("  No contract-to-contract calls were proven from the available evidence.")
+    lines.append("SYSTEM CONNECTION WEB")
+    lines.extend(_render_connection_web(nodes, _system_edges(nodes, functions_by_contract, contracts), actions))
 
     lines.append("")
     lines.append("WHAT LOWKEY IS DOING")
