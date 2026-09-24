@@ -289,6 +289,13 @@ class WalkthroughTests(unittest.TestCase):
             name="Factory",
             source="src/Factory.sol",
             artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function",
+                "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
             functions=["createPool(address)"],
             calls=[
                 {
@@ -941,7 +948,8 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("[Alice] ── CALL deposit(Bob) ──▶ [Escrow]", rendered)
         self.assertIn("sends 1 ETH", rendered)
         self.assertIn("ETH Bob: +1 ETH", rendered)
-        self.assertIn("WHY THIS STEP: Alice funds the escrow for Bob  [LAB CONTROL]", rendered)
+        self.assertIn("Alice sends 1 ETH to Escrow to fund the escrow for Bob", rendered)
+        self.assertIn("WHY THIS STEP: Alice funds the escrow for Bob [LAB CONTROL]", rendered)
 
 
 
