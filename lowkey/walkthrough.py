@@ -4416,11 +4416,30 @@ def _run_walkthrough(
         _persist(root, payload)
 
         if code != 0:
+            raw_send_error = "\n".join(
+                x.strip()
+                for x in (err, out)
+                if x and x.strip()
+            )
             print(
                 "\n" + _paint(
-                    "The live transition failed; Lowkey will not invent the next state.",
+                    "The live transaction submission failed; Lowkey will not invent the next state.",
                     "red",
                 )
+            )
+            if raw_send_error:
+                print("  SEND ERROR " + raw_send_error[-2000:])
+            print(
+                "  SEND FROM  " + caller
+            )
+            print(
+                "  SEND TO    " + node.address
+            )
+            print(
+                "  RPC        " + str(meta["rpc"])
+            )
+            print(
+                "  The preceding simulation passed; this failure is in transaction submission, not the source-level precondition."
             )
             break
 
