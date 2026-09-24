@@ -687,6 +687,69 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(result["actor_name"], "Setup Signer")
         self.assertTrue(result["setup_recovery"])
 
+
+    def test_send_mode_prefers_recovery_when_top_transition_cannot_be_signed(self):
+        node = walk.LiveNode(
+            "0x" + "1" * 40,
+            "ConfidencePoolFactory",
+            100,
+            "ConfidencePoolFactory",
+        )
+        fn = walk.FunctionInfo(
+            "ConfidencePoolFactory",
+            "createPool",
+            [],
+            [],
+            "nonpayable",
+            "createPool()",
+            visibility="external",
+        )
+        blocked = {
+            "node": node,
+            "function": fn,
+            "args": [],
+            "caller": "0x" + "9" * 40,
+            "actor_name": "Owner",
+            "status": "READY",
+            "result": {"ok": True},
+        }
+        recovery = {
+            "node": node,
+            "function": walk.FunctionInfo(
+                "ConfidencePoolFactory", "initialize", [], [], "nonpayable", "initialize()"
+            ),
+            "args": [],
+            "caller": "0x" + "1" * 40,
+            "actor_name": "Setup Signer",
+            "status": "READY",
+        }
+
+        with patch.object(
+            walk,
+            "_candidate_actions",
+            return_value=[blocked],
+        ), patch.object(
+            walk,
+            "_sender_available_for_local_send",
+            return_value=False,
+        ), patch.object(
+            walk,
+            "_initializer_recovery_action",
+            return_value=recovery,
+        ):
+            result = walk._next_transition_action(
+                pathlib.Path("."),
+                {"rpc": "http://127.0.0.1:8545"},
+                {"ConfidencePoolFactory": [fn]},
+                [node],
+                {"Alice": "0x" + "1" * 40},
+                {},
+                [],
+                require_local_signer=True,
+            )
+
+        self.assertIs(result, recovery)
+
     def test_blocked_protocol_transition_yields_state_enabling_prerequisite(self):
         node = walk.LiveNode(
             "0x" + "1" * 40,
