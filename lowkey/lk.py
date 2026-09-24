@@ -1625,6 +1625,7 @@ def run_system(config, args=None):
     print(f"Initialization: {summary['initialization_steps']}")
     print(f"Tests         : {summary['tests']}")
     print(f"Adversarial   : {summary['adversarial_evidence']}")
+    print(f"Audit targets : {summary.get('audit_targets', 0)}")
     if args and args[0] == "show":
         print(json.dumps(manifest, indent=2, default=str))
     return 0
