@@ -366,6 +366,123 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("token flow", rendered)
         self.assertIn("Not ready", rendered)
 
+    def test_walkthrough_decodes_project_custom_error(self):
+        model = lk.walkthrough.ContractModel(
+            name="ConfidencePoolFactory",
+            source="src/ConfidencePoolFactory.sol",
+            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
+            abi=[{
+                "type": "error",
+                "name": "StakeTokenNotAllowed",
+                "inputs": [],
+            }],
+        )
+        with patch.object(lk.walkthrough, "_cmd", return_value=(0, "0x5e0ff495", "")):
+            decoded = lk.walkthrough._decode_custom_error(
+                'server returned error data: "0x5e0ff495"', [model]
+            )
+        self.assertEqual(decoded, "StakeTokenNotAllowed()")
+
+    def test_walkthrough_uninitialized_initializer_is_rejected(self):
+        model = lk.walkthrough.ContractModel(
+            name="ConfidencePoolFactory",
+            source="src/ConfidencePoolFactory.sol",
+            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
+            abi=[
+                {
+                    "type": "function",
+                    "name": "initialize",
+                    "stateMutability": "nonpayable",
+                    "inputs": [],
+                    "outputs": [],
+                },
+                {
+                    "type": "function",
+                    "name": "owner",
+                    "stateMutability": "view",
+                    "inputs": [],
+                    "outputs": [{"type": "address"}],
+                },
+                {
+                    "type": "function",
+                    "name": "safeHarborRegistry",
+                    "stateMutability": "view",
+                    "inputs": [],
+                    "outputs": [{"type": "address"}],
+                },
+            ],
+        )
+        zero = "0x" + "0" * 40
+        with patch.object(lk.walkthrough, "_runtime_code", return_value="0x6001"), \
+             patch.object(lk.walkthrough, "_artifact_runtime_code", return_value="0x6002"), \
+             patch.object(lk.walkthrough, "_cmd", return_value=(0, zero, "")):
+            ok, reason = lk.walkthrough._target_is_live_instance(
+                pathlib.Path("/tmp"), "http://127.0.0.1:8545", "0x" + "1" * 40, model
+            )
+        self.assertFalse(ok)
+        self.assertIn("unset", reason)
+
+    def test_walkthrough_interface_maps_to_concrete_first_party_implementation(self):
+        pool = lk.walkthrough.ContractModel(
+            name="ConfidencePool",
+            source="src/ConfidencePool.sol",
+            artifact="out/ConfidencePool.sol/ConfidencePool.json",
+            bases=["IConfidencePool"],
+            imports=["src/interfaces/IConfidencePool.sol"],
+        )
+        factory = lk.walkthrough.ContractModel(
+            name="ConfidencePoolFactory",
+            source="src/ConfidencePoolFactory.sol",
+            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
+            bases=["IConfidencePoolFactory"],
+            imports=["src/interfaces/IConfidencePoolFactory.sol", "src/interfaces/IConfidencePool.sol"],
+        )
+        mapping = lk.walkthrough._implementation_mapping([pool, factory])
+        self.assertEqual(mapping["IConfidencePool"], "ConfidencePool")
+
+    def test_walkthrough_create_pool_story_explains_protocol_flow(self):
+        step = lk.walkthrough.Step(
+            1,
+            "Alice",
+            "ConfidencePoolFactory",
+            "0x" + "1" * 40,
+            "createPool(address,address,uint256,uint256,address,address[])",
+            ["0x" + "2" * 40, "0x" + "3" * 40, 123, 10**18, "0x" + "4" * 40, ["0x" + "2" * 40]],
+        )
+        actor_list = [
+            lk.walkthrough.Actor("Alice", "0x" + "2" * 40, 0),
+            lk.walkthrough.Actor("Bob", "0x" + "3" * 40, 1),
+        ]
+        rendered = "\n".join(lk.walkthrough._friendly_action(step, actor_list))
+        self.assertIn("factory checks", rendered)
+        self.assertIn("child pool", rendered)
+        self.assertIn("initialized", rendered)
+
+    def test_walkthrough_function_link_uses_vscode_source_target(self):
+        model = lk.walkthrough.ContractModel(
+            name="ConfidencePoolFactory",
+            source="src/ConfidencePoolFactory.sol",
+            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
+            function_locations={"setStakeTokenAllowed": 142},
+        )
+        step = lk.walkthrough.Step(
+            1, "Alice", model.name, "0x" + "1" * 40,
+            "setStakeTokenAllowed(address,bool)", ["0x" + "2" * 40, True],
+        )
+        old = os.environ.get("VSCODE_PID")
+        os.environ["VSCODE_PID"] = "1"
+        try:
+            rendered = lk.walkthrough._render_interaction_graph(
+                pathlib.Path("/tmp/project"), step, [], model, [model], False
+            )
+        finally:
+            if old is None:
+                os.environ.pop("VSCODE_PID", None)
+            else:
+                os.environ["VSCODE_PID"] = old
+        self.assertIn("vscode://file/", rendered)
+        self.assertIn("setStakeTokenAllowed", rendered)
+
     def test_confidence_pool_auto_lab_uses_specialized_harness(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
