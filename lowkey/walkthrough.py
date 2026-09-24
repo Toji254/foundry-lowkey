@@ -1123,10 +1123,14 @@ def _human_action_summary(step: Step, actors: list[Actor]) -> str:
     args = step.args
     if lower == "approve":
         return f"{actor} approves {contract} to spend their stake tokens"
-    if lower in {"stake", "deposit"}:
+    if lower == "stake":
         amount = _friendly_value(args[0]) if args else "the requested amount"
         verb = "deposits" if step.status == "success" else "tries to deposit"
         return f"{actor} {verb} {amount} stake tokens into {contract}"
+    if lower == "deposit":
+        recipient = _friendly_arg(args[0], actors) if args else "the recipient"
+        verb = "deposits" if step.status == "success" else "tries to deposit"
+        return f"{actor} {verb} funds into {contract} for {recipient}"
     if lower == "contributebonus":
         amount = _friendly_value(args[0]) if args else "the requested amount"
         verb = "adds" if step.status == "success" else "tries to add"
@@ -1185,10 +1189,15 @@ def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
     if lower == "approve":
         lines.append(f"    └─ {actor} authorizes {contract} to spend tokens")
     elif lower in {"stake", "deposit", "contributebonus", "fund", "contribute"}:
-        amount = _friendly_value(step.args[0]) if step.args else "the requested amount"
-        lines.append(f"    ├─ token flow: {actor} ── {amount} ──▶ {contract}")
-        lines.append(f"    ├─ requested amount: {amount}")
-        lines.append("    └─ actual token movement/state writes are shown below when observed")
+        if lower == "deposit" and step.args and isinstance(step.args[0], str) and is_address(step.args[0]):
+            recipient = _friendly_arg(step.args[0], actors)
+            lines.append(f"    ├─ {actor} names {recipient} as the recipient")
+            lines.append("    └─ native ETH movement is shown separately above when applicable")
+        else:
+            amount = _friendly_value(step.args[0]) if step.args else "the requested amount"
+            lines.append(f"    ├─ token flow: {actor} ── {amount} ──▶ {contract}")
+            lines.append(f"    ├─ requested amount: {amount}")
+            lines.append("    └─ actual token movement/state writes are shown below when observed")
     elif lower in {
         "withdraw", "redeem", "refund", "collect",
         "claimsurvived", "claimcorrupted", "claimattackerbounty",
@@ -2129,9 +2138,12 @@ def _decode_word(word: str, typ: str, offset: int = 0, size: int = 32) -> Any:
         return "0x" + raw
 
 
-def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addresses: list[str]) -> list[dict[str, Any]]:
+def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addresses: list[str], observed_keys: list[Any] | None = None) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     entries = model.storage.get("storage") or []
+    observed_keys = list(observed_keys or [])
+    observed_addresses = [x for x in observed_keys if isinstance(x, str) and is_address(x)]
+    observed_numbers = [str(x) for x in observed_keys if isinstance(x, int) or (isinstance(x, str) and x.isdigit())]
     types = model.storage.get("types") or {}
 
     def type_info(type_id: str) -> dict[str, Any]:
@@ -2166,9 +2178,9 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
             keys: list[str] = []
             key_label = type_label(key_type)
             if key_label == "address":
-                keys = actor_addresses[:4]
+                keys = list(dict.fromkeys(actor_addresses + observed_addresses))[:12]
             elif key_label.startswith("uint") or key_label.startswith("int"):
-                keys = ["0", "1"]
+                keys = list(dict.fromkeys(["0", "1"] + observed_numbers))[:12]
             elif key_label == "bytes32":
                 keys = ["0x" + "00" * 32]
             for key in keys:
@@ -2250,6 +2262,7 @@ def _snapshot_runtime(
     models: list[ContractModel],
     rpc: str,
     actor_addresses: list[str],
+    observed_keys: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     by_name = {model.name: model for model in models}
     result: list[dict[str, Any]] = []
@@ -2257,7 +2270,7 @@ def _snapshot_runtime(
         model = by_name.get(node.model)
         if not model:
             continue
-        for item in _snapshot_storage(model, rpc, node.address, actor_addresses):
+        for item in _snapshot_storage(model, rpc, node.address, actor_addresses, observed_keys):
             item["contract"] = node.model
             item["address"] = node.address
             result.append(item)
@@ -3298,7 +3311,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 rpc, observed.get("staketoken"),
                 [a.address for a in actors] + [node.address for node in runtime],
             )
-            before=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
+            before=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors], step.args + list(system.values()))
             tx,output=_send(host,config,actor,step.address,step.function,step.args,step.value_wei)
             if not tx:
                 step.status="reverted"
@@ -3349,7 +3362,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                         if approval:
                             draw(approval)
 
-                after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
+                after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors], step.args + list(system.values()))
                 step.balance_after = _snapshot_balances(rpc, balance_addresses)
                 step.token_balance_after = _snapshot_token_balances(
                     rpc, observed.get("staketoken"),
