@@ -12,6 +12,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
+try:
+    from project_tools import (
+        build_dependency_graph,
+        detect_project,
+        project_source_files,
+    )
+except ImportError:  # pragma: no cover - supports direct/embedded installs
+    build_dependency_graph = detect_project = project_source_files = None
+
 IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2, "informational": 3, "optimization": 4}
 
 
@@ -392,8 +401,14 @@ def _body(mode: str) -> str:
 
 
 def run_source_triage(root: str = ".") -> int:
-    patterns = [
-        ("REENTRANCY/LOW-LEVEL CALL", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
+    """Run language-aware source heuristics without assuming a src/ tree."""
+    root_path = Path(root).resolve()
+    project = detect_project(root) if detect_project else {"kind": "generic", "languages": []}
+    files = project_source_files(root_path) if project_source_files else list(root_path.rglob("*.sol"))
+
+    solidity_patterns = [
+        ("REENTRANCY REVIEW", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
+        ("ETH TRANSFER REVIEW", re.compile(r"\.(transfer|send)\s*\(")),
         ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
         ("DELEGATECALL", re.compile(r"\bdelegatecall\b")),
         ("SELFDESTRUCT", re.compile(r"\bselfdestruct\s*\(")),
@@ -401,36 +416,67 @@ def run_source_triage(root: str = ".") -> int:
         ("ASSEMBLY", re.compile(r"\bassembly\s*\{")),
         ("ENCODE_PACKED", re.compile(r"\babi\.encodePacked\s*\(")),
         ("TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
-        ("BLOCKHASH/PREVRANDAO", re.compile(r"\bblock\.hash\s*(?:\(|$)|\bblockhash\s*\(|\bblock\.prevrandao\b")),
+        ("BLOCKHASH/PREVRANDAO", re.compile(r"\bblock\.hash\b|\bblockhash\s*\(|\bblock\.prevrandao\b")),
         ("ECRECOVER", re.compile(r"\becrecover\s*\(")),
+        ("CREATE2", re.compile(r"\bcreate2\b")),
     ]
-    root_path = Path(root).resolve()
-    base = root_path / "src" if (root_path / "src").is_dir() else root_path
+    vyper_patterns = [
+        ("RAW_CALL", re.compile(r"\braw_call\s*\(")),
+        ("EXTERNAL_CALL", re.compile(r"\b(?:extcall|staticcall)\b")),
+        ("ETH TRANSFER", re.compile(r"\bsend\s*\(")),
+        ("CREATE", re.compile(r"\bcreate_(?:minimal_proxy_to|forwarder_to|from_blueprint)\b")),
+        ("SELFDESTRUCT", re.compile(r"\bselfdestruct\s*\(")),
+        ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
+        ("TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
+        ("BLOCK NUMBER", re.compile(r"\bblock\.number\b")),
+        ("PREV HASH", re.compile(r"\bblock\.prevhash\b")),
+        ("RAW LOG", re.compile(r"\braw_log\s*\(")),
+    ]
+
     markers = []
-    for path in sorted(base.rglob("*.sol")):
-        if any(part in {".git", "out", "cache", "lib", ".audit"} for part in path.parts):
+    for path in files:
+        suffix = path.suffix.lower()
+        if suffix not in {".sol", ".vy", ".vyi"}:
             continue
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
+        language = "solidity" if suffix == ".sol" else "vyper"
+        patterns = solidity_patterns if language == "solidity" else vyper_patterns
+        text = read_text(path)
+        if not text:
             continue
-        for number, line in enumerate(lines, 1):
+        for number, line in enumerate(text.splitlines(), 1):
             for label, pattern in patterns:
                 if pattern.search(line):
                     markers.append({
-                        "file": str(path.relative_to(root_path)),
+                        "file": str(path.resolve().relative_to(root_path)),
                         "line": number,
+                        "language": language,
                         "label": label,
                         "text": line.strip(),
                     })
-    record_evidence("source_triage", {"count": len(markers), "markers": markers}, root)
-    print("SOURCE TRIAGE")
-    print("=" * 52)
-    for item in markers:
-        print(f"{item['file']}:{item['line']}: [{item['label']}] {item['text']}")
-    print(f"\nReview markers: {len(markers)}")
-    return 0
 
+    record_evidence(
+        "source_triage",
+        {
+            "project": project.get("kind"),
+            "languages": project.get("languages", []),
+            "files_scanned": len(files),
+            "count": len(markers),
+            "markers": markers,
+        },
+        root,
+    )
+    print("SOURCE TRIAGE")
+    print("=" * 72)
+    print(f"Project : {project.get('kind', 'generic')}")
+    print(f"Files   : {len(files)}")
+    for item in markers:
+        print(
+            f"{item['file']}:{item['line']}: "
+            f"[{item['language']}:{item['label']}] {item['text']}"
+        )
+    print(f"\nReview markers: {len(markers)}")
+    print("These are source-level review markers, not vulnerability verdicts.")
+    return 0
 
 def generate_poc(root: str = ".", finding_index: int | None = None, name: str | None = None) -> tuple[int, list[Path]]:
     evidence = read_json(evidence_dir(root) / "slither.json", {}).get("data", {})
@@ -626,6 +672,11 @@ def _format_step_status(root: str, name: str, detail: str = "") -> tuple[str, st
     data = _evidence_data(root, name)
     if not data:
         return "NOT RUN", detail or "no evidence recorded"
+    explicit = str(data.get("status") or "").lower()
+    if explicit in {"not_applicable", "not-applicable"}:
+        return "N/A", detail or str(data.get("reason") or "not applicable to project")
+    if explicit in {"skipped", "skip"}:
+        return "SKIPPED", detail or str(data.get("reason") or "skipped")
     code = data.get("exit_code")
     if code == 0:
         status = "PASS"
@@ -637,7 +688,6 @@ def _format_step_status(root: str, name: str, detail: str = "") -> tuple[str, st
         status = "REVIEW"
     return status, detail or str(data.get("reason") or "completed")
 
-
 def _fit_cell(value: Any, width: int) -> str:
     text = str(value).replace("\n", " ")
     return text if len(text) <= width else text[: max(0, width - 3)] + "..."
@@ -648,20 +698,31 @@ def _dashboard_row(columns: Sequence[Any], widths: Sequence[int]) -> None:
 
 
 def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) -> int:
-    """Render a stable, human-readable summary from the evidence workspace."""
+    """Render a project-aware summary from the evidence workspace."""
     config = _config()
     manifest = read_json(manifest_path(root), {})
     context = _evidence_data(root, "context")
-    rows: list[tuple[str, str, str]] = []
+    project = context.get("project", {}) if isinstance(context.get("project"), dict) else {}
+    kind = str(project.get("kind") or "generic")
 
-    for name, label in (("build", "Forge build"), ("tests", "Forge tests"), ("coverage", "Coverage")):
+    if "foundry" in kind:
+        build_label, test_label = "Forge build", "Forge tests"
+    elif "vyper" in kind:
+        build_label, test_label = "Vyper build", "Vyper tests"
+    else:
+        build_label, test_label = "Build", "Tests"
+
+    rows: list[tuple[str, str, str]] = []
+    for name, label in (("build", build_label), ("tests", test_label), ("coverage", "Coverage")):
         status, detail = _format_step_status(root, name)
         data = _evidence_data(root, name)
         stdout = str(data.get("stdout", ""))
         if name == "tests":
-            match = re.search(r"Tests:\s*(\d+) passed", stdout)
-            if match:
-                detail = f"{match.group(1)} tests passed"
+            for pattern in (r"(\d+)\s+passed", r"Tests:\s*(\d+)\s*passed"):
+                match = re.search(pattern, stdout)
+                if match:
+                    detail = f"{match.group(1)} tests passed"
+                    break
         elif name == "coverage":
             for pattern in (r"\bTotal coverage:\s*([^\n]+)", r"\bLines:\s*([^\n]+)"):
                 match = re.search(pattern, stdout)
@@ -674,7 +735,7 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
     if not slither:
         rows.append(("Slither", "NOT RUN", "no evidence recorded"))
     elif not slither.get("available", True):
-        rows.append(("Slither", "SKIPPED", "slither not found on PATH"))
+        rows.append(("Slither", "SKIPPED", str(slither.get("reason") or "not available")))
     else:
         code = slither.get("exit_code")
         status = "PASS" if code == 0 else "FAIL"
@@ -695,12 +756,26 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
         f"{triage.get('count', 0)} review markers" if triage else "no evidence recorded",
     ))
 
+    graph = _evidence_data(root, "dependency_graph")
+    if graph:
+        summary = graph.get("summary", {})
+        rows.append((
+            "System graph",
+            "PASS",
+            f"{summary.get('files', 0)} files | {summary.get('imports', 0)} imports | "
+            f"{summary.get('unresolved_imports', 0)} unresolved",
+        ))
+
     for name in ("lint", "geiger"):
         if (evidence_dir(root) / f"{name}.json").exists():
             status, detail = _format_step_status(root, name)
             rows.append((f"Forge {name}", status, detail))
 
-    poc_count = len(list(poc_dir(root).glob("*.json"))) + len(list(poc_dir(root).glob("*.t.sol")))
+    poc_count = (
+        len(list(poc_dir(root).glob("*.json")))
+        + len(list(poc_dir(root).glob("*.t.sol")))
+        + len(list(Path(root).glob("tests/poc_*.py")))
+    )
     rows.append(("PoC scaffold", "READY" if poc_count else "NOT RUN", f"{poc_count} artifact(s)" if poc_count else "none generated"))
 
     target = config.get("target") or context.get("target") or "not configured"
@@ -708,12 +783,18 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
     git_sha = context.get("git_sha") or "unknown"
     git_branch = context.get("git_branch") or "unknown"
 
-    mandatory = [_evidence_data(root, name).get("exit_code") for name in ("build", "tests", "coverage")]
-    mandatory_pass = all(code == 0 for code in mandatory)
+    mandatory = []
+    for name in ("build", "tests", "coverage"):
+        data = _evidence_data(root, name)
+        if str(data.get("status") or "").lower() in {"not_applicable", "not-applicable"}:
+            continue
+        mandatory.append(data.get("exit_code"))
+    mandatory_pass = bool(mandatory) and all(code == 0 for code in mandatory)
     overall = "PASS" if mandatory_pass and pipeline_code in (None, 0) else "REVIEW NEEDED"
 
     print("\n=== LOWKEY AUDIT DASHBOARD ===")
-    print("=" * 88)
+    print("=" * 96)
+    print(f"Project: {kind}")
     print(f"Target : {target}")
     print(f"RPC    : {rpc}")
     print(f"Git    : {git_branch} @ {git_sha}")
@@ -732,7 +813,6 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
     print("Heuristic findings are review leads, not vulnerability verdicts.")
     return 0 if overall == "PASS" else 1
 
-
 def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, generate: bool) -> int:
     manifest = read_json(manifest_path(root), {})
     manifest["pipeline"] = {
@@ -747,62 +827,278 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
     return code
 
 
+def _write_step_evidence(root: str, label: str, command: Sequence[str], code: int,
+                        stdout: str, stderr: str, *, status: str | None = None,
+                        reason: str | None = None) -> None:
+    payload: dict[str, Any] = {
+        "command": list(command),
+        "exit_code": code,
+        "stdout": stdout[-50000:],
+        "stderr": stderr[-20000:],
+    }
+    if status:
+        payload["status"] = status
+    if reason:
+        payload["reason"] = reason
+    write_text(evidence_dir(root) / f"{label}.stdout.txt", stdout)
+    write_text(evidence_dir(root) / f"{label}.stderr.txt", stderr)
+    record_evidence(label, payload, root)
+
+
+def _run_vyper_build(root: str) -> tuple[int, str, str, list[dict[str, Any]]]:
+    project_root = Path(root).resolve()
+    files = []
+    if project_source_files:
+        candidates = project_source_files(project_root, {"vy"})
+    else:
+        candidates = list(project_root.rglob("*.vy"))
+    for path in candidates:
+        relative_parts = {part.lower() for part in path.relative_to(project_root).parts}
+        if relative_parts & {"test", "tests", "mocks"}:
+            continue
+        files.append(path)
+    files = sorted(files)
+
+    if not files:
+        return 0, "No production Vyper .vy files found; source inventory completed.\n", "", []
+
+    all_stdout: list[str] = []
+    all_stderr: list[str] = []
+    records: list[dict[str, Any]] = []
+    overall = 0
+
+    for path in files:
+        rel = path.relative_to(project_root)
+        command = ["uv", "run", "vyper", str(rel), "-p", "."]
+        code, stdout, stderr = run_command(command, root, 300)
+        all_stdout.append(f"$ {' '.join(command)}\n{stdout}")
+        all_stderr.append(f"$ {' '.join(command)}\n{stderr}")
+        records.append({"file": str(rel), "command": command, "exit_code": code})
+        if code != 0 and overall == 0:
+            overall = code
+
+    return overall, "\n".join(all_stdout), "\n".join(all_stderr), records
+
+
+def _run_project_vyper_tests(root: str) -> tuple[int, str, str]:
+    return run_command(["uv", "run", "pytest", "."], root, 900)
+
+
 def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
     results: list[dict[str, Any]] = []
-    git_code, git_sha, _ = run_command(["git", "rev-parse", "HEAD"], root)
-    branch_code, branch, _ = run_command(["git", "branch", "--show-current"], root)
+
+    project = detect_project(root) if detect_project else {
+        "root": str(Path(root).resolve()),
+        "kind": "generic",
+        "languages": [],
+        "build_systems": [],
+        "sources": {"solidity": 0, "vyper": 0},
+    }
+
+    git_code, git_sha, git_err = run_command(["git", "rev-parse", "HEAD"], root)
+    branch_code, branch, branch_err = run_command(["git", "branch", "--show-current"], root)
     config = _config()
-    record_evidence("context", {
-        "target": config.get("target"),
-        "rpc": config.get("rpc"),
-        "git_sha": git_sha.strip() if git_code == 0 else None,
-        "git_branch": branch.strip() if branch_code == 0 else None,
-        "started_at": now_stamp(),
-    }, root)
 
-    for label, command, timeout in (
-        ("build", ["forge", "build"], 300),
-        ("tests", ["forge", "test", "-vvvv"], 600),
-        ("coverage", ["forge", "coverage"], 600),
-    ):
-        print(f"\n=== LOWKEY EVIDENCE: {label.upper()} ===")
-        code, stdout, stderr = run_command(command, root, timeout)
-        write_text(evidence_dir(root) / f"{label}.stdout.txt", stdout)
-        write_text(evidence_dir(root) / f"{label}.stderr.txt", stderr)
-        record_evidence(label, {
-            "command": command,
-            "exit_code": code,
-            "stdout": stdout[-50000:],
-            "stderr": stderr[-20000:],
-        }, root)
-        print(stdout.rstrip())
-        if stderr:
-            print(stderr.rstrip())
-        results.append({"label": label, "code": code})
-        if code != 0:
-            return _finalize_pipeline(root, results, code, generate)
+    record_evidence(
+        "context",
+        {
+            "target": config.get("target"),
+            "rpc": config.get("rpc"),
+            "project": project,
+            "git_sha": git_sha.strip() if git_code == 0 else None,
+            "git_branch": branch.strip() if branch_code == 0 else None,
+            "git_error": git_err or branch_err,
+            "started_at": now_stamp(),
+        },
+        root,
+    )
 
-    slither_code = run_slither(root, slither_args)
-    results.append({"label": "slither", "code": slither_code})
+    print("\n=== LOWKEY PROJECT DETECTION ===")
+    print(f"Type      : {project.get('kind', 'generic')}")
+    print(f"Languages : {', '.join(project.get('languages', [])) or 'none detected'}")
+    print(f"Toolchains: {', '.join(project.get('build_systems', [])) or 'none detected'}")
+    print(
+        "Sources   : Solidity "
+        f"{project.get('sources', {}).get('solidity', 0)} | Vyper "
+        f"{project.get('sources', {}).get('vyper', 0)}"
+    )
+
+    if build_dependency_graph is not None:
+        graph = build_dependency_graph(root)
+        record_evidence("dependency_graph", graph, root)
+        print(
+            "System graph: "
+            f"{graph.get('summary', {}).get('files', 0)} files, "
+            f"{graph.get('summary', {}).get('imports', 0)} imports, "
+            f"{graph.get('summary', {}).get('unresolved_imports', 0)} unresolved"
+        )
+
+    is_foundry = "foundry" in project.get("build_systems", [])
+    is_vyper = "vyper" in project.get("build_systems", [])
+    required_codes: list[int] = []
+
+    if is_foundry:
+        for label, command, timeout in (
+            ("build", ["forge", "build"], 300),
+            ("tests", ["forge", "test", "-vvvv"], 600),
+            ("coverage", ["forge", "coverage"], 600),
+        ):
+            print(f"\n=== LOWKEY EVIDENCE: {label.upper()} ===")
+            code, stdout, stderr = run_command(command, root, timeout)
+            _write_step_evidence(root, label, command, code, stdout, stderr)
+            print(stdout.rstrip())
+            if stderr:
+                print(stderr.rstrip())
+            results.append({"label": label, "code": code, "tool": "foundry"})
+            required_codes.append(code)
+
+    if is_vyper:
+        uv = command_path("uv")
+        if not uv:
+            code = 127
+            _write_step_evidence(
+                root, "build", ["uv"], code, "", "uv not found on PATH",
+                reason="Vyper project detected but uv is unavailable",
+            )
+            _write_step_evidence(
+                root, "tests", ["uv"], code, "", "uv not found on PATH",
+                reason="Vyper project detected but uv is unavailable",
+            )
+            record_evidence(
+                "coverage",
+                {
+                    "status": "not_applicable",
+                    "reason": "No universal Vyper coverage command was inferred.",
+                },
+                root,
+            )
+            required_codes.extend([code, code])
+            results.extend([
+                {"label": "build", "code": code, "tool": "uv"},
+                {"label": "tests", "code": code, "tool": "uv"},
+                {"label": "coverage", "code": 0, "tool": "uv", "status": "not_applicable"},
+            ])
+        else:
+            print("\n=== LOWKEY EVIDENCE: UV SYNC ===")
+            sync_code, sync_stdout, sync_stderr = run_command(
+                ["uv", "sync", "--locked"], root, 900
+            )
+            record_evidence(
+                "uv_sync",
+                {
+                    "command": ["uv", "sync", "--locked"],
+                    "exit_code": sync_code,
+                    "stdout": sync_stdout[-50000:],
+                    "stderr": sync_stderr[-20000:],
+                },
+                root,
+            )
+            print(sync_stdout.rstrip())
+            if sync_stderr:
+                print(sync_stderr.rstrip())
+
+            if sync_code == 0:
+                print("\n=== LOWKEY EVIDENCE: VYPER BUILD ===")
+                build_code, build_stdout, build_stderr, files = _run_vyper_build(root)
+                _write_step_evidence(
+                    root,
+                    "build",
+                    ["uv", "run", "vyper", "<production-vyper-files>", "-p", "."],
+                    build_code,
+                    build_stdout,
+                    build_stderr,
+                )
+                record_evidence("vyper_compile", {"files": files, "exit_code": build_code}, root)
+                print(build_stdout.rstrip())
+                if build_stderr:
+                    print(build_stderr.rstrip())
+                required_codes.append(build_code)
+            else:
+                _write_step_evidence(
+                    root,
+                    "build",
+                    ["uv", "sync", "--locked"],
+                    sync_code,
+                    sync_stdout,
+                    sync_stderr,
+                    reason="dependency sync failed; Vyper compilation was not attempted",
+                )
+                required_codes.append(sync_code)
+
+            print("\n=== LOWKEY EVIDENCE: VYPER TESTS ===")
+            test_code, test_stdout, test_stderr = _run_project_vyper_tests(root)
+            if sync_code != 0:
+                test_code = sync_code
+                test_stdout = ""
+                test_stderr = "Skipped because uv dependency synchronization failed."
+            _write_step_evidence(
+                root,
+                "tests",
+                ["uv", "run", "pytest", "."],
+                test_code,
+                test_stdout,
+                test_stderr,
+                reason="project-native Vyper test command",
+            )
+            print(test_stdout.rstrip())
+            if test_stderr:
+                print(test_stderr.rstrip())
+            required_codes.append(test_code)
+
+            record_evidence(
+                "coverage",
+                {
+                    "status": "not_applicable",
+                    "reason": "Vyper coverage is repository/framework specific; Lowkey will not invent a misleading generic command.",
+                },
+                root,
+            )
+            results.append({"label": "coverage", "code": 0, "tool": "vyper", "status": "not_applicable"})
+
+    if not is_foundry and not is_vyper:
+        for label in ("build", "tests", "coverage"):
+            record_evidence(
+                label,
+                {
+                    "status": "not_applicable",
+                    "reason": f"No supported {label} adapter for '{project.get('kind', 'generic')}'.",
+                },
+                root,
+            )
+
+    if is_foundry or project.get("sources", {}).get("solidity", 0) > 0:
+        slither_code = run_slither(root, slither_args)
+        results.append({"label": "slither", "code": slither_code})
+    else:
+        record_evidence(
+            "slither",
+            {
+                "available": False,
+                "reason": "Slither is a Solidity analyzer and no Solidity sources were detected.",
+                "findings": [],
+                "exit_code": 127,
+            },
+            root,
+        )
+        print("Slither: SKIPPED (no Solidity sources detected).")
+        results.append({"label": "slither", "code": 127})
+
     triage_code = run_source_triage(root)
     results.append({"label": "source_triage", "code": triage_code})
 
-    forge = command_path("forge")
-    for optional in ("lint", "geiger"):
-        if forge:
-            help_code, _, _ = run_command(["forge", optional, "--help"], root)
-            if help_code == 0:
-                print(f"\n=== LOWKEY EVIDENCE: {optional.upper()} ===")
-                code, stdout, stderr = run_command(["forge", optional], root, 600)
-                write_text(evidence_dir(root) / f"{optional}.stdout.txt", stdout)
-                write_text(evidence_dir(root) / f"{optional}.stderr.txt", stderr)
-                record_evidence(optional, {
-                    "command": ["forge", optional],
-                    "exit_code": code,
-                    "stdout": stdout[-50000:],
-                    "stderr": stderr[-20000:],
-                }, root)
-                results.append({"label": optional, "code": code})
+    if is_foundry:
+        forge = command_path("forge")
+        for optional in ("lint", "geiger"):
+            if forge:
+                help_code, _, _ = run_command(["forge", optional, "--help"], root)
+                if help_code == 0:
+                    print(f"\n=== LOWKEY EVIDENCE: {optional.upper()} ===")
+                    code, stdout, stderr = run_command(["forge", optional], root, 600)
+                    _write_step_evidence(root, optional, ["forge", optional], code, stdout, stderr)
+                    results.append({"label": optional, "code": code})
 
-    return _finalize_pipeline(root, results, 0, generate)
+    final_code = 0 if required_codes and all(code == 0 for code in required_codes) else (
+        required_codes[0] if required_codes else 0
+    )
+    return _finalize_pipeline(root, results, final_code, generate)
