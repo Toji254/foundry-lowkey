@@ -570,6 +570,93 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIsNone(result["decoded_error"])
         self.assertIsNone(result["revert_data"])
 
+
+    def test_blocked_protocol_transition_yields_state_enabling_prerequisite(self):
+        node = walk.LiveNode(
+            "0x" + "1" * 40,
+            "Factory",
+            100,
+            "Factory",
+        )
+        writer = walk.FunctionInfo(
+            contract="Factory",
+            name="setStakeTokenAllowed",
+            inputs=[
+                {"type": "address", "name": "token"},
+                {"type": "bool", "name": "allowed"},
+            ],
+            outputs=[],
+            mutability="nonpayable",
+            signature="setStakeTokenAllowed(address,bool)",
+            writes=["allowedStakeToken"],
+            modifiers=["onlyOwner"],
+            visibility="external",
+        )
+        creator = walk.FunctionInfo(
+            contract="Factory",
+            name="createPool",
+            inputs=[
+                {"type": "address", "name": "agreement"},
+                {"type": "address", "name": "stakeToken"},
+            ],
+            outputs=[],
+            mutability="nonpayable",
+            signature="createPool(address,address)",
+            reads=["allowedStakeToken"],
+            visibility="external",
+        )
+        blocked = {
+            "node": node,
+            "function": creator,
+            "args": ["0x" + "2" * 40, "0x" + "3" * 40],
+            "caller": "0x" + "2" * 40,
+            "actor_name": "Agreement Owner",
+            "status": "BLOCKED",
+            "result": {
+                "ok": False,
+                "decoded_error": "StakeTokenNotAllowed()",
+                "raw": "",
+            },
+            "diagnosis": [],
+        }
+
+        with patch.object(
+            walk,
+            "_choose_caller",
+            return_value=("0x" + "4" * 40, "Owner"),
+        ), patch.object(
+            walk,
+            "_preflight_failure",
+            return_value={
+                "ok": True,
+                "exit_code": 0,
+                "stdout": "0x",
+                "stderr": "",
+                "revert_data": None,
+                "decoded_error": None,
+                "trace": None,
+                "trace_revert_frames": [],
+                "raw": "",
+            },
+        ):
+            result = walk._prerequisite_from_blocked_action(
+                pathlib.Path("."),
+                "http://127.0.0.1:8545",
+                blocked,
+                {"Factory": [creator, writer]},
+                [node],
+                {"Alice": "0x" + "a" * 40},
+                {},
+                [],
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["function"].name, "setStakeTokenAllowed")
+        self.assertEqual(result["args"], ["0x" + "3" * 40, True])
+        self.assertEqual(result["phase"], "PREREQUISITE")
+        self.assertEqual(result["prerequisite_for"], "Factory.createPool()")
+        self.assertEqual(result["prerequisite_state"], "allowedStakeToken")
+
     def test_erc20_utility_is_not_a_protocol_walkthrough_entrypoint(self):
         funcs = [
             walk.FunctionInfo(
