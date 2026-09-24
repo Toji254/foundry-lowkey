@@ -3556,28 +3556,50 @@ def _model_has_function(model: ContractModel | None, names: Iterable[str]) -> bo
 
 
 def _infer_protocol_root(models: list[ContractModel]) -> ContractModel | None:
-    """Find a likely protocol entry point from lifecycle + deployment semantics."""
+    """Find a likely protocol entry point for upgradeable and ordinary systems."""
     ranked: list[tuple[int, ContractModel]] = []
+    root_words = ("factory", "manager", "router", "registry", "controller", "gateway", "vault", "engine")
+    lifecycle_prefixes = ("create", "deploy", "open", "register", "clone", "initialize", "setup", "configure")
     for model in models:
-        names = {str(sig).split("(", 1)[0].lower() for sig in model.functions}
-        if not any("initialize" == name for name in names):
+        if model.kind in {"interface", "library", "abstract"}:
             continue
+        names = {
+            str(sig).split("(", 1)[0].lower()
+            for sig in model.functions
+        }
+        names.update(
+            str(item.get("name") or "").lower()
+            for item in model.abi
+            if item.get("type") == "function"
+        )
         score = 0
         lower = model.name.lower()
-        if any(word in lower for word in ("factory", "manager", "router", "registry", "controller")):
+
+        if any(word in lower for word in root_words):
             score += 80
-        if any(
-            name.startswith(prefix)
-            for name in names
-            for prefix in ("create", "deploy", "open", "register", "clone")
-        ):
-            score += 100
-        if any("clone" in str(text).lower() or "create2" in str(text).lower() for text in [model.source, model.name]):
-            score += 20
-        if model.calls:
-            score += min(30, 5 * len([e for e in model.calls if e.get("kind") == "cross-contract"]))
+        for name in names:
+            if any(name.startswith(prefix) for prefix in lifecycle_prefixes):
+                score += 45
+            if name.startswith(("create", "deploy", "clone")):
+                score += 55
+
+        cross_calls = sum(
+            1 for edge in model.calls
+            if edge.get("kind") == "cross-contract"
+        )
+        score += min(60, cross_calls * 10)
+
+        if model.semantics:
+            if any(item.get("creates") for item in model.semantics.values()):
+                score += 40
+        source_lower = str(model.source).lower()
+        if any(token in source_lower for token in ("clone", "create2", "new ", "deploy")):
+            score += 25
+
+        # Ordinary single-contract protocols still get a deterministic fallback.
         if score:
             ranked.append((score, model))
+
     ranked.sort(key=lambda item: (-item[0], item[1].name.lower()))
     return ranked[0][1] if ranked else None
 
