@@ -175,6 +175,70 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn(0, numeric)
         self.assertIn(2**256 - 1, numeric)
 
+    def test_compiler_ast_edges_capture_interface_calls_and_contract_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = "pragma solidity ^0.8.20; contract Factory { function create() external { child.initialize(); IRegistry(address(registry)).check(); } address registry; }"
+            (root / "src" / "Factory.sol").write_text(source, encoding="utf-8")
+            ast = {
+                "nodeType":"SourceUnit", "src":"0:1:0",
+                "nodes":[
+                    {"nodeType":"ContractDefinition","id":1,"name":"Factory",
+                     "nodes":[
+                        {"nodeType":"FunctionDefinition","id":2,"name":"create","src":"34:80:0",
+                         "body":{"nodeType":"Block","src":"60:50:0","statements":[
+                            {"nodeType":"ExpressionStatement","expression":{"nodeType":"FunctionCall","src":"70:10:0",
+                             "expression":{"nodeType":"MemberAccess","memberName":"initialize",
+                              "expression":{"nodeType":"Identifier","name":"child","referencedDeclaration":3,"typeDescriptions":{"typeString":"contract Child storage ref"}}},
+                             "arguments":[]}},
+                            {"nodeType":"ExpressionStatement","expression":{"nodeType":"FunctionCall","src":"90:25:0",
+                             "expression":{"nodeType":"MemberAccess","memberName":"check",
+                              "expression":{"nodeType":"FunctionCall","src":"90:18:0","expression":{"nodeType":"Identifier","name":"IRegistry"},"arguments":[{"nodeType":"Identifier","name":"registry"}]},
+                              "arguments":[]}},
+                             }
+                         ]}}
+                     ]},
+                    {"nodeType":"VariableDeclaration","id":3,"name":"child","typeDescriptions":{"typeString":"contract Child storage ref"}},
+                ]
+            }
+            payload={"output":{"sources":{"src/Factory.sol":{"ast":ast}, "src/Child.sol":{}, "src/IRegistry.sol":{}}, "contracts":{}}}
+            (root / "out" / "build-info").mkdir(parents=True)
+            (root / "out" / "build-info" / "x.json").write_text(json.dumps(payload), encoding="utf-8")
+            model=walkthrough.ContractModel(name="Factory",source="src/Factory.sol",artifact="out/Factory.sol/Factory.json",functions=["create()"])
+            edges=walkthrough._build_info_ast_calls(root,model)
+        self.assertTrue(any(e.get("to_function")=="initialize" and e.get("to_contract")=="Child" for e in edges))
+        self.assertTrue(any(e.get("to_function")=="check" and e.get("interface")=="IRegistry" for e in edges))
+
+    def test_test_flow_hints_capture_ordered_behavior_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp)
+            (root/"test").mkdir()
+            (root/"test"/"Flow.t.sol").write_text(
+                """contract Flow { function testLifecycle() external { factory.setAllowed(token, true); factory.createPool(a); pool.stake(1); pool.withdraw(1); } }""",
+                encoding="utf-8"
+            )
+            model=walkthrough.ContractModel(
+                name="Factory",source="src/Factory.sol",artifact="out/Factory.sol/Factory.json",
+                abi=[
+                    {"type":"function","name":"setAllowed","inputs":[]},
+                    {"type":"function","name":"createPool","inputs":[]},
+                    {"type":"function","name":"stake","inputs":[]},
+                    {"type":"function","name":"withdraw","inputs":[]},
+                ],
+            )
+            hints=walkthrough._test_flow_hints(root,model)
+        self.assertLess(hints["setAllowed"][0], hints["createPool"][0])
+        self.assertLess(hints["createPool"][0], hints["stake"][0])
+        self.assertLess(hints["stake"][0], hints["withdraw"][0])
+
+    def test_infer_protocol_root_has_plain_application_fallback(self):
+        plain=walkthrough.ContractModel(
+            name="Vault",source="src/Vault.sol",artifact="out/Vault.sol/Vault.json",kind="contract",
+            abi=[{"type":"function","name":"deposit","inputs":[],"stateMutability":"nonpayable"}],
+            functions=["deposit()"],
+        )
+        self.assertEqual(walkthrough._infer_protocol_root([plain]).name,"Vault")
     def test_source_guard_probe_identifies_exact_mapping_key_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
