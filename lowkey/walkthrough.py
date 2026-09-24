@@ -747,14 +747,18 @@ def _human_action_summary(step: Step, actors: list[Actor]) -> str:
         return f"{actor} approves {contract} to spend their stake tokens"
     if lower in {"stake", "deposit"}:
         amount = _friendly_value(args[0]) if args else "the requested amount"
-        return f"{actor} deposits {amount} stake tokens into {contract}"
+        verb = "deposits" if step.status == "success" else "tries to deposit"
+        return f"{actor} {verb} {amount} stake tokens into {contract}"
     if lower == "contributebonus":
         amount = _friendly_value(args[0]) if args else "the requested amount"
-        return f"{actor} adds {amount} stake tokens to {contract}'s bonus pool"
+        verb = "adds" if step.status == "success" else "tries to add"
+        return f"{actor} {verb} {amount} to {contract}'s bonus pool"
     if lower == "withdraw":
-        return f"{actor} withdraws their stake from {contract}"
+        verb = "withdraws" if step.status == "success" else "tries to withdraw"
+        return f"{actor} {verb} their stake from {contract}"
     if lower.startswith("claim"):
-        return f"{actor} tries to claim their payout from {contract}"
+        verb = "claims" if step.status == "success" else "tries to claim"
+        return f"{actor} {verb} their payout from {contract}"
     if lower == "flagsurvived":
         return f"{actor} asks the moderator to mark {contract} as survived"
     if lower == "flagcorruptedgoodfaith":
@@ -804,8 +808,8 @@ def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
         lines.append(f"    └─ {actor} authorizes {contract} to spend tokens")
     elif lower in {"stake", "deposit", "contributebonus", "fund", "contribute"}:
         amount = _friendly_value(step.args[0]) if step.args else "the requested amount"
-        lines.append(f"    ├─ asset movement: {actor} ── {amount} ──▶ {contract}")
-        lines.append("    └─ contract records the participant's position")
+        lines.append(f"    ├─ requested amount: {amount}")
+        lines.append("    └─ actual token movement/state writes are shown below when observed")
     elif lower in {
         "withdraw", "redeem", "refund", "collect",
         "claimsurvived", "claimcorrupted", "claimattackerbounty",
