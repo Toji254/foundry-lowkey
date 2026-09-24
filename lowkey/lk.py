@@ -5072,10 +5072,20 @@ def _bootstrap_audit_target(config, root, allow_deploy=False):
             artifact_data = read_artifact(str(artifact))
             if artifact_has_initializer(artifact_data or {}):
                 stale_implementation = not _live_target_is_proxy(effective_rpc(config), existing.get("address"))
+        existing_contract = str(existing.get("contract") or "").lower()
+        rebuild_protocol_fixture = (
+            existing_contract in {"confidencepool", "confidencepoolfactory"}
+            and not isinstance(config.get("lab_system"), dict)
+        )
         if stale_implementation:
             print(
                 f"Existing target ignored: {existing.get('contract') or 'implementation'} "
                 "is an implementation contract, not a configured proxy target."
+            )
+        elif rebuild_protocol_fixture:
+            print(
+                f"Existing target deferred: {existing.get('contract') or 'protocol'} "
+                "needs the project-aware local protocol fixture."
             )
         else:
             activate_project_target(config, root)
