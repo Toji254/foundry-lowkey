@@ -752,6 +752,44 @@ def _flatten_mapping_changes(change: dict[str, Any]) -> list[str]:
     return lines
 
 
+
+def _snapshot_balances(rpc: str, addresses: list[str]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for address in dict.fromkeys(addresses):
+        raw = _rpc_call(rpc, "eth_getBalance", [address, "latest"])
+        try:
+            result[address.lower()] = int(raw, 16)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _friendly_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
+    if not step.balance_before or not step.balance_after:
+        return []
+    lines = []
+    addresses = set(step.balance_before) | set(step.balance_after)
+    names = {actor.address.lower(): actor.name for actor in actors}
+    for address in addresses:
+        before = step.balance_before.get(address)
+        after = step.balance_after.get(address)
+        if before is None or after is None:
+            continue
+        delta = after - before
+        # Ignore tiny native-balance movement caused only by gas when this wasn't
+        # a value-bearing call. Native value movement is rendered explicitly below.
+        if not step.value_wei and abs(delta) < 10**12:
+            continue
+        if not step.value_wei and abs(delta) < 10**15:
+            continue
+        if delta == 0:
+            continue
+        label = names.get(address, _addr(address))
+        direction = "+" if delta > 0 else "-"
+        lines.append(f"    ◆ ETH {label}: {direction}{_friendly_value(abs(delta))}")
+    return lines
+
+
 def _friendly_state_lines(step: Step, actors: list[Actor]) -> list[str]:
     lines = []
     for change in step.storage_changes[:10]:
@@ -826,7 +864,12 @@ def _render_protocol_story(
             lines.append("  │ " + detail)
 
         state_lines = _friendly_state_lines(step, actors)
+        balance_lines = _friendly_balance_lines(step, actors)
         event_lines = _friendly_event_lines(step)
+        if balance_lines:
+            lines.append("  │")
+            lines.append("  │ BALANCE MOVEMENT")
+            lines.extend("  │ " + line for line in balance_lines[:6])
         if state_lines:
             lines.append("  │")
             lines.append("  │ STATE CHANGED")
@@ -1867,6 +1910,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             draw(step)
         else:
             actor=next((a for a in actors if a.name==step.actor),actors[0])
+            balance_addresses = [a.address for a in actors] + [node.address for node in runtime]
+            step.balance_before = _snapshot_balances(rpc, balance_addresses)
             before=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
             tx,output=_send(host,config,actor,step.address,step.function,step.args,step.value_wei)
             if not tx:
@@ -1907,6 +1952,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                             draw(approval)
 
                 after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
+                step.balance_after = _snapshot_balances(rpc, balance_addresses)
                 step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
                 step.runtime_contracts=[asdict(x) for x in runtime]
                 draw(step, after)
