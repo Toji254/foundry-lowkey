@@ -3368,7 +3368,8 @@ def _run_walkthrough(
         )
         action["status"] = "READY" if pre["ok"] else "BLOCKED"
 
-        # --auto prepares/analyzes local state; --send is required for mutations.\n        live_send = bool(flags.get("send"))
+        # --auto prepares/analyzes local state; --send is required for mutations.
+        live_send = bool(flags.get("send"))
         if live_send and pre["ok"]:
             if not _is_local_rpc(str(meta["rpc"])):
                 action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
