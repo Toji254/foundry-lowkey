@@ -1478,18 +1478,15 @@ def _merge_artifact_functions(
     by_contract: dict[str, list[FunctionInfo]] = {}
     for name, abi in artifacts.items():
         ci = contracts.get(name)
-        source_map: dict[str, tuple[str | None, int | None]] = {}
-        if ci:
-            source_map = {
-                f.signature: (f.source, f.line)
-                for f in ci.functions
-            }
+        source_functions = {
+            f.signature: f for f in (ci.functions if ci else [])
+        }
         functions: list[FunctionInfo] = []
         for item in abi:
             if item.get("type") != "function":
                 continue
             sig = _function_signature_from_abi(item)
-            src, line = source_map.get(sig, (None, None))
+            src_info = source_functions.get(sig)
             functions.append(
                 FunctionInfo(
                     contract=name,
@@ -1498,38 +1495,15 @@ def _merge_artifact_functions(
                     outputs=item.get("outputs") or [],
                     mutability=str(item.get("stateMutability") or "nonpayable"),
                     signature=sig,
-                    source=src,
-                    line=line,
-                    body=(
-                        next(
-                            (
-                                f.body
-                                for f in (ci.functions if ci else [])
-                                if f.signature == sig
-                            ),
-                            "",
-                        )
-                    ),
-                    modifiers=(
-                        next(
-                            (
-                                f.modifiers
-                                for f in (ci.functions if ci else [])
-                                if f.signature == sig
-                            ),
-                            [],
-                        )
-                    ),
-                    calls=(
-                        next(
-                            (
-                                f.calls
-                                for f in (ci.functions if ci else [])
-                                if f.signature == sig
-                            ),
-                            [],
-                        )
-                    ),
+                    source=src_info.source if src_info else None,
+                    line=src_info.line if src_info else None,
+                    body=src_info.body if src_info else "",
+                    modifiers=list(src_info.modifiers or []) if src_info else [],
+                    calls=list(src_info.calls or []) if src_info else [],
+                    visibility=src_info.visibility if src_info else "unknown",
+                    reads=list(src_info.reads or []) if src_info else [],
+                    writes=list(src_info.writes or []) if src_info else [],
+                    array_ops=list(src_info.array_ops or []) if src_info else [],
                 )
             )
         by_contract[name] = functions
