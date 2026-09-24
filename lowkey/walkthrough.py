@@ -309,7 +309,7 @@ def _build_source_calls(model: ContractModel, models: list[ContractModel], sourc
     edges: list[dict[str, Any]] = []
     current_names = {sig.split("(", 1)[0] for sig in model.functions}
 
-    functions = list(re.finditer(r"\bfunction\s+(\w+)\s*\([^)]*\)[^{;]*\{", source_text, re.S))
+    functions = list(re.finditer(r"\bfunction\s+(\w+)\s*\(([^)]*)\)[^{;]*\{", source_text, re.S))
     for fn_match in functions:
         caller = fn_match.group(1)
         body = _balanced_block(source_text, fn_match.end() - 1)
@@ -569,6 +569,25 @@ def _function_semantics(model: ContractModel, source_text: str) -> dict[str, dic
     functions = list(re.finditer(r"\bfunction\s+(\w+)\s*\([^)]*\)[^{;]*\{", source_text, re.S))
     for match in functions:
         name = match.group(1)
+        params_text = match.group(2) or ""
+        params: list[dict[str, Any]] = []
+        depth = 0
+        start = 0
+        chunks: list[str] = []
+        for index, char in enumerate(params_text):
+            if char in "([{<":
+                depth += 1
+            elif char in ")]}>":
+                depth = max(0, depth - 1)
+            elif char == "," and depth == 0:
+                chunks.append(params_text[start:index].strip())
+                start = index + 1
+        if params_text.strip():
+            chunks.append(params_text[start:].strip())
+        for chunk in chunks:
+            param_match = re.search(r"([A-Za-z_]\w*)\s*$", chunk)
+            if param_match:
+                params.append({"name": param_match.group(1), "source": chunk})
         body = _balanced_block(source_text, match.end() - 1)
         reads: list[str] = []
         writes: list[str] = []
@@ -606,6 +625,7 @@ def _function_semantics(model: ContractModel, source_text: str) -> dict[str, dic
             "creates": list(dict.fromkeys(creates))[:8],
             "emits": list(dict.fromkeys(emitted))[:8],
             "external_calls": _source_edges_for_name(model, name),
+            "inputs": params,
             "line": source_text.count("\n", 0, match.start()) + 1,
         }
     return semantics
@@ -816,7 +836,7 @@ def _contract_requirement_for_parameter(
     models: list[ContractModel] | None = None,
     _seen: set[tuple[str, str, str]] | None = None,
 ) -> str | None:
-    """Infer contract requirements directly or through forwarded call arguments."""
+    """Infer whether an address must be a live contract through source dataflow."""
     if not model or not param_name:
         return None
 
@@ -826,7 +846,7 @@ def _contract_requirement_for_parameter(
         return None
     seen.add(marker)
 
-    # Direct dependency: the function casts/calls the parameter as a contract.
+    # Direct call: this parameter itself is used as an external contract.
     for edge in model.calls:
         if str(edge.get("from") or "") != function_name:
             continue
@@ -842,40 +862,82 @@ def _contract_requirement_for_parameter(
     implementations = _implementation_mapping(catalog)
     wanted = str(param_name).lower()
 
-    # Transitive dependency: e.g. Factory.createPool(agreement, token)
-    # forwards those parameters into Child.initialize(agreement, token), and
-    # Child.initialize uses them as IAgreement/IERC20. Follow the argument
-    # positions until the first concrete contract interface is found.
+    # Direct source casts such as IERC20(stakeToken_) or IAgreement(agreement).
+    try:
+        source = Path(model.source)
+        if not source.is_absolute():
+            # model.source is relative to the active project; for this inference,
+            # source text is already represented in model semantics/calls, so skip IO
+            # rather than inventing a project root.
+            pass
+    except Exception:
+        pass
+
+    # State alias: agreement_ -> agreement, stakeToken_ -> stakeToken, etc.
+    # Look through every source call edge for the assigned state variable.
+    aliases: set[str] = set()
+    semantics = model.semantics
+    # Function source is not embedded in the model, but semantic write/read names
+    # give us a conservative alias candidate when names differ only by underscore.
+    aliases.add(wanted.rstrip("_"))
+    aliases.add(wanted.replace("_", ""))
+
     for edge in model.calls:
-        if str(edge.get("from") or "") != function_name or edge.get("kind") != "cross-contract":
+        edge_from = str(edge.get("from") or "")
+        if edge_from == function_name:
             continue
+
+        via = str(edge.get("via") or "").lower()
+        if not via or via not in aliases:
+            continue
+        if edge.get("kind") != "cross-contract":
+            continue
+        return str(edge.get("interface") or edge.get("to_contract") or "") or None
+
+    # Follow forwarded arguments through internal/external calls.
+    for edge in model.calls:
+        if str(edge.get("from") or "") != function_name:
+            continue
+        kind = str(edge.get("kind") or "")
+        if kind not in {"internal", "cross-contract"}:
+            continue
+
         argument_names = edge.get("argument_names") or []
         if not isinstance(argument_names, list):
             continue
-
-        positions = [i for i, value in enumerate(argument_names) if str(value).lower() == wanted]
+        positions = [
+            i for i, value in enumerate(argument_names)
+            if str(value).lower() == wanted
+        ]
         if not positions:
             continue
 
-        raw_target = str(edge.get("to_contract") or edge.get("interface") or "")
-        concrete = implementations.get(raw_target, raw_target)
-        target_model = next(
-            (
-                item for item in catalog
-                if item.name.lower() == concrete.lower()
-                or item.name.lower() == raw_target.lower()
-            ),
-            None,
-        )
+        if kind == "internal":
+            target_model = model
+        else:
+            raw_target = str(edge.get("to_contract") or edge.get("interface") or "")
+            concrete = implementations.get(raw_target, raw_target)
+            target_model = next(
+                (
+                    item for item in catalog
+                    if item.name.lower() == concrete.lower()
+                    or item.name.lower() == raw_target.lower()
+                ),
+                None,
+            )
         if not target_model:
             continue
 
         callee_name = str(edge.get("to_function") or "")
         callee = _function_by_name(target_model, callee_name)
-        if not callee:
+        if callee:
+            inputs = callee.get("inputs") or []
+        else:
+            semantic = target_model.semantics.get(callee_name + "()") or target_model.semantics.get(callee_name)
+            inputs = semantic.get("inputs") or [] if isinstance(semantic, dict) else []
+        if not inputs:
             continue
 
-        inputs = callee.get("inputs") or []
         for position in positions:
             if position >= len(inputs):
                 continue
@@ -891,6 +953,7 @@ def _contract_requirement_for_parameter(
                 return nested
 
     return None
+
 
 
 def _normalize_observed_keys(observed: dict[str, Any]) -> dict[str, Any]:
@@ -1114,10 +1177,10 @@ def _test_flow_hints(root: Path | None, model: ContractModel) -> dict[str, tuple
         except OSError:
             continue
         for name in names:
-            for match in re.finditer(r"\.\\s*" + re.escape(name) + r"\s*\\(", source):
+            for match in re.finditer(r"\.\s*" + re.escape(name) + r"\s*\(", source):
                 # Calls inside test contracts are behavioral evidence; ignore function definitions.
                 prefix = source[max(0, match.start() - 24):match.start()]
-                if re.search(r"function\\s*$", prefix):
+                if re.search(r"function\s*$", prefix):
                     continue
                 occurrences[name].append(match.start())
     ordered = []
@@ -1643,7 +1706,7 @@ def _explain_failure(step: Step, raw: str | None, actor: str) -> str:
     if "argument resolution blocked" in lower or "no matching protocol dependency" in lower:
         return "Lowkey could not resolve a required contract address, so it refused to send an impossible call"
     if 'data:"0x"' in lower:
-        return "the node returned an empty revert payload; Lowkey will inspect initialized dependencies and the traced call path next"
+        return "the node returned an empty revert payload; a dependency call or ABI decoding step likely failed before a custom error was returned"
     if "executionreverted" in lower:
         return "the contract rejected this call under the current on-chain state"
     return "the live call was not accepted"
@@ -2047,7 +2110,7 @@ def _render_interaction_graph_full(
         if model and model.function_locations.get(function)
         else None
     )
-    call_display = _osc8(raw_call, call_target) if call_target else raw_call
+    call_display = _osc8(raw_call, call_target) if call_target and enabled else raw_call
     status = "✓ SUCCESS" if step.status == "success" else "✕ BLOCKED" if step.status in {"blocked", "reverted"} else "● CHECKING"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
@@ -2174,15 +2237,19 @@ def _story_timeline_line(
         if model and model.function_locations.get(function)
         else None
     )
-    call = _osc8(raw_call, target) if target else raw_call
+    call = _osc8(raw_call, target) if target and enabled else raw_call
     marker = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
     summary = _human_action_summary(step, actors)
+    failure = ""
+    if step.status in {"blocked", "reverted"}:
+        failure = f"  WHY IT FAILED: {_short_error(step.error or step.error_reason)}"
     return (
-        f"  {_paint(marker, color, enabled)}  "
-        f"{step.index:02d}  {ACTOR} {step.actor} {ARROW} "
+        f"  {_paint(marker, color, enabled)}  FUNCTION {step.index:02d}  "
+        f"{ACTOR} {step.actor} {ARROW} "
         f"{step.contract}.{call}"
         f"  {DIM if enabled else ''}{summary}{RESET if enabled else ''}"
+        f"{failure}"
     )
 
 
@@ -2761,7 +2828,7 @@ def _constant_duration_seconds(source_text: str, name: str) -> int | None:
     }
     return value * multipliers[match.group(2).lower()]
 def _mapping_argument_for_function(body: str, mapping_name: str, inputs: list[dict[str, Any]], args: list[Any]) -> tuple[str | None, Any]:
-    match = re.search(r"\b" + re.escape(mapping_name) + r"\s*\\[\\s*([A-Za-z_]\\w*)\\s*\\]", body)
+    match = re.search(r"\b" + re.escape(mapping_name) + r"\s*\[\s*([A-Za-z_]\w*)\s*\]", body)
     if not match:
         return None, None
     wanted = match.group(1).lower()
@@ -2777,7 +2844,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
     except OSError:
         return None, []
     name = str(step.function or "").split("(", 1)[0]
-    match = re.search(r"\bfunction\\s+" + re.escape(name) + r"\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
+    match = re.search(r"\bfunction\s+" + re.escape(name) + r"\s*\([^)]*\)[^{;]*\{", source, re.S)
     header = match.group(0) if match else ""
     body = _balanced_block(source, match.end() - 1) if match else ""
     guard_region = header + "\n" + body
@@ -2791,7 +2858,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
             continue
         pname = str(param.get("name") or ("arg" + str(index + 1)))
         value = step.args[index]
-        if re.search(r"\b" + re.escape(pname) + r"\s*==\\s*address\\(0\\)", body):
+        if re.search(r"\b" + re.escape(pname) + r"\s*==\s*address\(0\)", body):
             if is_address(value) and value.lower() == "0x" + "00" * 20:
                 diagnostics.append("✕ " + pname + " = zero address; source rejects it")
                 origin = origin or (model.name + "." + name + " → " + pname + " == address(0)")
@@ -2822,7 +2889,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
 
     for mapping in model.mappings:
         mapping_name = str(mapping.get("name") or "")
-        if not mapping_name or not re.search(r"\b" + re.escape(mapping_name) + r"\s*\\[", body):
+        if not mapping_name or not re.search(r"\b" + re.escape(mapping_name) + r"\s*\[", body):
             continue
         getter = next((item for item in model.abi if item.get("type") == "function" and item.get("name") == mapping_name and len(item.get("inputs") or []) == 1), None)
         if not getter:
@@ -2845,7 +2912,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
         value = by_name.get(pname.lower())
         if not isinstance(value, int):
             continue
-        tm = re.search(r"\b" + re.escape(pname) + r"\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", body)
+        tm = re.search(r"\b" + re.escape(pname) + r"\s*<\s*block\.timestamp\s*\+\s*([A-Za-z_]\w*)", body)
         if not tm:
             continue
         seconds = _constant_duration_seconds(source, tm.group(1))
@@ -2909,7 +2976,7 @@ def _function_body(root: Path, model: ContractModel, function_name: str) -> str:
         source = (root / model.source).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
-    match = re.search(r"\bfunction\\s+" + re.escape(function_name) + r"\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
+    match = re.search(r"\bfunction\s+" + re.escape(function_name) + r"\s*\([^)]*\)[^{;]*\{", source, re.S)
     return _balanced_block(source, match.end() - 1) if match else ""
 
 def _find_mapping_setter(root: Path, model: ContractModel, mapping_name: str) -> dict[str, Any] | None:
@@ -2929,7 +2996,7 @@ def _find_mapping_setter(root: Path, model: ContractModel, mapping_name: str) ->
         if "allow" in name.lower() or "enable" in name.lower() or "active" in name.lower():
             score += 25
         body = _function_body(root, model, name)
-        if mapping_name and re.search(r"\b" + re.escape(mapping_name) + r"\s*\\[", body):
+        if mapping_name and re.search(r"\b" + re.escape(mapping_name) + r"\s*\[", body):
             score += 100
         if re.search(r"\]\s*=", body):
             score += 10
@@ -2996,7 +3063,7 @@ def _prepare_obvious_prerequisite(root: Path, rpc: str, host: Any, config: dict[
         pname = str(param.get("name") or "")
         if index >= len(step.args) or _canonical_type(param) not in {"uint256", "uint128", "uint64", "uint32"}:
             continue
-        tm = re.search(r"\b" + re.escape(pname) + r"\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", source, re.S)
+        tm = re.search(r"\b" + re.escape(pname) + r"\s*<\s*block\.timestamp\s*\+\s*([A-Za-z_]\w*)", source, re.S)
         if not tm:
             continue
         seconds = _constant_duration_seconds(source, tm.group(1))
@@ -3107,11 +3174,16 @@ def _diagnose_argument_contracts(
     rpc: str,
     step: Step,
     model: ContractModel,
-    models: list[ContractModel],
-    actors: list[Actor],
+    models: list[ContractModel] | Actor | None = None,
+    actors: list[Actor] | None = None,
     runtime: list[RuntimeContract] | None = None,
 ) -> tuple[str | None, list[str]]:
     """Explain address arguments that source code expects to be contracts."""
+    if isinstance(models, Actor):
+        actors = [models]
+        models = None
+    models = list(models or [model])
+    actors = list(actors or [])
     origin = None
     lines: list[str] = []
     inputs = _function_inputs(model, step.function)
