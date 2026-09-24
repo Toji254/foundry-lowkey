@@ -1041,6 +1041,15 @@ def _semantic_args(
     root: Path,
     rpc: str,
 ) -> tuple[list[Any] | None, str | None]:
+    # Resolve protocol roles before generic per-argument synthesis. This keeps
+    # diagnostics semantic ("Agreement" / "ERC20") instead of leaking a
+    # generic "no safe semantic value" when a required dependency is absent.
+    if fn.name == "createPool" and len(fn.inputs) >= 6:
+        if not known.get("agreement"):
+            return None, "no live Agreement contract discovered"
+        if not known.get("erc20"):
+            return None, "no live ERC20 stake token discovered"
+
     args: list[Any] = []
     for item in fn.inputs:
         typ = _canonical_abi_type(item)
@@ -1118,7 +1127,7 @@ def _preflight_failure(
     trace = None
     trace_revert_frames: list[str] = []
     if code != 0 and not decoded and (not blob or blob == "0x"):
-        trace = _debug_trace_call(root, rpc, address, fn, args, caller)
+        trace = _debug_trace_call(root, rpc, node.address, fn, args, caller)
         trace_revert_frames = _trace_revert_frames(trace)
     return {
         "ok": code == 0,
@@ -1511,7 +1520,8 @@ def _mutations(value: Any, typ: str, actors: dict[str, str], rng: random.Random)
     t = typ
     out: list[Any] = []
     if t.startswith("uint"):
-        vals = [0, 1, 2**8 - 1, 2**16 - 1, 2**32 - 1]
+        # Keep both tiny transition values and width-aware upper boundaries.
+        vals = [0, 1, 2, 2**8 - 1, 2**16 - 1, 2**32 - 1]
         for v in vals:
             if v != value:
                 out.append(v)
