@@ -2681,7 +2681,7 @@ def _render_contract_surface(
             if writers:
                 writer_bits = []
                 for fn in writers[:5]:
-                    writer_bits.append(f"{fn.name} ({fn.visibility})")
+                    writer_bits.append(f"{fn.name} [{_function_access_label(fn, functions)}]")
                 lines.append(f"      {_paint('WRITES', 'red')}  {', '.join(writer_bits)}")
             else:
                 lines.append(f"      {_paint('WRITES', 'dim')}  no source writer found")
@@ -2690,8 +2690,9 @@ def _render_contract_surface(
                 lines.append(f"      {_paint('READS', 'cyan')}   {', '.join(fn.name for fn in readers[:5])}")
 
             ops = []
-            for fn in writers:
-                ops.extend(fn.array_ops or [])
+            for fn in functions:
+                if name in (fn.reads or []) or name in (fn.writes or []):
+                    ops.extend(fn.array_ops or [])
             if ops:
                 lines.append(f"      {_paint('DATA FLOW', 'blue')} {', '.join(sorted(set(ops))[:5])}")
 
@@ -2802,6 +2803,47 @@ def _render_action_card(
         for item in action.get("diagnosis", [])[:2]:
             lines.append(f"         evidence: {item}")
     return "\n".join(lines)
+
+
+def _format_state_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "ON / true" if value else "OFF / false"
+    if isinstance(value, list):
+        if not value:
+            return "empty []"
+        if len(value) > 4:
+            return "[" + ", ".join(_short_address(x) if _is_address(x) else str(x) for x in value[:4]) + f", … +{len(value)-4}]"
+        return "[" + ", ".join(_short_address(x) if _is_address(x) else str(x) for x in value) + "]"
+    if _is_address(value):
+        return _short_address(value)
+    return str(value)
+
+
+def _render_live_state(
+    target: LiveNode,
+    functions: list[FunctionInfo],
+    getter_values: dict[str, Any],
+) -> list[str]:
+    lines = [_section("LIVE STATE / WHAT THE CHAIN CURRENTLY SAYS", "blue")]
+    if not getter_values:
+        lines.append("  No simple zero-argument readable state was recovered.")
+        return lines
+
+    interesting = []
+    for name, value in getter_values.items():
+        lower = name.lower()
+        score = 10
+        if any(token in lower for token in ("owner", "admin", "moderator", "state", "status", "paused", "allowed", "open", "active", "expiry", "deadline", "stake", "balance", "count")):
+            score += 20
+        if isinstance(value, (list, dict)):
+            score += 5
+        interesting.append((score, name, value))
+    interesting.sort(key=lambda x: (-x[0], x[1]))
+
+    for _, name, value in interesting[:10]:
+        lines.append(f"  {_paint(name, 'blue')} = {_format_state_value(value)}")
+    lines.append("  These are observed values from read-only calls; they are state evidence, not guesses.")
+    return lines
 
 
 def _render_story(
@@ -3086,6 +3128,7 @@ def _build_model(
             "artifact_count": len(artifacts),
             "live_nodes": [],
             "known_roles": {},
+            "runtime_getters": {},
             "bootstrap": bootstrap,
             "system_manifest": manifest,
             "static_system": _static_system_context(bootstrap, contracts),
@@ -3180,6 +3223,7 @@ def _build_model(
         "artifact_count": len(artifacts),
         "live_nodes": [asdict(x) for x in nodes],
         "known_roles": known,
+        "runtime_getters": getter_data,
         "bootstrap": bootstrap,
         "system_manifest": manifest,
         "static_system": _static_system_context(bootstrap, contracts),
