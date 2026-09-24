@@ -1196,27 +1196,32 @@ def _project_solc_env(root: str, project: dict[str, Any] | None = None) -> dict[
     return env
 
 
-def _project_python(root: str) -> str | None:
+def _project_test_command(root: str, project: dict[str, Any] | None = None) -> list[str]:
     root_path = Path(root).resolve()
-    candidates = [
-        root_path / ".venv" / "bin" / "python",
-        root_path / ".venv" / "Scripts" / "python.exe",
+    test_roots = [
+        root_path / name
+        for name in ("tests", "test")
+        if (root_path / name).is_dir()
     ]
 
-    virtual_env = os.environ.get("VIRTUAL_ENV")
-    if virtual_env:
-        env_path = Path(virtual_env)
-        candidates.extend([
-            env_path / "bin" / "python",
-            env_path / "Scripts" / "python.exe",
-        ])
+    # Prefer an explicitly active environment when Lowkey was launched from
+    # one. This preserves repository test dependencies that are intentionally
+    # provided by the active environment while still falling back to the
+    # project's managed .venv when no environment is active.
+    command = ["uv", "run", "--active", "pytest"]
 
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate.resolve())
-    return None
+    if test_roots:
+        command.extend(str(path.relative_to(root_path)) for path in test_roots)
+    else:
+        command.append(".")
 
-
+    for dependency_root in _project_dependency_paths(root, project):
+        try:
+            relative = dependency_root.relative_to(root_path)
+        except ValueError:
+            continue
+        command.extend(["--ignore", str(relative)])
+    return command
 def _project_test_command(root: str, project: dict[str, Any] | None = None) -> list[str]:
     root_path = Path(root).resolve()
     test_roots = [
