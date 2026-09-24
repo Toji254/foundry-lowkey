@@ -1004,7 +1004,7 @@ def _test_flow_hints(root: Path | None, model: ContractModel) -> dict[str, tuple
         except OSError:
             continue
         for name in names:
-            for match in re.finditer(r"\\.\\s*" + re.escape(name) + r"\\s*\\(", source):
+            for match in re.finditer(r"\.\\s*" + re.escape(name) + r"\s*\\(", source):
                 # Calls inside test contracts are behavioral evidence; ignore function definitions.
                 prefix = source[max(0, match.start() - 24):match.start()]
                 if re.search(r"function\\s*$", prefix):
