@@ -401,7 +401,7 @@ def _action_phase(fn: FunctionInfo) -> str:
         return "OUTCOME"
     if any(x in n for x in ("withdraw", "sweep")):
         return "SETTLE"
-    if any(x in n for x in ("set", "pause", "unpause", "upgrade", "authorize")):
+    if any(x in n for x in ("set", "pause", "unpause", "upgrade", "authorize", "ownership", "renounce", "transfer")):
         return "ADMIN"
     return "INTERACTION"
 
@@ -2234,6 +2234,7 @@ def _preflight_failure(
     args: list[Any],
     caller: str,
     all_errors: list[dict[str, Any]],
+    include_trace: bool = False,
 ) -> dict[str, Any]:
     code, out, err = _cast_call(
         root,
@@ -2248,7 +2249,7 @@ def _preflight_failure(
     decoded = _decode_error(blob, all_errors)
     trace = None
     trace_revert_frames: list[str] = []
-    if code != 0 and not decoded and (not blob or blob == "0x"):
+    if include_trace or (code != 0 and not decoded and (not blob or blob == "0x")):
         trace = _debug_trace_call(root, rpc, node.address, fn, args, caller)
         trace_revert_frames = _trace_revert_frames(trace)
     return {
@@ -3133,6 +3134,266 @@ def _render_action_card(
     return "\n".join(lines)
 
 
+
+def _trace_transaction(
+    root: Path,
+    rpc: str,
+    tx_hash: str,
+) -> dict[str, Any] | None:
+    """Best-effort EVM call-tree trace for an already-mined transaction."""
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(tx_hash or "")):
+        return None
+    try:
+        payload = _rpc(
+            rpc,
+            "debug_traceTransaction",
+            [tx_hash, {"tracer": "callTracer"}],
+        )
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _send_transaction_hash(send: dict[str, Any]) -> str | None:
+    text = "\n".join(
+        str(send.get(key) or "")
+        for key in ("stdout", "stderr")
+    )
+    match = re.search(
+        r"(?im)^\s*(?:transactionHash|transaction\s+hash)\s*[: ]\s*(0x[0-9a-fA-F]{64})\b",
+        text,
+    )
+    if match:
+        return match.group(1)
+    matches = re.findall(r"\b0x[0-9a-fA-F]{64}\b", text)
+    return matches[0] if matches else None
+
+
+def _trace_contract_label(
+    address: str,
+    nodes: list[LiveNode],
+) -> str:
+    for node in nodes:
+        if node.address.lower() == str(address or "").lower():
+            return node.artifact_contract or node.name
+    return _short_address(address)
+
+
+def _trace_function_label(
+    frame: dict[str, Any],
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    root_node: LiveNode,
+    root_fn: FunctionInfo,
+    *,
+    is_root: bool = False,
+) -> str:
+    if is_root:
+        return root_fn.name + "()"
+
+    to = str(frame.get("to") or "")
+    contract_name = _trace_contract_label(to, nodes)
+    data = str(frame.get("input") or "")
+    selector = data[:10].lower() if data.startswith("0x") and len(data) >= 10 else ""
+    if selector:
+        funcs = functions_by_contract.get(contract_name, [])
+        for candidate in funcs:
+            if _keccak_selector(candidate.signature).lower() == selector:
+                return f"{contract_name}.{candidate.name}()"
+    if data.startswith("0x") and len(data) >= 10:
+        return f"{contract_name}.<selector {selector}>"
+    return contract_name
+
+
+def _flatten_call_trace(
+    trace: Any,
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    root_node: LiveNode,
+    root_fn: FunctionInfo,
+    *,
+    max_depth: int = 4,
+    max_frames: int = 20,
+) -> list[tuple[int, str, str | None, str | None, str]]:
+    rows: list[tuple[int, str, str | None, str | None, str]] = []
+
+    def visit(frame: Any, depth: int, is_root: bool = False) -> None:
+        if len(rows) >= max_frames or not isinstance(frame, dict) or depth > max_depth:
+            return
+        label = _trace_function_label(
+            frame,
+            nodes,
+            functions_by_contract,
+            root_node,
+            root_fn,
+            is_root=is_root,
+        )
+        kind = str(frame.get("type") or "CALL").upper()
+        to = str(frame.get("to") or "")
+        error = frame.get("error") or frame.get("revertReason")
+        rows.append((depth, kind, label, error, to))
+        for child in frame.get("calls") or []:
+            visit(child, depth + 1)
+            if len(rows) >= max_frames:
+                break
+
+    visit(trace, 0, True)
+    return rows
+
+
+def _storage_effect_label(
+    fn: FunctionInfo,
+    state_name: str,
+    contracts: dict[str, ContractInfo],
+    actor_name: str,
+    args: list[Any],
+) -> str:
+    contract = contracts.get(fn.contract)
+    state = next(
+        (
+            item for item in (contract.state_vars or [])
+            if str(item.get("name") or "") == state_name
+        ),
+        None,
+    ) if contract else None
+
+    raw_type = str((state or {}).get("type") or "")
+    target = f"{fn.contract}::{state_name}"
+
+    if raw_type.lower().startswith("mapping"):
+        body = fn.body or ""
+        if re.search(rf"\b{re.escape(state_name)}\s*\[\s*msg\.sender\s*\]", body):
+            return f"{target}[{actor_name}]"
+        for index, param in enumerate(fn.inputs):
+            pname = str(param.get("name") or "")
+            if not pname or index >= len(args):
+                continue
+            if re.search(rf"\b{re.escape(state_name)}\s*\[\s*{re.escape(pname)}\s*\]", body):
+                return f"{target}[{_render_value(args[index])}]"
+    return target
+
+
+def _other_storage_paths(
+    fn: FunctionInfo,
+    state_name: str,
+    functions: list[FunctionInfo],
+) -> list[str]:
+    peers = [
+        candidate.name
+        for candidate in functions
+        if candidate.name != fn.name
+        and (
+            state_name in (candidate.reads or [])
+            or state_name in (candidate.writes or [])
+        )
+    ]
+    return list(dict.fromkeys(peers))[:5]
+
+
+def _render_execution_trace(
+    root: Path,
+    action: dict[str, Any],
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    contracts: dict[str, ContractInfo],
+    *,
+    links: bool = True,
+) -> list[str]:
+    node: LiveNode = action["node"]
+    fn: FunctionInfo = action["function"]
+    actor = str(action.get("actor_name") or "Unknown")
+    status = str(action.get("status") or "READY").upper()
+    label = f"{node.artifact_contract or node.name}.{fn.name}"
+    if links and fn.source and fn.line:
+        label = _source_link(root, fn.source, fn.line, label)
+
+    lines = [
+        _section(
+            f"EXECUTION / {action.get('phase', 'STEP')}",
+            "cyan",
+        ),
+        f"  {_paint(actor, 'magenta')} → {_paint(label, 'bold')}",
+        f"  ARGS   {_render_value(action.get('args') or [])}",
+        f"  STATUS {_paint(status, 'green' if status == 'SUCCESS' else 'yellow' if status in {'READY', 'RUNNING'} else 'red')}",
+    ]
+
+    result = action.get("result") or {}
+    trace = result.get("trace")
+    rows = _flatten_call_trace(
+        trace,
+        nodes,
+        functions_by_contract,
+        node,
+        fn,
+    ) if trace else []
+
+    if rows:
+        lines.append(f"  {_paint('EVM CALL TREE / OBSERVED', 'cyan')}")
+        for depth, kind, call_label, error, _ in rows:
+            prefix = "      " + ("│  " * max(0, depth - 1))
+            branch = "└─ " if depth else ""
+            detail = f"{prefix}{branch}{kind}  {call_label}"
+            if error:
+                detail += f"  {_paint(str(error), 'red')}"
+            lines.append(detail)
+    else:
+        lines.append("  EVM CALL TREE / no runtime trace available")
+
+    lines.append(f"  {_paint('INTERNAL PATH / SOURCE-CORRELATED', 'yellow')}")
+    internal = [
+        str(call.get("function") or "")
+        for call in fn.calls or []
+        if call.get("kind") == "internal-call"
+    ]
+    if internal:
+        unique = list(dict.fromkeys(x for x in internal if x))
+        chain = f"{fn.name}() → " + " → ".join(f"{name}()" for name in unique[:6])
+        lines.append(f"      {chain}")
+    else:
+        lines.append("      no internal/private helper call proven for this entry point")
+
+    touched = list(dict.fromkeys((fn.writes or []) + (fn.reads or [])))
+    if touched:
+        lines.append(f"  {_paint('SHARED STATE / THIS EXECUTION', 'blue')}")
+        write_set = set(fn.writes or [])
+        for state_name in touched[:10]:
+            mode = "WRITE" if state_name in write_set else "READ"
+            effect = _storage_effect_label(
+                fn,
+                state_name,
+                contracts,
+                actor,
+                list(action.get("args") or []),
+            )
+            color = "red" if mode == "WRITE" else "cyan"
+            lines.append(
+                f"      {fn.name}() ──[{_paint(mode, color)}]──▶ "
+                f"{_paint(effect, 'blue')}"
+            )
+            peers = _other_storage_paths(fn, state_name, functions_by_contract.get(fn.contract, []))
+            if peers:
+                lines.append(
+                    f"          ↳ same storage is also touched by: "
+                    + ", ".join(f"{name}()" for name in peers)
+                )
+
+    if result.get("decoded_error"):
+        msg, rec = _friendly_error(result.get("decoded_error"), result.get("raw", ""))
+        lines.append(f"  RESULT {_status_icon('BLOCKED')} {msg}")
+        lines.append(f"  NEXT   {_paint(rec, 'yellow')}")
+    elif result.get("ok"):
+        lines.append(
+            f"  RESULT {_status_icon('PASS')} "
+            "transaction/call completed successfully."
+        )
+
+    tx_hash = str(action.get("send", {}).get("transaction_hash") or "")
+    if tx_hash:
+        lines.append(f"  TX     {tx_hash}")
+
+    return lines
+
+
 def _render_story(
     root: Path,
     nodes: list[LiveNode],
@@ -3143,6 +3404,7 @@ def _render_story(
     current: int | None = None,
     links: bool = True,
     meta: dict[str, Any] | None = None,
+    live: bool = False,
 ) -> str:
     meta = meta if isinstance(meta, dict) else {}
     live_nodes = [n for n in nodes if n.code_size > 0]
@@ -3187,6 +3449,33 @@ def _render_story(
     names = _canonical_actor_names(actors)
     if names:
         lines.append(f"  Actors       {_paint(' / '.join(names), 'magenta')}")
+
+    if live:
+        if actions and current is not None and 0 <= current < len(actions):
+            lines += [""] + _render_execution_trace(
+                root,
+                actions[current],
+                nodes,
+                functions_by_contract,
+                contracts,
+                links=links,
+            )
+        elif actions:
+            lines += ["", _section("EXECUTION", "cyan")]
+            lines.append("  No current execution step selected.")
+        else:
+            lines += ["", _section("EXECUTION", "cyan")]
+            lines.append("  No executable transition selected from the current state.")
+        lines += [
+            "",
+            _paint("BLUE","blue") + " storage  " +
+            _paint("CYAN","cyan") + " runtime call tree  " +
+            _paint("GREEN","green") + " success  " +
+            _paint("RED","red") + " revert/blocked  " +
+            _paint("YELLOW","yellow") + " source-correlated internal path  " +
+            _paint("MAGENTA","magenta") + " actors",
+        ]
+        return "\n".join(lines)
 
     lines += ["", _section("SYSTEM CONNECTION WEB", "cyan")]
     lines += _render_connection_web(
@@ -3555,7 +3844,8 @@ def _walkthrough_phase_priority(fn: FunctionInfo) -> tuple[int, str]:
 def _walkthrough_is_setup_action(fn: FunctionInfo) -> bool:
     n = fn.name.lower()
     return n.startswith("initialize") or n in {
-        "setstaketokenallowed", "pause", "unpause", "upgrade"
+        "setstaketokenallowed", "pause", "unpause", "upgrade",
+        "renounceownership", "transferownership", "acceptownership",
     }
 
 
@@ -3778,6 +4068,18 @@ def _run_walkthrough(
             break
 
         # Show exactly the current transition, not a precomputed wall of stale steps.
+        if not live_send:
+            action["result"] = _preflight_failure(
+                root,
+                str(meta["rpc"]),
+                action["node"],
+                action["function"],
+                action["args"],
+                str(action["caller"]),
+                errors,
+                include_trace=True,
+            )
+
         print(_render_story(
             root,
             nodes,
@@ -3788,6 +4090,7 @@ def _run_walkthrough(
             0,
             flags.get("links", True),
             meta,
+            live=True,
         ))
 
         if not live_send:
@@ -3848,7 +4151,14 @@ def _run_walkthrough(
         fn: FunctionInfo = action["function"]
         caller = str(action["caller"])
         pre = _preflight_failure(
-            root, str(meta["rpc"]), node, fn, action["args"], caller, errors
+            root,
+            str(meta["rpc"]),
+            node,
+            fn,
+            action["args"],
+            caller,
+            errors,
+            include_trace=True,
         )
         action["result"] = pre
         if not pre["ok"]:
@@ -3885,6 +4195,12 @@ def _run_walkthrough(
             "stdout": out,
             "stderr": err,
         }
+        tx_hash = _send_transaction_hash(action["send"])
+        if tx_hash:
+            action["send"]["transaction_hash"] = tx_hash
+            tx_trace = _trace_transaction(root, str(meta["rpc"]), tx_hash)
+            if tx_trace:
+                action["result"]["trace"] = tx_trace
         action["status"] = "SUCCESS" if code == 0 else "FAILED"
 
         payload["actions"].append({
@@ -3906,7 +4222,27 @@ def _run_walkthrough(
 
         print(
             "\n" + _paint(
-                "Transition succeeded. Rebuilding the protocol model from the new chain state…",
+                "TRANSITION COMPLETE — observed execution trace:",
+                "green",
+            )
+        )
+        print(
+            _render_story(
+                root,
+                nodes,
+                fns,
+                contracts,
+                [action],
+                actors,
+                0,
+                flags.get("links", True),
+                meta,
+                live=True,
+            )
+        )
+        print(
+            _paint(
+                "Rebuilding the protocol model from the new chain state…",
                 "green",
             )
         )
