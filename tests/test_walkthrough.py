@@ -232,6 +232,30 @@ class WalkthroughTests(unittest.TestCase):
         self.assertLess(hints["createPool"][0], hints["stake"][0])
         self.assertLess(hints["stake"][0], hints["withdraw"][0])
 
+    def test_failure_flow_summary_shows_first_blocker_and_unreached_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Factory.sol").write_text(
+                """contract Factory { mapping(address => bool) public allowed; function create(address token) external { if (!allowed[token]) revert(); IRegistry(registry).check(); IAgreement(agreement).owner(); } address registry; address agreement; }""",
+                encoding="utf-8",
+            )
+            model = walkthrough.ContractModel(
+                name="Factory", source="src/Factory.sol", artifact="out/Factory.sol/Factory.json",
+                abi=[{"type":"function","name":"create","inputs":[{"name":"token","type":"address"}]}],
+                functions=["create(address)"],
+                calls=[
+                    {"kind":"cross-contract","from":"create","to_contract":"IRegistry","to_function":"check","via":"registry"},
+                    {"kind":"cross-contract","from":"create","to_contract":"IAgreement","to_function":"owner","via":"agreement"},
+                ],
+            )
+            step = walkthrough.Step(1,"Alice","Factory","0x"+"1"*40,"create(address)",["0x"+"2"*40])
+            lines = walkthrough._failure_flow_summary(root, model, step, "Factory.create → allowed[token] is false")
+        joined=" ".join(lines)
+        self.assertIn("FIRST BLOCKER", joined)
+        self.assertIn("allowed[token] is false", joined)
+        self.assertIn("NOT REACHED", joined)
+        self.assertIn("IRegistry.check()", joined)
     def test_infer_protocol_root_has_plain_application_fallback(self):
         plain=walkthrough.ContractModel(
             name="Vault",source="src/Vault.sol",artifact="out/Vault.sol/Vault.json",kind="contract",
