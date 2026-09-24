@@ -350,9 +350,11 @@ class LowkeyCastTests(unittest.TestCase):
                                 "withdraw()", [], status="blocked", error="Not ready"),
         ]
         rendered = lk.walkthrough._render_protocol_story(
+            pathlib.Path.cwd(),
             steps, steps[-1],
             [lk.walkthrough.Actor("Alice", "0x" + "2" * 40, 0),
              lk.walkthrough.Actor("Bob", "0x" + "3" * 40, 1)],
+            [],
             False,
         )
         self.assertIn("STEP 01", rendered)
@@ -2217,6 +2219,128 @@ contract Escrow {
         self.assertEqual(len(parsed["slots"]), 1)
         self.assertEqual(parsed["slots"][0]["slot"], slot)
 
+
+
+    def test_walkthrough_random_values_cover_bool_uint_and_actor_swap(self):
+        actors = [
+            lk.walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            lk.walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+            lk.walkthrough.Actor("Attacker", "0x" + "3" * 40, 2),
+        ]
+        rng = __import__("random").Random(7)
+        bool_value = lk.walkthrough._random_sol_value(
+            {"type": "bool", "name": "allowed"}, actors, actors[0].address, rng
+        )
+        uint_value = lk.walkthrough._random_sol_value(
+            {"type": "uint256", "name": "amount"}, actors, actors[0].address, rng
+        )
+        address_value = lk.walkthrough._random_sol_value(
+            {"type": "address", "name": "recipient"}, actors, actors[0].address, rng
+        )
+        self.assertIsInstance(bool_value, bool)
+        self.assertIsInstance(uint_value, int)
+        self.assertIn(address_value, {a.address for a in actors} | {"0x" + "0" * 40})
+
+    def test_walkthrough_clickable_function_link_contains_vscode_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Example.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20;\ncontract Example {\n    function ping() external {}\n}\n",
+                encoding="utf-8",
+            )
+            model = lk.walkthrough.ContractModel(
+                name="Example",
+                source="src/Example.sol",
+                artifact="out/Example.sol/Example.json",
+                abi=[{"type":"function","name":"ping","inputs":[],"outputs":[]}],
+                function_locations={"ping": 3},
+            )
+            previous = os.environ.pop("LOWKEY_NO_LINKS", None)
+            try:
+                linked = lk.walkthrough._function_link(root, model, "ping")
+            finally:
+                if previous is not None:
+                    os.environ["LOWKEY_NO_LINKS"] = previous
+            self.assertIn("ping", linked)
+            self.assertIn("\x1b]8;;", linked)
+            self.assertIn("vscode://file/", linked)
+
+    def test_walkthrough_source_graph_resolves_interface_to_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            factory_source = src / "Factory.sol"
+            child_source = src / "Child.sol"
+            factory_source.write_text(
+                """pragma solidity ^0.8.20;
+interface IChild { function initialize(address owner) external; }
+contract Factory {
+    function create(address child) external { IChild(child).initialize(msg.sender); }
+}
+""",
+                encoding="utf-8",
+            )
+            child_source.write_text(
+                """pragma solidity ^0.8.20;
+interface IChild { function initialize(address owner) external; }
+contract Child is IChild {
+    function initialize(address owner) external {}
+}
+""",
+                encoding="utf-8",
+            )
+            factory = lk.walkthrough.ContractModel(
+                name="Factory",
+                source=str(factory_source),
+                artifact="out/Factory.sol/Factory.json",
+                abi=[{"type":"function","name":"create","inputs":[{"type":"address","name":"child"}]}],
+                functions=["create(address)"],
+            )
+            child = lk.walkthrough.ContractModel(
+                name="Child",
+                source=str(child_source),
+                artifact="out/Child.sol/Child.json",
+                abi=[{"type":"function","name":"initialize","inputs":[{"type":"address","name":"owner"}]}],
+                functions=["initialize(address)"],
+                bases=["IChild"],
+            )
+            factory_source_text=factory_source.read_text(encoding="utf-8")
+            factory.type_bindings={"child":"IChild"}
+            edges = lk.walkthrough._build_source_calls(factory, [factory, child], factory_source_text)
+            self.assertTrue(any(
+                edge["to_contract"] == "Child" and edge["to_function"] == "initialize"
+                for edge in edges
+            ))
+
+    def test_walkthrough_story_accepts_models_for_clickable_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Example.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20;\ncontract Example {\n    function ping() external {}\n}\n",
+                encoding="utf-8",
+            )
+            model = lk.walkthrough.ContractModel(
+                name="Example",
+                source="src/Example.sol",
+                artifact="out/Example.sol/Example.json",
+                abi=[{"type":"function","name":"ping","inputs":[],"outputs":[]}],
+                function_locations={"ping": 3},
+            )
+            step = lk.walkthrough.Step(
+                1, "Alice", "Example", "0x" + "1" * 40, "ping()", [],
+            )
+            rendered = lk.walkthrough._render_protocol_story(
+                root, [step], step,
+                [lk.walkthrough.Actor("Alice","0x"+"2"*40,0)],
+                [model],
+                False,
+            )
+            self.assertIn("ping", rendered)
 
 if __name__ == "__main__":
     unittest.main()
