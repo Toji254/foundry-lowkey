@@ -1965,9 +1965,12 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         print("Error: no RPC. Use an existing local Anvil or 'lk walkthrough --auto'.",file=sys.stderr); return 2
     if not actors:
         print("Error: no local Anvil actors detected. Live walkthrough requires Anvil actors.",file=sys.stderr); return 2
-    target=target or config.get("target")
     if not target:
-        print("Error: no live target. Use 'lk target <address>' or 'lk walkthrough --auto'.",file=sys.stderr); return 2
+        if auto:
+            print("Error: auto mode could not provision a live protocol target.", file=sys.stderr)
+        else:
+            print("Error: no live target. Use 'lk target <address>' or 'lk walkthrough --auto'.", file=sys.stderr)
+        return 2
 
     runtime=_lab_runtime(config,target,model)
     steps=[]
