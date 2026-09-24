@@ -801,9 +801,6 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn(walk.ZERO, addr_mutations)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
     def test_deployment_label_wins_over_stale_target_name(self):
         self.assertEqual(
@@ -887,3 +884,6 @@ if __name__ == "__main__":
         self.assertIn("\n", rendered)
         self.assertNotIn("\\n", rendered)
 
+
+if __name__ == "__main__":
+    unittest.main()
