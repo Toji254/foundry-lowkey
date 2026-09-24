@@ -2273,7 +2273,7 @@ def _story_timeline_line(
     return (
         f"  {_paint(marker, color, enabled)}  FUNCTION {step.index:02d}  "
         f"{ACTOR} {step.actor} {ARROW} "
-        f"{step.contract}.{call}"
+        f"{call}"
         f"  {DIM if enabled else ''}{summary}{RESET if enabled else ''}"
         f"{failure}"
     )
