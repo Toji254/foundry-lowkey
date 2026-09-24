@@ -140,6 +140,26 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(target, factory)
         self.assertIn("ConfidencePoolFactory", source)
 
+    def test_deployment_label_uses_implementation_contract_for_erc1967_proxy(self):
+        implementation = "0x" + "1" * 40
+        proxy = "0x" + "2" * 40
+        deployments = [
+            {"address": proxy, "contract": "ERC1967Proxy", "live": True},
+            {"address": implementation, "contract": "ConfidencePoolFactory", "live": True},
+        ]
+        with patch.object(
+            walk,
+            "_eip1967_implementation",
+            return_value=implementation,
+        ):
+            label = walk._deployment_contract_label(
+                {"live_deployments": deployments},
+                proxy,
+                root=pathlib.Path("."),
+                rpc="http://127.0.0.1:8545",
+            )
+        self.assertEqual(label, "ConfidencePoolFactory")
+
     def test_address_classifier_does_not_confuse_actor_names(self):
         self.assertTrue(walk._is_address("0x" + "1" * 40))
         self.assertFalse(walk._is_address("Alice"))
