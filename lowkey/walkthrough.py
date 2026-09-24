@@ -43,51 +43,6 @@ ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+$")
 
 
-def _color_enabled() -> bool:
-    forced = os.environ.get("LOWKEY_COLOR", "").strip().lower()
-    if forced in {"0", "false", "no", "off"} or "NO_COLOR" in os.environ:
-        return False
-    if forced in {"1", "true", "yes", "on"}:
-        return True
-    return bool(getattr(sys.stdout, "isatty", lambda: False)())
-
-
-_COLORS = {
-    "reset": "\x1b[0m",
-    "bold": "\x1b[1m",
-    "red": "\x1b[31m",
-    "green": "\x1b[32m",
-    "yellow": "\x1b[33m",
-    "blue": "\x1b[34m",
-    "magenta": "\x1b[35m",
-    "cyan": "\x1b[36m",
-    "dim": "\x1b[2m",
-}
-
-
-def _paint(text: str, color: str) -> str:
-    if not _color_enabled():
-        return text
-    return f"{_COLORS.get(color, '')}{text}{_COLORS['reset']}"
-
-
-def _section(title: str, color: str = "cyan") -> str:
-    return _paint(title, color)
-
-
-def _status_icon(status: str) -> str:
-    value = str(status or "").upper()
-    if value in {"SUCCESS", "DONE", "PASS"}:
-        return _paint("✓", "green")
-    if value == "READY":
-        return _paint("→", "cyan")
-    if value in {"BLOCKED", "FAILED", "ERROR"}:
-        return _paint("✗", "red")
-    if value in {"WARN", "WARNING"}:
-        return _paint("!", "yellow")
-    return _paint("•", "cyan")
-
-
 def _cmd(args: list[str], cwd: Path | None = None, timeout: int = 30) -> tuple[int, str, str]:
     """Run a local command and return (exit_code, stdout, stderr)."""
     try:
@@ -125,17 +80,10 @@ class FunctionInfo:
     body: str = ""
     modifiers: list[str] | None = None
     calls: list[dict[str, Any]] | None = None
-    visibility: str = "unknown"
-    reads: list[str] | None = None
-    writes: list[str] | None = None
-    array_ops: list[str] | None = None
 
     def __post_init__(self) -> None:
         self.modifiers = self.modifiers or []
         self.calls = self.calls or []
-        self.reads = self.reads or []
-        self.writes = self.writes or []
-        self.array_ops = self.array_ops or []
 
 
 @dataclass
@@ -148,14 +96,12 @@ class ContractInfo:
     functions: list[FunctionInfo] | None = None
     errors: list[dict[str, Any]] | None = None
     address_vars: list[str] | None = None
-    state_vars: list[dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         self.imports = self.imports or []
         self.functions = self.functions or []
         self.errors = self.errors or []
         self.address_vars = self.address_vars or []
-        self.state_vars = self.state_vars or []
 
 
 @dataclass
@@ -189,7 +135,7 @@ def _contract_purpose(name: str, functions: list[FunctionInfo] | None = None) ->
     fn_names = {f.name.lower() for f in (functions or [])}
     if "factory" in low or "createpool" in fn_names:
         return "creates/configures protocol instances"
-    if "pool" in low and "factory" not in low:
+    if "pool" in low:
         return "holds participant state, stakes and settlement funds"
     if "agreement" in low:
         return "defines who/what is approved and in scope"
@@ -268,8 +214,6 @@ def _web_connection_label(edge: dict[str, str]) -> str:
         return "uses configured dependency"
     if kind == "external-call":
         return "calls external interface"
-    if kind == "internal-call":
-        return "enters internal logic"
     return "connects to"
 
 def _web_node_name(value: str) -> str:
@@ -280,7 +224,7 @@ def _render_connection_web(
     edges: list[dict[str, str]],
     actions: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Render a compact relationship topology with hidden-count summaries."""
+    """Render a terminal-friendly relationship topology rather than a flat edge list."""
     meaningful: list[dict[str, str]] = []
     seen: set[tuple[str, str, str, str]] = set()
     for edge in edges:
@@ -303,7 +247,7 @@ def _render_connection_web(
         })
 
     if not meaningful:
-        return [f"  {_paint('└─ no proven contract-to-contract connections yet', 'yellow')}"]
+        return ["  └─ no proven contract-to-contract connections yet"]
 
     names: list[str] = []
     for edge in meaningful:
@@ -322,291 +266,2039 @@ def _render_connection_web(
     def compact(name: str, width: int = 22) -> str:
         return name if len(name) <= width else name[:width - 1] + "…"
 
-    def edge_lines(edge: dict[str, str], direction: str) -> list[str]:
-        label = _paint(f"[{edge['label']}]", "cyan")
-        if direction == "in":
-            result = [
-                f"       {compact(edge['from']):<22} ╲",
-                f"                         ╲─{label}──▶  [{center}]",
-            ]
-        elif direction == "out":
-            result = [
-                f"       [{center}]  ──{label}──╲",
-                f"                              ╲──▶  {compact(edge['to'])}",
-            ]
-        else:
-            result = [
-                f"       {compact(edge['from']):<22} ╲",
-                f"                         ╰─{label}─▶  {compact(edge['to'])}",
-            ]
-        if edge["function"]:
-            result.append(f"                              {_paint(edge['function'], 'dim')}")
-        return result
-
     out = [
-        f"  ╭─ WEB / {_paint(center, 'bold')} ─────────────────────────────────────────────╮",
+        f"  ╭─ WEB / {center} ─────────────────────────────────────────────╮",
         f"  │ {compact(center, 48)}  • {degree[center]} proven relationship(s)",
         "  ╰──────────────────────────────────────────────────────────────╯",
     ]
 
-    for title, values, direction, limit in (
-        ("  FROM / who can affect or feed the hub", inbound, "in", 5),
-        ("  TO / what the hub relies on or controls", outbound, "out", 5),
-        ("  CROSS-LINKS / supporting components", cross, "cross", 6),
-    ):
-        if not values:
-            continue
-        out += ["", title]
-        for edge in values[:limit]:
-            out.extend(edge_lines(edge, direction))
-        if len(values) > limit:
-            out.append(f"       {_paint(f'… +{len(values) - limit} more connection(s) in evidence', 'dim')}")
+    if inbound:
+        out += ["", "  FROM / who can affect or feed the hub"]
+        for edge in inbound[:8]:
+            source = compact(edge["from"])
+            out.append(f"       {source:<22} ╲")
+            out.append(f"                         ╲─[{edge['label']}]──▶  [{center}]")
+            if edge["function"]:
+                out.append(f"                              {edge['function']}")
+
+    if outbound:
+        out += ["", "  TO / what the hub relies on or controls"]
+        for edge in outbound[:8]:
+            destination = compact(edge["to"])
+            out.append(f"       [{center}]  ──[{edge['label']}]──╲")
+            out.append(f"                              ╲──▶  {destination}")
+            if edge["function"]:
+                out.append(f"                                   {edge['function']}")
+
+    if cross:
+        out += ["", "  CROSS-LINKS / the web outside the hub"]
+        for edge in cross[:10]:
+            out.append(f"       {compact(edge['from']):<22} ╲")
+            out.append(f"                         ╰─[{edge['label']}]─▶  {compact(edge['to'])}")
+            if edge["function"]:
+                out.append(f"                              {edge['function']}")
 
     actor_links: list[tuple[str, str, str]] = []
     for action in actions or []:
         actor = str(action.get("actor_name") or "")
         node = action.get("node")
-        fn_obj = action.get("function")
-        if not actor or not isinstance(node, LiveNode) or not isinstance(fn_obj, FunctionInfo):
+        fn = action.get("function")
+        if not actor or not isinstance(node, LiveNode) or not isinstance(fn, FunctionInfo):
             continue
         target = _web_node_name(node.artifact_contract or node.name)
-        link = (actor, target, fn_obj.name)
+        link = (actor, target, fn.name)
         if link not in actor_links:
             actor_links.append(link)
     if actor_links:
         out += ["", "  ACTORS / where the human side enters the web"]
-        for actor, target, fn_name in actor_links[:6]:
-            out.append(
-                f"       {_paint(compact(actor), 'magenta'):<22} "
-                f"──{_paint(f'[calls {fn_name}()]', 'magenta')}──▶  {compact(target)}"
-            )
-        if len(actor_links) > 6:
-            out.append(f"       {_paint(f'… +{len(actor_links) - 6} more actor paths', 'dim')}")
+        for actor, target, fn_name in actor_links[:8]:
+            out.append(f"       {compact(actor):<22} ──[calls {fn_name}()]──▶  {compact(target)}")
 
+    out += [
+        "",
+        "  READ THIS AS:",
+        "    node       = component or actor",
+        "    [label]    = what crosses the connection",
+        "    function   = source/runtime evidence proving the relationship",
+        "    hub        = the component with the most observed relationships",
+    ]
     return out
 
 
-def _function_access_label(
-    fn: FunctionInfo,
-    functions: list[FunctionInfo],
-) -> str:
-    modifiers = [str(x) for x in fn.modifiers or []]
-    owner_gate = next((x for x in modifiers if x.lower() == "onlyowner"), None)
-    role_gate = next((x for x in modifiers if x.lower().startswith("onlyrole")), None)
-    gate = owner_gate or role_gate
-    if fn.visibility in {"external", "public"}:
+def _action_phase(fn: FunctionInfo) -> str:
+    n = fn.name.lower()
+    if any(x in n for x in ("create", "initialize")):
+        return "SETUP" if "initialize" in n else "CREATE"
+    if any(x in n for x in ("stake", "deposit", "contribute")):
+        return "PARTICIPATE"
+    if any(x in n for x in ("flag", "resolve", "claim", "redeem", "release")):
+        return "OUTCOME"
+    if any(x in n for x in ("withdraw", "sweep")):
+        return "SETTLE"
+    if any(x in n for x in ("set", "pause", "unpause", "upgrade", "authorize")):
+        return "ADMIN"
+    return "INTERACTION"
+
+
+def _action_what(fn: FunctionInfo, node: LiveNode) -> str:
+    n = fn.name.lower()
+    if "createpool" in n:
+        return "Create a new pool using an approved agreement and stake token."
+    if n == "stake":
+        return "Put stake into the pool so this participant becomes part of the protocol state."
+    if "contribute" in n:
+        return "Add bonus/value to the pool for a later outcome or settlement."
+    if "flagoutcome" in n:
+        return "Report an outcome so the pool can move into an outcome-dependent state."
+    if "withdraw" in n:
+        return "Ask the pool to release this participant's withdrawable value."
+    if "sweepunclaimed" in n:
+        return "Move value that the protocol considers permanently unclaimed/corrupted."
+    if "initialize" in n:
+        return "Initialize one-time contract state; this is normally a deployment/setup action."
+    if "setstaketokenallowed" in n:
+        return "Tell the factory which stake token it is allowed to accept."
+    if "set" in n:
+        return "Change a piece of protocol configuration."
+    return f"Call {node.artifact_contract or node.name}.{fn.name} and observe its state transition."
+
+
+def _action_why(fn: FunctionInfo, node: LiveNode) -> str:
+    n = fn.name.lower()
+    if "createpool" in n:
+        return "This is the main bridge from the factory into a newly created pool."
+    if n == "stake":
+        return "This is a core user action: it changes who has value at risk in the pool."
+    if "withdraw" in n:
+        return "Withdrawal is a security boundary because it moves value out of the protocol."
+    if "contribute" in n:
+        return "This changes pool value and can affect later settlement outcomes."
+    if "flagoutcome" in n or "resolve" in n:
+        return "Outcome decisions usually unlock or restrict later claims/withdrawals."
+    if "setstaketokenallowed" in n or n.startswith("set"):
+        return "Lowkey normally keeps deployment/configuration actions out of the user journey unless needed to repair the environment."
+    if "initialize" in n:
+        return "Initialization defines the trusted starting state; repeating it is usually expected to fail."
+    return "Lowkey selected it because it can change protocol state or cross a security boundary."
+
+
+def _friendly_error(decoded: str | None, raw: str) -> tuple[str, str]:
+    text = str(decoded or raw or "").strip()
+    low = text.lower()
+    if "staketokennotalowed" in low:
         return (
-            f"{gate} only" if gate
-            else "any external caller"
+            "The factory rejected the token because it is not currently approved for staking.",
+            "Use the legitimate factory setup/owner flow to approve the token, then retry pool creation.",
         )
-    callers = sorted({
-        candidate.name
-        for candidate in functions
-        if any(
-            call.get("kind") == "internal-call"
-            and str(call.get("function")) == fn.name
-            for call in candidate.calls or []
+    if "stakingclosed" in low:
+        return (
+            "The pool is not accepting new stakes in its current state.",
+            "Check the pool lifecycle and its setup/expiry state before treating staking as the next step.",
         )
-    })
-    reach = ", ".join(callers[:5]) if callers else "no caller proven by source scan"
-    return f"{fn.visibility} only; reached from {reach}"
-
-
-def _render_contract_surface(
-    contract: ContractInfo,
-    functions: list[FunctionInfo],
-) -> list[str]:
-    lines: list[str] = []
-    states = contract.state_vars or []
-    lines.append(_section("STORAGE / WHAT THIS CONTRACT REMEMBERS", "blue"))
-    if not states:
-        lines.append("  No source-level state declarations were recovered.")
-    else:
-        for state in states[:8]:
-            name = str(state.get("name") or "?")
-            typ = str(state.get("type") or "unknown")
-            vis = str(state.get("visibility") or "internal")
-            low_type = typ.lower()
-            kind = (
-                "MAPPING" if low_type.startswith("mapping")
-                else "ARRAY" if "[" in typ
-                else "VALUE"
-            )
-            writers = [fn for fn in functions if name in (fn.writes or [])]
-            readers = [fn for fn in functions if name in (fn.reads or []) and fn not in writers]
-            head = f"  {_paint(kind, 'blue')}  {_paint(name, 'blue')} : {typ}  ({vis})"
-            if state.get("constant"):
-                head += " [constant]"
-            elif state.get("immutable"):
-                head += " [immutable]"
-            lines.append(head)
-
-            if writers:
-                writer_bits = []
-                for fn in writers[:5]:
-                    writer_bits.append(f"{fn.name} [{_function_access_label(fn, functions)}]")
-                lines.append(f"      {_paint('WRITES', 'red')}  {', '.join(writer_bits)}")
-            else:
-                lines.append(f"      {_paint('WRITES', 'dim')}  no source writer found")
-
-            if readers:
-                lines.append(f"      {_paint('READS', 'cyan')}   {', '.join(fn.name for fn in readers[:5])}")
-
-            ops = []
-            for fn in functions:
-                if name in (fn.reads or []) or name in (fn.writes or []):
-                    ops.extend(fn.array_ops or [])
-            if ops:
-                lines.append(f"      {_paint('DATA FLOW', 'blue')} {', '.join(sorted(set(ops))[:5])}")
-
-    lines.append("")
-    lines.append(_section("ACCESS / WHO CAN DO WHAT", "magenta"))
-    entry_points = [
-        fn for fn in functions
-        if fn.visibility in {"external", "public"}
-        and (
-            fn.writes
-            or fn.calls
-            or fn.modifiers
-            or fn.mutability not in {"view", "pure"}
+    if "invalidinitialization" in low:
+        return (
+            "The contract says its one-time initialization has already been used.",
+            "Treat this as deployment/setup state, not as the normal user flow; inspect the existing initialized values.",
         )
-    ]
-    entry_points.sort(key=lambda fn: (-len(fn.writes), -len(fn.calls), fn.name))
-    if not entry_points:
-        lines.append("  No state-changing public/external entry points recovered.")
-    else:
-        for fn in entry_points[:8]:
-            lines.append(
-                f"  {_paint(fn.visibility.upper(), 'magenta'):<10} {fn.name}()"
-            )
-            lines.append(f"      WHO    {_function_access_label(fn, functions)}")
-            does = []
-            if fn.writes:
-                does.append("writes " + ", ".join(fn.writes[:4]))
-            if fn.calls:
-                does.append("calls " + ", ".join(str(x.get("function")) for x in fn.calls[:4]))
-            lines.append(f"      DOES   {'; '.join(does) if does else 'changes protocol state'}")
-
-    internals = [
-        fn for fn in functions
-        if fn.visibility in {"private", "internal"} and (fn.writes or fn.calls)
-    ]
-    if internals:
-        lines.append("")
-        lines.append(_section("INTERNAL / PRIVATE LOGIC", "yellow"))
-        for fn in sorted(internals, key=lambda x: (-len(x.writes), -len(x.calls), x.name))[:6]:
-            lines.append(f"  {_paint(fn.visibility.upper(), 'yellow'):<10} {fn.name}()")
-            lines.append(f"      WHO    {_function_access_label(fn, functions)}")
-            if fn.writes:
-                lines.append(f"      TOUCH  {', '.join(fn.writes[:5])}")
-            if fn.calls:
-                lines.append(f"      CALLS  {', '.join(str(x.get('function')) for x in fn.calls[:5])}")
-    return lines
+    if "outcomenotset" in low:
+        return (
+            "There is no outcome recorded yet, so this action has nothing to settle against.",
+            "Find the outcome/flagging step first and then re-check this settlement path.",
+        )
+    if "outcomenoteligibleforsweep" in low:
+        return (
+            "The current outcome/state does not make these funds eligible for sweeping.",
+            "Inspect the conditions that make an outcome sweepable instead of forcing the call.",
+        )
+    if text and ("execution reverted" in low or low.startswith("error:")):
+        return (
+            "The chain rejected the call, but did not provide a useful decoded reason.",
+            "First verify the target contract identity and current state; then inspect the source check that guards this function.",
+        )
+    return (
+        text or "The simulated call could not be executed.",
+        "Inspect the current state and function preconditions before trying the action again.",
+    )
 
 
-def _render_state_diagnosis(actions: list[dict[str, Any]]) -> list[str]:
-    blocked = [a for a in actions if str(a.get("status")) == "BLOCKED"]
-    if not blocked:
+def _step_status_word(action: dict[str, Any]) -> str:
+    status = str(action.get("status") or "PLANNED").upper()
+    if status == "SUCCESS":
+        return "DONE"
+    if status == "FAILED":
+        return "FAILED"
+    if status == "READY":
+        return "READY"
+    if status == "BLOCKED":
+        return "BLOCKED"
+    return "NEXT"
+
+
+def _checksumish(value: str) -> str:
+    if not _is_address(value):
+        return value
+    # Keep exact chain value but normalize its casing for display.
+    return "0x" + value[2:].lower()
+
+
+def _rpc_url(config: dict[str, Any]) -> str:
+    return (
+        str(config.get("rpc") or os.environ.get("ETH_RPC_URL") or "http://127.0.0.1:8545")
+        .strip()
+    )
+
+
+def _rpc(url: str, method: str, params: list[Any]) -> Any:
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    ).encode()
+    req = request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with request.urlopen(req, timeout=8) as response:
+        payload = json.loads(response.read().decode())
+    if "error" in payload:
+        raise RuntimeError(str(payload["error"]))
+    return payload.get("result")
+
+
+def _code_size(url: str, address: str) -> int:
+    try:
+        code = _rpc(url, "eth_getCode", [address, "latest"])
+        return max(0, (len(code or "0x") - 2) // 2)
+    except Exception:
+        return 0
+
+
+def _eth_accounts(url: str) -> list[str]:
+    """Return accounts exposed by the selected local JSON-RPC node."""
+    try:
+        result = _rpc(url, "eth_accounts", [])
+    except Exception:
         return []
-    reasons: list[tuple[str, int, str]] = []
-    seen: dict[str, int] = {}
-    recs: dict[str, str] = {}
-    for action in blocked:
-        result = action.get("result") or {}
-        msg, recommendation = _friendly_error(
-            result.get("decoded_error"),
-            result.get("raw", ""),
+    if not isinstance(result, list):
+        return []
+    return [str(item) for item in result if _is_address(item)]
+
+
+def _latest_timestamp(url: str) -> int:
+    try:
+        block = _rpc(url, "eth_getBlockByNumber", ["latest", False])
+        return int(block["timestamp"], 16)
+    except Exception:
+        return int(time.time())
+
+
+def _load_system_manifest(root: Path, rpc: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    if system_model is None:
+        return None
+    try:
+        manifest, _ = system_model.refresh_manifest(
+            root,
+            rpc=rpc,
+            config=config,
+            reason="walkthrough:start",
         )
-        key = msg.lower()
-        seen[key] = seen.get(key, 0) + 1
-        recs[key] = recommendation
-    for key, count in seen.items():
-        reasons.append((key, count, recs[key]))
-    out = [_section("WHY ACTIONS ARE BLOCKED", "red")]
-    for msg, count, recommendation in sorted(reasons, key=lambda x: (-x[1], x[0]))[:5]:
-        suffix = f" ×{count}" if count > 1 else ""
-        out.append(f"  {_paint('✗', 'red')} {msg}{suffix}")
-        out.append(f"      {_paint('NEXT', 'yellow')} {recommendation}")
+        return manifest
+    except Exception:
+        return system_model.load_manifest(root) if system_model else None
+
+
+def _bootstrap_from_manifest(manifest: dict[str, Any] | None, rpc: str) -> dict[str, Any] | None:
+    if not manifest:
+        return None
+    deployments = [
+        x for x in (manifest.get("deployments") or [])
+        if isinstance(x, dict)
+        and not any(part.lower() == "dry-run" for part in str(x.get("broadcast") or x.get("path") or "").split("/"))
+    ]
+    audit_evidence = manifest.get("audit_evidence") or []
+    return {
+        "deployments": deployments,
+        "live_deployments": [
+            x for x in deployments
+            if x.get("live") and x.get("code_size", x.get("live"))
+        ],
+        "scripts": [
+            {
+                "path": x.get("path"),
+                "score": 0,
+                "signals": [
+                    a.get("kind")
+                    for a in x.get("actions") or []
+                    if isinstance(a, dict)
+                ],
+                "command": f"forge script {x.get('path')} --rpc-url {rpc} --broadcast",
+            }
+            for x in manifest.get("scripts") or []
+        ],
+        "tests": [
+            {
+                "path": x.get("path"),
+                "signals": ["fixture/test"],
+                "command": f"forge test --match-path {x.get('path')} -vvvv",
+            }
+            for x in manifest.get("tests") or []
+        ],
+        "adversarial": manifest.get("adversarial_evidence") or [],
+        "audit_evidence": audit_evidence,
+        "audit_targets": _extract_audit_targets(audit_evidence),
+        "initialization": manifest.get("initialization") or [],
+        "roles": manifest.get("roles") or [],
+        "relationships": manifest.get("relationships") or [],
+        "source": "system_bootstrap_manifest",
+    }
+
+
+def _extract_audit_targets(audit_evidence: list[Any]) -> list[dict[str, str]]:
+    """Extract deterministic, live candidate targets from persisted audit evidence."""
+    priority = {
+        "audit_start.json": 0,
+        "context.json": 1,
+        "session_resume.json": 2,
+        "risk.json": 3,
+        "poc.json": 4,
+        "walkthrough.json": 5,
+    }
+    candidates: list[tuple[int, str, str]] = []
+    for item in audit_evidence:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if not _is_address(target):
+            continue
+        file_name = Path(str(item.get("file") or "")).name
+        candidates.append((priority.get(file_name, 50), file_name, str(target)))
+
+    candidates.sort(key=lambda x: (x[0], x[1], x[2].lower()))
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, file_name, target in candidates:
+        key = target.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"target": target, "file": file_name})
+    return result
+
+
+def _discover_bootstrap(root: Path, rpc: str) -> dict[str, Any]:
+    """Discover generic Foundry entry points without executing project code."""
+    deployments: list[dict[str, Any]] = []
+    seen_deployments: set[tuple[str, str]] = set()
+
+    for path in sorted((root / "broadcast").glob("**/run-latest.json")):
+        rel_path = path.relative_to(root).as_posix()
+        # Foundry writes simulated runs under a "dry-run" path. Those files
+        # describe addresses that may never have been deployed and must not be
+        # treated as live deployment evidence.
+        if any(part.lower() == "dry-run" for part in path.relative_to(root).parts):
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for index, tx in enumerate(payload.get("transactions", []) or []):
+            if not isinstance(tx, dict):
+                continue
+            addr = tx.get("contractAddress") or tx.get("contract_address")
+            if not _is_address(addr):
+                continue
+            contract = str(
+                tx.get("contractName")
+                or tx.get("contract_name")
+                or tx.get("contract")
+                or "Deployment"
+            )
+            key = (addr.lower(), path.as_posix())
+            if key in seen_deployments:
+                continue
+            seen_deployments.add(key)
+            deployments.append(
+                {
+                    "address": addr,
+                    "contract": contract,
+                    "broadcast": path.relative_to(root).as_posix(),
+                    "index": index,
+                    "live": _code_size(rpc, addr) > 0,
+                }
+            )
+
+    scripts: list[dict[str, Any]] = []
+    for path in sorted((root / "script").glob("**/*.s.sol")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        masked = _strip_solidity_comments(source)
+        signals: list[str] = []
+        if re.search(r"\bfunction\s+run\s*\(", masked):
+            signals.append("run()")
+        if re.search(r"\bvm\.startBroadcast\s*\(", masked):
+            signals.append("broadcast")
+        if re.search(r"\bnew\s+[A-Za-z_]\w*\s*\(", masked):
+            signals.append("contract creation")
+        if re.search(r"\bCREATE2?\b", masked):
+            signals.append("create opcode")
+        if not signals:
+            continue
+        rel = path.relative_to(root).as_posix()
+        score = 0
+        if "run()" in signals:
+            score += 3
+        if "broadcast" in signals:
+            score += 3
+        if "contract creation" in signals or "create opcode" in signals:
+            score += 2
+        scripts.append(
+            {
+                "path": rel,
+                "score": score,
+                "signals": signals,
+                "command": (
+                    f"forge script {shlex.quote(rel)} "
+                    f"--rpc-url {shlex.quote(rpc)} --broadcast"
+                ),
+            }
+        )
+
+    tests: list[dict[str, Any]] = []
+    seen_tests: set[Path] = set()
+    for base in (root / "test", root / "tests"):
+        for path in sorted(base.glob("**/*.t.sol")):
+            if path in seen_tests:
+                continue
+            seen_tests.add(path)
+            try:
+                source = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            masked = _strip_solidity_comments(source)
+            signals: list[str] = []
+            if re.search(r"\bfunction\s+setUp\s*\(", masked):
+                signals.append("setUp()")
+            if re.search(r"\b(?:new|deploy)\b", masked):
+                signals.append("deployment")
+            if not signals:
+                continue
+            rel = path.relative_to(root).as_posix()
+            tests.append(
+                {
+                    "path": rel,
+                    "signals": signals,
+                    "command": (
+                        f"forge test --match-path {shlex.quote(rel)} -vvvv"
+                    ),
+                }
+            )
+
+    scripts.sort(key=lambda item: (-int(item["score"]), item["path"]))
+    tests.sort(key=lambda item: item["path"])
+    return {
+        "deployments": deployments,
+        "live_deployments": [item for item in deployments if item["live"]],
+        "scripts": scripts,
+        "tests": tests,
+    }
+
+
+def _resolve_walkthrough_target(
+    root: Path,
+    config: dict[str, Any],
+    rpc: str,
+    bootstrap: dict[str, Any],
+) -> tuple[str | None, str]:
+    """Resolve a target, preferring live runtime state over stale static state."""
+    configured = str(config.get("target") or "").strip()
+    configured_static: tuple[str, str] | None = None
+    live_deployments = [
+        x for x in (bootstrap.get("live_deployments") or [])
+        if isinstance(x, dict)
+        and not any(part.lower() == "dry-run" for part in str(x.get("broadcast") or "").split("/"))
+    ]
+
+    def current_broadcast_match(address: str, expected_name: str) -> dict[str, Any] | None:
+        expected = re.sub(r"[^a-z0-9]", "", _clean_name(expected_name).lower())
+        same_address = [
+            x for x in live_deployments
+            if str(x.get("address") or "").lower() == address.lower()
+        ]
+        for item in same_address:
+            actual = re.sub(r"[^a-z0-9]", "", _clean_name(str(item.get("contract") or "")).lower())
+            if expected and actual and (expected == actual or expected in actual or actual in expected):
+                return item
+        return same_address[0] if same_address else None
+
+    configured = str(config.get("target") or "").strip()
+    configured_static: tuple[str, str] | None = None
+    if _is_address(configured):
+        expected = str(config.get("target_contract") or _target_label(config, configured) or "")
+        current = current_broadcast_match(configured, expected) if expected else None
+        if current:
+            return configured, "current broadcast target"
+        # A live address that is identified by persisted evidence but does not
+        # match the current deployment identity is stale-prone (especially on
+        # a reset Anvil where CREATE addresses are reused). Prefer a current
+        # deployment with the expected contract identity.
+        if live_deployments and expected:
+            expected_norm = re.sub(r"[^a-z0-9]", "", _clean_name(expected).lower())
+            for item in live_deployments:
+                actual_norm = re.sub(r"[^a-z0-9]", "", _clean_name(str(item.get("contract") or "")).lower())
+                if expected_norm and actual_norm and (expected_norm == actual_norm or expected_norm in actual_norm or actual_norm in expected_norm):
+                    return str(item["address"]), f"current broadcast deployment ({item.get('contract')})"
+        if _code_size(rpc, configured) > 0:
+            return configured, "configured target"
+        configured_static = (configured, "configured target (no live bytecode)")
+
+    saved_static: list[tuple[str, str]] = []
+    saved_targets = config.get("targets") or {}
+    if isinstance(saved_targets, dict):
+        for name, value in saved_targets.items():
+            if not _is_address(value):
+                continue
+            if _code_size(rpc, value) > 0:
+                return value, f"saved target '{name}'"
+            saved_static.append((value, f"saved target '{name}' (no live bytecode)"))
+
+    audit_targets = bootstrap.get("audit_targets") or _extract_audit_targets(
+        bootstrap.get("audit_evidence") or []
+    )
+    if not audit_targets:
+        direct_evidence: list[dict[str, Any]] = []
+        for path in sorted((root / ".audit" / "evidence").glob("*.json")):
+            if path.name == "system_bootstrap.json":
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, dict) and _is_address(data.get("target")):
+                direct_evidence.append({"target": data["target"], "file": path.name})
+        audit_targets = _extract_audit_targets(direct_evidence)
+
+    audit_static: list[tuple[str, str]] = []
+    for item in audit_targets:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if not _is_address(target):
+            continue
+        file_name = str(item.get("file") or "")
+        source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
+        if _code_size(rpc, target) > 0:
+            if not live_deployments:
+                return target, source
+            matched = current_broadcast_match(target, str(config.get("target_contract") or _target_label(config, target) or ""))
+            if matched:
+                return target, source
+        audit_static.append((target, source + " (no live bytecode or stale identity)"))
+
+    live = list(live_deployments)
+    live.sort(
+        key=lambda item: (
+            str(item.get("broadcast") or ""),
+            int(item.get("index") or 0),
+        ),
+        reverse=True,
+    )
+    if live:
+        item = live[0]
+        return str(item["address"]), f"broadcast {item['broadcast']}"
+
+    if configured_static:
+        return configured_static
+    if audit_static:
+        return audit_static[0]
+    if saved_static:
+        return saved_static[0]
+    return None, "not discovered"
+
+
+def _bootstrap_script_score(item: dict[str, Any]) -> int:
+    """Rank local setup candidates without assuming project naming conventions."""
+    path = str(item.get("path") or "").lower()
+    signals = {str(x).lower() for x in item.get("signals") or []}
+    if not path or any(token in path for token in ("poc", "exploit", "attack", "malicious")):
+        return -10_000
+
+    score = 0
+    if "run()" in signals:
+        score += 5
+    if "broadcast" in signals:
+        score += 5
+    if "contract creation" in signals or "create opcode" in signals:
+        score += 4
+    for token, bonus in (
+        ("local", 8),
+        ("setup", 7),
+        ("bootstrap", 6),
+        ("deploy", 5),
+        ("fixture", 4),
+        ("lab", 3),
+    ):
+        if token in path:
+            score += bonus
+    return score
+
+
+def _script_has_remote_execution_hazards(root: Path, rel_path: str) -> tuple[bool, str]:
+    """Reject auto-bootstrap scripts that explicitly manipulate remote forks."""
+    try:
+        source = (root / rel_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return True, f"cannot read bootstrap script: {exc}"
+
+    masked = _strip_solidity_comments(source).lower()
+    for marker in ("vm.createselectfork", "vm.createfork", "vm.rpc", "vm.transact"):
+        if marker in masked:
+            return True, f"script contains remote/fork execution primitive {marker}"
+    return False, ""
+
+
+def _auto_bootstrap_local(
+    root: Path,
+    config: dict[str, Any],
+    bootstrap: dict[str, Any],
+) -> tuple[bool, str]:
+    """Populate local Anvil from a conservative discovered setup script."""
+    rpc = _rpc_url(config)
+    if not _is_local_rpc(rpc):
+        return False, "auto bootstrap requires a local RPC"
+
+    scripts = [x for x in (bootstrap.get("scripts") or []) if isinstance(x, dict)]
+    ranked = sorted(
+        scripts,
+        key=lambda item: (-_bootstrap_script_score(item), str(item.get("path") or "")),
+    )
+    accounts = _eth_accounts(rpc)
+    sender = accounts[0] if accounts else None
+
+    for item in ranked:
+        path = str(item.get("path") or "").strip()
+        if _bootstrap_script_score(item) < 0:
+            continue
+        if not re.search(r"\.s\.sol$", path):
+            continue
+        hazardous, _reason = _script_has_remote_execution_hazards(root, path)
+        if hazardous:
+            continue
+
+        dry_command = ["forge", "script", path, "--rpc-url", rpc]
+        broadcast_command = ["forge", "script", path, "--rpc-url", rpc, "--broadcast"]
+        if sender:
+            dry_command += ["--unlocked", "--sender", sender]
+            broadcast_command += ["--unlocked", "--sender", sender]
+
+        code, _out, _err = _cmd(dry_command, cwd=root, timeout=90)
+        if code != 0:
+            continue
+        code, _out, _err = _cmd(broadcast_command, cwd=root, timeout=120)
+        if code == 0:
+            return True, f"executed {path}"
+
+    return False, "no safe bootstrap script completed successfully"
+
+
+def _print_bootstrap_discovery(meta: dict[str, Any]) -> None:
+    """Show bootstrap evidence as a concise explanation, not a command dump."""
+    bootstrap = meta.get("bootstrap") or {}
+    live = bootstrap.get("live_deployments") or []
+    deployments = bootstrap.get("deployments") or []
+    scripts = bootstrap.get("scripts") or []
+    tests = bootstrap.get("tests") or []
+    audit_targets = bootstrap.get("audit_targets") or []
+    auto = meta.get("auto_bootstrap") or {}
+
+    print("BOOTSTRAP / ENVIRONMENT")
+    if live:
+        print(f"  ✓ Local runtime contains {len(live)} deployed contract(s).")
+    elif deployments:
+        print("  ! Deployment records exist, but none match live bytecode on this RPC.")
+    else:
+        print("  ! No current deployment records were found.")
+
+    if auto.get("status") == "success":
+        print(f"  ✓ Auto setup: {auto.get('reason', 'local setup executed')}")
+    elif auto:
+        print(f"  • Auto setup: {auto.get('reason', 'not executed')}")
+
+    if scripts:
+        safe = [x for x in scripts if _bootstrap_script_score(x) >= 0]
+        print(f"  Setup entry points: {len(safe)} safe candidate(s) found.")
+        for item in safe[:4]:
+            signals = ", ".join(str(x) for x in item.get("signals") or [])
+            print(f"    → {item.get('path')}  ({signals})")
+    else:
+        print("  Setup entry points: none detected.")
+
+    if tests:
+        print(f"  Test/fixture entry points: {len(tests)} found.")
+    if audit_targets:
+        print(f"  Persisted audit target(s): {len(audit_targets)} found.")
+
+
+
+def _strip_solidity_comments(text: str) -> str:
+    """Mask // and /* */ comments without changing source offsets or line numbers."""
+    chars = list(text)
+    i = 0
+    n = len(chars)
+    state = "code"
+    quote = ""
+    while i < n:
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < n else ""
+        if state == "code":
+            if ch == "/" and nxt == "/":
+                chars[i] = " "
+                chars[i + 1] = " "
+                i += 2
+                state = "line_comment"
+                continue
+            if ch == "/" and nxt == "*":
+                chars[i] = " "
+                chars[i + 1] = " "
+                i += 2
+                state = "block_comment"
+                continue
+            if ch in {'"', "'"}:
+                quote = ch
+                state = "string"
+            i += 1
+            continue
+        if state == "line_comment":
+            if ch == "\n":
+                state = "code"
+            elif ch != "\r":
+                chars[i] = " "
+            i += 1
+            continue
+        if state == "block_comment":
+            if ch == "*" and nxt == "/":
+                chars[i] = " "
+                chars[i + 1] = " "
+                i += 2
+                state = "code"
+                continue
+            if ch not in "\r\n":
+                chars[i] = " "
+            i += 1
+            continue
+        # Solidity string literal: keep contents so call syntax inside strings
+        # is not converted into phantom source edges.
+        if state == "string":
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                state = "code"
+            i += 1
+    return "".join(chars)
+
+
+def _split_params(text: str) -> list[str]:
+    items: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for i, ch in enumerate(text):
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            item = text[start:i].strip()
+            if item:
+                items.append(item)
+            start = i + 1
+    tail = text[start:].strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _parse_decl_type(item: str) -> tuple[str, str]:
+    item = re.sub(r"\s+", " ", item.strip())
+    if not item:
+        return "bytes", ""
+    item = re.sub(r"\b(?:memory|calldata|storage|indexed)\b", " ", item)
+    item = re.sub(r"\s+", " ", item).strip()
+    parts = item.split(" ")
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[-1]
+
+
+def _canonical_abi_type(param: dict[str, Any]) -> str:
+    typ = str(param.get("type") or "bytes")
+    if typ.startswith("tuple"):
+        suffix = typ[5:]
+        components = param.get("components") or []
+        inner = ",".join(_canonical_abi_type(x) for x in components)
+        return f"({inner}){suffix}"
+    return typ
+
+
+def _function_signature_from_abi(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or "")
+    types = [_canonical_abi_type(x) for x in item.get("inputs", [])]
+    return f"{name}({','.join(types)})"
+
+
+def _load_artifacts(root: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Path]]:
+    by_contract: dict[str, list[dict[str, Any]]] = {}
+    files: dict[str, Path] = {}
+    for path in sorted(root.glob("out/**/*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        abi = data.get("abi")
+        if not isinstance(abi, list):
+            continue
+        name = str(data.get("contractName") or path.stem)
+        if name not in by_contract:
+            by_contract[name] = abi
+            files[name] = path
+    return by_contract, files
+
+
+def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
+    contracts: dict[str, ContractInfo] = {}
+    patterns = list(root.glob("src/**/*.sol")) + list(root.glob("contracts/**/*.sol"))
+    seen: set[Path] = set()
+    for path in patterns:
+        if not path.is_file() or path in seen:
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        rel = path.relative_to(root).as_posix()
+        scan_text = _strip_solidity_comments(text)
+        import_list = re.findall(r'\bimport\s+(?:[^;]*?from\s+)?["\']([^"\']+)["\']\s*;', scan_text)
+
+        for match in re.finditer(
+            r"\b(contract|interface|library)\s+([A-Za-z_]\w*)",
+            scan_text,
+        ):
+            kind, name = match.groups()
+            line = text.count("\n", 0, match.start()) + 1
+            ci = ContractInfo(
+                name=name,
+                source=rel,
+                line=line,
+                kind=kind,
+                imports=import_list,
+            )
+            block_start = match.start()
+            next_decl = re.search(
+                r"\b(?:contract|interface|library)\s+[A-Za-z_]\w*",
+                scan_text[match.end():],
+            )
+            block_end = (
+                match.end() + next_decl.start()
+                if next_decl
+                else len(text)
+            )
+            ci.address_vars = [
+                x.group(1)
+                for x in re.finditer(
+                    r"\baddress(?:\s+[A-Za-z_]\w+)?\s+(?:public|private|internal|external)\s+([A-Za-z_]\w*)\s*(?:=|;)",
+                    scan_text[block_start:block_end],
+                )
+            ]
+            for fmatch in re.finditer(
+                r"\bfunction\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*([^{;]*)(?:\{|;)",
+                scan_text[block_start:block_end],
+                flags=re.S,
+            ):
+                fname, ptext, tail = fmatch.groups()
+                pitems = _split_params(ptext)
+                inputs: list[dict[str, Any]] = []
+                for raw in pitems:
+                    typ, pname = _parse_decl_type(raw)
+                    inputs.append({"type": typ, "name": pname})
+                floc = block_start + fmatch.start()
+                fline = scan_text.count("\n", 0, floc) + 1
+                absolute = block_start + fmatch.start()
+                brace = text.find("{", absolute, block_start + fmatch.end() + 1)
+                body = ""
+                if brace >= 0:
+                    depth = 0
+                    end = brace
+                    for j in range(brace, min(len(text), brace + 30000)):
+                        if text[j] == "{":
+                            depth += 1
+                        elif text[j] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                end = j + 1
+                                break
+                    body = text[brace:end]
+                modifiers = re.findall(
+                    r"\b(only[A-Za-z_]\w*|when[A-Za-z_]\w*|nonReentrant|initializer|payable|view|pure)\b",
+                    tail,
+                )
+                calls: list[dict[str, Any]] = []
+                for c in re.finditer(
+                    r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(",
+                    body,
+                ):
+                    calls.append(
+                        {
+                            "kind": "member-call",
+                            "receiver": c.group(1),
+                            "function": c.group(2),
+                        }
+                    )
+                for c in re.finditer(
+                    r"\b([A-Z][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\.\s*([A-Za-z_]\w*)\s*\(",
+                    body,
+                ):
+                    calls.append(
+                        {
+                            "kind": "typed-call",
+                            "interface": c.group(1),
+                            "receiver": c.group(2),
+                            "function": c.group(3),
+                        }
+                    )
+                sig = f"{fname}({','.join(x['type'] for x in inputs)})"
+                ci.functions.append(
+                    FunctionInfo(
+                        contract=name,
+                        name=fname,
+                        inputs=inputs,
+                        outputs=[],
+                        mutability=(
+                            "view" if re.search(r"\bview\b", tail)
+                            else "pure" if re.search(r"\bpure\b", tail)
+                            else "payable" if re.search(r"\bpayable\b", tail)
+                            else "nonpayable"
+                        ),
+                        signature=sig,
+                        source=rel,
+                        line=fline,
+                        body=body,
+                        modifiers=modifiers,
+                        calls=calls,
+                    )
+                )
+
+            for em in re.finditer(
+                r"\berror\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*;",
+                text[block_start:block_end],
+                flags=re.S,
+            ):
+                err_name, err_args = em.groups()
+                err_inputs = []
+                for raw in _split_params(err_args):
+                    typ, pname = _parse_decl_type(raw)
+                    err_inputs.append({"type": typ, "name": pname})
+                ci.errors.append(
+                    {"name": err_name, "inputs": err_inputs}
+                )
+            contracts[name] = ci
+    return contracts
+
+
+def _merge_artifact_functions(
+    contracts: dict[str, ContractInfo],
+    artifacts: dict[str, list[dict[str, Any]]],
+    artifact_files: dict[str, Path],
+    root: Path,
+) -> dict[str, list[FunctionInfo]]:
+    by_contract: dict[str, list[FunctionInfo]] = {}
+    for name, abi in artifacts.items():
+        ci = contracts.get(name)
+        source_map: dict[str, tuple[str | None, int | None]] = {}
+        if ci:
+            source_map = {
+                f.signature: (f.source, f.line)
+                for f in ci.functions
+            }
+        functions: list[FunctionInfo] = []
+        for item in abi:
+            if item.get("type") != "function":
+                continue
+            sig = _function_signature_from_abi(item)
+            src, line = source_map.get(sig, (None, None))
+            functions.append(
+                FunctionInfo(
+                    contract=name,
+                    name=str(item.get("name") or ""),
+                    inputs=item.get("inputs") or [],
+                    outputs=item.get("outputs") or [],
+                    mutability=str(item.get("stateMutability") or "nonpayable"),
+                    signature=sig,
+                    source=src,
+                    line=line,
+                    body=(
+                        next(
+                            (
+                                f.body
+                                for f in (ci.functions if ci else [])
+                                if f.signature == sig
+                            ),
+                            "",
+                        )
+                    ),
+                    modifiers=(
+                        next(
+                            (
+                                f.modifiers
+                                for f in (ci.functions if ci else [])
+                                if f.signature == sig
+                            ),
+                            [],
+                        )
+                    ),
+                    calls=(
+                        next(
+                            (
+                                f.calls
+                                for f in (ci.functions if ci else [])
+                                if f.signature == sig
+                            ),
+                            [],
+                        )
+                    ),
+                )
+            )
+        by_contract[name] = functions
+    return by_contract
+
+
+def _source_link(root: Path, source: str | None, line: int | None, text: str) -> str:
+    if not source or not line:
+        return text
+    path = (root / source).resolve()
+    if not path.exists():
+        return text
+    href = f"file://{path}:{line}"
+    # OSC 8 hyperlink. Supported by modern GNOME Terminal, VS Code terminal,
+    # iTerm2 and several other terminals; unsupported terminals simply render text.
+    return f"\x1b]8;;{href}\x1b\\{text}\x1b]8;;\x1b\\"
+
+
+def _run(
+    command: list[str],
+    root: Path | None = None,
+    timeout: int = 30,
+) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(root) if root else None,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except FileNotFoundError:
+        return 127, "", f"{command[0]} not found on PATH"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"command timed out after {timeout}s"
+    except OSError as exc:
+        return 1, "", str(exc)
+
+
+def _cast_call(
+    root: Path,
+    rpc: str,
+    address: str,
+    function: FunctionInfo,
+    args: list[str],
+    caller: str | None = None,
+) -> tuple[int, str, str]:
+    cmd = ["cast", "call", address, function.signature, *args, "--rpc-url", rpc]
+    if caller and _is_address(caller):
+        cmd.extend(["--from", caller])
+    return _run(cmd, root, 30)
+
+
+def _cast_send(
+    root: Path,
+    rpc: str,
+    address: str,
+    function: FunctionInfo,
+    args: list[str],
+    caller: str,
+) -> tuple[int, str, str]:
+    cmd = [
+        "cast",
+        "send",
+        address,
+        function.signature,
+        *args,
+        "--rpc-url",
+        rpc,
+        "--from",
+        caller,
+        "--unlocked",
+    ]
+    return _run(cmd, root, 60)
+
+
+def _debug_trace_call(
+    root: Path,
+    rpc: str,
+    address: str,
+    function: FunctionInfo,
+    args: list[Any],
+    caller: str | None,
+) -> dict[str, Any] | None:
+    """Best-effort callTracer evidence for opaque empty reverts."""
+    try:
+        code, calldata, _ = _run(
+            ["cast", "calldata", function.signature, *_arg_values_to_strings(args)],
+            root,
+            15,
+        )
+        if code != 0 or not calldata.strip():
+            return None
+        tx = {
+            "from": caller if _is_address(caller) else ZERO,
+            "to": address,
+            "data": calldata.strip(),
+        }
+        payload = _rpc(
+            rpc,
+            "debug_traceCall",
+            [tx, "latest", {"tracer": "callTracer"}],
+        )
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def _trace_revert_frames(trace: Any) -> list[str]:
+    frames: list[str] = []
+
+    def visit(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        target = node.get("to") or node.get("from") or "unknown"
+        error = node.get("revertReason") or node.get("error")
+        if error:
+            frames.append(f"{target}: {error}")
+        for child in node.get("calls") or []:
+            visit(child)
+
+    visit(trace)
+    return frames
+
+
+def _parse_revert_blob(text: str) -> str | None:
+    candidates = re.findall(
+        r"0x[0-9a-fA-F]{8,}",
+        text.replace('\\"', '"'),
+    )
+    if not candidates:
+        return None
+    # Prefer a blob that includes at least a full 4-byte selector.
+    for item in reversed(candidates):
+        if len(item) >= 10:
+            return item
+    return None
+
+
+def _keccak_selector(signature: str) -> str:
+    try:
+        from Crypto.Hash import keccak  # type: ignore
+        k = keccak.new(digest_bits=256)
+        k.update(signature.encode())
+        return "0x" + k.hexdigest()[:8]
+    except Exception:
+        code, out, _ = _run(["cast", "sig", signature], None, 10)
+        if code == 0:
+            m = re.search(r"0x[0-9a-fA-F]{8}", out)
+            if m:
+                return m.group(0).lower()
+    # Deliberately return an impossible sentinel; callers do not rely on it for control flow.
+    return "0x00000000"
+
+
+def _decode_word(typ: str, word: bytes) -> Any:
+    t = typ.lower()
+    if t.startswith("uint") or t.startswith("int"):
+        return int.from_bytes(word, "big", signed=t.startswith("int"))
+    if t == "bool":
+        return bool(int.from_bytes(word, "big"))
+    if t == "address":
+        return "0x" + word[-20:].hex()
+    if t.startswith("bytes") and len(t) > 5:
+        n = int(t[5:])
+        return "0x" + word[:n].hex()
+    return "0x" + word.hex()
+
+
+def _decode_error(
+    blob: str | None,
+    errors: Iterable[dict[str, Any]],
+) -> str | None:
+    if not blob or len(blob) < 10:
+        return None
+    raw = bytes.fromhex(blob[2:])
+    selector = "0x" + raw[:4].hex()
+    for err in errors:
+        name = str(err.get("name") or "")
+        inputs = err.get("inputs") or []
+        sig = f"{name}({','.join(_canonical_abi_type(x) for x in inputs)})"
+        if _keccak_selector(sig) != selector:
+            continue
+        payload = raw[4:]
+        values: list[Any] = []
+        for i, item in enumerate(inputs):
+            typ = _canonical_abi_type(item)
+            # Dynamic decoding is deliberately conservative; static errors are
+            # by far the most common and are fully decoded here.
+            if "[" in typ or typ in {"bytes", "string"} or typ.startswith("("):
+                values.append("<dynamic>")
+                continue
+            off = i * 32
+            if len(payload) < off + 32:
+                values.append("<truncated>")
+            else:
+                values.append(_decode_word(typ, payload[off:off + 32]))
+        if values:
+            return f"{name}({', '.join(str(v) for v in values)})"
+        return f"{name}()"
+    return selector
+
+
+def _all_errors(artifacts: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for abi in artifacts.values():
+        for item in abi:
+            if item.get("type") != "error":
+                continue
+            sig = _function_signature_from_abi(
+                {**item, "name": item.get("name")}
+            )
+            key = sig
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
     return out
 
 
-def _render_action_card(
-    root: Path,
-    action: dict[str, Any],
-    index: int,
-    total: int,
-    links: bool,
-) -> str:
-    node: LiveNode = action["node"]
-    fn: FunctionInfo = action["function"]
-    status = str(action.get("status") or "NEXT").upper()
-    actor = str(action.get("actor_name") or "Unknown")
-    status_word = _step_status_word(action)
-    label = f"{node.artifact_contract or node.name}.{fn.name}"
-    if links and fn.source and fn.line:
-        label = _source_link(root, fn.source, fn.line, label)
-
-    lines = [
-        f"{_section(f'STEP {index + 1:02d} / {total:02d}', 'cyan')}  "
-        f"{_status_icon(status)} {_paint(status_word, 'green' if status_word == 'DONE' else 'cyan' if status_word == 'READY' else 'red' if status_word in {'BLOCKED','FAILED'} else 'yellow')}",
-        f"  {_paint(action.get('phase', 'STEP'), 'yellow')}  {_paint(actor, 'magenta')} → {label}",
-        f"  WHAT   {action.get('what') or _action_what(fn, node)}",
-        f"  WHY    {action.get('why') or _action_why(fn, node)}",
-    ]
-    result = action.get("result") or {}
-    if result.get("ok"):
-        lines.append(f"  RESULT {_status_icon('PASS')} Chain accepted the simulation.")
-    elif result:
-        friendly, recommendation = _friendly_error(
-            result.get("decoded_error"),
-            result.get("raw", ""),
-        )
-        lines.append(f"  RESULT {_status_icon('BLOCKED')} {friendly}")
-        lines.append(f"  NEXT   {_paint(recommendation, 'yellow')}")
-        for item in action.get("diagnosis", [])[:2]:
-            lines.append(f"         evidence: {item}")
-    return "\n".join(lines)
+def _parse_cast_value(raw: str, typ: str) -> Any:
+    text = raw.strip()
+    if typ.endswith("[]"):
+        inner = text.strip("[] ")
+        if not inner:
+            return []
+        return [
+            _parse_cast_value(part.strip(), typ[:-2])
+            for part in _split_params(inner)
+        ]
+    if _is_address(text):
+        return text
+    if text.lower() in {"true", "false"}:
+        return text.lower() == "true"
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    return text
 
 
-def _format_state_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "ON / true" if value else "OFF / false"
+def _render_value(value: Any) -> str:
     if isinstance(value, list):
-        if not value:
-            return "empty []"
-        if len(value) > 4:
-            return "[" + ", ".join(_short_address(x) if _is_address(x) else str(x) for x in value[:4]) + f", … +{len(value)-4}]"
-        return "[" + ", ".join(_short_address(x) if _is_address(x) else str(x) for x in value) + "]"
-    if _is_address(value):
-        return _short_address(value)
+        return "[" + ", ".join(_render_value(x) for x in value) + "]"
     return str(value)
 
 
-def _render_live_state(
-    target: LiveNode,
+def _normalize_arg_for_cast(value: Any) -> str:
+    if isinstance(value, list):
+        return "[" + ",".join(_normalize_arg_for_cast(x) for x in value) + "]"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _function_by_name(functions: Iterable[FunctionInfo], name: str) -> FunctionInfo | None:
+    matches = [f for f in functions if f.name == name]
+    return matches[0] if matches else None
+
+
+def _read_simple_getter(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    function: FunctionInfo,
+    *,
+    caller: str | None = None,
+) -> tuple[Any, str]:
+    code, out, err = _cast_call(root, rpc, node.address, function, [], caller)
+    if code != 0:
+        return None, err or out
+    text = out.strip()
+    if not text:
+        return None, ""
+    outputs = function.outputs
+    if len(outputs) == 1 and str(outputs[0].get("type")) == "address":
+        m = re.search(r"0x[0-9a-fA-F]{40}", text)
+        return (m.group(0) if m else None), text
+    if len(outputs) == 1 and str(outputs[0].get("type")) == "address[]":
+        vals = re.findall(r"0x[0-9a-fA-F]{40}", text)
+        return vals, text
+    if len(outputs) == 1 and str(outputs[0].get("type")) == "bool":
+        return text.lower().split()[0] == "true", text
+    if len(outputs) == 1 and (
+        str(outputs[0].get("type") or "").startswith(("uint", "int"))
+    ):
+        m = re.search(r"-?\d+", text)
+        return (int(m.group(0)) if m else None), text
+    return text, text
+
+
+def _discover_getters(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
     functions: list[FunctionInfo],
-    getter_values: dict[str, Any],
+) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for fn in functions:
+        if fn.mutability not in {"view", "pure"}:
+            continue
+        if fn.inputs:
+            continue
+        if len(fn.outputs) != 1:
+            continue
+        typ = str(fn.outputs[0].get("type") or "")
+        if typ not in {"address", "address[]", "bool"} and not typ.startswith(("uint", "int")):
+            continue
+        val, raw = _read_simple_getter(root, rpc, node, fn)
+        if val is not None:
+            values[fn.name] = val
+    return values
+
+
+def _looks_like_erc20(functions: list[FunctionInfo]) -> bool:
+    names = {f.name for f in functions}
+    return {"balanceOf", "transfer"}.issubset(names)
+
+
+def _looks_like_agreement(functions: list[FunctionInfo]) -> bool:
+    names = {f.name for f in functions}
+    return "isContractInScope" in names and "owner" in names
+
+
+def _build_live_graph(
+    root: Path,
+    rpc: str,
+    target: str,
+    label_hint: str | None,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    artifact_files: dict[str, Path],
+) -> tuple[list[LiveNode], dict[str, dict[str, Any]], dict[str, str]]:
+    nodes: list[LiveNode] = []
+    getter_data: dict[str, dict[str, Any]] = {}
+    address_names: dict[str, str] = {}
+    queue: list[tuple[str, str, str | None, str | None]] = [
+        (target, label_hint or "Target", None, None)
+    ]
+    seen: set[str] = set()
+
+    while queue and len(nodes) < 40:
+        address, label, parent, getter = queue.pop(0)
+        if not _is_address(address):
+            continue
+        key = address.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        size = _code_size(rpc, address)
+        # A target with zero code is intentionally retained so diagnostics can
+        # say "there is no contract here" instead of inventing a revert reason.
+        artifact_contract = None
+        if label in functions_by_contract:
+            artifact_contract = label
+        else:
+            for cname in functions_by_contract:
+                if cname.lower() == label.lower():
+                    artifact_contract = cname
+                    break
+        node = LiveNode(
+            address=address,
+            name=artifact_contract or label,
+            code_size=size,
+            artifact_contract=artifact_contract,
+            discovered_from=parent,
+            getter=getter,
+        )
+        nodes.append(node)
+        if size == 0:
+            continue
+
+        funcs = functions_by_contract.get(artifact_contract or "", [])
+        vals = _discover_getters(root, rpc, node, funcs)
+        getter_data[address.lower()] = vals
+
+        for gname, value in vals.items():
+            if _is_address(value) and value.lower() != ZERO.lower():
+                if _code_size(rpc, value) > 0:
+                    child_label = gname
+                    for cname, fs in functions_by_contract.items():
+                        if gname in {f.name for f in fs}:
+                            child_label = cname
+                            break
+                    queue.append((value, child_label, address, gname))
+                    address_names[value.lower()] = gname
+            elif isinstance(value, list):
+                for item in value[:20]:
+                    if _is_address(item) and _code_size(rpc, item) > 0:
+                        queue.append((item, gname, address, gname))
+                        address_names[item.lower()] = gname
+
+    return nodes, getter_data, address_names
+
+
+def _actor_context(config: dict[str, Any], rpc: str) -> dict[str, str]:
+    accounts = _eth_accounts(rpc)
+    actors: dict[str, str] = {}
+    saved = config.get("aliases") or {}
+    if isinstance(saved, dict):
+        for name, addr in saved.items():
+            if _is_address(addr):
+                actors[str(name)] = addr
+
+    defaults = ["Alice", "Bob", "Attacker"]
+    for i, addr in enumerate(accounts[:3]):
+        actors.setdefault(defaults[i], addr)
+
+    # Common lower-case aliases, used for role matching.
+    for canonical in list(actors):
+        actors[canonical.lower()] = actors[canonical]
+    return actors
+
+
+def _known_contracts(nodes: list[LiveNode], functions_by_contract: dict[str, list[FunctionInfo]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for node in nodes:
+        cname = node.artifact_contract or node.name
+        result[cname.lower()] = node.address
+        fs = functions_by_contract.get(cname, [])
+        if _looks_like_erc20(fs):
+            result.setdefault("erc20", node.address)
+        if _looks_like_agreement(fs):
+            result.setdefault("agreement", node.address)
+        if "isAgreementValid" in {f.name for f in fs}:
+            result.setdefault("safeharbor", node.address)
+        if "getAgreementState" in {f.name for f in fs}:
+            result.setdefault("attackregistry", node.address)
+    return result
+
+
+def _query_by_signature(
+    root: Path,
+    rpc: str,
+    address: str,
+    signature: str,
+    args: list[str] | None = None,
+    caller: str | None = None,
+) -> tuple[int, str, str]:
+    fn = FunctionInfo(
+        contract="Runtime",
+        name=signature.split("(", 1)[0],
+        inputs=[],
+        outputs=[],
+        mutability="view",
+        signature=signature,
+    )
+    return _cast_call(root, rpc, address, fn, args or [], caller)
+
+
+def _scope_accounts(
+    root: Path,
+    rpc: str,
+    agreement: str | None,
+    agreement_functions: list[FunctionInfo] | None,
 ) -> list[str]:
-    lines = [_section("LIVE STATE / WHAT THE CHAIN CURRENTLY SAYS", "blue")]
-    if not getter_values:
-        lines.append("  No simple zero-argument readable state was recovered.")
-        return lines
+    if not agreement or not agreement_functions:
+        return []
 
-    interesting = []
-    for name, value in getter_values.items():
-        lower = name.lower()
-        score = 10
-        if any(token in lower for token in ("owner", "admin", "moderator", "state", "status", "paused", "allowed", "open", "active", "expiry", "deadline", "stake", "balance", "count")):
-            score += 20
-        if isinstance(value, (list, dict)):
-            score += 5
-        interesting.append((score, name, value))
-    interesting.sort(key=lambda x: (-x[0], x[1]))
+    live_node = LiveNode(agreement, "Agreement", _code_size(rpc, agreement))
 
-    for _, name, value in interesting[:10]:
-        lines.append(f"  {_paint(name, 'blue')} = {_format_state_value(value)}")
-    lines.append("  These are observed values from read-only calls; they are state evidence, not guesses.")
-    return lines
+    # Prefer a bulk getter whose ABI says it returns address[] and whose name
+    # indicates accounts/scope/members. This works across unrelated protocols.
+    bulk_candidates = [
+        fn
+        for fn in agreement_functions
+        if fn.mutability in {"view", "pure"}
+        and any(
+            _canonical_abi_type(o) == "address[]"
+            for o in (fn.outputs or [])
+        )
+        and any(
+            token in fn.name.lower()
+            for token in ("account", "scope", "member", "participant")
+        )
+        and not fn.inputs
+    ]
+    for fn in bulk_candidates:
+        val, _ = _read_simple_getter(root, rpc, live_node, fn)
+        addresses = [x for x in (val or []) if _is_address(x)]
+        if addresses:
+            return addresses
+
+    # Fallback: find an address -> bool membership query and test RPC accounts.
+    membership_candidates = [
+        fn
+        for fn in agreement_functions
+        if fn.mutability in {"view", "pure"}
+        and len(fn.inputs) == 1
+        and _canonical_abi_type(fn.inputs[0]) == "address"
+        and len(fn.outputs) == 1
+        and _canonical_abi_type(fn.outputs[0]) == "bool"
+        and any(
+            token in fn.name.lower()
+            for token in ("scope", "account", "member", "participant", "in")
+        )
+    ]
+    for fn in membership_candidates:
+        discovered: list[str] = []
+        for candidate in _eth_accounts(rpc):
+            code, out, _ = _query_by_signature(
+                root,
+                rpc,
+                agreement,
+                _function_signature_from_abi({
+                    "name": fn.name,
+                    "inputs": fn.inputs,
+                }),
+                [_normalize_arg_for_cast(candidate)],
+            )
+            if code == 0 and out.strip().lower() in {"true", "1"}:
+                discovered.append(candidate)
+        if discovered:
+            return discovered
+    return []
+
+def _find_node_by_predicate(
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    predicate: Any,
+) -> LiveNode | None:
+    for node in nodes:
+        cname = node.artifact_contract or node.name
+        if predicate(functions_by_contract.get(cname, [])):
+            return node
+    return None
+
+
+def _semantic_address(
+    param_name: str,
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    actors: dict[str, str],
+    known: dict[str, str],
+    *,
+    prefer_contract: bool = False,
+    root: Path | None = None,
+    rpc: str | None = None,
+) -> str | None:
+    n = param_name.lower()
+    if "agreement" in n:
+        return known.get("agreement")
+    if "stake" in n and "token" in n or n in {"token", "staketoken"}:
+        return known.get("erc20")
+    if any(x in n for x in ("recovery", "recipient", "owner", "admin", "caller", "sender")):
+        return actors.get("alice") or actors.get("Alice")
+    if "attacker" in n:
+        return actors.get("attacker")
+    if "moderator" in n or "manager" in n:
+        for node in nodes:
+            cname = node.artifact_contract or node.name
+            if cname.lower() in {"confidencepool", "confidencepoolfactory"}:
+                continue
+            fs = functions_by_contract.get(cname, [])
+            if any(f.name == "owner" for f in fs):
+                owner_fn = _function_by_name(fs, "owner")
+                if owner_fn:
+                    val, _ = _read_simple_getter(
+                        root or Path.cwd(),
+                        rpc or _rpc_url({}),
+                        node,
+                        owner_fn,
+                    )
+                    if _is_address(val):
+                        return val
+        return actors.get("alice") or actors.get("Alice")
+    if any(x in n for x in ("pool", "implementation", "registry", "oracle", "factory")):
+        for key in (n, "poolimplementation", "safeharbor", "attackregistry"):
+            if key in known:
+                return known[key]
+    if prefer_contract:
+        for node in nodes:
+            if node.code_size > 0:
+                return node.address
+    return actors.get("alice") or actors.get("Alice")
+
+
+def _semantic_arg(
+    param: dict[str, Any],
+    node: LiveNode,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    now: int,
+    root: Path,
+    rpc: str,
+) -> Any:
+    typ = str(param.get("type") or "bytes")
+    name = str(param.get("name") or "").lower()
+
+    if typ == "address":
+        return _semantic_address(name, nodes, functions_by_contract, actors, known, root=root, rpc=rpc)
+
+    if typ == "address[]":
+        if "account" in name or "scope" in name:
+            agreement = known.get("agreement")
+            if agreement:
+                afn = functions_by_contract.get(
+                    next(
+                        (
+                            n.artifact_contract
+                            for n in nodes
+                            if n.address.lower() == agreement.lower()
+                        ),
+                        "Agreement",
+                    ),
+                    [],
+                )
+                scope = _scope_accounts(root, rpc, agreement, afn)
+                if scope:
+                    return scope
+        return [actors[x] for x in ("Alice", "Bob") if x in actors]
+
+    if typ.startswith("uint") or typ.startswith("int"):
+        if any(x in name for x in ("expiry", "deadline", "timestamp", "end", "until")):
+            return now + 31 * 24 * 60 * 60
+        if "minstake" in name:
+            return 1
+        if "amount" in name:
+            fs = functions_by_contract.get(node.artifact_contract or node.name, [])
+            min_fn = _function_by_name(fs, "minStake")
+            if min_fn:
+                val, _ = _read_simple_getter(
+                    root,
+                    rpc,
+                    node,
+                    min_fn,
+                )
+                if isinstance(val, int) and val > 0:
+                    return val
+            return 1
+        return 1
+
+    if typ == "bool":
+        if any(x in name for x in ("allowed", "enable", "enabled")):
+            return True
+        return False
+
+    if typ == "bytes32":
+        return "0x" + "00" * 32
+
+    if typ == "bytes":
+        return "0x"
+
+    if typ == "string":
+        return "lowkey"
+
+    # Dynamic or tuple types require a richer schema than a human-readable
+    # walkthrough should invent automatically. Leave them as unsupported.
+    return None
+
+
+def _semantic_args(
+    node: LiveNode,
+    fn: FunctionInfo,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    now: int,
+    root: Path,
+    rpc: str,
+) -> tuple[list[Any] | None, str | None]:
+    args: list[Any] = []
+    for item in fn.inputs:
+        typ = _canonical_abi_type(item)
+        if typ.startswith("(") or typ.endswith("]") and typ != "address[]":
+            # Handle address[] above; tuples and nested arrays are intentionally
+            # deferred to explicit/manual tests.
+            if typ != "address[]":
+                return None, f"complex ABI type {typ} is not auto-synthesized"
+        value = _semantic_arg(
+            item,
+            node,
+            functions_by_contract,
+            nodes,
+            actors,
+            known,
+            now,
+            root,
+            rpc,
+        )
+        if value is None:
+            return None, f"no safe semantic value for {item.get('name') or typ}"
+        args.append(value)
+
+    return args, None
+
+
+def _arg_values_to_strings(args: list[Any]) -> list[str]:
+    return [_normalize_arg_for_cast(x) for x in args]
+
+
+def _preflight_failure(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    fn: FunctionInfo,
+    args: list[Any],
+    caller: str,
+    all_errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    code, out, err = _cast_call(
+        root,
+        rpc,
+        node.address,
+        fn,
+        _arg_values_to_strings(args),
+        caller,
+    )
+    combined = "\n".join(x for x in (err, out) if x)
+    blob = _parse_revert_blob(combined)
+    decoded = _decode_error(blob, all_errors)
+    trace = None
+    trace_revert_frames: list[str] = []
+    if code != 0 and not decoded and (not blob or blob == "0x"):
+        trace = _debug_trace_call(root, rpc, node.address, fn, args, caller)
+        trace_revert_frames = _trace_revert_frames(trace)
+    return {
+        "ok": code == 0,
+        "exit_code": code,
+        "stdout": out,
+        "stderr": err,
+        "revert_data": blob,
+        "decoded_error": decoded,
+        "trace": trace,
+        "trace_revert_frames": trace_revert_frames,
+        "raw": combined[-2000:],
+    }
+
+
+def _known_preconditions(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    fn: FunctionInfo,
+    args: list[Any],
+    caller: str,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    known: dict[str, str],
+    actors: dict[str, str],
+) -> list[str]:
+    """Evaluate common source-shaped preconditions without hard-coding a project.
+
+    This is deliberately a small generic evaluator. It reports evidence-backed
+    checks instead of pretending it can symbolically solve arbitrary Solidity.
+    """
+    findings: list[str] = []
+    fs = functions_by_contract.get(node.artifact_contract or node.name, [])
+    by_name = {f.name: f for f in fs}
+    values = {str(p.get("name") or f"arg{i}"): v for i, (p, v) in enumerate(zip(fn.inputs, args))}
+    src = fn.body or ""
+
+    # Live bytecode is a first-class precondition.
+    if node.code_size == 0:
+        findings.append(f"target {node.address} has no runtime bytecode")
+
+    # Time-based expiry/deadline gates.
+    # Instead of assuming the exact constant, compare the source-level shape and
+    # use the current simulated timestamp.
+    if "block.timestamp" in src and "expiry" in src and re.search(r"expiry[^;]*(?:block\.timestamp|\+|\-)", src):
+        exp = values.get("expiry")
+        if isinstance(exp, int):
+            now = _latest_timestamp(rpc)
+            if exp <= now:
+                findings.append(f"expiry {exp} is not in the future")
+            elif exp < now + 7 * 24 * 60 * 60:
+                findings.append(f"expiry {exp} is less than 7 days from the live chain")
+
+    # Owner-of-referenced-contract is a common authorization gate.
+    if ".owner()" in src and "msg.sender" in src:
+        agreement = values.get("agreement")
+        if _is_address(agreement) and _code_size(rpc, agreement) > 0:
+            code, out, err = _query_by_signature(
+                root,
+                rpc,
+                agreement,
+                "owner()(address)",
+                [],
+            )
+            owner = re.search(r"0x[0-9a-fA-F]{40}", out)
+            if code == 0 and owner and owner.group(0).lower() != caller.lower():
+                findings.append(
+                    f"agreement.owner() is {owner.group(0)}, but caller is {caller}"
+                )
+
+
+    return findings
+
+
+def _rank_function(fn: FunctionInfo) -> int:
+    if fn.mutability in {"view", "pure"}:
+        return -100
+    n = fn.name.lower()
+    score = 20
+    for token, bonus in (
+        ("setstaketokenallowed", 34),
+        ("create", 30),
+        ("initialize", 20),
+        ("stake", 25),
+        ("deposit", 25),
+        ("contribute", 22),
+        ("borrow", 20),
+        ("withdraw", 20),
+        ("claim", 18),
+        ("redeem", 18),
+        ("release", 18),
+        ("execute", 15),
+        ("flag", 12),
+        ("resolve", 12),
+        ("sweep", 10),
+    ):
+        if token in n:
+            score += bonus
+    for token in ("set", "pause", "unpause", "upgrade", "authorize"):
+        if n.startswith(token):
+            score -= 20
+    if n in {"constructor", "fallback", "receive"}:
+        score = -100
+    return score
+
+
+def _choose_caller(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    fn: FunctionInfo,
+    actors: dict[str, str],
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+) -> tuple[str | None, str]:
+    n = fn.name.lower()
+    # Known protocol roles first.
+    if "attacker" in n and actors.get("Attacker"):
+        return actors["Attacker"], "Attacker"
+    if n in {"claimattackerbounty"} and actors.get("Attacker"):
+        return actors["Attacker"], "Attacker"
+
+    fs = functions_by_contract.get(node.artifact_contract or node.name, [])
+    owner_fn = _function_by_name(fs, "owner")
+    if owner_fn and any(x in n for x in ("set", "pause", "unpause", "upgrade", "authorize")):
+        val, _ = _read_simple_getter(root, rpc, node, owner_fn)
+        if _is_address(val):
+            return val, "Owner"
+
+    if n in {"flagoutcome"}:
+        mod_fn = _function_by_name(fs, "outcomeModerator")
+        if mod_fn:
+            val, _ = _read_simple_getter(root, rpc, node, mod_fn)
+            if _is_address(val):
+                return val, "Moderator"
+
+    return (
+        actors.get("Alice") or actors.get("alice"),
+        "Alice",
+    )
+
+
+def _function_source(
+    root: Path,
+    contracts: dict[str, ContractInfo],
+    fn: FunctionInfo,
+) -> tuple[str | None, int | None]:
+    if fn.source and fn.line:
+        return fn.source, fn.line
+    ci = contracts.get(fn.contract)
+    if ci:
+        return ci.source, ci.line
+    return None, None
+
+
+def _system_edges(
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    contracts: dict[str, ContractInfo],
+) -> list[dict[str, str]]:
+    edges: list[dict[str, str]] = []
+
+    # Static source/import edges.
+    for cname, ci in contracts.items():
+        for imp in ci.imports:
+            edges.append(
+                {
+                    "from": cname,
+                    "to": imp,
+                    "kind": "import",
+                }
+            )
+        for fn in ci.functions:
+            for call in fn.calls or []:
+                if call["kind"] == "typed-call":
+                    edges.append(
+                        {
+                            "from": cname,
+                            "to": call["interface"],
+                            "kind": "external-call",
+                            "function": f"{fn.name} -> {call['function']}",
+                        }
+                    )
+                else:
+                    receiver = call["receiver"]
+                    state_or_input = set(ci.address_vars)
+                    state_or_input.update(
+                        str(p.get("name") or "")
+                        for p in fn.inputs
+                        if isinstance(p, dict)
+                    )
+                    if receiver in state_or_input:
+                        edges.append(
+                            {
+                                "from": cname,
+                                "to": receiver,
+                                "kind": "member-call",
+                                "function": f"{fn.name} -> {call['function']}",
+                            }
+                        )
+
+    # Runtime getter edges connect actual addresses.
+    for node in nodes:
+        for other in nodes:
+            if node.address.lower() == other.address.lower():
+                continue
+            if other.discovered_from and other.discovered_from.lower() == node.address.lower():
+                edges.append(
+                    {
+                        "from": node.artifact_contract or node.name,
+                        "to": other.artifact_contract or other.name,
+                        "kind": f"runtime:{other.getter or 'address-returning getter'}",
+                    }
+                )
+    return edges
+
+
+def _static_system_context(
+    bootstrap: dict[str, Any] | None,
+    contracts: dict[str, ContractInfo],
+) -> dict[str, Any]:
+    """Build a protocol-agnostic static system view from source/setup evidence."""
+    bootstrap = bootstrap or {}
+    initialization = [
+        x for x in (bootstrap.get("initialization") or [])
+        if isinstance(x, dict)
+    ]
+
+    deployed: list[str] = []
+    for item in initialization:
+        if item.get("kind") != "deploy":
+            continue
+        name = str(item.get("target") or "").strip()
+        if name and name not in deployed:
+            deployed.append(name)
+
+    project_contracts: list[str] = []
+    for name, info in contracts.items():
+        source = str(info.source or "")
+        if not source.startswith(("src/", "contracts/")):
+            continue
+        if info.kind not in {"contract", "abstract"}:
+            continue
+        project_contracts.append(name)
+    project_contracts.sort()
+
+    script_flow: dict[str, list[dict[str, Any]]] = {}
+    for item in initialization:
+        source = str(item.get("source") or "unknown")
+        script_flow.setdefault(source, []).append(
+            {
+                "kind": str(item.get("kind") or "unknown"),
+                "target": str(item.get("target") or ""),
+                "line": item.get("line"),
+                "evidence": str(item.get("evidence") or ""),
+            }
+        )
+
+    return {
+        "deployed_contracts": deployed,
+        "project_contracts": project_contracts,
+        "script_flow": script_flow,
+        "initialization_steps": len(initialization),
+    }
+
+
+def _target_label(config: dict[str, Any], target: str | None) -> str:
+    if not _is_address(target):
+        return "Target"
+    if str(config.get("target") or "").lower() == target.lower():
+        labels = config.get("labels") or {}
+        configured = labels.get(target) if isinstance(labels, dict) else None
+        return str(config.get("target_contract") or configured or "Target")
+    labels = config.get("labels") or {}
+    if isinstance(labels, dict):
+        for k, v in labels.items():
+            if str(k).lower() == target.lower():
+                return str(v)
+    return "Target"
+
+
+def _pretty_error(result: dict[str, Any]) -> str:
+    decoded = result.get("decoded_error")
+    if decoded:
+        return decoded
+    raw = str(result.get("raw") or "")
+    blob = result.get("revert_data")
+    if blob:
+        return f"revert data {blob}"
+    if raw:
+        return raw.splitlines()[-1][:240]
+    return "execution reverted without returndata"
+
+
+def _persist(root: Path, payload: dict[str, Any]) -> None:
+    path = root / ".audit" / "evidence" / "walkthrough.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _render_story(
@@ -620,108 +2312,135 @@ def _render_story(
     links: bool = True,
     meta: dict[str, Any] | None = None,
 ) -> str:
-    """Render the audit story as a compact, layered human-readable console view."""
+    """Render the walkthrough as a compact human-facing protocol story."""
     meta = meta if isinstance(meta, dict) else {}
-    live_nodes = [node for node in nodes if node.code_size > 0]
-    target = str(meta.get("target") or "")
-    target_node = next(
-        (node for node in live_nodes if node.address.lower() == target.lower()),
-        None,
-    )
-    target_name = (
-        target_node.artifact_contract or target_node.name
-        if target_node else "Not resolved"
-    )
-
     lines: list[str] = []
-    lines.append(_paint("╭────────────────────────────────────────────────────────────╮", "cyan"))
-    lines.append(_paint("│ LOWKEY  /  PROTOCOL WALKTHROUGH                            │", "bold"))
-    lines.append(_paint("╰────────────────────────────────────────────────────────────╯", "cyan"))
-    lines.append(
-        f"  Environment  Local RPC • {len(live_nodes)} live contract(s) • {len(_canonical_actor_names(actors))} actor(s)"
-    )
-    lines.append(f"  Focus        {target_name} • {_short_address(target) if target else 'no target'}")
+    live_nodes = [n for n in nodes if n.code_size > 0]
+    target = meta.get("target")
+    target_name = _target_label({}, target) if target else "Not resolved"
+    if target:
+        for n in nodes:
+            if n.address.lower() == str(target).lower():
+                target_name = n.artifact_contract or n.name
+                break
+
+    lines.append("╭────────────────────────────────────────────────────────────╮")
+    lines.append("│ LOWKEY  /  SYSTEM WALKTHROUGH                              │")
+    lines.append("╰────────────────────────────────────────────────────────────╯")
+    lines.append(f"  Environment  Local RPC • {_short_address(str(target)) if target else 'no target'}")
+    lines.append(f"  System       {len(live_nodes)} live contract(s) • {len(actors)} actor(s)")
+    lines.append(f"  Focus        {target_name}")
     source = str(meta.get("target_source") or "")
-    if "mismatch" in source:
-        lines.append(f"  Identity     {_paint('✗ mismatch / stale evidence detected', 'red')}")
-    elif "exact" in source:
-        lines.append(f"  Identity     {_paint('✓ bytecode matches local artifact', 'green')}")
-    elif "current broadcast" in source:
-        lines.append(f"  Identity     {_paint('✓ current local deployment', 'green')}")
-    else:
-        lines.append(f"  Identity     {_paint('• not fully proven', 'yellow')}")
+    if "current broadcast" in source:
+        lines.append("  Identity     ✓ matched to the current local deployment")
+    elif "audit evidence" in source and "no live" not in source:
+        lines.append("  Identity     • taken from persisted audit evidence")
 
     if meta.get("auto_bootstrap"):
         boot = meta["auto_bootstrap"]
         if boot.get("status") == "success":
-            lines.append(f"  Bootstrap    {_paint('✓ local setup ready', 'green')} ({boot.get('reason', 'completed')})")
+            lines.append(f"  Bootstrap    ✓ Local setup loaded ({boot.get('reason', 'completed')})")
         else:
-            lines.append(f"  Bootstrap    {_paint('! setup not completed', 'yellow')} ({boot.get('reason', 'not needed')})")
-
-    if actors:
-        names = _canonical_actor_names(actors)
-        if names:
-            lines.append(f"  Actors       {_paint(' / '.join(names), 'magenta')}")
+            lines.append(f"  Bootstrap    • {boot.get('reason', 'not needed')}")
 
     lines.append("")
-    lines.append(_section("SYSTEM CONNECTION WEB", "cyan"))
+    lines.append("SYSTEM IN PLAIN ENGLISH")
+    if actors:
+        actor_bits = [name for name in ("Alice", "Bob", "Attacker") if actors.get(name)]
+        if actor_bits:
+            lines.append("  " + " / ".join(actor_bits) + " are the people Lowkey can use as test actors.")
+
+    role_nodes: dict[str, LiveNode] = {}
+    for n in live_nodes:
+        low = (n.artifact_contract or n.name).lower()
+        for key, tokens in {
+            "factory": ("factory",),
+            "pool": ("pool",),
+            "agreement": ("agreement",),
+            "token": ("token", "erc20"),
+            "registry": ("registry", "safeharbor"),
+            "moderator": ("moderator",),
+        }.items():
+            if key not in role_nodes and any(token in low for token in tokens):
+                role_nodes[key] = n
+
+    if role_nodes:
+        if role_nodes.get("factory"):
+            n = role_nodes["factory"]
+            lines.append(f"  {n.artifact_contract or n.name}  → {_contract_purpose(n.artifact_contract or n.name, functions_by_contract.get(n.artifact_contract or n.name))}")
+            if role_nodes.get("agreement"):
+                a = role_nodes["agreement"]
+                lines.append(f"     ├─ checks → {a.artifact_contract or a.name}  (agreement/permissions)")
+            if role_nodes.get("token"):
+                t = role_nodes["token"]
+                lines.append(f"     ├─ accepts → {t.artifact_contract or t.name}  (stake asset)")
+            if role_nodes.get("pool"):
+                p = role_nodes["pool"]
+                lines.append(f"     └─ creates/initializes → {p.artifact_contract or p.name}")
+        if role_nodes.get("pool"):
+            p = role_nodes["pool"]
+            lines.append(f"  {p.artifact_contract or p.name}  → {_contract_purpose(p.artifact_contract or p.name, functions_by_contract.get(p.artifact_contract or p.name))}")
+            if role_nodes.get("registry"):
+                r = role_nodes["registry"]
+                lines.append(f"     └─ consults → {r.artifact_contract or r.name}  (external validity/state)")
+    else:
+        lines.append("  Lowkey found contracts, but could not confidently assign their protocol roles yet.")
+
+    lines.append("")
+    lines.append("WALKTHROUGH PHASES")
+    lines.append("  CREATE       build the protocol instance and its starting configuration")
+    lines.append("  PARTICIPATE  users add stake/value and enter the protocol state")
+    lines.append("  OUTCOME      the system records or reacts to an outcome")
+    lines.append("  SETTLE       the protocol releases, claims or sweeps value")
+    lines.append("  ADMIN        deployment/configuration work; normally kept out of the user journey")
+
+    lines.append("")
+    lines.append("SYSTEM CONNECTION WEB")
     lines.extend(_render_connection_web(nodes, _system_edges(nodes, functions_by_contract, contracts), actions))
 
-    if target_node:
-        cname = target_node.artifact_contract or target_node.name
-        contract = contracts.get(cname)
-        functions = functions_by_contract.get(cname, [])
-        if contract:
-            lines.append("")
-            lines.append(_paint(f"FOCUS CONTRACT / {cname}", "bold"))
-            lines.append(f"  {_contract_purpose(cname, functions)}")
-            lines.append("")
-            lines.extend(_render_live_state(
-                target_node,
-                functions,
-                (meta.get("runtime_getters") or {}).get(target.lower(), {}),
-            ))
-            lines.append("")
-            lines.extend(_render_contract_surface(contract, functions))
-
-    if actions:
-        diagnosis = _render_state_diagnosis(actions)
-        if diagnosis:
-            lines.append("")
-            lines.extend(diagnosis)
-        lines.append("")
-        lines.append(_section("CURRENT WALKTHROUGH STEP", "cyan"))
-        if current is not None and 0 <= current < len(actions):
-            lines.append(_render_action_card(root, actions[current], current, len(actions), links))
-            if current + 1 < len(actions):
-                nxt = actions[current + 1]
-                lines.append("")
-                lines.append(
-                    f"  { _paint('NEXT', 'yellow') }  "
-                    f"{current + 2:02d}/{len(actions):02d}  "
-                    f"{nxt.get('phase', 'STEP')}  →  "
-                    f"{nxt['node'].artifact_contract or nxt['node'].name}.{nxt['function'].name}"
-                )
-        else:
-            lines.append(f"  Walkthrough examined {len(actions)} candidate(s).")
-            done = sum(_step_status_word(a) == "DONE" for a in actions)
-            blocked = sum(_step_status_word(a) == "BLOCKED" for a in actions)
-            failed = sum(_step_status_word(a) == "FAILED" for a in actions)
-            lines.append(f"  {_paint('✓', 'green')} passed/ready: {done}")
-            lines.append(f"  {_paint('✗', 'red')} blocked: {blocked}")
-            lines.append(f"  {_paint('!', 'yellow')} send failures: {failed}")
+    lines.append("")
+    lines.append("WHAT LOWKEY IS DOING")
+    if not actions:
+        lines.append("  No safe next action was found from the current state.")
     else:
-        lines.append("")
-        lines.append(_section("CURRENT WALKTHROUGH STEP", "cyan"))
-        lines.append("  No coherent state-changing action was found from the current state.")
+        upto = len(actions) if current is None else min(len(actions), current + 1)
+        for index, action in enumerate(actions[:upto]):
+            fn: FunctionInfo = action["function"]
+            node: LiveNode = action["node"]
+            status = _step_status_word(action)
+            actor = str(action.get("actor_name") or "Unknown")
+            mark = "✓" if status == "DONE" else "!" if status in {"BLOCKED", "FAILED"} else "→"
+            lines.append("")
+            lines.append(f"  {mark} {index + 1:02d}  {action.get('phase', 'STEP')} / {status}")
+            label = f"{node.artifact_contract or node.name}.{fn.name}"
+            if links and fn.source and fn.line:
+                label = _source_link(root, fn.source, fn.line, label)
+            lines.append(f"      {actor} → {label}")
+            lines.append(f"      WHAT   {action.get('what') or _action_what(fn, node)}")
+            lines.append(f"      WHY    {action.get('why') or _action_why(fn, node)}")
+
+            result = action.get("result") or {}
+            if result.get("ok"):
+                lines.append("      RESULT ✓ The chain accepts this action in simulation.")
+            else:
+                friendly, recommendation = _friendly_error(result.get("decoded_error"), result.get("raw", ""))
+                lines.append(f"      RESULT ! {friendly}")
+                lines.append(f"      NEXT   {recommendation}")
+                for item in action.get("diagnosis", [])[:2]:
+                    lines.append(f"             evidence: {item}")
+
+            if current is None and index >= 5 and len(actions) > 6:
+                lines.append(f"      … {len(actions) - index - 1} more candidate step(s) hidden")
+                break
 
     lines.append("")
-    lines.append(_paint("BLUE", "blue") + " storage   " +
-                  _paint("CYAN", "cyan") + " relationship   " +
-                  _paint("GREEN", "green") + " success   " +
-                  _paint("RED", "red") + " blocked   " +
-                  _paint("YELLOW", "yellow") + " warning/next   " +
-                  _paint("MAGENTA", "magenta") + " actor")
+    lines.append("LEGEND")
+    lines.append("  WHAT  = what the contract is being asked to do")
+    lines.append("  WHY   = why this action belongs in the protocol story")
+    lines.append("  RESULT = what the live chain actually said")
+    lines.append("  NEXT  = the practical thing to inspect/fix before retrying")
+    lines.append("")
+    lines.append("TIP  Run without --bootstrap for this clean view; use --bootstrap only when you need raw evidence.")
     return "\n".join(lines)
 
 
@@ -834,8 +2553,6 @@ def _help() -> None:
     --seed N           Replayable random seed
     --no-links         Disable Ctrl+Click OSC-8 source links
     --non-interactive  Never wait for Enter
-    Colors are enabled automatically on a terminal; set LOWKEY_COLOR=1 to force
-    them or NO_COLOR=1 to disable them.
 """
     )
 
@@ -899,7 +2616,6 @@ def _build_model(
             "artifact_count": len(artifacts),
             "live_nodes": [],
             "known_roles": {},
-            "runtime_getters": {},
             "bootstrap": bootstrap,
             "system_manifest": manifest,
             "static_system": _static_system_context(bootstrap, contracts),
@@ -994,34 +2710,11 @@ def _build_model(
         "artifact_count": len(artifacts),
         "live_nodes": [asdict(x) for x in nodes],
         "known_roles": known,
-        "runtime_getters": getter_data,
         "bootstrap": bootstrap,
         "system_manifest": manifest,
         "static_system": _static_system_context(bootstrap, contracts),
     }
     return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
-
-
-def _walkthrough_phase_priority(fn: FunctionInfo) -> tuple[int, str]:
-    phase = _action_phase(fn)
-    return {
-        "CREATE": 500,
-        "PARTICIPATE": 400,
-        "OUTCOME": 300,
-        "SETTLE": 200,
-        "INTERACTION": 100,
-        "SETUP": -100,
-        "ADMIN": -200,
-    }.get(phase, 0), phase
-
-
-def _walkthrough_is_setup_action(fn: FunctionInfo, meta: dict[str, Any]) -> bool:
-    name = fn.name.lower()
-    if name.startswith("initialize"):
-        return True
-    if name in {"setstaketokenallowed", "pause", "unpause", "upgrade"}:
-        return True
-    return False
 
 
 def _plan_actions(
@@ -1037,27 +2730,28 @@ def _plan_actions(
     rpc = str(meta["rpc"])
     now = int(meta["chain_timestamp"])
     actions: list[dict[str, Any]] = []
-    candidates: list[tuple[int, int, LiveNode, FunctionInfo]] = []
+    candidates: list[tuple[int, LiveNode, FunctionInfo]] = []
     for node in nodes:
         if node.code_size == 0:
             continue
         funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
         for fn in funcs:
             score = _rank_function(fn)
-            if score <= 0:
+            n = fn.name.lower()
+            already_configured = any(
+                str(item.get("target") or "").lower().find(n) >= 0
+                for item in (meta.get("bootstrap") or {}).get("initialization") or []
+                if isinstance(item, dict)
+            )
+            if already_configured and (n.startswith("initialize") or n.startswith("set") or n in {"pause", "unpause", "upgrade"}):
                 continue
-            name = fn.name.lower()
-            if _walkthrough_is_setup_action(fn, meta):
-                continue
-            phase_priority, _ = _walkthrough_phase_priority(fn)
-            if phase_priority <= 0:
-                continue
-            candidates.append((phase_priority, score, node, fn))
-    candidates.sort(key=lambda x: (-x[0], -x[1], x[2].name, x[3].name, x[3].signature))
+            if score > 0:
+                candidates.append((score, node, fn))
+    candidates.sort(key=lambda x: (-x[0], x[1].name, x[2].name))
 
     seen: set[tuple[str, str]] = set()
-    for _, _, node, fn in candidates:
-        key = (node.address.lower(), fn.name.lower())
+    for _, node, fn in candidates:
+        key = (node.address.lower(), fn.signature)
         if key in seen:
             continue
         seen.add(key)
@@ -1227,27 +2921,22 @@ def _run_walkthrough(
         _persist(root, payload)
         return 0
 
-    print(_render_story(
-        root,
-        nodes,
-        fns,
-        contracts,
-        [],
-        actors,
-        None,
-        flags.get("links", True),
-        meta,
-    ))
-    print("")
     for index, action in enumerate(actions):
         current = index
-        print(_render_action_card(
-            root,
-            action,
-            index,
-            len(actions),
-            flags.get("links", True),
-        ))
+        print("\033[2J\033[H", end="")
+        print(
+            _render_story(
+                root,
+                nodes,
+                fns,
+                contracts,
+                actions,
+                actors,
+                current,
+                flags.get("links", True),
+                meta,
+            )
+        )
         if not flags["non_interactive"]:
             try:
                 command = input("\n  ⏎ next   q = stop   ").strip().lower()
@@ -1289,7 +2978,7 @@ def _run_walkthrough(
         )
         action["status"] = "READY" if pre["ok"] else "BLOCKED"
 
-        live_send = bool(flags.get("send"))
+        live_send = bool(flags.get("send") or flags.get("auto"))
         if live_send and pre["ok"]:
             if not _is_local_rpc(str(meta["rpc"])):
                 action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
@@ -1321,7 +3010,7 @@ def _run_walkthrough(
             }
         )
 
-    print("")
+    print("\033[2J\033[H", end="")
     print(_render_story(root, nodes, fns, contracts, actions, actors, None, flags.get("links", True), meta))
     print("\nEvidence: .audit/evidence/walkthrough.json")
     _persist(root, payload)
