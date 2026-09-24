@@ -442,35 +442,35 @@ def _action_why(fn: FunctionInfo, node: LiveNode) -> str:
 
 def _friendly_error(decoded: str | None, raw: str) -> tuple[str, str]:
     text = str(decoded or raw or "").strip()
-    lower_text = text.lower()
-    normalized = re.sub(r"[^a-z0-9]", "", lower_text)
+    error_name = text.split("(", 1)[0].strip().casefold()
 
-    if lower_text.startswith("staketokennotalowed") or normalized.startswith("staketokennotalowed"):
-        return (
+    messages = {
+        "staketokennotalowed": (
             "The factory rejected the token because it is not currently approved for staking.",
             "Use the legitimate factory setup/owner flow to approve the token, then retry pool creation.",
-        )
-    if normalized.startswith("stakingclosed"):
-        return (
+        ),
+        "stakingclosed": (
             "The pool is not accepting new stakes in its current state.",
-            "Check the pool lifecycle and its setup/expiry state before treating staking as the next step.",
-        )
-    if normalized.startswith("invalidinitialization"):
-        return (
+            "Check the pool lifecycle and setup/expiry state before treating staking as the next step.",
+        ),
+        "invalidinitialization": (
             "The contract says its one-time initialization has already been used.",
-            "Treat this as deployment/setup state, not as the normal user flow; inspect the existing initialized values.",
-        )
-    if normalized.startswith("outcomenotset"):
-        return (
+            "Treat this as deployment/setup state, not the normal user flow; inspect the existing initialized values.",
+        ),
+        "outcomenotset": (
             "There is no outcome recorded yet, so this action has nothing to settle against.",
             "Find the outcome/flagging step first and then re-check this settlement path.",
-        )
-    if normalized.startswith("outcomenoteligibleforsweep"):
-        return (
+        ),
+        "outcomenoteligibleforsweep": (
             "The current outcome/state does not make these funds eligible for sweeping.",
             "Inspect the conditions that make an outcome sweepable instead of forcing the call.",
-        )
-    if normalized.startswith("executionreverted") or normalized.startswith("error"):
+        ),
+    }
+    if error_name in messages:
+        return messages[error_name]
+
+    lowered = text.casefold()
+    if lowered.startswith(("executionreverted", "error")):
         return (
             "The chain rejected the call, but did not provide a useful decoded reason.",
             "First verify the target contract identity and current state; then inspect the source check that guards this function.",
@@ -479,7 +479,6 @@ def _friendly_error(decoded: str | None, raw: str) -> tuple[str, str]:
         text or "The simulated call could not be executed.",
         "Inspect the current state and function preconditions before trying the action again.",
     )
-
 
 def _step_status_word(action: dict[str, Any]) -> str:
     status = str(action.get("status") or "PLANNED").upper()
