@@ -543,6 +543,41 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(result, "0x" + "1" * 64)
 
 
+
+    def test_local_sender_must_be_exposed_by_rpc_for_mutating_send(self):
+        caller = "0x" + "1" * 40
+        with patch.object(
+            walk,
+            "_is_local_rpc",
+            return_value=True,
+        ), patch.object(
+            walk,
+            "_eth_accounts",
+            return_value=["0x" + "2" * 40],
+        ):
+            self.assertFalse(
+                walk._sender_available_for_local_send(
+                    "http://127.0.0.1:8545",
+                    caller,
+                )
+            )
+
+        with patch.object(
+            walk,
+            "_is_local_rpc",
+            return_value=True,
+        ), patch.object(
+            walk,
+            "_eth_accounts",
+            return_value=[caller],
+        ):
+            self.assertTrue(
+                walk._sender_available_for_local_send(
+                    "http://127.0.0.1:8545",
+                    caller,
+                )
+            )
+
     def test_successful_cast_return_data_is_not_decoded_as_revert(self):
         fn = walk.FunctionInfo(
             contract="MockERC20",
