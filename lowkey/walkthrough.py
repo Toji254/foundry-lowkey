@@ -2193,9 +2193,9 @@ def _help() -> None:
         """LOWKEY WALKTHROUGH
 
   lk walkthrough --auto --steps 12
-      System-aware live walkthrough. Builds a static + runtime contract graph,
-      synthesizes semantic arguments, preflights every write, and diagnoses
-      blocked calls instead of repeating them.
+      System-aware walkthrough. On a local RPC, safely dry-runs a discovered
+      setup/deploy script when runtime state is missing, then rebuilds the
+      live + static contract model before planning interactions.
 
   lk walkthrough test --cases 50 --seed 1337
       Deterministic active probing. Randomizes values by ABI type and semantic
