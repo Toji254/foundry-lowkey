@@ -379,7 +379,7 @@ def _extract_roles_from_sources(sources: list[dict[str, Any]]) -> list[dict[str,
             if action["kind"] == "role_grant":
                 roles.append(
                     {
-                        "kind": "grant",
+                        "kind": "role_grant",
                         "source": source["path"],
                         "line": action["line"],
                         "target": action["target"],
