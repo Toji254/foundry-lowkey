@@ -1064,7 +1064,10 @@ def _function_link(root: Path, model: ContractModel | None, function: str) -> st
     line = model.function_locations.get(name)
     if not line:
         return function
-    return _osc8(function, _source_target(root, model.source, line))
+    target = _source_target(root, model.source, line)
+    # Keep the visible function signature readable while making the exact source
+    # location clickable in OSC8-capable terminals (Ctrl+Click in common terminals).
+    return _osc8(function, target)
 
 
 def _actor_for_address(address: str | None, actors: list[Actor]) -> str | None:
