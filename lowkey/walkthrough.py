@@ -362,6 +362,160 @@ def _build_source_calls(model: ContractModel, models: list[ContractModel], sourc
     return unique
 
 
+def _build_info_ast_calls(root: Path, model: ContractModel) -> list[dict[str, Any]]:
+    """Extract cross-contract/internal calls from Solidity compiler AST when available."""
+    source_name = str(model.source).replace("\\", "/").lstrip("./")
+    ast = None
+    for payload in _build_info_payloads(root):
+        sources = ((payload.get("output") or {}).get("sources") or {})
+        if not isinstance(sources, dict):
+            continue
+        for name, entry in sources.items():
+            if str(name).replace("\\", "/").lstrip("./") == source_name and isinstance(entry, dict):
+                candidate = entry.get("ast")
+                if isinstance(candidate, dict):
+                    ast = candidate
+                    break
+        if ast:
+            break
+    if not isinstance(ast, dict):
+        return []
+
+    def walk(node: Any):
+        if isinstance(node, dict):
+            if isinstance(node.get("nodeType"), str):
+                yield node
+            for value in node.values():
+                yield from walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from walk(value)
+
+    def src_start(node: dict[str, Any]) -> int | None:
+        raw = str(node.get("src") or "")
+        try:
+            return int(raw.split(":", 1)[0])
+        except (TypeError, ValueError):
+            return None
+
+    nodes = list(walk(ast))
+    declarations = {int(node["id"]): node for node in nodes if isinstance(node.get("id"), int)}
+
+    def declared_contract_name(node: dict[str, Any]) -> str | None:
+        ref = node.get("referencedDeclaration")
+        declaration = declarations.get(ref) if isinstance(ref, int) else None
+        if isinstance(declaration, dict):
+            desc = declaration.get("typeDescriptions") or {}
+            type_string = str(desc.get("typeString") or "")
+            match = re.search(r"\\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
+            if match:
+                return match.group(1)
+        desc = node.get("typeDescriptions") or {}
+        type_string = str(desc.get("typeString") or "")
+        match = re.search(r"\\b(?:contract|interface|library)\\s+([A-Za-z_]\\w*)", type_string)
+        return match.group(1) if match else None
+
+    source_text = ""
+    try:
+        source_text = (root / model.source).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    result: list[dict[str, Any]] = []
+
+    for fn in walk(ast):
+        if fn.get("nodeType") != "FunctionDefinition" or not fn.get("name"):
+            continue
+        caller = str(fn.get("name"))
+        body = fn.get("body")
+        if not isinstance(body, dict):
+            continue
+        fn_start = src_start(fn) or 0
+        for call in walk(body):
+            if call.get("nodeType") != "FunctionCall":
+                continue
+            expression = call.get("expression")
+            if not isinstance(expression, dict):
+                continue
+            called = str(expression.get("memberName") or expression.get("name") or "")
+            if not called:
+                continue
+            kind = "internal"
+            via = None
+            interface = None
+            target_contract = model.name
+
+            if expression.get("nodeType") == "MemberAccess":
+                base = expression.get("expression")
+                kind = "cross-contract"
+                if isinstance(base, dict):
+                    if base.get("nodeType") == "Identifier":
+                        via = str(base.get("name") or "") or None
+                        interface = declared_contract_name(base)
+                    elif base.get("nodeType") == "FunctionCall":
+                        inner = base.get("expression") or {}
+                        if isinstance(inner, dict):
+                            interface = str(inner.get("name") or inner.get("memberName") or "") or None
+                        arguments = base.get("arguments") or []
+                        if arguments and isinstance(arguments[0], dict):
+                            via = str(arguments[0].get("name") or "") or None
+                target_contract = interface or target_contract
+            elif expression.get("nodeType") == "Identifier":
+                called = str(expression.get("name") or called)
+                kind = "internal"
+
+            start = src_start(call)
+            line = source_text.count("\n", 0, start if start is not None else fn_start) + 1 if source_text else None
+            result.append({
+                "kind": kind,
+                "from": caller,
+                "to_contract": target_contract,
+                "to_function": called,
+                "via": via,
+                "interface": interface,
+                "line": line,
+                "certainty": "AST",
+                "source": "compiler-ast",
+            })
+
+        for new_node in walk(body):
+            if new_node.get("nodeType") != "NewExpression":
+                continue
+            type_name = new_node.get("typeName") or {}
+            if not isinstance(type_name, dict):
+                continue
+            created = str(type_name.get("name") or type_name.get("namePath") or "")
+            if not created:
+                continue
+            start = src_start(new_node)
+            line = source_text.count("\n", 0, start if start is not None else fn_start) + 1 if source_text else None
+            result.append({
+                "kind": "create",
+                "from": caller,
+                "to_contract": created.split(".")[-1],
+                "to_function": "<constructor>",
+                "via": None,
+                "interface": None,
+                "line": line,
+                "certainty": "AST",
+                "source": "compiler-ast",
+            })
+
+    return result
+
+def _merge_source_call_edges(root: Path, model: ContractModel, regex_edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use compiler AST edges first; retain regex edges only where AST cannot prove the edge."""
+    ast_edges = _build_info_ast_calls(root, model)
+    combined = ast_edges + regex_edges
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for edge in combined:
+        key = (edge.get("kind"), edge.get("from"), edge.get("to_contract"), edge.get("to_function"), edge.get("via"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(edge)
+    return unique
+
 def _function_semantics(model: ContractModel, source_text: str) -> dict[str, dict[str, Any]]:
     """Build conservative, source-derived semantic notes for each function."""
     semantics: dict[str, dict[str, Any]] = {}
@@ -503,7 +657,7 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
             source_text = source_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        model.calls = _build_source_calls(model, models, source_text)
+        model.calls = _merge_source_call_edges(root, model, _build_source_calls(model, models, source_text))
         model.semantics = _function_semantics(model, source_text)
 
     return sorted(models, key=lambda m: (m.name.lower(), m.source))
