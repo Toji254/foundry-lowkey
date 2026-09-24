@@ -143,6 +143,11 @@ def _addr(address: str | None) -> str:
     return f"{address[:10]}…{address[-8:]}"
 
 
+def is_address(value: Any) -> bool:
+    """Local address validator; walkthrough must not depend on lk.py helpers."""
+    return isinstance(value, str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}", value.strip()))
+
+
 def _ansi_enabled(static: bool = False) -> bool:
     return not static and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
@@ -637,8 +642,8 @@ def _friendly_value(value: Any) -> str:
         if value == 2**256 - 1:
             return "MAX"
         if value >= 10**18 and value % 10**18 == 0:
-            return f"{value // 10**18} token units"
-        if abs(value) >= 10**9:
+            return f"{value // 10**18} ETH"
+        if value >= 10**9:
             return f"{value:,}"
         return str(value)
     if isinstance(value, list):
@@ -662,40 +667,58 @@ def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
     contract = _friendly_contract_name(step)
     function = str(step.function or "").split("(", 1)[0]
     args = ", ".join(_friendly_arg(x, actors) for x in step.args)
-    target = contract
+    lines = []
 
-    lines = [
-        f"{actor} calls {target}.{function}({args})" if args else f"{actor} calls {target}.{function}()",
-        f"{actor} {ARROW} {target}",
-    ]
+    call_text = f"{contract}.{function}({args})" if args else f"{contract}.{function}()"
+    lines.append(f"{actor} {ARROW} {call_text}")
 
     lower = function.lower()
+
+    # Explicit value transfer is rendered as a real asset edge, separate from
+    # calldata. This prevents a payable call from looking like an ordinary function.
+    if step.value_wei:
+        lines.append(f"    ├─ sends {step.value_wei / 10**18:g} ETH with the call")
+        lines.append(f"    │       {actor} ── ETH ──▶ {contract}")
+
+    # Address arguments often identify the second human actor in the story.
+    address_args = [
+        _actor_for_address(x, actors)
+        for x in step.args
+        if isinstance(x, str) and is_address(x)
+    ]
+    address_args = [x for x in address_args if x and x != actor]
+    if address_args:
+        lines.append(f"    ├─ destination / related actor: {address_args[0]}")
+
     if lower == "approve":
-        lines.append("    └─ authorizes the pool to pull stake tokens from this actor")
+        lines.append(f"    └─ {actor} authorizes {contract} to spend tokens")
     elif lower in {"stake", "deposit", "contributebonus", "fund", "contribute"}:
         amount = _friendly_value(step.args[0]) if step.args else "the requested amount"
-        lines.append(f"    ├─ token flow: {actor} ── {amount} ──▶ {target}")
-        lines.append("    └─ protocol records the participant's stake/bonus")
-    elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
-        lines.append(f"    ├─ asset flow: {target} ──▶ {actor}")
-        lines.append("    └─ protocol reduces or closes this actor's claimable balance")
+        lines.append(f"    ├─ asset movement: {actor} ── {amount} ──▶ {contract}")
+        lines.append("    └─ contract records the participant's position")
+    elif lower in {
+        "withdraw", "redeem", "refund", "collect",
+        "claimsurvived", "claimcorrupted", "claimattackerbounty",
+        "claimexpired",
+    }:
+        lines.append(f"    ├─ asset movement: {contract} ──▶ {actor}")
+        lines.append("    └─ contract reduces / closes this actor's claimable position")
     elif lower.startswith("createpool"):
-        lines.append("    ├─ factory creates a new pool clone")
-        lines.append("    └─ new pool is initialized and linked into the system")
+        lines.append("    ├─ factory creates a new pool")
+        lines.append("    ├─ child pool is initialized")
+        lines.append(f"    └─ {contract} now owns the next step in the flow")
     elif lower.startswith("flagoutcome"):
-        lines.append("    ├─ moderator records the protocol outcome")
-        lines.append("    └─ claim distribution becomes tied to the recorded outcome")
+        lines.append("    ├─ outcome is recorded")
+        lines.append("    └─ claim path is now determined by protocol state")
     elif lower.startswith("set") or lower in {"initialize", "configure", "register"}:
         lines.append("    └─ protocol configuration/state is updated")
     elif lower.startswith("poke"):
-        lines.append("    └─ pool observes the external registry and updates its risk window")
+        lines.append("    └─ pool reads the external registry and updates its risk-window state")
     else:
-        lines.append("    └─ contract executes and the chain state is observed")
-
-    if step.value_wei:
-        lines.append(f"    ◆ ETH: {_friendly_value(step.value_wei)}")
+        lines.append("    └─ contract state is evaluated and observed live")
 
     return lines
+
 
 
 def _flatten_mapping_changes(change: dict[str, Any]) -> list[str]:
@@ -838,11 +861,12 @@ def _render_protocol_story(
     lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
     if not steps and not current:
         return "\n".join(lines + [
-            "  ┌─ SYSTEM READY",
+            "  ╭─ SYSTEM READY",
+            "  │",
             "  └─ press Enter to execute the first live interaction",
         ])
 
-    visible = steps[-8:]
+    visible = steps[-6:]
     if current is not None and (not visible or visible[-1] is not current):
         visible = visible + [current]
 
@@ -853,60 +877,52 @@ def _render_protocol_story(
         color = GREEN if status_ok else RED if status_blocked else YELLOW
 
         lines.append("")
-        lines.append(
-            _paint(
-                f"  ┌─ STEP {step.index:02d} {icon}  {step.actor}",
-                color,
-                enabled,
-            )
-        )
-        for detail in _friendly_action(step, actors):
+        title = f"  ╭─ STEP {step.index:02d} {icon}  {step.actor}"
+        if current is step:
+            title += "  ◀ LIVE"
+        lines.append(_paint(title, color, enabled))
+
+        details = _friendly_action(step, actors)
+        for detail in details:
             lines.append("  │ " + detail)
 
-        state_lines = _friendly_state_lines(step, actors)
         balance_lines = _friendly_balance_lines(step, actors)
+        state_lines = _friendly_state_lines(step, actors)
         event_lines = _friendly_event_lines(step)
+
         if balance_lines:
             lines.append("  │")
-            lines.append("  │ BALANCE MOVEMENT")
-            lines.extend("  │ " + line for line in balance_lines[:6])
+            lines.append("  ├─ BALANCES")
+            lines.extend("  │   " + line.strip() for line in balance_lines[:6])
         if state_lines:
             lines.append("  │")
-            lines.append("  │ STATE CHANGED")
-            lines.extend("  │ " + line for line in state_lines[:7])
+            lines.append("  ├─ STATE UPDATES")
+            lines.extend("  │   " + line.strip() for line in state_lines[:8])
         if event_lines:
             lines.append("  │")
-            lines.extend("  │ " + line for line in event_lines)
+            lines.extend("  │   " + line.strip() for line in event_lines[:4])
 
         if step.discovered_contracts:
             lines.append("  │")
-            lines.append("  │ NEW SYSTEM NODE")
+            lines.append("  ├─ NEW CONTRACTS")
             for node in step.discovered_contracts[:4]:
                 lines.append(
-                    f"  │     {EXTERNAL} {node.get('label') or node.get('model')} "
+                    f"  │   {ARROW} {node.get('label') or node.get('model')} "
                     f"{_addr(node.get('address'))}"
                 )
 
         if step.error:
             compact = " ".join(str(step.error).split())
             lines.append("  │")
-            lines.append(f"  │ {WARNING} {compact[-220:]}")
+            lines.append(f"  └─ {WARNING} {compact[-240:]}")
+        else:
+            lines.append("  ╰" + "─" * 78 + "╯")
 
-        lines.append("  └" + "─" * 74 + "┘")
         if index != len(visible) - 1:
             lines.append("                 │")
             lines.append("                 ▼")
-
-    if current:
-        lines.append("")
-        lines.append(
-            _paint(
-                f"                 ◆ CURRENTLY OBSERVING STEP {current.index:02d}",
-                BOLD + YELLOW,
-                enabled,
-            )
-        )
     return "\n".join(lines)
+
 
 
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
@@ -1491,7 +1507,8 @@ def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: s
         selected = aliases.get(contract)
         if selected:
             target = selected
-    return target or config.get("target"), config.get("target_contract") or contract
+    resolved_target = target if auto else (target or config.get("target"))
+    return resolved_target, config.get("target_contract") or contract
 
 
 def _actors(host: Any, config: dict[str, Any], count: int = 4) -> list[Actor]:
@@ -1781,6 +1798,8 @@ def _render_board(
         "",
         _render_runtime_graph(runtime, enabled),
         "",
+        _render_live_path(steps, runtime, enabled),
+        "",
         _render_protocol_story(steps, current, actors, enabled),
     ]
 
@@ -1872,7 +1891,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     pending=recipe[:max_steps] if recipe else plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
 
     def draw(current=None, storage=None):
-        if sys.stdout.isatty() and os.environ.get("NO_COLOR") is None:
+        if sys.stdout.isatty():
+            # Fixed terminal canvas: each live observation replaces the previous
+            # frame instead of scrolling the workflow downward.
             sys.stdout.write("\033[2J\033[H")
             sys.stdout.flush()
         print(_render_board(
