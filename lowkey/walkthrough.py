@@ -3090,6 +3090,37 @@ def _render_action_card(
         f"  WHAT   {action.get('what') or _action_what(fn, node)}",
         f"  WHY    {action.get('why') or _action_why(fn, node)}",
     ]
+    if fn.writes or fn.reads:
+        write_bits = [
+            f"{fn.contract}::{name}"
+            for name in fn.writes
+        ]
+        read_bits = [
+            f"{fn.contract}::{name}"
+            for name in fn.reads
+            if name not in (fn.writes or [])
+        ]
+        if write_bits:
+            lines.append(
+                f"  STORAGE {_paint('WRITE', 'red')} → "
+                + ", ".join(write_bits[:5])
+            )
+        if read_bits:
+            lines.append(
+                f"  STORAGE {_paint('READ', 'blue')}  → "
+                + ", ".join(read_bits[:5])
+            )
+    internal = [
+        str(call.get("function") or "")
+        for call in fn.calls or []
+        if call.get("kind") == "internal-call"
+    ]
+    if internal:
+        lines.append(
+            f"  INTERNAL {_paint('→', 'yellow')} "
+            + ", ".join(dict.fromkeys(internal[:5]))
+        )
+
     result = action.get("result") or {}
     if result.get("ok"):
         lines.append(f"  RESULT {_status_icon('PASS')} chain accepted this simulation.")
