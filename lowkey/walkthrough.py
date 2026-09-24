@@ -43,6 +43,38 @@ ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+$")
 
 
+def _color_enabled() -> bool:
+    forced = os.environ.get("LOWKEY_COLOR", "").strip().lower()
+    if forced in {"0", "false", "no", "off"} or "NO_COLOR" in os.environ:
+        return False
+    if forced in {"1", "true", "yes", "on"}:
+        return True
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
+_COLORS = {
+    "reset": "\x1b[0m",
+    "bold": "\x1b[1m",
+    "red": "\x1b[31m",
+    "green": "\x1b[32m",
+    "yellow": "\x1b[33m",
+    "blue": "\x1b[34m",
+    "magenta": "\x1b[35m",
+    "cyan": "\x1b[36m",
+    "dim": "\x1b[2m",
+}
+
+
+def _paint(text: str, color: str) -> str:
+    if not _color_enabled():
+        return text
+    return f"{_COLORS.get(color, '')}{text}{_COLORS['reset']}"
+
+
+def _section(title: str, color: str = "cyan") -> str:
+    return _paint(title, color)
+
+
 def _cmd(args: list[str], cwd: Path | None = None, timeout: int = 30) -> tuple[int, str, str]:
     """Run a local command and return (exit_code, stdout, stderr)."""
     try:
@@ -80,10 +112,17 @@ class FunctionInfo:
     body: str = ""
     modifiers: list[str] | None = None
     calls: list[dict[str, Any]] | None = None
+    visibility: str = "unknown"
+    reads: list[str] | None = None
+    writes: list[str] | None = None
+    array_ops: list[str] | None = None
 
     def __post_init__(self) -> None:
         self.modifiers = self.modifiers or []
         self.calls = self.calls or []
+        self.reads = self.reads or []
+        self.writes = self.writes or []
+        self.array_ops = self.array_ops or []
 
 
 @dataclass
@@ -96,12 +135,14 @@ class ContractInfo:
     functions: list[FunctionInfo] | None = None
     errors: list[dict[str, Any]] | None = None
     address_vars: list[str] | None = None
+    state_vars: list[dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         self.imports = self.imports or []
         self.functions = self.functions or []
         self.errors = self.errors or []
         self.address_vars = self.address_vars or []
+        self.state_vars = self.state_vars or []
 
 
 @dataclass
