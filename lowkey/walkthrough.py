@@ -1042,6 +1042,7 @@ def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
         lines.append(f"    └─ {actor} authorizes {contract} to spend tokens")
     elif lower in {"stake", "deposit", "contributebonus", "fund", "contribute"}:
         amount = _friendly_value(step.args[0]) if step.args else "the requested amount"
+        lines.append(f"    ├─ token flow: {actor} ── {amount} ──▶ {contract}")
         lines.append(f"    ├─ requested amount: {amount}")
         lines.append("    └─ actual token movement/state writes are shown below when observed")
     elif lower in {
@@ -1169,7 +1170,7 @@ def _friendly_token_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
         label = names.get(address, _addr(address))
         delta = after - before
         sign = "+" if delta > 0 else "-"
-        lines.append(f"    ◆ STAKE BALANCE {label}: {sign}{_friendly_value(abs(delta))}")
+        lines.append(f"STAKE BALANCE {label}: {sign}{_friendly_value(abs(delta))}")
     return lines
 
 
@@ -1195,7 +1196,7 @@ def _friendly_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
             continue
         label = names.get(address, _addr(address))
         direction = "+" if delta > 0 else "-"
-        lines.append(f"    ◆ ETH {label}: {direction}{_friendly_eth(abs(delta))}")
+        lines.append(f"ETH {label}: {direction}{_friendly_eth(abs(delta))}")
     return lines
 
 
@@ -1271,7 +1272,7 @@ def _input_story(step: Step, model: ContractModel | None, actors: list[Actor]) -
 
 
 
-def _render_interaction_graph(
+def _render_interaction_graph_full(
     root: Path,
     step: Step,
     actors: list[Actor],
@@ -1361,7 +1362,7 @@ def _render_interaction_graph(
 
 
 
-def _render_protocol_story(
+def _render_protocol_story_full(
     root: Path,
     steps: list[Step],
     current: Step | None,
@@ -1386,7 +1387,7 @@ def _render_protocol_story(
         last = index == len(visible) - 1
         if current is step or last:
             model = next((m for m in models if m.name == step.contract), None)
-            lines.append(_render_interaction_graph(root, step, actors, model, models, enabled))
+            lines.append(_render_interaction_graph_full(root, step, actors, model, models, enabled))
         else:
             icon = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
             status = "done" if step.status == "success" else "blocked" if step.status in {"blocked", "reverted"} else "checked"
@@ -1401,9 +1402,42 @@ def _render_protocol_story(
 
 
 
+def _render_interaction_graph(
+    *args: Any,
+    **kwargs: Any,
+) -> str:
+    # Legacy API: (step, actors, enabled=False)
+    # Rich API:   (root, step, actors, model, models, enabled)
+    if args and isinstance(args[0], Step):
+        step = args[0]
+        actors = args[1] if len(args) > 1 else []
+        enabled = args[2] if len(args) > 2 else bool(kwargs.get("enabled", False))
+        root = Path.cwd()
+        model = kwargs.get("model")
+        models = kwargs.get("models") or []
+    else:
+        root, step, actors, model, models, enabled = args[:6]
+    return _render_interaction_graph_full(root, step, actors, model, models, enabled)
+
+
+def _render_protocol_story(
+    *args: Any,
+    **kwargs: Any,
+) -> str:
+    # Legacy API: (steps, current, actors, enabled=False)
+    # Rich API:   (root, steps, current, actors, models, enabled)
+    if args and isinstance(args[0], (str, Path)):
+        root, steps, current, actors, models, enabled = args[:6]
+    else:
+        steps, current, actors = args[:3]
+        enabled = kwargs.get("enabled", args[3] if len(args) > 3 else False)
+        root = Path.cwd()
+        models = []
+    return _render_protocol_story_full(root, steps, current, actors, models, enabled)
+
+
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
-    root = Path.cwd()
-    return _render_protocol_story(root, steps, current, [], [], enabled)
+    return _render_protocol_story(steps, current, [], enabled)
 
 def _wait_for_next_interaction(no_prompt: bool) -> str:
     if no_prompt:
@@ -2717,7 +2751,7 @@ def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
         kids = children.get(node.address.lower(), [])
         for i, child in enumerate(kids[:10]):
             child_prefix = prefix + ("   " if last else "│  ")
-            edge = "⋯⋯▶ " if child.relation in {"CLONE", "IMPLEMENTATION"} else "────▶ "
+            edge = DOTTED + " " if child.relation in {"CLONE", "IMPLEMENTATION"} else ARROW + " "
             if i < len(kids[:10]) - 1:
                 branch_prefix = child_prefix + edge
             else:
@@ -2776,7 +2810,7 @@ def _render_board(
         "",
         _render_connections(root, models, model, enabled),
         "",
-        _render_protocol_story(root, steps, current, actors, models, enabled),
+        _render_protocol_story_full(root, steps, current, actors, models, enabled),
     ]
     if current and current.storage_after:
         board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled)]
