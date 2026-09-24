@@ -293,6 +293,41 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertIsNotNone(candidate)
             self.assertEqual(candidate["contract"], "ConfidencePoolFactory")
 
+
+    def test_confidence_pool_lab_adapter_is_generated_from_project_fixtures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for path in [
+                "src/ConfidencePool.sol",
+                "src/ConfidencePoolFactory.sol",
+                "src/mocks/MockConfidencePoolModerator.sol",
+                "test/mocks/MockERC20.sol",
+                "test/mocks/MockAttackRegistry.sol",
+                "test/mocks/MockSafeHarborRegistry.sol",
+                "test/mocks/MockAgreement.sol",
+            ]:
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("// fixture", encoding="utf-8")
+            script = lk.ensure_confidence_pool_lab_script(root)
+            self.assertIsNotNone(script)
+            self.assertTrue(pathlib.Path(script).is_file())
+            content = pathlib.Path(script).read_text(encoding="utf-8")
+            self.assertIn("ConfidencePoolFactory.createPool", content)
+            self.assertIn("LOWKEY_TARGET", content)
+
+    def test_parse_lab_system(self):
+        output = "\n".join([
+            "LOWKEY_TARGET 0x" + "1" * 40,
+            "LOWKEY_FACTORY 0x" + "2" * 40,
+            "LOWKEY_STAKE_TOKEN: 0x" + "3" * 40,
+            "LOWKEY_BOB 0x" + "4" * 40,
+        ])
+        parsed = lk.parse_lab_system(output)
+        self.assertEqual(parsed["factory"], "0x" + "2" * 40)
+        self.assertEqual(parsed["stake_token"], "0x" + "3" * 40)
+        self.assertEqual(parsed["bob"], "0x" + "4" * 40)
+
     def test_target_named_deployment_auto_selects_matching_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp)
