@@ -1127,6 +1127,113 @@ def _load_artifacts(root: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[s
     return by_contract, files
 
 
+
+def _extract_state_vars(segment: str, base_offset: int, source_text: str) -> list[dict[str, Any]]:
+    """Extract likely state declarations without pretending to know packed EVM slots."""
+    out: list[dict[str, Any]] = []
+    depth = 0
+    start = None
+    quote = None
+    for i, ch in enumerate(segment):
+        if quote:
+            if ch == "\\":
+                continue
+            if ch == quote:
+                quote = None
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i + 1
+            depth += 1
+            continue
+        if ch == "}":
+            depth = max(0, depth - 1)
+            if depth == 0:
+                start = None
+            continue
+        if ch != ";" or depth != 1 or start is None:
+            continue
+
+        statement = segment[start:i].strip()
+        start = i + 1
+        if not statement:
+            continue
+        low = statement.lower()
+        if low.startswith(("function ", "event ", "error ", "modifier ", "using ", "struct ", "enum ", "constructor", "fallback", "receive")):
+            continue
+
+        # State declaration: everything before the final identifier is the type/modifier region.
+        m = re.search(r"\b([A-Za-z_]\w*)\s*(?:=|$)", statement)
+        identifiers = list(re.finditer(r"\b[A-Za-z_]\w*\b", statement))
+        if not identifiers:
+            continue
+        name_match = identifiers[-1]
+        name = name_match.group(0)
+        prefix = statement[:name_match.start()].strip()
+        if not prefix:
+            continue
+        if "=" in prefix:
+            prefix = prefix.split("=", 1)[0].rstrip()
+
+        modifiers = re.findall(r"\b(public|private|internal|constant|immutable|override)\b", prefix)
+        cleaned = re.sub(r"\b(public|private|internal|constant|immutable|override)\b", " ", prefix)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            continue
+
+        absolute = base_offset + segment.find(statement)
+        out.append({
+            "name": name,
+            "type": cleaned,
+            "visibility": next((x for x in modifiers if x in {"public", "private", "internal"}), "internal"),
+            "constant": "constant" in modifiers,
+            "immutable": "immutable" in modifiers,
+            "line": source_text.count("\n", 0, absolute) + 1,
+        })
+    return out
+
+
+def _analyze_storage_use(
+    body: str,
+    state_vars: list[dict[str, Any]],
+    function_names: set[str],
+    current_name: str,
+) -> tuple[list[str], list[str], list[str], list[dict[str, str]]]:
+    reads: list[str] = []
+    writes: list[str] = []
+    array_ops: list[str] = []
+    calls: list[dict[str, str]] = []
+
+    for var in state_vars:
+        name = str(var.get("name") or "")
+        if not name or not re.search(rf"\b{re.escape(name)}\b", body):
+            continue
+        if re.search(
+            rf"\b{re.escape(name)}\b(?:\s*\[[^\]]+\])?\s*(?:\+=|-=|\*=|/=|%=|=|\+\+|--)",
+            body,
+        ) or re.search(rf"\bdelete\s+{re.escape(name)}\b", body):
+            writes.append(name)
+        if re.search(rf"\b{re.escape(name)}\b[^;{{}}]{{0,120}}\.\s*(push|pop)\s*\(", body):
+            array_ops.append(f"mutates {name} with push/pop")
+            writes.append(name)
+        if re.search(rf"\b{re.escape(name)}\b[^;{{}}]{{0,120}}\.\s*length\b", body):
+            array_ops.append(f"reads {name}.length")
+        if re.search(rf"\b{re.escape(name)}\b\s*\[[^\]]+\]", body):
+            array_ops.append(f"indexes {name}")
+        reads.append(name)
+
+    for name in sorted(function_names):
+        if name == current_name:
+            continue
+        if re.search(rf"(?<![\w.]){re.escape(name)}\s*\(", body):
+            calls.append({"kind": "internal-call", "function": name})
+
+    return sorted(set(reads)), sorted(set(writes)), sorted(set(array_ops)), calls
+
+
 def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
     contracts: dict[str, ContractInfo] = {}
     patterns = list(root.glob("src/**/*.sol")) + list(root.glob("contracts/**/*.sol"))
@@ -1167,12 +1274,16 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                 if next_decl
                 else len(text)
             )
+            contract_segment = scan_text[block_start:block_end]
+            ci.state_vars = _extract_state_vars(
+                contract_segment,
+                block_start,
+                text,
+            )
             ci.address_vars = [
-                x.group(1)
-                for x in re.finditer(
-                    r"\baddress(?:\s+[A-Za-z_]\w+)?\s+(?:public|private|internal|external)\s+([A-Za-z_]\w*)\s*(?:=|;)",
-                    scan_text[block_start:block_end],
-                )
+                str(x.get("name"))
+                for x in ci.state_vars
+                if str(x.get("type") or "").strip().startswith("address")
             ]
             for fmatch in re.finditer(
                 r"\bfunction\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*([^{;]*)(?:\{|;)",
@@ -1249,8 +1360,25 @@ def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
                         body=body,
                         modifiers=modifiers,
                         calls=calls,
+                        visibility=next(
+                            (x for x in ("external", "public", "internal", "private") if re.search(rf"\b{x}\b", tail)),
+                            "unknown",
+                        ),
                     )
                 )
+
+            function_names = {f.name for f in ci.functions}
+            for info in ci.functions:
+                reads, writes, array_ops, internal_calls = _analyze_storage_use(
+                    info.body or "",
+                    ci.state_vars or [],
+                    function_names,
+                    info.name,
+                )
+                info.reads = reads
+                info.writes = writes
+                info.array_ops = array_ops
+                info.calls.extend(internal_calls)
 
             for em in re.finditer(
                 r"\berror\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*;",
