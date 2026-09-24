@@ -4746,7 +4746,7 @@ def _render_system_workflow_graph(
     root_model: ContractModel,
     enabled: bool,
 ) -> str:
-    """Draw source relationships and observed runtime relationships as one compact map."""
+    """Draw the whole known contract relationship graph, then live instances."""
     by_name = {item.name.lower(): item for item in models}
     impls = _implementation_mapping(models)
     runtime_by_model: dict[str, list[RuntimeContract]] = {}
@@ -4757,42 +4757,65 @@ def _render_system_workflow_graph(
     lines = [_paint("SYSTEM WORKFLOW", BOLD + CYAN, enabled)]
     root_nodes = runtime_by_model.get(root_model.name.lower(), [])
     root_address = _addr(root_nodes[0].address) if root_nodes else "not live"
-    root_text = _function_link(root, root_model, root_model.name)
-    lines.append(f"  {ACTOR} {root_text}  {root_address}  [entry point]")
+    lines.append(
+        f"  {ACTOR} {_pretty_identifier(root_model.name)}  {root_address}  [entry point]"
+    )
 
-    seen: set[tuple[str, str, str]] = set()
-    for edge in root_model.calls:
-        if edge.get("kind") != "cross-contract":
-            continue
-        raw_target = str(edge.get("to_contract") or edge.get("interface") or "")
-        concrete = impls.get(raw_target, raw_target)
-        target_model = by_name.get(concrete.lower())
-        if target_model is None:
-            target_model = by_name.get(raw_target.lower())
-        if target_model is None:
-            continue
-        caller = str(edge.get("from") or "function")
-        fn = str(edge.get("to_function") or "unknown")
-        key = (caller.lower(), target_model.name.lower(), fn.lower())
-        if key in seen:
-            continue
-        seen.add(key)
-        caller_link = _function_link(root, root_model, caller)
-        target_link = _function_link(root, target_model, fn)
-        lines.append(f"  │  ○ {caller_link}() ──▶ {target_model.name}.{target_link}()")
+    emitted: set[tuple[str, str, str]] = set()
+    edge_lines = 0
 
-    root_addresses = {node.address.lower() for node in root_nodes}
+    # Source map: every first-party cross-contract relationship gets a compact edge.
+    for source_model in models:
+        for edge in source_model.calls:
+            if edge.get("kind") != "cross-contract":
+                continue
+            raw_target = str(edge.get("to_contract") or edge.get("interface") or "")
+            concrete = impls.get(raw_target, raw_target)
+            target_model = by_name.get(concrete.lower()) or by_name.get(raw_target.lower())
+            if target_model is None:
+                continue
+
+            caller = str(edge.get("from") or "function")
+            fn_name = str(edge.get("to_function") or "unknown")
+            key = (source_model.name.lower(), target_model.name.lower(), fn_name.lower())
+            if key in emitted:
+                continue
+            emitted.add(key)
+
+            caller_link = _function_link(root, source_model, caller)
+            target_link = _function_link(root, target_model, fn_name)
+            lines.append(
+                f"  │  ○ {source_model.name}.{caller_link}() "
+                f"──▶ {target_model.name}.{target_link}()"
+            )
+            edge_lines += 1
+            if edge_lines >= 18:
+                break
+        if edge_lines >= 18:
+            break
+
+    # Live deployment edges: actual child instances observed in traces.
     for node in runtime:
-        if not node.parent or str(node.parent).lower() not in root_addresses:
+        if not node.parent or not is_address(node.parent):
             continue
-        relation = "CLONE" if node.relation == "CLONE" else node.relation or "CALL"
-        lines.append(f"  │  ● {root_model.name} ──{relation}──▶ {node.label} {_addr(node.address)}")
+        parent = next(
+            (item for item in runtime if item.address.lower() == str(node.parent).lower()),
+            None,
+        )
+        if parent:
+            relation = "CLONE" if node.relation == "CLONE" else node.relation or "CALL"
+            lines.append(
+                f"  │  ● {parent.label} ──{relation}──▶ "
+                f"{node.label} {_addr(node.address)}"
+            )
 
-    if len(lines) == 2:
+    if edge_lines == 0:
         lines.append("  │  ○ no first-party cross-contract relationship resolved yet")
+
     lines.append("  │")
-    lines.append("  └─ ○ source-inferred   ● observed live")
+    lines.append("  └─ ○ source relationship   ● observed live")
     return "\n".join(lines)
+
 
 def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
     lines = [_paint("SYSTEM MAP", BOLD + WHITE, enabled)]
