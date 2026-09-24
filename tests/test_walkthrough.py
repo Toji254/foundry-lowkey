@@ -263,6 +263,35 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(target, broadcasted)
             self.assertTrue(source.startswith("broadcast "))
 
+    def test_render_story_consumes_model_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            meta = {
+                "bootstrap": {
+                    "initialization": [
+                        {"source": "script/Deploy.s.sol", "line": 10, "kind": "deploy", "target": "Example"}
+                    ],
+                    "roles": [],
+                    "adversarial": [],
+                    "audit_evidence": [{"file": ".audit/evidence/context.json"}],
+                },
+                "system_manifest": {"schema": "lowkey.system-bootstrap.v1"},
+            }
+            rendered = walk._render_story(
+                root,
+                [],
+                {},
+                {},
+                [],
+                {},
+                None,
+                True,
+                meta,
+            )
+            self.assertIn("BOOTSTRAP EVIDENCE", rendered)
+            self.assertIn("initialization steps observed: 1", rendered)
+            self.assertIn(".audit/evidence/context.json", rendered)
+
     def test_extract_audit_targets_prefers_canonical_evidence(self):
         target = "0x" + "1" * 40
         other = "0x" + "2" * 40
