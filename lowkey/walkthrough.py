@@ -525,7 +525,187 @@ def _cli_arg(value: Any) -> str:
         return json.dumps(value, separators=(",", ":"))
     return str(value)
 
-def _preflight(rpc: str, step: Step) -> tuple[bool, str]:
+
+def _lab_runtime(config: dict[str, Any], target: str, model: ContractModel) -> list[RuntimeContract]:
+    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+    if not system:
+        return [RuntimeContract(target, model.name, model.name, "target")]
+
+    definitions = [
+        ("factory", "ConfidencePoolFactory", "system"),
+        ("pool_implementation", "ConfidencePool", "IMPLEMENTATION"),
+        ("stake_token", "StakeToken", "DEPENDENCY"),
+        ("attack_registry", "MockAttackRegistry", "DEPENDENCY"),
+        ("safe_harbor_registry", "MockSafeHarborRegistry", "DEPENDENCY"),
+        ("agreement", "MockAgreement", "DEPENDENCY"),
+        ("moderator", "MockConfidencePoolModerator", "DEPENDENCY"),
+        ("pool", "ConfidencePool", "CLONE"),
+    ]
+    runtime=[]
+    factory_addr=system.get("factory")
+    for key,label,relation in definitions:
+        address=system.get(key)
+        if not address:
+            continue
+        parent=factory_addr if key in {"pool","pool_implementation"} else None
+        runtime.append(RuntimeContract(address, label, label, relation, parent))
+    if not any(x.address.lower()==target.lower() for x in runtime):
+        runtime.append(RuntimeContract(target, model.name, model.name, "target"))
+    return runtime
+
+
+def _confidence_pool_recipe(config: dict[str, Any], actors: list[Actor]) -> list[Step]:
+    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+    pool=system.get("pool") or config.get("target")
+    token=system.get("stake_token")
+    attack_registry=system.get("attack_registry")
+    moderator=system.get("moderator")
+    if not pool or not token or not attack_registry or not moderator:
+        return []
+    alice=actors[0] if actors else Actor("Alice", system.get("alice") or pool, 0)
+    bob=actors[1] if len(actors)>1 else alice
+    amount=10**18
+    max_uint=2**256-1
+    return [
+        Step(0,alice.name,"StakeToken",token,"approve(address,uint256)",[pool,max_uint],
+             reason="allow Alice to fund the pool",inferred=False),
+        Step(0,bob.name,"StakeToken",token,"approve(address,uint256)",[pool,max_uint],
+             reason="allow Bob to fund the pool",inferred=False),
+        Step(0,alice.name,"ConfidencePool",pool,"contributeBonus(uint256)",[amount],
+             reason="sponsor seeds the bonus pool",inferred=False),
+        Step(0,alice.name,"ConfidencePool",pool,"stake(uint256)",[amount],
+             reason="Alice joins the confidence pool",inferred=False),
+        Step(0,bob.name,"ConfidencePool",pool,"stake(uint256)",[amount],
+             reason="Bob joins the confidence pool",inferred=False),
+        Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[3],
+             reason="LAB CONTROL: agreement enters UNDER_ATTACK",inferred=False),
+        Step(0,alice.name,"ConfidencePool",pool,"pokeRiskWindow",[],
+             reason="pool observes and seals risk-window start",inferred=False),
+        Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[4],
+             reason="LAB CONTROL: agreement reaches PRODUCTION",inferred=False),
+        Step(0,alice.name,"MockConfidencePoolModerator",moderator,"flagSurvived(address)",[pool],
+             reason="moderator records the survived outcome",inferred=False),
+        Step(0,alice.name,"ConfidencePool",pool,"claimSurvived()",[],
+             reason="Alice claims principal plus time-weighted bonus",inferred=False),
+        Step(0,bob.name,"ConfidencePool",pool,"claimSurvived()",[],
+             reason="Bob claims principal plus time-weighted bonus",inferred=False),
+    ]
+
+
+def _render_shape_legend(enabled: bool) -> str:
+    return _box("DIAGRAM LEGEND",[
+        f"{FUNCTION} FUNCTION   executable interaction",
+        f"{MAPPING} MAPPING     keyed state",
+        f"{STRUCT} STRUCT      grouped state",
+        f"{ARRAY} ARRAY       ordered state",
+        f"{STATE} STATE       scalar/packed state",
+        f"{EXTERNAL} EXTERNAL   contract-to-contract call",
+        f"{DOTTED} INHERIT     implementation/parent link",
+    ],width=92)
+
+
+def _render_contract_shapes(model: ContractModel, enabled: bool) -> str:
+    lines=[_paint("CONTRACT SHAPES",BOLD+WHITE,enabled)]
+    functions=[x for x in model.abi if x.get("type")=="function" and x.get("name")][:8]
+    for fn in functions:
+        lines.append(f"  {FUNCTION} {_signature(fn)}  [{fn.get('stateMutability','')}]" )
+    for item in model.mappings[:6]:
+        lines.append(f"  {MAPPING} {item.get('name')} [{item.get('key_type')}] → {item.get('value_type')}")
+    for name,fields in list(model.structs.items())[:3]:
+        lines.append(f"  {STRUCT} {name} {{")
+        for field_item in fields[:5]:
+            lines.append(f"      {field_item.name}: {field_item.type}")
+        lines.append("  }")
+    for item in model.arrays[:3]:
+        lines.append(f"  {ARRAY} {item.get('name')}: {item.get('type')}")
+    return "\n".join(lines)
+
+
+def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
+    lines=[_paint("LIVE PSEUDOCODE FLOW",BOLD+CYAN,enabled)]
+    if not steps:
+        return "\n".join(lines+[
+            "  SYSTEM READY",
+            "      ↓",
+            f"  {FUNCTION} choose interaction",
+            "      ↓",
+            "  execute → observe → redraw → choose next",
+        ])
+    for step in steps[-10:]:
+        icon="✓" if step.status=="success" else "!" if step.status in {"blocked","reverted"} else "→"
+        lines.append(f"  {icon} {step.actor}")
+        lines.append(f"     └─ {FUNCTION} {step.contract}.{step.function}")
+        if step.args:
+            lines.append(f"        args: {', '.join(_cli_arg(x) for x in step.args)}")
+        if step.status=="success":
+            for change in step.storage_changes[:3]:
+                label=change.get("label") or f"slot {change.get('slot')}"
+                before=change.get("before",{}).get("value") if isinstance(change.get("before"),dict) else "?"
+                after=change.get("after",{}).get("value") if isinstance(change.get("after"),dict) else "?"
+                lines.append(f"        ├─ {STATE} {label}: {before} → {after}")
+            if step.discovered_contracts:
+                lines.append(f"        ├─ {EXTERNAL} runtime contract discovered")
+            if step.events and not step.storage_changes:
+                lines.append(f"        └─ {EVENT} {len(step.events)} event(s)")
+            elif not step.storage_changes and not step.discovered_contracts:
+                lines.append("        └─ ✓ state observed")
+        elif step.error:
+            lines.append(f"        └─ {WARNING} {' '.join(str(step.error).split())[-200:]}")
+        lines.append("        ↓")
+    if current:
+        lines.append(f"  {ARROW} YOU ARE HERE  {current.actor} → {current.contract}.{current.function}")
+    return "\n".join(lines)
+
+
+def _wait_for_next_interaction(no_prompt: bool) -> str:
+    if no_prompt:
+        return ""
+    if not sys.stdin.isatty():
+        try:
+            return input("\n  ⏎ next  |  q stop  ").strip().lower()
+        except EOFError:
+            return ""
+    fd=None
+    old=None
+    try:
+        import termios
+        fd=sys.stdin.fileno()
+        old=termios.tcgetattr(fd)
+        new=termios.tcgetattr(fd)
+        new[3] &= ~(termios.ECHO | termios.ICANON)
+        new[6][termios.VMIN]=1
+        new[6][termios.VTIME]=0
+        termios.tcsetattr(fd,termios.TCSADRAIN,new)
+        sys.stdout.write("\n  ⏎ next  |  q stop  ")
+        sys.stdout.flush()
+        return os.read(fd,1).decode(errors="ignore").lower()
+    except Exception:
+        try:
+            return input("\n  ⏎ next  |  q stop  ").strip().lower()
+        except EOFError:
+            return ""
+    finally:
+        if fd is not None and old is not None:
+            try:
+                termios.tcsetattr(fd,termios.TCSADRAIN,old)
+            except Exception:
+                pass
+
+
+def _preflight(rpc: str, step: Step, actor_address: str | None = None) -> tuple[bool, str]:
+    try:
+        command=["cast","call",step.address,step.function,*[_cli_arg(x) for x in step.args],"--rpc-url",rpc]
+        if actor_address:
+            command += ["--from",actor_address]
+        if step.value_wei:
+            command += ["--value",str(step.value_wei)]
+        code,out,err=_cmd(command,timeout=10)
+        text=(out or err or "").strip()
+        return code==0,text[-1200:] or ("eth_call succeeded" if code==0 else "eth_call reverted")
+    except Exception as exc:
+        return False,str(exc)
+
+
     try:
         code, out, err = _cmd(
             ["cast","call",step.address,step.function,*[
@@ -1256,20 +1436,32 @@ def _render_live_path(steps: list[Step], runtime: list[RuntimeContract], enabled
     return "\n".join(lines)
 
 def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
-    lines=[_paint("LIVE CONTRACT GRAPH",BOLD+WHITE,enabled)]
+    lines=[_paint("LIVE SYSTEM GRAPH",BOLD+WHITE,enabled)]
     if not runtime:
         return "\n".join(lines+["  <no live contracts>"])
-    for i,node in enumerate(runtime[:16]):
-        if i==0:
-            lines.append(f"  {ACTOR} {node.label:<24} {_addr(node.address)}")
+    children={}
+    roots=[]
+    for node in runtime:
+        if node.parent:
+            children.setdefault(node.parent.lower(),[]).append(node)
         else:
-            arrow=DOTTED if node.relation in {"CLONE","CREATE","CREATE2"} else EXTERNAL
-            parent=f"{_addr(node.parent)} " if node.parent else ""
-            lines.append(f"  {parent}{arrow} {node.label:<24} {_addr(node.address)} [{node.relation}]")
-            if node.implementation:
-                lines.append(f"      {DOTTED} implementation {_addr(node.implementation)}")
+            roots.append(node)
+    seen=set()
+    def render(node,indent="  "):
+        if node.address.lower() in seen:
+            return
+        seen.add(node.address.lower())
+        icon="◆" if node.relation=="system" else "●"
+        lines.append(f"{indent}{icon} {node.label:<28} {_addr(node.address)}")
+        for child in children.get(node.address.lower(),[])[:12]:
+            arrow=DOTTED if child.relation in {"CLONE","IMPLEMENTATION"} else EXTERNAL
+            lines.append(f"{indent}   {arrow} {child.label:<24} {_addr(child.address)}")
+    for node in roots:
+        render(node)
+    for node in runtime:
+        if node.address.lower() not in seen:
+            render(node)
     return "\n".join(lines)
-
 
 def _slither_status(root: Path) -> str:
     path = root / ".audit" / "slither" / "latest.json"
@@ -1287,35 +1479,47 @@ def _slither_status(root: Path) -> str:
 
 
 def _render_board(root: Path, model: ContractModel, models: list[ContractModel], runtime: list[RuntimeContract], actors: list[Actor], steps: list[Step], current: Step | None, storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
+    success=sum(1 for x in steps if x.status=="success")
+    blocked=sum(1 for x in steps if x.status in {"blocked","reverted"})
     board=[
-        _paint("LOWKEY  //  PROTOCOL WALKTHROUGH",BOLD+CYAN,enabled),
-        _paint("LIVE  execute → observe → redraw  |  Enter → next  |  q → stop",DIM,enabled),
+        _paint("LOWKEY // PROTOCOL WALKTHROUGH",BOLD+CYAN,enabled),
+        _paint("LIVE CANVAS  execute → observe → redraw  |  ⏎ next  |  q stop",DIM,enabled),
         "",
-        _box(f"{STATE} PROTOCOL ROOT",[model.name,f"source: {model.source}",f"artifact: {model.artifact}"],width=92),
+        _box("PROTOCOL ROOT",[
+            f"{STATE} {model.name}",
+            f"source   : {model.source}",
+            f"progress : {success} success / {blocked} blocked / {len(steps)} observed",
+        ],width=92),
+        "",
+        _render_shape_legend(enabled),
         "",
         _render_actor_row(actors,enabled),
         "",
         _render_runtime_graph(runtime,enabled),
         "",
-        _render_connections(models,model,enabled),
+        _render_contract_shapes(model,enabled),
         "",
-        _render_live_path(steps,runtime,enabled),
-        "",
-        "  "+_slither_status(root),
+        _render_pseudocode_flow(steps,current,enabled),
     ]
     if current:
-        board += ["",_render_step(current,storage,enabled)]
+        board += ["",_box("CURRENT OBSERVATION",[
+            f"{STATE} {current.contract}.{current.function}",
+            f"status : {current.status}",
+            f"tx     : {_addr(current.tx_hash) if current.tx_hash else 'preflight only'}",
+            f"trace  : {len(current.trace_edges)} edge(s)",
+            f"events : {len(current.events)}",
+            f"writes : {len(current.storage_changes)}",
+        ],width=92)]
         if current.trace_edges:
-            board += ["",_paint("CALL TRACE ⇣",BOLD+MAGENTA,enabled),_render_trace(current)]
+            board += ["",_paint(f"{EXTERNAL} CALL TRACE",BOLD+MAGENTA,enabled),_render_trace(current)]
         if current.events:
-            board += ["",_paint(f"{EVENT} EVENT STREAM ⇣",BOLD+YELLOW,enabled),_render_event_log(current,enabled)]
+            board += ["",_paint(f"{EVENT} EVENT STREAM",BOLD+YELLOW,enabled),_render_event_log(current,enabled)]
         if storage:
-            board += ["",_paint("LIVE STATE ⇣",BOLD+GREEN,enabled),_render_storage(storage,enabled)]
-    board += ["",f"OBSERVED INTERACTIONS success={sum(1 for x in steps if x.status=='success')} blocked/reverted={sum(1 for x in steps if x.status in {'blocked','reverted'})} total={len(steps)}"]
+            board += ["",_paint(f"{STATE} LIVE STORAGE",BOLD+GREEN,enabled),_render_storage(storage,enabled)]
+    board += ["","  "+_slither_status(root)]
     if static:
         board.append(_paint("STATIC MODEL ONLY",YELLOW,enabled))
     return "\n".join(board)
-
 
 def _render_plan(model: ContractModel, steps: list[Step], enabled: bool) -> str:
     lines=[_paint("STATIC PROTOCOL HYPOTHESIS",BOLD+CYAN,enabled),f"  {model.name} {ARROW}"]
@@ -1380,12 +1584,15 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     if not target:
         print("Error: no live target. Use 'lk target <address>' or 'lk walkthrough --auto'.",file=sys.stderr); return 2
 
-    runtime=[RuntimeContract(target,model.name,model.name,"target")]
+    runtime=_lab_runtime(config,target,model)
     steps=[]
     completed=set()
     prepared_pools: set[tuple[str, str]] = set()
-    observed = dict(config.get("_walkthrough_observed") or {})
-    pending=plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
+    observed=dict(config.get("_walkthrough_observed") or {})
+    system=config.get("lab_system") if isinstance(config.get("lab_system"),dict) else {}
+    observed.update({str(k).replace("_",""):v for k,v in system.items() if isinstance(v,str) and is_address(v)})
+    recipe=_confidence_pool_recipe(config,actors) if config.get("_walkthrough_recipe")=="confidence-pool" else []
+    pending=recipe[:max_steps] if recipe else plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
 
     def draw(current=None, storage=None):
         if sys.stdout.isatty() and os.environ.get("NO_COLOR") is None:
@@ -1415,7 +1622,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         steps.append(step)
         draw(step)
 
-        ok,preflight=_preflight(rpc,step)
+        actor=next((a for a in actors if a.name==step.actor),actors[0])
+        ok,preflight=_preflight(rpc,step,actor.address)
         steps.pop()
         step.preflight=preflight
         if not ok:
@@ -1487,7 +1695,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
 
         if not no_prompt:
             try:
-                choice = input("\n  ↳ Press ENTER for next interaction  |  q = stop  ").strip().lower()
+                choice = _wait_for_next_interaction(no_prompt)
                 if choice == "q":
                     break
             except EOFError:
