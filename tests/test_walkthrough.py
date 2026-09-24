@@ -175,6 +175,72 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn(0, numeric)
         self.assertIn(2**256 - 1, numeric)
 
+    def test_source_guard_probe_identifies_exact_mapping_key_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = """
+            pragma solidity ^0.8.20;
+            contract DemoFactory {
+                mapping(address => bool) public allowedToken;
+                address public ownerAddress;
+                function owner() external view returns (address) { return ownerAddress; }
+                function createPool(address agreement, address token, uint256 expiry) external onlyOwner {
+                    if (agreement == address(0)) revert();
+                    if (!allowedToken[token]) revert();
+                    if (expiry < block.timestamp + MIN_LEAD) revert();
+                }
+                uint256 constant MIN_LEAD = 30 days;
+            }
+            """
+            (root / "src" / "DemoFactory.sol").write_text(source, encoding="utf-8")
+            model = walkthrough.ContractModel(
+                name="DemoFactory", source="src/DemoFactory.sol", artifact="out/DemoFactory.sol/DemoFactory.json",
+                abi=[
+                    {"type":"function","name":"createPool","inputs":[
+                        {"name":"agreement","type":"address"},{"name":"token","type":"address"},{"name":"expiry","type":"uint256"}],
+                        "outputs":[],"stateMutability":"nonpayable"},
+                    {"type":"function","name":"allowedToken","inputs":[{"name":"","type":"address"}],
+                        "outputs":[{"type":"bool"}],"stateMutability":"view"},
+                    {"type":"function","name":"owner","inputs":[],"outputs":[{"type":"address"}],"stateMutability":"view"},
+                ],
+                functions=["createPool(address,address,uint256)"],
+                mappings=[{"name":"allowedToken","key_type":"address","value_type":"bool"}],
+            )
+            step = walkthrough.Step(1,"Bob","DemoFactory","0x"+"3"*40,"createPool(address,address,uint256)",
+                                   ["0x"+"4"*40,"0x"+"5"*40,100],status="blocked")
+            alice = "0x" + "1"*40
+            with patch.object(walkthrough,"_read_contract_getter",side_effect=[(True,alice),(True,"false")]),
+                 patch.object(walkthrough,"_block_timestamp",return_value=100):
+                origin, lines = walkthrough._probe_source_guards(root,"http://127.0.0.1:8545",step,model,[model],alice)
+        self.assertIn("allowedToken", " ".join(lines))
+        self.assertTrue(any(line.startswith("✕") and "allowedToken" in line for line in lines))
+        self.assertIn("allowedToken[token] is false", origin)
+
+    def test_output_signature_includes_return_types_for_live_getters(self):
+        item = {"name":"owner","inputs":[],"outputs":[{"type":"address"}],"type":"function"}
+        self.assertEqual(walkthrough._output_signature(item), "owner()(address)")
+
+    def test_lab_runtime_is_protocol_name_agnostic(self):
+        config = {
+            "lab_system": {
+                "root": "0x"+"1"*40, "root_model":"DemoRouter",
+                "router": "0x"+"1"*40, "router_model":"DemoRouter",
+                "vault": "0x"+"2"*40, "vault_model":"DemoVault",
+            }
+        }
+        router = walkthrough.ContractModel(name="DemoRouter",source="src/DemoRouter.sol",artifact="out/DemoRouter.sol/DemoRouter.json")
+        vault = walkthrough.ContractModel(name="DemoVault",source="src/DemoVault.sol",artifact="out/DemoVault.sol/DemoVault.json")
+        runtime = walkthrough._lab_runtime(config,"0x"+"1"*40,router,[router,vault])
+        self.assertTrue(any(node.label == "DemoRouter" for node in runtime))
+        self.assertTrue(any(node.label == "DemoVault" and node.relation == "DEPENDENCY" for node in runtime))
+
+    def test_random_test_mode_keeps_extreme_values_generic(self):
+        actors=[walkthrough.Actor("Alice","0x"+"1"*40,0), walkthrough.Actor("Bob","0x"+"2"*40,1), walkthrough.Actor("Attacker","0x"+"3"*40,2)]
+        rng=__import__("random").Random(1234)
+        values={walkthrough._random_sol_value({"name":"value","type":"uint256"},actors,"0x"+"4"*40,rng,{}) for _ in range(100)}
+        self.assertIn(0,values)
+        self.assertIn(2**256-1,values)
     def test_confidence_pool_recipe_contains_lifecycle(self):
         config={
             "target":"0x"+"1"*40,
@@ -839,11 +905,14 @@ class WalkthroughTests(unittest.TestCase):
         factory = "0x" + "1" * 40
         config = {
             "target": "0x" + "9" * 40,
-            "target_contract": "ConfidencePool",
+            "target_contract": "DemoFactory",
             "rpc": "http://127.0.0.1:8545",
             "lab_system": {
                 "factory": factory,
+                "root": factory,
+                "root_model": "DemoFactory",
                 "pool": "0x" + "2" * 40,
+                "child_model": "DemoPool",
             },
         }
 
@@ -865,7 +934,7 @@ class WalkthroughTests(unittest.TestCase):
                 Host(), config, pathlib.Path("."), None, True
             )
         self.assertEqual(target, factory)
-        self.assertEqual(contract, "ConfidencePoolFactory")
+        self.assertEqual(contract, "DemoFactory")
 
     def test_connection_renderer_explains_factory_lifecycle(self):
         factory = walkthrough.ContractModel(
