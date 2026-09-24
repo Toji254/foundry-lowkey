@@ -155,6 +155,126 @@ def parse_slither_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+def run_slither_project(
+    root: str = ".",
+    project: dict[str, Any] | None = None,
+    args: Sequence[str] | None = None,
+) -> int:
+    if not slither_available():
+        record_evidence(
+            "slither",
+            {
+                "available": False,
+                "reason": "slither not found on PATH",
+                "findings": [],
+            },
+            root,
+        )
+        print("Slither: SKIPPED (not found on PATH).")
+        return 127
+
+    root_path = Path(root).resolve()
+    files = project_source_files(root_path, {"sol"}) if project_source_files else []
+    production = [
+        path for path in files
+        if not any(part.lower() in {"test", "tests", "script", "scripts"} for part in path.relative_to(root_path).parts)
+    ]
+    targets = production or files
+    if not targets:
+        record_evidence(
+            "slither",
+            {
+                "available": True,
+                "status": "not_applicable",
+                "reason": "No Solidity source files available for Slither.",
+                "findings": [],
+            },
+            root,
+        )
+        print("Slither: SKIPPED (no Solidity sources available).")
+        return 0
+
+    extra = list(args or [])
+    remaps: list[str] = []
+    if (root_path / "node_modules" / "solidity-rlp").is_dir():
+        remaps.append(
+            "hamdiallam/Solidity-RLP@2.0.7=node_modules/solidity-rlp"
+        )
+    if (root_path / "lib" / "solidity-rlp").is_dir():
+        remaps.append(
+            "hamdiallam/Solidity-RLP@2.0.7=lib/solidity-rlp"
+        )
+
+    compilers = (project or {}).get("solidity_compilers", [])
+    env = {"SOLC_VERSION": str(compilers[0])} if len(compilers) == 1 else {}
+
+    aggregate_findings: list[dict[str, Any]] = []
+    file_runs: list[dict[str, Any]] = []
+    final_code = 0
+
+    print("SLITHER")
+    print("=" * 52)
+    for index, path in enumerate(targets, 1):
+        relative = str(path.relative_to(root_path))
+        raw_path = evidence_dir(root) / f"slither_{index}.raw.json"
+        command = [
+            "slither",
+            relative,
+            "--disable-color",
+            "--json",
+            str(raw_path),
+        ]
+        if remaps:
+            command.extend(["--solc-remaps", " ".join(remaps)])
+        command.extend(extra)
+
+        code, stdout, stderr = run_command(command, root, 600, env=env)
+        payload = read_json(raw_path, {})
+        findings = parse_slither_payload(payload)
+        for finding in findings:
+            finding["target"] = relative
+        aggregate_findings.extend(findings)
+        file_runs.append({
+            "target": relative,
+            "command": command,
+            "exit_code": code,
+            "finding_count": len(findings),
+        })
+        if code != 0:
+            final_code = code
+
+        write_text(evidence_dir(root) / f"slither_{index}.stdout.txt", stdout)
+        write_text(evidence_dir(root) / f"slither_{index}.stderr.txt", stderr)
+        print(f"{relative}: exit {code}, findings {len(findings)}")
+
+    summary: dict[str, int] = {}
+    for finding in aggregate_findings:
+        impact = finding["impact"]
+        summary[impact] = summary.get(impact, 0) + 1
+
+    record_evidence(
+        "slither",
+        {
+            "available": True,
+            "mode": "direct-solidity-files",
+            "targets": [str(path.relative_to(root_path)) for path in targets],
+            "solidity_compilers": compilers,
+            "remappings": remaps,
+            "runs": file_runs,
+            "summary": summary,
+            "finding_count": len(aggregate_findings),
+            "findings": aggregate_findings,
+            "exit_code": final_code,
+        },
+        root,
+    )
+
+    print(f"Findings: {len(aggregate_findings)}")
+    for impact in sorted(summary, key=lambda item: IMPACT_ORDER.get(item, 99)):
+        print(f"  {impact:<15} {summary[impact]}")
+    return final_code
+
+
 def run_slither(root: str = ".", args: Sequence[str] | None = None) -> int:
     if not slither_available():
         record_evidence("slither", {"available": False, "reason": "slither not found on PATH", "findings": []}, root)
@@ -1411,22 +1531,27 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
         _aggregate_pipeline_step(root, name, outcomes[name])
 
     solidity_count = int(project.get("sources", {}).get("solidity", 0) or 0)
-    if is_foundry and solidity_count > 0:
-        slither_code = run_slither(root, slither_args)
-        results.append({"label": "slither", "code": slither_code})
-    elif solidity_count > 0:
-        record_evidence(
-            "slither",
-            {
-                "available": False,
-                "reason": "Solidity sources were detected, but automatic Slither execution is only enabled for Foundry projects to avoid crossing incompatible build systems.",
-                "findings": [],
-                "exit_code": 127,
-            },
-            root,
-        )
-        print("Slither: SKIPPED (Solidity detected outside a Foundry project).")
-        results.append({"label": "slither", "code": 127})
+    if solidity_count > 0:
+        if slither_available():
+            slither_code = (
+                run_slither(root, slither_args)
+                if is_foundry
+                else run_slither_project(root, project, slither_args)
+            )
+            results.append({"label": "slither", "code": slither_code})
+        else:
+            record_evidence(
+                "slither",
+                {
+                    "available": False,
+                    "reason": "Solidity sources were detected but Slither is unavailable on PATH.",
+                    "findings": [],
+                    "exit_code": 127,
+                },
+                root,
+            )
+            print("Slither: SKIPPED (not found on PATH).")
+            results.append({"label": "slither", "code": 127})
     else:
         record_evidence(
             "slither",
