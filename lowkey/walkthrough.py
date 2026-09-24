@@ -1217,6 +1217,15 @@ def _human_action_summary(step: Step, actors: list[Actor]) -> str:
     args = step.args
     if lower == "approve":
         return f"{actor} approves {contract} to spend their stake tokens"
+    if lower == "setstaketokenallowed":
+        token = _friendly_arg(args[0], actors) if args else "the supplied token"
+        enabled = _friendly_arg(args[1], actors) if len(args) > 1 else "true"
+        return f"{actor} marks {token} as an allowed stake token ({enabled})"
+    if lower == "createpool":
+        agreement = _friendly_arg(args[0], actors) if args else "the Agreement"
+        token = _friendly_arg(args[1], actors) if len(args) > 1 else "the stake token"
+        recipient = _friendly_arg(args[4], actors) if len(args) > 4 else "the recovery address"
+        return f"{actor} asks {contract} to create a new pool for {agreement} using {token}; recovery goes to {recipient}"
     if lower == "stake":
         amount = _friendly_value(args[0]) if args else "the requested amount"
         verb = "deposits" if step.status == "success" else "tries to deposit"
