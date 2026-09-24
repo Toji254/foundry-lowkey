@@ -21,6 +21,79 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(walkthrough._cli_arg(True), "true")
         self.assertEqual(walkthrough._cli_arg(False), "false")
 
+    def test_protocol_root_and_child_are_inferred_from_source_graph(self):
+        factory = walkthrough.ContractModel(
+            name="DemoFactory",
+            source="src/DemoFactory.sol",
+            artifact="out/DemoFactory.sol/DemoFactory.json",
+            abi=[{
+                "type": "function",
+                "name": "initialize",
+                "inputs": [{"name": "implementation", "type": "address"}],
+                "outputs": [],
+            }, {
+                "type": "function",
+                "name": "createPool",
+                "inputs": [],
+                "outputs": [],
+            }],
+            functions=["initialize(address)", "createPool()"],
+            calls=[{
+                "kind": "cross-contract",
+                "from": "createPool",
+                "to_contract": "IPool",
+                "to_function": "initialize",
+                "via": "pool",
+            }],
+        )
+        pool = walkthrough.ContractModel(
+            name="Pool",
+            source="src/Pool.sol",
+            artifact="out/Pool.sol/Pool.json",
+            abi=[{
+                "type": "function",
+                "name": "initialize",
+                "inputs": [],
+                "outputs": [],
+            }],
+            functions=["initialize()"],
+        )
+        self.assertEqual(walkthrough._infer_protocol_root([factory, pool]).name, "DemoFactory")
+        self.assertEqual(walkthrough._infer_child_model(factory, [factory, pool]).name, "Pool")
+
+    def test_adversarial_random_values_include_roles_and_extremes(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+            walkthrough.Actor("Attacker", "0x" + "3" * 40, 2),
+        ]
+        rng = __import__("random").Random(7)
+        seen = set()
+        for _ in range(80):
+            value = walkthrough._random_sol_value(
+                {"name": "recipient", "type": "address"},
+                actors,
+                "0x" + "4" * 40,
+                rng,
+                {},
+            )
+            seen.add(value)
+        self.assertIn(actors[0].address, seen)
+        self.assertIn(actors[1].address, seen)
+
+        numeric = {
+            walkthrough._random_sol_value(
+                {"name": "amount", "type": "uint256"},
+                actors,
+                "0x" + "4" * 40,
+                rng,
+                {},
+            )
+            for _ in range(100)
+        }
+        self.assertIn(0, numeric)
+        self.assertIn(2**256 - 1, numeric)
+
     def test_confidence_pool_recipe_contains_lifecycle(self):
         config={
             "target":"0x"+"1"*40,
