@@ -33,6 +33,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib import request
 
+try:
+    import system_model
+except ImportError:
+    system_model = None
+
 ZERO = "0x" + "0" * 40
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+$")
@@ -134,6 +139,60 @@ def _latest_timestamp(url: str) -> int:
         return int(block["timestamp"], 16)
     except Exception:
         return int(time.time())
+
+
+def _load_system_manifest(root: Path, rpc: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    if system_model is None:
+        return None
+    try:
+        manifest, _ = system_model.refresh_manifest(
+            root,
+            rpc=rpc,
+            config=config,
+            reason="walkthrough:start",
+        )
+        return manifest
+    except Exception:
+        return system_model.load_manifest(root) if system_model else None
+
+
+def _bootstrap_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not manifest:
+        return None
+    deployments = manifest.get("deployments") or []
+    return {
+        "deployments": deployments,
+        "live_deployments": [
+            x for x in deployments
+            if isinstance(x, dict) and x.get("live") and x.get("code_size", x.get("live"))
+        ],
+        "scripts": [
+            {
+                "path": x.get("path"),
+                "score": 0,
+                "signals": [
+                    a.get("kind")
+                    for a in x.get("actions") or []
+                    if isinstance(a, dict)
+                ],
+                "command": f"forge script {x.get('path')} --rpc-url {rpc} --broadcast",
+            }
+            for x in manifest.get("scripts") or []
+        ],
+        "tests": [
+            {
+                "path": x.get("path"),
+                "signals": ["fixture/test"],
+                "command": f"forge test --match-path {x.get('path')} -vvvv",
+            }
+            for x in manifest.get("tests") or []
+        ],
+        "adversarial": manifest.get("adversarial_evidence") or [],
+        "initialization": manifest.get("initialization") or [],
+        "roles": manifest.get("roles") or [],
+        "relationships": manifest.get("relationships") or [],
+        "source": "system_bootstrap_manifest",
+    }
 
 
 def _discover_bootstrap(root: Path, rpc: str) -> dict[str, Any]:
@@ -1667,6 +1726,35 @@ def _render_story(
             actor_line.append(f"◉ {name} {addr[:10]}…{addr[-8:]}")
     lines.append("  " + "   ".join(actor_line))
     lines.append("")
+    lines.append("BOOTSTRAP EVIDENCE")
+    bootstrap = (meta.get("bootstrap") if isinstance(meta, dict) else None) or {}
+    manifest = (meta.get("system_manifest") if isinstance(meta, dict) else None) or {}
+    initialization = bootstrap.get("initialization") or []
+    roles = bootstrap.get("roles") or []
+    adversarial = bootstrap.get("adversarial") or []
+    lines.append(
+        "  source: "
+        + ("shared system bootstrap manifest" if manifest else "source/broadcast fallback")
+    )
+    if initialization:
+        lines.append(f"  initialization steps observed: {len(initialization)}")
+        for item in initialization[:6]:
+            lines.append(
+                f"    {item.get('source')}:{item.get('line')} "
+                f"[{item.get('kind')}] {item.get('target')}"
+            )
+    if roles:
+        lines.append(f"  role/ownership operations observed: {len(roles)}")
+        for item in roles[:4]:
+            lines.append(
+                f"    {item.get('source')}:{item.get('line')} "
+                f"[{item.get('kind')}] {item.get('target')}"
+            )
+    if adversarial:
+        lines.append(f"  adversarial artifacts observed: {len(adversarial)}")
+        for item in adversarial[:4]:
+            lines.append(f"    {item.get('path')}")
+    lines.append("")
     lines.append("SYSTEM MAP")
     if not nodes:
         lines.append("  └─ ! no live target/dependencies discovered")
@@ -1862,7 +1950,9 @@ def _build_model(
     except Exception as exc:
         raise RuntimeError(f"RPC unavailable at {rpc}: {exc}") from exc
 
-    bootstrap = _discover_bootstrap(root, rpc)
+    manifest = _load_system_manifest(root, rpc, config)
+    bootstrap = _bootstrap_from_manifest(manifest) or _discover_bootstrap(root, rpc)
+
     target, target_source = _resolve_walkthrough_target(
         root, config, rpc, bootstrap
     )
@@ -1902,6 +1992,7 @@ def _build_model(
             "live_nodes": [],
             "known_roles": {},
             "bootstrap": bootstrap,
+            "system_manifest": manifest,
         }
         return (
             meta,
@@ -1994,6 +2085,7 @@ def _build_model(
         "live_nodes": [asdict(x) for x in nodes],
         "known_roles": known,
         "bootstrap": bootstrap,
+        "system_manifest": manifest,
     }
     return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
 
