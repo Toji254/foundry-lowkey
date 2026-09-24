@@ -395,13 +395,15 @@ def _arg_for(
         return observed[compact]
 
     if ptype.startswith("address[]"):
-        return [alice, bob]
+        return observed.get(compact, [alice, bob])
     if ptype == "address":
+        if observed.get(compact):
+            return observed[compact]
         if any(x in name for x in ("attacker", "malicious", "evil")):
             return attacker
-        if any(x in name for x in ("recipient", "receiver", "to", "user", "beneficiary")):
+        if any(x in name for x in ("recipient", "receiver", "to", "user", "beneficiary", "recovery", "moderator")):
             return bob
-        return observed.get(compact, alice)
+        return alice
     if ptype.startswith("uint") or ptype.startswith("int"):
         if any(x in name for x in ("deadline", "expiry", "expires")):
             return now + 3600
@@ -498,11 +500,19 @@ def plan_workflow(
     return steps
 
 
+def _cli_arg(value: Any) -> str:
+    """Render a Solidity argument in a cast-friendly command-line form."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple, dict)):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)
+
 def _preflight(rpc: str, step: Step) -> tuple[bool, str]:
     try:
         code, out, err = _cmd(
             ["cast","call",step.address,step.function,*[
-                json.dumps(x,separators=(",",":")) if isinstance(x,list) else str(x)
+                _cli_arg(x)
                 for x in step.args
             ],"--rpc-url",rpc] + (["--value",str(step.value_wei)] if step.value_wei else []),
             timeout=10,
@@ -543,7 +553,7 @@ def _send(host: Any, config: dict[str, Any], actor: Actor, target: str, signatur
         return None, "no RPC"
     _actor_rpc_setup(rpc, actor.address)
 
-    encoded_args = [json.dumps(x, separators=(",", ":")) if isinstance(x, list) else str(x) for x in args]
+    encoded_args = [_cli_arg(x) for x in args]
     command = [
         "send", target, signature, *encoded_args,
         "--rpc-url", rpc,
@@ -1149,6 +1159,34 @@ def _render_trace(step: Step) -> str:
     return "\n".join(["  " + EXTERNAL + " " + x for x in step.trace_edges[-10:]])
 
 
+def _render_live_path(steps: list[Step], runtime: list[RuntimeContract], enabled: bool) -> str:
+    lines = [_paint("LIVE INTERACTION PATH", BOLD + CYAN, enabled)]
+    if not steps:
+        return "\n".join(lines + ["  <waiting for the first interaction>"])
+    runtime_by_addr = {node.address.lower(): node for node in runtime}
+    for step in steps[-10:]:
+        status_icon = "✓" if step.status == "success" else "!" if step.status in {"blocked", "reverted"} else "•"
+        color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
+        args = ", ".join(_cli_arg(x) for x in step.args) or "∅"
+        target = runtime_by_addr.get(step.address.lower())
+        target_label = target.label if target else step.contract
+        lines.append(
+            f"  {_paint(status_icon, color, enabled)} {step.actor} {ARROW} "
+            f"{target_label}.{step.function}  ({args})"
+        )
+        if target and target.parent and target.parent.lower() != step.address.lower():
+            lines.append(f"       {DOTTED} parent {_addr(target.parent)}")
+        if step.status == "success":
+            if step.events:
+                lines.append(f"       {EXTERNAL} {len(step.events)} event(s)  →  state observed")
+            if step.discovered_contracts:
+                for node in step.discovered_contracts[:4]:
+                    lines.append(f"       {ARROW} {node.label}  {_addr(node.address)}  [{node.relation}]")
+        elif step.error:
+            compact_error = " ".join(str(step.error).split())[-180:]
+            lines.append(f"       {WARNING} {compact_error}")
+    return "\n".join(lines)
+
 def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
     lines=[_paint("LIVE CONTRACT GRAPH",BOLD+WHITE,enabled)]
     if not runtime:
@@ -1183,13 +1221,17 @@ def _slither_status(root: Path) -> str:
 def _render_board(root: Path, model: ContractModel, models: list[ContractModel], runtime: list[RuntimeContract], actors: list[Actor], steps: list[Step], current: Step | None, storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
     board=[
         _paint("LOWKEY  //  PROTOCOL WALKTHROUGH",BOLD+CYAN,enabled),
-        _paint("REALTIME: execute → observe → redraw → choose next interaction",DIM,enabled),
+        _paint("LIVE  execute → observe → redraw  |  Enter → next  |  q → stop",DIM,enabled),
         "",
-        _box(f"{STATE} CONTRACT MODEL",[model.name,f"source: {model.source}",f"artifact: {model.artifact}"],width=92),
+        _box(f"{STATE} PROTOCOL ROOT",[model.name,f"source: {model.source}",f"artifact: {model.artifact}"],width=92),
         "",
         _render_actor_row(actors,enabled),
         "",
         _render_runtime_graph(runtime,enabled),
+        "",
+        _render_connections(models,model,enabled),
+        "",
+        _render_live_path(steps,runtime,enabled),
         "",
         "  "+_slither_status(root),
     ]
@@ -1273,10 +1315,20 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     runtime=[RuntimeContract(target,model.name,model.name,"target")]
     steps=[]
     completed=set()
-    observed={}
+    observed = dict(config.get("_walkthrough_observed") or {})
     pending=plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
 
-    print("\n"+_render_board(root,model,models,runtime,actors,steps,None,[],_ansi_enabled(False)))
+    def draw(current=None, storage=None):
+        if sys.stdout.isatty() and os.environ.get("NO_COLOR") is None:
+            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.flush()
+        print(_render_board(
+            root, model, models, runtime, actors, steps, current, storage or [],
+            _ansi_enabled(False)
+        ))
+        sys.stdout.flush()
+
+    draw()
 
     while pending and len(steps)<max_steps:
         step=pending.pop(0)
@@ -1290,29 +1342,25 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         key=(step.contract,step.address.lower(),step.function)
         if key in completed: continue
 
-        print("\n"+"="*92)
-        print(_paint("INTERACTION SELECTED",BOLD+CYAN,True))
-        print(f"  {ACTOR} {step.actor} {ARROW} {step.contract}.{step.function}")
-        print(f"  target : {step.address}")
-        print(f"  args   : {', '.join(repr(x) for x in step.args) or '∅'}")
-        print(f"  value  : {step.value_wei} wei")
-        print(f"  {WARNING} source-guided candidate; preflight will test the current state")
+        step.status = "checking"
+        steps.append(step)
+        draw(step)
 
         ok,preflight=_preflight(rpc,step)
+        steps.pop()
         step.preflight=preflight
         if not ok:
             step.status="blocked"
             step.error="PRECONDITION BLOCKED: "+preflight
             steps.append(step)
-            print(_render_board(root,model,models,runtime,actors,steps,step,[],_ansi_enabled(False)))
+            draw(step)
         else:
-            print(_paint("  EXECUTING NOW…",BOLD+GREEN,True))
             actor=next((a for a in actors if a.name==step.actor),actors[0])
             before=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
             tx,output=_send(host,config,actor,step.address,step.function,step.args,step.value_wei)
             if not tx:
                 step.status="reverted"; step.error=output or "transaction failed"; steps.append(step)
-                print(_render_board(root,model,models,runtime,actors,steps,step,before,_ansi_enabled(False)))
+                draw(step, before)
             else:
                 receipt=_receipt(rpc,tx)
                 trace=_trace_tree(rpc,tx)
@@ -1328,12 +1376,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
                 step.runtime_contracts=[asdict(x) for x in runtime]
                 steps.append(step); completed.add(key)
-                print("\033[2J\033[H" if sys.stdout.isatty() else "")
-                print(_render_board(root,model,models,runtime,actors,steps,step,after,_ansi_enabled(False)))
-                if discovered:
-                    print("\n"+_paint("RUNTIME DISCOVERY",BOLD+MAGENTA,True))
-                    for node in discovered:
-                        print(f"  {DOTTED} {node.label} @ {node.address} via {node.relation}")
+                draw(step, after)
                 for node in discovered:
                     child=next((m for m in models if m.name==node.model),None)
                     if child:
@@ -1353,8 +1396,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
 
         if not no_prompt:
             try:
-                if input("\nPress ENTER for next interaction (q to stop)  ").strip().lower()=="q": break
-            except EOFError: no_prompt=True
+                choice = input("\n  ↳ Press ENTER for next interaction  |  q = stop  ").strip().lower()
+                if choice == "q":
+                    break
+            except EOFError:
+                no_prompt=True
 
     replay=_generate_replay_script(root,model,target,steps)
     print("\n"+_paint("WALKTHROUGH COMPLETE",BOLD+GREEN,_ansi_enabled(False)))
