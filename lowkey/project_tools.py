@@ -342,8 +342,13 @@ def _solidity_external_candidates(raw: str, root: Path) -> list[Path]:
         if len(parts) >= 2:
             versioned_name = parts[1].split("@", 1)[0].lower()
             if "solidity" in versioned_name or "rlp" in versioned_name:
-                candidates.append(root / "node_modules" / versioned_name / remainder)
-                candidates.append(root / "lib" / versioned_name / remainder)
+                # Handle owner/package@version imports such as
+                # hamdiallam/Solidity-RLP@2.0.7/contracts/RLPReader.sol.
+                owner_package_remainder = Path(*parts[2:]) if len(parts) > 2 else Path()
+                candidates.append(root / "node_modules" / versioned_name / owner_package_remainder)
+                candidates.append(root / "lib" / versioned_name / owner_package_remainder)
+                candidates.append(root / "node_modules" / parts[1] / owner_package_remainder)
+                candidates.append(root / "lib" / parts[1] / owner_package_remainder)
 
         candidates.append(root / "lib" / parts[0] / Path(*parts[1:]))
     return candidates
