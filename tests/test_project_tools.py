@@ -99,6 +99,25 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertEqual(edge["to"], "contracts/interfaces/pool.vyi")
             self.assertTrue(edge["resolved"])
 
+    def test_dependency_graph_marks_installed_vyper_package_as_external_resolved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "contracts/main.vy",
+                "from snekmate.auth import access_control\n",
+            )
+            package = root / ".venv/lib/python3.12/site-packages/snekmate"
+            package.mkdir(parents=True)
+
+            graph = project_tools.build_dependency_graph(root)
+
+            self.assertEqual(graph["summary"]["unresolved_imports"], 0)
+            self.assertEqual(graph["summary"]["external_imports"], 1)
+            edge = graph["edges"][0]
+            self.assertTrue(edge["external"])
+            self.assertTrue(edge["resolved"])
+
     def test_source_inventory_excludes_audit_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
