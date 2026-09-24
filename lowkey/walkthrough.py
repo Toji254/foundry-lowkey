@@ -352,14 +352,19 @@ def _resolve_walkthrough_target(
 ) -> tuple[str | None, str]:
     """Resolve a live target from existing audit/system state."""
     configured = str(config.get("target") or "").strip()
-    if _is_address(configured) and _code_size(rpc, configured) > 0:
-        return configured, "configured target"
+    if _is_address(configured):
+        if _code_size(rpc, configured) > 0:
+            return configured, "configured target"
+        return configured, "configured target (no live bytecode)"
 
     saved_targets = config.get("targets") or {}
     if isinstance(saved_targets, dict):
         for name, value in saved_targets.items():
-            if _is_address(value) and _code_size(rpc, value) > 0:
+            if not _is_address(value):
+                continue
+            if _code_size(rpc, value) > 0:
                 return value, f"saved target '{name}'"
+            return value, f"saved target '{name}' (no live bytecode)"
 
     # Persisted audit evidence is authoritative session state and must work
     # even when Foundry broadcast artifacts do not exist.
@@ -394,10 +399,12 @@ def _resolve_walkthrough_target(
         target = item.get("target")
         if not _is_address(target):
             continue
-        if _code_size(rpc, target) > 0:
-            file_name = str(item.get("file") or "")
-            source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
-            return target, source
+        file_name = str(item.get("file") or "")
+        live = _code_size(rpc, target) > 0
+        source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
+        if not live:
+            source += " (no live bytecode)"
+        return target, source
 
     live = list(bootstrap.get("live_deployments") or [])
     live.sort(
