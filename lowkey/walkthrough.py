@@ -2311,7 +2311,7 @@ def _run_adversarial_test(
 
         if step.status != "success":
             step.error_reason = _explain_failure(step, step.error, actor.name)
-            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, model, models)
+            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, active_model, models, actor.address)
 
         results.append(step)
 
@@ -2983,7 +2983,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 # Visible local-lab prerequisite: once a real pool clone exists,
                 # approve the recorded mock stake token for that clone.
                 token_address = observed.get("staketoken")
-                if token_address and discovered:
+                use_pool_recipe = config.get("_walkthrough_recipe") == "confidence-pool"
+                if token_address and discovered and not use_pool_recipe:
                     for node in discovered:
                         if "pool" not in str(node.model).lower():
                             continue
@@ -3008,10 +3009,22 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 draw(step, after)
                 for node in discovered:
                     child=next((m for m in models if m.name==node.model),None)
-                    if child:
-                        for candidate in reversed(plan_workflow(child,actors,node.address,_block_timestamp(rpc),max_steps,observed)):
-                            ckey=(candidate.contract,candidate.address.lower(),candidate.function)
-                            if ckey not in completed: pending.insert(0,candidate)
+                    if not child:
+                        continue
+
+                    child_steps = []
+                    if config.get("_walkthrough_recipe") == "confidence-pool" and child.name.lower() == "confidencepool":
+                        child_steps = _confidence_pool_recipe(
+                            config, actors, pool_override=node.address, now=_block_timestamp(rpc)
+                        )
+
+                    selected = child_steps or plan_workflow(
+                        child, actors, node.address, _block_timestamp(rpc), max_steps, observed
+                    )
+                    for candidate in reversed(selected):
+                        ckey=(candidate.contract,candidate.address.lower(),candidate.function)
+                        if ckey not in completed:
+                            pending.insert(0,candidate)
                 for candidate in reversed(plan_workflow(current_model,actors,step.address,_block_timestamp(rpc),max_steps,observed)):
                     ckey=(candidate.contract,candidate.address.lower(),candidate.function)
                     if ckey not in completed: pending.append(candidate)
