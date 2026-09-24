@@ -2605,6 +2605,194 @@ def _persist(root: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _canonical_actor_names(actors: dict[str, str]) -> list[str]:
+    return [
+        name for name in ("Alice", "Bob", "Attacker", "Owner", "Agreement Owner", "Moderator")
+        if actors.get(name)
+    ]
+
+
+def _function_access_label(
+    fn: FunctionInfo,
+    functions: list[FunctionInfo],
+) -> str:
+    modifiers = [str(x) for x in fn.modifiers or []]
+    owner_gate = next((x for x in modifiers if x.lower() == "onlyowner"), None)
+    role_gate = next((x for x in modifiers if x.lower().startswith("onlyrole")), None)
+    gate = owner_gate or role_gate
+    if fn.visibility in {"external", "public"}:
+        return (
+            f"{gate} only" if gate
+            else "any external caller"
+        )
+    callers = sorted({
+        candidate.name
+        for candidate in functions
+        if any(
+            call.get("kind") == "internal-call"
+            and str(call.get("function")) == fn.name
+            for call in candidate.calls or []
+        )
+    })
+    reach = ", ".join(callers[:5]) if callers else "no caller proven by source scan"
+    return f"{fn.visibility} only; reached from {reach}"
+
+
+def _render_contract_surface(
+    contract: ContractInfo,
+    functions: list[FunctionInfo],
+) -> list[str]:
+    lines: list[str] = []
+    states = contract.state_vars or []
+    lines.append(_section("STORAGE / WHAT THIS CONTRACT REMEMBERS", "blue"))
+    if not states:
+        lines.append("  No source-level state declarations were recovered.")
+    else:
+        for state in states[:12]:
+            name = str(state.get("name") or "?")
+            typ = str(state.get("type") or "unknown")
+            vis = str(state.get("visibility") or "internal")
+            low_type = typ.lower()
+            kind = (
+                "MAPPING" if low_type.startswith("mapping")
+                else "ARRAY" if "[" in typ
+                else "VALUE"
+            )
+            writers = [fn for fn in functions if name in (fn.writes or [])]
+            readers = [fn for fn in functions if name in (fn.reads or []) and fn not in writers]
+            head = f"  {_paint(kind, 'blue')}  {_paint(name, 'blue')} : {typ}  ({vis})"
+            if state.get("constant"):
+                head += " [constant]"
+            elif state.get("immutable"):
+                head += " [immutable]"
+            lines.append(head)
+
+            if writers:
+                writer_bits = []
+                for fn in writers[:5]:
+                    writer_bits.append(f"{fn.name} ({fn.visibility})")
+                lines.append(f"      {_paint('WRITES', 'red')}  {', '.join(writer_bits)}")
+            else:
+                lines.append(f"      {_paint('WRITES', 'dim')}  no source writer found")
+
+            if readers:
+                lines.append(f"      {_paint('READS', 'cyan')}   {', '.join(fn.name for fn in readers[:5])}")
+
+            ops = []
+            for fn in writers:
+                ops.extend(fn.array_ops or [])
+            if ops:
+                lines.append(f"      {_paint('DATA FLOW', 'blue')} {', '.join(sorted(set(ops))[:5])}")
+
+    lines.append("")
+    lines.append(_section("ACCESS / WHO CAN DO WHAT", "magenta"))
+    entry_points = [
+        fn for fn in functions
+        if fn.visibility in {"external", "public"}
+        and (
+            fn.writes
+            or fn.calls
+            or fn.modifiers
+            or fn.mutability not in {"view", "pure"}
+        )
+    ]
+    entry_points.sort(key=lambda fn: (-len(fn.writes), -len(fn.calls), fn.name))
+    if not entry_points:
+        lines.append("  No state-changing public/external entry points recovered.")
+    else:
+        for fn in entry_points[:10]:
+            lines.append(
+                f"  {_paint(fn.visibility.upper(), 'magenta'):<10} {fn.name}()"
+            )
+            lines.append(f"      WHO    {_function_access_label(fn, functions)}")
+            does = []
+            if fn.writes:
+                does.append("writes " + ", ".join(fn.writes[:4]))
+            if fn.calls:
+                does.append("calls " + ", ".join(str(x.get("function")) for x in fn.calls[:4]))
+            lines.append(f"      DOES   {'; '.join(does) if does else 'changes protocol state'}")
+
+    internals = [
+        fn for fn in functions
+        if fn.visibility in {"private", "internal"} and (fn.writes or fn.calls)
+    ]
+    if internals:
+        lines.append("")
+        lines.append(_section("INTERNAL / PRIVATE LOGIC", "yellow"))
+        for fn in sorted(internals, key=lambda x: (-len(x.writes), -len(x.calls), x.name))[:8]:
+            lines.append(f"  {_paint(fn.visibility.upper(), 'yellow'):<10} {fn.name}()")
+            lines.append(f"      WHO    {_function_access_label(fn, functions)}")
+            if fn.writes:
+                lines.append(f"      TOUCH  {', '.join(fn.writes[:5])}")
+            if fn.calls:
+                lines.append(f"      CALLS  {', '.join(str(x.get('function')) for x in fn.calls[:5])}")
+    return lines
+
+
+def _render_state_diagnosis(actions: list[dict[str, Any]]) -> list[str]:
+    blocked = [a for a in actions if str(a.get("status")) == "BLOCKED"]
+    if not blocked:
+        return []
+    reasons: list[tuple[str, int, str]] = []
+    seen: dict[str, int] = {}
+    recs: dict[str, str] = {}
+    for action in blocked:
+        result = action.get("result") or {}
+        msg, recommendation = _friendly_error(
+            result.get("decoded_error"),
+            result.get("raw", ""),
+        )
+        key = msg.lower()
+        seen[key] = seen.get(key, 0) + 1
+        recs[key] = recommendation
+    for key, count in seen.items():
+        reasons.append((key, count, recs[key]))
+    out = [_section("WHY ACTIONS ARE BLOCKED", "red")]
+    for msg, count, recommendation in sorted(reasons, key=lambda x: (-x[1], x[0]))[:5]:
+        suffix = f" ×{count}" if count > 1 else ""
+        out.append(f"  {_paint('✗', 'red')} {msg}{suffix}")
+        out.append(f"      {_paint('NEXT', 'yellow')} {recommendation}")
+    return out
+
+
+def _render_action_card(
+    root: Path,
+    action: dict[str, Any],
+    index: int,
+    total: int,
+    links: bool,
+) -> str:
+    node: LiveNode = action["node"]
+    fn: FunctionInfo = action["function"]
+    status = str(action.get("status") or "NEXT").upper()
+    actor = str(action.get("actor_name") or "Unknown")
+    status_word = _step_status_word(action)
+    label = f"{node.artifact_contract or node.name}.{fn.name}"
+    if links and fn.source and fn.line:
+        label = _source_link(root, fn.source, fn.line, label)
+
+    lines = [
+        f"{_section(f'STEP {index + 1:02d} / {total:02d}', 'cyan')}  "
+        f"{_status_icon(status)} {_paint(status_word, 'green' if status_word in {'DONE','READY'} else 'red' if status_word in {'BLOCKED','FAILED'} else 'yellow')}",
+        f"  {_paint(action.get('phase', 'STEP'), 'yellow')}  {_paint(actor, 'magenta')} → {label}",
+        f"  WHAT   {action.get('what') or _action_what(fn, node)}",
+        f"  WHY    {action.get('why') or _action_why(fn, node)}",
+    ]
+    result = action.get("result") or {}
+    if result.get("ok"):
+        lines.append(f"  RESULT {_status_icon('PASS')} Chain accepted the simulation.")
+    elif result:
+        friendly, recommendation = _friendly_error(
+            result.get("decoded_error"),
+            result.get("raw", ""),
+        )
+        lines.append(f"  RESULT {_status_icon('BLOCKED')} {friendly}")
+        lines.append(f"  NEXT   {_paint(recommendation, 'yellow')}")
+        for item in action.get("diagnosis", [])[:2]:
+            lines.append(f"         evidence: {item}")
+    return "\n".join(lines)
+
+
 def _render_story(
     root: Path,
     nodes: list[LiveNode],
@@ -2616,135 +2804,102 @@ def _render_story(
     links: bool = True,
     meta: dict[str, Any] | None = None,
 ) -> str:
-    """Render the walkthrough as a compact human-facing protocol story."""
+    """Render the audit story as a compact, layered human-readable console view."""
     meta = meta if isinstance(meta, dict) else {}
-    lines: list[str] = []
-    live_nodes = [n for n in nodes if n.code_size > 0]
-    target = meta.get("target")
-    target_name = _target_label({}, target) if target else "Not resolved"
-    if target:
-        for n in nodes:
-            if n.address.lower() == str(target).lower():
-                target_name = n.artifact_contract or n.name
-                break
+    live_nodes = [node for node in nodes if node.code_size > 0]
+    target = str(meta.get("target") or "")
+    target_node = next(
+        (node for node in live_nodes if node.address.lower() == target.lower()),
+        None,
+    )
+    target_name = (
+        target_node.artifact_contract or target_node.name
+        if target_node else "Not resolved"
+    )
 
-    lines.append("╭────────────────────────────────────────────────────────────╮")
-    lines.append("│ LOWKEY  /  SYSTEM WALKTHROUGH                              │")
-    lines.append("╰────────────────────────────────────────────────────────────╯")
-    lines.append(f"  Environment  Local RPC • {_short_address(str(target)) if target else 'no target'}")
-    lines.append(f"  System       {len(live_nodes)} live contract(s) • {len(actors)} actor(s)")
-    lines.append(f"  Focus        {target_name}")
+    lines: list[str] = []
+    lines.append(_paint("╭────────────────────────────────────────────────────────────╮", "cyan"))
+    lines.append(_paint("│ LOWKEY  /  PROTOCOL WALKTHROUGH                            │", "bold"))
+    lines.append(_paint("╰────────────────────────────────────────────────────────────╯", "cyan"))
+    lines.append(
+        f"  Environment  Local RPC • {len(live_nodes)} live contract(s) • {len(_canonical_actor_names(actors))} actor(s)"
+    )
+    lines.append(f"  Focus        {target_name} • {_short_address(target) if target else 'no target'}")
     source = str(meta.get("target_source") or "")
-    if "current broadcast" in source:
-        lines.append("  Identity     ✓ matched to the current local deployment")
-    elif "audit evidence" in source and "no live" not in source:
-        lines.append("  Identity     • taken from persisted audit evidence")
+    if "mismatch" in source:
+        lines.append(f"  Identity     {_paint('✗ mismatch / stale evidence detected', 'red')}")
+    elif "exact" in source:
+        lines.append(f"  Identity     {_paint('✓ bytecode matches local artifact', 'green')}")
+    elif "current broadcast" in source:
+        lines.append(f"  Identity     {_paint('✓ current local deployment', 'green')}")
+    else:
+        lines.append(f"  Identity     {_paint('• not fully proven', 'yellow')}")
 
     if meta.get("auto_bootstrap"):
         boot = meta["auto_bootstrap"]
         if boot.get("status") == "success":
-            lines.append(f"  Bootstrap    ✓ Local setup loaded ({boot.get('reason', 'completed')})")
+            lines.append(f"  Bootstrap    {_paint('✓ local setup ready', 'green')} ({boot.get('reason', 'completed')})")
         else:
-            lines.append(f"  Bootstrap    • {boot.get('reason', 'not needed')}")
+            lines.append(f"  Bootstrap    {_paint('! setup not completed', 'yellow')} ({boot.get('reason', 'not needed')})")
 
-    lines.append("")
-    lines.append("SYSTEM IN PLAIN ENGLISH")
     if actors:
-        actor_bits = [name for name in ("Alice", "Bob", "Attacker") if actors.get(name)]
-        if actor_bits:
-            lines.append("  " + " / ".join(actor_bits) + " are the people Lowkey can use as test actors.")
-
-    role_nodes: dict[str, LiveNode] = {}
-    for n in live_nodes:
-        low = (n.artifact_contract or n.name).lower()
-        for key, tokens in {
-            "factory": ("factory",),
-            "pool": ("pool",),
-            "agreement": ("agreement",),
-            "token": ("token", "erc20"),
-            "registry": ("registry", "safeharbor"),
-            "moderator": ("moderator",),
-        }.items():
-            if key not in role_nodes and any(token in low for token in tokens):
-                role_nodes[key] = n
-
-    if role_nodes:
-        if role_nodes.get("factory"):
-            n = role_nodes["factory"]
-            lines.append(f"  {n.artifact_contract or n.name}  → {_contract_purpose(n.artifact_contract or n.name, functions_by_contract.get(n.artifact_contract or n.name))}")
-            if role_nodes.get("agreement"):
-                a = role_nodes["agreement"]
-                lines.append(f"     ├─ checks → {a.artifact_contract or a.name}  (agreement/permissions)")
-            if role_nodes.get("token"):
-                t = role_nodes["token"]
-                lines.append(f"     ├─ accepts → {t.artifact_contract or t.name}  (stake asset)")
-            if role_nodes.get("pool"):
-                p = role_nodes["pool"]
-                lines.append(f"     └─ creates/initializes → {p.artifact_contract or p.name}")
-        if role_nodes.get("pool"):
-            p = role_nodes["pool"]
-            lines.append(f"  {p.artifact_contract or p.name}  → {_contract_purpose(p.artifact_contract or p.name, functions_by_contract.get(p.artifact_contract or p.name))}")
-            if role_nodes.get("registry"):
-                r = role_nodes["registry"]
-                lines.append(f"     └─ consults → {r.artifact_contract or r.name}  (external validity/state)")
-    else:
-        lines.append("  Lowkey found contracts, but could not confidently assign their protocol roles yet.")
+        names = _canonical_actor_names(actors)
+        if names:
+            lines.append(f"  Actors       {_paint(' / '.join(names), 'magenta')}")
 
     lines.append("")
-    lines.append("WALKTHROUGH PHASES")
-    lines.append("  CREATE       build the protocol instance and its starting configuration")
-    lines.append("  PARTICIPATE  users add stake/value and enter the protocol state")
-    lines.append("  OUTCOME      the system records or reacts to an outcome")
-    lines.append("  SETTLE       the protocol releases, claims or sweeps value")
-    lines.append("  ADMIN        deployment/configuration work; normally kept out of the user journey")
-
-    lines.append("")
-    lines.append("SYSTEM CONNECTION WEB")
+    lines.append(_section("SYSTEM CONNECTION WEB", "cyan"))
     lines.extend(_render_connection_web(nodes, _system_edges(nodes, functions_by_contract, contracts), actions))
 
-    lines.append("")
-    lines.append("WHAT LOWKEY IS DOING")
-    if not actions:
-        lines.append("  No safe next action was found from the current state.")
-    else:
-        upto = len(actions) if current is None else min(len(actions), current + 1)
-        for index, action in enumerate(actions[:upto]):
-            fn: FunctionInfo = action["function"]
-            node: LiveNode = action["node"]
-            status = _step_status_word(action)
-            actor = str(action.get("actor_name") or "Unknown")
-            mark = "✓" if status == "DONE" else "!" if status in {"BLOCKED", "FAILED"} else "→"
+    if target_node:
+        cname = target_node.artifact_contract or target_node.name
+        contract = contracts.get(cname)
+        functions = functions_by_contract.get(cname, [])
+        if contract:
             lines.append("")
-            lines.append(f"  {mark} {index + 1:02d}  {action.get('phase', 'STEP')} / {status}")
-            label = f"{node.artifact_contract or node.name}.{fn.name}"
-            if links and fn.source and fn.line:
-                label = _source_link(root, fn.source, fn.line, label)
-            lines.append(f"      {actor} → {label}")
-            lines.append(f"      WHAT   {action.get('what') or _action_what(fn, node)}")
-            lines.append(f"      WHY    {action.get('why') or _action_why(fn, node)}")
+            lines.append(_paint(f"FOCUS CONTRACT / {cname}", "bold"))
+            lines.append(f"  {_contract_purpose(cname, functions)}")
+            lines.append("")
+            lines.extend(_render_contract_surface(contract, functions))
 
-            result = action.get("result") or {}
-            if result.get("ok"):
-                lines.append("      RESULT ✓ The chain accepts this action in simulation.")
-            else:
-                friendly, recommendation = _friendly_error(result.get("decoded_error"), result.get("raw", ""))
-                lines.append(f"      RESULT ! {friendly}")
-                lines.append(f"      NEXT   {recommendation}")
-                for item in action.get("diagnosis", [])[:2]:
-                    lines.append(f"             evidence: {item}")
-
-            if current is None and index >= 5 and len(actions) > 6:
-                lines.append(f"      … {len(actions) - index - 1} more candidate step(s) hidden")
-                break
+    if actions:
+        diagnosis = _render_state_diagnosis(actions)
+        if diagnosis:
+            lines.append("")
+            lines.extend(diagnosis)
+        lines.append("")
+        lines.append(_section("CURRENT WALKTHROUGH STEP", "cyan"))
+        if current is not None and 0 <= current < len(actions):
+            lines.append(_render_action_card(root, actions[current], current, len(actions), links))
+            if current + 1 < len(actions):
+                nxt = actions[current + 1]
+                lines.append("")
+                lines.append(
+                    f"  { _paint('NEXT', 'yellow') }  "
+                    f"{current + 2:02d}/{len(actions):02d}  "
+                    f"{nxt.get('phase', 'STEP')}  →  "
+                    f"{nxt['node'].artifact_contract or nxt['node'].name}.{nxt['function'].name}"
+                )
+        else:
+            lines.append(f"  Walkthrough examined {len(actions)} candidate(s).")
+            done = sum(_step_status_word(a) == "DONE" for a in actions)
+            blocked = sum(_step_status_word(a) == "BLOCKED" for a in actions)
+            failed = sum(_step_status_word(a) == "FAILED" for a in actions)
+            lines.append(f"  {_paint('✓', 'green')} passed/ready: {done}")
+            lines.append(f"  {_paint('✗', 'red')} blocked: {blocked}")
+            lines.append(f"  {_paint('!', 'yellow')} send failures: {failed}")
+    else:
+        lines.append("")
+        lines.append(_section("CURRENT WALKTHROUGH STEP", "cyan"))
+        lines.append("  No coherent state-changing action was found from the current state.")
 
     lines.append("")
-    lines.append("LEGEND")
-    lines.append("  WHAT  = what the contract is being asked to do")
-    lines.append("  WHY   = why this action belongs in the protocol story")
-    lines.append("  RESULT = what the live chain actually said")
-    lines.append("  NEXT  = the practical thing to inspect/fix before retrying")
-    lines.append("")
-    lines.append("TIP  Run without --bootstrap for this clean view; use --bootstrap only when you need raw evidence.")
+    lines.append(_paint("BLUE", "blue") + " storage   " +
+                  _paint("CYAN", "cyan") + " relationship   " +
+                  _paint("GREEN", "green") + " success   " +
+                  _paint("RED", "red") + " blocked   " +
+                  _paint("YELLOW", "yellow") + " warning/next   " +
+                  _paint("MAGENTA", "magenta") + " actor")
     return "\n".join(lines)
 
 
