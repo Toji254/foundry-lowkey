@@ -442,33 +442,34 @@ def _action_why(fn: FunctionInfo, node: LiveNode) -> str:
 
 def _friendly_error(decoded: str | None, raw: str) -> tuple[str, str]:
     text = str(decoded or raw or "").strip()
-    low = text.lower()
-    if "staketokennotalowed" in low:
+    normalized = re.sub(r"[^a-z0-9]", "", text.lower())
+
+    if normalized.startswith("staketokennotalowed"):
         return (
             "The factory rejected the token because it is not currently approved for staking.",
             "Use the legitimate factory setup/owner flow to approve the token, then retry pool creation.",
         )
-    if "stakingclosed" in low:
+    if normalized.startswith("stakingclosed"):
         return (
             "The pool is not accepting new stakes in its current state.",
             "Check the pool lifecycle and its setup/expiry state before treating staking as the next step.",
         )
-    if "invalidinitialization" in low:
+    if normalized.startswith("invalidinitialization"):
         return (
             "The contract says its one-time initialization has already been used.",
             "Treat this as deployment/setup state, not as the normal user flow; inspect the existing initialized values.",
         )
-    if "outcomenotset" in low:
+    if normalized.startswith("outcomenotset"):
         return (
             "There is no outcome recorded yet, so this action has nothing to settle against.",
             "Find the outcome/flagging step first and then re-check this settlement path.",
         )
-    if "outcomenoteligibleforsweep" in low:
+    if normalized.startswith("outcomenoteligibleforsweep"):
         return (
             "The current outcome/state does not make these funds eligible for sweeping.",
             "Inspect the conditions that make an outcome sweepable instead of forcing the call.",
         )
-    if text and ("execution reverted" in low or low.startswith("error:")):
+    if normalized.startswith("executionreverted") or normalized.startswith("error"):
         return (
             "The chain rejected the call, but did not provide a useful decoded reason.",
             "First verify the target contract identity and current state; then inspect the source check that guards this function.",
