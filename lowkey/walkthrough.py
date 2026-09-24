@@ -979,14 +979,10 @@ def _sol_literal(value: Any) -> str:
 
 
 def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: str | None, auto: bool) -> tuple[str | None, str | None]:
-    # Reuse the existing project-scoped target resolver and local lab bootstrap.
+    # Auto mode always goes through the project bootstrap resolver so stale
+    # implementation targets cannot bypass proxy/fixture selection.
     target = None
-    try:
-        target = host.active_project_target(config, root)
-    except Exception:
-        target = config.get("target")
-
-    if not target and auto:
+    if auto:
         try:
             info = host.anvil_rpc_info(config)
             if not info and not config.get("rpc"):
@@ -996,6 +992,11 @@ def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: s
             target = host._bootstrap_audit_target(config, root, allow_deploy=True)
         except Exception:
             target = None
+    else:
+        try:
+            target = host.active_project_target(config, root)
+        except Exception:
+            target = config.get("target")
     if target and contract:
         aliases = getattr(host, "target_aliases", lambda c: {})(config)
         selected = aliases.get(contract)
