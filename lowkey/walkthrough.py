@@ -2106,6 +2106,34 @@ def _render_interaction_graph_full(
     marker = "INFERRED" if step.inferred else "LAB CONTROL"
     lines += ["  │", f"  │   WHY THIS STEP: {step.reason} [{marker}]", "  ╰" + "─" * 86 + "╯"]
     return "\n".join(lines)
+def _story_timeline_line(
+    root: Path,
+    step: Step,
+    actors: list[Actor],
+    model: ContractModel | None,
+    runtime: list[RuntimeContract] | None = None,
+    enabled: bool = False,
+) -> str:
+    function = str(step.function or "").split("(", 1)[0]
+    args = ", ".join(_friendly_arg(x, actors, runtime) for x in step.args) if step.args else ""
+    raw_call = f"{function}({args})" if args else f"{function}()"
+    target = (
+        _source_target(root, model.source, model.function_locations.get(function))
+        if model and model.function_locations.get(function)
+        else None
+    )
+    call = _osc8(raw_call, target) if target else raw_call
+    marker = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
+    color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
+    summary = _human_action_summary(step, actors)
+    return (
+        f"  {_paint(marker, color, enabled)}  "
+        f"{step.index:02d}  {ACTOR} {step.actor} {ARROW} "
+        f"{step.contract}.{call}"
+        f"  {DIM if enabled else ''}{summary}{RESET if enabled else ''}"
+    )
+
+
 def _render_protocol_story_full(
     root: Path,
     steps: list[Step],
@@ -2116,6 +2144,7 @@ def _render_protocol_story_full(
     runtime: list[RuntimeContract] | None = None,
 ) -> str:
     lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
+
     if not steps and not current:
         return "\n".join(lines + [
             "  SYSTEM READY",
@@ -2124,22 +2153,30 @@ def _render_protocol_story_full(
             "  Press Enter to execute the first live interaction.",
         ])
 
-    visible = list(steps[-6:])
-    if current is not None and current not in visible:
-        visible.append(current)
+    # The terminal canvas shows recent history as a connected path instead of
+    # repeatedly printing every verbose frame. Only the live interaction expands.
+    history = list(steps)
+    if current is not None and current in history:
+        history.remove(current)
 
-    for index, step in enumerate(visible):
+    for index, step in enumerate(history[-7:]):
         step_model = next((m for m in models if m.name == step.contract), None)
-        frame = _render_interaction_graph_full(
-            root, step, actors, step_model, models, enabled, runtime
+        lines.append(_story_timeline_line(
+            root, step, actors, step_model, runtime, enabled
+        ))
+        lines.append("                 │")
+        lines.append("                 ▼")
+
+    if current is not None:
+        step_model = next((m for m in models if m.name == current.contract), None)
+        lines.append(
+            _render_interaction_graph_full(
+                root, current, actors, step_model, models, enabled, runtime
+            )
         )
-        if current is step:
-            frame += "\n  ◀ NOW  •  LIVE\n  ◀ LIVE"
-        lines.append(frame)
-        if index != len(visible) - 1:
-            lines.append("                 │")
-            lines.append("                 ▼")
-            lines.append("             next live step")
+        lines.append("                 │")
+        lines.append("                 ▼")
+        lines.append("             next live interaction")
 
     return "\n".join(lines)
 
@@ -2171,6 +2208,7 @@ def _render_protocol_story(
     # Rich API:   (root, steps, current, actors, models, enabled)
     if args and isinstance(args[0], (str, Path)):
         root, steps, current, actors, models, enabled = args[:6]
+        runtime = kwargs.get("runtime")
     else:
         steps, current, actors = args[:3]
         enabled = kwargs.get("enabled", args[3] if len(args) > 3 else False)
@@ -6030,7 +6068,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         if sys.stdout.isatty():
             # Fixed terminal canvas: each live observation replaces the previous
             # frame instead of scrolling the workflow downward.
-            sys.stdout.write("\033[2J\033[H\033[3J")
+            sys.stdout.write("\033[?25l\033[2J\033[H\033[3J")
             sys.stdout.flush()
         print(_render_board(
             root, model, models, runtime, actors, steps, current, storage or [],
@@ -6259,5 +6297,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     print("  evidence : .audit/walkthrough/latest.json")
     print(f"  replay   : {replay.relative_to(root)}")
     print(f"  {_slither_status(root)}")
+    if sys.stdout.isatty():
+        sys.stdout.write("\033[?25h\033[0m")
+        sys.stdout.flush()
     return 0
 
