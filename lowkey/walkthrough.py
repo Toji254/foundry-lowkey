@@ -4264,9 +4264,17 @@ def _synthesize_generic_protocol_fixture(
     config["lab_system"] = {
         **{key: value for key, value in system.items() if is_address(value)},
         "root": target,
+        "root_model": root_model.name,
         "child": child_address,
         "child_model": child.name,
+        "child_model_address": child_address,
     }
+    for dependency in dependency_models.values():
+        dep_address = deployed.get(dependency.name.lower())
+        if is_address(dep_address):
+            dep_key = re.sub(r"[^a-z0-9]+", "_", dependency.name.lower()).strip("_")
+            config["lab_system"][dep_key] = dep_address
+            config["lab_system"][dep_key + "_model"] = dependency.name
     if any(
         str(sig).split("(", 1)[0].lower().startswith(
             prefix
