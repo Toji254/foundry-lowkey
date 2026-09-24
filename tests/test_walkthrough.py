@@ -89,6 +89,41 @@ class WalkthroughTests(unittest.TestCase):
                 )
             )
 
+    def test_scope_accounts_falls_back_to_live_account_membership(self):
+        class Stub:
+            def __init__(self):
+                self.calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            agreement = "0x" + "1" * 40
+            alice = "0x" + "a" * 40
+            bob = "0x" + "b" * 40
+            funcs = [
+                walk.FunctionInfo(
+                    contract="Agreement",
+                    name="isContractInScope",
+                    inputs=[{"type": "address", "name": "contractAddress"}],
+                    outputs=[{"type": "bool", "name": ""}],
+                    mutability="view",
+                    signature="isContractInScope(address)",
+                )
+            ]
+
+            responses = {
+                alice.lower(): "true",
+                bob.lower(): "false",
+            }
+
+            def fake_query(_root, _rpc, _address, _sig, args, _caller=None):
+                return 0, responses[args[0].lower()], ""
+
+            with patch.object(walk, "_eth_accounts", return_value=[alice, bob]):
+                with patch.object(walk, "_query_by_signature", side_effect=fake_query):
+                    with patch.object(walk, "_code_size", return_value=100):
+                        result = walk._scope_accounts(root, "http://127.0.0.1:8545", agreement, funcs)
+
+            self.assertEqual(result, [alice])
+
     def test_factory_does_not_synthesize_actors_as_create_pool_contract_roles(self):
         node = walk.LiveNode(
             address="0x" + "1" * 40,
