@@ -576,8 +576,10 @@ def _arg_for(
             return bob
         return alice
     if ptype.startswith("uint") or ptype.startswith("int"):
-        if any(x in name for x in ("deadline", "expiry", "expires")):
+        if any(x in name for x in ("expiry", "expires")):
             return now + 31 * 24 * 60 * 60
+        if "deadline" in name:
+            return now + 3600
         if any(x in name for x in ("amount", "stake", "value", "price", "limit")):
             return 10**18
         if any(x in name for x in ("id", "index", "nonce")):
@@ -1292,7 +1294,7 @@ def _render_interaction_graph_full(
         _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
         f"  │   { _human_action_summary(step, actors) }",
-        f"  │   [{actor}] ── CALL {contract}.{linked_function}({args}) ──▶ [{contract}]",
+        f"  │   [{actor}] ── CALL {linked_function}({args}) ──▶ [{contract}]",
         "  │                              │",
     ]
 
@@ -1387,7 +1389,10 @@ def _render_protocol_story_full(
         last = index == len(visible) - 1
         if current is step or last:
             model = next((m for m in models if m.name == step.contract), None)
-            lines.append(_render_interaction_graph_full(root, step, actors, model, models, enabled))
+            frame = _render_interaction_graph_full(root, step, actors, model, models, enabled)
+            if current is step:
+                frame += "\n  ◀ NOW"
+            lines.append(frame)
         else:
             icon = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
             status = "done" if step.status == "success" else "blocked" if step.status in {"blocked", "reverted"} else "checked"
@@ -1395,7 +1400,7 @@ def _render_protocol_story_full(
             fn = str(step.function or "").split("(", 1)[0]
             step_model = next((m for m in models if m.name == step.contract), None)
             linked = _function_link(root, step_model, fn)
-            lines.append(f"  {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{linked}({args}) • {status}")
+            lines.append(f"  STEP {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{linked}({args}) • {status}")
             lines.append("       │")
             lines.append("       ▼")
     return "\n".join(lines)
