@@ -2273,7 +2273,7 @@ def ensure_project_anvil(config, root):
     return None
 
 def run_clone(config, args):
-    """Clone with the cache-aware engine, then perform full Lowkey onboarding."""
+    """Clone a repository, then onboard it only when it is a Foundry project."""
     try:
         from clone_tools import (
             parse_clone_args,
@@ -2291,21 +2291,45 @@ def run_clone(config, args):
     except (ValueError, TypeError) as exc:
         return fail(str(exc))
 
-    if destination.exists():
-        # clone_tools safely resumes an existing matching repository; let it own
-        # the clone semantics rather than rejecting a recoverable partial checkout.
-        pass
-
     code = clone_project(args)
     if code != 0:
         return code
-    if not (destination / "foundry.toml").is_file():
-        return fail(f"Error: {destination} is not a Foundry project (foundry.toml missing).")
+
+    root = str(destination)
+    foundry_toml = destination / "foundry.toml"
+
+    # A Git repository is not necessarily a Foundry project. Contest
+    # repositories can contain non-Foundry roots or nested Foundry projects.
+    if not foundry_toml.is_file():
+        nested: list[Path] = []
+        for current, dirs, files in os.walk(destination):
+            dirs[:] = [
+                name for name in dirs
+                if name not in {".git", ".audit", ".lowkey"}
+            ]
+            if "foundry.toml" in files:
+                nested.append(Path(current) / "foundry.toml")
+            if len(nested) >= 12:
+                break
+
+        print()
+        print("LOWKEY CLONE COMPLETE")
+        print("=====================")
+        print(f"Project : {root}")
+        print("Type    : Git repository (root is not Foundry)")
+        if nested:
+            print("Nested Foundry projects:")
+            for item in nested:
+                print(f"  - {item.parent}")
+            print("Next    : cd into the desired Foundry project and run lk audit")
+        else:
+            print("Foundry : not detected")
+            print("Next    : inspect the repository contents manually")
+        return 0
 
     previous_cwd = Path.cwd()
     try:
         os.chdir(destination)
-        root = str(destination)
 
         print("\n[1/3] Building project...")
         build = run_foundry(["build"], capture=True)
@@ -2343,7 +2367,6 @@ def run_clone(config, args):
         return 0 if audit_code == 0 and lab_code == 0 else 1
     finally:
         os.chdir(previous_cwd)
-
 
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
