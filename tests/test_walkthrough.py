@@ -339,6 +339,30 @@ class WalkthroughTests(unittest.TestCase):
             "[0x" + "1" * 40 + ",0x" + "2" * 40 + "]",
         )
 
+    def test_confidence_pool_recipe_uses_correct_registry_ordinals(self):
+        config = {
+            "target": "0x" + "1" * 40,
+            "_walkthrough_recipe": "confidence-pool",
+            "lab_system": {
+                "pool": "0x" + "1" * 40,
+                "stake_token": "0x" + "2" * 40,
+                "attack_registry": "0x" + "3" * 40,
+                "moderator": "0x" + "4" * 40,
+            },
+        }
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "a" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "b" * 40, 1),
+        ]
+        recipe = walkthrough._confidence_pool_recipe(config, actors)
+        state_updates = {
+            s.args[0]: s.reason
+            for s in recipe
+            if s.function == "setAgreementState(uint8)"
+        }
+        self.assertEqual(state_updates[3], "LAB CONTROL: agreement enters UNDER_ATTACK")
+        self.assertEqual(state_updates[5], "LAB CONTROL: agreement reaches PRODUCTION")
+
     def test_failure_explainer_is_plain_english(self):
         step = walkthrough.Step(1, "Alice", "Pool", "0x" + "3"*40, "stake(uint256)", [1], status="blocked")
         self.assertIn("staking deadline",
