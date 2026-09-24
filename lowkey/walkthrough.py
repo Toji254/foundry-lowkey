@@ -4546,9 +4546,11 @@ def _synthesize_local_protocol_fixture(
     config["_walkthrough_recipe"] = "confidence-pool" if _looks_like_confidence_pool_system(root_model, child) else "generic-system"
     config["lab_system"] = {
         **{key: value for key, value in system.items() if is_address(value)},
-        "pool": None,
-        "factory_model": root_model.name,
+        "root": root_target,
+        "root_model": root_model.name,
+        "child": None,
         "child_model": child.name,
+        "factory_model": root_model.name,
     }
     if hasattr(host, "set_lab_target"):
         artifact_path = str(root / root_model.artifact)
@@ -4660,7 +4662,7 @@ def _target_from_host(
 
             # A system-aware walkthrough begins at the protocol's factory/root.
             if not contract and is_address(factory) and (not rpc or _runtime_code(rpc, factory) not in {"", "0x"}):
-                return factory, "ConfidencePoolFactory"
+                return factory, system.get("root_model") or config.get("target_contract")
 
             if not contract and is_address(pool) and (not rpc or _runtime_code(rpc, pool) not in {"", "0x"}):
                 return pool, "ConfidencePool"
@@ -5238,7 +5240,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     archived = _quarantine_generated_replays(root)
     if archived:
         print(f"  refreshed {archived} previous generated walkthrough replay(s)")
-    code,out,err=_cmd(["forge","build"],cwd=root,timeout=120)
+    code,out,err=_forge_build_with_info(root)
     if code!=0:
         print(out+err,file=sys.stderr); return code or 1
 
