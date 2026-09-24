@@ -1127,15 +1127,93 @@ def _run_vyper_build(root: str) -> tuple[int, str, str, list[dict[str, Any]]]:
     return overall, "\n".join(all_stdout), "\n".join(all_stderr), records
 
 
-def _run_project_vyper_tests(
-    root: str,
-    project: dict[str, Any] | None = None,
-) -> tuple[int, str, str]:
+def _project_solc_env(root: str, project: dict[str, Any] | None = None) -> dict[str, str]:
     env: dict[str, str] = {}
     compilers = (project or {}).get("solidity_compilers", [])
     if len(compilers) == 1:
         env["SOLC_VERSION"] = str(compilers[0])
-    return run_command(["uv", "run", "pytest", "."], root, 900, env=env)
+
+    toolchain_bin = Path(root).resolve() / ".audit" / "toolchain" / "bin"
+    solc_binary = toolchain_bin / "solc"
+    if solc_binary.exists():
+        current_path = os.environ.get("PATH", "")
+        env["PATH"] = (
+            f"{toolchain_bin}{os.pathsep}{current_path}"
+            if current_path
+            else str(toolchain_bin)
+        )
+    return env
+
+
+def _run_project_vyper_tests(
+    root: str,
+    project: dict[str, Any] | None = None,
+) -> tuple[int, str, str]:
+    return run_command(
+        ["uv", "run", "pytest", "."],
+        root,
+        900,
+        env=_project_solc_env(root, project),
+    )
+
+
+def _git_worktree_has_files(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    try:
+        return any(item.name != ".git" for item in path.iterdir())
+    except OSError:
+        return False
+
+
+def _git_submodule_is_tracked(root: str, relative: str) -> bool:
+    code, stdout, _ = run_command(
+        ["git", "ls-tree", "HEAD", "--", relative],
+        root,
+        60,
+    )
+    if code != 0:
+        return False
+    return any(
+        line.split(None, 1)[0] == "160000"
+        for line in stdout.splitlines()
+        if line.strip() and line.split(None, 1)
+    )
+
+
+def _clone_declared_git_dependency(
+    root: str,
+    relative: str,
+    url: str,
+) -> tuple[int, str, str]:
+    root_path = Path(root).resolve()
+    target = root_path / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if target.exists() and _git_worktree_has_files(target):
+        code, _, _ = run_command(
+            ["git", "-C", str(target), "rev-parse", "--is-inside-work-tree"],
+            root,
+            60,
+        )
+        if code == 0:
+            return 0, "", "already initialized"
+        return (
+            1,
+            "",
+            f"declared dependency path is non-empty but is not a Git worktree: {relative}",
+        )
+
+    command = [
+        "git",
+        "clone",
+        "--depth",
+        "1",
+        "--recurse-submodules",
+        url,
+        str(target),
+    ]
+    return run_command(command, root, 900)
 
 
 def _project_prepare(root: str, project: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1147,27 +1225,69 @@ def _project_prepare(root: str, project: dict[str, Any]) -> list[dict[str, Any]]
         need_submodules = any(not item.get("initialized") for item in submodules)
         if need_submodules:
             print("\n=== LOWKEY EVIDENCE: GIT SUBMODULES ===")
-            command = ["git", "submodule", "update", "--init", "--recursive"]
+            command = ["git", "submodule", "update", "--init", "--recursive", "--depth", "1"]
             code, stdout, stderr = run_command(command, root, 900)
             _write_step_evidence(
                 root, "git_submodules", command, code, stdout, stderr,
-                reason="Initialize repository-declared submodules before analysis.",
+                reason="Initialize repository-declared Git submodules before analysis.",
             )
             print(stdout.rstrip())
             if stderr:
                 print(stderr.rstrip())
             results.append({"label": "git_submodules", "code": code})
-        else:
-            record_evidence(
-                "git_submodules",
-                {
-                    "status": "already_initialized",
-                    "submodules": submodules,
-                },
-                root,
-            )
 
-    if (root_path / "package.json").exists() and (root_path / "package-lock.json").exists() and command_path("npm"):
+        # Some repositories ship .gitmodules as a dependency manifest but do
+        # not commit the corresponding gitlink entries. Git then has nothing
+        # to materialize, so clone the declared dependency directly at its
+        # documented path.
+        refreshed = detect_project(root) if detect_project else project
+        remaining = [
+            item for item in refreshed.get("submodules", [])
+            if not item.get("initialized")
+        ]
+        for item in remaining:
+            relative = str(item.get("path") or "")
+            url = str(item.get("url") or "")
+            if not relative or not url:
+                continue
+            if _git_submodule_is_tracked(root, relative):
+                continue
+
+            print(f"\n=== LOWKEY EVIDENCE: DECLARED GIT DEPENDENCY ({relative}) ===")
+            code, stdout, stderr = _clone_declared_git_dependency(root, relative, url)
+            command = [
+                "git", "clone", "--depth", "1", "--recurse-submodules", url, relative
+            ]
+            _write_step_evidence(
+                root,
+                f"git_clone_{relative}",
+                command,
+                code,
+                stdout,
+                stderr,
+                reason="Materialize a .gitmodules dependency whose path is declared but not represented by a Git gitlink.",
+            )
+            print(stdout.rstrip())
+            if stderr:
+                print(stderr.rstrip())
+            results.append({
+                "label": f"git_clone:{relative}",
+                "code": code,
+                "url": url,
+                "path": relative,
+            })
+
+        project["submodules"] = (
+            detect_project(root).get("submodules", submodules)
+            if detect_project
+            else submodules
+        )
+
+    if (
+        (root_path / "package.json").exists()
+        and (root_path / "package-lock.json").exists()
+        and command_path("npm")
+    ):
         required_node_modules = root_path / "node_modules" / "solidity-rlp"
         if not required_node_modules.exists():
             print("\n=== LOWKEY EVIDENCE: NPM INSTALL ===")
@@ -1175,7 +1295,7 @@ def _project_prepare(root: str, project: dict[str, Any]) -> list[dict[str, Any]]
             code, stdout, stderr = run_command(command, root, 900)
             _write_step_evidence(
                 root, "npm_ci", command, code, stdout, stderr,
-                reason="Install package-lock-locked Solidity/JS dependencies required by the project tests and analyzers.",
+                reason="Install package-lock-locked Solidity/JS dependencies required by project tests and analyzers.",
             )
             print(stdout.rstrip())
             if stderr:
@@ -1192,8 +1312,57 @@ def _project_prepare(root: str, project: dict[str, Any]) -> list[dict[str, Any]]
                 root,
             )
 
-    project["submodules"] = detect_project(root).get("submodules", submodules) if detect_project else submodules
+    project["submodules"] = (
+        detect_project(root).get("submodules", project.get("submodules", []))
+        if detect_project
+        else project.get("submodules", [])
+    )
     return results
+
+
+def _solc_select_artifact(version: str) -> Path | None:
+    candidates = [
+        Path.home() / ".solc-select" / "artifacts" / f"solc-{version}" / f"solc-{version}",
+        Path.home() / ".solc-select" / "artifacts" / f"solc-{version}" / "solc",
+    ]
+    for path in candidates:
+        if path.is_file() and os.access(path, os.X_OK):
+            return path.resolve()
+    return None
+
+
+def _py_solc_x_executable(root: str, version: str) -> tuple[int, str, str, Path | None]:
+    script = (
+        "import solcx; "
+        f"solcx.install_solc({version!r}); "
+        f"print(solcx.get_executable({version!r}))"
+    )
+    code, stdout, stderr = run_command(
+        ["uv", "run", "python", "-c", script],
+        root,
+        1200,
+    )
+    executable: Path | None = None
+    for line in reversed(stdout.splitlines()):
+        candidate = Path(line.strip())
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            executable = candidate.resolve()
+            break
+    return code, stdout, stderr, executable
+
+
+def _pin_project_solc_binary(root: str, binary: Path) -> Path:
+    toolchain_bin = Path(root).resolve() / ".audit" / "toolchain" / "bin"
+    toolchain_bin.mkdir(parents=True, exist_ok=True)
+    target = toolchain_bin / "solc"
+    try:
+        if target.is_symlink() or target.exists():
+            target.unlink()
+        target.symlink_to(binary)
+    except OSError:
+        target.write_bytes(binary.read_bytes())
+        target.chmod(0o755)
+    return target
 
 
 def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] | None:
@@ -1202,31 +1371,95 @@ def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] |
         return None
 
     version = str(compilers[0])
-    command: list[str]
-    if command_path("solc-select"):
-        command = ["solc-select", "use", version]
-    elif command_path("uv"):
-        command = ["uv", "run", "solc-select", "use", version]
-    else:
+    attempts: list[dict[str, Any]] = []
+    selected_binary = _solc_select_artifact(version)
+
+    if selected_binary is not None:
+        attempts.append({
+            "method": "existing-solc-select-artifact",
+            "command": [],
+            "exit_code": 0,
+            "binary": str(selected_binary),
+        })
+
+    if selected_binary is None:
+        if command_path("solc-select"):
+            command = ["solc-select", "use", version, "--always-install"]
+        elif command_path("uv"):
+            command = ["uv", "run", "solc-select", "use", version, "--always-install"]
+        else:
+            command = []
+
+        if command:
+            print(f"\n=== LOWKEY EVIDENCE: SOLC SELECT ({version}) ===")
+            code, stdout, stderr = run_command(command, root, 900)
+            attempts.append({
+                "method": "solc-select",
+                "command": command,
+                "exit_code": code,
+                "stdout": stdout[-50000:],
+                "stderr": stderr[-20000:],
+            })
+            print(stdout.rstrip())
+            if stderr:
+                print(stderr.rstrip())
+            if code == 0:
+                selected_binary = _solc_select_artifact(version)
+
+    if selected_binary is None and command_path("uv"):
+        print(f"\n=== LOWKEY EVIDENCE: SOLC PY-SOLC-X FALLBACK ({version}) ===")
+        code, stdout, stderr, binary = _py_solc_x_executable(root, version)
+        attempts.append({
+            "method": "py-solc-x",
+            "command": ["uv", "run", "python", "-c", "<install-solc>"],
+            "exit_code": code,
+            "stdout": stdout[-50000:],
+            "stderr": stderr[-20000:],
+            "binary": str(binary) if binary else None,
+        })
+        print(stdout.rstrip())
+        if stderr:
+            print(stderr.rstrip())
+        if binary is not None:
+            selected_binary = binary
+
+    if selected_binary is not None:
+        pinned = _pin_project_solc_binary(root, selected_binary)
+        payload = {
+            "available": True,
+            "status": "ready",
+            "version": version,
+            "binary": str(pinned),
+            "source_binary": str(selected_binary),
+            "attempts": attempts,
+        }
+        record_evidence("solc_select", payload, root)
+        write_json(
+            evidence_dir(root) / "solc_select_attempts.json",
+            {"version": version, "attempts": attempts},
+        )
+        print(f"Using project solc: {pinned}")
         return {
             "label": "solc_select",
-            "code": 127,
+            "code": 0,
             "version": version,
-            "reason": "Neither solc-select nor uv is available on PATH.",
+            "binary": str(pinned),
         }
 
-    print(f"\n=== LOWKEY EVIDENCE: SOLC SELECT ({version}) ===")
-    code, stdout, stderr = run_command(command, root, 900)
-    _write_step_evidence(
-        root, "solc_select", command, code, stdout, stderr,
-        reason="Select the compiler version declared by repository source/deployment evidence.",
-    )
-    print(stdout.rstrip())
-    if stderr:
-        print(stderr.rstrip())
+    payload = {
+        "available": False,
+        "status": "failed",
+        "version": version,
+        "attempts": attempts,
+        "reason": "Could not obtain the repository-declared Solidity compiler.",
+    }
+    record_evidence("solc_select", payload, root)
     return {
         "label": "solc_select",
-        "code": code,
+        "code": next(
+            (int(item.get("exit_code", 1)) for item in reversed(attempts) if item.get("exit_code") != 0),
+            1,
+        ),
         "version": version,
     }
 
