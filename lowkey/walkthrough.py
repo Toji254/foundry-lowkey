@@ -4382,13 +4382,19 @@ def _synthesize_local_protocol_fixture(
     system: dict[str, Any] = {}
 
     system["stake_token"] = deploy_model(token)
+    system["stake_token_model"] = token.name
     system["safe_harbor_registry"] = deploy_model(registry)
+    system["safe_harbor_registry_model"] = registry.name
     if attack_registry:
         system["attack_registry"] = deploy_model(attack_registry)
+        system["attack_registry_model"] = attack_registry.name
     if moderator:
         system["moderator"] = deploy_model(moderator)
+        system["moderator_model"] = moderator.name
     system["pool_implementation"] = deploy_model(child)
+    system["pool_implementation_model"] = child.name
     system["agreement"] = deploy_model(agreement, [alice.address])
+    system["agreement_model"] = agreement.name
 
     if not all(is_address(system.get(k)) for k in ("stake_token", "safe_harbor_registry", "pool_implementation", "agreement")):
         return False, "one or more core protocol fixtures failed to deploy"
@@ -4523,6 +4529,7 @@ def _synthesize_local_protocol_fixture(
             if not tx:
                 return False, f"failed to initialize {root_model.name}"
     system["factory"] = root_target
+    system["factory_model"] = root_model.name
 
     # Configure the common token allowlist gate after the root is initialized.
     allow_fn = next(
