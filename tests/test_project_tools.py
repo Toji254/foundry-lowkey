@@ -118,6 +118,56 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertTrue(edge["external"])
             self.assertTrue(edge["resolved"])
 
+    def test_dependency_graph_resolves_vyper_package_style_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "contracts/scrvusd/oracles/ScrvusdOracleV2.vy",
+                "@external\ndef price() -> uint256:\n    return 1\n",
+            )
+            self.write(
+                root,
+                "tests/scrvusd/contracts/ScrvusdOracleMock.vy",
+                "from contracts.scrvusd.oracles import ScrvusdOracleV2\n",
+            )
+
+            graph = project_tools.build_dependency_graph(root)
+
+            self.assertEqual(graph["summary"]["unresolved_imports"], 0)
+            edge = next(edge for edge in graph["edges"] if edge["from"].startswith("tests/"))
+            self.assertEqual(
+                edge["to"],
+                "contracts/scrvusd/oracles/ScrvusdOracleV2.vy",
+            )
+            self.assertTrue(edge["resolved"])
+            self.assertFalse(edge["external"])
+
+    def test_dependency_graph_resolves_common_node_modules_solidity_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "contracts/Verifier.sol",
+                'pragma solidity ^0.8.20; import "hamdiallam/Solidity-RLP@2.0.7/contracts/RLPReader.sol"; contract Verifier {}\n',
+            )
+            self.write(
+                root,
+                "node_modules/solidity-rlp/contracts/RLPReader.sol",
+                "pragma solidity ^0.8.20; library RLPReader {}\n",
+            )
+
+            graph = project_tools.build_dependency_graph(root)
+
+            edge = graph["edges"][0]
+            self.assertTrue(edge["resolved"])
+            self.assertTrue(edge["external"])
+            self.assertEqual(
+                pathlib.Path(edge["to"]).as_posix(),
+                "node_modules/solidity-rlp/contracts/RLPReader.sol",
+            )
+            self.assertEqual(graph["summary"]["unresolved_imports"], 0)
+
     def test_source_inventory_excludes_audit_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
