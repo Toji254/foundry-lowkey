@@ -305,7 +305,7 @@ def immediate_submodules(repo: Path) -> list[tuple[str, str, Path]]:
         return []
 
     by_path = {path: url for _, (path, url) in configured.items()}
-    result = run_git(["-C", str(repo), "ls-tree", "-z", "HEAD"], capture=True)
+    result = run_git(["-C", str(repo), "ls-tree", "-r", "-z", "HEAD"], capture=True)
     records: list[tuple[str, str, Path]] = []
 
     if result.returncode == 0:
