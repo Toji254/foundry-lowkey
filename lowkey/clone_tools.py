@@ -298,6 +298,66 @@ def gitmodules_entries(repo: Path) -> dict[str, tuple[str, str]]:
     return entries
 
 
+def declared_submodules(repo: Path) -> list[tuple[str, str, Path]]:
+    """Return dependencies declared by .gitmodules, including unlocked ones."""
+    configured = gitmodules_entries(repo)
+    return [(url, path, repo / path) for path, url in configured.values()]
+
+
+def gitlink_commits(repo: Path) -> dict[str, str]:
+    """Return committed gitlink revisions keyed by path."""
+    result = run_git(["-C", str(repo), "ls-tree", "-r", "-z", "HEAD"], capture=True)
+    commits: dict[str, str] = {}
+    if result.returncode != 0:
+        return commits
+    for entry in result.stdout.split("\0"):
+        if not entry:
+            continue
+        meta, sep, path = entry.partition("\t")
+        if not sep:
+            continue
+        fields = meta.split()
+        if len(fields) == 3 and fields[0] == "160000" and fields[1] == "commit":
+            if re.fullmatch(r"[0-9a-fA-F]{40}", fields[2]):
+                commits[path] = fields[2]
+    return commits
+
+
+def materialize_declared_submodule(
+    repo: Path,
+    url: str,
+    path: Path,
+    *,
+    depth: int,
+) -> int:
+    """Clone a declared dependency when its Git tree has no gitlink."""
+    if path.exists():
+        if git_repo_ready(path):
+            remote = origin_url(path)
+            if normalize_repo_url(remote) == normalize_repo_url(url):
+                print(f"[DEPS] READY (UNPINNED): {path.relative_to(repo)}")
+                return 0
+            return die(f"Dependency path belongs to a different Git repository: {path}")
+        try:
+            if any(path.iterdir()):
+                return die(f"Dependency path exists but is not a Git repository: {path}")
+        except OSError as exc:
+            return die(f"Could not inspect dependency path {path}: {exc}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    command = ["clone"]
+    if depth:
+        command += ["--depth", str(depth)]
+    command += [url, str(path)]
+    print(f"[DEPS] Materializing UNPINNED dependency: {path.relative_to(repo)}")
+    print(f"       URL: {url}")
+    result = run_git(command, capture=True)
+    if result.returncode != 0:
+        print(result.stderr or result.stdout, file=sys.stderr, end="")
+        return result.returncode
+    return 0
+
+
 def immediate_submodules(repo: Path) -> list[tuple[str, str, Path]]:
     """Return immediate submodules from committed gitlink entries."""
     configured = gitmodules_entries(repo)
@@ -426,39 +486,55 @@ def walk_submodules(
             continue
         visited.add(repo)
 
-        entries = immediate_submodules(repo)
-        if not entries:
-            if repo == root and (repo / ".gitmodules").is_file():
-                print("[DEPS] Gitlink discovery found no entries; falling back to native recursive submodule update...")
-                fallback = run_git([
-                    "-C", str(repo), "submodule", "update", "--init",
-                    "--recursive", "--jobs", str(jobs),
-                ])
-                if fallback.returncode != 0:
-                    return fallback.returncode
-                entries = immediate_submodules(repo)
-            if not entries:
-                continue
+        configured = gitmodules_entries(repo)
+        if not configured:
+            continue
 
-        total += len(entries)
-        code = update_one_level(
-            repo,
-            entries,
-            depth=depth,
-            jobs=jobs,
-            use_cache=use_cache,
-        )
-        if code != 0:
-            return code
+        gitlinks = gitlink_commits(repo)
+        pinned: list[tuple[str, str, Path]] = []
+        unlocked: list[tuple[str, str, Path]] = []
 
-        populate_level_cache(entries, use_cache=use_cache)
+        for _, (path, url) in configured.items():
+            commit = gitlinks.get(path)
+            if commit:
+                pinned.append((url, commit, repo / path))
+            else:
+                unlocked.append((url, path, repo / path))
+
+        if unlocked:
+            print("[DEPS] Dependency metadata detected")
+            print(f"       Declared dependencies : {len(configured)}")
+            print(f"       Gitlink entries       : {len(gitlinks)}")
+            print(f"       Pinned                : {len(pinned)}")
+            print(f"       Unpinned              : {len(unlocked)}")
+            if repo == root:
+                print("[DEPS] WARNING: .gitmodules declares dependencies without matching")
+                print("       Gitlinks. Exact dependency revisions cannot be reproduced.")
+
+        if pinned:
+            total += len(pinned)
+            code = update_one_level(
+                repo, pinned, depth=depth, jobs=jobs, use_cache=use_cache
+            )
+            if code != 0:
+                return code
+            populate_level_cache(pinned, use_cache=use_cache)
+
+        for url, _, path in unlocked:
+            total += 1
+            code = materialize_declared_submodule(repo, url, path, depth=depth)
+            if code != 0:
+                return code
+
         levels += 1
-
-        for _, _, path in entries:
+        for _, _, path in pinned:
+            if git_repo_ready(path):
+                queue.append(path)
+        for _, _, path in unlocked:
             if git_repo_ready(path):
                 queue.append(path)
 
-    print(f"[DEPS] Processed {total} submodule entries across {levels} levels")
+    print(f"[DEPS] Processed {total} declared dependency entries across {levels} levels")
     return 0
 
 
