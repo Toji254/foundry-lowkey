@@ -168,6 +168,24 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             )
             self.assertEqual(graph["summary"]["unresolved_imports"], 0)
 
+    def test_detect_project_reports_solidity_compiler_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "contracts/Verifier.sol",
+                "pragma solidity ^0.8.18; contract Verifier {}\n",
+            )
+            self.write(
+                root,
+                "scripts/deploy.py",
+                'compiler_args = {"solc_version": "0.8.18"}\n',
+            )
+
+            project = project_tools.detect_project(root)
+
+            self.assertEqual(project["solidity_compilers"], ["0.8.18"])
+
     def test_detect_project_reports_python_version_and_submodules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
