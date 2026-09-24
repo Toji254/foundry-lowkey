@@ -366,6 +366,28 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("STAKE BALANCE Alice: -1",
                       walkthrough._friendly_token_balance_lines(step,[actor]))
 
+    def test_auto_walkthrough_does_not_resurrect_stale_config_target(self):
+        config = {
+            "target": "0x" + "9" * 40,
+            "target_contract": "ConfidencePool",
+            "rpc": "http://127.0.0.1:8545",
+        }
+
+        class Host:
+            def anvil_rpc_info(self, _config):
+                return {"url": "http://127.0.0.1:8545", "accounts": ["0x" + "1" * 40]}
+
+            def _bind_detected_anvil(self, _info):
+                return None
+
+            def _bootstrap_audit_target(self, _config, _root, allow_deploy=True):
+                return None
+
+        target, _ = walkthrough._target_from_host(
+            Host(), config, pathlib.Path("."), None, True
+        )
+        self.assertIsNone(target)
+
     def test_live_path_renders_connected_interactions(self):
         steps = [
             walkthrough.Step(1, "Alice", "Factory", "0x" + "1" * 40,
