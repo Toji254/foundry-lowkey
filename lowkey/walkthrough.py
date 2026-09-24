@@ -810,18 +810,83 @@ def _contract_requirement_for_parameter(
     model: ContractModel | None,
     function_name: str,
     param_name: str,
+    models: list[ContractModel] | None = None,
+    _seen: set[tuple[str, str, str]] | None = None,
 ) -> str | None:
-    """Infer whether an address parameter is actually expected to be a contract."""
+    """Infer contract requirements directly or through forwarded call arguments."""
     if not model or not param_name:
         return None
+
+    seen = _seen or set()
+    marker = (model.name.lower(), str(function_name).lower(), str(param_name).lower())
+    if marker in seen:
+        return None
+    seen.add(marker)
+
+    # Direct dependency: the function casts/calls the parameter as a contract.
     for edge in model.calls:
         if str(edge.get("from") or "") != function_name:
             continue
-        if str(edge.get("via") or "").lower() != str(param_name).lower():
-            continue
         if edge.get("kind") != "cross-contract":
             continue
-        return str(edge.get("interface") or edge.get("to_contract") or "") or None
+        if str(edge.get("via") or "").lower() == str(param_name).lower():
+            return str(edge.get("interface") or edge.get("to_contract") or "") or None
+
+    catalog = list(models or [])
+    if not catalog:
+        return None
+
+    implementations = _implementation_mapping(catalog)
+    wanted = str(param_name).lower()
+
+    # Transitive dependency: e.g. Factory.createPool(agreement, token)
+    # forwards those parameters into Child.initialize(agreement, token), and
+    # Child.initialize uses them as IAgreement/IERC20. Follow the argument
+    # positions until the first concrete contract interface is found.
+    for edge in model.calls:
+        if str(edge.get("from") or "") != function_name or edge.get("kind") != "cross-contract":
+            continue
+        argument_names = edge.get("argument_names") or []
+        if not isinstance(argument_names, list):
+            continue
+
+        positions = [i for i, value in enumerate(argument_names) if str(value).lower() == wanted]
+        if not positions:
+            continue
+
+        raw_target = str(edge.get("to_contract") or edge.get("interface") or "")
+        concrete = implementations.get(raw_target, raw_target)
+        target_model = next(
+            (
+                item for item in catalog
+                if item.name.lower() == concrete.lower()
+                or item.name.lower() == raw_target.lower()
+            ),
+            None,
+        )
+        if not target_model:
+            continue
+
+        callee_name = str(edge.get("to_function") or "")
+        callee = _function_by_name(target_model, callee_name)
+        if not callee:
+            continue
+
+        inputs = callee.get("inputs") or []
+        for position in positions:
+            if position >= len(inputs):
+                continue
+            nested_name = str(inputs[position].get("name") or f"arg{position + 1}")
+            nested = _contract_requirement_for_parameter(
+                target_model,
+                callee_name,
+                nested_name,
+                catalog,
+                seen,
+            )
+            if nested:
+                return nested
+
     return None
 
 
@@ -950,7 +1015,10 @@ def _arg_for(
 
     if ptype == "address":
         requirement = _contract_requirement_for_parameter(
-            model, function_name or "", str(param.get("name") or "")
+            model,
+            function_name or "",
+            str(param.get("name") or ""),
+            _ACTIVE_MODEL_CATALOG,
         )
         live_value = _observed_address_for_parameter(param, observed, requirement)
         if live_value:
@@ -1376,6 +1444,8 @@ def _friendly_arg(value: Any, actors: list[Actor]) -> str:
 def _friendly_contract_name(step: Step) -> str:
     return str(step.contract or "Contract").replace("MockConfidencePoolModerator", "Moderator")
 
+
+_ACTIVE_MODEL_CATALOG: list[ContractModel] = []
 
 _ERROR_SELECTOR_CACHE: dict[str, str] = {}
 
@@ -3587,7 +3657,10 @@ def _random_sol_value(
 
     if typ == "address":
         requirement = _contract_requirement_for_parameter(
-            model, function_name or "", str(param.get("name") or "")
+            model,
+            function_name or "",
+            str(param.get("name") or ""),
+            _ACTIVE_MODEL_CATALOG,
         )
         normalized = _normalize_observed_keys(observed)
         observed_addresses = [value for value in normalized.values() if is_address(value)]
@@ -5853,6 +5926,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         item for item in support_models
         if item.name not in {x.name for x in models}
     ]
+    global _ACTIVE_MODEL_CATALOG
+    _ACTIVE_MODEL_CATALOG = model_catalog
     runtime=_lab_runtime(config,target,model,model_catalog)
     steps=[]
     completed=set()
