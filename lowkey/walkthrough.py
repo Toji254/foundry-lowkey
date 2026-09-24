@@ -2184,6 +2184,11 @@ def _render_story(
     lines.append(f"  Environment  Local RPC • {_short_address(str(target)) if target else 'no target'}")
     lines.append(f"  System       {len(live_nodes)} live contract(s) • {len(actors)} actor(s)")
     lines.append(f"  Focus        {target_name}")
+    source = str(meta.get("target_source") or "")
+    if "current broadcast" in source:
+        lines.append("  Identity     ✓ matched to the current local deployment")
+    elif "audit evidence" in source and "no live" not in source:
+        lines.append("  Identity     • taken from persisted audit evidence")
 
     if meta.get("auto_bootstrap"):
         boot = meta["auto_bootstrap"]
@@ -2234,6 +2239,14 @@ def _render_story(
                 lines.append(f"     └─ consults → {r.artifact_contract or r.name}  (external validity/state)")
     else:
         lines.append("  Lowkey found contracts, but could not confidently assign their protocol roles yet.")
+
+    lines.append("")
+    lines.append("WALKTHROUGH PHASES")
+    lines.append("  CREATE       build the protocol instance and its starting configuration")
+    lines.append("  PARTICIPATE  users add stake/value and enter the protocol state")
+    lines.append("  OUTCOME      the system records or reacts to an outcome")
+    lines.append("  SETTLE       the protocol releases, claims or sweeps value")
+    lines.append("  ADMIN        deployment/configuration work; normally kept out of the user journey")
 
     lines.append("")
     lines.append("CONNECTIONS")
