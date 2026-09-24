@@ -284,6 +284,27 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("not currently approved", message)
         self.assertIn("approve the token", recommendation)
 
+    def test_connection_web_groups_inbound_outbound_and_cross_links(self):
+        nodes = [
+            walk.LiveNode(address="0x" + "1" * 40, name="Factory", code_size=100, artifact_contract="Factory"),
+            walk.LiveNode(address="0x" + "2" * 40, name="Pool", code_size=100, artifact_contract="Pool"),
+            walk.LiveNode(address="0x" + "3" * 40, name="Agreement", code_size=100, artifact_contract="Agreement"),
+        ]
+        edges = [
+            {"from": "User", "to": "Factory", "kind": "external-call", "function": "createPool"},
+            {"from": "Factory", "to": "Agreement", "kind": "external-call", "function": "createPool -> owner"},
+            {"from": "Factory", "to": "Pool", "kind": "external-call", "function": "createPool -> initialize"},
+            {"from": "Pool", "to": "Agreement", "kind": "external-call", "function": "_replaceScope -> isContractInScope"},
+        ]
+        rendered = "\\n".join(walk._render_connection_web(nodes, edges, []))
+        self.assertIn("HUB  [Factory]", rendered)
+        self.assertIn("INBOUND / who feeds or authorizes", rendered)
+        self.assertIn("OUTBOUND / what this component reaches into", rendered)
+        self.assertIn("CROSS-LINKS / supporting components", rendered)
+        self.assertIn("checks ownership", rendered)
+        self.assertIn("creates / initializes", rendered)
+        self.assertIn("checks scope", rendered)
+
     def test_render_story_explains_steps_and_hides_import_noise(self):
         node = walk.LiveNode(
             address="0x" + "1" * 40,
