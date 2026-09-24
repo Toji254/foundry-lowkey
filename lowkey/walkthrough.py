@@ -566,7 +566,7 @@ def _function_semantics(model: ContractModel, source_text: str) -> dict[str, dic
     state_names.update(str(x.get("name")) for x in model.mappings if x.get("name"))
     state_names.update(str(x.get("name")) for x in model.arrays if x.get("name"))
 
-    functions = list(re.finditer(r"\bfunction\s+(\w+)\s*\([^)]*\)[^{;]*\{", source_text, re.S))
+    functions = list(re.finditer(r"\bfunction\s+(\w+)\s*\(([^)]*)\)[^{;]*\{", source_text, re.S))
     for match in functions:
         name = match.group(1)
         params_text = match.group(2) or ""
@@ -1806,6 +1806,8 @@ def _human_action_summary(step: Step, actors: list[Actor]) -> str:
         return f"{actor} changes the allowed pool scope to {_friendly_arg(args[0], actors) if args else '[]'}"
     if lower == "pokeriskwindow":
         return f"{actor} asks {contract} to check the external attack registry"
+    if step.value_wei:
+        return f"{actor} calls {contract}.{function}() and sends {_friendly_eth(step.value_wei)}"
     return f"{actor} calls {contract}.{function}()"
 
 
@@ -2132,7 +2134,7 @@ def _render_interaction_graph_full(
         if model and model.function_locations.get(function)
         else None
     )
-    call_display = _osc8(raw_call, call_target) if call_target and enabled else raw_call
+    call_display = _osc8(raw_call, call_target) if call_target else raw_call
     status = "✓ SUCCESS" if step.status == "success" else "✕ BLOCKED" if step.status in {"blocked", "reverted"} else "● CHECKING"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
@@ -2259,13 +2261,13 @@ def _story_timeline_line(
         if model and model.function_locations.get(function)
         else None
     )
-    call = _osc8(raw_call, target) if target and enabled else raw_call
+    call = _osc8(raw_call, target) if target else raw_call
     marker = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
     summary = _human_action_summary(step, actors)
     failure = ""
     if step.status in {"blocked", "reverted"}:
-        failure = f"  WHY IT FAILED: {_short_error(step.error or step.error_reason)}"
+        failure = f"  WHY IT FAILED: {step.error_reason or _short_error(step.error)}"
     return (
         f"  {_paint(marker, color, enabled)}  FUNCTION {step.index:02d}  "
         f"{ACTOR} {step.actor} {ARROW} "
@@ -2317,6 +2319,7 @@ def _render_protocol_story_full(
         )
         lines.append("                 │")
         lines.append("                 ▼")
+        lines.append("  ◀ LIVE")
         lines.append("             next live interaction")
 
     return "\n".join(lines)
