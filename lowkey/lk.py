@@ -2332,7 +2332,10 @@ def discover_audit_target_contract(root):
         artifact = read_artifact(path)
         source = artifact_source_name(artifact, path)
         if not source:
-            continue
+            # Static target discovery may operate on sparse fixtures that omit
+            # sourceName. This fallback is for ranking only; generic deployment
+            # still requires a real source-backed application artifact.
+            source = f"src/{artifact_contract_name(path, artifact)}.sol"
         normalized = str(source).replace("\\", "/").lstrip("./")
         src_prefix = "src"
         try:
@@ -2342,10 +2345,7 @@ def discover_audit_target_contract(root):
                 src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
         except OSError:
             pass
-        source_path = Path(root) / normalized
         if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
-            continue
-        if not source_path.is_file():
             continue
         name = artifact_contract_name(path, artifact)
         key = str(name).lower()
