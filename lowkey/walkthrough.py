@@ -2386,6 +2386,11 @@ def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: s
         selected = aliases.get(contract)
         if selected:
             target = selected
+    if auto and not contract:
+        system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+        factory = system.get("factory")
+        if is_address(factory):
+            return factory, "ConfidencePoolFactory"
     resolved_target = target if auto else (target or config.get("target"))
     return resolved_target, config.get("target_contract") or contract
 
@@ -2740,9 +2745,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         if not target:
             print("Error: adversarial test mode needs a live target.", file=sys.stderr)
             return 2
+        system_targets = _system_test_targets(config, target, model, models)
         return _run_adversarial_test(
             root, config, host, target, model, models, actors, rpc,
             total_cases=test_cases, seed=test_seed,
+            system_targets=system_targets,
         )
 
     if static:
@@ -2820,7 +2827,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             step.status="blocked"
             step.error="PRECONDITION BLOCKED: "+preflight
             step.error_reason=_explain_failure(step, preflight, step.actor)
-            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models)
+            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models, actor.address)
             steps.append(step)
             draw(step)
         else:
@@ -2837,7 +2844,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.status="reverted"
                 step.error=output or "transaction failed"
                 step.error_reason=_explain_failure(step, step.error, step.actor)
-                step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models)
+                step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models, actor.address)
                 steps.append(step)
                 draw(step, before)
             else:
