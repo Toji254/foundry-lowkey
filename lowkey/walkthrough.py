@@ -3492,6 +3492,376 @@ def _looks_like_confidence_pool_system(root_model: ContractModel, child: Contrac
     )
 
 
+def _generic_constructor_args(model: ContractModel, root: Path, actor: Actor) -> list[Any] | None:
+    """Return only conservative constructor arguments; None means unsafe/unknown."""
+    entry = _artifact_entry_by_name(root, model.name)
+    if not entry:
+        return None
+    _path, artifact = entry
+    constructors = [
+        item for item in (artifact.get("abi") or [])
+        if item.get("type") == "constructor"
+    ]
+    if not constructors:
+        return []
+    values: list[Any] = []
+    for param in constructors[0].get("inputs") or []:
+        name = str(param.get("name") or "").lower()
+        ptype = _canonical_type(param)
+        compact = re.sub(r"[^a-z0-9]", "", name)
+        if ptype == "address":
+            if any(token in compact for token in ("owner", "admin", "authority", "guardian")):
+                values.append(actor.address)
+            else:
+                return None
+        elif ptype == "bool":
+            values.append(False)
+        elif ptype.startswith(("uint", "int")):
+            values.append(0)
+        elif ptype == "bytes":
+            values.append("0x")
+        elif ptype == "bytes32":
+            values.append("0x" + "00" * 32)
+        elif ptype == "string":
+            values.append("lowkey")
+        else:
+            return None
+    return values
+
+
+def _find_generic_dependency_model(
+    interface_name: str,
+    function_name: str,
+    models: list[ContractModel],
+    support_models: list[ContractModel],
+    excluded: set[str],
+) -> ContractModel | None:
+    """Resolve a source dependency to a compiled disposable implementation."""
+    impl_name = interface_name[1:] if interface_name.startswith("I") else interface_name
+    app_by_name = {m.name.lower(): m for m in models}
+    candidates = [
+        m for m in support_models
+        if m.name.lower() not in excluded
+        and m.kind not in {"interface", "library", "abstract"}
+    ]
+    exact = {
+        impl_name.lower(),
+        ("Mock" + impl_name).lower(),
+        interface_name.lower(),
+    }
+    ranked: list[tuple[int, ContractModel]] = []
+    for candidate in candidates:
+        names = {str(sig).split("(", 1)[0].lower() for sig in candidate.functions}
+        haystack = (candidate.name + " " + candidate.source).lower()
+        score = 0
+        if candidate.name.lower() in exact:
+            score += 1000
+        if candidate.name.lower() == impl_name.lower():
+            score += 800
+        if candidate.name.lower().startswith("mock"):
+            score += 120
+        if function_name.lower() in names:
+            score += 120
+        for token in (impl_name, interface_name[1:] if interface_name.startswith("I") else interface_name):
+            if token and token.lower() in haystack:
+                score += 30
+        if score:
+            ranked.append((score, candidate))
+    direct = app_by_name.get(impl_name.lower())
+    if direct and direct.name.lower() not in excluded:
+        ranked.append((900, direct))
+    ranked.sort(key=lambda item: (-item[0], item[1].name.lower()))
+    return ranked[0][1] if ranked else None
+
+
+def _generic_dependency_keys(interface_name: str, via: str, concrete: str) -> list[str]:
+    keys: list[str] = []
+    for value in (via, interface_name, concrete):
+        compact = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+        if compact:
+            keys.append(compact[1:] if compact.startswith("i") else compact)
+    return list(dict.fromkeys(keys))
+
+
+def _configure_generic_fixture(
+    root: Path,
+    rpc: str,
+    host: Any,
+    config: dict[str, Any],
+    actor: Actor,
+    fixture: ContractModel,
+    fixture_address: str,
+    system: dict[str, Any],
+) -> None:
+    """Apply only setters whose names/types clearly describe fixture configuration."""
+    functions = list(fixture.abi)
+    for item in functions:
+        if item.get("type") != "function":
+            continue
+        name = str(item.get("name") or "").lower()
+        inputs = item.get("inputs") or []
+        if len(inputs) != 2:
+            continue
+        if _canonical_type(inputs[0]) != "address" or _canonical_type(inputs[1]) != "bool":
+            continue
+        if not any(token in name for token in (
+            "valid", "allowed", "enabled", "active",
+            "scoped", "registered", "approved", "support"
+        )):
+            continue
+        pname = str(inputs[0].get("name") or "").lower()
+        compact = re.sub(r"[^a-z0-9]", "", pname)
+        address_value = system.get(compact)
+        if not is_address(address_value):
+            for key, value in system.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if is_address(value) and compact and (
+                    compact in normalized or normalized in compact
+                ):
+                    address_value = value
+                    break
+        if is_address(address_value):
+            _send_lab_control(
+                host, config, actor, fixture_address,
+                _signature(item), [address_value, True],
+            )
+
+    mint = next(
+        (
+            item for item in functions
+            if item.get("type") == "function"
+            and str(item.get("name") or "").lower() in {"mint", "faucet"}
+            and len(item.get("inputs") or []) == 2
+            and _canonical_type(item["inputs"][0]) == "address"
+            and _canonical_type(item["inputs"][1]).startswith(("uint", "int"))
+        ),
+        None,
+    )
+    if mint:
+        _send_lab_control(
+            host, config, actor, fixture_address,
+            _signature(mint), [actor.address, 10**24],
+        )
+
+
+def _synthesize_generic_protocol_fixture(
+    root: Path,
+    rpc: str,
+    host: Any,
+    config: dict[str, Any],
+    actors: list[Actor],
+    models: list[ContractModel],
+    support_models: list[ContractModel],
+) -> tuple[bool, str]:
+    """Build a generic disposable system from source-discovered dependencies."""
+    root_model = _infer_protocol_root(models)
+    if not root_model:
+        return False, "no initializer/create-style protocol root could be inferred"
+    child = _infer_child_model(root_model, models)
+    if not child:
+        return False, f"no concrete child contract could be inferred from {root_model.name}"
+
+    actor = actors[0] if actors else Actor("Alice", "0x" + "00" * 20, 0)
+    private_key = host.derive_default_anvil_key(0) if hasattr(host, "derive_default_anvil_key") else None
+    if not private_key:
+        return False, "could not derive the default Anvil deployer key"
+
+    impls = _implementation_mapping(models)
+    excluded = {root_model.name.lower(), child.name.lower()}
+    system: dict[str, Any] = {}
+    dependency_models: dict[str, ContractModel] = {}
+
+    for edge in root_model.calls:
+        if edge.get("kind") != "cross-contract":
+            continue
+        interface_name = str(edge.get("to_contract") or edge.get("interface") or "")
+        if not interface_name:
+            continue
+        concrete_name = impls.get(interface_name, interface_name)
+        candidate = _find_generic_dependency_model(
+            concrete_name,
+            str(edge.get("to_function") or ""),
+            models,
+            support_models,
+            excluded,
+        )
+        if not candidate:
+            continue
+        dependency_models[candidate.name.lower()] = candidate
+        for key in _generic_dependency_keys(
+            interface_name,
+            str(edge.get("via") or ""),
+            candidate.name,
+        ):
+            system.setdefault(key, None)
+
+    def deploy(model: ContractModel, ctor_args: list[Any] | None = None) -> str | None:
+        values = ctor_args
+        if values is None:
+            values = _generic_constructor_args(model, root, actor)
+        if values is None:
+            return None
+        return _deploy_local_artifact(
+            root,
+            rpc,
+            private_key,
+            _artifact_entry_by_name(root, model.name),
+            values,
+        )
+
+    child_address = deploy(child)
+    if not is_address(child_address):
+        return False, (
+            f"{child.name} requires constructor configuration that "
+            "generic bootstrap cannot prove safe"
+        )
+    system["implementation"] = child_address
+    system[re.sub(r"[^a-z0-9]", "", child.name.lower())] = child_address
+
+    deployed: dict[str, str] = {}
+    for dependency in dependency_models.values():
+        if dependency.name.lower() == child.name.lower():
+            continue
+        address = deploy(dependency)
+        if not is_address(address):
+            continue
+        deployed[dependency.name.lower()] = address
+        for key in _generic_dependency_keys(
+            dependency.name, "", dependency.name
+        ):
+            system[key] = address
+
+    for edge in root_model.calls:
+        via = re.sub(r"[^a-z0-9]", "", str(edge.get("via") or "").lower())
+        interface_name = str(edge.get("to_contract") or edge.get("interface") or "")
+        concrete_name = impls.get(interface_name, interface_name)
+        address = system.get(via) or system.get(
+            re.sub(r"[^a-z0-9]", "", concrete_name.lower())
+        )
+        if is_address(address):
+            system[via] = address
+            if interface_name:
+                system[re.sub(
+                    r"[^a-z0-9]", "", interface_name.lower().lstrip("i")
+                )] = address
+
+    root_impl = deploy(root_model)
+    if not is_address(root_impl):
+        return False, (
+            f"failed to deploy {root_model.name}; "
+            "constructor arguments are not safely inferable"
+        )
+
+    init = next(
+        (
+            item for item in root_model.abi
+            if item.get("type") == "function"
+            and str(item.get("name") or "").lower() == "initialize"
+        ),
+        None,
+    )
+    target = root_impl
+    if init:
+        values: list[Any] = []
+        for param in init.get("inputs") or []:
+            ptype = _canonical_type(param)
+            name = str(param.get("name") or "")
+            compact = re.sub(r"[^a-z0-9]", "", name.lower())
+            if ptype == "address":
+                value = system.get(compact)
+                if not is_address(value) and compact in {
+                    "implementation", "poolimplementation", "childimplementation"
+                }:
+                    value = child_address
+                if not is_address(value) and compact in {
+                    "owner", "owneraddress", "admin", "adminaddress", "authority"
+                }:
+                    value = actor.address
+                if not is_address(value):
+                    return False, (
+                        f"initializer dependency '{name or 'address'}' "
+                        "could not be resolved from source-discovered fixtures"
+                    )
+                values.append(value)
+            elif ptype == "bool":
+                values.append(False)
+            elif ptype.startswith(("uint", "int")):
+                values.append(0)
+            elif ptype == "bytes":
+                values.append("0x")
+            elif ptype == "bytes32":
+                values.append("0x" + "00" * 32)
+            elif ptype == "string":
+                values.append("lowkey")
+            else:
+                return False, (
+                    f"initializer parameter '{name or ptype}' "
+                    "needs protocol-specific configuration"
+                )
+
+        data = _encode_calldata(_signature(init), values)
+        if not data:
+            return False, f"failed to encode {root_model.name}.initialize(...) safely"
+
+        proxy = _candidate_proxy_artifact(root)
+        if proxy:
+            target = _deploy_local_artifact(
+                root, rpc, private_key, proxy, [root_impl, data]
+            )
+            if not is_address(target):
+                return False, f"failed to deploy proxy for {root_model.name}"
+        else:
+            tx = _send_lab_control(
+                host, config, actor, root_impl, _signature(init), values
+            )
+            if not tx:
+                return False, (
+                    f"failed to initialize {root_model.name} "
+                    "from its source-defined initializer"
+                )
+
+    for dependency in dependency_models.values():
+        address = deployed.get(dependency.name.lower())
+        if address:
+            _configure_generic_fixture(
+                root, rpc, host, config, actor, dependency, address, system
+            )
+
+    config["target"] = target
+    config["target_contract"] = root_model.name
+    config["_walkthrough_recipe"] = "generic-system"
+    config["lab_system"] = {
+        **{key: value for key, value in system.items() if is_address(value)},
+        "root": target,
+        "child": child_address,
+        "child_model": child.name,
+    }
+    if any(
+        str(sig).split("(", 1)[0].lower().startswith(
+            prefix
+        )
+        for sig in root_model.functions
+        for prefix in ("create", "deploy", "open", "register", "clone")
+    ):
+        config["lab_system"]["factory"] = target
+
+    if hasattr(host, "set_lab_target"):
+        host.set_lab_target(
+            config, root, target, root_model.name, str(root / root_model.artifact)
+        )
+    if hasattr(host, "save_config"):
+        host.save_config(config)
+    audit_context.set_target(
+        root,
+        address=target,
+        contract=root_model.name,
+        artifact=str(root / root_model.artifact),
+        source="generic-system-synthesis",
+    )
+    audit_context.update(root, actor=actor.name, rpc=rpc)
+    return True, f"synthesized generic system {root_model.name} + {child.name}"
+
+
 def _synthesize_local_protocol_fixture(
     root: Path,
     rpc: str,
@@ -3516,6 +3886,11 @@ def _synthesize_local_protocol_fixture(
     child = _infer_child_model(root_model, models)
     if not child:
         return False, f"no concrete child contract was inferred from {root_model.name}"
+
+    if not _looks_like_confidence_pool_system(root_model, child):
+        return _synthesize_generic_protocol_fixture(
+            root, rpc, host, config, actors, models, support_models
+        )
 
     # The full multi-contract bootstrap needs disposable mocks. Prefer the project's
     # own test doubles; never substitute an EOA where the source treats an address
@@ -3826,6 +4201,15 @@ def _target_from_host(
 
             system_ready = _system_has_live_core(config, rpc)
 
+            adapter = host.discover_local_lab_script(root) if hasattr(host, "discover_local_lab_script") else None
+
+            if adapter and not system_ready and hasattr(host, "run_lab"):
+                code = host.run_lab(config, [])
+                if code != 0:
+                    system_ready = _system_has_live_core(config, rpc)
+                if config.get("target") and host.active_project_target(config, root):
+                    system_ready = system_ready or bool(config.get("target"))
+
             if not system_ready:
                 synthesized, synthesis_reason = _synthesize_local_protocol_fixture(
                     root,
@@ -3840,16 +4224,6 @@ def _target_from_host(
                     system_ready = True
                 elif synthesis_reason:
                     print(f"  Auto protocol lab synthesis: {synthesis_reason}")
-
-            adapter = host.discover_local_lab_script(root) if hasattr(host, "discover_local_lab_script") else None
-
-            if adapter and not system_ready and hasattr(host, "run_lab"):
-                code = host.run_lab(config, [])
-                if code != 0:
-                    # Some adapters return a non-zero code after successfully
-                    # creating a usable target. Re-check the system context before
-                    # treating it as a bootstrap failure.
-                    system_ready = _system_has_live_core(config, rpc)
 
             system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
             factory = system.get("factory")
