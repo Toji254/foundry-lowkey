@@ -2322,6 +2322,7 @@ def _render_protocol_story_full(
         lines.append("                 │")
         lines.append("                 ▼")
         lines.append("  ◀ NOW  •  LIVE")
+        lines.append("  ◀ LIVE")
         lines.append("             next live interaction")
 
     return "\n".join(lines)
