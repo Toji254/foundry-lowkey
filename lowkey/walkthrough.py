@@ -77,8 +77,10 @@ def _section(title: str, color: str = "cyan") -> str:
 
 def _status_icon(status: str) -> str:
     value = str(status or "").upper()
-    if value in {"SUCCESS", "DONE", "PASS", "READY"}:
+    if value in {"SUCCESS", "DONE", "PASS"}:
         return _paint("✓", "green")
+    if value == "READY":
+        return _paint("→", "cyan")
     if value in {"BLOCKED", "FAILED", "ERROR"}:
         return _paint("✗", "red")
     if value in {"WARN", "WARNING"}:
@@ -546,7 +548,7 @@ def _render_action_card(
 
     lines = [
         f"{_section(f'STEP {index + 1:02d} / {total:02d}', 'cyan')}  "
-        f"{_status_icon(status)} {_paint(status_word, 'green' if status_word in {'DONE','READY'} else 'red' if status_word in {'BLOCKED','FAILED'} else 'yellow')}",
+        f"{_status_icon(status)} {_paint(status_word, 'green' if status_word == 'DONE' else 'cyan' if status_word == 'READY' else 'red' if status_word in {'BLOCKED','FAILED'} else 'yellow')}",
         f"  {_paint(action.get('phase', 'STEP'), 'yellow')}  {_paint(actor, 'magenta')} → {label}",
         f"  WHAT   {action.get('what') or _action_what(fn, node)}",
         f"  WHY    {action.get('why') or _action_why(fn, node)}",
@@ -832,6 +834,8 @@ def _help() -> None:
     --seed N           Replayable random seed
     --no-links         Disable Ctrl+Click OSC-8 source links
     --non-interactive  Never wait for Enter
+    Colors are enabled automatically on a terminal; set LOWKEY_COLOR=1 to force
+    them or NO_COLOR=1 to disable them.
 """
     )
 
