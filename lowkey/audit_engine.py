@@ -478,6 +478,80 @@ def run_source_triage(root: str = ".") -> int:
     print("These are source-level review markers, not vulnerability verdicts.")
     return 0
 
+def _generate_vyper_poc(root: str, check: str, impact: str, confidence: str,
+                       description: str, locations: list[dict[str, Any]],
+                       function: str | None, name: str | None) -> tuple[int, list[Path]]:
+    slug = _slug(name or check)
+    project_root = Path(root).resolve()
+    tests_dir = project_root / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    test_path = tests_dir / f"poc_{slug}.py"
+
+    location_text = "\n".join(
+        f"#   {item.get('source') or item.get('file') or 'unknown'}:"
+        f"{item.get('start') or item.get('line') or '?'}"
+        for item in locations[:8]
+    )
+    test_body = f'''"""Lowkey evidence-backed Vyper PoC scaffold.
+
+Candidate: {check}
+Impact/confidence: {impact}/{confidence}
+Function: {function or "identify the exact function/interface"}
+Description: {description[:700]}
+{location_text}
+"""
+
+import pytest
+
+
+def test_poc_candidate():
+    # This scaffold is intentionally non-asserting until the exploit path is proven.
+    pytest.skip("TODO: replace with a concrete Vyper/Titanoboa reproduction")
+
+    # Suggested structure:
+    # 1. Deploy/load the vulnerable Vyper contract using the project's native test harness.
+    # 2. Establish attacker and trusted/protocol state.
+    # 3. Execute the smallest attacker-controlled sequence.
+    # 4. Assert a concrete invariant violation or asset/state delta.
+    # 5. Preserve trace/log/state evidence in .audit/evidence/.
+'''
+    write_text(test_path, test_body)
+
+    brief = {
+        "generated_at": now_stamp(),
+        "project_type": "vyper",
+        "target": _config().get("target"),
+        "candidate": {
+            "check": check,
+            "impact": impact,
+            "confidence": confidence,
+            "function": function,
+            "description": description,
+            "locations": locations,
+        },
+        "poc_file": os.path.relpath(test_path, project_root),
+        "refinement_checklist": [
+            "Identify the exact Vyper entry point/interface.",
+            "Load the project contract with its native test framework.",
+            "Establish attacker/trusted protocol state.",
+            "Prove the broken invariant before asserting impact.",
+            "Use traces, logs, and state deltas as supporting evidence.",
+        ],
+    }
+    json_path = poc_dir(root) / f"Poc_{slug}.json"
+    write_json(json_path, brief)
+    record_evidence("poc", brief, root)
+
+    print("POC SCAFFOLD")
+    print("=" * 52)
+    print(f"Candidate: {check} ({impact}/{confidence})")
+    print(f"Function:  {function or 'not resolved'}")
+    print(f"Generated: {test_path}")
+    print(f"Generated: {json_path}")
+    print("\nVyper/Titanoboa scaffold; manual proof is still required.")
+    return 0, [test_path, json_path]
+
+
 def generate_poc(root: str = ".", finding_index: int | None = None, name: str | None = None) -> tuple[int, list[Path]]:
     evidence = read_json(evidence_dir(root) / "slither.json", {}).get("data", {})
     findings = evidence.get("findings", []) if isinstance(evidence, dict) else []
@@ -495,6 +569,48 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
     config = _config()
     target = config.get("target")
     abi_map = _abi_functions(_load_abi(config, target))
+
+    if project.get("kind") in {"vyper", "vyper-uv"}:
+        if selected:
+            vy_check = str(selected.get("check") or "candidate")
+            vy_impact = str(selected.get("impact") or "informational")
+            vy_confidence = str(selected.get("confidence") or "unknown")
+            vy_description = str(selected.get("description") or "").replace("\n", " ")
+            vy_locations = selected.get("locations", []) if isinstance(selected.get("locations"), list) else []
+            vy_function = None
+            for location in vy_locations:
+                candidate = str(location.get("name") or "")
+                base = candidate.split("(", 1)[0]
+                if candidate in abi_map:
+                    vy_function = abi_map[candidate][0]
+                    break
+                if base in abi_map:
+                    vy_function = abi_map[base][0]
+                    break
+        elif matrix:
+            scenario = matrix[0]
+            vy_check = "manual-matrix-scenario"
+            vy_impact = vy_confidence = "manual"
+            vy_description = str(scenario.get("expected") or scenario.get("name") or "Manual scenario")
+            vy_locations = []
+            vy_function = scenario.get("function")
+        elif triage_markers:
+            marker = triage_markers[0]
+            vy_check = "source-marker-" + str(marker.get("label") or "candidate").lower().replace(" ", "-")
+            vy_impact = vy_confidence = "manual"
+            vy_description = str(marker.get("text") or "Manual source review marker")
+            vy_locations = [marker]
+            vy_function = None
+        else:
+            vy_check = "audit-candidate"
+            vy_impact = vy_confidence = "manual"
+            vy_description = "No selected detector or manual scenario; inspect the Vyper source graph and state transitions."
+            vy_locations = []
+            vy_function = None
+        return _generate_vyper_poc(
+            root, vy_check, vy_impact, vy_confidence,
+            vy_description, vy_locations, vy_function, name
+        )
 
     if selected:
         check = str(selected.get("check") or "candidate")
