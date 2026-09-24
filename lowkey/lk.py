@@ -5107,6 +5107,9 @@ def _bootstrap_audit_target(config, root, allow_deploy=False):
     # over a single focused finding's child implementation. The investigation focus still
     # remains available when no protocol-root candidate can be inferred.
     preferred_contract = discover_audit_target_contract(root) or _focused_audit_target_contract(root)
+    if existing and source != "manual":
+        config["target"] = None
+        config["target_contract"] = None
     candidate = _live_target_candidate(config, root, preferred_contract)
     if candidate:
         return _set_audit_auto_target(
