@@ -1741,6 +1741,113 @@ def _dependency_diagnostics(
     return origin, diagnostics
 
 
+def _function_inputs(model: ContractModel, signature: str) -> list[dict[str, Any]]:
+    for item in model.abi:
+        if item.get("type") == "function" and _signature(item) == signature:
+            return list(item.get("inputs") or [])
+    return []
+
+
+def _source_edges_for_step(model: ContractModel, step: Step) -> list[dict[str, Any]]:
+    name = str(step.function or "").split("(", 1)[0]
+    return [edge for edge in model.calls if str(edge.get("from") or "") == name]
+
+
+def _pretty_identifier(value: str | None) -> str:
+    text = re.sub(r"[^A-Za-z0-9_]+", " ", str(value or "")).strip()
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    return text.title() if text else "contract"
+
+
+def _source_dependency_address(rpc: str, model: ContractModel, edge: dict[str, Any], step: Step) -> tuple[str | None, str | None]:
+    """Resolve a source-level dependency variable to a live address."""
+    via = str(edge.get("via") or "")
+    if not via:
+        return None, None
+    inputs = _function_inputs(model, step.function)
+    by_param = {
+        str(param.get("name") or "").lower(): step.args[index]
+        for index, param in enumerate(inputs)
+        if index < len(step.args)
+    }
+    direct = by_param.get(via.lower())
+    if is_address(direct):
+        return direct, via
+    getter = next((
+        (item for item in model.abi
+         if item.get("type") == "function" and not item.get("inputs")
+         and str(item.get("name") or "").lower() == via.lower()
+         and item.get("outputs")
+         and str(item["outputs"][0].get("type") or "") == "address"),
+        None)
+    if not getter:
+        return None, via
+    code, out, _err = _cmd(["cast", "call", step.address, _signature(getter), "--rpc-url", rpc], timeout=6)
+    if code != 0:
+        return None, via
+    values = (out or "").strip().splitlines()
+    value = values[-1].strip() if values else ""
+    return (value if is_address(value) else None), via
+
+
+def _probe_boolean_getters(rpc: str, step: Step, model: ContractModel) -> list[str]:
+    """Probe cheap ABI predicates to explain empty revert payloads."""
+    inputs = _function_inputs(model, step.function)
+    observations: list[str] = []
+    for index, param in enumerate(inputs):
+        if index >= len(step.args) or not is_address(step.args[index]):
+            continue
+        param_name = str(param.get("name") or "").lower()
+        wanted = []
+        if "token" in param_name:
+            wanted += ["allowed", "whitelisted", "enabled", "supported", "valid"]
+        if "agreement" in param_name:
+            wanted += ["valid", "registered", "enabled", "active"]
+        if "account" in param_name or "user" in param_name:
+            wanted += ["allowed", "enabled", "active"]
+        for item in [item for item in model.abi
+                     if item.get("type") == "function"
+                     and len(item.get("inputs") or []) == 1
+                     and len(item.get("outputs") or []) == 1
+                     and str(item["outputs"][0].get("type") or "") == "bool"
+                     and any(token in str(item.get("name") or "").lower() for token in wanted)][:4]:
+            code, out, err = _cmd(["cast", "call", step.address, _signature(item), str(step.args[index]), "--rpc-url", rpc], timeout=6)
+            if code != 0:
+                continue
+            value = " ".join((out or err or "").strip().split()).lower()
+            if value in {"true", "false"}:
+                observations.append(f"{_signature(item)} = {value} for {_pretty_identifier(param_name)}")
+    return observations
+
+
+def _diagnose_argument_contracts(rpc: str, step: Step, model: ContractModel) -> tuple[str | None, list[str]]:
+    """Check address arguments that source code later treats as contracts."""
+    origin = None
+    diagnostics: list[str] = []
+    for edge in _source_edges_for_step(model, step):
+        via = str(edge.get("via") or "")
+        if not via:
+            continue
+        candidate, label = _source_dependency_address(rpc, model, edge, step)
+        if not candidate:
+            continue
+        code = _runtime_code(rpc, candidate)
+        if code in {"", "0x"}:
+            origin = origin or (f"{model.name}.{step.function.split("(", 1)[0]} -> " +
+                                f"{edge.get("interface") or edge.get("to_contract")}.{edge.get("to_function")}({label})")
+            diagnostics.append(
+                f"{_pretty_identifier(label)} = {_addr(candidate)} has no contract code; "
+                f"source calls {edge.get("interface") or edge.get("to_contract")}.{edge.get("to_function")}(), "
+                "so this value cannot behave like the contract the protocol expects"
+            )
+        else:
+            diagnostics.append(
+                f"{_pretty_identifier(label)} = {_addr(candidate)} has live contract code; "
+                f"source expects {edge.get("interface") or edge.get("to_contract")}.{edge.get("to_function")}()"
+            )
+    diagnostics.extend(_probe_boolean_getters(rpc, step, model))
+    return origin, list(dict.fromkeys(diagnostics))
+
 def _diagnose_failed_call(
     root: Path,
     rpc: str,
@@ -1750,12 +1857,12 @@ def _diagnose_failed_call(
     actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
     origin, diagnostics = _read_zero_address_diagnostics(rpc, step.address, model)
+    arg_origin, arg_diagnostics = _diagnose_argument_contracts(rpc, step, model)
+    origin = origin or arg_origin
+    diagnostics.extend(arg_diagnostics)
 
     try:
-        code, calldata, err = _cmd(
-            ["cast", "calldata", step.function, *[_cli_arg(x) for x in step.args]],
-            timeout=6,
-        )
+        code, calldata, err = _cmd(["cast", "calldata", step.function, *[_cli_arg(x) for x in step.args]], timeout=6)
         if code != 0:
             diagnostics.append("Lowkey could not encode the failing calldata for trace analysis")
             decoded = _decode_custom_error(err, models)
@@ -1763,37 +1870,26 @@ def _diagnose_failed_call(
                 diagnostics.append(f"decoded revert: {decoded}")
             return origin, list(dict.fromkeys(diagnostics))
 
-        trace = _rpc_call(
-            rpc,
-            "debug_traceCall",
-            [{
-                "from": actor_address or "0x" + "00" * 20,
-                "to": step.address,
-                "data": calldata,
-                "value": hex(int(step.value_wei or 0)),
-            }, {"tracer": "callTracer", "timeout": "10s"}],
-        )
+        trace = _rpc_call(rpc, "debug_traceCall", [{
+            "from": actor_address or "0x" + "00" * 20,
+            "to": step.address,
+            "data": calldata,
+            "value": hex(int(step.value_wei or 0)),
+        }, {"tracer": "callTracer", "timeout": "10s"}])
 
         if isinstance(trace, dict):
-            root_output = trace.get("output")
-            root_error = trace.get("error") or trace.get("revertReason")
-            decoded = _decode_custom_error(root_output or root_error, models)
+            payload = trace.get("output") or trace.get("error") or trace.get("revertReason")
+            decoded = _decode_custom_error(payload, models)
             if decoded:
-                diagnostics.append(f"decoded revert: {decoded}")
+                diagnostics.append(f"root revert decoded as {decoded}")
 
         edges = _trace_execution_edges(root, rpc, models, trace)
-        for edge in edges[:8]:
+        for edge in edges[:10]:
             target = edge.get("to_contract") or _addr(edge.get("to_address"))
             fn = edge.get("function") or edge.get("type")
-            diagnostics.append(
-                f"call path: {edge.get('from_contract') or 'caller'} ──▶ {target}.{fn} "
-                f"[{edge.get('type')}]"
-            )
+            diagnostics.append(f"actual call: {edge.get("from_contract") or "caller"} ──▶ {target}.{fn}")
 
-        failed = next(
-            (edge for edge in reversed(edges) if edge.get("error") or edge.get("revert")),
-            None,
-        )
+        failed = next((edge for edge in reversed(edges) if edge.get("error") or edge.get("revert")), None)
         if failed:
             target = failed.get("to_contract") or _addr(failed.get("to_address"))
             fn = failed.get("function") or "unknown()"
@@ -1803,22 +1899,13 @@ def _diagnose_failed_call(
             if decoded:
                 diagnostics.append(f"failed call decoded as {decoded}")
             elif raw:
-                diagnostics.append(f"dependency returned: {raw}")
-
-        if isinstance(trace, dict) and not failed:
-            root_payload = trace.get("output") or trace.get("error") or trace.get("revertReason")
-            decoded = _decode_custom_error(root_payload, models)
-            if decoded:
-                diagnostics.append(f"root revert decoded as {decoded}")
+                diagnostics.append(f"failed call returned: {raw}")
 
         if not edges and not diagnostics:
-            diagnostics.append("no internal call path was exposed by the local node")
-
+            diagnostics.append("the local node exposed no internal call frames; the exact failing instruction could not be proven")
     except Exception as exc:
         diagnostics.append(f"revert trace unavailable: {exc}")
-
     return origin, list(dict.fromkeys(diagnostics))
-
 def _preflight(rpc: str, step: Step, actor_address: str | None = None) -> tuple[bool, str]:
     try:
         command=["cast","call",step.address,step.function,*[_cli_arg(x) for x in step.args],"--rpc-url",rpc]
