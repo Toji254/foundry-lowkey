@@ -2272,7 +2272,9 @@ def discover_generic_lab_contract(root, query=None):
         if "/interfaces/" in lowered_path or lowered_contract.startswith("i"):
             continue
         score = 50
-        if contract in preferred_contracts:
+        if query and lowered_contract == str(query).strip().lower():
+            score = -50
+        elif contract in preferred_contracts:
             score = 0 + preferred_contracts.index(contract)
         elif "/mocks/" in lowered_path or lowered_contract.startswith("mock"):
             score = 100
