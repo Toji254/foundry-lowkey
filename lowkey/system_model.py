@@ -357,6 +357,38 @@ def _extract_test_and_poc_evidence(root: Path) -> dict[str, Any]:
         "audit_evidence": evidence,
     }
 
+def _extract_audit_targets(audit_evidence: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Extract deduplicated audit-session targets from persisted evidence."""
+    priority = {
+        "audit_start.json": 0,
+        "context.json": 1,
+        "session_resume.json": 2,
+        "risk.json": 3,
+        "poc.json": 4,
+        "walkthrough.json": 5,
+    }
+    candidates: list[tuple[int, str, str]] = []
+    for item in audit_evidence:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if not _is_address(target):
+            continue
+        file_name = Path(str(item.get("file") or "")).name
+        candidates.append((priority.get(file_name, 50), file_name, str(target)))
+    candidates.sort(key=lambda x: (x[0], x[1], x[2].lower()))
+
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, file_name, target in candidates:
+        key = target.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"address": target, "source": file_name or "audit evidence"})
+    return result
+
+
 def _extract_actor_roles(config: dict[str, Any] | None) -> dict[str, Any]:
     config = config or {}
     actors: list[dict[str, Any]] = []
@@ -500,6 +532,7 @@ def build_manifest(
     initialization.sort(key=lambda x: (x["source"], int(x["line"])))
 
     relationships = _constructor_relationships(deployments)
+    audit_targets = _extract_audit_targets(evidence["audit_evidence"])
 
     deployment_names = {x["contract"] for x in deployments}
     known_addresses = {
@@ -544,6 +577,7 @@ def build_manifest(
         "tests": evidence["tests"],
         "adversarial_evidence": evidence["adversarial"],
         "audit_evidence": evidence["audit_evidence"],
+        "audit_targets": audit_targets,
         "known_addresses": known_addresses,
         "deployed_contract_names": sorted(deployment_names),
         "confidence": {
@@ -663,5 +697,6 @@ def summarize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "initialization_steps": len(manifest.get("initialization") or []),
         "tests": len(manifest.get("tests") or []),
         "adversarial_evidence": len(manifest.get("adversarial_evidence") or []),
+        "audit_targets": len(manifest.get("audit_targets") or []),
         "updated_reason": manifest.get("updated_reason"),
     }
