@@ -102,6 +102,8 @@ class SystemModelTests(unittest.TestCase):
         self.assertTrue(any(x["kind"] == "initialize" for x in manifest["initialization"]))
         self.assertTrue(any(x["kind"] == "role_grant" for x in manifest["roles"]))
         self.assertEqual(manifest["actors"]["actors"][0]["name"], "alice")
+        self.assertIn("audit_evidence", manifest)
+
 
     def test_manifest_links_deployment_arguments_to_known_contracts(self):
         with tempfile.TemporaryDirectory() as tmp:
