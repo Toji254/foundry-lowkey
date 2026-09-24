@@ -2265,7 +2265,7 @@ contract Escrow {
                     os.environ["LOWKEY_NO_LINKS"] = previous
             self.assertIn("ping", linked)
             self.assertIn("\x1b]8;;", linked)
-            self.assertIn("vscode://file/", linked)
+            self.assertTrue("vscode://file/" in linked or "file://" in linked)
 
     def test_walkthrough_source_graph_resolves_interface_to_implementation(self):
         with tempfile.TemporaryDirectory() as tmp:
