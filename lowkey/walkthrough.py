@@ -5051,34 +5051,28 @@ def _synthesize_local_protocol_fixture(
 
 
 def _system_has_live_core(config: dict[str, Any], rpc: str | None) -> bool:
+    """Generic validity check for a persisted local protocol system."""
+    if not rpc:
+        return False
     system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-    if not system or not rpc:
-        return False
-
-    entry = system.get("factory") or system.get("pool") or config.get("target")
-    if not is_address(entry) or _runtime_code(rpc, str(entry)) in {"", "0x"}:
-        return False
-
-    # A synthesized/project lab is considered complete only when its recorded
-    # concrete dependencies are still live. This prevents a stale implementation
-    # address from masquerading as an initialized protocol.
-    required_keys = (
-        "stake_token",
-        "agreement",
-        "safe_harbor_registry",
-        "pool_implementation",
+    entry = (
+        system.get("root")
+        or system.get("entry")
+        or system.get("factory")
+        or system.get("target")
+        or config.get("target")
     )
-    # A persisted lab_system is trusted only when it contains the minimum concrete
-    # dependency set needed to be meaningful. A lone factory address is not a
-    # complete protocol instance and must be rebuilt or revalidated.
-    if not all(is_address(system.get(key)) for key in required_keys):
+    if not is_address(entry):
+        return False
+    if _runtime_code(rpc, str(entry)) in {"", "0x"}:
         return False
 
-    for key in required_keys + ("attack_registry", "moderator"):
-        address = system.get(key)
-        if key in {"attack_registry", "moderator"} and not address:
+    # Validate recorded contract addresses when the project has explicitly
+    # described them. Never require protocol-specific dependency names.
+    for key, value in system.items():
+        if key.endswith("_model") or key.endswith("_parent") or not is_address(value):
             continue
-        if not is_address(address) or _runtime_code(rpc, str(address)) in {"", "0x"}:
+        if _runtime_code(rpc, str(value)) in {"", "0x"}:
             return False
     return True
 
@@ -5133,15 +5127,24 @@ def _target_from_host(
                     print(f"  Auto protocol lab synthesis: {synthesis_reason}")
 
             system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-            factory = system.get("factory")
-            pool = system.get("pool")
+            root_address = (
+                system.get("root")
+                or system.get("entry")
+                or system.get("factory")
+                or system.get("target")
+            )
+            root_model = (
+                system.get("root_model")
+                or system.get("entry_model")
+                or system.get("factory_model")
+                or config.get("target_contract")
+            )
 
-            # A system-aware walkthrough begins at the protocol's factory/root.
-            if not contract and is_address(factory) and (not rpc or _runtime_code(rpc, factory) not in {"", "0x"}):
-                return factory, system.get("root_model") or config.get("target_contract")
-
-            if not contract and is_address(pool) and (not rpc or _runtime_code(rpc, pool) not in {"", "0x"}):
-                return pool, "ConfidencePool"
+            # A system-aware walkthrough begins at the explicitly recorded protocol root.
+            if not contract and is_address(root_address) and (
+                not rpc or _runtime_code(rpc, root_address) not in {"", "0x"}
+            ):
+                return root_address, root_model
 
             target = host._bootstrap_audit_target(config, root, allow_deploy=True)
         except Exception:
