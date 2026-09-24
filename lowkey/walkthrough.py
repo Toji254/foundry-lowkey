@@ -2913,6 +2913,12 @@ def _render_story(
             lines.append(_paint(f"FOCUS CONTRACT / {cname}", "bold"))
             lines.append(f"  {_contract_purpose(cname, functions)}")
             lines.append("")
+            lines.extend(_render_live_state(
+                target_node,
+                functions,
+                (meta.get("runtime_getters") or {}).get(target.lower(), {}),
+            ))
+            lines.append("")
             lines.extend(_render_contract_surface(contract, functions))
 
     if actions:
