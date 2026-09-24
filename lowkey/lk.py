@@ -1129,73 +1129,127 @@ def run_self_test():
     print(f"Self-test passed ({len(checks)} checks)."); return 0
 
 def run_doctor():
-    failures=0
+    failures = 0
+    project = detect_project(".") if detect_project else {"kind": "generic", "build_systems": []}
+    systems = set(project.get("build_systems", []))
+
     print("Lowkey doctor")
     print("============")
-    for name in ("python3", "cast", "forge", "anvil"):
-        path=shutil.which(name)
+    print(f"PROJECT  {project.get('kind', 'generic')}")
+    print(f"LANGUAGES {', '.join(project.get('languages', [])) or 'none detected'}")
+    print(f"TOOLCHAINS {', '.join(project.get('build_systems', [])) or 'none detected'}")
+
+    for name in ("python3",):
+        path = shutil.which(name)
         if not path:
             print(f"FAIL  {name}: not found")
-            failures+=1
+            failures += 1
             continue
         try:
-            result=subprocess.run([path,"--version"],capture_output=True,text=True)
-            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
+            result = subprocess.run([path, "--version"], capture_output=True, text=True)
+            version = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else "version check failed"
         except OSError as error:
             print(f"FAIL  {name}: {error}")
-            failures+=1
+            failures += 1
             continue
-        if result.returncode==0:
-            print(f"PASS  {name}: {path} ({version})")
-        else:
-            print(f"FAIL  {name}: {path} ({version})")
-            failures+=1
+        print(f"{'PASS' if result.returncode == 0 else 'FAIL'}  {name}: {path} ({version})")
+        if result.returncode != 0:
+            failures += 1
 
-    print("OPTIONAL AUDIT TOOLS")
-    for name in ("rg", "slither"):
-        path=shutil.which(name)
+    if "vyper" in systems:
+        uv = shutil.which("uv")
+        if uv:
+            try:
+                result = subprocess.run([uv, "--version"], capture_output=True, text=True)
+                version = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else "version check failed"
+                print(f"{'PASS' if result.returncode == 0 else 'FAIL'}  uv: {uv} ({version})")
+                if result.returncode != 0:
+                    failures += 1
+            except OSError as error:
+                print(f"FAIL  uv: {error}")
+                failures += 1
+        else:
+            print("FAIL  uv: not found (required by detected Vyper/uv project)")
+            failures += 1
+
+    foundry_required = "foundry" in systems
+    for name in ("cast", "forge", "anvil"):
+        path = shutil.which(name)
         if not path:
-            print(f"INFO  {name}: not found (optional)")
+            if foundry_required:
+                print(f"FAIL  {name}: not found")
+                failures += 1
+            else:
+                print(f"INFO  {name}: not found (not required by detected project type)")
             continue
         try:
-            result=subprocess.run([path,"--version"],capture_output=True,text=True)
-            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
+            result = subprocess.run([path, "--version"], capture_output=True, text=True)
+            version = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else "version check failed"
         except OSError as error:
             print(f"WARN  {name}: {error}")
             continue
         print(f"PASS  {name}: {path} ({version})")
-    forge=shutil.which("forge")
-    if forge:
+
+    print("OPTIONAL AUDIT TOOLS")
+    for name in ("rg", "slither"):
+        path = shutil.which(name)
+        if not path:
+            print(f"INFO  {name}: not found (optional)")
+            continue
         try:
-            result=subprocess.run([forge,"--help"],capture_output=True,text=True)
-            available={line.strip().split()[0] for line in result.stdout.splitlines() if line.startswith("  ") and line.strip() and not line.strip().startswith("-")}
-            advertised=set(FORGE_NATIVE_COMMANDS)
-            missing=sorted(advertised-available)
+            result = subprocess.run([path, "--version"], capture_output=True, text=True)
+            version = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else "version check failed"
+        except OSError as error:
+            print(f"WARN  {name}: {error}")
+            continue
+        print(f"PASS  {name}: {path} ({version})")
+
+    forge = shutil.which("forge")
+    if forge and foundry_required:
+        try:
+            result = subprocess.run([forge, "--help"], capture_output=True, text=True)
+            advertised = set(FORGE_NATIVE_COMMANDS)
+            available = {
+                line.strip().split()[0]
+                for line in result.stdout.splitlines()
+                if line.startswith("  ") and line.strip() and not line.strip().startswith("-")
+            }
+            missing = sorted(advertised - available)
             if missing:
                 print(f"FAIL  forge commands missing: {', '.join(missing)}")
-                failures+=1
+                failures += 1
             else:
                 print(f"PASS  forge commands: {', '.join(sorted(advertised))}")
         except OSError as error:
             print(f"FAIL  forge command check: {error}")
-            failures+=1
-    for command,args in (("cast decode-event",["cast","decode-event","--help"]),
-                         ("cast receipt",["cast","receipt","--help"]),
-                         ("cast sig-event",["cast","sig-event","--help"]),
-                         ("forge inspect",["forge","inspect","--help"])):
+            failures += 1
+
+    for command, args in (
+        ("cast decode-event", ["cast", "decode-event", "--help"]),
+        ("cast receipt", ["cast", "receipt", "--help"]),
+        ("cast sig-event", ["cast", "sig-event", "--help"]),
+        ("forge inspect", ["forge", "inspect", "--help"]),
+    ):
         if not shutil.which(args[0]):
-            print(f"FAIL  dependency command: {command} (binary not found)")
-            failures+=1
+            if foundry_required:
+                print(f"FAIL  dependency command: {command} (binary not found)")
+                failures += 1
+            else:
+                print(f"INFO  dependency command: {command} not required by detected project type")
             continue
         try:
-            result=subprocess.run(args,capture_output=True,text=True)
+            result = subprocess.run(args, capture_output=True, text=True)
         except OSError:
-            result=None
-        if result is not None and result.returncode==0:
+            result = None
+        if result is not None and result.returncode == 0:
             print(f"PASS  dependency command: {command}")
         else:
-            print(f"FAIL  dependency command: {command}")
-            failures+=1
+            if foundry_required:
+                print(f"FAIL  dependency command: {command}")
+                failures += 1
+            else:
+                print(f"INFO  dependency command: {command} check skipped")
+
     runtime = runtime_sync_status()
     if runtime["status"] == "ok":
         print(f"PASS  Lowkey runtime: {runtime['detail']}")
@@ -1207,7 +1261,10 @@ def run_doctor():
         failures += 1
     else:
         print(f"INFO  Lowkey runtime: {runtime['detail']}")
+
     return 1 if failures else 0
+
+
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
         print("Error: No session history found."); return
