@@ -774,6 +774,7 @@ def _resolve_walkthrough_target(
     artifact_files = _load_artifacts(root)[1]
     configured = str(config.get("target") or "").strip()
     configured_static: tuple[str, str] | None = None
+    saved_static: list[tuple[str, str]] = []
     live = [
         x for x in (bootstrap.get("live_deployments") or [])
         if isinstance(x, dict) and "dry-run" not in str(x.get("broadcast") or "").lower()
@@ -816,18 +817,36 @@ def _resolve_walkthrough_target(
             f"configured target ({'identity mismatch' if code > 0 else 'no live bytecode'})",
         )
 
+    saved_targets = config.get("targets") or {}
+    if isinstance(saved_targets, dict):
+        for name, value in saved_targets.items():
+            if not _is_address(value):
+                continue
+            if _code_size(rpc, value) > 0:
+                saved_static.append((value, f"saved target '{name}'"))
+            else:
+                saved_static.append((value, f"saved target '{name}' (no live bytecode)"))
+
     audit_targets = bootstrap.get("audit_targets") or _extract_audit_targets(
         bootstrap.get("audit_evidence") or []
     )
+    audit_static: list[tuple[str, str]] = []
     expected = str(config.get("target_contract") or "")
     for item in audit_targets:
         address = item.get("target") if isinstance(item, dict) else None
         if not _is_address(address):
             continue
-        if _code_size(rpc, address) > 0 and (
+        file_name = str(item.get("file") or "target")
+        source = f"audit evidence '{file_name}'"
+        code = _code_size(rpc, address)
+        if code > 0 and (
             not live or not expected or compatible(address, expected)
         ):
-            return address, f"audit evidence '{item.get('file') or 'target'}'"
+            return address, source
+        if code > 0:
+            audit_static.append((address, source + " (identity mismatch)"))
+        else:
+            audit_static.append((address, source + " (no live bytecode)"))
 
     if live:
         live.sort(
@@ -842,9 +861,11 @@ def _resolve_walkthrough_target(
 
     if configured_static:
         return configured_static
+    if audit_static:
+        return audit_static[0]
+    if saved_static:
+        return saved_static[0]
     return None, "not discovered"
-
-
 
 
 def _bootstrap_script_score(item: dict[str, Any]) -> int:
