@@ -900,34 +900,59 @@ def _cli_arg(value: Any) -> str:
     if isinstance(value, dict):
         return "{" + ",".join(f"{key}:{_cli_arg(item)}" for key, item in value.items()) + "}"
     return str(value)
-def _lab_runtime(config: dict[str, Any], target: str, model: ContractModel) -> list[RuntimeContract]:
+def _lab_runtime(config: dict[str, Any], target: str, model: ContractModel, models: list[ContractModel] | None = None) -> list[RuntimeContract]:
+    """Build a protocol runtime graph from generic lab metadata and observed addresses."""
     system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-    if not system:
-        return [RuntimeContract(target, model.name, model.name, "target")]
+    catalog = models or []
+    runtime: list[RuntimeContract] = []
+    seen: set[str] = set()
 
-    definitions = [
-        ("factory", "ConfidencePoolFactory", "system", None),
-        ("pool_implementation", "ConfidencePool", "IMPLEMENTATION", "factory"),
-        ("pool", "ConfidencePool", "CLONE", "factory"),
-        ("stake_token", "StakeToken", "DEPENDENCY", "pool"),
-        ("agreement", "MockAgreement", "DEPENDENCY", "pool"),
-        ("safe_harbor_registry", "MockSafeHarborRegistry", "DEPENDENCY", "pool"),
-        ("attack_registry", "MockAttackRegistry", "DEPENDENCY", "safe_harbor_registry"),
-        ("moderator", "MockConfidencePoolModerator", "DEPENDENCY", "pool"),
-    ]
-    runtime=[]
-    address_by_key={k:system.get(k) for k,_,_,_ in definitions}
-    for key,label,relation,parent_key in definitions:
-        address=address_by_key.get(key)
-        if not address:
+    def model_for(key: str) -> str:
+        explicit = system.get(key + "_model")
+        if explicit:
+            return str(explicit)
+        compact = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        candidates = []
+        for item in catalog:
+            name = re.sub(r"[^a-z0-9]", "", item.name.lower())
+            if compact and (compact == name or compact in name or name in compact):
+                candidates.append(item)
+        if candidates:
+            candidates.sort(key=lambda item: (len(item.name), item.name.lower()))
+            return candidates[0].name
+        return str(system.get("root_model") or model.name) if key in {"root", "entry", "target"} else str(key).replace("_", " ").title()
+
+    def relation_for(key: str) -> str:
+        low = str(key).lower()
+        if key in {"root", "entry", "target"}:
+            return "ROOT" if key != "target" else "target"
+        if "implementation" in low:
+            return "IMPLEMENTATION"
+        if any(token in low for token in ("child", "clone", "instance")):
+            return "CHILD"
+        return "DEPENDENCY"
+
+    for key, value in system.items():
+        if key.endswith("_model") or key.endswith("_parent") or not is_address(value):
             continue
-        parent=address_by_key.get(parent_key) if parent_key else None
-        runtime.append(RuntimeContract(address,label,label,relation,parent))
-    if not any(x.address.lower()==target.lower() for x in runtime):
-        runtime.append(RuntimeContract(target,model.name,model.name,"target"))
+        if key in {"implementation"} and not system.get("implementation_model"):
+            continue
+        address = str(value)
+        if address.lower() in seen:
+            continue
+        model_name = model_for(str(key))
+        parent = system.get(str(key) + "_parent") if is_address(system.get(str(key) + "_parent")) else None
+        runtime.append(RuntimeContract(address, model_name, model_name, relation_for(str(key)), parent))
+        seen.add(address.lower())
+
+    if is_address(target) and target.lower() not in seen:
+        runtime.insert(0, RuntimeContract(target, model.name, model.name, "target"))
+    elif is_address(target):
+        for node in runtime:
+            if node.address.lower() == target.lower():
+                node.relation = "target"
+                node.parent = None
     return runtime
-
-
 
 def _confidence_pool_factory_recipe(
     config: dict[str, Any],
@@ -3153,74 +3178,46 @@ def _adversarial_functions(model: ContractModel) -> list[dict[str, Any]]:
 
 
 
-def _system_test_targets(
-    config: dict[str, Any],
-    target: str,
-    model: ContractModel,
-    models: list[ContractModel],
-) -> list[tuple[str, str, ContractModel]]:
-    """Collect live application instances known to this audit lab."""
+def _system_test_targets(config: dict[str, Any], target: str, model: ContractModel, models: list[ContractModel]) -> list[tuple[str, str, ContractModel]]:
+    """Return all live application instances in the current protocol system."""
     result: list[tuple[str, str, ContractModel]] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(label: str, address: Any, contract_name: str | None) -> None:
+    def find_model(name: str | None, key: str) -> ContractModel | None:
+        if name:
+            exact = next((item for item in models if item.name.lower() == str(name).lower()), None)
+            if exact:
+                return exact
+        compact = re.sub(r"[^a-z0-9]", "", key.lower())
+        candidates = [item for item in models if compact and (compact == re.sub(r"[^a-z0-9]", "", item.name.lower()) or compact in re.sub(r"[^a-z0-9]", "", item.name.lower()))]
+        return sorted(candidates, key=lambda item: (len(item.name), item.name.lower()))[0] if candidates else None
+
+    def add(label: str, address: Any, name: str | None, key: str) -> None:
         if not is_address(address):
             return
-        candidate = None
-        for item in models:
-            if contract_name and item.name.lower() == str(contract_name).lower():
-                candidate = item
-                break
-        if candidate is None and contract_name:
-            candidate = next((item for item in models if str(contract_name).lower() in item.name.lower()), None)
-        if candidate is None:
+        candidate = find_model(name, key)
+        if not candidate:
             return
-        # Never fuzz implementation-only initializer bytecode as a live instance.
-        runtime_address = str(address)
-        key = (candidate.name.lower(), runtime_address.lower())
-        if key in seen:
+        pair = (candidate.name.lower(), str(address).lower())
+        if pair in seen:
             return
-        seen.add(key)
-        result.append((label, runtime_address, candidate))
+        seen.add(pair)
+        result.append((label, str(address), candidate))
 
-    add(model.name, target, model.name)
-
+    add(model.name, target, model.name, "target")
     system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-    known_names = {
-        "factory": "ConfidencePoolFactory",
-        "pool": "ConfidencePool",
-        "pool_implementation": "ConfidencePool",
-    }
     for key, address in system.items():
-        if not is_address(address) or key.endswith("_implementation") or key in {"pool"} and not address:
+        if key.endswith("_model") or key.endswith("_parent") or key.endswith("_implementation") or not is_address(address):
             continue
-        contract_name = known_names.get(key)
-        if not contract_name:
-            compact = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            compact_map = {
-                "factory": "Factory",
-                "pool": "Pool",
-                "router": "Router",
-                "manager": "Manager",
-            }
-            contract_name = compact_map.get(compact)
-        if contract_name:
-            add(key, address, contract_name)
+        add(str(key), address, system.get(str(key) + "_model"), str(key))
 
-    runtime_instances = config.get("_walkthrough_runtime_instances")
-    if isinstance(runtime_instances, list):
-        for entry in runtime_instances:
+    runtime = config.get("_walkthrough_runtime_instances")
+    if isinstance(runtime, list):
+        for entry in runtime:
             if not isinstance(entry, dict):
                 continue
-            add(
-                str(entry.get("label") or entry.get("contract") or "runtime"),
-                entry.get("address"),
-                str(entry.get("contract") or entry.get("model") or ""),
-            )
-
+            add(str(entry.get("label") or entry.get("contract") or "runtime"), entry.get("address"), str(entry.get("contract") or entry.get("model") or ""), str(entry.get("contract") or entry.get("model") or "runtime"))
     return result
-
-
 
 def _generic_walkthrough_warmup(
     root: Path,
@@ -4685,9 +4682,10 @@ def _target_from_host(
 
     if auto and not contract:
         system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-        factory = system.get("factory")
-        if is_address(factory):
-            return factory, "ConfidencePoolFactory"
+        root_address = system.get("root") or system.get("entry") or system.get("factory") or system.get("target")
+        root_model = system.get("root_model") or system.get("factory_model") or config.get("target_contract")
+        if is_address(root_address):
+            return root_address, root_model
 
     resolved_target = target if auto else (target or config.get("target"))
     return resolved_target, config.get("target_contract") or contract
@@ -5303,7 +5301,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         print("Lowkey will not continue with misleading precondition failures.", file=sys.stderr)
         return 2
 
-    runtime=_lab_runtime(config,target,model)
+    runtime=_lab_runtime(config,target,model,model_catalog)
     model_catalog = models + [
         item for item in support_models
         if item.name not in {x.name for x in models}
