@@ -146,10 +146,61 @@ class AuditEngineTests(unittest.TestCase):
             dependency.mkdir(parents=True)
             project = {"submodules": [{"path": "tests/vendor"}]}
 
+            project_python = root / ".venv" / "bin" / "python"
+            project_python.parent.mkdir(parents=True)
+            project_python.write_text("#!/bin/sh\n", encoding="utf-8")
+            project_python.chmod(0o755)
+
             command = audit_engine._project_test_command(str(root), project)
 
-            self.assertEqual(command[:4], ["uv", "run", "pytest", "tests"])
+            self.assertEqual(
+                command[:3],
+                [str(project_python), "-m", "pytest"],
+            )
+            self.assertEqual(command[3], "tests")
             self.assertEqual(command[4:], ["--ignore", "tests/vendor"])
+
+    def test_project_python_prefers_project_venv(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            python = root / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("#!/bin/sh\n", encoding="utf-8")
+            python.chmod(0o755)
+
+            with patch.dict("os.environ", {"VIRTUAL_ENV": "/does/not/matter"}, clear=False):
+                self.assertEqual(
+                    audit_engine._project_python(str(root)),
+                    str(python.resolve()),
+                )
+
+    def test_slither_command_does_not_fail_on_findings_by_default(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "contracts" / "Verifier.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.18;\ncontract Verifier {}\n",
+                encoding="utf-8",
+            )
+            project = {"solidity_compilers": ["0.8.18"], "submodules": []}
+
+            with patch.object(audit_engine, "slither_available", return_value=True), \
+                 patch.object(audit_engine, "project_source_files", return_value=[source]), \
+                 patch.object(
+                     audit_engine,
+                     "run_command",
+                     return_value=(0, "", ""),
+                 ) as run:
+                code = audit_engine.run_slither_project(str(root), project)
+
+            self.assertEqual(code, 0)
+            command = run.call_args.args[0]
+            self.assertIn("--fail-none", command)
 
     def test_github_release_solc_rejects_invalid_cached_binary(self):
         from tempfile import TemporaryDirectory
