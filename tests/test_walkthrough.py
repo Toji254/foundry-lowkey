@@ -542,6 +542,74 @@ class WalkthroughTests(unittest.TestCase):
         })
         self.assertEqual(result, "0x" + "1" * 64)
 
+
+    def test_successful_cast_return_data_is_not_decoded_as_revert(self):
+        fn = walk.FunctionInfo(
+            contract="MockERC20",
+            name="approve",
+            inputs=[{"type": "address", "name": "spender"}, {"type": "uint256", "name": "amount"}],
+            outputs=[{"type": "bool", "name": ""}],
+            mutability="nonpayable",
+            signature="approve(address,uint256)",
+        )
+        with patch.object(
+            walk,
+            "_cast_call",
+            return_value=(0, "0x00000000", ""),
+        ):
+            result = walk._preflight_failure(
+                pathlib.Path("."),
+                "http://127.0.0.1:8545",
+                walk.LiveNode("0x" + "1" * 40, "MockERC20", 100, "MockERC20"),
+                fn,
+                ["0x" + "2" * 40, 1],
+                "0x" + "3" * 40,
+                [],
+            )
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["decoded_error"])
+        self.assertIsNone(result["revert_data"])
+
+    def test_erc20_utility_is_not_a_protocol_walkthrough_entrypoint(self):
+        funcs = [
+            walk.FunctionInfo(
+                "MockERC20", "approve",
+                [{"type": "address", "name": "spender"}, {"type": "uint256", "name": "amount"}],
+                [{"type": "bool", "name": ""}],
+                "nonpayable", "approve(address,uint256)",
+            ),
+            walk.FunctionInfo("MockERC20", "transfer", [], [], "nonpayable", "transfer(address,uint256)"),
+            walk.FunctionInfo("MockERC20", "transferFrom", [], [], "nonpayable", "transferFrom(address,address,uint256)"),
+            walk.FunctionInfo("MockERC20", "balanceOf", [], [{"type": "uint256", "name": ""}], "view", "balanceOf(address)"),
+        ]
+        node = walk.LiveNode(
+            "0x" + "1" * 40,
+            "MockERC20",
+            100,
+            "MockERC20",
+        )
+        self.assertFalse(walk._is_protocol_entrypoint(funcs[0], node, funcs))
+        self.assertFalse(walk._is_protocol_entrypoint(funcs[2], node, funcs))
+
+    def test_protocol_pool_entrypoint_is_not_filtered_as_asset_plumbing(self):
+        funcs = [
+            walk.FunctionInfo(
+                "ConfidencePool",
+                "stake",
+                [{"type": "uint256", "name": "amount"}],
+                [],
+                "nonpayable",
+                "stake(uint256)",
+            )
+        ]
+        node = walk.LiveNode(
+            "0x" + "1" * 40,
+            "ConfidencePool",
+            100,
+            "ConfidencePool",
+        )
+        self.assertTrue(walk._is_protocol_entrypoint(funcs[0], node, funcs))
+
     def test_walkthrough_phase_marks_ownership_operations_as_admin(self):
         fn = walk.FunctionInfo(
             "Pool",
