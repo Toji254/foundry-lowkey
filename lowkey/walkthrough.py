@@ -359,12 +359,16 @@ def _build_source_calls(model: ContractModel, models: list[ContractModel], sourc
     return unique
 
 
-def _artifact_models(root: Path) -> list[ContractModel]:
+def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractModel]:
+    """Build models for application sources, plus optional project-local fixtures."""
     models: list[ContractModel] = []
     out = root / "out"
     if not out.is_dir():
         return models
     src_prefix = _foundry_src_dir(root).replace("\\", "/").strip("/") or "src"
+    allowed_prefixes = [src_prefix]
+    if include_aux:
+        allowed_prefixes.extend(["test", "script"])
 
     for path in out.rglob("*.json"):
         if "build-info" in path.parts:
@@ -380,7 +384,7 @@ def _artifact_models(root: Path) -> list[ContractModel]:
             if candidates:
                 source = candidates[0].relative_to(root).as_posix()
 
-        if not (source == src_prefix or source.startswith(src_prefix + "/")):
+        if not any(source == prefix or source.startswith(prefix + "/") for prefix in allowed_prefixes):
             continue
 
         source_path = root / source
@@ -402,6 +406,9 @@ def _artifact_models(root: Path) -> list[ContractModel]:
         for match in re.finditer(r"\b(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\{", source_text):
             if match.group(1) == name:
                 bases = [re.sub(r"\s+", "", value).split("(")[0] for value in match.group(2).split(",") if value.strip()]
+
+        if kind == "abstract":
+            continue
 
         model = ContractModel(
             name=name,
@@ -540,12 +547,82 @@ def _phase_score(name: str) -> tuple[int, int]:
     return 3, -999
 
 
+def _contract_requirement_for_parameter(
+    model: ContractModel | None,
+    function_name: str,
+    param_name: str,
+) -> str | None:
+    """Infer whether an address parameter is actually expected to be a contract."""
+    if not model or not param_name:
+        return None
+    for edge in model.calls:
+        if str(edge.get("from") or "") != function_name:
+            continue
+        if str(edge.get("via") or "").lower() != str(param_name).lower():
+            continue
+        if edge.get("kind") != "cross-contract":
+            continue
+        return str(edge.get("interface") or edge.get("to_contract") or "") or None
+    return None
+
+
+def _normalize_observed_keys(observed: dict[str, Any]) -> dict[str, Any]:
+    return {
+        re.sub(r"[^a-z0-9]", "", str(key).lower()): value
+        for key, value in observed.items()
+    }
+
+
+def _observed_address_for_parameter(
+    param: dict[str, Any],
+    observed: dict[str, Any],
+    requirement: str | None = None,
+) -> str | None:
+    aliases = _normalize_observed_keys(observed)
+    compact = re.sub(r"[^a-z0-9]", "", str(param.get("name") or "").lower())
+
+    direct = aliases.get(compact)
+    if is_address(direct):
+        return str(direct)
+
+    semantic = {
+        "agreement": ("agreement",),
+        "staketoken": ("staketoken", "token"),
+        "token": ("staketoken", "token"),
+        "safeharborregistry": ("safeharborregistry", "registry"),
+        "registry": ("safeharborregistry", "registry", "attackregistry"),
+        "attackregistry": ("attackregistry",),
+        "poolimplementation": ("poolimplementation", "implementation"),
+        "implementation": ("poolimplementation", "implementation"),
+        "moderator": ("defaultoutcomemoderator", "outcomemoderator", "moderator"),
+        "factory": ("factory",),
+        "router": ("router",),
+        "oracle": ("oracle",),
+        "manager": ("manager",),
+    }
+    for key in semantic.get(compact, ()):
+        value = aliases.get(re.sub(r"[^a-z0-9]", "", key))
+        if is_address(value):
+            return str(value)
+
+    requirement_name = re.sub(r"[^a-z0-9]", "", str(requirement or "").lower())
+    if requirement_name.startswith("i"):
+        requirement_name = requirement_name[1:]
+    if requirement_name:
+        for key, value in aliases.items():
+            if requirement_name in key and is_address(value):
+                return str(value)
+    return None
+
+
 def _arg_for(
     param: dict[str, Any],
     actors: list[Actor],
     target: str,
     now: int,
     observed: dict[str, Any] | None = None,
+    model: ContractModel | None = None,
+    function_name: str | None = None,
 ) -> Any:
     ptype = _canonical_type(param)
     name = str(param.get("name") or "arg").lower()
@@ -563,10 +640,22 @@ def _arg_for(
         return observed[compact]
 
     if ptype.startswith("address[]"):
-        return observed.get(compact, [alice, bob])
+        value = observed.get(compact)
+        return value if isinstance(value, list) else [alice, bob]
+
     if ptype == "address":
-        if observed.get(compact):
-            return observed[compact]
+        requirement = _contract_requirement_for_parameter(
+            model, function_name or "", str(param.get("name") or "")
+        )
+        live_value = _observed_address_for_parameter(param, observed, requirement)
+        if live_value:
+            return live_value
+
+        # Do not substitute a human account for an address the source later treats
+        # as a contract. Unresolved dependencies are blocked explicitly later.
+        if requirement:
+            return None
+
         if any(x in name for x in ("attacker", "malicious", "evil")):
             return attacker
         if any(x in name for x in ("recipient", "receiver", "to", "user", "beneficiary", "recovery", "moderator")):
@@ -596,7 +685,7 @@ def _arg_for(
         return name + "-lowkey"
     if ptype.startswith("tuple"):
         return [
-            _arg_for(comp, actors, target, now, observed)
+            _arg_for(comp, actors, target, now, observed, model, function_name)
             for comp in param.get("components", [])
         ]
     if ptype.endswith("[]"):
@@ -649,7 +738,10 @@ def plan_workflow(
         if any(x in low for x in ("upgrade", "setadmin", "transferownership", "selfdestruct", "pause", "unpause")):
             continue
         actor = _actor_for_function(name, actors, observed)
-        args = [_arg_for(p, actors, target, now, observed) for p in item.get("inputs", [])]
+        args = [
+            _arg_for(p, actors, target, now, observed, model, name)
+            for p in item.get("inputs", [])
+        ]
         sig = _signature(item)
         steps.append(Step(
             index=len(steps) + 1,
@@ -1087,6 +1179,8 @@ def _explain_failure(step: Step, raw: str | None, actor: str) -> str:
             return explanation
     if "parsererror" in lower or "invalidboolean" in lower or "expectedhexdigits" in lower:
         return "Lowkey could not encode the argument for cast, so Solidity was never reached"
+    if "argument resolution blocked" in lower or "no matching protocol dependency" in lower:
+        return "Lowkey could not resolve a required contract address, so it refused to send an impossible call"
     if 'data:"0x"' in lower:
         return "the node returned an empty revert payload; Lowkey will inspect initialized dependencies and the traced call path next"
     if "executionreverted" in lower:
@@ -1924,6 +2018,29 @@ def _diagnose_failed_call(
     except Exception as exc:
         diagnostics.append(f"revert trace unavailable: {exc}")
     return origin, list(dict.fromkeys(diagnostics))
+def _validate_step_arguments(step: Step, model: ContractModel) -> tuple[bool, str | None]:
+    """Reject unresolved semantic dependencies before calldata is built."""
+    inputs = _function_inputs(model, step.function)
+    if len(step.args) != len(inputs):
+        return False, f"Lowkey resolved {len(step.args)} argument(s), but the ABI requires {len(inputs)}"
+
+    function_name = str(step.function).split("(", 1)[0]
+    for index, param in enumerate(inputs):
+        if _canonical_type(param) != "address":
+            continue
+        requirement = _contract_requirement_for_parameter(
+            model, function_name, str(param.get("name") or "")
+        )
+        if requirement and not is_address(step.args[index]):
+            label = str(param.get("name") or f"arg{index + 1}")
+            return (
+                False,
+                f"{label} must reference a live contract implementing {requirement}; "
+                "no matching protocol dependency was resolved",
+            )
+    return True, None
+
+
 def _preflight(rpc: str, step: Step, actor_address: str | None = None) -> tuple[bool, str]:
     try:
         command=["cast","call",step.address,step.function,*[_cli_arg(x) for x in step.args],"--rpc-url",rpc]
@@ -2462,13 +2579,20 @@ def _random_sol_value(
     actors: list[Actor],
     target: str,
     rng: random.Random,
+    observed: dict[str, Any] | None = None,
 ) -> Any:
     raw_type = str(param.get("type") or "")
     typ = _canonical_type(param)
     name = str(param.get("name") or "").lower()
 
     if typ == "address":
-        pool = [a.address for a in actors] + [target, "0x" + "00" * 20]
+        observed_addresses = [
+            value for value in (observed or {}).values()
+            if is_address(value)
+        ]
+        pool = list(dict.fromkeys(
+            [a.address for a in actors] + [target, "0x" + "00" * 20] + observed_addresses
+        ))
         if any(token in name for token in ("recipient", "receiver", "to", "user", "owner", "moderator")) and len(actors) > 1:
             pool = [actors[1].address, actors[0].address] + pool
         if any(token in name for token in ("attacker", "malicious")) and len(actors) > 2:
@@ -2500,12 +2624,18 @@ def _random_sol_value(
         return rng.choice(["", "lowkey", "A" * 32, "0xdeadbeef"])
 
     if raw_type.startswith("tuple") and not raw_type.endswith("[]"):
-        return [_random_sol_value(component, actors, target, rng) for component in param.get("components", [])]
+        return [
+            _random_sol_value(component, actors, target, rng, observed)
+            for component in param.get("components", [])
+        ]
 
     if raw_type.endswith("[]"):
         base = dict(param)
         base["type"] = raw_type[:-2]
-        return [_random_sol_value(base, actors, target, rng) for _ in range(rng.randint(0, 4))]
+        return [
+            _random_sol_value(base, actors, target, rng, observed)
+            for _ in range(rng.randint(0, 4))
+        ]
 
     return 0
 
@@ -2613,7 +2743,16 @@ def _run_adversarial_test(
     for index in range(1, total_cases + 1):
         label, active_target, active_model, fn = schedules[(index - 1) % len(schedules)]
         actor = rng.choice(actors) if actors else Actor("Alice", active_target, 0)
-        args = [_random_sol_value(param, actors, active_target, rng) for param in fn.get("inputs", [])]
+        args = [
+            _random_sol_value(
+                param,
+                actors,
+                active_target,
+                rng,
+                config.get("_walkthrough_observed") or config.get("lab_system") or {},
+            )
+            for param in fn.get("inputs", [])
+        ]
         value = rng.choice([0, 1, 10**6, 10**15, 10**18]) if fn.get("stateMutability") == "payable" else 0
 
         step = Step(
@@ -3245,6 +3384,7 @@ def _render_board(
     storage: list[dict[str, Any]],
     enabled: bool,
     static: bool = False,
+    support_models: list[ContractModel] | None = None,
 ) -> str:
     success = sum(1 for x in steps if x.status == "success")
     blocked = sum(1 for x in steps if x.status in {"blocked", "reverted"})
@@ -3263,7 +3403,14 @@ def _render_board(
         "",
         _render_connections(root, models, model, enabled, runtime),
         "",
-        _render_protocol_story_full(root, steps, current, actors, models, enabled),
+        _render_protocol_story_full(
+            root,
+            steps,
+            current,
+            actors,
+            models + [m for m in (support_models or []) if m.name not in {x.name for x in models}],
+            enabled,
+        ),
     ]
     if current and current.storage_after:
         board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled)]
@@ -3325,6 +3472,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         print(out+err,file=sys.stderr); return code or 1
 
     models=_artifact_models(root)
+    support_models=_artifact_models(root, include_aux=True)
     if not models:
         print("Error: no project application contracts found under the configured src directory.",file=sys.stderr)
         return 2
@@ -3378,6 +3526,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         return 2
 
     runtime=_lab_runtime(config,target,model)
+    model_catalog = models + [
+        item for item in support_models
+        if item.name not in {x.name for x in models}
+    ]
     steps=[]
     completed=set()
     prepared_pools: set[tuple[str, str]] = set()
@@ -3401,7 +3553,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             sys.stdout.flush()
         print(_render_board(
             root, model, models, runtime, actors, steps, current, storage or [],
-            _ansi_enabled(False)
+            _ansi_enabled(False),
+            support_models=model_catalog,
         ))
         sys.stdout.flush()
 
@@ -3410,11 +3563,26 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     while pending and len(steps)<max_steps:
         step=pending.pop(0)
         step.index=len(steps)+1
-        current_model=next((m for m in models if m.name==step.contract),model)
+        current_model=next((m for m in model_catalog if m.name==step.contract),model)
         abi_item=next((x for x in current_model.abi if x.get("type")=="function" and _signature(x)==step.function),None)
         if abi_item:
-            step.args=[_arg_for(p,actors,step.address,_block_timestamp(rpc),observed) for p in abi_item.get("inputs",[])]
-            step.value_wei=_value_for(abi_item)
+            # Recipe/LAB_CONTROL steps already contain authoritative arguments
+            # derived from the live protocol fixture. Only inferred steps are
+            # re-derived from the generic semantic planner.
+            if step.inferred:
+                step.args = [
+                    _arg_for(
+                        p,
+                        actors,
+                        step.address,
+                        _block_timestamp(rpc),
+                        observed,
+                        current_model,
+                        str(step.function).split("(", 1)[0],
+                    )
+                    for p in abi_item.get("inputs", [])
+                ]
+                step.value_wei = _value_for(abi_item)
 
         key=(step.contract,step.address.lower(),step.function)
         if key in completed: continue
@@ -3431,7 +3599,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             step.status="blocked"
             step.error="PRECONDITION BLOCKED: "+preflight
             step.error_reason=_explain_failure(step, preflight, step.actor)
-            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models, actor.address)
+            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, model_catalog, actor.address)
             steps.append(step)
             draw(step)
         else:
@@ -3448,7 +3616,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.status="reverted"
                 step.error=output or "transaction failed"
                 step.error_reason=_explain_failure(step, step.error, step.actor)
-                step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models, actor.address)
+                step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, model_catalog, actor.address)
                 steps.append(step)
                 draw(step, before)
             else:
@@ -3459,7 +3627,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx)
-                step.execution_edges=_trace_execution_edges(root,rpc,models,trace)
+                step.execution_edges=_trace_execution_edges(root,rpc,model_catalog,trace)
                 runtime_by_addr = {node.address.lower(): node.label for node in runtime}
                 for edge in step.execution_edges:
                     address = edge.get("to_address")
