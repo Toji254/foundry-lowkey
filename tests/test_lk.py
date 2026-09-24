@@ -328,6 +328,39 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(parsed["stake_token"], "0x" + "3" * 40)
         self.assertEqual(parsed["bob"], "0x" + "4" * 40)
 
+    def test_walkthrough_human_action_describes_asset_flow(self):
+        step = lk.walkthrough.Step(
+            1, "Alice", "ConfidencePool", "0x" + "1" * 40,
+            "stake(uint256)", [10**18],
+        )
+        lines = lk.walkthrough._friendly_action(
+            step,
+            [lk.walkthrough.Actor("Alice", "0x" + "2" * 40, 0)],
+        )
+        rendered = "\n".join(lines)
+        self.assertIn("Alice", rendered)
+        self.assertIn("token flow", rendered)
+        self.assertIn("ConfidencePool", rendered)
+
+    def test_walkthrough_story_connects_steps_vertically(self):
+        steps = [
+            lk.walkthrough.Step(1, "Alice", "ConfidencePool", "0x" + "1" * 40,
+                                "stake(uint256)", [1], status="success"),
+            lk.walkthrough.Step(2, "Bob", "ConfidencePool", "0x" + "1" * 40,
+                                "withdraw()", [], status="blocked", error="Not ready"),
+        ]
+        rendered = lk.walkthrough._render_protocol_story(
+            steps, steps[-1],
+            [lk.walkthrough.Actor("Alice", "0x" + "2" * 40, 0),
+             lk.walkthrough.Actor("Bob", "0x" + "3" * 40, 1)],
+            False,
+        )
+        self.assertIn("STEP 01", rendered)
+        self.assertIn("STEP 02", rendered)
+        self.assertIn("▼", rendered)
+        self.assertIn("token flow", rendered)
+        self.assertIn("Not ready", rendered)
+
     def test_target_named_deployment_auto_selects_matching_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp)
