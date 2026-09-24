@@ -12,6 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
+try:
+    import system_model
+except ImportError:
+    system_model = None
+
 IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2, "informational": 3, "optimization": 4}
 
 
@@ -432,7 +437,25 @@ def run_source_triage(root: str = ".") -> int:
     return 0
 
 
+def _refresh_system_model(root: str, reason: str) -> None:
+    if system_model is None:
+        return
+    config = _config()
+    try:
+        system_model.refresh_manifest(
+            root,
+            rpc=config.get("rpc"),
+            config=config,
+            reason=reason,
+        )
+    except Exception:
+        # System modeling is evidence enrichment and must never prevent the
+        # existing audit/PoC pipeline from completing.
+        pass
+
+
 def generate_poc(root: str = ".", finding_index: int | None = None, name: str | None = None) -> tuple[int, list[Path]]:
+    _refresh_system_model(root, "poc:before")
     evidence = read_json(evidence_dir(root) / "slither.json", {}).get("data", {})
     findings = evidence.get("findings", []) if isinstance(evidence, dict) else []
     findings = findings if isinstance(findings, list) else []
@@ -613,6 +636,7 @@ contract Poc_{slug} is Test {{
     print(f"Generated: {sol_path}")
     print(f"Generated: {json_path}")
     print("\nEvidence-backed scaffold; manual proof is still required.")
+    _refresh_system_model(root, "poc:generated")
     return 0, [sol_path, json_path]
 
 
@@ -749,6 +773,7 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
 
 def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
+    _refresh_system_model(root, "audit:start")
     results: list[dict[str, Any]] = []
     git_code, git_sha, _ = run_command(["git", "rev-parse", "HEAD"], root)
     branch_code, branch, _ = run_command(["git", "branch", "--show-current"], root)
@@ -805,4 +830,6 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                 }, root)
                 results.append({"label": optional, "code": code})
 
-    return _finalize_pipeline(root, results, 0, generate)
+    code = _finalize_pipeline(root, results, 0, generate)
+    _refresh_system_model(root, "audit:complete")
+    return code
