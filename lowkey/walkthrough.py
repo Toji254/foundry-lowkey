@@ -2118,6 +2118,15 @@ def _render_interaction_graph_full(
             lines += ["  │", call_tree]
 
     if step.status == "success":
+        verified = []
+        for item in step.diagnostics:
+            text = str(item).strip()
+            if text and text not in verified:
+                verified.append(text)
+        if verified:
+            lines += ["  │", "  │   WHAT WAS VERIFIED"]
+            lines.extend(f"  │   ├─ {item}" for item in verified[:6])
+
         state_lines = _friendly_state_lines(step, actors)
         balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors)
         event_lines = _friendly_event_lines(step)
@@ -6199,6 +6208,22 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             draw(step)
         else:
             actor=next((a for a in actors if a.name==step.actor),actors[0])
+
+            # Successful preflight is not enough for a readable walkthrough: expose
+            # the actual source-visible guards/dependency checks that passed too.
+            guard_origin, guard_lines = _probe_source_guards(
+                root, rpc, step, current_model, model_catalog, actor.address
+            )
+            if guard_origin:
+                step.failure_origin = guard_origin
+            step.diagnostics.extend(guard_lines)
+            verify_origin, verify_lines = _diagnose_argument_contracts(
+                rpc, step, current_model, model_catalog, actors, runtime
+            )
+            if verify_origin and not step.failure_origin:
+                step.failure_origin = verify_origin
+            step.diagnostics.extend(verify_lines)
+
             balance_addresses = [a.address for a in actors] + [node.address for node in runtime]
             step.balance_before = _snapshot_balances(rpc, balance_addresses)
             step.token_balance_before = _snapshot_token_balances(
