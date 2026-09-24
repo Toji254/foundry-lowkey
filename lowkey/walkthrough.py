@@ -224,17 +224,19 @@ def _render_connection_web(
     edges: list[dict[str, str]],
     actions: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """Render the system as a labeled graph with inbound, outbound and cross-links."""
-    meaningful = []
-    seen = set()
+    """Render a terminal-friendly relationship topology rather than a flat edge list."""
+    meaningful: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
     for edge in edges:
         if edge.get("kind") == "import":
             continue
         source = _web_node_name(str(edge.get("from") or ""))
         destination = _web_node_name(str(edge.get("to") or ""))
+        if source == destination:
+            continue
         label = _web_connection_label(edge)
         key = (source, destination, label, str(edge.get("function") or ""))
-        if source == destination or key in seen:
+        if key in seen:
             continue
         seen.add(key)
         meaningful.append({
@@ -247,7 +249,7 @@ def _render_connection_web(
     if not meaningful:
         return ["  └─ no proven contract-to-contract connections yet"]
 
-    names = []
+    names: list[str] = []
     for edge in meaningful:
         for name in (edge["from"], edge["to"]):
             if name not in names:
@@ -257,54 +259,71 @@ def _render_connection_web(
         degree[edge["from"]] += 1
         degree[edge["to"]] += 1
     center = max(names, key=lambda name: (degree[name], -names.index(name)))
-    incoming = [e for e in meaningful if e["to"] == center]
-    outgoing = [e for e in meaningful if e["from"] == center]
-    cross = [e for e in meaningful if e not in incoming and e not in outgoing]
+    inbound = [e for e in meaningful if e["to"] == center]
+    outbound = [e for e in meaningful if e["from"] == center]
+    cross = [e for e in meaningful if e not in inbound and e not in outbound]
 
-    out = [f"  HUB  [{center}]  • {degree[center]} proven connection(s)"]
-    if incoming:
-        out += ["", "  INBOUND / who feeds or authorizes this component"]
-        for edge in incoming[:8]:
-            detail = f"  {edge['from']}  ──[{edge['label']}]──▶  [{center}]"
+    def compact(name: str, width: int = 22) -> str:
+        return name if len(name) <= width else name[:width - 1] + "…"
+
+    out = [
+        f"  ╭─ WEB / {center} ─────────────────────────────────────────────╮",
+        f"  │ {compact(center, 48)}  • {degree[center]} proven relationship(s)",
+        "  ╰──────────────────────────────────────────────────────────────╯",
+    ]
+
+    if inbound:
+        out += ["", "  FROM / who can affect or feed the hub"]
+        for edge in inbound[:8]:
+            source = compact(edge["from"])
+            out.append(f"       {source:<22} ╲")
+            out.append(f"                         ╲─[{edge['label']}]──▶  [{center}]")
             if edge["function"]:
-                detail += f"  {edge['function']}"
-            out.append(detail)
-    if outgoing:
-        out += ["", "  OUTBOUND / what this component reaches into"]
-        for edge in outgoing[:8]:
-            detail = f"  [{center}]  ──[{edge['label']}]──▶  {edge['to']}"
+                out.append(f"                              {edge['function']}")
+
+    if outbound:
+        out += ["", "  TO / what the hub relies on or controls"]
+        for edge in outbound[:8]:
+            destination = compact(edge["to"])
+            out.append(f"       [{center}]  ──[{edge['label']}]──╲")
+            out.append(f"                              ╲──▶  {destination}")
             if edge["function"]:
-                detail += f"  {edge['function']}"
-            out.append(detail)
+                out.append(f"                                   {edge['function']}")
+
     if cross:
-        out += ["", "  CROSS-LINKS / supporting components connected to each other"]
-        for edge in cross[:8]:
-            detail = f"  {edge['from']}  ──[{edge['label']}]──▶  {edge['to']}"
+        out += ["", "  CROSS-LINKS / the web outside the hub"]
+        for edge in cross[:10]:
+            out.append(f"       {compact(edge['from']):<22} ╲")
+            out.append(f"                         ╰─[{edge['label']}]─▶  {compact(edge['to'])}")
             if edge["function"]:
-                detail += f"  {edge['function']}"
-            out.append(detail)
+                out.append(f"                              {edge['function']}")
 
-    actor_links = []
+    actor_links: list[tuple[str, str, str]] = []
     for action in actions or []:
         actor = str(action.get("actor_name") or "")
         node = action.get("node")
         fn = action.get("function")
         if not actor or not isinstance(node, LiveNode) or not isinstance(fn, FunctionInfo):
             continue
-        link = (actor, _web_node_name(node.artifact_contract or node.name), fn.name)
+        target = _web_node_name(node.artifact_contract or node.name)
+        link = (actor, target, fn.name)
         if link not in actor_links:
             actor_links.append(link)
     if actor_links:
-        out += ["", "  HUMAN ACTORS / entry points into the graph"]
-        for actor, target, fn_name in actor_links[:6]:
-            out.append(f"  {actor}  ──[calls {fn_name}()]──▶  {target}")
+        out += ["", "  ACTORS / where the human side enters the web"]
+        for actor, target, fn_name in actor_links[:8]:
+            out.append(f"       {compact(actor):<22} ──[calls {fn_name}()]──▶  {compact(target)}")
 
-    out += ["", "  RELATIONSHIP KEY"]
-    out.append("    ownership / validation = authorization or safety gate")
-    out.append("    reads state = dependency on another contract's state")
-    out.append("    creates / initializes = lifecycle dependency")
-    out.append("    reports outcome = outcome/control dependency")
+    out += [
+        "",
+        "  READ THIS AS:",
+        "    node       = component or actor",
+        "    [label]    = what crosses the connection",
+        "    function   = source/runtime evidence proving the relationship",
+        "    hub        = the component with the most observed relationships",
+    ]
     return out
+
 
 def _action_phase(fn: FunctionInfo) -> str:
     n = fn.name.lower()
