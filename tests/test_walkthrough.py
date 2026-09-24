@@ -450,6 +450,13 @@ class WalkthroughTests(unittest.TestCase):
                 "outputs": [],
                 "stateMutability": "nonpayable",
             }],
+            abi=[{
+                "type": "function",
+                "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
             functions=["createPool(address)"],
             calls=[
                 {
@@ -1132,7 +1139,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("Alice ──▶ Factory.createPool()", rendered)
         self.assertIn("├─▶ Agreement.owner()", rendered)
         self.assertIn("├─▶ ConfidencePool.initialize()", rendered)
-        self.assertIn("    ├─▶ Registry.isAgreementValid(address)", rendered)
+        self.assertIn("Registry.isAgreementValid(address)  ✓", rendered)
 
     def test_live_interaction_graph_reads_like_a_protocol_story(self):
         actors = [
@@ -1162,7 +1169,7 @@ class WalkthroughTests(unittest.TestCase):
             step.address.lower(): 0,
         }
         rendered = walkthrough._render_interaction_graph(step, actors, False)
-        self.assertIn("[Alice] ── CALL deposit(Bob) ──▶ [Escrow]", rendered)
+        self.assertIn("Alice ────▶ Escrow.deposit(Bob)", rendered)
         self.assertIn("sends 1 ETH", rendered)
         self.assertIn("ETH Bob: +1 ETH", rendered)
         self.assertIn("Alice sends 1 ETH to Escrow to fund the escrow for Bob", rendered)
