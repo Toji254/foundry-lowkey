@@ -136,7 +136,7 @@ class AuditEngineTests(unittest.TestCase):
         self.assertEqual(findings[0]["locations"][0]["source"], "src/Vault.sol")
         self.assertEqual(findings[0]["locations"][0]["start"], 42)
 
-    def test_project_test_command_ignores_declared_dependencies(self):
+    def test_project_test_command_uses_uv_active_environment(self):
         from tempfile import TemporaryDirectory
 
         with TemporaryDirectory() as raw:
@@ -146,19 +146,12 @@ class AuditEngineTests(unittest.TestCase):
             dependency.mkdir(parents=True)
             project = {"submodules": [{"path": "tests/vendor"}]}
 
-            project_python = root / ".venv" / "bin" / "python"
-            project_python.parent.mkdir(parents=True)
-            project_python.write_text("#!/bin/sh\n", encoding="utf-8")
-            project_python.chmod(0o755)
-
             command = audit_engine._project_test_command(str(root), project)
 
-            self.assertEqual(
-                command[:3],
-                [str(project_python), "-m", "pytest"],
-            )
-            self.assertEqual(command[3], "tests")
-            self.assertEqual(command[4:], ["--ignore", "tests/vendor"])
+            self.assertEqual(command[:4], ["uv", "run", "--active", "pytest"])
+            self.assertEqual(command[4], "tests")
+            self.assertEqual(command[5:], ["--ignore", "tests/vendor"])
+
 
     def test_project_python_prefers_project_venv(self):
         from tempfile import TemporaryDirectory
