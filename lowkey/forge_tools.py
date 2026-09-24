@@ -16,6 +16,11 @@ try:
 except ImportError:
     run_clone = None
 
+try:
+    import system_model
+except ImportError:
+    system_model = None
+
 NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
     "fmt", "lint", "geiger", "flatten", "verify-contract",
@@ -40,6 +45,23 @@ def run_forge(args: Sequence[str]) -> int:
         return subprocess.run([binary, *args]).returncode
     except OSError as exc:
         return die(f"could not execute forge: {exc}", 1)
+
+def _refresh_system_manifest(reason: str) -> None:
+    if system_model is None:
+        return
+    try:
+        config = {}
+        if isinstance(getattr(system_model, "_config", None), type(lambda: None)):
+            config = system_model._config()
+        system_model.refresh_manifest(
+            ".",
+            rpc=config.get("rpc"),
+            config=config,
+            reason=reason,
+        )
+    except Exception:
+        # Deployment evidence enrichment must never mask the real Forge result.
+        pass
 
 def command_available(command: str) -> bool:
     binary = forge_path()
@@ -155,7 +177,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     if command in NATIVE_COMMANDS:
         if not command_available(command):
             return die(f"Forge command '{command}' is not supported by the installed Forge.")
-        return run_forge(args)
+        code = run_forge(args)
+        if code == 0 and command in {"script", "create"}:
+            _refresh_system_manifest(f"forge:{command}")
+        return code
     return die(f"unknown Forge command '{command}'. Use 'lk forge --help'.")
 
 if __name__ == "__main__":
