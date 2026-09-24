@@ -769,111 +769,80 @@ def _resolve_walkthrough_target(
     rpc: str,
     bootstrap: dict[str, Any],
 ) -> tuple[str | None, str]:
-    """Resolve a target, preferring live runtime state over stale static state."""
+    artifact_files = _load_artifacts(root)[1]
     configured = str(config.get("target") or "").strip()
     configured_static: tuple[str, str] | None = None
-    live_deployments = [
+    live = [
         x for x in (bootstrap.get("live_deployments") or [])
-        if isinstance(x, dict)
-        and not any(part.lower() == "dry-run" for part in str(x.get("broadcast") or "").split("/"))
+        if isinstance(x, dict) and "dry-run" not in str(x.get("broadcast") or "").lower()
     ]
 
-    def current_broadcast_match(address: str, expected_name: str) -> dict[str, Any] | None:
-        expected = re.sub(r"[^a-z0-9]", "", _clean_name(expected_name).lower())
-        same_address = [
-            x for x in live_deployments
-            if str(x.get("address") or "").lower() == address.lower()
-        ]
-        for item in same_address:
-            actual = re.sub(r"[^a-z0-9]", "", _clean_name(str(item.get("contract") or "")).lower())
-            if expected and actual and (expected == actual or expected in actual or actual in expected):
-                return item
-        return same_address[0] if same_address else None
+    def names_match(actual: str, expected: str) -> bool:
+        a = re.sub(r"[^a-z0-9]", "", _clean_name(actual).lower())
+        b = re.sub(r"[^a-z0-9]", "", _clean_name(expected).lower())
+        return bool(a and b and (a == b or a in b or b in a))
 
-    configured = str(config.get("target") or "").strip()
-    configured_static: tuple[str, str] | None = None
+    def compatible(address: str, expected: str) -> bool:
+        return _runtime_identity(root, rpc, address, expected, artifact_files) != "mismatch"
+
     if _is_address(configured):
         expected = str(config.get("target_contract") or _target_label(config, configured) or "")
-        current = current_broadcast_match(configured, expected) if expected else None
-        if current:
-            return configured, "current broadcast target"
-        # A live address that is identified by persisted evidence but does not
-        # match the current deployment identity is stale-prone (especially on
-        # a reset Anvil where CREATE addresses are reused). Prefer a current
-        # deployment with the expected contract identity.
-        if live_deployments and expected:
-            expected_norm = re.sub(r"[^a-z0-9]", "", _clean_name(expected).lower())
-            for item in live_deployments:
-                actual_norm = re.sub(r"[^a-z0-9]", "", _clean_name(str(item.get("contract") or "")).lower())
-                if expected_norm and actual_norm and (expected_norm == actual_norm or expected_norm in actual_norm or actual_norm in expected_norm):
-                    return str(item["address"]), f"current broadcast deployment ({item.get('contract')})"
-        if _code_size(rpc, configured) > 0:
-            return configured, "configured target"
-        configured_static = (configured, "configured target (no live bytecode)")
+        same = next(
+            (
+                item for item in live
+                if str(item.get("address") or "").lower() == configured.lower()
+                and (not expected or names_match(str(item.get("contract") or ""), expected))
+            ),
+            None,
+        )
+        if same and (not expected or compatible(configured, expected)):
+            ident = _runtime_identity(root, rpc, configured, expected, artifact_files)
+            return configured, f"current broadcast target ({ident})"
 
-    saved_static: list[tuple[str, str]] = []
-    saved_targets = config.get("targets") or {}
-    if isinstance(saved_targets, dict):
-        for name, value in saved_targets.items():
-            if not _is_address(value):
-                continue
-            if _code_size(rpc, value) > 0:
-                return value, f"saved target '{name}'"
-            saved_static.append((value, f"saved target '{name}' (no live bytecode)"))
+        if expected:
+            for item in live:
+                address = str(item.get("address") or "")
+                if address and names_match(str(item.get("contract") or ""), expected) and compatible(address, expected):
+                    ident = _runtime_identity(root, rpc, address, expected, artifact_files)
+                    return address, f"current broadcast deployment ({item.get('contract')}, {ident})"
+
+        code = _code_size(rpc, configured)
+        if code > 0 and (not expected or compatible(configured, expected)):
+            return configured, "configured target"
+        configured_static = (
+            configured,
+            f"configured target ({'identity mismatch' if code > 0 else 'no live bytecode'})",
+        )
 
     audit_targets = bootstrap.get("audit_targets") or _extract_audit_targets(
         bootstrap.get("audit_evidence") or []
     )
-    if not audit_targets:
-        direct_evidence: list[dict[str, Any]] = []
-        for path in sorted((root / ".audit" / "evidence").glob("*.json")):
-            if path.name == "system_bootstrap.json":
-                continue
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if isinstance(data, dict) and _is_address(data.get("target")):
-                direct_evidence.append({"target": data["target"], "file": path.name})
-        audit_targets = _extract_audit_targets(direct_evidence)
-
-    audit_static: list[tuple[str, str]] = []
+    expected = str(config.get("target_contract") or "")
     for item in audit_targets:
-        if not isinstance(item, dict):
+        address = item.get("target") if isinstance(item, dict) else None
+        if not _is_address(address):
             continue
-        target = item.get("target")
-        if not _is_address(target):
-            continue
-        file_name = str(item.get("file") or "")
-        source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
-        if _code_size(rpc, target) > 0:
-            if not live_deployments:
-                return target, source
-            matched = current_broadcast_match(target, str(config.get("target_contract") or _target_label(config, target) or ""))
-            if matched:
-                return target, source
-        audit_static.append((target, source + " (no live bytecode or stale identity)"))
+        if _code_size(rpc, address) > 0 and (
+            not live or not expected or compatible(address, expected)
+        ):
+            return address, f"audit evidence '{item.get('file') or 'target'}'"
 
-    live = list(live_deployments)
-    live.sort(
-        key=lambda item: (
-            str(item.get("broadcast") or ""),
-            int(item.get("index") or 0),
-        ),
-        reverse=True,
-    )
     if live:
+        live.sort(
+            key=lambda x: (
+                str(x.get("broadcast") or ""),
+                int(x.get("index") or 0),
+            ),
+            reverse=True,
+        )
         item = live[0]
-        return str(item["address"]), f"broadcast {item['broadcast']}"
+        return str(item.get("address")), f"broadcast {item.get('broadcast') or 'deployment'}"
 
     if configured_static:
         return configured_static
-    if audit_static:
-        return audit_static[0]
-    if saved_static:
-        return saved_static[0]
     return None, "not discovered"
+
+
 
 
 def _bootstrap_script_score(item: dict[str, Any]) -> int:
@@ -1116,6 +1085,60 @@ def _function_signature_from_abi(item: dict[str, Any]) -> str:
     name = str(item.get("name") or "")
     types = [_canonical_abi_type(x) for x in item.get("inputs", [])]
     return f"{name}({','.join(types)})"
+
+
+def _artifact_runtime_code(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    deployed = payload.get("deployedBytecode")
+    value = deployed.get("object") if isinstance(deployed, dict) else deployed
+    if not isinstance(value, str) or not value.startswith("0x") or len(value) <= 2:
+        return None
+    return value.lower()
+
+
+def _runtime_identity(
+    root: Path,
+    rpc: str,
+    address: str,
+    contract: str,
+    artifact_files: dict[str, Path] | None = None,
+) -> str:
+    if not _is_address(address) or not contract:
+        return "unknown"
+    files = artifact_files or _load_artifacts(root)[1]
+    path = files.get(contract) or next(
+        (p for name, p in files.items() if name.lower() == contract.lower()),
+        None,
+    )
+    expected = _artifact_runtime_code(path) if path else None
+    if expected is None:
+        return "unknown"
+    try:
+        actual = str(_rpc(rpc, "eth_getCode", [address, "latest"]) or "0x").lower()
+    except Exception:
+        return "unknown"
+    if actual == expected:
+        return "exact"
+    if len(actual) == len(expected) and len(actual) > 100:
+        if actual[:74] == expected[:74] and actual[-74:] == expected[-74:]:
+            return "weak"
+    return "mismatch"
+
+
+def _identify_runtime_contract(
+    root: Path,
+    rpc: str,
+    address: str,
+    artifact_files: dict[str, Path],
+) -> str | None:
+    matches = [
+        name for name in artifact_files
+        if _runtime_identity(root, rpc, address, name, artifact_files) == "exact"
+    ]
+    return sorted(matches)[0] if matches else None
 
 
 def _load_artifacts(root: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Path]]:
@@ -1401,18 +1424,13 @@ def _merge_artifact_functions(
     by_contract: dict[str, list[FunctionInfo]] = {}
     for name, abi in artifacts.items():
         ci = contracts.get(name)
-        source_map: dict[str, tuple[str | None, int | None]] = {}
-        if ci:
-            source_map = {
-                f.signature: (f.source, f.line)
-                for f in ci.functions
-            }
+        source = {f.signature: f for f in (ci.functions if ci else [])}
         functions: list[FunctionInfo] = []
         for item in abi:
             if item.get("type") != "function":
                 continue
             sig = _function_signature_from_abi(item)
-            src, line = source_map.get(sig, (None, None))
+            src = source.get(sig)
             functions.append(
                 FunctionInfo(
                     contract=name,
@@ -1421,38 +1439,15 @@ def _merge_artifact_functions(
                     outputs=item.get("outputs") or [],
                     mutability=str(item.get("stateMutability") or "nonpayable"),
                     signature=sig,
-                    source=src,
-                    line=line,
-                    body=(
-                        next(
-                            (
-                                f.body
-                                for f in (ci.functions if ci else [])
-                                if f.signature == sig
-                            ),
-                            "",
-                        )
-                    ),
-                    modifiers=(
-                        next(
-                            (
-                                f.modifiers
-                                for f in (ci.functions if ci else [])
-                                if f.signature == sig
-                            ),
-                            [],
-                        )
-                    ),
-                    calls=(
-                        next(
-                            (
-                                f.calls
-                                for f in (ci.functions if ci else [])
-                                if f.signature == sig
-                            ),
-                            [],
-                        )
-                    ),
+                    source=src.source if src else None,
+                    line=src.line if src else None,
+                    body=src.body if src else "",
+                    modifiers=list(src.modifiers or []) if src else [],
+                    calls=list(src.calls or []) if src else [],
+                    visibility=src.visibility if src else "unknown",
+                    reads=list(src.reads or []) if src else [],
+                    writes=list(src.writes or []) if src else [],
+                    array_ops=list(src.array_ops or []) if src else [],
                 )
             )
         by_contract[name] = functions
@@ -1812,6 +1807,11 @@ def _build_live_graph(
                 if cname.lower() == label.lower():
                     artifact_contract = cname
                     break
+        if artifact_contract and size > 0:
+            if _runtime_identity(root, rpc, address, artifact_contract, artifact_files) == "mismatch":
+                identified = _identify_runtime_contract(root, rpc, address, artifact_files)
+                if identified:
+                    artifact_contract = identified
         node = LiveNode(
             address=address,
             name=artifact_contract or label,
