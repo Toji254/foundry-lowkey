@@ -226,6 +226,7 @@ def _extract_broadcasts(root: Path, rpc: str | None) -> list[dict[str, Any]]:
                 merged = {**transaction, **tx}
             else:
                 merged = tx
+            code_size = _code_size(rpc, address) if rpc else None
             deployments.append(
                 {
                     "contract": str(
@@ -240,7 +241,8 @@ def _extract_broadcasts(root: Path, rpc: str | None) -> list[dict[str, Any]]:
                     "block_number": tx.get("blockNumber"),
                     "args": tx.get("args") or tx.get("arguments") or [],
                     "from": merged.get("from"),
-                    "live": _code_size(rpc, address) if rpc else None,
+                    "code_size": code_size,
+                    "live": code_size is not None and code_size > 0,
                 }
             )
     deployments.sort(
