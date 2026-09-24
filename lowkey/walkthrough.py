@@ -363,9 +363,32 @@ def _resolve_walkthrough_target(
 
     # Persisted audit evidence is authoritative session state and must work
     # even when Foundry broadcast artifacts do not exist.
-    for item in bootstrap.get("audit_targets") or _extract_audit_targets(
+    audit_targets = bootstrap.get("audit_targets") or _extract_audit_targets(
         bootstrap.get("audit_evidence") or []
-    ):
+    )
+
+    # Last-mile fallback: read persisted evidence directly. This keeps target
+    # recovery working even if the shared manifest is stale or partially built.
+    if not audit_targets:
+        direct_evidence: list[dict[str, Any]] = []
+        for path in sorted((root / ".audit" / "evidence").glob("*.json")):
+            if path.name == "system_bootstrap.json":
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, dict) and _is_address(data.get("target")):
+                direct_evidence.append(
+                    {
+                        "target": data["target"],
+                        "file": path.name,
+                    }
+                )
+        audit_targets = _extract_audit_targets(direct_evidence)
+
+    for item in audit_targets:
         if not isinstance(item, dict):
             continue
         target = item.get("target")
