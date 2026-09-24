@@ -2025,7 +2025,8 @@ def main():
         "checklist","session","forge","walkthrough"
     }
     if (
-        config.get("session_active")
+        result == 0
+        and config.get("session_active")
         and sys.argv[1] in evidence_commands
         and sys.argv[1] not in {"audit","poc"}
         and generate_poc
