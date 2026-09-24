@@ -827,6 +827,42 @@ def _actor_for_function(name: str, actors: list[Actor], observed: dict[str, Any]
         return actors[1]
     return actors[0]
 
+def _test_flow_hints(root: Path | None, model: ContractModel) -> dict[str, tuple[int, int]]:
+    """Mine project tests for ordered calls to this model's ABI functions."""
+    if not root or not root.is_dir():
+        return {}
+    names = {
+        str(item.get("name")): 0
+        for item in model.abi
+        if item.get("type") == "function" and item.get("name")
+    }
+    if not names:
+        return {}
+    occurrences: dict[str, list[int]] = {name: [] for name in names}
+    test_files = []
+    for directory_name in ("test", "tests"):
+        directory = root / directory_name
+        if directory.is_dir():
+            test_files.extend(sorted(directory.rglob("*.sol")))
+    for path in test_files:
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for name in names:
+            for match in re.finditer(r"\\.\\s*" + re.escape(name) + r"\\s*\\(", source):
+                # Calls inside test contracts are behavioral evidence; ignore function definitions.
+                prefix = source[max(0, match.start() - 24):match.start()]
+                if re.search(r"function\\s*$", prefix):
+                    continue
+                occurrences[name].append(match.start())
+    ordered = []
+    for name, positions in occurrences.items():
+        if positions:
+            ordered.append((min(positions), -len(positions), name))
+    ordered.sort()
+    return {name: (index, -count) for index, (_pos, count, name) in enumerate(ordered)}
+
 def plan_workflow(
     model: ContractModel,
     actors: list[Actor],
@@ -834,10 +870,19 @@ def plan_workflow(
     now: int,
     max_steps: int,
     observed: dict[str, Any] | None = None,
+    root: Path | None = None,
 ) -> list[Step]:
     observed = observed or {}
     candidates = [x for x in _mutators(model) if _lifecycle_candidate(str(x.get("name") or ""))]
-    candidates.sort(key=lambda item: (_phase_score(str(item.get("name") or "")), str(item.get("name") or "")))
+    test_hints = _test_flow_hints(root, model)
+    candidates.sort(
+        key=lambda item: (
+            0 if str(item.get("name") or "") in test_hints else 1,
+            test_hints.get(str(item.get("name") or ""), (999999, 0))[0],
+            _phase_score(str(item.get("name") or "")),
+            str(item.get("name") or ""),
+        )
+    )
 
     steps: list[Step] = []
     used: set[str] = set()
@@ -5504,7 +5549,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         )
 
     if static:
-        plan=plan_workflow(model,actors,target or "0x"+"00"*20,int(time.time()),max_steps)
+        plan=plan_workflow(model,actors,target or "0x"+"00"*20,int(time.time()),max_steps,root=root)
         runtime=[RuntimeContract(target or "0x"+"00"*20,model.name,model.name,"target")]
         print("\n"+_render_plan(model,plan,_ansi_enabled(static)))
         print("\n"+_render_board(root,model,models,runtime,actors,plan,None,[],_ansi_enabled(static),True))
@@ -5551,7 +5596,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             recipe=_confidence_pool_factory_recipe(config,actors,now)
         elif model.name.lower()=="confidencepool":
             recipe=_confidence_pool_recipe(config,actors,now=now)
-    pending=recipe[:max_steps] if recipe else plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed)
+    pending=recipe[:max_steps] if recipe else plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed,root=root)
 
     def draw(current=None, storage=None):
         if sys.stdout.isatty():
@@ -5747,13 +5792,13 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                         )
 
                     selected = child_steps or plan_workflow(
-                        child, actors, node.address, _block_timestamp(rpc), max_steps, observed
+                        child, actors, node.address, _block_timestamp(rpc), max_steps, observed, root=root
                     )
                     for candidate in reversed(selected):
                         ckey=(candidate.contract,candidate.address.lower(),candidate.function)
                         if ckey not in completed:
                             pending.insert(0,candidate)
-                for candidate in reversed(plan_workflow(current_model,actors,step.address,_block_timestamp(rpc),max_steps,observed)):
+                for candidate in reversed(plan_workflow(current_model,actors,step.address,_block_timestamp(rpc),max_steps,observed,root=root)):
                     ckey=(candidate.contract,candidate.address.lower(),candidate.function)
                     if ckey not in completed: pending.append(candidate)
 
