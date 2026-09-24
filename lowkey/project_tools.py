@@ -108,7 +108,7 @@ def _pyproject_dependencies(content: str) -> list[str]:
 
 
 def _python_requirement(content: str) -> str | None:
-    match = re.search(r'(?im)^\\s*requires-python\\s*=\\s*["\\']([^"\\']+)["\\']', content)
+    match = re.search(r"(?im)^\\s*requires-python\\s*=\\s*[\"']([^\"']+)[\"']", content)
     return match.group(1) if match else None
 
 
