@@ -37,6 +37,18 @@ LowkeyCast is a small auditor-oriented CLI that sits on top of Foundry Cast. It 
 - Raw Cast passthrough
 - Batch command files
 
+### Protocol walkthrough
+
+The system-aware walkthrough is invoked through Lowkey itself:
+
+```bash
+lk walkthrough --auto --steps 12
+lk walkthrough test --cases 50 --seed 1337
+lk walkthrough test --cases 50 --seed 1337 --send
+```
+
+It builds a static + live contract graph, discovers runtime dependencies, synthesizes role-aware arguments, preflights state-changing calls, diagnoses observed reverts, and records replayable evidence under `.audit/evidence/walkthrough.json`. The `test` mode mutates ABI values and semantic actors; successful probes are observations, not vulnerability verdicts.
+
 ### Audit workflow
 - Findings, notes, TODOs, sessions, checklist
 - Attacker-state matrix
