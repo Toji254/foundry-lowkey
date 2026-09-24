@@ -136,6 +136,26 @@ class AuditEngineTests(unittest.TestCase):
         self.assertEqual(findings[0]["locations"][0]["source"], "src/Vault.sol")
         self.assertEqual(findings[0]["locations"][0]["start"], 42)
 
+    def test_project_test_command_bootstraps_project_solcx(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "tests").mkdir()
+            project = {"solidity_compilers": ["0.8.18"]}
+
+            with patch.object(
+                audit_engine,
+                "_project_solcx_install_path",
+                return_value=root / ".audit" / "toolchain" / "solcx",
+            ):
+                command = audit_engine._project_test_command(str(root), project)
+
+            bootstrap = command[5]
+            self.assertIn("solcx.set_solc_version", bootstrap)
+            self.assertIn("0.8.18", bootstrap)
+            self.assertIn("solcx_binary_path", bootstrap)
+
     def test_project_test_command_uses_uv_active_environment(self):
         from tempfile import TemporaryDirectory
 
@@ -148,9 +168,10 @@ class AuditEngineTests(unittest.TestCase):
 
             command = audit_engine._project_test_command(str(root), project)
 
-            self.assertEqual(command[:4], ["uv", "run", "--active", "pytest"])
-            self.assertEqual(command[4], "tests")
-            self.assertEqual(command[5:], ["--ignore", "tests/vendor"])
+            self.assertEqual(command[:5], ["uv", "run", "--active", "python", "-c"])
+            self.assertEqual(command[5], "lowkey-pytest")
+            self.assertEqual(command[6], "tests")
+            self.assertEqual(command[7:], ["--ignore", "tests/vendor"])
 
 
     def test_slither_command_does_not_fail_on_findings_by_default(self):
