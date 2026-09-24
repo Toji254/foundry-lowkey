@@ -1285,8 +1285,9 @@ def _render_interaction_graph_full(
     actor = step.actor or "Caller"
     contract = _friendly_contract_name(step)
     function = str(step.function or "").split("(", 1)[0]
-    args = ", ".join(_friendly_arg(x, actors) for x in step.args) or "∅"
+    args = ", ".join(_friendly_arg(x, actors) for x in step.args)
     linked_function = _function_link(root, model, function)
+    call_display = f"{linked_function}({args})" if args else f"{linked_function}()"
     status = "✓ SUCCESS" if step.status == "success" else "✕ BLOCKED" if step.status in {"blocked", "reverted"} else "● CHECKING"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
@@ -1294,9 +1295,20 @@ def _render_interaction_graph_full(
         _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
         f"  │   { _human_action_summary(step, actors) }",
-        f"  │   [{actor}] ── CALL {linked_function}({args}) ──▶ [{contract}]",
+        f"  │   [{actor}] ── CALL {call_display} ──▶ [{contract}]",
         "  │                              │",
     ]
+
+    lower = function.lower()
+    if lower in {"stake", "deposit", "contributebonus", "fund", "contribute"} and step.args:
+        amount = _friendly_value(step.args[0])
+        lines.append(
+            f"  │                              ├─ token flow: {actor} ── {amount} ──▶ {contract}"
+        )
+    elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
+        lines.append(
+            f"  │                              ├─ token flow: {contract} ──▶ {actor}"
+        )
 
     if step.value_wei:
         lines += [
