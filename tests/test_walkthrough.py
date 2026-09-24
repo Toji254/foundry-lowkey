@@ -198,6 +198,91 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(result["tests"][0]["path"], "test/Example.t.sol")
             self.assertIn("setUp()", result["tests"][0]["signals"])
 
+    def test_offline_configured_target_does_not_hide_live_broadcast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            configured = "0x" + "1" * 40
+            live = "0x" + "2" * 40
+            bootstrap = {
+                "audit_targets": [],
+                "audit_evidence": [],
+                "live_deployments": [
+                    {
+                        "address": live,
+                        "contract": "Example",
+                        "broadcast": "broadcast/Deploy/31337/run-latest.json",
+                        "index": 1,
+                    }
+                ],
+            }
+            with patch.object(
+                walk, "_code_size",
+                side_effect=lambda _rpc, addr: 100 if addr.lower() == live.lower() else 0,
+            ):
+                target, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": configured, "targets": {}},
+                    "http://127.0.0.1:8545",
+                    bootstrap,
+                )
+            self.assertEqual(target, live)
+            self.assertTrue(source.startswith("broadcast "))
+
+    def test_auto_bootstrap_uses_only_safe_local_setup_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            script = root / "script"
+            script.mkdir()
+            (script / "LocalSetup.s.sol").write_text(
+                """
+                contract LocalSetup {
+                    function run() external {
+                        vm.startBroadcast();
+                        new Example();
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            poc = root / "script" / "Exploit.s.sol"
+            poc.write_text(
+                """
+                contract Exploit {
+                    function run() external { vm.startBroadcast(); new Example(); }
+                }
+                """,
+                encoding="utf-8",
+            )
+            calls = []
+
+            def fake_cmd(args, cwd=None, timeout=30):
+                calls.append((args, timeout))
+                return 0, "", ""
+
+            with patch.object(walk, "_is_local_rpc", return_value=True):
+                with patch.object(walk, "_eth_accounts", return_value=[]):
+                    with patch.object(walk, "_cmd", side_effect=fake_cmd):
+                        ok, reason = walk._auto_bootstrap_local(
+                            root,
+                            {"rpc": "http://127.0.0.1:8545"},
+                            {
+                                "scripts": [
+                                    {
+                                        "path": "script/Exploit.s.sol",
+                                        "signals": ["run()", "broadcast", "contract creation"],
+                                    },
+                                    {
+                                        "path": "script/LocalSetup.s.sol",
+                                        "signals": ["run()", "broadcast", "contract creation"],
+                                    },
+                                ]
+                            },
+                        )
+            self.assertTrue(ok)
+            self.assertIn("LocalSetup.s.sol", reason)
+            self.assertEqual(len(calls), 2)
+            self.assertNotIn("Exploit.s.sol", " ".join(calls[0][0]))
+
     def test_walkthrough_target_prefers_live_config_then_audit_evidence_then_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
