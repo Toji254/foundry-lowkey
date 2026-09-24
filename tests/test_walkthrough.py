@@ -76,6 +76,70 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(result, proxy)
         self.assertIn("proxy for implementation", source)
 
+    def test_resolver_does_not_let_stale_poc_target_hijack_live_protocol_root(self):
+        factory = "0x" + "1" * 40
+        moderator = "0x" + "2" * 40
+
+        artifacts = {
+            "ConfidencePoolFactory": [
+                {"type": "function", "name": "createPool", "stateMutability": "nonpayable"},
+                {"type": "function", "name": "setStakeTokenAllowed", "stateMutability": "nonpayable"},
+            ],
+            "MockConfidencePoolModerator": [
+                {"type": "function", "name": "flagOutcome", "stateMutability": "nonpayable"},
+            ],
+        }
+        files = {}
+
+        live = [
+            {
+                "address": factory,
+                "contract": "ConfidencePoolFactory",
+                "broadcast": "broadcast/Deploy.s.sol/run-latest.json",
+                "index": 0,
+                "live": True,
+            },
+            {
+                "address": moderator,
+                "contract": "MockConfidencePoolModerator",
+                "broadcast": "broadcast/Deploy.s.sol/run-latest.json",
+                "index": 5,
+                "live": True,
+            },
+        ]
+        bootstrap = {
+            "live_deployments": live,
+            "audit_targets": [{"target": moderator, "file": "poc.json"}],
+            "audit_evidence": [{"target": moderator, "file": "poc.json"}],
+        }
+
+        with patch.object(
+            walk,
+            "_load_artifacts",
+            return_value=(artifacts, files),
+        ), patch.object(
+            walk,
+            "_code_size",
+            return_value=100,
+        ), patch.object(
+            walk,
+            "_runtime_identity",
+            return_value="unknown",
+        ), patch.object(
+            walk,
+            "_find_live_proxy_for_implementation",
+            return_value=None,
+        ):
+            target, source = walk._resolve_walkthrough_target(
+                pathlib.Path("."),
+                {},
+                "http://127.0.0.1:8545",
+                bootstrap,
+            )
+
+        self.assertEqual(target, factory)
+        self.assertIn("ConfidencePoolFactory", source)
+
     def test_address_classifier_does_not_confuse_actor_names(self):
         self.assertTrue(walk._is_address("0x" + "1" * 40))
         self.assertFalse(walk._is_address("Alice"))
