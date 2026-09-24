@@ -1571,7 +1571,7 @@ def _render_interaction_graph_full(
     if source_edges:
         impls = _implementation_mapping(models)
         by_name = {item.name: item for item in models}
-        lines += ["  │", "  │   WHAT HAPPENS INSIDE"]
+        lines += ["  │", "  │   SOURCE LOGIC OF THIS FUNCTION"]
         seen = set()
         for edge in source_edges[:10]:
             target_name = str(edge.get("to_contract") or edge.get("interface") or "external")
@@ -1668,6 +1668,7 @@ def _render_protocol_story_full(
         if index != len(visible) - 1:
             lines.append("                 │")
             lines.append("                 ▼")
+            lines.append("             next live step")
 
     return "\n".join(lines)
 
@@ -2686,12 +2687,20 @@ def _system_test_targets(
         "pool_implementation": "ConfidencePool",
     }
     for key, address in system.items():
-        if key not in known_names:
+        if not is_address(address) or key.endswith("_implementation") or key in {"pool"} and not address:
             continue
-        if key == "pool_implementation":
-            # The implementation is not a live protocol instance; the clone is.
-            continue
-        add(key, address, known_names[key])
+        contract_name = known_names.get(key)
+        if not contract_name:
+            compact = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            compact_map = {
+                "factory": "Factory",
+                "pool": "Pool",
+                "router": "Router",
+                "manager": "Manager",
+            }
+            contract_name = compact_map.get(compact)
+        if contract_name:
+            add(key, address, contract_name)
 
     return result
 
@@ -2951,18 +2960,486 @@ def _target_is_live_instance(
 
     return True, None
 
+
+
+def _all_artifact_entries(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Return every compiled artifact, including dependency proxy artifacts."""
+    out = root / "out"
+    if not out.is_dir():
+        return []
+    found: list[tuple[Path, dict[str, Any]]] = []
+    for path in out.rglob("*.json"):
+        if "build-info" in path.parts:
+            continue
+        data = _json_file(path)
+        if isinstance(data, dict) and isinstance(data.get("abi"), list):
+            found.append((path, data))
+    return found
+
+
+def _artifact_entry_by_name(root: Path, contract_name: str) -> tuple[Path, dict[str, Any]] | None:
+    target = str(contract_name or "").lower()
+    exact: list[tuple[Path, dict[str, Any]]] = []
+    loose: list[tuple[Path, dict[str, Any]]] = []
+    for path, data in _all_artifact_entries(root):
+        name = str(data.get("contractName") or path.stem)
+        if name.lower() == target:
+            exact.append((path, data))
+        elif target and target in name.lower():
+            loose.append((path, data))
+    return (exact or loose or [None])[0]
+
+
+def _artifact_fqn(entry: tuple[Path, dict[str, Any]] | None) -> str | None:
+    if not entry:
+        return None
+    path, data = entry
+    source = str(data.get("sourceName") or "").replace("\\", "/").lstrip("./")
+    name = str(data.get("contractName") or path.stem)
+    return f"{source}:{name}" if source else None
+
+
+def _fixture_model(
+    models: list[ContractModel],
+    *,
+    exact: Iterable[str] = (),
+    tokens: Iterable[str] = (),
+    required_functions: Iterable[str] = (),
+) -> ContractModel | None:
+    exact_lower = {str(x).lower() for x in exact}
+    token_list = [str(x).lower() for x in tokens]
+    required = {str(x).lower() for x in required_functions}
+
+    ranked: list[tuple[int, ContractModel]] = []
+    for model in models:
+        haystack = f"{model.name} {model.source}".lower()
+        names = {str(sig).split("(", 1)[0].lower() for sig in model.functions}
+        score = 0
+        if model.name.lower() in exact_lower:
+            score += 1000
+        if "mock" in model.name.lower() or "/mocks/" in model.source.lower() or "test/mocks" in model.source.lower():
+            score += 100
+        score += sum(20 for token in token_list if token in haystack)
+        score += sum(30 for fn in required if fn in names)
+        if score:
+            ranked.append((score, model))
+    ranked.sort(key=lambda item: (-item[0], item[1].name.lower()))
+    return ranked[0][1] if ranked else None
+
+
+def _function_by_name(model: ContractModel | None, name: str) -> dict[str, Any] | None:
+    if not model:
+        return None
+    wanted = str(name).lower()
+    for item in model.abi:
+        if item.get("type") == "function" and str(item.get("name") or "").lower() == wanted:
+            return item
+    return None
+
+
+def _model_has_function(model: ContractModel | None, names: Iterable[str]) -> bool:
+    if not model:
+        return False
+    wanted = {str(x).lower() for x in names}
+    return any(str(sig).split("(", 1)[0].lower() in wanted for sig in model.functions)
+
+
+def _infer_protocol_root(models: list[ContractModel]) -> ContractModel | None:
+    """Find a likely protocol entry point from lifecycle + deployment semantics."""
+    ranked: list[tuple[int, ContractModel]] = []
+    for model in models:
+        names = {str(sig).split("(", 1)[0].lower() for sig in model.functions}
+        if not any("initialize" == name for name in names):
+            continue
+        score = 0
+        lower = model.name.lower()
+        if any(word in lower for word in ("factory", "manager", "router", "registry", "controller")):
+            score += 80
+        if any(
+            name.startswith(prefix)
+            for name in names
+            for prefix in ("create", "deploy", "open", "register", "clone")
+        ):
+            score += 100
+        if any("clone" in str(text).lower() or "create2" in str(text).lower() for text in [model.source, model.name]):
+            score += 20
+        if model.calls:
+            score += min(30, 5 * len([e for e in model.calls if e.get("kind") == "cross-contract"]))
+        if score:
+            ranked.append((score, model))
+    ranked.sort(key=lambda item: (-item[0], item[1].name.lower()))
+    return ranked[0][1] if ranked else None
+
+
+def _infer_child_model(root_model: ContractModel, models: list[ContractModel]) -> ContractModel | None:
+    """Resolve a root contract's created/initialized child from source call edges."""
+    by_name = {item.name.lower(): item for item in models}
+    impls = _implementation_mapping(models)
+    candidates: list[tuple[int, ContractModel]] = []
+
+    for edge in root_model.calls:
+        if str(edge.get("to_function") or "").lower() != "initialize":
+            continue
+        target_name = str(edge.get("to_contract") or "").strip()
+        concrete = impls.get(target_name, target_name)
+        child = by_name.get(concrete.lower())
+        if not child:
+            continue
+        score = 100
+        if "pool" in child.name.lower():
+            score += 40
+        candidates.append((score, child))
+
+    if candidates:
+        candidates.sort(key=lambda item: (-item[0], item[1].name.lower()))
+        return candidates[0][1]
+
+    # Fallback: create/clone roots commonly have one sibling application contract.
+    siblings = [
+        item for item in models
+        if item.name != root_model.name
+        and not item.kind in {"interface", "library", "abstract"}
+        and any(
+            str(sig).split("(", 1)[0].lower().startswith(prefix)
+            for sig in item.functions
+            for prefix in ("stake", "deposit", "claim", "withdraw", "initialize")
+        )
+    ]
+    return sorted(siblings, key=lambda item: ("pool" not in item.name.lower(), item.name.lower()))[0] if siblings else None
+
+
+def _encode_calldata(signature: str, args: list[Any]) -> str | None:
+    command = ["cast", "calldata", signature, *[_cli_arg(item) for item in args]]
+    code, out, err = _cmd(command, timeout=8)
+    if code != 0:
+        return None
+    value = (out or err or "").strip().splitlines()
+    return value[-1].strip() if value else None
+
+
+def _parse_local_deployed_address(output: str) -> str | None:
+    patterns = [
+        r"(?i)\bDeployed to:\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bContract Address:\s*(0x[0-9a-fA-F]{40})",
+        r'(?i)"deployedTo"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+        r'(?i)"contractAddress"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, str(output or ""))
+        if match:
+            return match.group(1)
+    return None
+
+
+def _deploy_local_artifact(
+    root: Path,
+    rpc: str,
+    private_key: str,
+    entry: tuple[Path, dict[str, Any]] | None,
+    args: list[Any] | None = None,
+) -> str | None:
+    fqn = _artifact_fqn(entry)
+    if not fqn:
+        return None
+    command = ["forge", "create", fqn]
+    values = list(args or [])
+    if values:
+        command += ["--constructor-args", *[_cli_arg(item) for item in values]]
+    command += ["--rpc-url", rpc, "--private-key", private_key, "--broadcast"]
+    code, out, err = _cmd(command, cwd=root, timeout=90)
+    if code != 0:
+        return None
+    return _parse_local_deployed_address(out or err)
+
+
+def _send_lab_control(
+    host: Any,
+    config: dict[str, Any],
+    actor: Actor,
+    target: str,
+    signature: str,
+    args: list[Any],
+) -> str | None:
+    tx, _output = _send(host, config, actor, target, signature, args, 0)
+    return tx
+
+
+def _candidate_proxy_artifact(root: Path) -> tuple[Path, dict[str, Any]] | None:
+    return _artifact_entry_by_name(root, "ERC1967Proxy")
+
+
+def _looks_like_confidence_pool_system(root_model: ContractModel, child: ContractModel | None) -> bool:
+    names = {str(sig).split("(", 1)[0].lower() for sig in root_model.functions}
+    return (
+        root_model.name.lower() == "confidencepoolfactory"
+        and child is not None
+        and child.name.lower() == "confidencepool"
+        and "createpool" in names
+    )
+
+
+def _synthesize_local_protocol_fixture(
+    root: Path,
+    rpc: str,
+    host: Any,
+    config: dict[str, Any],
+    actors: list[Actor],
+    models: list[ContractModel],
+    support_models: list[ContractModel],
+) -> tuple[bool, str]:
+    """
+    Build a disposable protocol instance from compiled project + test fixtures.
+
+    This is deliberately semantic rather than hard-coded to one address layout:
+    the engine identifies an entry-point, its created child, then supplies matching
+    mock dependencies from project fixtures. Projects without enough safe fixtures
+    fall back to the ordinary generic lab path instead of inventing addresses.
+    """
+    root_model = _infer_protocol_root(models)
+    if not root_model:
+        return False, "no upgradeable/create-style application root was inferred"
+
+    child = _infer_child_model(root_model, models)
+    if not child:
+        return False, f"no concrete child contract was inferred from {root_model.name}"
+
+    # The full multi-contract bootstrap needs disposable mocks. Prefer the project's
+    # own test doubles; never substitute an EOA where the source treats an address
+    # as a contract.
+    token = _fixture_model(
+        support_models,
+        exact=("MockERC20",),
+        tokens=("erc20", "token"),
+        required_functions=("mint", "balanceof", "transfer"),
+    )
+    registry = _fixture_model(
+        support_models,
+        exact=("MockSafeHarborRegistry",),
+        tokens=("safeharborregistry", "safeharbor", "registry"),
+        required_functions=("isagreementvalid",),
+    )
+    agreement = _fixture_model(
+        support_models,
+        exact=("MockAgreement",),
+        tokens=("agreement",),
+        required_functions=("owner",),
+    )
+    attack_registry = _fixture_model(
+        support_models,
+        exact=("MockAttackRegistry",),
+        tokens=("attackregistry",),
+        required_functions=("getagreementstate", "setagreementstate"),
+    )
+    moderator = _fixture_model(
+        support_models,
+        exact=("MockConfidencePoolModerator",),
+        tokens=("moderator",),
+        required_functions=("flag",),
+    )
+
+    if not all([token, registry, agreement]):
+        return False, "project test fixtures do not expose enough safe token/registry/agreement mocks"
+
+    needs_proxy = any(
+        str(item.get("name") or "").lower() == "initialize"
+        and item.get("type") == "function"
+        for item in root_model.abi
+    )
+    proxy = _candidate_proxy_artifact(root) if needs_proxy else None
+    if needs_proxy and not proxy:
+        return False, f"{root_model.name} is initializer-based but no compiled ERC1967Proxy artifact was found"
+
+    private_key = host.derive_default_anvil_key(0) if hasattr(host, "derive_default_anvil_key") else None
+    if not private_key:
+        return False, "could not derive the default Anvil deployer key"
+
+    alice = actors[0] if actors else Actor("Alice", "0x" + "00" * 20, 0)
+    bob = actors[1] if len(actors) > 1 else alice
+
+    def deploy_model(model: ContractModel, ctor_args: list[Any] | None = None) -> str | None:
+        return _deploy_local_artifact(root, rpc, private_key, _artifact_entry_by_name(root, model.name), ctor_args)
+
+    system: dict[str, Any] = {}
+
+    system["stake_token"] = deploy_model(token)
+    system["safe_harbor_registry"] = deploy_model(registry)
+    if attack_registry:
+        system["attack_registry"] = deploy_model(attack_registry)
+    if moderator:
+        system["moderator"] = deploy_model(moderator)
+    system["pool_implementation"] = deploy_model(child)
+    system["agreement"] = deploy_model(agreement, [alice.address])
+
+    if not all(is_address(system.get(k)) for k in ("stake_token", "safe_harbor_registry", "pool_implementation", "agreement")):
+        return False, "one or more core protocol fixtures failed to deploy"
+
+    # Wire the disposable registry/Agreement fixtures before the root creates a child.
+    if system.get("attack_registry"):
+        _send_lab_control(
+            host, config, alice, system["safe_harbor_registry"],
+            "setAttackRegistry(address)", [system["attack_registry"]],
+        )
+    _send_lab_control(
+        host, config, alice, system["safe_harbor_registry"],
+        "setAgreementValid(address,bool)", [system["agreement"], True],
+    )
+
+    # Agreement scope is required by child.initialize in systems with the same
+    # scope-validation pattern. Ignore the optional call for other fixtures.
+    agreement_scope_fn = next(
+        (
+            item for item in agreement.abi
+            if item.get("type") == "function"
+            and str(item.get("name") or "").lower() == "setcontractinscope"
+        ),
+        None,
+    )
+    if agreement_scope_fn:
+        _send_lab_control(
+            host, config, alice, system["agreement"],
+            _signature(agreement_scope_fn), [alice.address, True],
+        )
+        if bob.address.lower() != alice.address.lower():
+            _send_lab_control(
+                host, config, alice, system["agreement"],
+                _signature(agreement_scope_fn), [bob.address, True],
+            )
+
+    factory_impl = deploy_model(root_model)
+    if not is_address(factory_impl):
+        return False, f"failed to deploy {root_model.name} implementation"
+
+    init = next(
+        (
+            item for item in root_model.abi
+            if item.get("type") == "function"
+            and str(item.get("name") or "").lower() == "initialize"
+        ),
+        None,
+    )
+
+    root_target = factory_impl
+    if init:
+        # Resolve initializer address parameters by semantic role. The child implementation
+        # and fixture contracts are concrete, not placeholder EOAs.
+        values: list[Any] = []
+        for param in init.get("inputs", []):
+            name = str(param.get("name") or "").lower()
+            ptype = _canonical_type(param)
+            compact = re.sub(r"[^a-z0-9]", "", name)
+            if ptype == "address":
+                mapping = {
+                    "safeharborregistry": system["safe_harbor_registry"],
+                    "registry": system["safe_harbor_registry"],
+                    "poolimplementation": system["pool_implementation"],
+                    "implementation": system["pool_implementation"],
+                    "defaultoutcomemoderator": system.get("moderator"),
+                    "outcomemoderator": system.get("moderator"),
+                    "moderator": system.get("moderator"),
+                }
+                values.append(mapping.get(compact) or system.get(compact) or alice.address)
+            elif ptype == "bool":
+                values.append(False)
+            elif ptype.startswith("uint") or ptype.startswith("int"):
+                values.append(0)
+            elif ptype == "bytes":
+                values.append("0x")
+            elif ptype == "bytes32":
+                values.append("0x" + "00" * 32)
+            elif ptype == "string":
+                values.append("lowkey")
+            elif ptype.endswith("[]"):
+                values.append([])
+            else:
+                values.append(0)
+
+        init_data = _encode_calldata(_signature(init), values)
+        if not init_data:
+            return False, f"failed to encode {root_model.name}.initialize(...)"
+
+        if proxy:
+            proxy_args = [factory_impl, init_data]
+            root_target = _deploy_local_artifact(root, rpc, private_key, proxy, proxy_args)
+            if not is_address(root_target):
+                return False, f"failed to deploy ERC1967Proxy for {root_model.name}"
+        else:
+            tx = _send_lab_control(host, config, alice, factory_impl, _signature(init), values)
+            if not tx:
+                return False, f"failed to initialize {root_model.name}"
+    system["factory"] = root_target
+
+    # Configure the common token allowlist gate after the root is initialized.
+    allow_fn = next(
+        (
+            item for item in root_model.abi
+            if item.get("type") == "function"
+            and str(item.get("name") or "").lower() in {"setstaketokenallowed", "settokenallowed"}
+        ),
+        None,
+    )
+    if allow_fn:
+        _send_lab_control(
+            host, config, alice, root_target,
+            _signature(allow_fn), [system["stake_token"], True],
+        )
+
+    # Publish the complete discovered environment into the shared audit context.
+    config["target"] = root_target
+    config["target_contract"] = root_model.name
+    config["_walkthrough_recipe"] = "confidence-pool" if _looks_like_confidence_pool_system(root_model, child) else "generic-system"
+    config["lab_system"] = {
+        **{key: value for key, value in system.items() if is_address(value)},
+        "pool": None,
+    }
+    if hasattr(host, "set_lab_target"):
+        artifact_path = str(root / root_model.artifact)
+        host.set_lab_target(config, root, root_target, root_model.name, artifact_path)
+    else:
+        config.setdefault("aliases", {})[root_model.name] = root_target
+        config.setdefault("targets", {})[root_model.name] = root_target
+        config.setdefault("abi_paths", {})[root_target] = str(root / root_model.artifact)
+        config["actor"] = "lab-deployer"
+
+    if hasattr(host, "save_config"):
+        host.save_config(config)
+    audit_context.set_target(
+        root,
+        address=root_target,
+        contract=root_model.name,
+        artifact=str(root / root_model.artifact),
+        source="synthesized-project-lab",
+    )
+    audit_context.update(root, actor=alice.name, rpc=rpc)
+    return True, f"synthesized {root_model.name} + {child.name} protocol environment"
+
+
 def _system_has_live_core(config: dict[str, Any], rpc: str | None) -> bool:
     system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
     if not system or not rpc:
         return False
 
-    # A valid generated/project adapter should at least expose its main entry
-    # point as a live address. ConfidencePool-style systems additionally expose
-    # the child pool and core fixtures.
     entry = system.get("factory") or system.get("pool") or config.get("target")
-    if not is_address(entry):
+    if not is_address(entry) or _runtime_code(rpc, str(entry)) in {"", "0x"}:
         return False
-    return _runtime_code(rpc, str(entry)) not in {"", "0x"}
+
+    # A synthesized/project lab is considered complete only when its recorded
+    # concrete dependencies are still live. This prevents a stale implementation
+    # address from masquerading as an initialized protocol.
+    dependency_keys = [
+        key for key in (
+            "stake_token", "agreement", "safe_harbor_registry",
+            "attack_registry", "moderator", "pool_implementation",
+        ) if key in system
+    ]
+    live = 0
+    for key in dependency_keys:
+        address = system.get(key)
+        if is_address(address) and _runtime_code(rpc, str(address)) not in {"", "0x"}:
+            live += 1
+
+    if dependency_keys:
+        return live == len(dependency_keys)
+    return True
 
 
 def _target_from_host(
@@ -2991,6 +3468,20 @@ def _target_from_host(
             )
 
             system_ready = _system_has_live_core(config, rpc)
+
+            if not system_ready:
+                synthesized, synthesis_reason = _synthesize_local_protocol_fixture(
+                    root,
+                    rpc,
+                    host,
+                    config,
+                    _actors(host, config, 4),
+                    _artifact_models(root),
+                    _artifact_models(root, include_aux=True),
+                )
+                if synthesized:
+                    system_ready = True
+
             adapter = host.discover_local_lab_script(root) if hasattr(host, "discover_local_lab_script") else None
 
             if adapter and not system_ready and hasattr(host, "run_lab"):
@@ -3387,7 +3878,7 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = execute next live function   Q = stop",
+        "  ENTER = execute next live function   Q = stop   |   test: lk walkthrough test",
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = actual call path   boxes = state   function names = Ctrl+Click source",
         "",
@@ -3655,7 +4146,22 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 )
                 discovered=_discover_runtime_contracts(root,rpc,models,runtime,receipt,trace,step.index,step.address)
                 if discovered:
-                    runtime.extend(discovered); step.discovered_contracts=[asdict(x) for x in discovered]
+                    runtime.extend(discovered)
+                    step.discovered_contracts=[asdict(x) for x in discovered]
+                    # Feed discovered application instances back into the shared
+                    # protocol system so the next live/test operation can use them.
+                    lab = config.get("lab_system")
+                    if isinstance(lab, dict):
+                        for node in discovered:
+                            if (
+                                node.model
+                                and node.model != "External"
+                                and node.model.lower() != str(lab.get("factory_model") or "ConfidencePoolFactory").lower()
+                            ):
+                                lab.setdefault("pool", node.address)
+                        config["lab_system"] = lab
+                        if hasattr(host, "save_config"):
+                            host.save_config(config)
 
                 # Record the actual protocol interaction before any environment
                 # preparation that it causes. This preserves create -> discover ->
