@@ -1666,17 +1666,23 @@ def _render_interaction_graph_full(
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
     lines = [
-        _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
+        _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
         f"  │   {ACTOR} {actor} {ARROW} {contract}.{call_display}",
         f"  │       ↳ {_human_action_summary(step, actors)}",
-        f"  │   [technical] [{actor}] ── CALL {raw_call} ──▶ [{contract}]",
+        f"  │       ↳ CALL: {actor} ──▶ {contract}",
     ]
 
     input_lines = _input_story(step, model, actors) if model else []
     if input_lines:
         lines += ["  │", "  │   INPUTS"]
         for item in input_lines[:8]:
+            lines.append(f"  │   ├─ {item}")
+
+    source_guard_lines = _source_guard_lines(model, step) if model else []
+    if source_guard_lines:
+        lines += ["  │", "  │   WHAT THE CODE CHECKS"]
+        for item in source_guard_lines[:8]:
             lines.append(f"  │   ├─ {item}")
 
     source_edges = _source_edges_for_step(model, step) if model else []
@@ -2055,6 +2061,25 @@ def _probe_boolean_getters(rpc: str, step: Step, model: ContractModel) -> list[s
                 observations.append(f"{_signature(item)} = {value} for {_pretty_identifier(param_name)}")
     return observations
 
+
+def _source_guard_lines(model: ContractModel, step: Step) -> list[str]:
+    """Return concise source-level guards and state writes for the current function."""
+    name = str(step.function or "").split("(", 1)[0]
+    semantics = model.semantics.get(name + "()") or model.semantics.get(name)
+    if not isinstance(semantics, dict):
+        return []
+    lines: list[str] = []
+    for guard in semantics.get("guards", [])[:8]:
+        lines.append("source guard: " + str(guard))
+    for edge in semantics.get("external_calls", [])[:8]:
+        target = edge.get("interface") or edge.get("to_contract") or "dependency"
+        fn = edge.get("to_function") or "unknown"
+        via = edge.get("via")
+        suffix = " via " + str(via) if via else ""
+        lines.append(f"source dependency: {target}.{fn}(){suffix}")
+    for item in semantics.get("writes", [])[:8]:
+        lines.append("state write candidate: " + str(item))
+    return list(dict.fromkeys(lines))
 
 def _probe_source_dependency_result(
     rpc: str,
@@ -4139,6 +4164,61 @@ def _render_live_path(steps: list[Step], runtime: list[RuntimeContract], enabled
             lines.append(f"       {WARNING} {compact_error}")
     return "\n".join(lines)
 
+def _render_system_workflow_graph(
+    root: Path,
+    models: list[ContractModel],
+    runtime: list[RuntimeContract],
+    root_model: ContractModel,
+    enabled: bool,
+) -> str:
+    """Draw source relationships and observed runtime relationships as one compact map."""
+    by_name = {item.name.lower(): item for item in models}
+    impls = _implementation_mapping(models)
+    runtime_by_model: dict[str, list[RuntimeContract]] = {}
+    for node in runtime:
+        if node.model and node.model != "External":
+            runtime_by_model.setdefault(node.model.lower(), []).append(node)
+
+    lines = [_paint("SYSTEM WORKFLOW", BOLD + CYAN, enabled)]
+    root_nodes = runtime_by_model.get(root_model.name.lower(), [])
+    root_address = _addr(root_nodes[0].address) if root_nodes else "not live"
+    root_text = _function_link(root, root_model, root_model.name)
+    lines.append(f"  {ACTOR} {root_text}  {root_address}  [entry point]")
+
+    seen: set[tuple[str, str, str]] = set()
+    for edge in root_model.calls:
+        if edge.get("kind") != "cross-contract":
+            continue
+        raw_target = str(edge.get("to_contract") or edge.get("interface") or "")
+        concrete = impls.get(raw_target, raw_target)
+        target_model = by_name.get(concrete.lower())
+        if target_model is None:
+            target_model = by_name.get(raw_target.lower())
+        if target_model is None:
+            continue
+        caller = str(edge.get("from") or "function")
+        fn = str(edge.get("to_function") or "unknown")
+        key = (caller.lower(), target_model.name.lower(), fn.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        caller_link = _function_link(root, root_model, caller)
+        target_link = _function_link(root, target_model, fn)
+        lines.append(f"  │  ○ {caller_link}() ──▶ {target_model.name}.{target_link}()")
+
+    root_addresses = {node.address.lower() for node in root_nodes}
+    for node in runtime:
+        if not node.parent or str(node.parent).lower() not in root_addresses:
+            continue
+        relation = "CLONE" if node.relation == "CLONE" else node.relation or "CALL"
+        lines.append(f"  │  ● {root_model.name} ──{relation}──▶ {node.label} {_addr(node.address)}")
+
+    if len(lines) == 2:
+        lines.append("  │  ○ no first-party cross-contract relationship resolved yet")
+    lines.append("  │")
+    lines.append("  └─ ○ source-inferred   ● observed live")
+    return "\n".join(lines)
+
 def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
     lines = [_paint("SYSTEM MAP", BOLD + WHITE, enabled)]
     if not runtime:
@@ -4221,7 +4301,7 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = execute next live function   Q = stop   |   test: lk walkthrough test",
+        "  ENTER = next live interaction   Q = stop   |   RANDOM TEST: lk walkthrough test",
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = actual call path   boxes = state   function names = Ctrl+Click source",
         "",
@@ -4229,9 +4309,13 @@ def _render_board(
             "   ".join(f"{ACTOR} {actor.name} {_addr(actor.address)}" for actor in actors)
         ], width=92),
         "",
-        _render_runtime_graph(runtime, enabled),
-        "",
-        _render_connections(root, models, model, enabled, runtime),
+        _render_system_workflow_graph(
+            root,
+            models + [m for m in (support_models or []) if m.name not in {x.name for x in models}],
+            runtime,
+            model,
+            enabled,
+        ),
         "",
         _render_protocol_story_full(
             root,
@@ -4265,7 +4349,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     if not root or not (root/"foundry.toml").is_file():
         print("Error: 'lk walkthrough' must be run inside a Foundry project.",file=sys.stderr)
         return 2
-    test_mode=any(str(x).lower()=="test" for x in args) or "--test" in args
+    test_mode=any(str(x).lower() in {"test", "random"} for x in args) or "--test" in args or "--random" in args
     auto="--auto" in args or "auto" in args
     # Adversarial walkthroughs are local-only and may bootstrap the disposable
     # project fixture automatically when no live target exists.
@@ -4366,6 +4450,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     observed=_merge_protocol_observations(
         config.get("_walkthrough_observed") or {},
         config=config,
+        runtime=runtime,
     )
     system=config.get("lab_system") if isinstance(config.get("lab_system"),dict) else {}
     recipe=[]
@@ -4494,6 +4579,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 discovered=_discover_runtime_contracts(root,rpc,models,runtime,receipt,trace,step.index,step.address)
                 if discovered:
                     runtime.extend(discovered)
+                    observed.update(_merge_protocol_observations({}, config=config, runtime=discovered))
                     step.discovered_contracts=[asdict(x) for x in discovered]
                     # Feed discovered application instances back into the shared
                     # protocol system so the next live/test operation can use them.
