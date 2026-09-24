@@ -101,14 +101,14 @@ def _pyproject_dependencies(content: str) -> list[str]:
                 "[dependency-groups]",
             }
         if in_dependencies:
-            match = re.search(r"""["']([A-Za-z0-9_.-]+)(?:\\[[^]]+\\])?(?:[<>=!~].*)?["']""", line)
+            match = re.search(r"""["']([A-Za-z0-9_.-]+)(?:\[[^]]+\])?(?:[<>=!~].*)?["']""", line)
             if match:
                 values.append(match.group(1))
     return values
 
 
 def _python_requirement(content: str) -> str | None:
-    match = re.search(r"(?im)^\\s*requires-python\\s*=\\s*[\"']([^\"']+)[\"']", content)
+    match = re.search(r"(?im)^\s*requires-python\s*=\s*[\"']([^\"']+)[\"']", content)
     return match.group(1) if match else None
 
 
@@ -271,20 +271,20 @@ def _installed_package_root(root: Path, package: str) -> Path | None:
 
 
 def _solidity_imports(text: str) -> list[tuple[str, int, str]]:
-    pattern = re.compile(r"""import\\s+(?:[^;]*?\\s+from\\s+)?["']([^"']+)["']\\s*;""")
+    pattern = re.compile(r"""import\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']\s*;""")
     return [(match.group(1), text.count("\\n", 0, match.start()) + 1, match.group(0).strip()) for match in pattern.finditer(text)]
 
 
 def _vyper_imports(text: str) -> list[tuple[str, int, str, str | None]]:
     records: list[tuple[str, int, str, str | None]] = []
-    for match in re.finditer(r'(?m)^\\s*from\\s+([A-Za-z0-9_./.-]+)\\s+import\\s+([^#\\n]+)', text):
+    for match in re.finditer(r'(?m)^\s*from\s+([A-Za-z0-9_./.-]+)\s+import\s+([^#\n]+)', text):
         records.append((
             match.group(1).strip(),
             text.count("\\n", 0, match.start()) + 1,
             match.group(0).strip(),
             match.group(2).strip(),
         ))
-    for match in re.finditer(r'(?m)^\\s*import\\s+([A-Za-z0-9_./.-]+)', text):
+    for match in re.finditer(r'(?m)^\s*import\s+([A-Za-z0-9_./.-]+)', text):
         records.append((
             match.group(1).strip(),
             text.count("\\n", 0, match.start()) + 1,
@@ -297,7 +297,7 @@ def _vyper_imports(text: str) -> list[tuple[str, int, str, str | None]]:
 def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     if language == "solidity":
-        for match in re.finditer(r'\\b(contract|interface|library)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s+is\\s+([^\\{]+))?', text):
+        for match in re.finditer(r'\b(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+is\s+([^\{]+))?', text):
             values.append({
                 "kind": match.group(1),
                 "name": match.group(2),
@@ -309,14 +309,14 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
                 "line": text.count("\\n", 0, match.start()) + 1,
             })
     else:
-        for match in re.finditer(r'(?m)^\\s*def\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(', text):
+        for match in re.finditer(r'(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(', text):
             values.append({
                 "kind": "function",
                 "name": match.group(1),
                 "inherits": [],
                 "line": text.count("\\n", 0, match.start()) + 1,
             })
-        for match in re.finditer(r'(?m)^\\s*interface\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:', text):
+        for match in re.finditer(r'(?m)^\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)\s*:', text):
             values.append({
                 "kind": "interface",
                 "name": match.group(1),
@@ -329,15 +329,15 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
 def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     patterns = (
         [
-            ("low-level-call", re.compile(r'\\.(?:call|delegatecall|staticcall)\\b[^\\n]*')),
-            ("external-call", re.compile(r'\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\(')),
+            ("low-level-call", re.compile(r'\.(?:call|delegatecall|staticcall)\b[^\n]*')),
+            ("external-call", re.compile(r'\.[A-Za-z_][A-Za-z0-9_]*\s*\(')),
         ]
         if language == "solidity"
         else [
-            ("raw-call", re.compile(r'\\braw_call\\s*\\([^\\n]*')),
-            ("external-call", re.compile(r'\\b(?:extcall|staticcall)\\s*[^\\n]*')),
-            ("value-transfer", re.compile(r'\\bsend\\s*\\([^\\n]*')),
-            ("create", re.compile(r'\\bcreate_(?:minimal_proxy_to|forwarder_to|from_blueprint)\\b[^\\n]*')),
+            ("raw-call", re.compile(r'\braw_call\s*\([^\n]*')),
+            ("external-call", re.compile(r'\b(?:extcall|staticcall)\s*[^\n]*')),
+            ("value-transfer", re.compile(r'\bsend\s*\([^\n]*')),
+            ("create", re.compile(r'\bcreate_(?:minimal_proxy_to|forwarder_to|from_blueprint)\b[^\n]*')),
         ]
     )
     calls: list[dict[str, Any]] = []
