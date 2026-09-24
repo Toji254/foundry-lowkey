@@ -4155,6 +4155,165 @@ def _initializer_recovery_action(
     }
 
 
+def _prerequisite_from_blocked_action(
+    root: Path,
+    rpc: str,
+    blocked: dict[str, Any],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    all_errors: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Turn an evidence-backed protocol gate into its enabling transition.
+
+    Look for source state read by the blocked entry point and an external/public
+    mutator that writes that same state. The relationship must also have
+    reasonable naming/revert evidence before Lowkey synthesizes a prerequisite.
+    """
+    node: LiveNode = blocked["node"]
+    fn: FunctionInfo = blocked["function"]
+    result = blocked.get("result") or {}
+    decoded = str(result.get("decoded_error") or "").casefold()
+    funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
+
+    if not decoded:
+        return None
+
+    looks_like_allowance_gate = any(
+        token in decoded
+        for token in ("notallowed", "not_allowed", "notapproved", "not_approved")
+    )
+
+    state_names = list(dict.fromkeys(fn.reads or []))
+    for state_name in state_names:
+        writers = [
+            candidate for candidate in funcs
+            if candidate.name != fn.name
+            and candidate.visibility in {"external", "public"}
+            and candidate.mutability not in {"view", "pure"}
+            and state_name in (candidate.writes or [])
+        ]
+        if not writers:
+            continue
+
+        ranked = sorted(
+            writers,
+            key=lambda candidate: (
+                0 if candidate.name.lower().startswith(
+                    ("set", "allow", "authorize", "enable")
+                ) else 1,
+                -len(candidate.writes or []),
+                candidate.name,
+            ),
+        )
+        writer = ranked[0]
+
+        wn = writer.name.lower()
+        state_low = state_name.casefold()
+        state_specific = any(
+            part in state_low
+            for part in ("allow", "approv", "enabled", "active", "open")
+        )
+        writer_specific = any(
+            part in wn
+            for part in ("allow", "approv", "enable", "authorize")
+        )
+        if not (looks_like_allowance_gate or state_specific or writer_specific):
+            continue
+
+        blocked_inputs = {
+            str(item.get("name") or "").casefold(): value
+            for item, value in zip(fn.inputs, blocked.get("args") or [])
+        }
+        prereq_args: list[Any] = []
+
+        for item in writer.inputs:
+            pname = str(item.get("name") or "")
+            plow = pname.casefold()
+            typ = _canonical_abi_type(item)
+            value = None
+
+            # Carry the blocked call's keyed resource into the enabling setter.
+            # Example: createPool(stakeToken=TOKEN) ->
+            # setStakeTokenAllowed(token=TOKEN,true).
+            for candidate_name, candidate_value in blocked_inputs.items():
+                if not _is_address(candidate_value):
+                    continue
+                if (
+                    candidate_name == plow
+                    or any(
+                        token in plow and token in candidate_name
+                        for token in ("token", "asset", "address", "resource")
+                    )
+                    or any(token in plow for token in ("token", "asset", "address"))
+                ):
+                    value = candidate_value
+                    break
+
+            if value is None and typ == "bool":
+                value = True if any(
+                    token in plow
+                    for token in ("allow", "approv", "enable", "enabled")
+                ) else False
+
+            if value is None:
+                value = _semantic_arg(
+                    item,
+                    node,
+                    functions_by_contract,
+                    nodes,
+                    actors,
+                    known,
+                    int(time.time()),
+                    root,
+                    rpc,
+                )
+
+            if value is None:
+                return None
+            prereq_args.append(value)
+
+        caller, actor_name = _choose_caller(
+            root, rpc, node, writer, actors, nodes, functions_by_contract
+        )
+        if not caller:
+            return None
+
+        precheck = _preflight_failure(
+            root, rpc, node, writer, prereq_args, caller, all_errors
+        )
+
+        return {
+            "node": node,
+            "function": writer,
+            "args": prereq_args,
+            "caller": caller,
+            "actor_name": actor_name,
+            "status": "READY" if precheck["ok"] else "BLOCKED",
+            "phase": "PREREQUISITE",
+            "what": (
+                f"Prepare {state_name} so "
+                f"{node.artifact_contract or node.name}.{fn.name}() can execute."
+            ),
+            "why": (
+                f"{node.artifact_contract or node.name}.{fn.name}() is blocked by "
+                f"{result.get('decoded_error')}; this transition writes the state "
+                "that gate reads."
+            ),
+            "semantic_reason": (
+                f"derived from {fn.name}() reading {state_name} and "
+                f"{writer.name}() writing the same state"
+            ),
+            "result": precheck,
+            "diagnosis": blocked.get("diagnosis") or [],
+            "prerequisite_for": f"{fn.contract}.{fn.name}()",
+            "prerequisite_state": state_name,
+        }
+
+    return None
+
+
 def _next_transition_action(
     root: Path,
     meta: dict[str, Any],
