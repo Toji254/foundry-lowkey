@@ -300,6 +300,37 @@ class WalkthroughTests(unittest.TestCase):
             for edge in model.calls
         ))
 
+    def test_friendly_renderer_has_no_host_dependency(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        self.assertEqual(walkthrough._friendly_arg(actors[0].address, actors), "Alice")
+        self.assertEqual(walkthrough._friendly_arg(True, actors), "true")
+        self.assertEqual(walkthrough._friendly_arg(False, actors), "false")
+
+    def test_protocol_story_connects_steps_with_arrows(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        steps = [
+            walkthrough.Step(
+                1, "Alice", "Pool", "0x" + "3" * 40,
+                "deposit()", [], value_wei=10**18, status="success",
+            ),
+            walkthrough.Step(
+                2, "Bob", "Pool", "0x" + "3" * 40,
+                "withdraw()", [], status="planned",
+            ),
+        ]
+        rendered = walkthrough._render_protocol_story(steps, steps[1], actors, enabled=False)
+        self.assertIn("Alice ────▶ Pool.deposit()", rendered)
+        self.assertIn("1 ETH", rendered)
+        self.assertIn("▼", rendered)
+        self.assertIn("Bob ────▶ Pool.withdraw()", rendered)
+        self.assertIn("◀ LIVE", rendered)
+
     def test_cli_arg_normalizes_bool_and_arrays(self):
         self.assertEqual(walkthrough._cli_arg(True), "true")
         self.assertEqual(walkthrough._cli_arg(False), "false")
