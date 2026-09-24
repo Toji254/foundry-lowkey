@@ -186,6 +186,25 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
 
             self.assertEqual(project["solidity_compilers"], ["0.8.18"])
 
+    def test_detect_project_treats_git_only_submodule_directory_as_uninitialized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                ".gitmodules",
+                "[submodule \"contracts/xdao\"]\n"
+                "\tpath = contracts/xdao\n"
+                "\turl = https://example.com/xdao.git\n",
+            )
+            submodule = root / "contracts/xdao"
+            submodule.mkdir(parents=True)
+            (submodule / ".git").mkdir()
+
+            project = project_tools.detect_project(root)
+
+            self.assertTrue(project["submodules"][0]["present"])
+            self.assertFalse(project["submodules"][0]["initialized"])
+
     def test_detect_project_reports_python_version_and_submodules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
