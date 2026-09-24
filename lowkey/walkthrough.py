@@ -639,6 +639,40 @@ def _normalize_observed_keys(observed: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _merge_protocol_observations(
+    observed: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+    runtime: list[RuntimeContract] | None = None,
+) -> dict[str, Any]:
+    """Merge live lab roles, aliases, and runtime contracts into one catalog."""
+    merged: dict[str, Any] = dict(observed or {})
+    config = config or {}
+
+    for container_name in ("_walkthrough_observed", "lab_system", "aliases", "targets"):
+        container = config.get(container_name)
+        if not isinstance(container, dict):
+            continue
+        for key, value in container.items():
+            if not is_address(value):
+                continue
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            merged[str(key)] = value
+            if normalized:
+                merged[normalized] = value
+
+    for node in runtime or []:
+        if not is_address(node.address):
+            continue
+        for key in (node.model, node.label):
+            normalized = re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+            if normalized:
+                merged[normalized] = node.address
+            if key:
+                merged[str(key)] = node.address
+
+    return merged
+
+
 def _observed_address_for_parameter(
     param: dict[str, Any],
     observed: dict[str, Any],
@@ -672,12 +706,24 @@ def _observed_address_for_parameter(
             return str(value)
 
     requirement_name = re.sub(r"[^a-z0-9]", "", str(requirement or "").lower())
-    if requirement_name.startswith("i"):
-        requirement_name = requirement_name[1:]
     if requirement_name:
+        candidates = [requirement_name]
+        if requirement_name.startswith("i"):
+            candidates.append(requirement_name[1:])
         for key, value in aliases.items():
-            if requirement_name in key and is_address(value):
+            if not is_address(value):
+                continue
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if any(candidate in normalized_key or normalized_key in candidate for candidate in candidates):
                 return str(value)
+
+    for key, value in aliases.items():
+        if not is_address(value):
+            continue
+        normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if compact and (compact in normalized_key or normalized_key in compact):
+            return str(value)
+
     return None
 
 
@@ -2010,10 +2056,72 @@ def _probe_boolean_getters(rpc: str, step: Step, model: ContractModel) -> list[s
     return observations
 
 
-def _diagnose_argument_contracts(rpc: str, step: Step, model: ContractModel) -> tuple[str | None, list[str]]:
-    """Check address arguments that source code later treats as contracts."""
+def _probe_source_dependency_result(
+    rpc: str,
+    step: Step,
+    model: ContractModel,
+    edge: dict[str, Any],
+    dependency_address: str,
+    models: list[ContractModel],
+) -> tuple[str | None, str | None]:
+    """Read the source-discovered dependency call and report its real return value."""
+    target_name = str(edge.get("to_contract") or edge.get("interface") or "")
+    concrete = _implementation_mapping(models).get(target_name, target_name)
+    target_model = next((item for item in models if item.name.lower() == concrete.lower()), None)
+    if target_model is None:
+        target_model = next((item for item in models if item.name.lower() == target_name.lower()), None)
+    fn_name = str(edge.get("to_function") or "")
+    fn_item = _function_by_name(target_model, fn_name)
+    if not fn_item:
+        return None, None
+
+    caller_inputs = _function_inputs(model, step.function)
+    caller_values = {
+        str(param.get("name") or "").lower(): step.args[index]
+        for index, param in enumerate(caller_inputs)
+        if index < len(step.args)
+    }
+    values: list[Any] = []
+    for param in fn_item.get("inputs") or []:
+        pname = str(param.get("name") or "").lower()
+        value = caller_values.get(pname)
+        if value is None and len(fn_item.get("inputs") or []) == 1:
+            address_values = [
+                step.args[index]
+                for index, source_param in enumerate(caller_inputs)
+                if index < len(step.args) and _canonical_type(source_param) == "address"
+            ]
+            if address_values:
+                value = address_values[0]
+        if value is None:
+            return None, None
+        values.append(value)
+
+    code, out, err = _cmd(
+        ["cast", "call", dependency_address, _signature(fn_item),
+         *[_cli_arg(value) for value in values], "--rpc-url", rpc],
+        timeout=8,
+    )
+    if code != 0:
+        return None, f"{concrete}.{_signature(fn_item)} could not be read at {_addr(dependency_address)}"
+
+    rendered = " ".join((out or err or "").strip().split())[-240:] or "empty result"
+    origin = None
+    if rendered.lower() == "false" or rendered.lower().endswith(" false"):
+        origin = f"{concrete}.{fn_name} returned false"
+    return origin, f"{concrete}.{_signature(fn_item)} → {rendered}"
+
+def _diagnose_argument_contracts(
+    rpc: str,
+    step: Step,
+    model: ContractModel,
+    models: list[ContractModel] | None = None,
+) -> tuple[str | None, list[str]]:
+    """Trace source-discovered address dependencies and probe their real behavior."""
     origin = None
     diagnostics: list[str] = []
+    model_catalog = models or [model]
+
     for edge in _source_edges_for_step(model, step):
         via = str(edge.get("via") or "")
         if not via:
@@ -2021,22 +2129,29 @@ def _diagnose_argument_contracts(rpc: str, step: Step, model: ContractModel) -> 
         candidate, label = _source_dependency_address(rpc, model, edge, step)
         if not candidate:
             continue
+
         code = _runtime_code(rpc, candidate)
+        target_desc = f"{edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}()"
         if code in {"", "0x"}:
-            origin = origin or (
-                f"{model.name}.{step.function.split('(', 1)[0]} -> "
-                f"{edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}({label})"
-            )
+            origin = origin or f"{model.name}.{step.function.split('(', 1)[0]} -> {target_desc}"
             diagnostics.append(
                 f"{_pretty_identifier(label)} = {_addr(candidate)} has no contract code; "
-                f"source calls {edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}(), "
-                "so this value cannot behave like the contract the protocol expects"
+                f"the source expects {target_desc}"
             )
-        else:
-            diagnostics.append(
-                f"{_pretty_identifier(label)} = {_addr(candidate)} has live contract code; "
-                f"source expects {edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}()"
-            )
+            continue
+
+        diagnostics.append(
+            f"{_pretty_identifier(label)} = {_addr(candidate)} has live contract code; "
+            f"the source expects {target_desc}"
+        )
+        probe_origin, probe = _probe_source_dependency_result(
+            rpc, step, model, edge, candidate, model_catalog
+        )
+        if probe:
+            diagnostics.append(f"dependency result: {probe}")
+        if probe_origin and origin is None:
+            origin = probe_origin
+
     diagnostics.extend(_probe_boolean_getters(rpc, step, model))
     return origin, list(dict.fromkeys(diagnostics))
 
@@ -2049,7 +2164,7 @@ def _diagnose_failed_call(
     actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
     origin, diagnostics = _read_zero_address_diagnostics(rpc, step.address, model)
-    arg_origin, arg_diagnostics = _diagnose_argument_contracts(rpc, step, model)
+    arg_origin, arg_diagnostics = _diagnose_argument_contracts(rpc, step, model, models)
     origin = origin or arg_origin
     diagnostics.extend(arg_diagnostics)
 
@@ -4248,9 +4363,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     steps=[]
     completed=set()
     prepared_pools: set[tuple[str, str]] = set()
-    observed=dict(config.get("_walkthrough_observed") or {})
+    observed=_merge_protocol_observations(
+        config.get("_walkthrough_observed") or {},
+        config=config,
+    )
     system=config.get("lab_system") if isinstance(config.get("lab_system"),dict) else {}
-    observed.update({str(k).replace("_",""):v for k,v in system.items() if isinstance(v,str) and is_address(v)})
     recipe=[]
     if config.get("_walkthrough_recipe")=="confidence-pool":
         now=_block_timestamp(rpc)
@@ -4291,7 +4408,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                         actors,
                         step.address,
                         _block_timestamp(rpc),
-                        observed,
+                        _merge_protocol_observations(
+                            observed, config=config, runtime=runtime
+                        ),
                         current_model,
                         str(step.function).split("(", 1)[0],
                     )
