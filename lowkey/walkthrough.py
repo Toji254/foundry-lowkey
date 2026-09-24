@@ -2330,8 +2330,25 @@ def _diagnose_argument_contracts(
     diagnostics.extend(_probe_boolean_getters(rpc, step, model))
     return origin, list(dict.fromkeys(diagnostics))
 
+def _constant_duration_seconds(source_text: str, name: str) -> int | None:
+    match = re.search(
+        r"\b(?:uint\d*\s+)?(?:public\s+|private\s+|internal\s+)?constant\s+"
+        + re.escape(name) + r"\s*=\s*([0-9]+)\s*(seconds?|minutes?|hours?|days?|weeks?)\b",
+        source_text,
+    )
+    if not match:
+        return None
+    value = int(match.group(1))
+    multipliers = {
+        "second": 1, "seconds": 1,
+        "minute": 60, "minutes": 60,
+        "hour": 3600, "hours": 3600,
+        "day": 86400, "days": 86400,
+        "week": 604800, "weeks": 604800,
+    }
+    return value * multipliers[match.group(2).lower()]
 def _mapping_argument_for_function(body: str, mapping_name: str, inputs: list[dict[str, Any]], args: list[Any]) -> tuple[str | None, Any]:
-    match = re.search(r"\\b" + re.escape(mapping_name) + r"\\s*\\[\\s*([A-Za-z_]\\w*)\\s*\\]", body)
+    match = re.search(r"\b" + re.escape(mapping_name) + r"\s*\\[\\s*([A-Za-z_]\\w*)\\s*\\]", body)
     if not match:
         return None, None
     wanted = match.group(1).lower()
@@ -2347,7 +2364,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
     except OSError:
         return None, []
     name = str(step.function or "").split("(", 1)[0]
-    match = re.search(r"\\bfunction\\s+" + re.escape(name) + r"\\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
+    match = re.search(r"\bfunction\\s+" + re.escape(name) + r"\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
     header = match.group(0) if match else ""
     body = _balanced_block(source, match.end() - 1) if match else ""
     guard_region = header + "\n" + body
@@ -2361,7 +2378,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
             continue
         pname = str(param.get("name") or ("arg" + str(index + 1)))
         value = step.args[index]
-        if re.search(r"\\b" + re.escape(pname) + r"\\s*==\\s*address\\(0\\)", body):
+        if re.search(r"\b" + re.escape(pname) + r"\s*==\\s*address\\(0\\)", body):
             if is_address(value) and value.lower() == "0x" + "00" * 20:
                 diagnostics.append("✕ " + pname + " = zero address; source rejects it")
                 origin = origin or (model.name + "." + name + " → " + pname + " == address(0)")
@@ -2392,7 +2409,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
 
     for mapping in model.mappings:
         mapping_name = str(mapping.get("name") or "")
-        if not mapping_name or not re.search(r"\\b" + re.escape(mapping_name) + r"\\s*\\[", body):
+        if not mapping_name or not re.search(r"\b" + re.escape(mapping_name) + r"\s*\\[", body):
             continue
         getter = next((item for item in model.abi if item.get("type") == "function" and item.get("name") == mapping_name and len(item.get("inputs") or []) == 1), None)
         if not getter:
@@ -2415,7 +2432,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
         value = by_name.get(pname.lower())
         if not isinstance(value, int):
             continue
-        tm = re.search(r"\\b" + re.escape(pname) + r"\\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", body)
+        tm = re.search(r"\b" + re.escape(pname) + r"\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", body)
         if not tm:
             continue
         seconds = _constant_duration_seconds(source, tm.group(1))
@@ -2479,7 +2496,7 @@ def _function_body(root: Path, model: ContractModel, function_name: str) -> str:
         source = (root / model.source).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
-    match = re.search(r"\\bfunction\\s+" + re.escape(function_name) + r"\\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
+    match = re.search(r"\bfunction\\s+" + re.escape(function_name) + r"\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
     return _balanced_block(source, match.end() - 1) if match else ""
 
 def _find_mapping_setter(root: Path, model: ContractModel, mapping_name: str) -> dict[str, Any] | None:
@@ -2499,9 +2516,9 @@ def _find_mapping_setter(root: Path, model: ContractModel, mapping_name: str) ->
         if "allow" in name.lower() or "enable" in name.lower() or "active" in name.lower():
             score += 25
         body = _function_body(root, model, name)
-        if mapping_name and re.search(r"\\b" + re.escape(mapping_name) + r"\\s*\\[", body):
+        if mapping_name and re.search(r"\b" + re.escape(mapping_name) + r"\s*\\[", body):
             score += 100
-        if re.search(r"\\]\s*=", body):
+        if re.search(r"\]\s*=", body):
             score += 10
         if score:
             candidates.append((score, name.lower(), item))
@@ -2566,7 +2583,7 @@ def _prepare_obvious_prerequisite(root: Path, rpc: str, host: Any, config: dict[
         pname = str(param.get("name") or "")
         if index >= len(step.args) or _canonical_type(param) not in {"uint256", "uint128", "uint64", "uint32"}:
             continue
-        tm = re.search(r"\\b" + re.escape(pname) + r"\\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", source, re.S)
+        tm = re.search(r"\b" + re.escape(pname) + r"\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", source, re.S)
         if not tm:
             continue
         seconds = _constant_duration_seconds(source, tm.group(1))
@@ -2705,7 +2722,18 @@ def _validate_step_arguments(step: Step, model: ContractModel) -> tuple[bool, st
     """Reject unresolved semantic dependencies before calldata is built."""
     inputs = _function_inputs(model, step.function)
     if len(step.args) != len(inputs):
-        return False, f"Lowkey resolved {len(step.args)} argument(s), but the ABI requires {len(inputs)}"
+        function_name_fallback = str(step.function).split("(", 1)[0]
+        direct_matches = [
+            item for item in model.abi
+            if item.get("type") == "function"
+            and str(item.get("name") or "").lower() == function_name_fallback.lower()
+        ]
+        if len(direct_matches) == 1:
+            direct_inputs = list(direct_matches[0].get("inputs") or [])
+            if len(step.args) == len(direct_inputs):
+                inputs = direct_inputs
+        if len(step.args) != len(inputs):
+            return False, f"{function_name_fallback} expects {len(inputs)} argument(s); Lowkey supplied {len(step.args)}"
 
     function_name = str(step.function).split("(", 1)[0]
     for index, param in enumerate(inputs):
