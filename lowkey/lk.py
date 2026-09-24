@@ -2024,6 +2024,27 @@ def main():
         "layout","export","fork","token","ens","decode","decode-error","returns","event",
         "checklist","session","forge","walkthrough"
     }
+    if sys.argv[1] == "walkthrough" and result == 0:
+        # The walkthrough may resolve a newer live deployment than the persisted
+        # audit target. Keep the PoC scaffold anchored to the exact deployment
+        # the walkthrough actually inspected.
+        evidence_path = Path(".audit/evidence/walkthrough.json")
+        try:
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            model = evidence.get("model") or {}
+            walkthrough_target = model.get("target")
+            if isinstance(walkthrough_target, str) and re.fullmatch(
+                r"0x[0-9a-fA-F]{40}", walkthrough_target
+            ):
+                if config.get("target") != walkthrough_target:
+                    config["target"] = walkthrough_target
+                    contract_name = str(model.get("target_contract") or "").strip()
+                    if contract_name:
+                        config["target_contract"] = contract_name
+                    save_config(config)
+        except (OSError, json.JSONDecodeError):
+            pass
+
     if (
         result == 0
         and config.get("session_active")
