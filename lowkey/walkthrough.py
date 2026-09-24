@@ -1320,9 +1320,8 @@ def _render_protocol_story(
 
 
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
-    return _render_protocol_story(steps, current, [], enabled)
-def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
-    return _render_protocol_story(steps, current, [], enabled)
+    root = Path.cwd()
+    return _render_protocol_story(root, steps, current, [], [], enabled)
 
 def _wait_for_next_interaction(no_prompt: bool) -> str:
     if no_prompt:
@@ -2029,6 +2028,205 @@ def _sol_literal(value: Any) -> str:
     return "0"
 
 
+
+def _rpc_snapshot(rpc: str) -> str | None:
+    value = _rpc_call(rpc, "evm_snapshot", [])
+    return str(value) if value is not None else None
+
+
+def _rpc_revert(rpc: str, snapshot: str | None) -> bool:
+    if snapshot is None:
+        return False
+    return bool(_rpc_call(rpc, "evm_revert", [snapshot]))
+
+
+def _random_sol_value(
+    param: dict[str, Any],
+    actors: list[Actor],
+    target: str,
+    rng: random.Random,
+) -> Any:
+    typ = _canonical_type(param)
+    name = str(param.get("name") or "").lower()
+
+    if typ == "address":
+        pool = [a.address for a in actors] + [target, "0x" + "00" * 20]
+        if any(token in name for token in ("recipient", "receiver", "to", "user", "owner", "moderator")) and len(actors) > 1:
+            pool = [actors[1].address, actors[0].address] + pool
+        if any(token in name for token in ("attacker", "malicious")) and len(actors) > 2:
+            pool.insert(0, actors[2].address)
+        return rng.choice(pool)
+
+    if typ == "bool":
+        return rng.choice([False, True])
+
+    if typ.startswith("uint"):
+        bits_text = re.sub(r"[^0-9]", "", typ)
+        bits = int(bits_text or "256")
+        maximum = (1 << min(bits, 256)) - 1
+        return rng.choice([0, 1, maximum, rng.randrange(0, min(maximum, 10**18) + 1)])
+
+    if typ.startswith("int"):
+        bits_text = re.sub(r"[^0-9]", "", typ)
+        bits = int(bits_text or "256")
+        magnitude = (1 << max(1, min(bits, 256) - 1)) - 1
+        return rng.choice([-magnitude - 1, -1, 0, 1, magnitude])
+
+    if typ == "bytes32":
+        return "0x" + rng.randbytes(32).hex()
+
+    if typ == "bytes":
+        return "0x" + rng.randbytes(rng.randint(0, 48)).hex()
+
+    if typ == "string":
+        return rng.choice(["", "lowkey", "A" * 32, "0xdeadbeef"])
+
+    if typ.startswith("tuple"):
+        return [_random_sol_value(component, actors, target, rng) for component in param.get("components", [])]
+
+    if typ.endswith("[]"):
+        base = dict(param)
+        base["type"] = typ[:-2]
+        return [_random_sol_value(base, actors, target, rng) for _ in range(rng.randint(0, 4))]
+
+    return 0
+
+
+def _adversarial_functions(model: ContractModel) -> list[dict[str, Any]]:
+    return [
+        item for item in model.abi
+        if item.get("type") == "function"
+        and item.get("name")
+        and item.get("stateMutability") not in {"view", "pure"}
+        and not any(token in str(item.get("name") or "").lower() for token in ("upgrade", "selfdestruct"))
+    ]
+
+
+def _run_adversarial_test(
+    root: Path,
+    config: dict[str, Any],
+    host: Any,
+    target: str,
+    model: ContractModel,
+    models: list[ContractModel],
+    actors: list[Actor],
+    rpc: str,
+    total_cases: int,
+    seed: int | None,
+) -> int:
+    actual_seed = seed if seed is not None else int(time.time())
+    rng = random.Random(actual_seed)
+    functions = _adversarial_functions(model)
+
+    if not functions:
+        print("No mutating functions available for adversarial testing.")
+        return 0
+
+    total_cases = max(1, min(200, int(total_cases)))
+    results: list[Step] = []
+
+    print(_paint("LOWKEY // ADVERSARIAL WALKTHROUGH TEST", BOLD + MAGENTA, _ansi_enabled(False)))
+    print(f"  target : {model.name} {_addr(target)}")
+    print("  engine : random arguments → SEND → observe → restore")
+    print(f"  seed   : {actual_seed}")
+    print("")
+
+    for index in range(1, total_cases + 1):
+        fn = rng.choice(functions)
+        actor = rng.choice(actors) if actors else Actor("Alice", target, 0)
+        args = [_random_sol_value(param, actors, target, rng) for param in fn.get("inputs", [])]
+        value = rng.choice([0, 1, 10**6, 10**15, 10**18]) if fn.get("stateMutability") == "payable" else 0
+
+        step = Step(
+            index=index,
+            actor=actor.name,
+            contract=model.name,
+            address=target,
+            function=_signature(fn),
+            args=args,
+            value_wei=value,
+            reason="randomized adversarial probe",
+            inferred=False,
+        )
+
+        snapshot = _rpc_snapshot(rpc)
+        if snapshot is None:
+            print("Error: Anvil did not provide an evm_snapshot; aborting adversarial test.", file=sys.stderr)
+            return 1
+
+        tx, output = _send(host, config, actor, target, step.function, args, value)
+        step.tx_hash = tx
+
+        if tx:
+            receipt = _receipt(rpc, tx)
+            trace = _trace_tree(rpc, tx)
+            step.status = "success" if receipt and receipt.get("status") in (None, "0x1", 1) else "reverted"
+            step.events = _event_rows(host, config, receipt)
+            step.execution_edges = _trace_execution_edges(root, rpc, models, trace)
+            if step.status != "success":
+                step.error = output or "transaction reverted"
+        else:
+            step.status = "reverted"
+            step.error = output or "transaction was rejected"
+
+        if step.status != "success":
+            step.error_reason = _explain_failure(step, step.error, actor.name)
+            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, model, models)
+
+        results.append(step)
+
+        linked = _function_link(root, model, str(step.function).split("(", 1)[0])
+        shown_args = ", ".join(_friendly_arg(value, actors) for value in args) or "∅"
+        marker = "✓" if step.status == "success" else "✕"
+        color = GREEN if step.status == "success" else RED
+        print(_paint(
+            f"  {index:02d} {marker} [{actor.name}] ──▶ {model.name}.{linked}({shown_args})",
+            color,
+            _ansi_enabled(False),
+        ))
+        if step.error_reason:
+            print(f"     ↳ {step.error_reason}")
+        if step.failure_origin:
+            print(f"     ↳ origin: {step.failure_origin}")
+        for diagnostic in step.diagnostics[:2]:
+            print(f"     ↳ {diagnostic}")
+
+        if not _rpc_revert(rpc, snapshot):
+            print("     ⚠ Anvil snapshot could not be restored; aborting.", file=sys.stderr)
+            return 1
+
+    accepted = sum(item.status == "success" for item in results)
+    reverted = len(results) - accepted
+    evidence = root / ".audit" / "walkthrough" / "test.json"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mode": "randomized-isolated",
+                "seed": actual_seed,
+                "target": target,
+                "contract": model.name,
+                "cases": [asdict(item) for item in results],
+                "summary": {
+                    "cases": len(results),
+                    "accepted": accepted,
+                    "reverted": reverted,
+                },
+            },
+            indent=2,
+            default=str,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    print("")
+    print(f"  RESULT : {accepted} accepted • {reverted} reverted • {len(results)} probes")
+    print(f"  EVIDENCE: {evidence.relative_to(root)}")
+    print("  Every probe was restored to its pre-test Anvil snapshot.")
+    return 0
+
+
 def _generate_replay_script(root: Path, model: ContractModel, target: str, steps: list[Step]) -> Path:
     path = root / "script" / f"LowkeyWalkthrough_{model.name}.s.sol"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2430,14 +2628,21 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     if not root or not (root/"foundry.toml").is_file():
         print("Error: 'lk walkthrough' must be run inside a Foundry project.",file=sys.stderr)
         return 2
+    test_mode=any(str(x).lower()=="test" for x in args) or "--test" in args
     auto="--auto" in args or "auto" in args
     static="--static" in args or "--no-exec" in args
     no_prompt="--yes" in args or "--non-interactive" in args or not sys.stdin.isatty()
-    contract=None; max_steps=8
+    contract=None; max_steps=8; test_cases=24; test_seed=None
     for i,arg in enumerate(args):
         if arg=="--contract" and i+1<len(args): contract=args[i+1]
         elif arg=="--steps" and i+1<len(args):
             try: max_steps=max(1,min(24,int(args[i+1])))
+            except ValueError: pass
+        elif arg=="--cases" and i+1<len(args):
+            try: test_cases=max(1,min(200,int(args[i+1])))
+            except ValueError: pass
+        elif arg=="--seed" and i+1<len(args):
+            try: test_seed=int(args[i+1])
             except ValueError: pass
 
     if hasattr(host,"_sync_audit_context"):
@@ -2445,7 +2650,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         except Exception: pass
 
     print(_paint("LOWKEY PROTOCOL WALKTHROUGH",BOLD+CYAN,_ansi_enabled(static)))
-    print("  LIVE mode: each interaction is executed, observed, then rendered.")
+    print("  LIVE mode: execute → observe → explain → redraw.")
+    if test_mode:
+        print("  TEST mode: randomized mutating calls are sent on isolated Anvil snapshots.")
     archived = _quarantine_generated_replays(root)
     if archived:
         print(f"  refreshed {archived} previous generated walkthrough replay(s)")
@@ -2463,6 +2670,19 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     if not model:
         print("Error: unable to choose an executable application contract.",file=sys.stderr); return 2
     actors=_actors(host,config,4) if host else []
+
+    if test_mode:
+        rpc=host.effective_rpc(config) if host and hasattr(host,"effective_rpc") else config.get("rpc")
+        if not rpc:
+            print("Error: adversarial test mode needs a local Anvil RPC.", file=sys.stderr)
+            return 2
+        if not target:
+            print("Error: adversarial test mode needs a live target.", file=sys.stderr)
+            return 2
+        return _run_adversarial_test(
+            root, config, host, target, model, models, actors, rpc,
+            total_cases=test_cases, seed=test_seed,
+        )
 
     if static:
         plan=plan_workflow(model,actors,target or "0x"+"00"*20,int(time.time()),max_steps)
