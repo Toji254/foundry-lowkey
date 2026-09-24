@@ -2134,14 +2134,15 @@ def _render_interaction_graph_full(
         if model and model.function_locations.get(function)
         else None
     )
-    call_display = _osc8(raw_call, call_target) if call_target else raw_call
+    qualified_call = f"{contract}.{raw_call}"
+    call_display = _osc8(qualified_call, call_target) if call_target else qualified_call
     status = "✓ SUCCESS" if step.status == "success" else "✕ BLOCKED" if step.status in {"blocked", "reverted"} else "● CHECKING"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
     lines = [
         _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
-        f"  │   {ACTOR} {actor} {ARROW} {contract}.{call_display}",
+        f"  │   {ACTOR} {actor} {ARROW} {call_display}",
         f"  │       ↳ {_human_action_summary(step, actors)}",
         f"  │       ↳ CALL: {actor} ──▶ {contract}",
     ]
@@ -2261,7 +2262,8 @@ def _story_timeline_line(
         if model and model.function_locations.get(function)
         else None
     )
-    call = _osc8(raw_call, target) if target else raw_call
+    qualified_call = f"{step.contract}.{raw_call}"
+    call = _osc8(qualified_call, target) if target else qualified_call
     marker = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
     summary = _human_action_summary(step, actors)
@@ -2319,7 +2321,7 @@ def _render_protocol_story_full(
         )
         lines.append("                 │")
         lines.append("                 ▼")
-        lines.append("  ◀ LIVE")
+        lines.append("  ◀ NOW  •  LIVE")
         lines.append("             next live interaction")
 
     return "\n".join(lines)
@@ -2928,7 +2930,11 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
             continue
         marker = "✕" if value.lower() == "false" else "✓"
         suffix = "; this mapping gate blocks the call" if marker == "✕" else ""
-        diagnostics.append(marker + " " + _pretty_identifier(mapping_name) + "(" + _friendly_arg(key_value, []) + ") = " + value + suffix)
+        human_mapping = _pretty_identifier(mapping_name)
+        diagnostics.append(
+            marker + " " + mapping_name + "(" + _friendly_arg(key_value, []) + ") = " + value
+            + suffix + (" — " + human_mapping if human_mapping.lower() != mapping_name.lower() else "")
+        )
         if marker == "✕":
             origin = origin or (model.name + "." + name + " → " + mapping_name + "[" + key_name + "] is false")
 
