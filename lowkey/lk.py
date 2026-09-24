@@ -2129,6 +2129,15 @@ def artifact_constructor_inputs(artifact):
     constructors = [item for item in abi if isinstance(item, dict) and item.get("type") == "constructor"]
     return constructors[0].get("inputs", []) if constructors else []
 
+def artifact_has_initializer(artifact):
+    abi = artifact.get("abi", []) if isinstance(artifact, dict) else []
+    return any(
+        isinstance(item, dict)
+        and item.get("type") == "function"
+        and str(item.get("name") or "").lower().startswith("initialize")
+        for item in abi
+    )
+
 def artifact_is_deployable(artifact):
     if not isinstance(artifact, dict):
         return False
@@ -2183,8 +2192,32 @@ def artifact_is_project_application(root, path, artifact):
 
 
 def discover_audit_target_contract(root):
-    """Choose a likely application contract from existing audit signals."""
+    """Choose a likely protocol-root application contract from audit + source topology."""
+    artifacts = {}
     scores = {}
+    sources = {}
+
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not artifact_is_project_application(root, path, artifact):
+            continue
+        name = artifact_contract_name(path, artifact)
+        key = str(name).lower()
+        artifacts[key] = str(name)
+        scores.setdefault(key, 0)
+        source = artifact_source_name(artifact, path)
+        sources[key] = source or str(path)
+
+        lowered = key
+        if lowered.endswith(("factory", "router", "manager", "coordinator", "controller")):
+            scores[key] += 140
+        if artifact_has_initializer(artifact):
+            scores[key] += 20
+
+    if not artifacts:
+        return None
+
+    # Audit evidence is still the strongest signal for the contract under review.
     for signal in audit_context.signals(root, "open"):
         if not isinstance(signal, dict):
             continue
@@ -2196,23 +2229,30 @@ def discover_audit_target_contract(root):
         lowered = path.lower()
         if "/interfaces/" in lowered or name.lower().startswith("i"):
             continue
+        key = str(name).lower()
+        if key not in scores:
+            continue
         impact = str(signal.get("impact") or "").lower()
         weight = {"high": 100, "medium": 50, "low": 10, "informational": 2}.get(impact, 5)
-        scores[name] = scores.get(name, 0) + weight
-    if not scores:
-        return None
+        scores[key] += weight
 
-    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0].lower()))
-    artifacts = {}
-    for path in local_artifact_paths(root):
-        artifact = read_artifact(path)
-        if artifact_is_project_application(root, path, artifact):
-            name = artifact_contract_name(path, artifact)
-            artifacts[str(name).lower()] = str(name)
-    for contract, _score in ranked:
-        if str(contract).lower() in artifacts:
-            return artifacts[str(contract).lower()]
-    return None
+    # A contract that explicitly references another first-party application contract
+    # is usually a protocol root (factory/router -> pool/token/etc.).
+    contract_names = {name for name in artifacts.values()}
+    for key, source in sources.items():
+        try:
+            source_text = (Path(root) / source).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source_text = ""
+        for other in contract_names:
+            if other.lower() == key:
+                continue
+            if re.search(r"\b" + re.escape(other) + r"\b", source_text):
+                scores[key] += 30
+                break
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return artifacts[ranked[0][0]] if ranked else None
 
 def discover_generic_lab_contract(root, query=None):
     matches = project_artifact_function_matches(root, query) if query else []
@@ -2467,6 +2507,188 @@ def run_clone(config, args):
         os.chdir(previous_cwd)
 
 
+def _generate_factory_upgradeable_lab(root, target_contract, artifact, accounts):
+    """Generate a local-only proxy fixture for an upgradeable factory + pool mock pattern."""
+    if not artifact_has_initializer(artifact):
+        return None
+
+    contract_lower = str(target_contract).lower()
+    if not contract_lower.endswith("factory"):
+        return None
+
+    source = artifact_source_name(artifact, "")
+    if not source:
+        return None
+
+    abi = artifact.get("abi", [])
+    initialize = next(
+        (
+            item for item in abi
+            if isinstance(item, dict)
+            and item.get("type") == "function"
+            and str(item.get("name") or "").lower() == "initialize"
+        ),
+        None,
+    )
+    if not initialize:
+        return None
+
+    names = [str(item.get("name") or "").lower().replace("_", "") for item in initialize.get("inputs", [])]
+    required = {"safeharborregistry", "poolimplementation", "defaultoutcomemoderator"}
+    if not required.issubset(set(names)):
+        return None
+
+    mock_paths = {}
+    for filename in ("MockERC20.sol", "MockAgreement.sol", "MockSafeHarborRegistry.sol"):
+        matches = list(Path(root).glob(f"test/mocks/{filename}"))
+        if matches:
+            mock_paths[filename] = f"test/mocks/{filename}"
+    if len(mock_paths) != 3:
+        return None
+
+    # Select the first application contract whose name contains "pool" and exposes initialize.
+    pool_artifact = None
+    pool_name = None
+    for path in local_artifact_paths(root):
+        data = read_artifact(path)
+        if not artifact_is_project_application(root, path, data):
+            continue
+        name = artifact_contract_name(path, data)
+        if "pool" in name.lower() and artifact_has_initializer(data):
+            pool_artifact, pool_name = data, name
+            break
+    if not pool_artifact:
+        return None
+
+    source_path = str(source).replace("\\", "/")
+    target_import = f'import {{ {target_contract} }} from "{source_path}";'
+    pool_source = artifact_source_name(pool_artifact, "")
+    if not pool_source:
+        return None
+
+    safe_source = source_path.rsplit("/", 1)[-1]
+    contract_file = root / ".audit" / "generated"
+    contract_file.mkdir(parents=True, exist_ok=True)
+    script = contract_file / f"LowkeyAutoLab_{re.sub(r'[^A-Za-z0-9_]', '_', target_contract)}.s.sol"
+
+    alice = accounts[0]
+    bob = accounts[1] if len(accounts) > 1 else accounts[0]
+    code = f'''// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {{Script}} from "forge-std/Script.sol";
+import {{console2}} from "forge-std/console2.sol";
+{target_import}
+import {{ {pool_name} }} from "{pool_source}";
+import {{MockERC20}} from "test/mocks/MockERC20.sol";
+import {{MockAgreement}} from "test/mocks/MockAgreement.sol";
+import {{MockSafeHarborRegistry}} from "test/mocks/MockSafeHarborRegistry.sol";
+import {{ERC1967Proxy}} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+contract LowkeyAutoLab_{re.sub(r"[^A-Za-z0-9_]", "_", target_contract)} is Script {{
+    function run() external {{
+        address alice = {alice};
+        address bob = {bob};
+        address scopeAccount = address(0xC0FFEE);
+
+        vm.startBroadcast();
+
+        MockERC20 token = new MockERC20();
+        MockSafeHarborRegistry registry = new MockSafeHarborRegistry();
+        {pool_name} poolImplementation = new {pool_name}();
+        MockAgreement agreement = new MockAgreement(alice);
+
+        agreement.setContractInScope(scopeAccount, true);
+        registry.setAgreementValid(address(agreement), true);
+        token.mint(alice, 1000000 ether);
+        token.mint(bob, 1000000 ether);
+
+        {target_contract} impl = new {target_contract}();
+        bytes memory initData = abi.encodeCall(
+            {target_contract}.initialize,
+            (address(registry), address(poolImplementation), bob)
+        );
+        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
+        {target_contract} factory = {target_contract}(address(proxy));
+        factory.setStakeTokenAllowed(address(token), true);
+
+        vm.stopBroadcast();
+
+        console2.log("LOWKEY_TARGET", address(factory));
+        console2.log("LOWKEY_OBSERVED staketoken", address(token));
+        console2.log("LOWKEY_OBSERVED safeharborregistry", address(registry));
+        console2.log("LOWKEY_OBSERVED poolimplementation", address(poolImplementation));
+        console2.log("LOWKEY_OBSERVED agreement", address(agreement));
+        console2.log("LOWKEY_OBSERVED recoveryaddress", bob);
+        console2.log("LOWKEY_OBSERVED scope", scopeAccount);
+        console2.log("LOWKEY_OBSERVED defaultoutcomemoderator", bob);
+    }}
+}}
+'''
+    script.write_text(code, encoding="utf-8")
+    return script
+
+def run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested=None):
+    if requested:
+        # Explicit contract requests may still use the normal generic path.
+        return None
+    candidates = discover_generic_lab_contract(root)
+    if not candidates:
+        return None
+    _score, contract, path, artifact, _constructor_inputs, _fqn = candidates
+    script = _generate_factory_upgradeable_lab(root, contract, artifact, accounts)
+    if not script:
+        return None
+
+    relative = os.path.relpath(script, root)
+    script_contract = script.stem
+    print("LOWKEY LOCAL AUDIT LAB")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Script  : {relative}")
+    print(f"Target  : {contract} (proxy fixture)")
+    print(f"RPC     : {rpc_display(rpc)}")
+    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print("Mode    : automatic upgradeable protocol fixture")
+    print("Action  : deploying implementation + dependencies + ERC1967 proxy...")
+
+    result = run_foundry(
+        ["script", f"{relative}:{script_contract}", "--rpc-url", rpc, "--broadcast", "--private-key", key],
+        capture=True,
+    )
+    output = result.text
+    if result.code != 0:
+        tail = "\n".join(output.splitlines()[-30:]) if output else "forge script failed"
+        return fail(f"Error: automatic protocol fixture failed.\n{tail}", result.code)
+
+    target = parse_lab_marker(output)
+    if not target:
+        return fail("Error: automatic protocol fixture did not report LOWKEY_TARGET.")
+
+    observed = parse_lab_observations(output)
+    config["_walkthrough_observed"] = observed
+    config["actor"] = "lab-deployer"
+    config.setdefault("wallets", {})["lab-deployer"] = {
+        "source": "anvil-default", "anvil_index": 0, "address": accounts[0],
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    artifact_path = path
+    set_lab_target(config, root, target, contract, artifact_path)
+    print(f"Target  : {contract} proxy -> {target}")
+    print(f"ABI     : {artifact_path}")
+    print(f"Fixture : {relative}")
+    print(f"Observed bootstrap values: {len(observed)}")
+    return 0
+
+def parse_lab_observations(output):
+    observed = {}
+    for match in re.finditer(
+        r"LOWKEY_OBSERVED(?:\s+|:)\s*([A-Za-z0-9_]+)\s+(0x[0-9a-fA-F]{40})",
+        str(output or ""),
+    ):
+        observed[match.group(1).lower()] = match.group(2)
+    return observed
+
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
     print("LOWKEY LOCAL AUDIT LAB")
@@ -2576,11 +2798,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
 
     print(f"Target  : {contract} -> {target}")
     print(f"ABI     : {path}")
-    has_initializer = any(
-        item.get("name") == "initialize"
-        for item in artifact.get("abi", [])
-        if isinstance(item, dict)
-    )
+    has_initializer = artifact_has_initializer(artifact)
     if has_initializer:
         print("Status  : CONFIGURATION REQUIRED")
         print("Note    : this is an upgradeable-style contract; generic deployment does not create/configure its proxy runtime.")
@@ -2625,6 +2843,12 @@ def run_lab(config,args):
 
     if script and (not requested or requested.lower() not in {"generic", "forge", "artifact"}):
         return run_project_lab_script(config, root, script, rpc, accounts, key, requested)
+
+    # Auto-build a disposable proxy + fixture for common upgradeable factory protocols.
+    if not requested:
+        fixture_code = run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested)
+        if fixture_code is not None:
+            return fixture_code
 
     # No adapter? Prefer the audit evidence; it usually points at the application's
     # most security-relevant implementation contract.
@@ -4519,6 +4743,18 @@ def _set_audit_auto_target(config, root, address, contract=None, artifact=None, 
     return address
 
 
+def _live_target_is_proxy(rpc, address):
+    if not rpc or not is_address(address):
+        return False
+    try:
+        code, implementation, _err = cast_output(["cast", "implementation", address, "--rpc-url", rpc])
+    except Exception:
+        return False
+    if code != 0:
+        return False
+    implementation = str(implementation or "").strip().splitlines()[-1] if implementation else ""
+    return is_address(implementation) and implementation.lower() != str(address).lower()
+
 def _live_target_candidate(config, root, contract_name=None):
     """Find a saved target matching a current-project contract and live on the detected Anvil."""
     info = anvil_rpc_info(config)
@@ -4551,6 +4787,10 @@ def _live_target_candidate(config, root, contract_name=None):
         if code != 0 or not str(runtime or "").strip() or str(runtime).strip() == "0x":
             continue
         contract, artifact = artifact_info
+        # An implementation contract with an initializer is not a usable live
+        # application target for autonomous walkthrough mode. Prefer its proxy.
+        if artifact_has_initializer(read_artifact(artifact) or {}) and not _live_target_is_proxy(rpc, address):
+            continue
         priority = 0 if preferred and key == preferred else 1
         if is_address(config.get("target")) and str(config.get("target")).lower() == str(address).lower():
             priority -= 2
@@ -4609,8 +4849,21 @@ def _bootstrap_audit_target(config, root, allow_deploy=False):
     """Resolve a live project target without guessing across unrelated projects."""
     existing = project_context_target(root)
     if existing:
-        activate_project_target(config, root)
-        return existing.get("address")
+        artifact = existing.get("artifact")
+        source = existing.get("source")
+        stale_implementation = False
+        if source != "manual" and artifact:
+            artifact_data = read_artifact(str(artifact))
+            if artifact_has_initializer(artifact_data or {}):
+                stale_implementation = not _live_target_is_proxy(effective_rpc(config), existing.get("address"))
+        if stale_implementation:
+            print(
+                f"Existing target ignored: {existing.get('contract') or 'implementation'} "
+                "is an implementation contract, not a configured proxy target."
+            )
+        else:
+            activate_project_target(config, root)
+            return existing.get("address")
 
     preferred_contract = _focused_audit_target_contract(root) or discover_audit_target_contract(root)
     candidate = _live_target_candidate(config, root, preferred_contract)
