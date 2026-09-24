@@ -210,6 +210,120 @@ class WalkthroughTests(unittest.TestCase):
         self.assertTrue(any(e.get("to_function")=="initialize" and e.get("to_contract")=="Child" for e in edges))
         self.assertTrue(any(e.get("to_function")=="check" and e.get("interface")=="IRegistry" for e in edges))
 
+    def test_contract_requirement_follows_internal_helper_and_forwarded_argument(self):
+        factory = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function",
+                "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+            }],
+            functions=["createPool(address)", "_create(address)"],
+            calls=[
+                {
+                    "kind": "internal",
+                    "from": "createPool",
+                    "to_contract": "Factory",
+                    "to_function": "_create(address)",
+                    "argument_names": ["agreement"],
+                },
+            ],
+        )
+        helper = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[
+                {
+                    "type": "function",
+                    "name": "_create",
+                    "inputs": [{"name": "agreement_", "type": "address"}],
+                }
+            ],
+            functions=["_create(address)"],
+            calls=[],
+        )
+        helper.calls = [
+            {
+                "kind": "cross-contract",
+                "from": "_create",
+                "to_contract": "IAgreement",
+                "to_function": "owner",
+                "via": "agreement_",
+                "argument_names": [],
+            }
+        ]
+
+        # The catalog can contain one model object per source; the recursion uses
+        # the same model for internal calls, so test that path directly.
+        factory.calls.append({
+            "kind": "cross-contract",
+            "from": "_create",
+            "to_contract": "IAgreement",
+            "to_function": "owner",
+            "via": "agreement",
+            "argument_names": [],
+        })
+        self.assertEqual(
+            walkthrough._contract_requirement_for_parameter(
+                factory,
+                "createPool",
+                "agreement",
+                [factory],
+            ),
+            "IAgreement",
+        )
+
+    def test_empty_revert_explanation_points_to_dependency_layer(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Factory",
+            "0x" + "1" * 40,
+            "create(address)",
+            ["0x" + "2" * 40],
+            status="blocked",
+            error='server returned an error response: error code 3: execution reverted, data: "0x"',
+        )
+        text = walkthrough._explain_failure(step, step.error, "Alice")
+        self.assertIn("dependency call", text)
+        self.assertIn("empty revert payload", text)
+
+    def test_live_story_keeps_previous_steps_compact_and_current_step_expanded(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        model = walkthrough.ContractModel(
+            name="Pool",
+            source="src/Pool.sol",
+            artifact="out/Pool.sol/Pool.json",
+            functions=["deposit()", "withdraw()"],
+            function_locations={"deposit": 10, "withdraw": 20},
+        )
+        first = walkthrough.Step(
+            1, "Alice", "Pool", "0x" + "3" * 40,
+            "deposit()", [], value_wei=10**18, status="success",
+        )
+        second = walkthrough.Step(
+            2, "Bob", "Pool", "0x" + "3" * 40,
+            "withdraw()", [], status="checking",
+        )
+        rendered = walkthrough._render_protocol_story_full(
+            pathlib.Path("/tmp/project"),
+            [first, second],
+            second,
+            actors,
+            [model],
+            False,
+        )
+        self.assertIn("01", rendered)
+        self.assertIn("02", rendered)
+        self.assertIn("▼", rendered)
+        self.assertIn("Pool.withdraw()", rendered)
+
     def test_test_flow_hints_capture_ordered_behavior_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp)
