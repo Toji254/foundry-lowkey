@@ -2429,7 +2429,7 @@ def discover_generic_lab_contract(root, query=None):
         elif "test" in lowered_path:
             score = 90
         constructor_inputs = artifact_constructor_inputs(artifact)
-        source = artifact_source_name(artifact, path, root)
+        source = artifact_source_name(artifact, path)
         fqn = f"{source}:{contract}" if source else None
         if not fqn:
             continue
