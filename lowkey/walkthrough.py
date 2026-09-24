@@ -2414,36 +2414,59 @@ def _render_story(
     lines.append("WHAT LOWKEY IS DOING")
     if not actions:
         lines.append("  No safe next action was found from the current state.")
-    else:
-        upto = len(actions) if current is None else min(len(actions), current + 1)
-        for index, action in enumerate(actions[:upto]):
-            fn: FunctionInfo = action["function"]
-            node: LiveNode = action["node"]
-            status = _step_status_word(action)
-            actor = str(action.get("actor_name") or "Unknown")
-            mark = "✓" if status == "DONE" else "!" if status in {"BLOCKED", "FAILED"} else "→"
+    elif current is not None:
+        action = actions[current]
+        fn = action["function"]
+        node = action["node"]
+        status = _step_status_word(action)
+        actor = str(action.get("actor_name") or "Unknown")
+        mark = "✓" if status == "DONE" else "!" if status in {"BLOCKED", "FAILED"} else "→"
+        lines.append("")
+        lines.append(f"  {mark} CURRENT STEP  {current + 1:02d}  {action.get('phase', 'STEP')} / {status}")
+        label = f"{node.artifact_contract or node.name}.{fn.name}"
+        if links and fn.source and fn.line:
+            label = _source_link(root, fn.source, fn.line, label)
+        lines.append(f"      {actor} → {label}")
+        lines.append(f"      WHAT   {action.get('what') or _action_what(fn, node)}")
+        lines.append(f"      WHY    {action.get('why') or _action_why(fn, node)}")
+
+        result = action.get("result") or {}
+        if result.get("ok"):
+            lines.append("      RESULT ✓ The chain accepts this action in simulation.")
+        else:
+            friendly, recommendation = _friendly_error(result.get("decoded_error"), result.get("raw", ""))
+            lines.append(f"      RESULT ! {friendly}")
+            lines.append(f"      NEXT   {recommendation}")
+            for item in action.get("diagnosis", [])[:2]:
+                lines.append(f"             evidence: {item}")
+
+        if current + 1 < len(actions):
+            nxt = actions[current + 1]
+            nfn = nxt["function"]
             lines.append("")
-            lines.append(f"  {mark} {index + 1:02d}  {action.get('phase', 'STEP')} / {status}")
-            label = f"{node.artifact_contract or node.name}.{fn.name}"
-            if links and fn.source and fn.line:
-                label = _source_link(root, fn.source, fn.line, label)
-            lines.append(f"      {actor} → {label}")
-            lines.append(f"      WHAT   {action.get('what') or _action_what(fn, node)}")
-            lines.append(f"      WHY    {action.get('why') or _action_why(fn, node)}")
-
-            result = action.get("result") or {}
-            if result.get("ok"):
-                lines.append("      RESULT ✓ The chain accepts this action in simulation.")
-            else:
-                friendly, recommendation = _friendly_error(result.get("decoded_error"), result.get("raw", ""))
-                lines.append(f"      RESULT ! {friendly}")
-                lines.append(f"      NEXT   {recommendation}")
-                for item in action.get("diagnosis", [])[:2]:
-                    lines.append(f"             evidence: {item}")
-
-            if current is None and index >= 5 and len(actions) > 6:
-                lines.append(f"      … {len(actions) - index - 1} more candidate step(s) hidden")
-                break
+            lines.append(f"      NEXT STEP PREVIEW  {current + 2:02d}  {nxt.get('phase', 'STEP')}")
+            lines.append(f"      {nxt.get('actor_name', 'Unknown')} → {(nxt['node'].artifact_contract or nxt['node'].name)}.{nfn.name}")
+    else:
+        completed = [a for a in actions if _step_status_word(a) == "DONE"]
+        blocked = [a for a in actions if _step_status_word(a) == "BLOCKED"]
+        failed = [a for a in actions if _step_status_word(a) == "FAILED"]
+        lines.append(f"  Walkthrough examined {len(actions)} planned step(s).")
+        if completed:
+            lines.append(f"  ✓ Completed successfully: {len(completed)}")
+        if blocked:
+            first = blocked[0]
+            result = first.get("result") or {}
+            friendly, recommendation = _friendly_error(result.get("decoded_error"), result.get("raw", ""))
+            lines.append(f"  ! Blocked: {len(blocked)}  — {friendly}")
+            lines.append(f"    Recommended next move: {recommendation}")
+        if failed:
+            lines.append(f"  ! Send failures: {len(failed)}")
+        phases = []
+        for action in actions:
+            phase = str(action.get("phase") or "STEP")
+            if phase not in phases:
+                phases.append(phase)
+        lines.append(f"  Path touched: {' → '.join(phases)}")
 
     lines.append("")
     lines.append("LEGEND")
