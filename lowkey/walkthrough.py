@@ -156,7 +156,7 @@ def _load_system_manifest(root: Path, rpc: str, config: dict[str, Any]) -> dict[
         return system_model.load_manifest(root) if system_model else None
 
 
-def _bootstrap_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+def _bootstrap_from_manifest(manifest: dict[str, Any] | None, rpc: str) -> dict[str, Any] | None:
     if not manifest:
         return None
     deployments = manifest.get("deployments") or []
@@ -1951,7 +1951,7 @@ def _build_model(
         raise RuntimeError(f"RPC unavailable at {rpc}: {exc}") from exc
 
     manifest = _load_system_manifest(root, rpc, config)
-    bootstrap = _bootstrap_from_manifest(manifest) or _discover_bootstrap(root, rpc)
+    bootstrap = _bootstrap_from_manifest(manifest, rpc) or _discover_bootstrap(root, rpc)
 
     target, target_source = _resolve_walkthrough_target(
         root, config, rpc, bootstrap
