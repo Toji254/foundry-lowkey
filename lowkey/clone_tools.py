@@ -259,9 +259,14 @@ def sync_submodules(destination: Path) -> int:
 
 
 def gitmodules_entries(repo: Path) -> dict[str, tuple[str, str]]:
+    """Read declared submodules directly from the repository's .gitmodules."""
+    gitmodules = repo / ".gitmodules"
+    if not gitmodules.is_file():
+        return {}
+
     result = run_git(
         [
-            "-C", str(repo), "config", "--file", ".gitmodules",
+            "-C", str(repo), "config", "--file", str(gitmodules),
             "--get-regexp", r"^submodule\..*\.path$"
         ],
         capture=True,
@@ -275,29 +280,61 @@ def gitmodules_entries(repo: Path) -> dict[str, tuple[str, str]]:
         if len(parts) != 2:
             continue
         key, path = parts
-        name = key[len("submodule."):-len(".path")]
+        prefix = "submodule."
+        suffix = ".path"
+        if not key.startswith(prefix) or not key.endswith(suffix):
+            continue
+        name = key[len(prefix):-len(suffix)]
         url_result = run_git(
             [
-                "-C", str(repo), "config", "--file", ".gitmodules",
+                "-C", str(repo), "config", "--file", str(gitmodules),
                 "--get", f"submodule.{name}.url"
             ],
             capture=True,
         )
-        if url_result.returncode == 0 and url_result.stdout.strip():
-            entries[name] = (path.strip(), url_result.stdout.strip())
+        url = url_result.stdout.strip() if url_result.returncode == 0 else ""
+        if url:
+            entries[name] = (path.strip(), url)
     return entries
 
 
 def immediate_submodules(repo: Path) -> list[tuple[str, str, Path]]:
-    result = run_git(["-C", str(repo), "submodule", "status"], capture=True)
-    if result.returncode != 0:
+    """Return immediate submodules from committed gitlink entries."""
+    configured = gitmodules_entries(repo)
+    if not configured:
         return []
 
-    configured = gitmodules_entries(repo)
     by_path = {path: url for _, (path, url) in configured.items()}
-
+    result = run_git(["-C", str(repo), "ls-tree", "-z", "HEAD"], capture=True)
     records: list[tuple[str, str, Path]] = []
-    for line in result.stdout.splitlines():
+
+    if result.returncode == 0:
+        for entry in result.stdout.split("\0"):
+            if not entry:
+                continue
+            meta, sep, path = entry.partition("\t")
+            if not sep:
+                continue
+            fields = meta.split()
+            if len(fields) != 3:
+                continue
+            mode, object_type, commit = fields
+            if mode != "160000" or object_type != "commit":
+                continue
+            url = by_path.get(path)
+            if url and re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+                records.append((url, commit, repo / path))
+        if records:
+            return records
+
+    status = run_git(
+        ["-C", str(repo), "submodule", "status", "--cached"],
+        capture=True,
+    )
+    if status.returncode != 0:
+        return records
+
+    for line in status.stdout.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
@@ -309,9 +346,8 @@ def immediate_submodules(repo: Path) -> list[tuple[str, str, Path]]:
         commit, rest = parts
         path = rest.split(None, 1)[0]
         url = by_path.get(path)
-        if not url or not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
-            continue
-        records.append((url, commit, repo / path))
+        if url and re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+            records.append((url, commit, repo / path))
     return records
 
 
@@ -323,12 +359,8 @@ def update_one_level(
     jobs: int,
     use_cache: bool,
 ) -> int:
-    pending = [(url, commit, path) for url, commit, path in entries if not git_repo_ready(path)]
-    if not pending:
-        return 0
-
     groups: dict[str, list[tuple[str, str, Path]]] = {}
-    for url, commit, path in pending:
+    for url, commit, path in entries:
         key = normalize_repo_url(url) if use_cache else "__no_cache__"
         groups.setdefault(key, []).append((url, commit, path))
 
@@ -340,9 +372,12 @@ def update_one_level(
         ]
         if depth:
             command.extend(["--depth", str(depth)])
+
         if use_cache and key != "__no_cache__":
             cache = ensure_cache_repo(group[0][0])
-            command.extend(["--reference-if-able", str(cache)])
+            if all(cache_has_commit(cache, commit) for _, commit, _ in group):
+                command.extend(["--reference-if-able", str(cache)])
+
         command.extend(["--", *[str(path.relative_to(repo)) for _, _, path in group]])
 
         result = run_git(command)
@@ -393,7 +428,17 @@ def walk_submodules(
 
         entries = immediate_submodules(repo)
         if not entries:
-            continue
+            if repo == root and (repo / ".gitmodules").is_file():
+                print("[DEPS] Gitlink discovery found no entries; falling back to native recursive submodule update...")
+                fallback = run_git([
+                    "-C", str(repo), "submodule", "update", "--init",
+                    "--recursive", "--jobs", str(jobs),
+                ])
+                if fallback.returncode != 0:
+                    return fallback.returncode
+                entries = immediate_submodules(repo)
+            if not entries:
+                continue
 
         total += len(entries)
         code = update_one_level(
