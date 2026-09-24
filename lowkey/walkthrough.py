@@ -2943,6 +2943,17 @@ def _system_test_targets(
         if contract_name:
             add(key, address, contract_name)
 
+    runtime_instances = config.get("_walkthrough_runtime_instances")
+    if isinstance(runtime_instances, list):
+        for entry in runtime_instances:
+            if not isinstance(entry, dict):
+                continue
+            add(
+                str(entry.get("label") or entry.get("contract") or "runtime"),
+                entry.get("address"),
+                str(entry.get("contract") or entry.get("model") or ""),
+            )
+
     return result
 
 
