@@ -1223,11 +1223,13 @@ def _extract_state_vars(segment: str, base_offset: int, source_text: str) -> lis
             continue
         if statement.lower().startswith(("function ","event ","error ","modifier ","using ","struct ","enum ","constructor","fallback","receive")):
             continue
-        match = re.search(r"\b([A-Za-z_]\w*)\b\s*(?==|$)", statement)
+        assignment = re.search(r"(?<![<>!=])=(?![=>])", statement)
+        declaration = statement[:assignment.start()].strip() if assignment else statement.strip()
+        match = re.search(r"\b([A-Za-z_]\w*)\b\s*$", declaration)
         if not match:
             continue
         name = match.group(1)
-        prefix = statement[:match.start()].strip()
+        prefix = declaration[:match.start()].strip()
         if not prefix:
             continue
         modifiers = re.findall(r"\b(public|private|internal|constant|immutable|override)\b", prefix)
