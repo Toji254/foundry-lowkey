@@ -136,6 +136,202 @@ def _latest_timestamp(url: str) -> int:
         return int(time.time())
 
 
+def _discover_bootstrap(root: Path, rpc: str) -> dict[str, Any]:
+    """Discover generic Foundry entry points without executing project code."""
+    deployments: list[dict[str, Any]] = []
+    seen_deployments: set[tuple[str, str]] = set()
+
+    for path in sorted((root / "broadcast").glob("**/run-latest.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for index, tx in enumerate(payload.get("transactions", []) or []):
+            if not isinstance(tx, dict):
+                continue
+            addr = tx.get("contractAddress") or tx.get("contract_address")
+            if not _is_address(addr):
+                continue
+            contract = str(
+                tx.get("contractName")
+                or tx.get("contract_name")
+                or tx.get("contract")
+                or "Deployment"
+            )
+            key = (addr.lower(), path.as_posix())
+            if key in seen_deployments:
+                continue
+            seen_deployments.add(key)
+            deployments.append(
+                {
+                    "address": addr,
+                    "contract": contract,
+                    "broadcast": path.relative_to(root).as_posix(),
+                    "index": index,
+                    "live": _code_size(rpc, addr) > 0,
+                }
+            )
+
+    scripts: list[dict[str, Any]] = []
+    for path in sorted((root / "script").glob("**/*.s.sol")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        masked = _strip_solidity_comments(source)
+        signals: list[str] = []
+        if re.search(r"\bfunction\s+run\s*\(", masked):
+            signals.append("run()")
+        if re.search(r"\bvm\.startBroadcast\s*\(", masked):
+            signals.append("broadcast")
+        if re.search(r"\bnew\s+[A-Za-z_]\w*\s*\(", masked):
+            signals.append("contract creation")
+        if re.search(r"\bCREATE2?\b", masked):
+            signals.append("create opcode")
+        if not signals:
+            continue
+        rel = path.relative_to(root).as_posix()
+        score = 0
+        if "run()" in signals:
+            score += 3
+        if "broadcast" in signals:
+            score += 3
+        if "contract creation" in signals or "create opcode" in signals:
+            score += 2
+        scripts.append(
+            {
+                "path": rel,
+                "score": score,
+                "signals": signals,
+                "command": (
+                    f"forge script {shlex.quote(rel)} "
+                    f"--rpc-url {shlex.quote(rpc)} --broadcast"
+                ),
+            }
+        )
+
+    tests: list[dict[str, Any]] = []
+    seen_tests: set[Path] = set()
+    for base in (root / "test", root / "tests"):
+        for path in sorted(base.glob("**/*.t.sol")):
+            if path in seen_tests:
+                continue
+            seen_tests.add(path)
+            try:
+                source = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            masked = _strip_solidity_comments(source)
+            signals: list[str] = []
+            if re.search(r"\bfunction\s+setUp\s*\(", masked):
+                signals.append("setUp()")
+            if re.search(r"\b(?:new|deploy)\b", masked):
+                signals.append("deployment")
+            if not signals:
+                continue
+            rel = path.relative_to(root).as_posix()
+            tests.append(
+                {
+                    "path": rel,
+                    "signals": signals,
+                    "command": (
+                        f"forge test --match-path {shlex.quote(rel)} -vvvv"
+                    ),
+                }
+            )
+
+    scripts.sort(key=lambda item: (-int(item["score"]), item["path"]))
+    tests.sort(key=lambda item: item["path"])
+    return {
+        "deployments": deployments,
+        "live_deployments": [item for item in deployments if item["live"]],
+        "scripts": scripts,
+        "tests": tests,
+    }
+
+
+def _resolve_walkthrough_target(
+    root: Path,
+    config: dict[str, Any],
+    rpc: str,
+    bootstrap: dict[str, Any],
+) -> tuple[str | None, str]:
+    """Resolve a live target from existing state before asking the user to configure one."""
+    configured = str(config.get("target") or "").strip()
+    if _is_address(configured) and _code_size(rpc, configured) > 0:
+        return configured, "configured target"
+
+    for name, value in (config.get("targets") or {}).items():
+        if _is_address(value) and _code_size(rpc, value) > 0:
+            return value, f"saved target '{name}'"
+
+    live = list(bootstrap.get("live_deployments") or [])
+    live.sort(
+        key=lambda item: (
+            str(item.get("broadcast") or ""),
+            int(item.get("index") or 0),
+        ),
+        reverse=True,
+    )
+    if live:
+        item = live[0]
+        return str(item["address"]), f"broadcast {item['broadcast']}"
+
+    return None, "not discovered"
+
+
+def _print_bootstrap_discovery(meta: dict[str, Any]) -> None:
+    bootstrap = meta.get("bootstrap") or {}
+    print("BOOTSTRAP DISCOVERY")
+    live = bootstrap.get("live_deployments") or []
+    deployments = bootstrap.get("deployments") or []
+    if live:
+        print(f"  Live broadcast deployments: {len(live)}")
+        for item in live[:8]:
+            print(
+                f"    {item['contract']} -> {item['address']} "
+                f"({item['broadcast']})"
+            )
+    elif deployments:
+        print("  Broadcast deployments: found, but none have live bytecode on this RPC.")
+        for item in deployments[:8]:
+            print(
+                f"    {item['contract']} -> {item['address']} "
+                f"({item['broadcast']})"
+            )
+    else:
+        print("  Broadcast deployments: none found")
+
+    scripts = bootstrap.get("scripts") or []
+    if scripts:
+        print("  Deployment scripts:")
+        for item in scripts[:6]:
+            print(f"    {item['path']} [{', '.join(item['signals'])}]")
+            print(f"      {item['command']}")
+    else:
+        print("  Deployment scripts: none detected")
+
+    tests = bootstrap.get("tests") or []
+    if tests:
+        print("  Test fixtures:")
+        for item in tests[:6]:
+            print(f"    {item['path']} [{', '.join(item['signals'])}]")
+            print(f"      {item['command']}")
+    else:
+        print("  Test fixtures: none detected")
+
+    if not meta.get("target"):
+        print("")
+        print(
+            "  No live target was selected. Lowkey will not guess project-specific "
+            "constructor/env values or execute an arbitrary script."
+        )
+        print(
+            "  Use one of the discovered deployment entry points, then rerun "
+            "lk walkthrough; existing broadcast state is picked up automatically."
+        )
+
+
 def _eth_accounts(url: str) -> list[str]:
     try:
         raw = _rpc(url, "eth_accounts", [])
@@ -1591,6 +1787,7 @@ def _parse_flags(argv: list[str]) -> dict[str, Any]:
         "cases": 20,
         "seed": None,
         "send": False,
+        "bootstrap": False,
         "links": True,
         "non_interactive": False,
     }
@@ -1601,6 +1798,8 @@ def _parse_flags(argv: list[str]) -> dict[str, Any]:
             flags["auto"] = True
         elif item in {"--send", "--live"}:
             flags["send"] = True
+        elif item == "--bootstrap":
+            flags["bootstrap"] = True
         elif item == "--no-links":
             flags["links"] = False
         elif item == "--non-interactive":
@@ -1635,6 +1834,7 @@ def _help() -> None:
 
   Options:
     --send             Actually send mutating probes/interactions
+    --bootstrap        Show deployment/test entry-point discovery
     --steps N          Number of walkthrough actions
     --cases N          Number of mutation cases per probe
     --seed N           Replayable random seed
@@ -1662,9 +1862,11 @@ def _build_model(
     except Exception as exc:
         raise RuntimeError(f"RPC unavailable at {rpc}: {exc}") from exc
 
-    target = str(config.get("target") or "").strip()
-    if not _is_address(target):
-        raise RuntimeError("Set a valid target before running walkthrough.")
+    bootstrap = _discover_bootstrap(root, rpc)
+    target, target_source = _resolve_walkthrough_target(
+        root, config, rpc, bootstrap
+    )
+
     artifacts, artifact_files = _load_artifacts(root)
     label = _target_label(config, target)
     configured = (config.get("abi_paths") or {}).get(target)
@@ -1687,6 +1889,51 @@ def _build_model(
         artifact_files,
         root,
     )
+
+    if not target:
+        actors = _actor_context(config, rpc)
+        meta = {
+            "rpc": rpc,
+            "target": None,
+            "target_source": target_source,
+            "chain_timestamp": _latest_timestamp(rpc),
+            "contract_count": len(contracts),
+            "artifact_count": len(artifacts),
+            "live_nodes": [],
+            "known_roles": {},
+            "bootstrap": bootstrap,
+        }
+        return (
+            meta,
+            functions_by_contract,
+            [],
+            {},
+            contracts,
+            actors,
+            {},
+        )
+
+    label = _target_label(config, target)
+    configured = (config.get("abi_paths") or {}).get(target)
+    if configured:
+        try:
+            data = json.loads(
+                Path(configured).expanduser().read_text(encoding="utf-8")
+            )
+            abi = data.get("abi") if isinstance(data, dict) else None
+            cname = (
+                str(data.get("contractName") or Path(configured).stem)
+                if isinstance(data, dict)
+                else Path(configured).stem
+            )
+            if isinstance(abi, list):
+                artifacts[cname] = abi
+                artifact_files[cname] = Path(configured).expanduser()
+            if label == "Target":
+                label = cname
+        except (OSError, json.JSONDecodeError):
+            pass
+
     nodes, getter_data, _ = _build_live_graph(
         root,
         rpc,
@@ -1740,11 +1987,13 @@ def _build_model(
     meta = {
         "rpc": rpc,
         "target": target,
+        "target_source": target_source,
         "chain_timestamp": _latest_timestamp(rpc),
         "contract_count": len(contracts),
         "artifact_count": len(artifacts),
         "live_nodes": [asdict(x) for x in nodes],
         "known_roles": known,
+        "bootstrap": bootstrap,
     }
     return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
 
@@ -1881,6 +2130,8 @@ def _run_walkthrough(
         root, config
     )
     errors = _all_errors(_load_artifacts(root)[0])
+    if flags.get("bootstrap") or not meta.get("target"):
+        _print_bootstrap_discovery(meta)
     actions = _plan_actions(
         root,
         meta,
@@ -2009,6 +2260,8 @@ def _run_probe(
     meta, fns, nodes, getter_data, contracts, actors, known = _build_model(
         root, config
     )
+    if flags.get("bootstrap") or not meta.get("target"):
+        _print_bootstrap_discovery(meta)
     artifacts, _ = _load_artifacts(root)
     errors = _all_errors(artifacts)
     rng_seed = int(flags["seed"]) if flags["seed"] is not None else random.randrange(1, 2**63)
