@@ -3016,6 +3016,17 @@ def run_lab(config,args):
     requested = str(args[0]).strip() if args else None
     script = discover_local_lab_script(root)
 
+    # Known upgradeable ConfidencePool systems require a real local harness:
+    # implementation-only deployment leaves initialize() unset and produces a
+    # misleading walkthrough full of precondition failures.
+    if requested and str(requested).lower() in {"confidencepool", "confidencepoolfactory"}:
+        try:
+            generated = ensure_confidence_pool_lab_script(root)
+            if generated:
+                script = generated
+        except Exception as exc:
+            print(f"Warning: ConfidencePool lab adapter unavailable: {exc}", file=sys.stderr)
+
     rpc = effective_rpc(config)
     info = anvil_rpc_info(config)
     if not info and not config.get("rpc"):
