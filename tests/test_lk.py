@@ -235,7 +235,10 @@ class LowkeyCastTests(unittest.TestCase):
                 source="project-lab",
             )
 
-            self.assertIsNone(lk.project_context_target(root))
+            self.assertIsNotNone(lk.project_context_target(root))
+            config = {"target": stale, "target_contract": "Address", "aliases": {}, "targets": {}, "abi_paths": {}, "rpc": None}
+            with patch.object(lk, "discover_audit_target_contract", return_value=None),                  patch.object(lk, "_live_target_candidate", return_value=None),                  patch.object(lk, "discover_deployments", return_value=[]):
+                self.assertIsNone(lk._bootstrap_audit_target(config, root, allow_deploy=False))
 
     def test_live_target_candidate_ignores_dependency_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
