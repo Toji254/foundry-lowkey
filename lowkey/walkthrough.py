@@ -1611,6 +1611,11 @@ def _render_interaction_graph_full(
         for node in step.discovered_contracts[:5]:
             lines.append(f"  │   ├─ {ARROW} {node.get('label') or node.get('model')} {_addr(node.get('address'))} [{node.get('relation') or 'contract'}]")
 
+    if step.execution_edges:
+        call_tree = _render_actual_call_tree(step, [], enabled)
+        if call_tree:
+            lines += ["  │", call_tree]
+
     if step.status == "success":
         state_lines = _friendly_state_lines(step, actors)
         balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors)
@@ -3867,6 +3872,45 @@ def _render_connections(
     if len(lines) == 2:
         lines.append("  no source-level cross-contract calls resolved")
     return "\n".join(lines)
+
+
+def _render_actual_call_tree(step: Step, runtime: list[RuntimeContract], enabled: bool) -> str:
+    """Render the observed EVM call tree as a human-readable protocol chain."""
+    if not step.execution_edges:
+        return ""
+
+    runtime_by_addr = {
+        node.address.lower(): node.label
+        for node in runtime
+        if is_address(node.address)
+    }
+    root_fn = str(step.function or "").split("(", 1)[0]
+    lines = [
+        _paint("  │   LIVE CALL CHAIN", BOLD + BLUE, enabled),
+        f"  │      {ACTOR} {step.actor} ──▶ {_friendly_contract_name(step)}.{root_fn}()",
+        "  │      │",
+    ]
+
+    edges = step.execution_edges[:16]
+    for edge_index, edge in enumerate(edges):
+        depth = max(0, int(edge.get("depth") or 0))
+        target = edge.get("to_label") or edge.get("to_contract") or runtime_by_addr.get(
+            str(edge.get("to_address") or "").lower()
+        ) or _addr(edge.get("to_address"))
+        fn = str(edge.get("function") or edge.get("type") or "unknown")
+        error = bool(edge.get("error") or edge.get("revert"))
+        mark = "✕" if error else "✓"
+
+        # The root call is already shown in the header. Descendants become branches.
+        if depth == 0 and str(target).lower() == str(step.contract).lower():
+            continue
+
+        prefix = "  │      " + "    " * min(depth, 5)
+        connector = "└─▶" if edge_index == len(edges) - 1 else "├─▶"
+        lines.append(f"{prefix}{connector} {target}.{fn}  {mark}")
+
+    return "\n".join(lines)
+
 
 def _render_event_log(step: Step, enabled: bool) -> str:
     lines = [_paint(f"{EVENT} EVENT STREAM", BOLD + YELLOW, enabled)]
