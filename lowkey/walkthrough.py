@@ -3189,7 +3189,7 @@ def _trace_function_label(
     is_root: bool = False,
 ) -> str:
     if is_root:
-        return root_fn.name + "()"
+        return f"{root_node.artifact_contract or root_node.name}.{root_fn.name}()"
 
     to = str(frame.get("to") or "")
     contract_name = _trace_contract_label(to, nodes)
