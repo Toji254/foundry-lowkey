@@ -2128,6 +2128,7 @@ def _random_sol_value(
     target: str,
     rng: random.Random,
 ) -> Any:
+    raw_type = str(param.get("type") or "")
     typ = _canonical_type(param)
     name = str(param.get("name") or "").lower()
 
@@ -2163,12 +2164,12 @@ def _random_sol_value(
     if typ == "string":
         return rng.choice(["", "lowkey", "A" * 32, "0xdeadbeef"])
 
-    if typ.startswith("tuple"):
+    if raw_type.startswith("tuple") and not raw_type.endswith("[]"):
         return [_random_sol_value(component, actors, target, rng) for component in param.get("components", [])]
 
-    if typ.endswith("[]"):
+    if raw_type.endswith("[]"):
         base = dict(param)
-        base["type"] = typ[:-2]
+        base["type"] = raw_type[:-2]
         return [_random_sol_value(base, actors, target, rng) for _ in range(rng.randint(0, 4))]
 
     return 0
