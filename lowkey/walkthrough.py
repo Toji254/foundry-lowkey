@@ -2957,16 +2957,54 @@ def _target_label(config: dict[str, Any], target: str | None) -> str:
 def _deployment_contract_label(
     bootstrap: dict[str, Any] | None,
     target: str | None,
+    *,
+    root: Path | None = None,
+    rpc: str | None = None,
 ) -> str | None:
     if not _is_address(target):
         return None
-    for item in (bootstrap or {}).get("live_deployments") or []:
-        if not isinstance(item, dict):
+
+    deployments = [
+        item
+        for item in (bootstrap or {}).get("live_deployments") or []
+        if isinstance(item, dict)
+    ]
+    for item in deployments:
+        if str(item.get("address") or "").lower() != target.lower():
             continue
-        if str(item.get("address") or "").lower() == target.lower():
-            contract = str(item.get("contract") or "").strip()
-            if contract:
-                return contract
+        contract = str(item.get("contract") or "").strip()
+        if contract:
+            # A proxy deployment record may be named ERC1967Proxy/UUPSProxy while
+            # the callable protocol surface belongs to its implementation.
+            if root is not None and rpc and contract.lower().endswith("proxy"):
+                implementation = _eip1967_implementation(root, rpc, target)
+                if implementation:
+                    for implementation_item in deployments:
+                        if (
+                            str(implementation_item.get("address") or "").lower()
+                            == implementation.lower()
+                        ):
+                            implementation_contract = str(
+                                implementation_item.get("contract") or ""
+                            ).strip()
+                            if implementation_contract:
+                                return implementation_contract
+            return contract
+
+    # The resolved target may not have its own deployment record if discovery
+    # came from audit evidence. Still attach the implementation's contract name
+    # when the ERC-1967 slot proves one.
+    if root is not None and rpc:
+        implementation = _eip1967_implementation(root, rpc, target)
+        if implementation:
+            for item in deployments:
+                if (
+                    str(item.get("address") or "").lower()
+                    == implementation.lower()
+                ):
+                    contract = str(item.get("contract") or "").strip()
+                    if contract:
+                        return contract
     return None
 
 
@@ -3979,7 +4017,7 @@ def _build_model(
 
     artifacts, artifact_files = _load_artifacts(root)
     label = _target_label(config, target)
-    deployment_label = _deployment_contract_label(bootstrap, target)
+    deployment_label = _deployment_contract_label(bootstrap, target, root=root, rpc=rpc)
     if deployment_label and label == "Target":
         label = deployment_label
     configured = (config.get("abi_paths") or {}).get(target)
@@ -4030,7 +4068,7 @@ def _build_model(
         )
 
     label = _target_label(config, target)
-    deployment_label = _deployment_contract_label(bootstrap, target)
+    deployment_label = _deployment_contract_label(bootstrap, target, root=root, rpc=rpc)
     if deployment_label and label == "Target":
         label = deployment_label
     configured = (config.get("abi_paths") or {}).get(target)
@@ -4106,7 +4144,7 @@ def _build_model(
     meta = {
         "rpc": rpc,
         "target": target,
-        "target_contract": _deployment_contract_label(bootstrap, target) or str(config.get("target_contract") or ""),
+        "target_contract": _deployment_contract_label(bootstrap, target, root=root, rpc=rpc) or str(config.get("target_contract") or ""),
         "target_source": target_source,
         "chain_timestamp": _latest_timestamp(rpc),
         "contract_count": len(contracts),
