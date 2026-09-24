@@ -2816,10 +2816,31 @@ def _target_is_live_instance(
 
     return True, None
 
-def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: str | None, auto: bool) -> tuple[str | None, str | None]:
-    # Auto mode always goes through the project bootstrap resolver so stale
-    # implementation targets cannot bypass proxy/fixture selection.
+def _system_has_live_core(config: dict[str, Any], rpc: str | None) -> bool:
+    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+    if not system or not rpc:
+        return False
+
+    # A valid generated/project adapter should at least expose its main entry
+    # point as a live address. ConfidencePool-style systems additionally expose
+    # the child pool and core fixtures.
+    entry = system.get("factory") or system.get("pool") or config.get("target")
+    if not is_address(entry):
+        return False
+    return _runtime_code(rpc, str(entry)) not in {"", "0x"}
+
+
+def _target_from_host(
+    host: Any,
+    config: dict[str, Any],
+    root: Path,
+    contract: str | None,
+    auto: bool,
+) -> tuple[str | None, str | None]:
+    # Auto mode is allowed to rebuild a disposable local system when a project
+    # adapter exists but the persisted target has no verified system context.
     target = None
+
     if auto:
         try:
             info = host.anvil_rpc_info(config)
@@ -2827,6 +2848,35 @@ def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: s
                 info = host.ensure_project_anvil(config, root)
             if info:
                 host._bind_detected_anvil(config, info)
+
+            rpc = (
+                info.get("url")
+                if isinstance(info, dict)
+                else (host.effective_rpc(config) if hasattr(host, "effective_rpc") else config.get("rpc"))
+            )
+
+            system_ready = _system_has_live_core(config, rpc)
+            adapter = host.discover_local_lab_script(root) if hasattr(host, "discover_local_lab_script") else None
+
+            if adapter and not system_ready and hasattr(host, "run_lab"):
+                code = host.run_lab(config, [])
+                if code != 0:
+                    # Some adapters return a non-zero code after successfully
+                    # creating a usable target. Re-check the system context before
+                    # treating it as a bootstrap failure.
+                    system_ready = _system_has_live_core(config, rpc)
+
+            system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+            factory = system.get("factory")
+            pool = system.get("pool")
+
+            # A system-aware walkthrough begins at the protocol's factory/root.
+            if not contract and is_address(factory) and (not rpc or _runtime_code(rpc, factory) not in {"", "0x"}):
+                return factory, "ConfidencePoolFactory"
+
+            if not contract and is_address(pool) and (not rpc or _runtime_code(rpc, pool) not in {"", "0x"}):
+                return pool, "ConfidencePool"
+
             target = host._bootstrap_audit_target(config, root, allow_deploy=True)
         except Exception:
             target = None
@@ -2835,16 +2885,19 @@ def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: s
             target = host.active_project_target(config, root)
         except Exception:
             target = config.get("target")
+
     if target and contract:
         aliases = getattr(host, "target_aliases", lambda c: {})(config)
         selected = aliases.get(contract)
         if selected:
             target = selected
+
     if auto and not contract:
         system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
         factory = system.get("factory")
         if is_address(factory):
             return factory, "ConfidencePoolFactory"
+
     resolved_target = target if auto else (target or config.get("target"))
     return resolved_target, config.get("target_contract") or contract
 
@@ -3199,7 +3252,8 @@ def _render_board(
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
         "  ENTER = execute next live function   Q = stop",
-        "  arrows = actual call path   boxes = state   links = Ctrl+Click source",
+        "  the story is live: no future step is rendered before it is observed",
+        "  arrows = actual call path   boxes = state   function names = Ctrl+Click source",
         "",
         _box("ACTORS", [
             "   ".join(f"{ACTOR} {actor.name} {_addr(actor.address)}" for actor in actors)
@@ -3406,6 +3460,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx)
                 step.execution_edges=_trace_execution_edges(root,rpc,models,trace)
+                runtime_by_addr = {node.address.lower(): node.label for node in runtime}
+                for edge in step.execution_edges:
+                    address = edge.get("to_address")
+                    if isinstance(address, str):
+                        edge["to_label"] = runtime_by_addr.get(address.lower())
                 step.status="success" if receipt and receipt.get("status") in (None,"0x1",1) else "reverted"
                 step.error_reason = (
                     "preflight passed and the live transaction was accepted"
