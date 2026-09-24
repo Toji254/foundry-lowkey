@@ -3420,6 +3420,7 @@ def _run_walkthrough(
         )
         if deployment_label and not meta.get("target_contract"):
             meta["target_contract"] = deployment_label
+            payload["model"] = meta
 
         action = _next_transition_action(
             root, meta, fns, nodes, actors, known, errors
@@ -3430,70 +3431,82 @@ def _run_walkthrough(
                 root, nodes, fns, contracts, [], actors, None,
                 flags.get("links", True), meta
             ))
-            print("
-" + _paint(
-                "No semantically executable lifecycle transition is currently discoverable.",
-                "yellow",
-            ))
+            print(
+                "\n" + _paint(
+                    "No semantically executable lifecycle transition is currently discoverable.",
+                    "yellow",
+                )
+            )
             print(
                 "The important next audit step is state reconstruction, not random mutation."
             )
             break
 
-        payload["model"] = meta
-        payload["actions"].append({
-            **{k: v for k, v in action.items() if k not in {"node", "function"}},
-            "node": asdict(action["node"]),
-            "function": asdict(action["function"]),
-        })
-
         # Show exactly the current transition, not a precomputed wall of stale steps.
         print(_render_story(
-            root, nodes, fns, contracts, [action], 0, actors,
-            0, flags.get("links", True), meta
+            root,
+            nodes,
+            fns,
+            contracts,
+            [action],
+            actors,
+            0,
+            flags.get("links", True),
+            meta,
         ))
 
-        if str(action.get("status")) == "BLOCKED":
+        if not flags.get("send"):
+            payload["actions"].append({
+                **{k: v for k, v in action.items() if k not in {"node", "function"}},
+                "node": asdict(action["node"]),
+                "function": asdict(action["function"]),
+            })
+            payload["model"] = meta
+            _persist(root, payload)
             print(
-                "
-"
-                + _paint(
-                    "Walkthrough stopped at the current state: the selected transition is blocked.",
-                    "red",
-                )
-            )
-            print(
-                _paint(
-                    "Use the diagnosis above to inspect the state gate and its legitimate transition path.",
-                    "yellow",
+                "\n" + _paint(
+                    (
+                        "Current transition is blocked; Lowkey will not advance "
+                        "past a state it cannot satisfy."
+                        if str(action.get("status")) == "BLOCKED"
+                        else
+                        "Simulation only: --auto does not mutate local state. "
+                        "Add --send to advance the protocol."
+                    ),
+                    "red" if str(action.get("status")) == "BLOCKED" else "yellow",
                 )
             )
             break
 
-        if not flags.get("send"):
-            action["status"] = "READY"
-            payload["actions"][-1]["status"] = "READY"
+        if str(action.get("status")) == "BLOCKED":
+            payload["actions"].append({
+                **{k: v for k, v in action.items() if k not in {"node", "function"}},
+                "node": asdict(action["node"]),
+                "function": asdict(action["function"]),
+            })
+            payload["model"] = meta
             _persist(root, payload)
             print(
-                "
-"
-                + _paint(
-                    "Simulation only: --auto does not mutate local state. Add --send to advance the protocol.",
-                    "yellow",
+                "\n" + _paint(
+                    "Walkthrough stopped at the current state; the transition is blocked.",
+                    "red",
                 )
             )
             break
 
         if not _is_local_rpc(str(meta["rpc"])):
             action["status"] = "FAILED"
-            action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
-            payload["actions"][-1].update({
-                "status": "FAILED",
-                "send_skipped": action["send_skipped"],
+            action["send_skipped"] = (
+                "refusing remote mutating send without explicit local RPC"
+            )
+            payload["actions"].append({
+                **{k: v for k, v in action.items() if k not in {"node", "function"}},
+                "node": asdict(action["node"]),
+                "function": asdict(action["function"]),
             })
+            payload["model"] = meta
             _persist(root, payload)
-            print("
-" + _paint(action["send_skipped"], "red"))
+            print("\n" + _paint(action["send_skipped"], "red"))
             break
 
         node: LiveNode = action["node"]
@@ -3509,22 +3522,28 @@ def _run_walkthrough(
                 root, str(meta["rpc"]), node, fn, action["args"], caller,
                 fns, nodes, known, actors
             )
-            payload["actions"][-1].update({
-                "status": "BLOCKED",
-                "result": pre,
-                "diagnosis": action["diagnosis"],
+            payload["actions"].append({
+                **{k: v for k, v in action.items() if k not in {"node", "function"}},
+                "node": asdict(action["node"]),
+                "function": asdict(action["function"]),
             })
+            payload["model"] = meta
             _persist(root, payload)
-            print("
-" + _paint(
-                "State changed between planning and execution; transition is now blocked.",
-                "red",
-            ))
+            print(
+                "\n" + _paint(
+                    "State changed between planning and execution; transition is now blocked.",
+                    "red",
+                )
+            )
             break
 
         code, out, err = _cast_send(
-            root, str(meta["rpc"]), node.address, fn,
-            _arg_values_to_strings(action["args"]), caller
+            root,
+            str(meta["rpc"]),
+            node.address,
+            fn,
+            _arg_values_to_strings(action["args"]),
+            caller,
         )
         action["send"] = {
             "exit_code": code,
@@ -3532,29 +3551,32 @@ def _run_walkthrough(
             "stderr": err,
         }
         action["status"] = "SUCCESS" if code == 0 else "FAILED"
-        payload["actions"][-1].update({
-            "status": action["status"],
-            "result": pre,
-            "send": action["send"],
+
+        payload["actions"].append({
+            **{k: v for k, v in action.items() if k not in {"node", "function"}},
+            "node": asdict(action["node"]),
+            "function": asdict(action["function"]),
         })
+        payload["model"] = meta
         _persist(root, payload)
 
         if code != 0:
-            print("
-" + _paint(
-                "The live transition failed; Lowkey will not invent the next state.",
-                "red",
-            ))
+            print(
+                "\n" + _paint(
+                    "The live transition failed; Lowkey will not invent the next state.",
+                    "red",
+                )
+            )
             break
 
-        print("
-" + _paint(
-            "Transition succeeded. Rebuilding the protocol model from the new chain state…",
-            "green",
-        ))
+        print(
+            "\n" + _paint(
+                "Transition succeeded. Rebuilding the protocol model from the new chain state…",
+                "green",
+            )
+        )
 
-    print("
-Evidence: .audit/evidence/walkthrough.json")
+    print("\nEvidence: .audit/evidence/walkthrough.json")
     _persist(root, payload)
     return 0
 
