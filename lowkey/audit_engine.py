@@ -1491,7 +1491,7 @@ def _github_release_solc(root: str, version: str) -> tuple[int, str, str, Path |
         return 1, "", str(exc), None
 
 
-ef _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] | None:
+def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] | None:
     compilers = project.get("solidity_compilers", []) if isinstance(project, dict) else []
     if len(compilers) != 1:
         return None
