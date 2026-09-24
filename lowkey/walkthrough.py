@@ -266,6 +266,8 @@ def _web_connection_label(edge: dict[str, str]) -> str:
         return "uses configured dependency"
     if kind == "external-call":
         return "calls external interface"
+    if kind == "internal-call":
+        return "enters internal logic"
     return "connects to"
 
 def _web_node_name(value: str) -> str:
@@ -2482,6 +2484,15 @@ def _system_edges(
                             "from": cname,
                             "to": call["interface"],
                             "kind": "external-call",
+                            "function": f"{fn.name} -> {call['function']}",
+                        }
+                    )
+                elif call["kind"] == "internal-call":
+                    edges.append(
+                        {
+                            "from": cname,
+                            "to": f"{cname}.{call['function']}",
+                            "kind": "internal-call",
                             "function": f"{fn.name} -> {call['function']}",
                         }
                     )
