@@ -636,19 +636,28 @@ def _actor_for_address(address: str | None, actors: list[Actor]) -> str | None:
 
 
 def _friendly_value(value: Any) -> str:
+    """Render generic Solidity values without assuming an asset denomination."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
         if value == 2**256 - 1:
             return "MAX"
-        if value >= 10**18 and value % 10**18 == 0:
-            return f"{value // 10**18} ETH"
-        if value >= 10**9:
-            return f"{value:,}"
+        if abs(value) >= 10**9:
+            return f"{value:,} units"
         return str(value)
     if isinstance(value, list):
         return "[" + ", ".join(_friendly_value(item) for item in value[:4]) + (", …" if len(value) > 4 else "") + "]"
     return str(value)
+
+
+def _friendly_eth(value_wei: int | None) -> str:
+    try:
+        value = int(value_wei or 0)
+    except (TypeError, ValueError):
+        return str(value_wei)
+    if value % 10**18 == 0:
+        return f"{value // 10**18:g} ETH"
+    return f"{value / 10**18:g} ETH"
 
 
 def _friendly_arg(value: Any, actors: list[Actor]) -> str:
@@ -677,7 +686,7 @@ def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
     # Explicit value transfer is rendered as a real asset edge, separate from
     # calldata. This prevents a payable call from looking like an ordinary function.
     if step.value_wei:
-        lines.append(f"    ├─ sends {step.value_wei / 10**18:g} ETH with the call")
+        lines.append(f"    ├─ sends {_friendly_eth(step.value_wei)} with the call")
         lines.append(f"    │       {actor} ── ETH ──▶ {contract}")
 
     # Address arguments often identify the second human actor in the story.
@@ -809,7 +818,7 @@ def _friendly_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
             continue
         label = names.get(address, _addr(address))
         direction = "+" if delta > 0 else "-"
-        lines.append(f"    ◆ ETH {label}: {direction}{_friendly_value(abs(delta))}")
+        lines.append(f"    ◆ ETH {label}: {direction}{_friendly_eth(abs(delta))}")
     return lines
 
 
