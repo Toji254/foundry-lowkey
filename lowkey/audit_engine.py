@@ -65,14 +65,23 @@ def command_path(name: str) -> str | None:
     return shutil.which(name)
 
 
-def run_command(command: Sequence[str], root: str = ".", timeout: int | None = None) -> tuple[int, str, str]:
+def run_command(
+    command: Sequence[str],
+    root: str = ".",
+    timeout: int | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     try:
+        process_env = os.environ.copy()
+        if env:
+            process_env.update(env)
         completed = subprocess.run(
             list(command),
             cwd=str(Path(root).resolve()),
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=process_env,
         )
     except FileNotFoundError:
         return 127, "", f"{command[0]} not found on PATH"
@@ -998,8 +1007,88 @@ def _run_vyper_build(root: str) -> tuple[int, str, str, list[dict[str, Any]]]:
     return overall, "\n".join(all_stdout), "\n".join(all_stderr), records
 
 
-def _run_project_vyper_tests(root: str) -> tuple[int, str, str]:
-    return run_command(["uv", "run", "pytest", "."], root, 900)
+def _run_project_vyper_tests(
+    root: str,
+    project: dict[str, Any] | None = None,
+) -> tuple[int, str, str]:
+    env: dict[str, str] = {}
+    compilers = (project or {}).get("solidity_compilers", [])
+    if len(compilers) == 1:
+        env["SOLC_VERSION"] = str(compilers[0])
+    return run_command(["uv", "run", "pytest", "."], root, 900, env=env)
+
+
+def _project_prepare(root: str, project: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    root_path = Path(root).resolve()
+
+    submodules = project.get("submodules", []) if isinstance(project, dict) else []
+    if submodules and command_path("git"):
+        need_submodules = any(not item.get("initialized") for item in submodules)
+        if need_submodules:
+            print("\n=== LOWKEY EVIDENCE: GIT SUBMODULES ===")
+            command = ["git", "submodule", "update", "--init", "--recursive"]
+            code, stdout, stderr = run_command(command, root, 900)
+            _write_step_evidence(
+                root, "git_submodules", command, code, stdout, stderr,
+                reason="Initialize repository-declared submodules before analysis.",
+            )
+            print(stdout.rstrip())
+            if stderr:
+                print(stderr.rstrip())
+            results.append({"label": "git_submodules", "code": code})
+        else:
+            record_evidence(
+                "git_submodules",
+                {
+                    "status": "already_initialized",
+                    "submodules": submodules,
+                },
+                root,
+            )
+
+    if (root_path / "package.json").exists() and (root_path / "package-lock.json").exists() and command_path("npm"):
+        required_node_modules = root_path / "node_modules" / "solidity-rlp"
+        if not required_node_modules.exists():
+            print("\n=== LOWKEY EVIDENCE: NPM INSTALL ===")
+            command = ["npm", "ci", "--ignore-scripts"]
+            code, stdout, stderr = run_command(command, root, 900)
+            _write_step_evidence(
+                root, "npm_ci", command, code, stdout, stderr,
+                reason="Install package-lock-locked Solidity/JS dependencies required by the project tests and analyzers.",
+            )
+            print(stdout.rstrip())
+            if stderr:
+                print(stderr.rstrip())
+            results.append({"label": "npm_ci", "code": code})
+        else:
+            record_evidence(
+                "npm_ci",
+                {
+                    "status": "already_installed",
+                    "package": "solidity-rlp",
+                    "path": str(required_node_modules),
+                },
+                root,
+            )
+
+    compilers = project.get("solidity_compilers", []) if isinstance(project, dict) else []
+    if len(compilers) == 1 and command_path("solc-select"):
+        version = str(compilers[0])
+        print(f"\n=== LOWKEY EVIDENCE: SOLC SELECT ({version}) ===")
+        command = ["solc-select", "use", version]
+        code, stdout, stderr = run_command(command, root, 900)
+        _write_step_evidence(
+            root, "solc_select", command, code, stdout, stderr,
+            reason="Select the compiler version declared by the repository before mixed-language tests/analyzers run.",
+        )
+        print(stdout.rstrip())
+        if stderr:
+            print(stderr.rstrip())
+        results.append({"label": "solc_select", "code": code, "version": version})
+
+    project["submodules"] = detect_project(root).get("submodules", submodules) if detect_project else submodules
+    return results
 
 
 def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]]) -> None:
@@ -1065,6 +1154,31 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
         "build_systems": [],
         "sources": {"solidity": 0, "vyper": 0},
     }
+
+    prepare_results = _project_prepare(root, project)
+    results.extend(prepare_results)
+
+    if prepare_results and any(item.get("code") not in (0, 127) for item in prepare_results):
+        record_evidence(
+            "project_prepare",
+            {
+                "status": "completed_with_errors",
+                "steps": prepare_results,
+            },
+            root,
+        )
+    else:
+        record_evidence(
+            "project_prepare",
+            {
+                "status": "completed",
+                "steps": prepare_results,
+            },
+            root,
+        )
+
+    if detect_project is not None:
+        project = detect_project(root)
 
     git_code, git_sha, git_err = run_command(["git", "rev-parse", "HEAD"], root)
     branch_code, branch, branch_err = run_command(["git", "branch", "--show-current"], root)
@@ -1230,7 +1344,7 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                 results.append({"label": evidence_name, "code": sync_code, "tool": "vyper"})
 
             print("\n=== LOWKEY EVIDENCE: VYPER TESTS ===")
-            test_code, test_stdout, test_stderr = _run_project_vyper_tests(root)
+            test_code, test_stdout, test_stderr = _run_project_vyper_tests(root, project)
             if sync_code != 0:
                 test_code = sync_code
                 test_stdout = ""
