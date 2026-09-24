@@ -864,6 +864,8 @@ def _semantic_address(
     known: dict[str, str],
     *,
     prefer_contract: bool = False,
+    root: Path | None = None,
+    rpc: str | None = None,
 ) -> str | None:
     n = param_name.lower()
     if "agreement" in n:
@@ -884,8 +886,8 @@ def _semantic_address(
                 owner_fn = _function_by_name(fs, "owner")
                 if owner_fn:
                     val, _ = _read_simple_getter(
-                        Path.cwd(),
-                        _rpc_url({}),
+                        root or Path.cwd(),
+                        rpc or _rpc_url({}),
                         node,
                         owner_fn,
                     )
@@ -918,7 +920,7 @@ def _semantic_arg(
     name = str(param.get("name") or "").lower()
 
     if typ == "address":
-        return _semantic_address(name, nodes, functions_by_contract, actors, known)
+        return _semantic_address(name, nodes, functions_by_contract, actors, known, root=root, rpc=rpc)
 
     if typ == "address[]":
         if "account" in name or "scope" in name:
@@ -1017,12 +1019,26 @@ def _semantic_args(
     # and a real agreement scope. Never substitute EOA actors here.
     if fn.name == "createPool":
         if len(fn.inputs) >= 6:
-            if not known.get("agreement"):
+            agreement = known.get("agreement")
+            if not agreement:
                 return None, "no live Agreement contract discovered"
             if not known.get("erc20"):
                 return None, "no live ERC20 stake token discovered"
-            if not isinstance(args[5], list) or not args[5]:
-                return None, "no live BattleChain scope accounts discovered"
+            afn = functions_by_contract.get(
+                next(
+                    (
+                        n.artifact_contract
+                        for n in nodes
+                        if n.address.lower() == agreement.lower()
+                    ),
+                    "Agreement",
+                ),
+                [],
+            )
+            scope = _scope_accounts(root, rpc, agreement, afn)
+            if not scope:
+                return None, "Agreement exposes no live BattleChain scope accounts"
+            args[5] = scope
     return args, None
 
 
@@ -1183,6 +1199,7 @@ def _rank_function(fn: FunctionInfo) -> int:
     n = fn.name.lower()
     score = 20
     for token, bonus in (
+        ("setstaketokenallowed", 34),
         ("create", 30),
         ("initialize", 20),
         ("stake", 25),
@@ -1197,6 +1214,7 @@ def _rank_function(fn: FunctionInfo) -> int:
         ("flag", 12),
         ("resolve", 12),
         ("sweep", 10),
+        ("setstaketokenallowed", 22),
     ):
         if token in n:
             score += bonus
@@ -1352,6 +1370,7 @@ def _render_story(
     actions: list[dict[str, Any]],
     actors: dict[str, str],
     current: int | None = None,
+    links: bool = True,
 ) -> str:
     lines: list[str] = []
     lines.append("LOWKEY // SYSTEM-AWARE PROTOCOL WALKTHROUGH")
@@ -1403,7 +1422,7 @@ def _render_story(
         label = f"{fn.name}({args})"
         source = fn.source
         line = fn.line
-        clickable = _source_link(root, source, line, label)
+        clickable = _source_link(root, source, line, label) if links else label
         lines.append("")
         lines.append(
             f"  {mark} STEP {index + 1:02d} {status:<10} {actor} -> "
@@ -1551,6 +1570,19 @@ def _build_model(
     if not _is_address(target):
         raise RuntimeError("Set a valid target before running walkthrough.")
     artifacts, artifact_files = _load_artifacts(root)
+    configured = (config.get("abi_paths") or {}).get(target)
+    if configured:
+        try:
+            data = json.loads(Path(configured).expanduser().read_text(encoding="utf-8"))
+            abi = data.get("abi") if isinstance(data, dict) else None
+            cname = str(data.get("contractName") or Path(configured).stem) if isinstance(data, dict) else Path(configured).stem
+            if isinstance(abi, list):
+                artifacts[cname] = abi
+                artifact_files[cname] = Path(configured).expanduser()
+            if label == "Target":
+                label = cname
+        except (OSError, json.JSONDecodeError):
+            pass
     contracts = _parse_solidity_sources(root)
     functions_by_contract = _merge_artifact_functions(
         contracts,
@@ -1567,6 +1599,32 @@ def _build_model(
         functions_by_contract,
         artifact_files,
     )
+    extra_roots: list[tuple[str, str]] = []
+    for key, value in (config.get("targets") or {}).items():
+        if _is_address(value) and value.lower() != target.lower():
+            extra_roots.append((value, str(key)))
+    for path in sorted((root / "broadcast").glob("**/run-latest.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for tx in payload.get("transactions", []) or []:
+            addr = tx.get("contractAddress") or tx.get("contract_address")
+            cname = tx.get("contractName") or tx.get("contract_name") or "Deployment"
+            if _is_address(addr):
+                extra_roots.append((addr, str(cname)))
+    known_live = {n.address.lower() for n in nodes}
+    for addr, name in extra_roots[:30]:
+        if addr.lower() in known_live or _code_size(rpc, addr) == 0:
+            continue
+        more_nodes, more_getters, _ = _build_live_graph(
+            root, rpc, addr, name, functions_by_contract, artifact_files
+        )
+        for child in more_nodes:
+            if child.address.lower() not in known_live:
+                nodes.append(child)
+                known_live.add(child.address.lower())
+        getter_data.update(more_getters)
     actors = _actor_context(config, rpc)
     known = _known_contracts(nodes, functions_by_contract)
     # Refresh the "agreement" role using runtime getter names, because many
@@ -1721,7 +1779,7 @@ def _run_walkthrough(
     }
     current = 0
     if not actions:
-        print(_render_story(root, nodes, fns, contracts, [], actors))
+        print(_render_story(root, nodes, fns, contracts, [], actors, None, flags.get("links", True)))
         print("\nNo semantically executable actions were discovered.")
         print("That is intentional: Lowkey will not substitute EOAs for contract roles.")
         _persist(root, payload)
@@ -1739,6 +1797,7 @@ def _run_walkthrough(
                 actions,
                 actors,
                 current,
+                flags.get("links", True),
             )
         )
         if not flags["non_interactive"]:
@@ -1778,7 +1837,8 @@ def _run_walkthrough(
         )
         action["status"] = "READY" if pre["ok"] else "BLOCKED"
 
-        if flags.get("send") and pre["ok"]:
+        live_send = bool(flags.get("send") or flags.get("auto"))
+        if live_send and pre["ok"]:
             if not _is_local_rpc(str(meta["rpc"])):
                 action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
             else:
@@ -1810,7 +1870,7 @@ def _run_walkthrough(
         )
 
     print("\033[2J\033[H", end="")
-    print(_render_story(root, nodes, fns, contracts, actions, actors, None))
+    print(_render_story(root, nodes, fns, contracts, actions, actors, None, flags.get("links", True)))
     print("\nEvidence: .audit/evidence/walkthrough.json")
     _persist(root, payload)
     return 0
