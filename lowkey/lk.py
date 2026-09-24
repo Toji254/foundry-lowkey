@@ -4867,7 +4867,10 @@ def _bootstrap_audit_target(config, root, allow_deploy=False):
             activate_project_target(config, root)
             return existing.get("address")
 
-    preferred_contract = _focused_audit_target_contract(root) or discover_audit_target_contract(root)
+    # Whole-protocol bootstrap prefers an inferred protocol root (factory/router/etc.)
+    # over a single focused finding's child implementation. The investigation focus still
+    # remains available when no protocol-root candidate can be inferred.
+    preferred_contract = discover_audit_target_contract(root) or _focused_audit_target_contract(root)
     candidate = _live_target_candidate(config, root, preferred_contract)
     if candidate:
         return _set_audit_auto_target(
