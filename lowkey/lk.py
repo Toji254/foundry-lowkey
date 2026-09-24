@@ -2028,12 +2028,20 @@ def ensure_confidence_pool_lab_script(root):
         return None
 
     path = Path(root) / "script" / "LowkeyAutoConfidencePoolLab.s.sol"
+    marker = "LOWKEY_AUTO_LAB_VERSION = 2"
     if path.is_file():
-        return str(path)
+        try:
+            existing = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing = ""
+        if marker in existing:
+            return str(path)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     source = r'''// SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
+
+// LOWKEY_AUTO_LAB_VERSION = 2
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
