@@ -1582,6 +1582,17 @@ def _cast_call(
     return _run(cmd, root, 30)
 
 
+
+def _local_signer_addresses(rpc: str) -> list[str]:
+    """Return JSON-RPC accounts that the local node can actually sign for."""
+    return [addr.lower() for addr in _eth_accounts(rpc)]
+
+
+def _sender_available_for_local_send(rpc: str, caller: str) -> bool:
+    if not _is_local_rpc(rpc) or not _is_address(caller):
+        return False
+    return caller.lower() in set(_local_signer_addresses(rpc))
+
 def _cast_send(
     root: Path,
     rpc: str,
@@ -4354,6 +4365,56 @@ def _run_walkthrough(
         node: LiveNode = action["node"]
         fn: FunctionInfo = action["function"]
         caller = str(action["caller"])
+
+        # eth_call can impersonate an arbitrary from-address, but a local
+        # mutating send requires that address to be exposed by the RPC node.
+        if not _sender_available_for_local_send(str(meta["rpc"]), caller):
+            available = _eth_accounts(str(meta["rpc"]))
+            action["status"] = "BLOCKED"
+            action["result"] = {
+                "ok": False,
+                "decoded_error": None,
+                "raw": (
+                    f"selected sender {caller} is not an unlocked local RPC account"
+                ),
+                "trace": None,
+            }
+            action["diagnosis"] = [
+                f"selected role sender {caller} is not exposed by eth_accounts",
+                "local send requires an unlocked Anvil account; eth_call alone can impersonate arbitrary addresses",
+                "available local accounts: " + (", ".join(_short_address(x) for x in available) if available else "none"),
+            ]
+            payload["actions"].append({
+                **{k: v for k, v in action.items() if k not in {"node", "function"}},
+                "node": asdict(action["node"]),
+                "function": asdict(action["function"]),
+            })
+            payload["model"] = meta
+            _persist(root, payload)
+            print(_render_story(
+                root,
+                nodes,
+                fns,
+                contracts,
+                [action],
+                actors,
+                0,
+                flags.get("links", True),
+                meta,
+                live=True,
+            ))
+            print(
+                "\n" + _paint(
+                    "Walkthrough stopped: selected role cannot sign on this local RPC node.",
+                    "red",
+                )
+            )
+            print(
+                "  Available local signers: " +
+                (", ".join(_short_address(x) for x in available) if available else "none")
+            )
+            break
+
         pre = _preflight_failure(
             root,
             str(meta["rpc"]),
