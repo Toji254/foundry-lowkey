@@ -567,6 +567,7 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
         p.stem for p in evidence_dir(root).glob("*.json") if p.name != "manifest.json"
     )
     config = _config()
+    project = detect_project(root) if detect_project else {"kind": "generic"}
     target = config.get("target")
     abi_map = _abi_functions(_load_abi(config, target))
 
