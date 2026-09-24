@@ -267,3 +267,29 @@ lk audit run --poc
 
 These helpers automate workflow only. They do not detect, rank, score, or
 declare vulnerabilities.
+
+
+## Project-aware audits
+
+Lowkey detects the repository's actual toolchain instead of assuming a Foundry
+`src/` layout. Vyper projects using `pyproject.toml`/`uv.lock` are detected and
+audited with their project environment:
+
+```bash
+lk project
+lk audit
+```
+
+For Vyper/uv projects the baseline records `uv sync --locked`, compiles
+production `.vy` sources through the project's environment, runs `uv run pytest .`,
+builds a language-aware source triage report, and stores a whole-system
+import/call graph under `.audit/evidence/`.
+
+Solidity, Vyper, and mixed repositories are represented in one graph so local
+imports, inheritance, external-call sites, and unresolved dependencies are
+visible together. Foundry behavior remains the native path for Foundry-only projects.
+
+Vyper projects receive a Python/pytest PoC scaffold instead of a Solidity-only
+Forge test skeleton. Coverage is marked not-applicable when the repository does
+not expose a reliable native Vyper coverage command; Lowkey does not invent a
+coverage result.
