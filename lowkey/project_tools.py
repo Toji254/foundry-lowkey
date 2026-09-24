@@ -140,7 +140,9 @@ def _git_submodules(root: Path) -> list[dict[str, Any]]:
         sub_path = root / str(item.get("path") or "")
         item["path"] = str(item.get("path") or "")
         item["present"] = sub_path.is_dir()
-        item["initialized"] = item["present"] and any(sub_path.iterdir())
+        item["initialized"] = item["present"] and any(
+            entry.name != ".git" for entry in sub_path.iterdir()
+        )
     return records
 
 
