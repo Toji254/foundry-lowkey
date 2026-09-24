@@ -94,3 +94,66 @@ jobs:
           test $? -ne 0
           lk forge debug --help
           test $? -ne 0
+
+  vyper-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          check-latest: true
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv
+      - name: Build a Vyper project fixture
+        run: |
+          mkdir -p /tmp/lowkey-vyper-fixture/contracts /tmp/lowkey-vyper-fixture/tests
+          cat > /tmp/lowkey-vyper-fixture/pyproject.toml <<'EOF'
+          [project]
+          name = "lowkey-vyper-fixture"
+          version = "0.1.0"
+          requires-python = ">=3.10"
+          dependencies = [
+            "vyper>=0.4.0",
+            "pytest>=8.0",
+          ]
+
+          [tool.pytest.ini_options]
+          pythonpath = ["."]
+          EOF
+          cat > /tmp/lowkey-vyper-fixture/uv.lock <<'EOF'
+          version = 1
+          revision = 1
+          requires-python = ">=3.10"
+          EOF
+          cat > /tmp/lowkey-vyper-fixture/contracts/Fixture.vy <<'EOF'
+          value: public(uint256)
+
+          @external
+          def set_value(value_: uint256):
+              self.value = value_
+
+          @external
+          @view
+          def get_value() -> uint256:
+              return self.value
+          EOF
+          cat > /tmp/lowkey-vyper-fixture/tests/test_fixture.py <<'EOF'
+          def test_placeholder():
+              assert True
+          EOF
+          cat > /tmp/lowkey-vyper-fixture/.python-version <<'EOF'
+          3.12
+          EOF
+      - name: Run project-aware Vyper audit
+        run: |
+          cd /tmp/lowkey-vyper-fixture
+          python /home/runner/work/foundry-lowkey/foundry-lowkey/lowkey/lk.py project | tee /tmp/lk-project.txt
+          grep -q "vyper" /tmp/lk-project.txt
+          python /home/runner/work/foundry-lowkey/foundry-lowkey/lowkey/lk.py audit run --poc | tee /tmp/lk-vyper-audit.txt
+          grep -q "VYPER BUILD" /tmp/lk-vyper-audit.txt
+          grep -q "VYPER TESTS" /tmp/lk-vyper-audit.txt
+          grep -q "System graph" /tmp/lk-vyper-audit.txt
+          grep -q "PoC scaffold" /tmp/lk-vyper-audit.txt
+          test -f .audit/evidence/dependency_graph.json
+          test -f .audit/evidence/uv_sync.json
