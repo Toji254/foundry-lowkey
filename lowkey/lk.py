@@ -537,25 +537,17 @@ def path_is_within(path, root):
         return False
 
 def project_context_target(root=None):
-    """Return the current project's remembered target, ignoring stale legacy data."""
+    """Return only a valid remembered target for the current project."""
     project_root = audit_context.foundry_project_root(root)
     context = audit_context.load(project_root)
     target = context.get("target", {})
     if not isinstance(target, dict) or not is_address(target.get("address")):
         return None
-
     source = target.get("source")
     artifact = target.get("artifact")
     contract = target.get("contract")
-
-    # Manual targets are explicit user selections and may legitimately have
-    # no artifact metadata yet.
     if source == "manual":
         return target
-
-    # Every automatic/project target must resolve to a real first-party
-    # application artifact. This prevents a stale dependency target such as
-    # OpenZeppelin Address from bypassing fresh discovery.
     if not artifact:
         return None
     try:
@@ -565,17 +557,13 @@ def project_context_target(root=None):
         artifact_path = artifact_path.resolve()
     except OSError:
         return None
-
     if not artifact_path.is_file():
         return None
     artifact_data = read_artifact(str(artifact_path))
-    if not artifact_data:
+    if not artifact_data or not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
         return None
-    if not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
-        return None
-
-    artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
-    if contract and str(contract).lower() != str(artifact_contract).lower():
+    actual_contract = artifact_contract_name(str(artifact_path), artifact_data)
+    if contract and str(contract).lower() != str(actual_contract).lower():
         return None
     return target
 
