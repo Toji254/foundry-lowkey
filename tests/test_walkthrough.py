@@ -709,6 +709,79 @@ class WalkthroughTests(unittest.TestCase):
             self.assertIn("members", funcs["_record"].writes)
             self.assertTrue(any("push" in op for op in funcs["_record"].array_ops))
 
+    def test_storage_effects_propagate_from_private_writer_to_public_entry(self):
+        private_writer = walk.FunctionInfo(
+            contract="Vault",
+            name="_record",
+            inputs=[],
+            outputs=[],
+            mutability="internal",
+            signature="_record()",
+            visibility="private",
+            reads=["balances"],
+            writes=["balances"],
+        )
+        public_entry = walk.FunctionInfo(
+            contract="Vault",
+            name="deposit",
+            inputs=[],
+            outputs=[],
+            mutability="nonpayable",
+            signature="deposit()",
+            visibility="external",
+            calls=[{"kind": "internal-call", "function": "_record"}],
+        )
+        walk._propagate_internal_storage([public_entry, private_writer])
+        self.assertIn("balances", public_entry.writes)
+        self.assertIn("balances", public_entry.reads)
+
+    def test_shared_state_flow_shows_multiple_functions_converging_on_same_mapping(self):
+        contract = walk.ContractInfo(
+            name="Vault",
+            source="src/Vault.sol",
+            line=1,
+            state_vars=[
+                {
+                    "name": "balances",
+                    "type": "mapping(address => uint256)",
+                    "visibility": "private",
+                }
+            ],
+        )
+        deposit = walk.FunctionInfo(
+            contract="Vault",
+            name="deposit",
+            inputs=[],
+            outputs=[],
+            mutability="nonpayable",
+            signature="deposit()",
+            visibility="external",
+            reads=["balances"],
+            writes=["balances"],
+        )
+        withdraw = walk.FunctionInfo(
+            contract="Vault",
+            name="withdraw",
+            inputs=[],
+            outputs=[],
+            mutability="nonpayable",
+            signature="withdraw()",
+            visibility="external",
+            reads=["balances"],
+            writes=["balances"],
+        )
+        rendered = "\n".join(
+            walk._render_shared_state_flow(
+                {"Vault": [deposit, withdraw]},
+                {"Vault": contract},
+            )
+        )
+        self.assertIn("deposit()", rendered)
+        self.assertIn("withdraw()", rendered)
+        self.assertIn("MAPPING Vault::balances", rendered)
+        self.assertIn("SHARED", rendered)
+        self.assertIn("function path(s) converge on this same storage", rendered)
+
     def test_render_contract_surface_explains_who_modifies_storage(self):
         contract = walk.ContractInfo(
             name="Vault", source="src/Vault.sol", line=1, kind="contract",
