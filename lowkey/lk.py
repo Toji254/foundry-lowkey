@@ -2014,6 +2014,149 @@ def run_auto_target(config,name=None):
     print(f"Target selected: {alias} -> {record['address']}")
     return 0
 
+
+def _confidence_pool_lab_supported(root):
+    """Return True when this project has the concrete fixture pieces for a safe local system lab."""
+    root = audit_context.foundry_project_root(root) or root
+    required = [
+        Path(root) / "src/ConfidencePool.sol",
+        Path(root) / "src/ConfidencePoolFactory.sol",
+        Path(root) / "src/mocks/MockConfidencePoolModerator.sol",
+        Path(root) / "test/mocks/MockERC20.sol",
+        Path(root) / "test/mocks/MockAttackRegistry.sol",
+        Path(root) / "test/mocks/MockSafeHarborRegistry.sol",
+        Path(root) / "test/mocks/MockAgreement.sol",
+    ]
+    return all(path.is_file() for path in required)
+
+
+def ensure_confidence_pool_lab_script(root):
+    """Generate a disposable, project-native ConfidencePool system harness once."""
+    root = audit_context.foundry_project_root(root) or root
+    if not _confidence_pool_lab_supported(root):
+        return None
+
+    path = Path(root) / "script" / "LowkeyAutoConfidencePoolLab.s.sol"
+    if path.is_file():
+        return str(path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    source = r'''// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
+
+import {Script} from "forge-std/Script.sol";
+import {console2} from "forge-std/console2.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+import {ConfidencePool} from "src/ConfidencePool.sol";
+import {ConfidencePoolFactory} from "src/ConfidencePoolFactory.sol";
+import {MockConfidencePoolModerator} from "src/mocks/MockConfidencePoolModerator.sol";
+
+import {MockERC20} from "test/mocks/MockERC20.sol";
+import {MockAttackRegistry} from "test/mocks/MockAttackRegistry.sol";
+import {MockSafeHarborRegistry} from "test/mocks/MockSafeHarborRegistry.sol";
+import {MockAgreement} from "test/mocks/MockAgreement.sol";
+import {IAttackRegistry} from "@battlechain/interface/IAttackRegistry.sol";
+
+/// @notice Disposable local system environment for Lowkey protocol walkthroughs.
+/// @dev Never use this harness for a real deployment.
+contract LowkeyAutoConfidencePoolLab is Script {
+    function run() external {
+        uint256 aliceKey = vm.envUint("LOWKEY_LAB_KEY");
+        uint256 bobKey = vm.envUint("LOWKEY_BOB_KEY");
+        address alice = vm.addr(aliceKey);
+        address bob = vm.addr(bobKey);
+
+        vm.startBroadcast(aliceKey);
+
+        MockERC20 token = new MockERC20();
+        MockAttackRegistry attackRegistry = new MockAttackRegistry();
+        MockSafeHarborRegistry registry = new MockSafeHarborRegistry();
+
+        MockAgreement agreement = new MockAgreement(alice);
+        agreement.setContractInScope(alice, true);
+        agreement.setContractInScope(bob, true);
+
+        registry.setAttackRegistry(address(attackRegistry));
+        registry.setAgreementValid(address(agreement), true);
+        attackRegistry.setAgreementState(IAttackRegistry.ContractState.NEW_DEPLOYMENT);
+
+        MockConfidencePoolModerator moderator = new MockConfidencePoolModerator();
+
+        ConfidencePool poolImplementation = new ConfidencePool();
+        ConfidencePoolFactory factoryImplementation = new ConfidencePoolFactory();
+
+        bytes memory initData = abi.encodeCall(
+            ConfidencePoolFactory.initialize,
+            (address(registry), address(poolImplementation), address(moderator))
+        );
+        ConfidencePoolFactory factory = ConfidencePoolFactory(
+            address(new ERC1967Proxy(address(factoryImplementation), initData))
+        );
+
+        factory.setStakeTokenAllowed(address(token), true);
+
+        token.mint(alice, 100 ether);
+        token.mint(bob, 100 ether);
+
+        uint256 expiry = block.timestamp + 31 days;
+        address[] memory scope = new address[](2);
+        scope[0] = alice;
+        scope[1] = bob;
+
+        address pool = factory.createPool(
+            address(agreement),
+            address(token),
+            expiry,
+            1 ether,
+            alice,
+            scope
+        );
+
+        vm.stopBroadcast();
+
+        console2.log("LOWKEY_TARGET", pool);
+        console2.log("LOWKEY_FACTORY", address(factory));
+        console2.log("LOWKEY_POOL_IMPLEMENTATION", address(poolImplementation));
+        console2.log("LOWKEY_STAKE_TOKEN", address(token));
+        console2.log("LOWKEY_ATTACK_REGISTRY", address(attackRegistry));
+        console2.log("LOWKEY_SAFE_HARBOR_REGISTRY", address(registry));
+        console2.log("LOWKEY_AGREEMENT", address(agreement));
+        console2.log("LOWKEY_MODERATOR", address(moderator));
+        console2.log("LOWKEY_ALICE", alice);
+        console2.log("LOWKEY_BOB", bob);
+    }
+}
+'''
+    path.write_text(source, encoding="utf-8")
+    return str(path)
+
+
+def parse_lab_system(output):
+    """Parse Lowkey system markers emitted by a project lab adapter."""
+    labels = {
+        "factory": "LOWKEY_FACTORY",
+        "pool_implementation": "LOWKEY_POOL_IMPLEMENTATION",
+        "stake_token": "LOWKEY_STAKE_TOKEN",
+        "attack_registry": "LOWKEY_ATTACK_REGISTRY",
+        "safe_harbor_registry": "LOWKEY_SAFE_HARBOR_REGISTRY",
+        "agreement": "LOWKEY_AGREEMENT",
+        "moderator": "LOWKEY_MODERATOR",
+        "alice": "LOWKEY_ALICE",
+        "bob": "LOWKEY_BOB",
+    }
+    system = {}
+    text = str(output or "")
+    for key, marker in labels.items():
+        match = re.search(
+            rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
+            text,
+        )
+        if match:
+            system[key] = match.group(1)
+    return system
+
+
 LOCAL_LAB_SCRIPTS = (
     "script/LocalAudit.s.sol",
     "script/LocalDeploy.s.sol",
@@ -2026,10 +2169,17 @@ def discover_local_lab_script(root="."):
         path = os.path.join(root, relative)
         if os.path.isfile(path):
             return path
+
+    generated = ensure_confidence_pool_lab_script(root)
+    if generated:
+        return generated
     return None
 
 def parse_lab_marker(output, marker="LOWKEY_TARGET"):
-    match = re.search(rf"(?m)^\s*{re.escape(marker)}\s+(0x[0-9a-fA-F]{{40}})\s*$", str(output or ""))
+    match = re.search(
+        rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
+        str(output or ""),
+    )
     return match.group(1) if match else None
 
 def parse_deployed_address(output):
@@ -2707,18 +2857,33 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print("Action  : deploying disposable local test environment...")
 
     script_contract = Path(script).stem
-    result = run_foundry(
-        [
-            "script",
-            f"{relative}:{script_contract}",
-            "--rpc-url",
-            rpc,
-            "--broadcast",
-            "--private-key",
-            key,
-        ],
-        capture=True,
-    )
+    previous_lab_key = os.environ.get("LOWKEY_LAB_KEY")
+    previous_bob_key = os.environ.get("LOWKEY_BOB_KEY")
+    bob_key = derive_default_anvil_key(1) or key
+    os.environ["LOWKEY_LAB_KEY"] = str(int(str(key), 16))
+    os.environ["LOWKEY_BOB_KEY"] = str(int(str(bob_key), 16))
+    try:
+        result = run_foundry(
+            [
+                "script",
+                f"{relative}:{script_contract}",
+                "--rpc-url",
+                rpc,
+                "--broadcast",
+                "--private-key",
+                key,
+            ],
+            capture=True,
+        )
+    finally:
+        if previous_lab_key is None:
+            os.environ.pop("LOWKEY_LAB_KEY", None)
+        else:
+            os.environ["LOWKEY_LAB_KEY"] = previous_lab_key
+        if previous_bob_key is None:
+            os.environ.pop("LOWKEY_BOB_KEY", None)
+        else:
+            os.environ["LOWKEY_BOB_KEY"] = previous_bob_key
     output = result.text
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-20:]) if output else "forge script failed"
@@ -2727,6 +2892,26 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     target = parse_lab_marker(output)
     if not target:
         return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
+
+    system = parse_lab_system(output)
+    if system:
+        config["lab_system"] = system
+        config["_walkthrough_recipe"] = "confidence-pool"
+        names = {
+            "factory": "ConfidencePoolFactory",
+            "pool_implementation": "ConfidencePool",
+            "stake_token": "StakeToken",
+            "attack_registry": "MockAttackRegistry",
+            "safe_harbor_registry": "MockSafeHarborRegistry",
+            "agreement": "MockAgreement",
+            "moderator": "MockConfidencePoolModerator",
+        }
+        for alias, address in system.items():
+            if alias in {"alice", "bob"}:
+                continue
+            label = names.get(alias, alias)
+            config.setdefault("aliases", {})[label] = address
+            config.setdefault("targets", {})[label] = address
 
     # Let the live target drive ABI discovery. This is important for proxies:
     # the deployed address may be a proxy while the useful ABI lives on its implementation.
