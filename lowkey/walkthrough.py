@@ -1980,9 +1980,25 @@ def _dependency_diagnostics(
 
 
 def _function_inputs(model: ContractModel, signature: str) -> list[dict[str, Any]]:
+    if not model:
+        return []
+    wanted = str(signature).lower()
     for item in model.abi:
-        if item.get("type") == "function" and _signature(item) == signature:
+        if item.get("type") != "function":
+            continue
+        if _signature(item).lower() == wanted:
             return list(item.get("inputs") or [])
+
+    # Some lightweight models have the ABI but not the derived functions list.
+    # A unique ABI-name match is still safe and avoids rejecting valid fixtures.
+    name = wanted.split("(", 1)[0]
+    matches = [
+        item for item in model.abi
+        if item.get("type") == "function"
+        and str(item.get("name") or "").lower() == name
+    ]
+    if len(matches) == 1:
+        return list(matches[0].get("inputs") or [])
     return []
 
 
@@ -2101,9 +2117,16 @@ def _probe_source_dependency_result(
         target_model = next(
             (
                 item for item in models
-                if any(
-                    str(sig).split("(", 1)[0].lower() == fn_name.lower()
-                    for sig in item.functions
+                if (
+                    any(
+                        str(sig).split("(", 1)[0].lower() == fn_name.lower()
+                        for sig in item.functions
+                    )
+                    or any(
+                        item_abi.get("type") == "function"
+                        and str(item_abi.get("name") or "").lower() == fn_name.lower()
+                        for item_abi in item.abi
+                    )
                 )
             ),
             None,
