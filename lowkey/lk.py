@@ -2210,7 +2210,9 @@ def discover_audit_target_contract(root):
 
         lowered = key
         if lowered.endswith(("factory", "router", "manager", "coordinator", "controller")):
-            scores[key] += 140
+            # Whole-protocol walkthroughs need a system root rather than the
+            # deepest leaf with the most static-analysis findings.
+            scores[key] += 500
         if artifact_has_initializer(artifact):
             scores[key] += 20
 
@@ -2569,7 +2571,9 @@ def _generate_factory_upgradeable_lab(root, target_contract, artifact, accounts)
         return None
 
     safe_source = source_path.rsplit("/", 1)[-1]
-    contract_file = root / ".audit" / "generated"
+    # Keep the generated adapter in Foundry's normal script tree so
+    # forge script resolves it consistently across profiles.
+    contract_file = root / "script"
     contract_file.mkdir(parents=True, exist_ok=True)
     script = contract_file / f"LowkeyAutoLab_{re.sub(r'[^A-Za-z0-9_]', '_', target_contract)}.s.sol"
 
