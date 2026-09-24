@@ -43,6 +43,30 @@ ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 HEX_RE = re.compile(r"0x[0-9a-fA-F]+$")
 
 
+def _cmd(args: list[str], cwd: Path | None = None, timeout: int = 30) -> tuple[int, str, str]:
+    """Run a local command and return (exit_code, stdout, stderr)."""
+    try:
+        proc = subprocess.run(
+            [str(arg) for arg in args],
+            cwd=str(cwd) if cwd is not None else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        return 124, str(stdout), str(stderr) or f"command timed out after {timeout}s"
+    except OSError as exc:
+        return 127, "", str(exc)
+
+
 @dataclass
 class FunctionInfo:
     contract: str
