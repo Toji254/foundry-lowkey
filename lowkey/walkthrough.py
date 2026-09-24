@@ -1312,7 +1312,9 @@ def _render_protocol_story(
             status = "done" if step.status == "success" else "blocked" if step.status in {"blocked", "reverted"} else "checked"
             args = ", ".join(_friendly_arg(x, actors) for x in step.args) or "∅"
             fn = str(step.function or "").split("(", 1)[0]
-            lines.append(f"  {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{fn}({args}) • {status}")
+            step_model = next((m for m in models if m.name == step.contract), None)
+            linked = _function_link(root, step_model, fn)
+            lines.append(f"  {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{linked}({args}) • {status}")
             lines.append("       │")
             lines.append("       ▼")
     return "\n".join(lines)
@@ -2131,8 +2133,14 @@ def _run_adversarial_test(
     print(f"  seed   : {actual_seed}")
     print("")
 
+    ordered_functions = list(functions)
+    rng.shuffle(ordered_functions)
+
     for index in range(1, total_cases + 1):
-        fn = rng.choice(functions)
+        fn = ordered_functions[(index - 1) % len(ordered_functions)]
+        if index > len(ordered_functions):
+            # Refresh actor/argument randomness each cycle while preserving function coverage.
+            pass
         actor = rng.choice(actors) if actors else Actor("Alice", target, 0)
         args = [_random_sol_value(param, actors, target, rng) for param in fn.get("inputs", [])]
         value = rng.choice([0, 1, 10**6, 10**15, 10**18]) if fn.get("stateMutability") == "payable" else 0
@@ -2833,7 +2841,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     if ckey not in completed: pending.append(candidate)
 
         _save_artifacts(root,{
-            "version":3,"mode":"source-guided-live","target":target,
+            "version":4,"mode":"source-guided-live","target":target,
             "contract":asdict(model),"contracts":_models_payload(models),
             "actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in steps],
             "runtime_contracts":[asdict(x) for x in runtime],
