@@ -282,7 +282,7 @@ class LowkeyCastTests(unittest.TestCase):
                  patch.object(
                      lk,
                      "cast_output",
-                     side_effect=lambda args: (0, "0x6000", "") if args[-1] in config["aliases"].values() else (1, "", ""),
+                     side_effect=lambda args: (0, "0x6000", "") if len(args) > 2 and args[2] in config["aliases"].values() else (1, "", ""),
                  ):
                 candidate = lk._live_target_candidate(
                     config,
@@ -313,7 +313,7 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertIsNotNone(script)
             self.assertTrue(pathlib.Path(script).is_file())
             content = pathlib.Path(script).read_text(encoding="utf-8")
-            self.assertIn("ConfidencePoolFactory.createPool", content)
+            self.assertIn("factory.createPool(", content)
             self.assertIn("LOWKEY_TARGET", content)
 
     def test_parse_lab_system(self):
