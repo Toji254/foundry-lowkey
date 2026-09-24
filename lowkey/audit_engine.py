@@ -1185,6 +1185,10 @@ def _project_solc_env(root: str, project: dict[str, Any] | None = None) -> dict[
             if current_path
             else str(toolchain_bin)
         )
+        if len(compilers) == 1:
+            env["SOLCX_BINARY_PATH"] = str(
+                _project_solcx_install_path(root, str(compilers[0]))
+            )
 
     root_text = str(Path(root).resolve())
     current_pythonpath = os.environ.get("PYTHONPATH", "")
@@ -1204,24 +1208,37 @@ def _project_test_command(root: str, project: dict[str, Any] | None = None) -> l
         if (root_path / name).is_dir()
     ]
 
-    # Prefer an explicitly active environment when Lowkey was launched from
-    # one. This preserves repository test dependencies that are intentionally
-    # provided by the active environment while still falling back to the
-    # project's managed .venv when no environment is active.
-    command = ["uv", "run", "--active", "pytest"]
-
-    if test_roots:
-        command.extend(str(path.relative_to(root_path)) for path in test_roots)
-    else:
-        command.append(".")
-
+    pytest_args = [
+        *(str(path.relative_to(root_path)) for path in test_roots)
+    ] if test_roots else ["."]
     for dependency_root in _project_dependency_paths(root, project):
         try:
             relative = dependency_root.relative_to(root_path)
         except ValueError:
             continue
-        command.extend(["--ignore", str(relative)])
-    return command
+        pytest_args.extend(["--ignore", str(relative)])
+
+    compilers = (project or {}).get("solidity_compilers", [])
+    if len(compilers) == 1:
+        version = str(compilers[0])
+        solcx_root = _project_solcx_install_path(root, version)
+        # Configure py-solc-x before pytest/conftest imports any Solidity
+        # compiler consumer. This is deliberately in-process so Boa,
+        # Titanoboa, or repository test helpers inherit the same compiler.
+        bootstrap = (
+            "import sys; "
+            "import solcx; "
+            f"solcx.set_solc_version({version!r}, silent=True, "
+            f"solcx_binary_path={str(solcx_root)!r}); "
+            "import pytest; "
+            "raise SystemExit(pytest.main(sys.argv[1:]))"
+        )
+        return [
+            "uv", "run", "--active", "python", "-c", bootstrap,
+            "lowkey-pytest", *pytest_args,
+        ]
+
+    return ["uv", "run", "--active", "pytest", *pytest_args]
 
 
 def _run_project_vyper_tests(
@@ -1443,6 +1460,27 @@ def _pin_project_solc_binary(root: str, binary: Path) -> Path:
         target.chmod(0o755)
     return target
 
+def _project_solcx_install_path(root: str, version: str) -> Path:
+    return Path(root).resolve() / ".audit" / "toolchain" / "solcx"
+
+
+def _ensure_project_solcx_binary(root: str, version: str, binary: Path) -> Path:
+    """
+    Expose Lowkey's validated compiler through py-solc-x's expected
+    versioned installation layout without modifying the audited project.
+    """
+    install_root = _project_solcx_install_path(root, version)
+    install_root.mkdir(parents=True, exist_ok=True)
+    target = install_root / f"solc-v{version}"
+    try:
+        if target.is_symlink() or target.exists():
+            target.unlink()
+        target.symlink_to(binary.resolve())
+    except OSError:
+        target.write_bytes(binary.read_bytes())
+        target.chmod(0o755)
+    return target
+
 
 def _github_release_solc(root: str, version: str) -> tuple[int, str, str, Path | None]:
     cache_dir = Path(root).resolve() / ".audit" / "toolchain" / "cache"
@@ -1587,12 +1625,14 @@ def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] |
 
     if selected_binary is not None:
         pinned = _pin_project_solc_binary(root, selected_binary)
+        solcx_binary = _ensure_project_solcx_binary(root, version, pinned)
         payload = {
             "available": True,
             "status": "ready",
             "version": version,
             "binary": str(pinned),
             "source_binary": str(selected_binary),
+            "solcx_binary": str(solcx_binary),
             "attempts": attempts,
         }
         record_evidence("solc_select", payload, root)
