@@ -940,16 +940,33 @@ def _scope_accounts(
 ) -> list[str]:
     if not agreement or not agreement_functions:
         return []
+
+    live_node = LiveNode(agreement, "Agreement", _code_size(rpc, agreement))
     fn = _function_by_name(agreement_functions, "getBattleChainScopeAddresses")
-    if not fn:
+    if fn:
+        val, _ = _read_simple_getter(root, rpc, live_node, fn)
+        bulk = [x for x in (val or []) if _is_address(x)]
+        if bulk:
+            return bulk
+
+    # Some Agreement implementations expose only isContractInScope(address).
+    # Prefer known RPC accounts so we can discover a real scope without
+    # inventing arbitrary addresses.
+    scope_fn = _function_by_name(agreement_functions, "isContractInScope")
+    if not scope_fn:
         return []
-    val, _ = _read_simple_getter(
-        root,
-        rpc,
-        LiveNode(agreement, "Agreement", _code_size(rpc, agreement)),
-        fn,
-    )
-    return [x for x in (val or []) if _is_address(x)]
+    discovered: list[str] = []
+    for candidate in _eth_accounts(rpc):
+        code, out, _ = _query_by_signature(
+            root,
+            rpc,
+            agreement,
+            "isContractInScope(address)(bool)",
+            [_normalize_arg_for_cast(candidate)],
+        )
+        if code == 0 and out.strip().lower() in {"true", "1"}:
+            discovered.append(candidate)
+    return discovered
 
 
 def _find_node_by_predicate(
