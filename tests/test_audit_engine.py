@@ -100,6 +100,39 @@ class AuditEngineTests(unittest.TestCase):
             self.assertEqual(brief["candidate"]["impact"], "high")
             self.assertEqual(brief["poc_file"], "test/Poc_reentrancy_eth.t.sol")
 
+    def test_generate_poc_detects_vyper_project_without_slither(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "pyproject.toml").write_text(
+                """
+[project]
+name = "fixture"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["vyper>=0.4.0"]
+""",
+                encoding="utf-8",
+            )
+            contracts = root / "contracts"
+            contracts.mkdir()
+            (contracts / "Oracle.vy").write_text(
+                "@external\ndef price() -> uint256:\n    return block.timestamp\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"HOME": str(root)}, clear=False):
+                code, files = audit_engine.generate_poc(str(root))
+
+            self.assertEqual(code, 0)
+            self.assertEqual(len(files), 2)
+            self.assertTrue((root / "tests" / "poc_audit_candidate.py").exists())
+            brief = list((root / ".audit" / "poc").glob("Poc_*.json"))
+            self.assertEqual(len(brief), 1)
+            payload = json.loads(brief[0].read_text(encoding="utf-8"))
+            self.assertEqual(payload["project_type"], "vyper")
+
     def test_run_source_triage_handles_relative_root(self):
         from tempfile import TemporaryDirectory
 
