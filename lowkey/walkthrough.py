@@ -130,12 +130,20 @@ def _clean_name(value: str) -> str:
     return name
 
 
+def _canonical_actor_names(actors: dict[str, str]) -> list[str]:
+    """Return human-facing actor names without internal lowercase aliases."""
+    return [
+        name for name in ("Alice", "Bob", "Attacker", "Owner", "Agreement Owner", "Moderator")
+        if actors.get(name)
+    ]
+
+
 def _contract_purpose(name: str, functions: list[FunctionInfo] | None = None) -> str:
     low = name.lower()
     fn_names = {f.name.lower() for f in (functions or [])}
     if "factory" in low or "createpool" in fn_names:
         return "creates/configures protocol instances"
-    if "pool" in low:
+    if "pool" in low and "factory" not in low:
         return "holds participant state, stakes and settlement funds"
     if "agreement" in low:
         return "defines who/what is approved and in scope"
@@ -2328,7 +2336,7 @@ def _render_story(
     lines.append("│ LOWKEY  /  SYSTEM WALKTHROUGH                              │")
     lines.append("╰────────────────────────────────────────────────────────────╯")
     lines.append(f"  Environment  Local RPC • {_short_address(str(target)) if target else 'no target'}")
-    lines.append(f"  System       {len(live_nodes)} live contract(s) • {len(actors)} actor(s)")
+    lines.append(f"  System       {len(live_nodes)} live contract(s) • {len(_canonical_actor_names(actors))} actor(s)")
     lines.append(f"  Focus        {target_name}")
     source = str(meta.get("target_source") or "")
     if "current broadcast" in source:
@@ -2346,7 +2354,7 @@ def _render_story(
     lines.append("")
     lines.append("SYSTEM IN PLAIN ENGLISH")
     if actors:
-        actor_bits = [name for name in ("Alice", "Bob", "Attacker") if actors.get(name)]
+        actor_bits = _canonical_actor_names(actors)
         if actor_bits:
             lines.append("  " + " / ".join(actor_bits) + " are the people Lowkey can use as test actors.")
 
@@ -2361,8 +2369,12 @@ def _render_story(
             "registry": ("registry", "safeharbor"),
             "moderator": ("moderator",),
         }.items():
-            if key not in role_nodes and any(token in low for token in tokens):
-                role_nodes[key] = n
+            if key not in role_nodes:
+                matches = any(token in low for token in tokens)
+                if key == "pool" and "factory" in low:
+                    matches = False
+                if matches:
+                    role_nodes[key] = n
 
     if role_nodes:
         if role_nodes.get("factory"):
@@ -2717,6 +2729,42 @@ def _build_model(
     return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
 
 
+def _walkthrough_phase_priority(fn: FunctionInfo) -> tuple[int, str]:
+    """Prefer a coherent lifecycle over isolated high-scoring functions."""
+    phase = _action_phase(fn)
+    priority = {
+        "CREATE": 500,
+        "PARTICIPATE": 400,
+        "OUTCOME": 300,
+        "SETTLE": 200,
+        "INTERACTION": 100,
+        "SETUP": -100,
+        "ADMIN": -200,
+    }.get(phase, 0)
+    name = fn.name.lower()
+    # These are normally deployment/configuration mechanics, not user journey steps.
+    if name.startswith("initialize") or name in {"setstaketokenallowed", "pause", "unpause", "upgrade"}:
+        priority -= 300
+    return priority, phase
+
+
+def _walkthrough_is_redundant_setup(fn: FunctionInfo, meta: dict[str, Any]) -> bool:
+    name = fn.name.lower()
+    if name.startswith("initialize"):
+        return any(
+            isinstance(item, dict)
+            and str(item.get("target") or "").lower() == name
+            for item in (meta.get("bootstrap") or {}).get("initialization") or []
+        ) or bool(meta.get("live_nodes"))
+    if name == "setstaketokenallowed":
+        return any(
+            isinstance(item, dict)
+            and str(item.get("target") or "").lower().startswith("setstaketokenallowed")
+            for item in (meta.get("bootstrap") or {}).get("initialization") or []
+        )
+    return False
+
+
 def _plan_actions(
     root: Path,
     meta: dict[str, Any],
@@ -2730,28 +2778,24 @@ def _plan_actions(
     rpc = str(meta["rpc"])
     now = int(meta["chain_timestamp"])
     actions: list[dict[str, Any]] = []
-    candidates: list[tuple[int, LiveNode, FunctionInfo]] = []
+    candidates: list[tuple[int, int, LiveNode, FunctionInfo]] = []
     for node in nodes:
         if node.code_size == 0:
             continue
         funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
         for fn in funcs:
             score = _rank_function(fn)
-            n = fn.name.lower()
-            already_configured = any(
-                str(item.get("target") or "").lower().find(n) >= 0
-                for item in (meta.get("bootstrap") or {}).get("initialization") or []
-                if isinstance(item, dict)
-            )
-            if already_configured and (n.startswith("initialize") or n.startswith("set") or n in {"pause", "unpause", "upgrade"}):
+            if score <= 0 or _walkthrough_is_redundant_setup(fn, meta):
                 continue
-            if score > 0:
-                candidates.append((score, node, fn))
-    candidates.sort(key=lambda x: (-x[0], x[1].name, x[2].name))
+            phase_priority, _phase = _walkthrough_phase_priority(fn)
+            # Keep one representative per function name in the human journey;
+            # overloaded variants can still be exercised by explicit audit probes.
+            candidates.append((phase_priority, score, node, fn))
+    candidates.sort(key=lambda x: (-x[0], -x[1], x[2].name, x[3].name, x[3].signature))
 
     seen: set[tuple[str, str]] = set()
-    for _, node, fn in candidates:
-        key = (node.address.lower(), fn.signature)
+    for _, _, node, fn in candidates:
+        key = (node.address.lower(), fn.name.lower())
         if key in seen:
             continue
         seen.add(key)
@@ -2978,7 +3022,9 @@ def _run_walkthrough(
         )
         action["status"] = "READY" if pre["ok"] else "BLOCKED"
 
-        live_send = bool(flags.get("send") or flags.get("auto"))
+        # --auto only bootstraps the local environment. Mutating walkthrough
+        # calls require the explicit --send flag.
+        live_send = bool(flags.get("send"))
         if live_send and pre["ok"]:
             if not _is_local_rpc(str(meta["rpc"])):
                 action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
