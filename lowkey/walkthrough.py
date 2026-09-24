@@ -2087,6 +2087,18 @@ def _semantic_address(
         return known.get("agreement")
     if "stake" in n and "token" in n or n in {"token", "staketoken"}:
         return known.get("erc20")
+    if "implementation" in n:
+        for candidate in nodes:
+            cname = (candidate.artifact_contract or candidate.name).lower()
+            if "pool" in cname and "factory" not in cname and candidate.code_size > 0:
+                return candidate.address
+        return known.get("poolimplementation") or known.get("implementation")
+    if "moderator" in n:
+        for candidate in nodes:
+            cname = (candidate.artifact_contract or candidate.name).lower()
+            if "moderator" in cname and candidate.code_size > 0:
+                return candidate.address
+        return known.get("moderator")
     if any(x in n for x in ("recovery", "recipient", "owner", "admin", "caller", "sender")):
         return actors.get("alice") or actors.get("Alice")
     if "attacker" in n:
@@ -4012,6 +4024,86 @@ def _plan_actions(
 
 
 
+
+def _initializer_recovery_action(
+    root: Path,
+    rpc: str,
+    blocked: dict[str, Any],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    all_errors: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Recover an evidently uninitialized Ownable-style component on local state."""
+    node: LiveNode = blocked["node"]
+    funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
+    owner_fn = _function_by_name(funcs, "owner")
+    initialize = _function_by_name(funcs, "initialize")
+    if owner_fn is None or initialize is None:
+        return None
+
+    owner, _ = _read_simple_getter(root, rpc, node, owner_fn)
+    if not _is_address(owner) or owner.lower() != ZERO.lower():
+        return None
+
+    local_accounts = _eth_accounts(rpc)
+    if not local_accounts:
+        return None
+
+    args, reason = _semantic_args(
+        node,
+        initialize,
+        functions_by_contract,
+        nodes,
+        actors,
+        known,
+        int(time.time()),
+        root,
+        rpc,
+    )
+    if args is None:
+        return None
+
+    caller = local_accounts[0]
+    precheck = _preflight_failure(
+        root,
+        rpc,
+        node,
+        initialize,
+        args,
+        caller,
+        all_errors,
+    )
+    if not precheck["ok"]:
+        return None
+
+    return {
+        "node": node,
+        "function": initialize,
+        "args": args,
+        "caller": caller,
+        "actor_name": "Setup Signer",
+        "status": "READY",
+        "phase": "SETUP",
+        "what": (
+            f"Initialize {node.artifact_contract or node.name} because its live owner is the zero address."
+        ),
+        "why": (
+            "The live contract is evidently uninitialized: owner() == address(0), "
+            "while an initializer exists and its arguments can be recovered from live protocol components."
+        ),
+        "semantic_reason": "derived from zero owner + initializer + live component argument synthesis",
+        "result": precheck,
+        "diagnosis": [
+            "owner() currently returns address(0)",
+            "initializer is present on the live contract",
+            "initialization arguments were synthesized from live protocol components",
+        ],
+        "setup_recovery": True,
+    }
+
+
 def _prerequisite_from_blocked_action(
     root: Path,
     rpc: str,
@@ -4181,9 +4273,24 @@ def _next_transition_action(
     if ready:
         return ready[0]
 
+    # A zero-owner local component with an initializer is a setup-state problem.
+    # Recover that state before attempting owner-gated prerequisites.
+    blocked = candidates[0]
+    recovery = _initializer_recovery_action(
+        root,
+        str(meta["rpc"]),
+        blocked,
+        functions_by_contract,
+        nodes,
+        actors,
+        known,
+        all_errors,
+    )
+    if recovery:
+        return recovery
+
     # When the core transition is blocked by a source-backed state gate, walk
     # backward one hop and execute the legitimate enabling transition first.
-    blocked = candidates[0]
     prerequisite = _prerequisite_from_blocked_action(
         root,
         str(meta["rpc"]),
