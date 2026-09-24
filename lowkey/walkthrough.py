@@ -579,7 +579,7 @@ def _confidence_pool_recipe(config: dict[str, Any], actors: list[Actor]) -> list
              reason="Bob joins the confidence pool",inferred=False),
         Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[3],
              reason="LAB CONTROL: agreement enters UNDER_ATTACK",inferred=False),
-        Step(0,alice.name,"ConfidencePool",pool,"pokeRiskWindow",[],
+        Step(0,alice.name,"ConfidencePool",pool,"pokeRiskWindow()",[],
              reason="pool observes and seals risk-window start",inferred=False),
         Step(0,alice.name,"MockAttackRegistry",attack_registry,"setAgreementState(uint8)",[4],
              reason="LAB CONTROL: agreement reaches PRODUCTION",inferred=False),
