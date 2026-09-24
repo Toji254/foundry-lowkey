@@ -2209,23 +2209,25 @@ def _dependency_diagnostics(
 def _function_inputs(model: ContractModel, signature: str) -> list[dict[str, Any]]:
     if not model:
         return []
-    wanted = str(signature).lower()
-    for item in model.abi:
-        if item.get("type") != "function":
-            continue
-        if _signature(item).lower() == wanted:
-            return list(item.get("inputs") or [])
 
-    # Some lightweight models have the ABI but not the derived functions list.
-    # A unique ABI-name match is still safe and avoids rejecting valid fixtures.
+    wanted = str(signature).lower()
     name = wanted.split("(", 1)[0]
-    matches = [
+
+    # Prefer a unique ABI-name match. This keeps lightweight/test-built models
+    # usable even when their precomputed function signature index is incomplete.
+    direct_matches = [
         item for item in model.abi
         if item.get("type") == "function"
         and str(item.get("name") or "").lower() == name
     ]
-    if len(matches) == 1:
-        return list(matches[0].get("inputs") or [])
+    if len(direct_matches) == 1:
+        return list(direct_matches[0].get("inputs") or [])
+
+    # Overloads still require the canonical signature.
+    for item in direct_matches:
+        if _signature(item).lower() == wanted:
+            return list(item.get("inputs") or [])
+
     return []
 
 
@@ -2962,21 +2964,30 @@ def _diagnose_failed_call(
 def _validate_step_arguments(step: Step, model: ContractModel) -> tuple[bool, str | None]:
     """Reject unresolved semantic dependencies before calldata is built."""
     inputs = _function_inputs(model, step.function)
+    function_name = str(step.function).split("(", 1)[0]
+
     if len(step.args) != len(inputs):
-        function_name_fallback = str(step.function).split("(", 1)[0]
         direct_matches = [
             item for item in model.abi
             if item.get("type") == "function"
-            and str(item.get("name") or "").lower() == function_name_fallback.lower()
+            and str(item.get("name") or "").lower() == function_name.lower()
         ]
         if len(direct_matches) == 1:
-            direct_inputs = list(direct_matches[0].get("inputs") or [])
-            if len(step.args) == len(direct_inputs):
-                inputs = direct_inputs
-        if len(step.args) != len(inputs):
-            return False, f"{function_name_fallback} expects {len(inputs)} argument(s); Lowkey supplied {len(step.args)}"
+            inputs = list(direct_matches[0].get("inputs") or [])
 
-    function_name = str(step.function).split("(", 1)[0]
+        # Last safe fallback: source-proven dependency variables can expose
+        # address parameter names even when an ABI index is incomplete.
+        if len(step.args) != len(inputs):
+            dependency_names = []
+            for edge in _source_edges_for_step(model, step):
+                via = str(edge.get("via") or "")
+                if edge.get("kind") == "cross-contract" and via and via not in dependency_names:
+                    dependency_names.append(via)
+            if len(dependency_names) == len(step.args):
+                inputs = [{"name": name, "type": "address"} for name in dependency_names]
+
+        if len(step.args) != len(inputs):
+            return False, f"{function_name} expects {len(inputs)} argument(s); Lowkey supplied {len(step.args)}"
     for index, param in enumerate(inputs):
         if _canonical_type(param) != "address":
             continue
