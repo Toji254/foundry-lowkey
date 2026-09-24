@@ -187,18 +187,30 @@ def cache_submodule(url: str, worktree: Path, commit: str) -> bool:
     return True
 
 
-def node_package_manager(path: Path) -> tuple[str, list[str]] | None:
-    """Return the package-manager command for a repository with package metadata."""
+def node_package_manager(path: Path) -> tuple[list[str], str] | None:
+    """Return an available package-manager command and a human-readable name."""
     package_json = path / "package.json"
     if not package_json.is_file():
         return None
+
     if (path / "pnpm-lock.yaml").is_file():
-        return ("pnpm", ["install", "--frozen-lockfile"])
+        if shutil.which("pnpm"):
+            return (["pnpm", "install", "--frozen-lockfile"], "pnpm")
+        if shutil.which("corepack"):
+            return (["corepack", "pnpm", "install", "--frozen-lockfile"], "corepack/pnpm")
+        return (["npm", "install"], "npm fallback (pnpm unavailable)")
+
     if (path / "yarn.lock").is_file():
-        return ("yarn", ["install", "--frozen-lockfile"])
+        if shutil.which("yarn"):
+            return (["yarn", "install", "--frozen-lockfile"], "yarn")
+        if shutil.which("corepack"):
+            return (["corepack", "yarn", "install", "--frozen-lockfile"], "corepack/yarn")
+        return (["npm", "install"], "npm fallback (yarn unavailable)")
+
     if (path / "package-lock.json").is_file():
-        return ("npm", ["ci"])
-    return ("npm", ["install"])
+        return (["npm", "ci"], "npm ci")
+
+    return (["npm", "install"], "npm")
 
 
 def install_node_dependencies(path: Path) -> int:
@@ -206,17 +218,24 @@ def install_node_dependencies(path: Path) -> int:
     manager = node_package_manager(path)
     if not manager:
         return 0
-    binary, args = manager
-    if not shutil.which(binary):
-        return die(f"{binary} is required by {path / 'package.json'} but was not found on PATH.")
+
+    command, manager_name = manager
     node_modules = path / "node_modules"
     if node_modules.is_dir() and any(node_modules.iterdir()):
         print(f"[NODE] READY: {path}")
         return 0
-    print(f"[NODE] Installing dependencies: {path}")
-    result = subprocess.run([binary, *args], cwd=str(path), text=True)
+
+    if "fallback" in manager_name:
+        print(f"[NODE] WARNING: {path}")
+        print(f"       {manager_name}; using npm install instead.")
+    print(f"[NODE] Installing dependencies ({manager_name}): {path}")
+    result = subprocess.run(command, cwd=str(path), text=True)
     if result.returncode != 0:
-        return die(f"Node dependency installation failed in {path}. Re-run the same lk clone command to resume.", result.returncode)
+        return die(
+            f"Node dependency installation failed in {path}. "
+            "Re-run the same lk clone command to resume.",
+            result.returncode,
+        )
     return 0
 
 
@@ -519,6 +538,13 @@ def walk_submodules(
             continue
         visited.add(repo)
 
+        # Package-manager dependencies are independent of Git submodules.
+        # Install them for every discovered repository, even when it has no
+        # .gitmodules of its own.
+        code = install_node_dependencies(repo)
+        if code != 0:
+            return code
+
         configured = gitmodules_entries(repo)
         if not configured:
             continue
@@ -558,10 +584,6 @@ def walk_submodules(
             code = materialize_declared_submodule(repo, url, path, depth=depth)
             if code != 0:
                 return code
-
-        code = install_node_dependencies(repo)
-        if code != 0:
-            return code
 
         levels += 1
         for _, _, path in pinned:
