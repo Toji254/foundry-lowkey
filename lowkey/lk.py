@@ -1573,6 +1573,66 @@ def run_project(args=None):
         return fail("Project analysis module is not installed. Reinstall Lowkey.")
     return 0 if render_project_map(args[0] if args else ".") else 0
 
+def run_walkthrough(args=None):
+    """Project-agnostic protocol/system walkthrough using Lowkey's source graph."""
+    if render_project_map is None:
+        return fail("Project analysis module is not installed. Reinstall Lowkey.")
+
+    root = args[0] if args else "."
+    payload = render_project_map(root)
+    project = payload.get("project", {})
+    graph = payload.get("graph", {})
+
+    print("\nPROTOCOL / SYSTEM WALKTHROUGH")
+    print("=" * 72)
+    print(f"Project type : {project.get('kind', 'generic')}")
+    print(f"Languages    : {', '.join(project.get('languages', [])) or 'unknown'}")
+    print(f"Toolchains   : {', '.join(project.get('build_systems', [])) or 'unknown'}")
+    print(f"Source roots : {', '.join(project.get('source_roots', [])) or '.'}")
+
+    print("\nCONTRACT / MODULES")
+    print("-" * 72)
+    for node in graph.get("nodes", []):
+        declarations = node.get("declarations", [])
+        names = ", ".join(
+            f"{item.get('kind')} {item.get('name')}"
+            for item in declarations
+        )
+        print(f"- {node.get('file')} [{node.get('language')}]")
+        if names:
+            print(f"  declarations: {names}")
+        calls = node.get("calls", [])
+        for call in calls[:20]:
+            print(f"  call: {call.get('kind')} @ line {call.get('line')}: {call.get('text')}")
+
+    print("\nRELATIONSHIPS")
+    print("-" * 72)
+    for edge in graph.get("edges", []):
+        state = "RESOLVED" if edge.get("resolved") else "UNRESOLVED"
+        print(
+            f"- {edge.get('from')} -> {edge.get('to')} "
+            f"[{edge.get('kind')}, {state}, line {edge.get('line')}]"
+        )
+
+    if graph.get("unresolved"):
+        print("\nREVIEW REQUIRED")
+        print("-" * 72)
+        for edge in graph["unresolved"]:
+            print(f"- Resolve/understand dependency: {edge.get('from')} -> {edge.get('to')}")
+
+    if record_evidence:
+        record_evidence(
+            "protocol_walkthrough",
+            {
+                "project": project,
+                "graph_summary": graph.get("summary", {}),
+                "relationships": graph.get("edges", []),
+                "unresolved": graph.get("unresolved", []),
+            },
+        )
+    print("\nWalkthrough is source-derived; runtime/deployment behavior still needs to be validated.")
+    return 0
+
 def run_risk(config):
     target=config.get("target")
     if not target:
@@ -1643,7 +1703,7 @@ def run_audit_mode(config):
 
     while True:
         print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
-        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   7) full evidence pass   8) generate PoC   0) exit")
+        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   7) full evidence pass   8) generate PoC   9) protocol walkthrough   0) exit")
         try: choice=input("lk> ").strip()
         except EOFError: return
         if choice=="1": run_recon(config)
@@ -1654,6 +1714,7 @@ def run_audit_mode(config):
         elif choice=="6": run_deployments(config)
         elif choice=="7" and run_audit_pipeline: run_audit_pipeline(".")
         elif choice=="8" and generate_poc: generate_poc(".", None, None)
+        elif choice=="9": run_walkthrough([])
         elif choice=="0":
             if generate_poc:
                 print("\nRefreshing PoC before leaving audit mode...")
@@ -1793,6 +1854,7 @@ SOURCE TRIAGE
   lk slither [args...]                Slither static analysis + normalized evidence
   lk deps [src]                       Import/inheritance map
   lk project                           Detect project/toolchain + print whole-system graph
+  lk walkthrough                       Source-derived protocol/system walkthrough
   lk layout <ContractName>            Forge storage layout
   lk risk                             ABI-level function risk heuristic
   lk gas <func> [args]                Estimate gas
@@ -2007,6 +2069,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
             generate_poc(".",index,name)
     elif cmd=="deps": run_deps(args)
     elif cmd in {"project","project-map","system"}: run_project(args)
+    elif cmd in {"walkthrough","protocol-walkthrough","protocol_map"}: run_walkthrough(args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": run_raw(config,args)
