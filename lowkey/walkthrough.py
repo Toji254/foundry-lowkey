@@ -2721,10 +2721,65 @@ def _run_adversarial_test(
 ) -> int:
     actual_seed = seed if seed is not None else int(time.time())
     rng = random.Random(actual_seed)
-    targets = system_targets or [(model.name, target, model)]
+
+    # Establish a useful baseline once, then isolate every randomized probe from
+    # that baseline. For known local multi-contract fixtures this also forces the
+    # entry point to create its child so the child contract participates in fuzzing.
+    cleanup_snapshot = _rpc_snapshot(rpc)
+    if cleanup_snapshot is None:
+        print("Error: Anvil did not provide an evm_snapshot; aborting adversarial test.", file=sys.stderr)
+        return 1
+
+    warmup_notes: list[str] = []
+    if (
+        config.get("_walkthrough_recipe") == "confidence-pool"
+        and model.name.lower() == "confidencepoolfactory"
+    ):
+        recipe = _confidence_pool_factory_recipe(config, actors, _block_timestamp(rpc))
+        for warmup in recipe[:2]:
+            actor = next((a for a in actors if a.name == warmup.actor), actors[0] if actors else None)
+            if not actor:
+                continue
+            tx, output = _send(host, config, actor, warmup.address, warmup.function, warmup.args, warmup.value_wei)
+            if not tx:
+                warmup_notes.append(
+                    f"{warmup.function}: bootstrap probe did not succeed — { _short_error(output) }"
+                )
+                break
+            warmup_notes.append(f"{warmup.function}: established")
+            if warmup.function.startswith("createPool("):
+                receipt = _receipt(rpc, tx)
+                trace = _trace_tree(rpc, tx)
+                discovered = _discover_runtime_contracts(
+                    root,
+                    rpc,
+                    models,
+                    [],
+                    receipt,
+                    trace,
+                    0,
+                    warmup.address,
+                )
+                lab = config.get("lab_system")
+                if isinstance(lab, dict):
+                    for node in discovered:
+                        if node.model and node.model != "External":
+                            child_model = str(lab.get("child_model") or "").lower()
+                            if child_model and node.model.lower() == child_model:
+                                lab["pool"] = node.address
+                                config["lab_system"] = lab
+                                if hasattr(host, "save_config"):
+                                    host.save_config(config)
+                break
+
+    if system_targets and len(system_targets) > 1:
+        targets = system_targets
+    else:
+        targets = _system_test_targets(config, target, model, models)
     targets = [item for item in targets if _adversarial_functions(item[2])]
 
     if not targets:
+        _rpc_revert(rpc, cleanup_snapshot)
         print("No mutating functions available for adversarial testing.")
         return 0
 
@@ -2732,10 +2787,22 @@ def _run_adversarial_test(
     results: list[Step] = []
 
     print(_paint("LOWKEY // ADVERSARIAL WALKTHROUGH TEST", BOLD + MAGENTA, _ansi_enabled(False)))
-    print(f"  system : {len(targets)} application instance(s)")
-    print("  engine : random arguments → SEND → trace → diagnose → restore")
+    print(f"  system : {len(targets)} live application instance(s)")
+    print("  engine : randomized args/roles/extremes → SEND → trace → diagnose → restore")
     print(f"  seed   : {actual_seed}")
+    if warmup_notes:
+        print("  baseline:")
+        for note in warmup_notes:
+            print(f"    ↳ {note}")
     print("")
+
+    # Capture the post-warmup baseline. Every case is reverted to this state, and
+    # the entire test is finally reverted to cleanup_snapshot.
+    baseline_snapshot = _rpc_snapshot(rpc)
+    if baseline_snapshot is None:
+        _rpc_revert(rpc, cleanup_snapshot)
+        print("Error: could not snapshot the prepared adversarial baseline.", file=sys.stderr)
+        return 1
 
     schedules: list[tuple[str, str, ContractModel, dict[str, Any]]] = []
     for label, address, target_model in targets:
@@ -2768,13 +2835,14 @@ def _run_adversarial_test(
             function=_signature(fn),
             args=args,
             value_wei=value,
-            reason="randomized adversarial probe",
+            reason="randomized adversarial probe: role swaps, boundary values, and random calldata",
             inferred=False,
         )
 
         snapshot = _rpc_snapshot(rpc)
         if snapshot is None:
             print("Error: Anvil did not provide an evm_snapshot; aborting adversarial test.", file=sys.stderr)
+            _rpc_revert(rpc, cleanup_snapshot)
             return 1
 
         tx, output = _send(host, config, actor, active_target, step.function, args, value)
@@ -2816,7 +2884,12 @@ def _run_adversarial_test(
 
         if not _rpc_revert(rpc, snapshot):
             print("     ⚠ Anvil snapshot could not be restored; aborting.", file=sys.stderr)
+            _rpc_revert(rpc, cleanup_snapshot)
             return 1
+
+    # Leave the project exactly as it was before the adversarial run, including
+    # any temporary child protocol created during warmup.
+    _rpc_revert(rpc, cleanup_snapshot)
 
     accepted = sum(item.status == "success" for item in results)
     reverted = len(results) - accepted
