@@ -294,7 +294,7 @@ def _render_connection_web(
         destination = _web_node_name(str(edge.get("to") or ""))
         if source == destination:
             continue
-        label = _web_connection_label(edge)
+        label = _paint(_web_connection_label(edge), "cyan")
         key = (source, destination, label, str(edge.get("function") or ""))
         if key in seen:
             continue
@@ -334,7 +334,7 @@ def _render_connection_web(
 
     if inbound:
         out += ["", "  FROM / who can affect or feed the hub"]
-        for edge in inbound[:8]:
+        for edge in inbound[:5]:
             source = compact(edge["from"])
             out.append(f"       {source:<22} ╲")
             out.append(f"                         ╲─[{edge['label']}]──▶  [{center}]")
@@ -343,7 +343,7 @@ def _render_connection_web(
 
     if outbound:
         out += ["", "  TO / what the hub relies on or controls"]
-        for edge in outbound[:8]:
+        for edge in outbound[:5]:
             destination = compact(edge["to"])
             out.append(f"       [{center}]  ──[{edge['label']}]──╲")
             out.append(f"                              ╲──▶  {destination}")
@@ -352,7 +352,7 @@ def _render_connection_web(
 
     if cross:
         out += ["", "  CROSS-LINKS / the web outside the hub"]
-        for edge in cross[:10]:
+        for edge in cross[:6]:
             out.append(f"       {compact(edge['from']):<22} ╲")
             out.append(f"                         ╰─[{edge['label']}]─▶  {compact(edge['to'])}")
             if edge["function"]:
@@ -2890,6 +2890,7 @@ def _help() -> None:
     --seed N           Replayable random seed
     --no-links         Disable Ctrl+Click OSC-8 source links
     --non-interactive  Never wait for Enter
+    Colors auto-enable on terminals; LOWKEY_COLOR=1 forces them and NO_COLOR=1 disables them.
 """
     )
 
@@ -3277,22 +3278,27 @@ def _run_walkthrough(
         _persist(root, payload)
         return 0
 
+    print(_render_story(
+        root,
+        nodes,
+        fns,
+        contracts,
+        [],
+        actors,
+        None,
+        flags.get("links", True),
+        meta,
+    ))
+    print("")
     for index, action in enumerate(actions):
         current = index
-        print("\033[2J\033[H", end="")
-        print(
-            _render_story(
-                root,
-                nodes,
-                fns,
-                contracts,
-                actions,
-                actors,
-                current,
-                flags.get("links", True),
-                meta,
-            )
-        )
+        print(_render_action_card(
+            root,
+            action,
+            index,
+            len(actions),
+            flags.get("links", True),
+        ))
         if not flags["non_interactive"]:
             try:
                 command = input("\n  ⏎ next   q = stop   ").strip().lower()
@@ -3334,7 +3340,7 @@ def _run_walkthrough(
         )
         action["status"] = "READY" if pre["ok"] else "BLOCKED"
 
-        live_send = bool(flags.get("send") or flags.get("auto"))
+        # --auto prepares/analyzes local state; --send is required for mutations.\n        live_send = bool(flags.get("send"))
         if live_send and pre["ok"]:
             if not _is_local_rpc(str(meta["rpc"])):
                 action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
@@ -3366,7 +3372,7 @@ def _run_walkthrough(
             }
         )
 
-    print("\033[2J\033[H", end="")
+    print("")
     print(_render_story(root, nodes, fns, contracts, actions, actors, None, flags.get("links", True), meta))
     print("\nEvidence: .audit/evidence/walkthrough.json")
     _persist(root, payload)
