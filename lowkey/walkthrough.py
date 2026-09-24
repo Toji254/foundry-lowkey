@@ -1196,6 +1196,30 @@ def _label_for_balance_address(address: str, step: Step, actors: list[Actor]) ->
     return _addr(address)
 
 
+
+def _input_story(step: Step, model: ContractModel | None, actors: list[Actor]) -> list[str]:
+    if not model:
+        return []
+    target = next(
+        (item for item in model.abi if item.get("type") == "function" and _signature(item) == step.function),
+        None,
+    )
+    if not target:
+        return []
+
+    lines: list[str] = []
+    inputs = target.get("inputs") or []
+    for index, param in enumerate(inputs):
+        if index >= len(step.args):
+            break
+        label = str(param.get("name") or f"arg{index + 1}")
+        value = _friendly_arg(step.args[index], actors)
+        lines.append(f"{label} = {value}")
+
+    return lines
+
+
+
 def _render_interaction_graph(
     root: Path,
     step: Step,
@@ -1215,6 +1239,7 @@ def _render_interaction_graph(
     lines = [
         _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
+        f"  │   { _human_action_summary(step, actors) }",
         f"  │   [{actor}] ── CALL {contract}.{linked_function}({args}) ──▶ [{contract}]",
         "  │                              │",
     ]
@@ -1224,6 +1249,10 @@ def _render_interaction_graph(
             f"  │                              ├─ sends {_friendly_eth(step.value_wei)}",
             f"  │                              │      [{actor}] ── ETH ──▶ [{contract}]",
         ]
+
+    input_lines = _input_story(step, model, actors)
+    for item in input_lines[:8]:
+        lines.append(f"  │                              ├─ input: {item}")
 
     related = [
         _actor_for_address(value, actors)
@@ -2310,6 +2339,29 @@ def _generate_replay_script(root: Path, model: ContractModel, target: str, steps
 
 
 
+
+def _target_is_live_instance(root: Path, rpc: str, target: str, model: ContractModel) -> tuple[bool, str | None]:
+    """Reject implementation-only addresses for upgradeable contracts."""
+    has_initializer = any(
+        item.get("type") == "function"
+        and str(item.get("name") or "").lower().startswith("initialize")
+        for item in model.abi
+    )
+    if not has_initializer:
+        return True, None
+
+    runtime = _normalize_code(_runtime_code(rpc, target))
+    implementation = _artifact_runtime_code(root, model)
+    expected = _normalize_code(implementation)
+    if runtime and expected and runtime == expected:
+        return False, (
+            f"{model.name} exposes initialize() and the live address matches its implementation bytecode; "
+            "this is an implementation contract, not a configured proxy instance"
+        )
+    return True, None
+
+
+
 def _target_from_host(host: Any, config: dict[str, Any], root: Path, contract: str | None, auto: bool) -> tuple[str | None, str | None]:
     # Auto mode always goes through the project bootstrap resolver so stale
     # implementation targets cannot bypass proxy/fixture selection.
@@ -2601,7 +2653,8 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = execute the next live function   Q = stop",
+        "  ENTER = execute next live function   Q = stop",
+        "  arrows = actual call path   boxes = state   links = Ctrl+Click source",
         "",
         _box("ACTORS", [
             "   ".join(f"{ACTOR} {actor.name} {_addr(actor.address)}" for actor in actors)
@@ -2710,6 +2763,13 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             print("Error: auto mode could not provision a live protocol target.", file=sys.stderr)
         else:
             print("Error: no live target. Use 'lk target <address>' or 'lk walkthrough --auto'.", file=sys.stderr)
+        return 2
+
+    live_ok, live_reason = _target_is_live_instance(root, rpc, target, model)
+    if not live_ok:
+        print("Error: live target is not a configured protocol instance.", file=sys.stderr)
+        print(f"Reason: {live_reason}", file=sys.stderr)
+        print("Lowkey will not continue with misleading precondition failures.", file=sys.stderr)
         return 2
 
     runtime=_lab_runtime(config,target,model)
@@ -2841,7 +2901,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     if ckey not in completed: pending.append(candidate)
 
         _save_artifacts(root,{
-            "version":4,"mode":"source-guided-live","target":target,
+            "version":5,"mode":"source-guided-live","target":target,
             "contract":asdict(model),"contracts":_models_payload(models),
             "actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in steps],
             "runtime_contracts":[asdict(x) for x in runtime],
