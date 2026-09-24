@@ -177,9 +177,11 @@ def run_slither_project(
 
     root_path = Path(root).resolve()
     files = project_source_files(root_path, {"sol"}) if project_source_files else []
+    dependency_roots = _project_dependency_paths(root, project)
     production = [
         path for path in files
         if not any(part.lower() in {"test", "tests", "script", "scripts"} for part in path.relative_to(root_path).parts)
+        and not _is_under_any(path, dependency_roots)
     ]
     targets = production or files
     if not targets:
@@ -536,6 +538,11 @@ def run_source_triage(root: str = ".") -> int:
     root_path = Path(root).resolve()
     project = detect_project(root) if detect_project else {"kind": "generic", "languages": []}
     files = project_source_files(root_path) if project_source_files else list(root_path.rglob("*.sol"))
+    dependency_roots = _project_dependency_paths(root, project)
+    files = [
+        path for path in files
+        if not _is_under_any(path, dependency_roots)
+    ]
 
     solidity_patterns = [
         ("REENTRANCY REVIEW", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
