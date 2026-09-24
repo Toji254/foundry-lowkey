@@ -2,6 +2,7 @@ import io
 import json
 import importlib.util
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 from contextlib import redirect_stdout
@@ -15,6 +16,58 @@ SPEC.loader.exec_module(audit_engine)
 
 
 class AuditEngineTests(unittest.TestCase):
+    def test_project_solc_env_prefers_lowkey_pinned_binary(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            toolchain = root / ".audit" / "toolchain" / "bin"
+            toolchain.mkdir(parents=True)
+            solc = toolchain / "solc"
+            solc.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            solc.chmod(0o755)
+
+            env = audit_engine._project_solc_env(
+                str(root),
+                {"solidity_compilers": ["0.8.18"]},
+            )
+
+            self.assertEqual(env["SOLC_VERSION"], "0.8.18")
+            self.assertEqual(env["PATH"].split(os.pathsep)[0], str(toolchain))
+
+    def test_clone_declared_git_dependency_uses_recursive_shallow_clone(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            with patch.object(
+                audit_engine,
+                "run_command",
+                return_value=(0, "cloned", ""),
+            ) as run:
+                code, stdout, stderr = audit_engine._clone_declared_git_dependency(
+                    str(root),
+                    "deps/example",
+                    "https://example.com/example.git",
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(stdout, "cloned")
+            self.assertEqual(stderr, "")
+            command = run.call_args.args[0]
+            self.assertEqual(
+                command,
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--recurse-submodules",
+                    "https://example.com/example.git",
+                    str(root / "deps/example"),
+                ],
+            )
+
     def test_parse_slither_payload_normalizes_detector(self):
         payload = {
             "results": {
