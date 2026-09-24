@@ -942,32 +942,61 @@ def _scope_accounts(
         return []
 
     live_node = LiveNode(agreement, "Agreement", _code_size(rpc, agreement))
-    fn = _function_by_name(agreement_functions, "getBattleChainScopeAddresses")
-    if fn:
-        val, _ = _read_simple_getter(root, rpc, live_node, fn)
-        bulk = [x for x in (val or []) if _is_address(x)]
-        if bulk:
-            return bulk
 
-    # Some Agreement implementations expose only isContractInScope(address).
-    # Prefer known RPC accounts so we can discover a real scope without
-    # inventing arbitrary addresses.
-    scope_fn = _function_by_name(agreement_functions, "isContractInScope")
-    if not scope_fn:
-        return []
-    discovered: list[str] = []
-    for candidate in _eth_accounts(rpc):
-        code, out, _ = _query_by_signature(
-            root,
-            rpc,
-            agreement,
-            "isContractInScope(address)(bool)",
-            [_normalize_arg_for_cast(candidate)],
+    # Prefer a bulk getter whose ABI says it returns address[] and whose name
+    # indicates accounts/scope/members. This works across unrelated protocols.
+    bulk_candidates = [
+        fn
+        for fn in agreement_functions
+        if fn.mutability in {"view", "pure"}
+        and any(
+            _canonical_abi_type(o) == "address[]"
+            for o in (fn.outputs or [])
         )
-        if code == 0 and out.strip().lower() in {"true", "1"}:
-            discovered.append(candidate)
-    return discovered
+        and any(
+            token in fn.name.lower()
+            for token in ("account", "scope", "member", "participant")
+        )
+        and not fn.inputs
+    ]
+    for fn in bulk_candidates:
+        val, _ = _read_simple_getter(root, rpc, live_node, fn)
+        addresses = [x for x in (val or []) if _is_address(x)]
+        if addresses:
+            return addresses
 
+    # Fallback: find an address -> bool membership query and test RPC accounts.
+    membership_candidates = [
+        fn
+        for fn in agreement_functions
+        if fn.mutability in {"view", "pure"}
+        and len(fn.inputs) == 1
+        and _canonical_abi_type(fn.inputs[0]) == "address"
+        and len(fn.outputs) == 1
+        and _canonical_abi_type(fn.outputs[0]) == "bool"
+        and any(
+            token in fn.name.lower()
+            for token in ("scope", "account", "member", "participant", "in")
+        )
+    ]
+    for fn in membership_candidates:
+        discovered: list[str] = []
+        for candidate in _eth_accounts(rpc):
+            code, out, _ = _query_by_signature(
+                root,
+                rpc,
+                agreement,
+                _function_signature_from_abi({
+                    "name": fn.name,
+                    "inputs": fn.inputs,
+                }),
+                [_normalize_arg_for_cast(candidate)],
+            )
+            if code == 0 and out.strip().lower() in {"true", "1"}:
+                discovered.append(candidate)
+        if discovered:
+            return discovered
+    return []
 
 def _find_node_by_predicate(
     nodes: list[LiveNode],
@@ -1117,15 +1146,6 @@ def _semantic_args(
     root: Path,
     rpc: str,
 ) -> tuple[list[Any] | None, str | None]:
-    # Resolve protocol roles before generic per-argument synthesis. This keeps
-    # diagnostics semantic ("Agreement" / "ERC20") instead of leaking a
-    # generic "no safe semantic value" when a required dependency is absent.
-    if fn.name == "createPool" and len(fn.inputs) >= 6:
-        if not known.get("agreement"):
-            return None, "no live Agreement contract discovered"
-        if not known.get("erc20"):
-            return None, "no live ERC20 stake token discovered"
-
     args: list[Any] = []
     for item in fn.inputs:
         typ = _canonical_abi_type(item)
@@ -1149,30 +1169,6 @@ def _semantic_args(
             return None, f"no safe semantic value for {item.get('name') or typ}"
         args.append(value)
 
-    # ConfidencePoolFactory.createPool needs an Agreement contract, an ERC20,
-    # and a real agreement scope. Never substitute EOA actors here.
-    if fn.name == "createPool":
-        if len(fn.inputs) >= 6:
-            agreement = known.get("agreement")
-            if not agreement:
-                return None, "no live Agreement contract discovered"
-            if not known.get("erc20"):
-                return None, "no live ERC20 stake token discovered"
-            afn = functions_by_contract.get(
-                next(
-                    (
-                        n.artifact_contract
-                        for n in nodes
-                        if n.address.lower() == agreement.lower()
-                    ),
-                    "Agreement",
-                ),
-                [],
-            )
-            scope = _scope_accounts(root, rpc, agreement, afn)
-            if not scope:
-                return None, "Agreement exposes no live BattleChain scope accounts"
-            args[5] = scope
     return args, None
 
 
@@ -1245,24 +1241,7 @@ def _known_preconditions(
     if node.code_size == 0:
         findings.append(f"target {node.address} has no runtime bytecode")
 
-    # Common allowlist pattern: !allowedStakeToken[token]
-    if "allowedStakeToken" in src:
-        token = values.get("stakeToken") or values.get("token")
-        afn = by_name.get("allowedStakeToken")
-        if token and afn:
-            call_args = [_normalize_arg_for_cast(token)]
-            code, out, err = _cast_call(
-                root,
-                rpc,
-                node.address,
-                afn,
-                call_args,
-                caller,
-            )
-            if code == 0 and out.strip().lower() in {"false", "0"}:
-                findings.append(f"allowedStakeToken({token}) is false")
-
-    # Expiry must provide at least 30 days in this common family of protocols.
+    # Time-based expiry/deadline gates.
     # Instead of assuming the exact constant, compare the source-level shape and
     # use the current simulated timestamp.
     if "block.timestamp" in src and "expiry" in src and re.search(r"expiry[^;]*(?:block\.timestamp|\+|\-)", src):
@@ -1274,7 +1253,7 @@ def _known_preconditions(
             elif exp < now + 7 * 24 * 60 * 60:
                 findings.append(f"expiry {exp} is less than 7 days from the live chain")
 
-    # Agreement owner is a common factory gate.
+    # Owner-of-referenced-contract is a common authorization gate.
     if ".owner()" in src and "msg.sender" in src:
         agreement = values.get("agreement")
         if _is_address(agreement) and _code_size(rpc, agreement) > 0:
@@ -1291,45 +1270,6 @@ def _known_preconditions(
                     f"agreement.owner() is {owner.group(0)}, but caller is {caller}"
                 )
 
-    # Safe Harbor / registry boolean gate.
-    if "isAgreementValid" in src:
-        registry = known.get("safeharbor")
-        agreement = values.get("agreement")
-        if registry and _is_address(agreement):
-            code, out, err = _query_by_signature(
-                root,
-                rpc,
-                registry,
-                "isAgreementValid(address)(bool)",
-                [_normalize_arg_for_cast(agreement)],
-            )
-            if code != 0:
-                findings.append(
-                    f"safeHarborRegistry.isAgreementValid({agreement}) reverted: {(err or out).strip()[-240:]}"
-                )
-            elif out.strip().lower() in {"false", "0"}:
-                findings.append(
-                    f"safeHarborRegistry.isAgreementValid({agreement}) returned false"
-                )
-
-    # Scope array gate via agreement getter, if available.
-    if "isContractInScope" in src and "accounts" in values:
-        agreement = values.get("agreement")
-        accs = values.get("accounts")
-        if _is_address(agreement) and isinstance(accs, list):
-            for account in accs[:8]:
-                code, out, err = _query_by_signature(
-                    root,
-                    rpc,
-                    agreement,
-                    "isContractInScope(address)(bool)",
-                    [_normalize_arg_for_cast(account)],
-                )
-                if code == 0 and out.strip().lower() in {"false", "0"}:
-                    findings.append(
-                        f"agreement.isContractInScope({account}) returned false"
-                    )
-                    break
 
     return findings
 
