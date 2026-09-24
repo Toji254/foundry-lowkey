@@ -229,6 +229,16 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(target, live)
             self.assertTrue(source.startswith("broadcast "))
 
+    def test_eth_accounts_uses_json_rpc_and_filters_invalid_values(self):
+        with patch.object(
+            walk,
+            "_rpc",
+            return_value=["0x" + "1" * 40, "Alice", "0x" + "2" * 39],
+        ) as rpc:
+            result = walk._eth_accounts("http://127.0.0.1:8545")
+        self.assertEqual(result, ["0x" + "1" * 40])
+        rpc.assert_called_once_with("http://127.0.0.1:8545", "eth_accounts", [])
+
     def test_cmd_returns_process_output_and_exit_code(self):
         code, stdout, stderr = walk._cmd(
             [sys.executable, "-c", "print('walkthrough-ok'); raise SystemExit(7)"],
@@ -283,6 +293,16 @@ class WalkthroughTests(unittest.TestCase):
         message, recommendation = walk._friendly_error("StakeTokenNotAllowed()", "")
         self.assertIn("not currently approved", message)
         self.assertIn("approve the token", recommendation)
+
+    def test_connection_web_uses_visual_connectors(self):
+        edges = [
+            {"from": "User", "to": "Factory", "kind": "external-call", "function": "createPool"},
+            {"from": "Factory", "to": "Pool", "kind": "external-call", "function": "createPool -> initialize"},
+        ]
+        rendered = "\\n".join(walk._render_connection_web([], edges, []))
+        self.assertIn("WEB / Factory", rendered)
+        self.assertIn("╲", rendered)
+        self.assertIn("──[creates / initializes]──", rendered)
 
     def test_connection_web_groups_inbound_outbound_and_cross_links(self):
         nodes = [
