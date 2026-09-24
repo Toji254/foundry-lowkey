@@ -803,3 +803,87 @@ class WalkthroughTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_deployment_label_wins_over_stale_target_name(self):
+        self.assertEqual(
+            walk._deployment_contract_label(
+                {
+                    "live_deployments": [
+                        {
+                            "address": "0x" + "a" * 40,
+                            "contract": "ConfidencePool",
+                        }
+                    ]
+                },
+                "0x" + "a" * 40,
+            ),
+            "ConfidencePool",
+        )
+
+    def test_focus_node_uses_source_backed_component_when_target_is_unlabeled(self):
+        target = walk.LiveNode(
+            address="0x" + "1" * 40,
+            name="Target",
+            code_size=100,
+        )
+        pool = walk.LiveNode(
+            address="0x" + "2" * 40,
+            name="ConfidencePool",
+            artifact_contract="ConfidencePool",
+            code_size=100,
+        )
+        contracts = {
+            "ConfidencePool": walk.ContractInfo(
+                name="ConfidencePool", source="src/ConfidencePool.sol", line=1
+            )
+        }
+        focus = walk._focus_node(
+            {"target": target.address, "target_contract": ""},
+            [target, pool],
+            contracts,
+        )
+        self.assertEqual(focus.address, pool.address)
+
+    def test_blocker_analysis_finds_state_transition_writer(self):
+        blocked = walk.FunctionInfo(
+            "Pool",
+            "stake",
+            [],
+            [],
+            "nonpayable",
+            "stake()",
+            body="{ if (stakingClosed) { revert StakingClosed(); } }",
+            reads=["stakingClosed"],
+        )
+        opens = walk.FunctionInfo(
+            "Pool",
+            "openStaking",
+            [],
+            [],
+            "nonpayable",
+            "openStaking()",
+            body="{ stakingClosed = false; }",
+            writes=["stakingClosed"],
+        )
+        result = walk._state_transition_candidates(
+            blocked,
+            {"Pool": [blocked, opens]},
+        )
+        self.assertIn(("stakingClosed", "openStaking"), result)
+
+    def test_renderers_use_real_terminal_newlines(self):
+        rendered = walk._render_story(
+            pathlib.Path("."),
+            [],
+            {},
+            {},
+            [],
+            {"Alice": "0x" + "1" * 40},
+            None,
+            False,
+            {"target": None},
+        )
+        self.assertIn("\n", rendered)
+        self.assertNotIn("\\n", rendered)
+
