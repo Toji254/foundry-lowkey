@@ -199,6 +199,14 @@ def run_slither_project(
         return 0
 
     extra = list(args or [])
+    # Findings are review evidence, not pipeline/tool execution failures.
+    # Respect an explicit caller-selected fail policy, otherwise request
+    # Slither's native non-failing finding mode.
+    if not any(
+        str(item).startswith("--fail-") or str(item) == "--no-fail-pedantic"
+        for item in extra
+    ):
+        extra.append("--fail-none")
     remaps: list[str] = []
     if (root_path / "node_modules" / "solidity-rlp").is_dir():
         remaps.append(
@@ -1188,6 +1196,27 @@ def _project_solc_env(root: str, project: dict[str, Any] | None = None) -> dict[
     return env
 
 
+def _project_python(root: str) -> str | None:
+    root_path = Path(root).resolve()
+    candidates = [
+        root_path / ".venv" / "bin" / "python",
+        root_path / ".venv" / "Scripts" / "python.exe",
+    ]
+
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if virtual_env:
+        env_path = Path(virtual_env)
+        candidates.extend([
+            env_path / "bin" / "python",
+            env_path / "Scripts" / "python.exe",
+        ])
+
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve())
+    return None
+
+
 def _project_test_command(root: str, project: dict[str, Any] | None = None) -> list[str]:
     root_path = Path(root).resolve()
     test_roots = [
@@ -1195,7 +1224,13 @@ def _project_test_command(root: str, project: dict[str, Any] | None = None) -> l
         for name in ("tests", "test")
         if (root_path / name).is_dir()
     ]
-    command = ["uv", "run", "pytest"]
+
+    project_python = _project_python(root)
+    if project_python:
+        command = [project_python, "-m", "pytest"]
+    else:
+        command = ["uv", "run", "python", "-m", "pytest"]
+
     if test_roots:
         command.extend(str(path.relative_to(root_path)) for path in test_roots)
     else:
