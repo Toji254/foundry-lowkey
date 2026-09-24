@@ -361,6 +361,42 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("token flow", rendered)
         self.assertIn("Not ready", rendered)
 
+    def test_confidence_pool_auto_lab_uses_specialized_harness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir(parents=True)
+            (root / "src" / "ConfidencePool.sol").write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePool { }",
+                encoding="utf-8",
+            )
+            # The moderator lives under src/mocks; the remaining fixtures live
+            # under test/mocks in the contest repository.
+            (root / "src" / "ConfidencePoolFactory.sol").write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePoolFactory { }",
+                encoding="utf-8",
+            )
+            (root / "src" / "mocks").mkdir(parents=True)
+            (root / "src" / "mocks" / "MockConfidencePoolModerator.sol").write_text(
+                "pragma solidity ^0.8.20; contract MockConfidencePoolModerator { }",
+                encoding="utf-8",
+            )
+            for name in ("MockERC20.sol","MockAttackRegistry.sol","MockSafeHarborRegistry.sol","MockAgreement.sol"):
+                (root / "test" / "mocks").mkdir(parents=True, exist_ok=True)
+                (root / "test" / "mocks" / name).write_text(
+                    f"pragma solidity ^0.8.20; contract {name[:-4]} {{ }}",
+                    encoding="utf-8",
+                )
+            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+
+            with patch.object(lk, "_confidence_pool_lab_supported", return_value=True), \
+                 patch.object(lk, "ensure_confidence_pool_lab_script", return_value=str(root / "script" / "Auto.s.sol")):
+                requested = "ConfidencePool"
+                auto_selected = requested or lk.discover_audit_target_contract(root)
+                generated = lk.ensure_confidence_pool_lab_script(root)
+
+            self.assertEqual(auto_selected, "ConfidencePool")
+            self.assertTrue(str(generated).endswith("Auto.s.sol"))
+
     def test_target_named_deployment_auto_selects_matching_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp)
