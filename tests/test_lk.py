@@ -383,7 +383,7 @@ class LowkeyCastTests(unittest.TestCase):
                 [lk.walkthrough.Actor("Alice", "0x" + "2" * 40, 0)],
                 model, [model], False,
             )
-            self.assertIn("create(Bob)", rendered)
+            self.assertIn("create(Alice)", rendered)
             self.assertIn("\x1b]8;;", rendered)
 
     def test_parse_lab_system(self):
