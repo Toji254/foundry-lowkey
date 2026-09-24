@@ -1233,7 +1233,7 @@ def _read_zero_address_diagnostics(
             continue
         seen.add(name)
         code, out, err = _cmd(
-            ["cast", "call", address, _signature(item), "--rpc-url", rpc],
+            ["cast", "call", address, _output_signature(item), "--rpc-url", rpc],
             timeout=6,
         )
         if code != 0:
@@ -2068,7 +2068,7 @@ def _source_dependency_address(rpc: str, model: ContractModel, edge: dict[str, A
     )
     if not getter:
         return None, via
-    code, out, _err = _cmd(["cast", "call", step.address, _signature(getter), "--rpc-url", rpc], timeout=6)
+    code, out, _err = _cmd(["cast", "call", step.address, _output_signature(getter), "--rpc-url", rpc], timeout=6)
     if code != 0:
         return None, via
     values = (out or "").strip().splitlines()
@@ -2097,7 +2097,7 @@ def _probe_boolean_getters(rpc: str, step: Step, model: ContractModel) -> list[s
                      and len(item.get("outputs") or []) == 1
                      and str(item["outputs"][0].get("type") or "") == "bool"
                      and any(token in str(item.get("name") or "").lower() for token in wanted)][:4]:
-            code, out, err = _cmd(["cast", "call", step.address, _signature(item), str(step.args[index]), "--rpc-url", rpc], timeout=6)
+            code, out, err = _cmd(["cast", "call", step.address, _output_signature(item), str(step.args[index]), "--rpc-url", rpc], timeout=6)
             if code != 0:
                 continue
             value = " ".join((out or err or "").strip().split()).lower()
