@@ -470,6 +470,68 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("ping(uint256)", content)
         self.assertNotIn("bad()", content)
         self.assertIn('LOWKEY_ALICE_KEY', content)
+        self.assertEqual(content.count("(bool ok_"), 1)
+
+    def test_replay_script_uses_exact_calldata_and_valid_literals(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+        )
+        alice = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+        good = walkthrough.Step(
+            1,
+            "Alice",
+            "Demo",
+            alice,
+            "set(bool,address)",
+            [True, "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"],
+            value_wei=10**18,
+            calldata="0xabcdef",
+            status="success",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = walkthrough._generate_replay_script(pathlib.Path(tmp), model, "0x" + "1" * 40, [good])
+            content = path.read_text(encoding="utf-8")
+        self.assertIn("target_1 = address(uint160(0x70997970c51812dc3a010c7d01b50e0d17dc79c8));", content)
+        self.assertIn('.call{value: 1000000000000000000}(hex"abcdef");', content)
+        self.assertIn("bool ok_1", content)
+        self.assertNotIn("bool ok, )", content)
+        self.assertNotIn("0x70997970c51812dc3a010c7d01b50e0d17dc79c8", content.split("target_1 =", 1)[-1].split(";", 1)[0] if "target_1 =" in content else "")
+
+    def test_live_interaction_graph_reads_like_a_protocol_story(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "deposit(address)",
+            ["0x" + "2" * 40],
+            value_wei=10**18,
+            status="success",
+            reason="Alice funds the escrow for Bob",
+            inferred=False,
+        )
+        step.balance_before = {
+            actors[0].address.lower(): 10**18,
+            actors[1].address.lower(): 0,
+            step.address.lower(): 0,
+        }
+        step.balance_after = {
+            actors[0].address.lower(): 0,
+            actors[1].address.lower(): 10**18,
+            step.address.lower(): 0,
+        }
+        rendered = walkthrough._render_interaction_graph(step, actors, False)
+        self.assertIn("[Alice] ── CALL deposit(Bob) ──▶ [Escrow]", rendered)
+        self.assertIn("sends 1 ETH", rendered)
+        self.assertIn("ETH Bob: +1 ETH", rendered)
+        self.assertIn("WHY THIS STEP: Alice funds the escrow for Bob  [LAB CONTROL]", rendered)
+
 
 
 if __name__ == "__main__":
