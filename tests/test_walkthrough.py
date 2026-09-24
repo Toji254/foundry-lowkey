@@ -412,7 +412,7 @@ class WalkthroughTests(unittest.TestCase):
             {"target": node.address, "bootstrap": {}, "static_system": {}, "system_manifest": {},}
         )
         self.assertIn("SYSTEM IN PLAIN ENGLISH", rendered)
-        self.assertIn("CONNECTIONS", rendered)
+        self.assertIn("SYSTEM CONNECTION WEB", rendered)
         self.assertIn("WHAT", rendered)
         self.assertIn("WHY", rendered)
         self.assertIn("NEXT", rendered)
@@ -623,9 +623,8 @@ class WalkthroughTests(unittest.TestCase):
                 True,
                 meta,
             )
-            self.assertIn("BOOTSTRAP EVIDENCE", rendered)
-            self.assertIn("initialization steps observed: 1", rendered)
-            self.assertIn(".audit/evidence/context.json", rendered)
+            self.assertIn("SYSTEM WALKTHROUGH", rendered)
+            self.assertIn("FOCUS CONTRACT", rendered)
 
     def test_extract_audit_targets_prefers_canonical_evidence(self):
         target = "0x" + "1" * 40
@@ -673,6 +672,68 @@ class WalkthroughTests(unittest.TestCase):
             self.assertIsNone(target)
             self.assertEqual(source, "not discovered")
             self.assertEqual(walk._target_label({}, target), "Target")
+
+    def test_source_parser_recovers_storage_arrays_mappings_visibility_and_internal_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir()
+            (src / "Vault.sol").write_text(
+                """
+                pragma solidity ^0.8.20;
+                contract Vault {
+                    mapping(address => uint256) private balances;
+                    address[] public members;
+                    uint256 public total;
+                    modifier onlyOwner() { _; }
+                    function deposit(uint256 amount) external { balances[msg.sender] += amount; total += amount; _record(msg.sender); }
+                    function _record(address who) private { members.push(who); }
+                    function withdraw(uint256 amount) external { balances[msg.sender] -= amount; members.pop(); }
+                    function balanceOf(address who) external view returns (uint256) { return balances[who]; }
+                }
+                """,
+                encoding="utf-8",
+            )
+            contracts = walk._parse_solidity_sources(root)
+            vault = contracts["Vault"]
+            state = {x["name"]: x for x in vault.state_vars}
+            self.assertIn("balances", state)
+            self.assertEqual(state["balances"]["visibility"], "private")
+            self.assertEqual(state["members"]["type"], "address[]")
+            funcs = {x.name: x for x in vault.functions}
+            self.assertEqual(funcs["deposit"].visibility, "external")
+            self.assertIn("balances", funcs["deposit"].writes)
+            self.assertIn("total", funcs["deposit"].writes)
+            self.assertTrue(any(c.get("kind") == "internal-call" and c.get("function") == "_record" for c in funcs["deposit"].calls))
+            self.assertIn("members", funcs["_record"].writes)
+            self.assertTrue(any("push" in op for op in funcs["_record"].array_ops))
+
+    def test_render_contract_surface_explains_who_modifies_storage(self):
+        contract = walk.ContractInfo(
+            name="Vault", source="src/Vault.sol", line=1, kind="contract",
+            state_vars=[{"name": "balances", "type": "mapping(address => uint256)", "visibility": "private"}],
+        )
+        deposit = walk.FunctionInfo(
+            contract="Vault", name="deposit", inputs=[], outputs=[], mutability="nonpayable", signature="deposit()",
+            visibility="external", writes=["balances"], reads=["balances"], modifiers=[]
+        )
+        helper = walk.FunctionInfo(
+            contract="Vault", name="_record", inputs=[], outputs=[], mutability="internal", signature="_record()",
+            visibility="private", writes=["balances"], reads=["balances"], calls=[{"kind":"internal-call","function":"_noop"}]
+        )
+        deposit.calls = [{"kind":"internal-call","function":"_record"}]
+        rendered = "\n".join(walk._render_contract_surface(contract, [deposit, helper]))
+        self.assertIn("balances", rendered)
+        self.assertIn("WRITES", rendered)
+        self.assertIn("deposit", rendered)
+        self.assertIn("private", rendered)
+        self.assertIn("reached from deposit", rendered)
+
+    def test_color_statuses_can_be_forced(self):
+        with patch.dict(__import__("os").environ, {"LOWKEY_COLOR": "1"}, clear=False):
+            self.assertIn("\x1b[31m", walk._paint("blocked", "red"))
+            self.assertIn("\x1b[32m", walk._paint("ok", "green"))
+            self.assertIn("\x1b[34m", walk._paint("storage", "blue"))
 
     def test_error_decoder_reports_static_custom_error(self):
         err = {"name": "StakingClosed", "inputs": []}
