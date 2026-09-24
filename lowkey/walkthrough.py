@@ -1466,20 +1466,22 @@ def _render_interaction_graph_full(
     source_edges = _source_edges_for_step(model, step) if model else []
     if source_edges:
         impls = _implementation_mapping(models)
-        lines += ["  │", "  │   WHAT HAPPENS INSIDE", "  │", f"  │   {contract}", "  │      │"]
-        for index, edge in enumerate(source_edges[:8]):
+        by_name = {item.name: item for item in models}
+        lines += ["  │", "  │   WHAT HAPPENS INSIDE"]
+        seen = set()
+        for edge in source_edges[:10]:
             target_name = str(edge.get("to_contract") or edge.get("interface") or "external")
             concrete = impls.get(target_name, target_name)
             fn = str(edge.get("to_function") or "unknown")
-            target_model = next((item for item in models if item.name == concrete), None)
-            if target_model is None:
-                target_model = next((item for item in models if item.name == target_name), None)
-            fn_link = _function_link(root, target_model, fn)
-            via = str(edge.get("via") or "")
-            suffix = f"   ← {via}" if via else ""
-            branch = "└─" if index == len(source_edges[:8]) - 1 else "├─"
-            edge_arrow = DOTTED if edge.get("kind") == "cross-contract" else ARROW
-            lines.append(f"  │      {branch} {edge_arrow} {target_name}.{fn_link}{suffix}")
+            target_model = by_name.get(concrete) or by_name.get(target_name)
+            key = (concrete, fn, edge.get("via"))
+            if key in seen:
+                continue
+            seen.add(key)
+            description = _connection_summary(model, edge, concrete, target_model, root)
+            lines.append(f"  │   ├─ {description}")
+            link = _function_link(root, target_model, fn) if target_model else fn
+            lines.append(f"  │   └─ {EXTERNAL} {concrete}.{link}")
 
     lower = function.lower()
     if step.value_wei:
@@ -1494,10 +1496,11 @@ def _render_interaction_graph_full(
         runtime_count = min(8, len(step.execution_edges))
         for index, edge in enumerate(step.execution_edges[:runtime_count]):
             dst = edge.get("to_contract") or _addr(edge.get("to_address"))
+            resolved_label = edge.get("to_label") or dst
             fn = str(edge.get("function") or edge.get("type") or "")
             branch = "└─" if index == runtime_count - 1 else "├─"
             mark = " ✕" if edge.get("error") or edge.get("revert") else " ✓"
-            lines.append(f"  │       {branch} {EXTERNAL} {dst}.{fn}{mark}")
+            lines.append(f"  │       {branch} {EXTERNAL} {resolved_label}.{fn}{mark}")
 
     if step.discovered_contracts:
         lines += ["  │", "  │   NEW CONTRACTS DISCOVERED"]
@@ -2958,45 +2961,114 @@ def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> st
     return _box("LIVE EXECUTION", lines, width=92)
 
 
+def _connection_summary(source: ContractModel, edge: dict[str, Any], concrete: str, target_model: ContractModel | None, root: Path) -> str:
+    caller = str(edge.get("from") or "")
+    fn = str(edge.get("to_function") or "")
+    via = str(edge.get("via") or "")
+    interface = str(edge.get("interface") or edge.get("to_contract") or "")
+    fn_link = _function_link(root, target_model, fn)
+
+    low_caller = caller.lower()
+    low_fn = fn.lower()
+
+    if caller == "createPool" and low_fn == "owner":
+        return "checks who owns the Agreement before allowing the pool to be created"
+    if caller == "createPool" and low_fn == "isagreementvalid":
+        return "asks the Safe Harbor Registry whether the Agreement is valid"
+    if caller == "createPool" and low_fn == "initialize":
+        return f"creates a new {concrete} clone and initializes it with the pool configuration"
+    if low_fn in {"safetransferfrom", "transferfrom"}:
+        return f"pulls stake tokens from the user through {concrete}.{fn_link}"
+    if low_fn == "safetransfer":
+        return f"sends stake tokens out through {concrete}.{fn_link}"
+    if low_fn == "balanceof":
+        return f"reads the token balance through {concrete}.{fn_link}"
+    if low_fn == "getagreementstate":
+        return f"reads the Agreement's attack state through {concrete}.{fn_link}"
+    if low_fn == "getattackregistry":
+        return f"finds the Attack Registry through {concrete}.{fn_link}"
+    if low_fn == "iscontractinscope":
+        return "checks whether the account belongs to the Agreement's scope"
+    if caller == "_replaceScope" and low_fn == "push":
+        return "records the updated scope account in the pool's internal array"
+    if caller == "_markRiskWindowStart" and low_fn == "expiry":
+        return "reads the pool expiry while calculating the risk-window boundary"
+
+    via_text = f" via {via}" if via else ""
+    return f"calls {concrete}.{fn_link}{via_text} to use that contract's interface"
+
+def _runtime_node_label(runtime: list[RuntimeContract], address: Any) -> str | None:
+    if not is_address(address):
+        return None
+    for node in runtime:
+        if node.address.lower() == str(address).lower():
+            return node.label
+    return None
+
 def _render_connections(
     root: Path,
     models: list[ContractModel],
     model: ContractModel,
     enabled: bool,
+    runtime: list[RuntimeContract] | None = None,
 ) -> str:
-    lines = [_paint("SYSTEM CONNECTIONS", BOLD + WHITE, enabled)]
+    lines = [
+        _paint("SYSTEM CONNECTIONS", BOLD + WHITE, enabled),
+        "  Source-backed relationships, grouped by the function that causes them.",
+    ]
     by_name = {item.name: item for item in models}
     impls = _implementation_mapping(models)
-    seen: set[tuple[str, str, str, str]] = set()
 
     for source_model in models:
-        for base in source_model.bases[:8]:
-            key = (source_model.name, "inherits", base, "")
-            if key in seen:
-                continue
-            seen.add(key)
-            lines.append(f"  {source_model.name} {DOTTED} {base}  [INHERITS]")
-
-        for edge in source_model.calls[:40]:
-            target_name = str(edge.get("to_contract") or "")
+        cross: list[tuple[dict[str, Any], str]] = []
+        for edge in source_model.calls:
+            target_name = str(edge.get("to_contract") or edge.get("interface") or "")
             concrete = impls.get(target_name, target_name)
-            fn = str(edge.get("to_function") or "unknown()")
-            target_model = by_name.get(concrete) or by_name.get(target_name)
-            linked = _function_link(root, target_model, fn)
-            key = (source_model.name, str(edge.get("from") or ""), concrete, fn)
-            if key in seen:
-                continue
-            seen.add(key)
-            via = f"  via {edge.get('via')}" if edge.get("via") else ""
-            relation = "CONCRETE" if concrete != target_name else (edge.get("certainty") or "INFERRED")
-            lines.append(
-                f"  {source_model.name}.{edge.get('from')} {EXTERNAL} "
-                f"{concrete}.{linked}{via}  [{relation}]"
-            )
+            if edge.get("kind") == "cross-contract" and concrete:
+                cross.append((edge, concrete))
 
-    if len(lines) == 1:
+        if not cross:
+            continue
+
+        grouped: dict[str, list[tuple[dict[str, Any], str]]] = {}
+        for edge, concrete in cross:
+            grouped.setdefault(str(edge.get("from") or "unknown"), []).append((edge, concrete))
+
+        lines.append("")
+        lines.append(f"  {STATE} {source_model.name}")
+        for caller, edges in list(grouped.items())[:8]:
+            caller_link = _function_link(root, source_model, caller)
+            lines.append(f"    {FUNCTION} {caller_link}()")
+
+            seen: set[tuple[str, str, str | None]] = set()
+            for edge, concrete in edges[:6]:
+                fn = str(edge.get("to_function") or "unknown")
+                via = str(edge.get("via") or "")
+                key = (concrete, fn, via)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                target_model = by_name.get(concrete) or by_name.get(str(edge.get("to_contract") or ""))
+                description = _connection_summary(source_model, edge, concrete, target_model, root)
+                lines.append(f"      ├─ {description}")
+                if target_model:
+                    linked = _function_link(root, target_model, fn)
+                    lines.append(f"      └─ {EXTERNAL} {target_model.name}.{linked}")
+                else:
+                    lines.append(f"      └─ {EXTERNAL} {concrete}.{fn}")
+
+    inheritance = []
+    for source_model in models:
+        for base in source_model.bases[:8]:
+            inheritance.append((source_model.name, base))
+    if inheritance:
+        lines += ["", "  INHERITANCE"]
+        for child, base in inheritance[:24]:
+            lines.append(f"    {child} {DOTTED} {base}   [inherits]")
+
+    if len(lines) == 2:
         lines.append("  no source-level cross-contract calls resolved")
-
     return "\n".join(lines)
 
 def _render_event_log(step: Step, enabled: bool) -> str:
@@ -3050,42 +3122,47 @@ def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
     if not runtime:
         return "\n".join(lines + ["  <no live contracts>"])
 
+    by_addr = {node.address.lower(): node for node in runtime}
     children: dict[str, list[RuntimeContract]] = {}
     roots: list[RuntimeContract] = []
-    by_addr = {node.address.lower(): node for node in runtime}
+
     for node in runtime:
         if node.parent and node.parent.lower() in by_addr:
             children.setdefault(node.parent.lower(), []).append(node)
         else:
             roots.append(node)
 
+    relation_text = {
+        "system": "protocol entry point",
+        "target": "current entry point",
+        "CLONE": "creates / clones",
+        "IMPLEMENTATION": "uses implementation",
+        "DEPENDENCY": "depends on",
+        "CREATE2": "creates",
+        "CREATE": "creates",
+        "EVENT": "emits events to",
+    }
+
     seen: set[str] = set()
 
-    def render(node: RuntimeContract, prefix: str = "  ", last: bool = True) -> None:
-        if node.address.lower() in seen:
+    def render(node: RuntimeContract, indent: str = "  ", last: bool = True) -> None:
+        key = node.address.lower()
+        if key in seen:
             return
-        seen.add(node.address.lower())
-        connector = "└─ " if last else "├─ "
-        icon = "◆" if node.relation == "system" else "●"
-        lines.append(
-            f"{prefix}{connector}{icon} {node.label:<28} {_addr(node.address)}"
-        )
-        kids = children.get(node.address.lower(), [])
-        for i, child in enumerate(kids[:10]):
-            child_prefix = prefix + ("   " if last else "│  ")
-            edge = DOTTED + " " if child.relation in {"CLONE", "IMPLEMENTATION"} else ARROW + " "
-            if i < len(kids[:10]) - 1:
-                branch_prefix = child_prefix + edge
-            else:
-                branch_prefix = child_prefix + edge
-            render(child, branch_prefix, i == len(kids[:10]) - 1)
+        seen.add(key)
 
-    for i, root_node in enumerate(roots):
-        render(root_node, "  ", i == len(roots) - 1)
+        marker = "◆" if node.relation in {"system", "target"} else "●"
+        suffix = f"  [{relation_text.get(node.relation, node.relation)}]" if node.relation else ""
+        lines.append(f"{indent}{marker} {node.label} {_addr(node.address)}{suffix}")
 
-    for node in runtime:
-        if node.address.lower() not in seen:
-            render(node, "  ", True)
+        kids = children.get(key, [])
+        for index, child in enumerate(kids[:10]):
+            branch = "└──" if index == len(kids[:10]) - 1 else "├──"
+            relation = relation_text.get(child.relation, child.relation)
+            lines.append(f"{indent}{branch} {relation} ──▶ {child.label} {_addr(child.address)}")
+
+    for index, node in enumerate(roots):
+        render(node, "  ", index == len(roots) - 1)
 
     return "\n".join(lines)
 
@@ -3130,7 +3207,7 @@ def _render_board(
         "",
         _render_runtime_graph(runtime, enabled),
         "",
-        _render_connections(root, models, model, enabled),
+        _render_connections(root, models, model, enabled, runtime),
         "",
         _render_protocol_story_full(root, steps, current, actors, models, enabled),
     ]
