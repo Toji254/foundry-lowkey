@@ -619,41 +619,255 @@ def _render_contract_shapes(model: ContractModel, enabled: bool) -> str:
 
 
 
-def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
-    lines=[_paint("LIVE PSEUDOCODE FLOW",BOLD+CYAN,enabled)]
-    if not steps:
-        return "\n".join(lines+[
-            "  SYSTEM READY",
-            "      ↓",
-            f"  {FUNCTION} choose interaction",
-            "      ↓",
-            "  execute → observe → redraw → choose next",
+
+def _actor_for_address(address: str | None, actors: list[Actor]) -> str | None:
+    if not address:
+        return None
+    lowered = str(address).lower()
+    for actor in actors:
+        if actor.address.lower() == lowered:
+            return actor.name
+    return None
+
+
+def _friendly_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        if value == 2**256 - 1:
+            return "MAX"
+        if value >= 10**18 and value % 10**18 == 0:
+            return f"{value // 10**18} token units"
+        if abs(value) >= 10**9:
+            return f"{value:,}"
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_friendly_value(item) for item in value[:4]) + (", …" if len(value) > 4 else "") + "]"
+    return str(value)
+
+
+def _friendly_arg(value: Any, actors: list[Actor]) -> str:
+    if isinstance(value, str) and is_address(value):
+        actor = _actor_for_address(value, actors)
+        return actor or _addr(value)
+    return _friendly_value(value)
+
+
+def _friendly_contract_name(step: Step) -> str:
+    return str(step.contract or "Contract").replace("MockConfidencePoolModerator", "Moderator")
+
+
+def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
+    actor = step.actor or "Caller"
+    contract = _friendly_contract_name(step)
+    function = str(step.function or "").split("(", 1)[0]
+    args = ", ".join(_friendly_arg(x, actors) for x in step.args)
+    target = contract
+
+    lines = [
+        f"{actor} calls {target}.{function}({args})" if args else f"{actor} calls {target}.{function}()",
+        f"{actor} {ARROW} {target}",
+    ]
+
+    lower = function.lower()
+    if lower == "approve":
+        lines.append("    └─ authorizes the pool to pull stake tokens from this actor")
+    elif lower in {"stake", "deposit", "contributebonus", "fund", "contribute"}:
+        amount = _friendly_value(step.args[0]) if step.args else "the requested amount"
+        lines.append(f"    ├─ token flow: {actor} ── {amount} ──▶ {target}")
+        lines.append("    └─ protocol records the participant's stake/bonus")
+    elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
+        lines.append(f"    ├─ asset flow: {target} ──▶ {actor}")
+        lines.append("    └─ protocol reduces or closes this actor's claimable balance")
+    elif lower.startswith("createpool"):
+        lines.append("    ├─ factory creates a new pool clone")
+        lines.append("    └─ new pool is initialized and linked into the system")
+    elif lower.startswith("flagoutcome"):
+        lines.append("    ├─ moderator records the protocol outcome")
+        lines.append("    └─ claim distribution becomes tied to the recorded outcome")
+    elif lower.startswith("set") or lower in {"initialize", "configure", "register"}:
+        lines.append("    └─ protocol configuration/state is updated")
+    elif lower.startswith("poke"):
+        lines.append("    └─ pool observes the external registry and updates its risk window")
+    else:
+        lines.append("    └─ contract executes and the chain state is observed")
+
+    if step.value_wei:
+        lines.append(f"    ◆ ETH: {_friendly_value(step.value_wei)}")
+
+    return lines
+
+
+def _flatten_mapping_changes(change: dict[str, Any]) -> list[str]:
+    before = change.get("before")
+    after = change.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return []
+
+    before_map = before.get("mapping")
+    after_map = after.get("mapping")
+    if not isinstance(before_map, dict) or not isinstance(after_map, dict):
+        return []
+
+    before_rows = {
+        str(row.get("key")): row
+        for row in before_map.get("rows", [])
+        if isinstance(row, dict)
+    }
+    after_rows = {
+        str(row.get("key")): row
+        for row in after_map.get("rows", [])
+        if isinstance(row, dict)
+    }
+
+    lines = []
+    for key in sorted(set(before_rows) | set(after_rows))[:6]:
+        old_row = before_rows.get(key)
+        new_row = after_rows.get(key)
+        if old_row is None or new_row is None:
+            continue
+        actor_key = key
+        if is_address(key):
+            actor_key = key
+        old_value = old_row.get("value")
+        new_value = new_row.get("value")
+        if old_value != new_value and old_value is not None and new_value is not None:
+            lines.append(
+                f"{change.get('label', 'mapping')}[{actor_key}] : "
+                f"{_friendly_value(old_value)} → {_friendly_value(new_value)}"
+            )
+        old_struct = old_row.get("struct")
+        new_struct = new_row.get("struct")
+        if isinstance(old_struct, dict) and isinstance(new_struct, dict):
+            old_fields = {str(x.get("name")): x for x in old_struct.get("fields", []) if isinstance(x, dict)}
+            new_fields = {str(x.get("name")): x for x in new_struct.get("fields", []) if isinstance(x, dict)}
+            for field_name in sorted(set(old_fields) | set(new_fields))[:8]:
+                old_field = old_fields.get(field_name, {})
+                new_field = new_fields.get(field_name, {})
+                if old_field.get("value") != new_field.get("value"):
+                    lines.append(
+                        f"{change.get('label', 'mapping')}[{actor_key}].{field_name} : "
+                        f"{_friendly_value(old_field.get('value'))} → {_friendly_value(new_field.get('value'))}"
+                    )
+    return lines
+
+
+def _friendly_state_lines(step: Step, actors: list[Actor]) -> list[str]:
+    lines = []
+    for change in step.storage_changes[:10]:
+        label = str(change.get("label") or "state")
+        nested = _flatten_mapping_changes(change)
+        if nested:
+            for item in nested[:6]:
+                shown = item
+                if is_address(shown.split("[", 1)[-1].split("]", 1)[0] if "[" in shown else ""):
+                    address = shown.split("[", 1)[-1].split("]", 1)[0]
+                    actor = _actor_for_address(address, actors)
+                    if actor:
+                        shown = shown.replace(address, actor, 1)
+                lines.append("    ◆ " + shown)
+            continue
+
+        before = change.get("before")
+        after = change.get("after")
+        if isinstance(before, dict) and isinstance(after, dict):
+            old = before.get("value")
+            new = after.get("value")
+            if old != new:
+                lines.append(
+                    f"    ◆ {label} : {_friendly_value(old)} → {_friendly_value(new)}"
+                )
+    return lines
+
+
+def _friendly_event_lines(step: Step) -> list[str]:
+    lines = []
+    for event in step.events[:4]:
+        if not isinstance(event, dict):
+            continue
+        name = event.get("event")
+        if name:
+            lines.append(f"    ✦ event: {name}")
+    return lines
+
+
+def _render_protocol_story(
+    steps: list[Step],
+    current: Step | None,
+    actors: list[Actor],
+    enabled: bool,
+) -> str:
+    lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
+    if not steps and not current:
+        return "\n".join(lines + [
+            "  ┌─ SYSTEM READY",
+            "  └─ press Enter to execute the first live interaction",
         ])
-    for step in steps[-10:]:
-        icon="✓" if step.status=="success" else "!" if step.status in {"blocked","reverted"} else "→"
-        lines.append(f"  {icon} {step.actor}")
-        lines.append(f"     └─ {FUNCTION} {step.contract}.{step.function}")
-        if step.args:
-            lines.append(f"        args: {', '.join(_cli_arg(x) for x in step.args)}")
-        if step.status=="success":
-            for change in step.storage_changes[:3]:
-                label=change.get("label") or f"slot {change.get('slot')}"
-                before=change.get("before",{}).get("value") if isinstance(change.get("before"),dict) else "?"
-                after=change.get("after",{}).get("value") if isinstance(change.get("after"),dict) else "?"
-                lines.append(f"        ├─ {STATE} {label}: {before} → {after}")
-            if step.discovered_contracts:
-                lines.append(f"        ├─ {EXTERNAL} runtime contract discovered")
-            if step.events and not step.storage_changes:
-                lines.append(f"        └─ {EVENT} {len(step.events)} event(s)")
-            elif not step.storage_changes and not step.discovered_contracts:
-                lines.append("        └─ ✓ state observed")
-        elif step.error:
-            lines.append(f"        └─ {WARNING} {' '.join(str(step.error).split())[-200:]}")
-        lines.append("        ↓")
+
+    visible = steps[-8:]
+    if current is not None and (not visible or visible[-1] is not current):
+        visible = visible + [current]
+
+    for index, step in enumerate(visible):
+        status_ok = step.status == "success"
+        status_blocked = step.status in {"blocked", "reverted"}
+        icon = "✓" if status_ok else "!" if status_blocked else "●"
+        color = GREEN if status_ok else RED if status_blocked else YELLOW
+
+        lines.append("")
+        lines.append(
+            _paint(
+                f"  ┌─ STEP {step.index:02d} {icon}  {step.actor}",
+                color,
+                enabled,
+            )
+        )
+        for detail in _friendly_action(step, actors):
+            lines.append("  │ " + detail)
+
+        state_lines = _friendly_state_lines(step, actors)
+        event_lines = _friendly_event_lines(step)
+        if state_lines:
+            lines.append("  │")
+            lines.append("  │ STATE CHANGED")
+            lines.extend("  │ " + line for line in state_lines[:7])
+        if event_lines:
+            lines.append("  │")
+            lines.extend("  │ " + line for line in event_lines)
+
+        if step.discovered_contracts:
+            lines.append("  │")
+            lines.append("  │ NEW SYSTEM NODE")
+            for node in step.discovered_contracts[:4]:
+                lines.append(
+                    f"  │     {EXTERNAL} {node.get('label') or node.get('model')} "
+                    f"{_addr(node.get('address'))}"
+                )
+
+        if step.error:
+            compact = " ".join(str(step.error).split())
+            lines.append("  │")
+            lines.append(f"  │ {WARNING} {compact[-220:]}")
+
+        lines.append("  └" + "─" * 74 + "┘")
+        if index != len(visible) - 1:
+            lines.append("                 │")
+            lines.append("                 ▼")
+
     if current:
-        lines.append(f"  {ARROW} YOU ARE HERE  {current.actor} → {current.contract}.{current.function}")
+        lines.append("")
+        lines.append(
+            _paint(
+                f"                 ◆ CURRENTLY OBSERVING STEP {current.index:02d}",
+                BOLD + YELLOW,
+                enabled,
+            )
+        )
     return "\n".join(lines)
 
+
+def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
+    return _render_protocol_story(steps, current, [], enabled)
 
 def _wait_for_next_interaction(no_prompt: bool) -> str:
     if no_prompt:
@@ -1434,31 +1648,47 @@ def _render_live_path(steps: list[Step], runtime: list[RuntimeContract], enabled
     return "\n".join(lines)
 
 def _render_runtime_graph(runtime: list[RuntimeContract], enabled: bool) -> str:
-    lines=[_paint("LIVE SYSTEM GRAPH",BOLD+WHITE,enabled)]
+    lines = [_paint("SYSTEM MAP", BOLD + WHITE, enabled)]
     if not runtime:
-        return "\n".join(lines+["  <no live contracts>"])
-    children={}
-    roots=[]
+        return "\n".join(lines + ["  <no live contracts>"])
+
+    children: dict[str, list[RuntimeContract]] = {}
+    roots: list[RuntimeContract] = []
+    by_addr = {node.address.lower(): node for node in runtime}
     for node in runtime:
-        if node.parent:
-            children.setdefault(node.parent.lower(),[]).append(node)
+        if node.parent and node.parent.lower() in by_addr:
+            children.setdefault(node.parent.lower(), []).append(node)
         else:
             roots.append(node)
-    seen=set()
-    def render(node,indent="  "):
+
+    seen: set[str] = set()
+
+    def render(node: RuntimeContract, prefix: str = "  ", last: bool = True) -> None:
         if node.address.lower() in seen:
             return
         seen.add(node.address.lower())
-        icon="◆" if node.relation=="system" else "●"
-        lines.append(f"{indent}{icon} {node.label:<28} {_addr(node.address)}")
-        for child in children.get(node.address.lower(),[])[:12]:
-            arrow=DOTTED if child.relation in {"CLONE","IMPLEMENTATION"} else EXTERNAL
-            lines.append(f"{indent}   {arrow} {child.label:<24} {_addr(child.address)}")
-    for node in roots:
-        render(node)
+        connector = "└─ " if last else "├─ "
+        icon = "◆" if node.relation == "system" else "●"
+        lines.append(
+            f"{prefix}{connector}{icon} {node.label:<28} {_addr(node.address)}"
+        )
+        kids = children.get(node.address.lower(), [])
+        for i, child in enumerate(kids[:10]):
+            child_prefix = prefix + ("   " if last else "│  ")
+            edge = "⋯⋯▶ " if child.relation in {"CLONE", "IMPLEMENTATION"} else "────▶ "
+            if i < len(kids[:10]) - 1:
+                branch_prefix = child_prefix + edge
+            else:
+                branch_prefix = child_prefix + edge
+            render(child, branch_prefix, i == len(kids[:10]) - 1)
+
+    for i, root_node in enumerate(roots):
+        render(root_node, "  ", i == len(roots) - 1)
+
     for node in runtime:
         if node.address.lower() not in seen:
-            render(node)
+            render(node, "  ", True)
+
     return "\n".join(lines)
 
 def _slither_status(root: Path) -> str:
@@ -1476,42 +1706,53 @@ def _slither_status(root: Path) -> str:
     return f"Slither: {len(findings)} recorded finding(s) [context evidence]"
 
 
-def _render_board(root: Path, model: ContractModel, models: list[ContractModel], runtime: list[RuntimeContract], actors: list[Actor], steps: list[Step], current: Step | None, storage: list[dict[str, Any]], enabled: bool, static: bool = False) -> str:
-    success=sum(1 for x in steps if x.status=="success")
-    blocked=sum(1 for x in steps if x.status in {"blocked","reverted"})
-    board=[
-        _paint("LOWKEY // PROTOCOL CANVAS",BOLD+CYAN,enabled),
-        _paint(
-            f"  live  {success}✓  {blocked}!  {len(steps)} observed   |   ⏎ next   q stop",
-            DIM,enabled
+def _render_board(
+    root: Path,
+    model: ContractModel,
+    models: list[ContractModel],
+    runtime: list[RuntimeContract],
+    actors: list[Actor],
+    steps: list[Step],
+    current: Step | None,
+    storage: list[dict[str, Any]],
+    enabled: bool,
+    static: bool = False,
+) -> str:
+    success = sum(1 for x in steps if x.status == "success")
+    blocked = sum(1 for x in steps if x.status in {"blocked", "reverted"})
+    board = [
+        _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
+        f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
+        "  Enter = next interaction   q = stop",
+        "",
+        _box(
+            "ACTORS",
+            [
+                "   ".join(
+                    f"{ACTOR} {actor.name} {_addr(actor.address)}"
+                    for actor in actors
+                )
+            ],
+            width=92,
         ),
         "",
-        _box("SYSTEM",[
-            f"{STATE} {model.name}",
-            f"target  {_addr(runtime[-1].address) if runtime else _addr(current.address if current else None)}",
-            _render_shape_legend(enabled),
-        ],width=92),
+        _render_runtime_graph(runtime, enabled),
         "",
-        _render_runtime_graph(runtime,enabled),
-        "",
-        _render_contract_shapes(model,enabled),
-        "",
-        _render_pseudocode_flow(steps,current,enabled),
+        _render_protocol_story(steps, current, actors, enabled),
     ]
-    if storage:
-        board += ["",_paint(f"{STATE} LIVE STATE",BOLD+GREEN,enabled),_render_storage(storage[:3],enabled)]
-    if current:
-        board += ["",_box("OBSERVATION",[
-            f"{current.actor} {ARROW} {FUNCTION} {current.contract}.{current.function}",
-            f"status : {current.status}",
-            f"preflight: {'PASS' if current.preflight and current.status=='success' else (current.preflight or 'pending')}",
-            f"trace/events/writes : {len(current.trace_edges)} / {len(current.events)} / {len(current.storage_changes)}",
-        ],width=92)]
-    board += ["", "  "+_slither_status(root)]
-    if static:
-        board.append(_paint("STATIC MODEL ONLY",YELLOW,enabled))
-    return "\n".join(board)
 
+    if current and current.storage_after:
+        recent = current.storage_after
+        board += [
+            "",
+            _paint("CURRENT STATE", BOLD + GREEN, enabled),
+            _render_storage(recent[:3], enabled),
+        ]
+
+    board += ["", "  " + _slither_status(root)]
+    if static:
+        board.append(_paint("STATIC MODEL ONLY", YELLOW, enabled))
+    return "\n".join(board)
 
 
 def _render_plan(model: ContractModel, steps: list[Step], enabled: bool) -> str:
