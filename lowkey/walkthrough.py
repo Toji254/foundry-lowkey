@@ -160,6 +160,7 @@ def _bootstrap_from_manifest(manifest: dict[str, Any] | None, rpc: str) -> dict[
     if not manifest:
         return None
     deployments = manifest.get("deployments") or []
+    audit_evidence = manifest.get("audit_evidence") or []
     return {
         "deployments": deployments,
         "live_deployments": [
@@ -188,12 +189,45 @@ def _bootstrap_from_manifest(manifest: dict[str, Any] | None, rpc: str) -> dict[
             for x in manifest.get("tests") or []
         ],
         "adversarial": manifest.get("adversarial_evidence") or [],
-        "audit_evidence": manifest.get("audit_evidence") or [],
+        "audit_evidence": audit_evidence,
+        "audit_targets": _extract_audit_targets(audit_evidence),
         "initialization": manifest.get("initialization") or [],
         "roles": manifest.get("roles") or [],
         "relationships": manifest.get("relationships") or [],
         "source": "system_bootstrap_manifest",
     }
+
+
+def _extract_audit_targets(audit_evidence: list[Any]) -> list[dict[str, str]]:
+    """Extract deterministic, live candidate targets from persisted audit evidence."""
+    priority = {
+        "audit_start.json": 0,
+        "context.json": 1,
+        "session_resume.json": 2,
+        "risk.json": 3,
+        "poc.json": 4,
+        "walkthrough.json": 5,
+    }
+    candidates: list[tuple[int, str, str]] = []
+    for item in audit_evidence:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if not _is_address(target):
+            continue
+        file_name = Path(str(item.get("file") or "")).name
+        candidates.append((priority.get(file_name, 50), file_name, str(target)))
+
+    candidates.sort(key=lambda x: (x[0], x[1], x[2].lower()))
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for _, file_name, target in candidates:
+        key = target.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({"target": target, "file": file_name})
+    return result
 
 
 def _discover_bootstrap(root: Path, rpc: str) -> dict[str, Any]:
@@ -316,14 +350,31 @@ def _resolve_walkthrough_target(
     rpc: str,
     bootstrap: dict[str, Any],
 ) -> tuple[str | None, str]:
-    """Resolve a live target from existing state before asking the user to configure one."""
+    """Resolve a live target from existing audit/system state."""
     configured = str(config.get("target") or "").strip()
     if _is_address(configured) and _code_size(rpc, configured) > 0:
         return configured, "configured target"
 
-    for name, value in (config.get("targets") or {}).items():
-        if _is_address(value) and _code_size(rpc, value) > 0:
-            return value, f"saved target '{name}'"
+    saved_targets = config.get("targets") or {}
+    if isinstance(saved_targets, dict):
+        for name, value in saved_targets.items():
+            if _is_address(value) and _code_size(rpc, value) > 0:
+                return value, f"saved target '{name}'"
+
+    # Persisted audit evidence is authoritative session state and must work
+    # even when Foundry broadcast artifacts do not exist.
+    for item in bootstrap.get("audit_targets") or _extract_audit_targets(
+        bootstrap.get("audit_evidence") or []
+    ):
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if not _is_address(target):
+            continue
+        if _code_size(rpc, target) > 0:
+            file_name = str(item.get("file") or "")
+            source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
+            return target, source
 
     live = list(bootstrap.get("live_deployments") or [])
     live.sort(
@@ -1673,9 +1724,13 @@ def _system_edges(
     return edges
 
 
-def _target_label(config: dict[str, Any], target: str) -> str:
+def _target_label(config: dict[str, Any], target: str | None) -> str:
+    if not _is_address(target):
+        return "Target"
     if str(config.get("target") or "").lower() == target.lower():
-        return str(config.get("target_contract") or config.get("labels", {}).get(target) or "Target")
+        labels = config.get("labels") or {}
+        configured = labels.get(target) if isinstance(labels, dict) else None
+        return str(config.get("target_contract") or configured or "Target")
     labels = config.get("labels") or {}
     if isinstance(labels, dict):
         for k, v in labels.items():
