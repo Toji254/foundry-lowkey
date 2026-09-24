@@ -374,6 +374,163 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual([item.name for item in app_models], ["Demo"])
         self.assertIn("MockToken", [item.name for item in all_models])
 
+    def test_contract_typed_address_uses_observed_dependency(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address,address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        agreement = "0x" + "9" * 40
+        value = walkthrough._arg_for(
+            {"name": "agreement", "type": "address"},
+            actors,
+            actors[0].address,
+            100,
+            {"agreement": agreement},
+            model,
+            "createPool",
+        )
+        self.assertEqual(value, agreement)
+
+    def test_contract_typed_address_never_falls_back_to_actor(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        value = walkthrough._arg_for(
+            {"name": "agreement", "type": "address"},
+            actors,
+            actors[0].address,
+            100,
+            {},
+            model,
+            "createPool",
+        )
+        self.assertIsNone(value)
+
+    def test_validate_step_arguments_blocks_missing_contract_dependency(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Factory",
+            "0x" + "2" * 40,
+            "createPool(address)",
+            [None],
+        )
+        ok, reason = walkthrough._validate_step_arguments(step, model)
+        self.assertFalse(ok)
+        self.assertIn("agreement", reason)
+        self.assertIn("IAgreement", reason)
+
+    def test_live_recipe_arguments_are_authoritative(self):
+        token = "0x" + "a" * 40
+        agreement = "0x" + "b" * 40
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        config = {
+            "target": "0x" + "3" * 40,
+            "lab_system": {
+                "factory": "0x" + "3" * 40,
+                "stake_token": token,
+                "agreement": agreement,
+                "moderator": "0x" + "4" * 40,
+            },
+        }
+        recipe = walkthrough._confidence_pool_factory_recipe(config, actors, 100)
+        create = next(step for step in recipe if step.function.startswith("createPool("))
+        self.assertFalse(create.inferred)
+        self.assertEqual(create.args[0], agreement)
+        self.assertEqual(create.args[1], token)
+        self.assertEqual(create.args[4], actors[1].address)
+
+    def test_auxiliary_project_models_are_available_for_runtime_decoding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "test" / "mocks").mkdir(parents=True)
+            (root / "out" / "Demo.sol").mkdir(parents=True)
+            (root / "out" / "MockToken.sol").mkdir(parents=True)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "src"\n',
+                encoding="utf-8",
+            )
+            (root / "src" / "Demo.sol").write_text(
+                "pragma solidity ^0.8.20; contract Demo { function ping() external {} }",
+                encoding="utf-8",
+            )
+            (root / "test" / "mocks" / "MockToken.sol").write_text(
+                "pragma solidity ^0.8.20; contract MockToken { function transfer(address,uint256) external {} }",
+                encoding="utf-8",
+            )
+            (root / "out" / "Demo.sol" / "Demo.json").write_text(
+                json.dumps({
+                    "contractName": "Demo",
+                    "sourceName": "src/Demo.sol",
+                    "abi": [{"type":"function","name":"ping","inputs":[],"outputs":[]}],
+                }),
+                encoding="utf-8",
+            )
+            (root / "out" / "MockToken.sol" / "MockToken.json").write_text(
+                json.dumps({
+                    "contractName": "MockToken",
+                    "sourceName": "test/mocks/MockToken.sol",
+                    "abi": [{
+                        "type":"function","name":"transfer",
+                        "inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],
+                        "outputs":[{"type":"bool"}],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            app_models = walkthrough._artifact_models(root)
+            all_models = walkthrough._artifact_models(root, include_aux=True)
+
+        self.assertEqual([item.name for item in app_models], ["Demo"])
+        self.assertIn("MockToken", [item.name for item in all_models])
+
     def test_argument_inference_uses_roles(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
