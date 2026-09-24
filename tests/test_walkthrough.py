@@ -228,6 +228,15 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(target, live)
             self.assertTrue(source.startswith("broadcast "))
 
+    def test_cmd_returns_process_output_and_exit_code(self):
+        code, stdout, stderr = walk._cmd(
+            [sys.executable, "-c", "print('walkthrough-ok'); raise SystemExit(7)"],
+            timeout=10,
+        )
+        self.assertEqual(code, 7)
+        self.assertEqual(stdout.strip(), "walkthrough-ok")
+        self.assertEqual(stderr, "")
+
     def test_auto_bootstrap_uses_only_safe_local_setup_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
