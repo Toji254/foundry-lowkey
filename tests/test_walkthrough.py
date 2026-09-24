@@ -289,7 +289,7 @@ class WalkthroughTests(unittest.TestCase):
             dry = root / "broadcast" / "Setup.s.sol" / "31337" / "dry-run"
             live = root / "broadcast" / "Setup.s.sol" / "31337"
             dry.mkdir(parents=True)
-            live.mkdir(parents=True)
+            live.mkdir(parents=True, exist_ok=True)
             payload = {"transactions": [{"contractAddress": "0x" + "1" * 40, "contractName": "Fake"}]}
             (dry / "run-latest.json").write_text(json.dumps(payload), encoding="utf-8")
             payload2 = {"transactions": [{"contractAddress": "0x" + "2" * 40, "contractName": "Real"}]}
@@ -352,9 +352,9 @@ class WalkthroughTests(unittest.TestCase):
             {"from": "Pool", "to": "Agreement", "kind": "external-call", "function": "_replaceScope -> isContractInScope"},
         ]
         rendered = "\\n".join(walk._render_connection_web(nodes, edges, []))
-        self.assertIn("HUB  [Factory]", rendered)
-        self.assertIn("INBOUND / who feeds or authorizes", rendered)
-        self.assertIn("OUTBOUND / what this component reaches into", rendered)
+        self.assertIn("WEB / Factory", rendered)
+        self.assertIn("FROM / who can affect or feed the hub", rendered)
+        self.assertIn("TO / what the hub relies on or controls", rendered)
         self.assertIn("CROSS-LINKS / supporting components", rendered)
         self.assertIn("checks ownership", rendered)
         self.assertIn("creates / initializes", rendered)
@@ -369,7 +369,7 @@ class WalkthroughTests(unittest.TestCase):
             None, False,
             {"target": None, "bootstrap": {}, "static_system": {}, "system_manifest": {}},
         )
-        self.assertIn("System       0 live contract(s) • 3 actor(s)", rendered)
+        self.assertIn("Environment  Local RPC • 0 live contract(s) • 3 actor(s)", rendered)
 
     def test_render_story_explains_steps_and_hides_import_noise(self):
         node = walk.LiveNode(
@@ -412,7 +412,7 @@ class WalkthroughTests(unittest.TestCase):
             [action], {"Alice": "0x" + "a" * 40}, None, False,
             {"target": node.address, "bootstrap": {}, "static_system": {}, "system_manifest": {},}
         )
-        self.assertIn("SYSTEM IN PLAIN ENGLISH", rendered)
+        self.assertIn("FOCUS CONTRACT / ConfidencePoolFactory", rendered)
         self.assertIn("SYSTEM CONNECTION WEB", rendered)
         self.assertIn("WHAT", rendered)
         self.assertIn("WHY", rendered)
@@ -624,8 +624,8 @@ class WalkthroughTests(unittest.TestCase):
                 True,
                 meta,
             )
-            self.assertIn("SYSTEM WALKTHROUGH", rendered)
-            self.assertIn("FOCUS CONTRACT", rendered)
+            self.assertIn("LOWKEY  /  PROTOCOL WALKTHROUGH", rendered)
+            self.assertIn("CURRENT WALKTHROUGH STEP", rendered)
 
     def test_extract_audit_targets_prefers_canonical_evidence(self):
         target = "0x" + "1" * 40
