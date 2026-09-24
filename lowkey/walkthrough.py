@@ -1989,6 +1989,42 @@ def _input_story(step: Step, model: ContractModel | None, actors: list[Actor]) -
 
 
 
+def _human_argument_rows(
+    model: ContractModel | None,
+    step: Step,
+    actors: list[Actor],
+    runtime: list[RuntimeContract] | None = None,
+) -> list[str]:
+    """Turn raw ABI arguments into human-readable name = value rows."""
+    if not model:
+        return []
+    target = next(
+        (
+            item for item in model.abi
+            if item.get("type") == "function"
+            and _signature(item) == step.function
+        ),
+        None,
+    )
+    if not target:
+        return []
+    rows: list[str] = []
+    for index, param in enumerate(target.get("inputs") or []):
+        if index >= len(step.args):
+            break
+        name = str(param.get("name") or f"arg{index + 1}")
+        value = _friendly_arg(step.args[index], actors, runtime)
+        requirement = _contract_requirement_for_parameter(
+            model,
+            str(step.function).split("(", 1)[0],
+            name,
+            _ACTIVE_MODEL_CATALOG,
+        )
+        suffix = f"  [expects {requirement}]" if requirement else ""
+        rows.append(f"{name} = {value}{suffix}")
+    return rows
+
+
 def _render_interaction_graph_full(
     root: Path,
     step: Step,
@@ -2020,9 +2056,9 @@ def _render_interaction_graph_full(
         f"  │       ↳ CALL: {actor} ──▶ {contract}",
     ]
 
-    input_lines = _input_story(step, model, actors) if model else []
+    input_lines = _human_argument_rows(model, step, actors, runtime)
     if input_lines:
-        lines += ["  │", "  │   INPUTS"]
+        lines += ["  │", "  │   ARGUMENTS"]
         for item in input_lines[:8]:
             lines.append(f"  │   ├─ {item}")
 
@@ -2104,6 +2140,10 @@ def _render_interaction_graph_full(
         lines.append(f"  │   └─ raw node result: {_short_error(step.error)}")
 
     marker = "INFERRED" if step.inferred else "LAB CONTROL"
+    if step.status == "success":
+        lines += ["  │", f"  │   RESULT  ✓  {actor} completed {contract}.{function}()"]
+    elif step.status in {"blocked", "reverted"}:
+        lines += ["  │", f"  │   RESULT  ✕  {actor} could not complete {contract}.{function}()"]
     lines += ["  │", f"  │   WHY THIS STEP: {step.reason} [{marker}]", "  ╰" + "─" * 86 + "╯"]
     return "\n".join(lines)
 def _story_timeline_line(
