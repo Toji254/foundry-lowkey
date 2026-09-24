@@ -229,6 +229,40 @@ class WalkthroughTests(unittest.TestCase):
             self.assertEqual(target, live)
             self.assertTrue(source.startswith("broadcast "))
 
+    def test_canonical_actor_names_ignore_internal_aliases(self):
+        actors = {
+            "Alice": "0x" + "1" * 40,
+            "alice": "0x" + "1" * 40,
+            "Bob": "0x" + "2" * 40,
+            "bob": "0x" + "2" * 40,
+            "Attacker": "0x" + "3" * 40,
+            "attacker": "0x" + "3" * 40,
+        }
+        self.assertEqual(walk._canonical_actor_names(actors), ["Alice", "Bob", "Attacker"])
+
+    def test_factory_is_not_misclassified_as_pool(self):
+        funcs = [
+            walk.FunctionInfo(
+                contract="ConfidencePoolFactory",
+                name="createPool",
+                inputs=[],
+                outputs=[],
+                mutability="nonpayable",
+                signature="createPool()",
+            )
+        ]
+        self.assertEqual(
+            walk._contract_purpose("ConfidencePoolFactory", funcs),
+            "creates/configures protocol instances",
+        )
+
+    def test_walkthrough_phase_priority_keeps_setup_out_of_user_flow(self):
+        create = walk.FunctionInfo("Factory", "createPool", [], [], "nonpayable", "createPool()")
+        stake = walk.FunctionInfo("Pool", "stake", [{"type": "uint256", "name": "amount"}], [], "nonpayable", "stake(uint256)")
+        initialize = walk.FunctionInfo("Pool", "initialize", [], [], "nonpayable", "initialize()")
+        self.assertGreater(walk._walkthrough_phase_priority(create)[0], walk._walkthrough_phase_priority(stake)[0])
+        self.assertGreater(walk._walkthrough_phase_priority(stake)[0], walk._walkthrough_phase_priority(initialize)[0])
+
     def test_eth_accounts_uses_json_rpc_and_filters_invalid_values(self):
         with patch.object(
             walk,
@@ -324,6 +358,17 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("checks ownership", rendered)
         self.assertIn("creates / initializes", rendered)
         self.assertIn("checks scope", rendered)
+
+    def test_render_story_counts_only_canonical_actors(self):
+        rendered = walk._render_story(
+            pathlib.Path("."), [], {}, {}, [],
+            {"Alice": "0x" + "1" * 40, "alice": "0x" + "1" * 40,
+             "Bob": "0x" + "2" * 40, "bob": "0x" + "2" * 40,
+             "Attacker": "0x" + "3" * 40, "attacker": "0x" + "3" * 40},
+            None, False,
+            {"target": None, "bootstrap": {}, "static_system": {}, "system_manifest": {}},
+        )
+        self.assertIn("System       0 live contract(s) • 3 actor(s)", rendered)
 
     def test_render_story_explains_steps_and_hides_import_noise(self):
         node = walk.LiveNode(
