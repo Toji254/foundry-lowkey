@@ -1294,8 +1294,8 @@ def _render_interaction_graph_full(
     lines = [
         _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
-        f"  │   { _human_action_summary(step, actors) }",
-        f"  │   [{actor}] ── CALL {call_display} ──▶ [{contract}]",
+        f"  │   {actor} {ARROW} {contract}.{call_display}",
+        f"  │   ↳ {_human_action_summary(step, actors)}",
         "  │                              │",
     ]
 
