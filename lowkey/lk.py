@@ -2979,6 +2979,15 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     if not target:
         return fail("Error: deployment succeeded, but Lowkey could not read the deployed address.")
 
+    has_initializer = artifact_has_initializer(artifact)
+    if has_initializer:
+        print(f"Target  : {contract} -> {target}")
+        print(f"ABI     : {path}")
+        print("Status  : CONFIGURATION REQUIRED")
+        print("Note    : this is an upgradeable-style implementation; generic deployment is not a live protocol instance.")
+        print("Next    : provide a project lab adapter/proxy bootstrap, then rerun lk walkthrough.")
+        return 1
+
     config["actor"] = "lab-deployer"
     config.setdefault("wallets", {})["lab-deployer"] = {
         "source": "anvil-default",
@@ -2990,12 +2999,6 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
 
     print(f"Target  : {contract} -> {target}")
     print(f"ABI     : {path}")
-    has_initializer = artifact_has_initializer(artifact)
-    if has_initializer:
-        print("Status  : CONFIGURATION REQUIRED")
-        print("Note    : this is an upgradeable-style contract; generic deployment does not create/configure its proxy runtime.")
-        print("Next    : add/use a project lab adapter, then rerun lk lab.")
-        return 1
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
@@ -3019,7 +3022,8 @@ def run_lab(config,args):
     # Known upgradeable ConfidencePool systems require a real local harness:
     # implementation-only deployment leaves initialize() unset and produces a
     # misleading walkthrough full of precondition failures.
-    if requested and str(requested).lower() in {"confidencepool", "confidencepoolfactory"}:
+    auto_selected = requested or discover_audit_target_contract(root)
+    if auto_selected and str(auto_selected).lower() in {"confidencepool", "confidencepoolfactory"}:
         try:
             generated = ensure_confidence_pool_lab_script(root)
             if generated:
