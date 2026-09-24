@@ -16,6 +16,34 @@ spec.loader.exec_module(walkthrough)
 
 
 class WalkthroughTests(unittest.TestCase):
+
+    def test_cli_arg_lowercases_booleans(self):
+        self.assertEqual(walkthrough._cli_arg(True), "true")
+        self.assertEqual(walkthrough._cli_arg(False), "false")
+
+    def test_confidence_pool_recipe_contains_lifecycle(self):
+        config={
+            "target":"0x"+"1"*40,
+            "_walkthrough_recipe":"confidence-pool",
+            "lab_system":{
+                "pool":"0x"+"1"*40,
+                "stake_token":"0x"+"2"*40,
+                "attack_registry":"0x"+"3"*40,
+                "moderator":"0x"+"4"*40,
+            },
+        }
+        actors=[
+            walkthrough.Actor("Alice","0x"+"a"*40,0),
+            walkthrough.Actor("Bob","0x"+"b"*40,1),
+        ]
+        recipe=walkthrough._confidence_pool_recipe(config,actors)
+        names=[s.function for s in recipe]
+        self.assertIn("contributeBonus(uint256)",names)
+        self.assertIn("stake(uint256)",names)
+        self.assertIn("pokeRiskWindow()",names)
+        self.assertIn("flagSurvived(address)",names)
+        self.assertIn("claimSurvived()",names)
+
     def test_struct_mapping_and_functions_are_modelled(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
