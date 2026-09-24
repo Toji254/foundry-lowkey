@@ -450,13 +450,6 @@ class WalkthroughTests(unittest.TestCase):
                 "outputs": [],
                 "stateMutability": "nonpayable",
             }],
-            abi=[{
-                "type": "function",
-                "name": "createPool",
-                "inputs": [{"name": "agreement", "type": "address"}],
-                "outputs": [],
-                "stateMutability": "nonpayable",
-            }],
             functions=["createPool(address)"],
             calls=[
                 {
