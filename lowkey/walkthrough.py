@@ -4426,8 +4426,6 @@ def _target_from_host(
                 code = host.run_lab(config, [])
                 if code != 0:
                     system_ready = _system_has_live_core(config, rpc)
-                if config.get("target") and host.active_project_target(config, root):
-                    system_ready = system_ready or bool(config.get("target"))
 
             if not system_ready:
                 synthesized, synthesis_reason = _synthesize_local_protocol_fixture(
