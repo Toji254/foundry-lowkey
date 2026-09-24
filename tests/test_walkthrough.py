@@ -304,6 +304,27 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(result[0], {"target": target, "file": "audit_start.json"})
         self.assertEqual(result[1], {"target": other, "file": "risk.json"})
 
+    def test_walkthrough_target_retains_persisted_evidence_without_live_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = "0x" + "1" * 40
+            bootstrap = {
+                "audit_targets": [
+                    {"target": target, "file": "audit_start.json"},
+                ],
+                "audit_evidence": [],
+                "live_deployments": [],
+            }
+            with patch.object(walk, "_code_size", return_value=0):
+                resolved, source = walk._resolve_walkthrough_target(
+                    root,
+                    {"target": None, "targets": {}},
+                    "http://127.0.0.1:8545",
+                    bootstrap,
+                )
+            self.assertEqual(resolved, target)
+            self.assertEqual(source, "audit evidence 'audit_start.json' (no live bytecode)")
+
     def test_walkthrough_target_is_safe_when_nothing_is_discovered(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
