@@ -397,6 +397,57 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(auto_selected, "ConfidencePool")
             self.assertTrue(str(generated).endswith("Auto.s.sol"))
 
+    def test_bootstrap_does_not_reuse_saved_confidence_pool_without_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "out" / "ConfidencePool.sol").mkdir(parents=True)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "src"\n',
+                encoding="utf-8",
+            )
+            source = root / "src" / "ConfidencePool.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePool { function initialize() external {} }",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "ConfidencePool.sol" / "ConfidencePool.json"
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePool",
+                    "sourceName": "src/ConfidencePool.sol",
+                    "abi": [{
+                        "type": "function", "name": "initialize",
+                        "stateMutability": "nonpayable", "inputs": [], "outputs": []
+                    }],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+
+            address = "0x" + "a" * 40
+            lk.audit_context.set_target(
+                root,
+                address=address,
+                contract="ConfidencePool",
+                artifact=str(artifact),
+                source="project-lab",
+            )
+            config = {
+                "target": address,
+                "target_contract": "ConfidencePool",
+                "rpc": None,
+                "aliases": {},
+                "targets": {},
+                "abi_paths": {},
+            }
+
+            with patch.object(lk, "discover_audit_target_contract", return_value="ConfidencePool"),                  patch.object(lk, "_live_target_candidate", return_value=None),                  patch.object(lk, "discover_deployments", return_value=[]),                  patch.object(lk, "run_lab", return_value=0) as run_lab:
+                result = lk._bootstrap_audit_target(config, root, allow_deploy=True)
+
+            run_lab.assert_called_once_with(config, [])
+            self.assertIsNone(result)
+
     def test_target_named_deployment_auto_selects_matching_broadcast(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=pathlib.Path(tmp)
