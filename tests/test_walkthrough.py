@@ -990,6 +990,25 @@ class WalkthroughTests(unittest.TestCase):
         self.assertNotIn("bool ok, )", content)
         self.assertNotIn("address target_1 = 0x70997970c51812dc3a010c7d01b50e0d17dc79c8;", content)
 
+
+    def test_actual_call_tree_is_connected(self):
+        step = walkthrough.Step(
+            1, "Alice", "Factory", "0x" + "1" * 40,
+            "createPool()", [], status="success",
+        )
+        step.execution_edges = [
+            {"depth": 0, "to_contract": "Factory", "function": "createPool()"},
+            {"depth": 1, "to_contract": "Agreement", "function": "owner()"},
+            {"depth": 1, "to_contract": "ConfidencePool", "function": "initialize()"},
+            {"depth": 2, "to_contract": "Registry", "function": "isAgreementValid(address)"},
+        ]
+        actors = [walkthrough.Actor("Alice", "0x" + "a" * 40, 0)]
+        rendered = walkthrough._render_actual_call_tree(step, [], False)
+        self.assertIn("Alice ──▶ Factory.createPool()", rendered)
+        self.assertIn("├─▶ Agreement.owner()", rendered)
+        self.assertIn("├─▶ ConfidencePool.initialize()", rendered)
+        self.assertIn("    ├─▶ Registry.isAgreementValid(address)", rendered)
+
     def test_live_interaction_graph_reads_like_a_protocol_story(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
