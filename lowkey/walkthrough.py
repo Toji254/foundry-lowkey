@@ -1214,7 +1214,6 @@ def _rank_function(fn: FunctionInfo) -> int:
         ("flag", 12),
         ("resolve", 12),
         ("sweep", 10),
-        ("setstaketokenallowed", 22),
     ):
         if token in n:
             score += bonus
@@ -1570,6 +1569,7 @@ def _build_model(
     if not _is_address(target):
         raise RuntimeError("Set a valid target before running walkthrough.")
     artifacts, artifact_files = _load_artifacts(root)
+    label = _target_label(config, target)
     configured = (config.get("abi_paths") or {}).get(target)
     if configured:
         try:
@@ -1590,7 +1590,6 @@ def _build_model(
         artifact_files,
         root,
     )
-    label = _target_label(config, target)
     nodes, getter_data, _ = _build_live_graph(
         root,
         rpc,
@@ -1705,6 +1704,31 @@ def _plan_actions(
             nodes,
             functions_by_contract,
         )
+
+        # Factory-style creation often gates the caller against the owner of
+        # the referenced protocol contract. Resolve that owner from the exact
+        # semantic argument instead of assuming Alice is the caller.
+        if ".owner()" in (fn.body or "") and "msg.sender" in (fn.body or ""):
+            agreement_pos = next(
+                (
+                    i for i, p in enumerate(fn.inputs)
+                    if str(p.get("name") or "").lower() == "agreement"
+                ),
+                None,
+            )
+            if agreement_pos is not None and _is_address(args[agreement_pos]):
+                code, out, _ = _query_by_signature(
+                    root,
+                    rpc,
+                    args[agreement_pos],
+                    "owner()(address)",
+                    [],
+                )
+                if code == 0:
+                    owner = re.search(r"0x[0-9a-fA-F]{40}", out)
+                    if owner:
+                        caller, actor_name = owner.group(0), "Agreement Owner"
+
         if not caller:
             continue
         precheck = _preflight_failure(
