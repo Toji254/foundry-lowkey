@@ -350,12 +350,13 @@ def _resolve_walkthrough_target(
     rpc: str,
     bootstrap: dict[str, Any],
 ) -> tuple[str | None, str]:
-    """Resolve a live target from existing audit/system state."""
+    """Resolve a target, preferring live runtime state over stale static state."""
     configured = str(config.get("target") or "").strip()
+    configured_static: tuple[str, str] | None = None
     if _is_address(configured):
         if _code_size(rpc, configured) > 0:
             return configured, "configured target"
-        return configured, "configured target (no live bytecode)"
+        configured_static = (configured, "configured target (no live bytecode)")
 
     saved_static: list[tuple[str, str]] = []
     saved_targets = config.get("targets") or {}
@@ -367,14 +368,9 @@ def _resolve_walkthrough_target(
                 return value, f"saved target '{name}'"
             saved_static.append((value, f"saved target '{name}' (no live bytecode)"))
 
-    # Persisted audit evidence is authoritative session state, but a stale
-    # offline target must not override a genuinely live broadcast deployment.
     audit_targets = bootstrap.get("audit_targets") or _extract_audit_targets(
         bootstrap.get("audit_evidence") or []
     )
-
-    # Last-mile fallback: read persisted evidence directly. This keeps target
-    # recovery working even if the shared manifest is stale or partially built.
     if not audit_targets:
         direct_evidence: list[dict[str, Any]] = []
         for path in sorted((root / ".audit" / "evidence").glob("*.json")):
@@ -397,10 +393,9 @@ def _resolve_walkthrough_target(
         if not _is_address(target):
             continue
         file_name = str(item.get("file") or "")
-        if _code_size(rpc, target) > 0:
-            source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
-            return target, source
         source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
+        if _code_size(rpc, target) > 0:
+            return target, source
         audit_static.append((target, source + " (no live bytecode)"))
 
     live = list(bootstrap.get("live_deployments") or [])
@@ -415,14 +410,98 @@ def _resolve_walkthrough_target(
         item = live[0]
         return str(item["address"]), f"broadcast {item['broadcast']}"
 
-    # Static evidence is still useful when no live deployment exists.
+    if configured_static:
+        return configured_static
     if audit_static:
         return audit_static[0]
-
     if saved_static:
         return saved_static[0]
-
     return None, "not discovered"
+
+
+def _bootstrap_script_score(item: dict[str, Any]) -> int:
+    """Rank local setup candidates without assuming project naming conventions."""
+    path = str(item.get("path") or "").lower()
+    signals = {str(x).lower() for x in item.get("signals") or []}
+    if not path or any(token in path for token in ("poc", "exploit", "attack", "malicious")):
+        return -10_000
+
+    score = 0
+    if "run()" in signals:
+        score += 5
+    if "broadcast" in signals:
+        score += 5
+    if "contract creation" in signals or "create opcode" in signals:
+        score += 4
+    for token, bonus in (
+        ("local", 8),
+        ("setup", 7),
+        ("bootstrap", 6),
+        ("deploy", 5),
+        ("fixture", 4),
+        ("lab", 3),
+    ):
+        if token in path:
+            score += bonus
+    return score
+
+
+def _script_has_remote_execution_hazards(root: Path, rel_path: str) -> tuple[bool, str]:
+    """Reject auto-bootstrap scripts that explicitly manipulate remote forks."""
+    try:
+        source = (root / rel_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return True, f"cannot read bootstrap script: {exc}"
+
+    masked = _strip_solidity_comments(source).lower()
+    for marker in ("vm.createselectfork", "vm.createfork", "vm.rpc", "vm.transact"):
+        if marker in masked:
+            return True, f"script contains remote/fork execution primitive {marker}"
+    return False, ""
+
+
+def _auto_bootstrap_local(
+    root: Path,
+    config: dict[str, Any],
+    bootstrap: dict[str, Any],
+) -> tuple[bool, str]:
+    """Populate local Anvil from a conservative discovered setup script."""
+    rpc = _rpc_url(config)
+    if not _is_local_rpc(rpc):
+        return False, "auto bootstrap requires a local RPC"
+
+    scripts = [x for x in (bootstrap.get("scripts") or []) if isinstance(x, dict)]
+    ranked = sorted(
+        scripts,
+        key=lambda item: (-_bootstrap_script_score(item), str(item.get("path") or "")),
+    )
+    accounts = _eth_accounts(rpc)
+    sender = accounts[0] if accounts else None
+
+    for item in ranked:
+        path = str(item.get("path") or "").strip()
+        if _bootstrap_script_score(item) < 0:
+            continue
+        if not re.search(r"\.s\.sol$", path):
+            continue
+        hazardous, _reason = _script_has_remote_execution_hazards(root, path)
+        if hazardous:
+            continue
+
+        dry_command = ["forge", "script", path, "--rpc-url", rpc]
+        broadcast_command = ["forge", "script", path, "--rpc-url", rpc, "--broadcast"]
+        if sender:
+            dry_command += ["--unlocked", "--sender", sender]
+            broadcast_command += ["--unlocked", "--sender", sender]
+
+        code, _out, _err = _cmd(dry_command, cwd=root, timeout=90)
+        if code != 0:
+            continue
+        code, _out, _err = _cmd(broadcast_command, cwd=root, timeout=120)
+        if code == 0:
+            return True, f"executed {path}"
+
+    return False, "no safe bootstrap script completed successfully"
 
 
 def _print_bootstrap_discovery(meta: dict[str, Any]) -> None:
@@ -2425,6 +2504,31 @@ def _run_walkthrough(
     meta, fns, nodes, getter_data, contracts, actors, known = _build_model(
         root, config
     )
+
+    if flags.get("auto") and _is_local_rpc(str(meta["rpc"])):
+        live_nodes = meta.get("live_nodes") or []
+        if not any(
+            isinstance(node, dict) and int(node.get("code_size") or 0) > 0
+            for node in live_nodes
+        ):
+            bootstrap_ok, bootstrap_reason = _auto_bootstrap_local(
+                root,
+                config,
+                meta.get("bootstrap") or {},
+            )
+            meta["auto_bootstrap"] = {
+                "status": "success" if bootstrap_ok else "not_executed",
+                "reason": bootstrap_reason,
+            }
+            if bootstrap_ok:
+                meta, fns, nodes, getter_data, contracts, actors, known = _build_model(
+                    root, config
+                )
+                meta["auto_bootstrap"] = {
+                    "status": "success",
+                    "reason": bootstrap_reason,
+                }
+
     errors = _all_errors(_load_artifacts(root)[0])
     if flags.get("bootstrap") or not meta.get("target"):
         _print_bootstrap_discovery(meta)
