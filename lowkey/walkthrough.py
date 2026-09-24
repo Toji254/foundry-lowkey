@@ -532,26 +532,27 @@ def _lab_runtime(config: dict[str, Any], target: str, model: ContractModel) -> l
         return [RuntimeContract(target, model.name, model.name, "target")]
 
     definitions = [
-        ("factory", "ConfidencePoolFactory", "system"),
-        ("pool_implementation", "ConfidencePool", "IMPLEMENTATION"),
-        ("stake_token", "StakeToken", "DEPENDENCY"),
-        ("attack_registry", "MockAttackRegistry", "DEPENDENCY"),
-        ("safe_harbor_registry", "MockSafeHarborRegistry", "DEPENDENCY"),
-        ("agreement", "MockAgreement", "DEPENDENCY"),
-        ("moderator", "MockConfidencePoolModerator", "DEPENDENCY"),
-        ("pool", "ConfidencePool", "CLONE"),
+        ("factory", "ConfidencePoolFactory", "system", None),
+        ("pool_implementation", "ConfidencePool", "IMPLEMENTATION", "factory"),
+        ("pool", "ConfidencePool", "CLONE", "factory"),
+        ("stake_token", "StakeToken", "DEPENDENCY", "pool"),
+        ("agreement", "MockAgreement", "DEPENDENCY", "pool"),
+        ("safe_harbor_registry", "MockSafeHarborRegistry", "DEPENDENCY", "pool"),
+        ("attack_registry", "MockAttackRegistry", "DEPENDENCY", "safe_harbor_registry"),
+        ("moderator", "MockConfidencePoolModerator", "DEPENDENCY", "pool"),
     ]
     runtime=[]
-    factory_addr=system.get("factory")
-    for key,label,relation in definitions:
-        address=system.get(key)
+    address_by_key={k:system.get(k) for k,_,_,_ in definitions}
+    for key,label,relation,parent_key in definitions:
+        address=address_by_key.get(key)
         if not address:
             continue
-        parent=factory_addr if key in {"pool","pool_implementation"} else None
-        runtime.append(RuntimeContract(address, label, label, relation, parent))
+        parent=address_by_key.get(parent_key) if parent_key else None
+        runtime.append(RuntimeContract(address,label,label,relation,parent))
     if not any(x.address.lower()==target.lower() for x in runtime):
-        runtime.append(RuntimeContract(target, model.name, model.name, "target"))
+        runtime.append(RuntimeContract(target,model.name,model.name,"target"))
     return runtime
+
 
 
 def _confidence_pool_recipe(config: dict[str, Any], actors: list[Actor]) -> list[Step]:
