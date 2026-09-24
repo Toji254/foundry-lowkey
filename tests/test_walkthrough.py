@@ -101,6 +101,21 @@ class WalkthroughTests(unittest.TestCase):
         decoded = walk._decode_error(selector, [err])
         self.assertEqual(decoded, "StakingClosed()")
 
+    def test_trace_revert_frames_walk_nested_calls(self):
+        trace = {
+            "to": "0x" + "1" * 40,
+            "calls": [
+                {
+                    "to": "0x" + "2" * 40,
+                    "error": "execution reverted",
+                    "revertReason": "StakeTokenNotAllowed()",
+                }
+            ],
+        }
+        frames = walk._trace_revert_frames(trace)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("StakeTokenNotAllowed()", frames[0])
+
     def test_mutations_include_zero_and_actor_swaps(self):
         actors = {
             "Alice": "0x" + "a" * 40,
