@@ -2554,6 +2554,36 @@ def _prepare_obvious_prerequisite(root: Path, rpc: str, host: Any, config: dict[
     if not origin:
         return None
 
+    # A time-window guard can be repaired without inventing protocol state.
+    function_name = str(step.function).split("(", 1)[0]
+    source = ""
+    try:
+        source = (root / model.source).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        source = ""
+    inputs = _function_inputs(model, step.function)
+    for index, param in enumerate(inputs):
+        pname = str(param.get("name") or "")
+        if index >= len(step.args) or _canonical_type(param) not in {"uint256", "uint128", "uint64", "uint32"}:
+            continue
+        tm = re.search(r"\\b" + re.escape(pname) + r"\\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", source, re.S)
+        if not tm:
+            continue
+        seconds = _constant_duration_seconds(source, tm.group(1))
+        if seconds is None:
+            continue
+        if any(pname + " is too soon" in line for line in diagnostics):
+            step.args[index] = _block_timestamp(rpc) + seconds + 1
+            return "PREREQUISITE ✓ adjusted " + pname + " to satisfy the source time window"
+
+    # When the source proves this is an owner mismatch, switch to a local Anvil
+    # actor representing the real owner instead of forging an identity.
+    if any("is not the owner" in line or "caller is" in line for line in diagnostics):
+        owner_actor = _owner_actor_for_target(rpc, step.address, model, actors)
+        if owner_actor and owner_actor.name != step.actor:
+            step.actor = owner_actor.name
+            return "PREREQUISITE ✓ switched caller to owner actor " + owner_actor.name
+
     # Missing public mapping permission → execute its obvious address/bool setter.
     for mapping in model.mappings:
         name = str(mapping.get("name") or "")
@@ -5543,6 +5573,22 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     break
             continue
 
+        repair_attempts = 0
+        repair_notes: list[str] = []
+        while auto and repair_attempts < 3:
+            repair = _prepare_obvious_prerequisite(
+                root, rpc, host, config, step, current_model, model_catalog, actors
+            )
+            if not repair:
+                break
+            repair_attempts += 1
+            repair_notes.append(repair)
+            step.diagnostics.append(repair)
+            # Re-read the source-derived guards after every setup transaction.
+            if repair.startswith("PREREQUISITE ✕"):
+                break
+            actor = next((a for a in actors if a.name == step.actor), actor)
+            draw(step)
         ok,preflight=_preflight(rpc,step,actor.address)
         steps.pop()
         step.preflight=preflight
