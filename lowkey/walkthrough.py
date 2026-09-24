@@ -1112,6 +1112,67 @@ def _function_signature_from_abi(item: dict[str, Any]) -> str:
     return f"{name}({','.join(types)})"
 
 
+def _artifact_runtime_code(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    deployed = payload.get("deployedBytecode")
+    if isinstance(deployed, dict):
+        value = deployed.get("object")
+    else:
+        value = deployed
+    if not isinstance(value, str) or not value.startswith("0x") or len(value) <= 2:
+        return None
+    return value.lower()
+
+
+def _runtime_identity(root: Path, rpc: str, address: str, contract: str, artifact_files: dict[str, Path] | None = None) -> str:
+    """Return exact/weak/unknown/mismatch runtime identity against a local artifact."""
+    if not _is_address(address) or not contract:
+        return "unknown"
+    files = artifact_files or _load_artifacts(root)[1]
+    path = files.get(contract)
+    if path is None:
+        for name, candidate in files.items():
+            if name.lower() == contract.lower():
+                path = candidate
+                break
+    expected = _artifact_runtime_code(path) if path else None
+    if expected is None:
+        return "unknown"
+    try:
+        actual = str(_rpc(rpc, "eth_getCode", [address, "latest"]) or "0x").lower()
+    except Exception:
+        return "unknown"
+    if actual == expected:
+        return "exact"
+    # Immutables can differ between otherwise identical deployments. Treat a
+    # matching prefix+suffix and runtime size as weak evidence, never as exact proof.
+    if len(actual) == len(expected) and len(actual) > 100:
+        if actual[:74] == expected[:74] and actual[-74:] == expected[-74:]:
+            return "weak"
+    return "mismatch"
+
+
+def _identify_runtime_contract(
+    root: Path,
+    rpc: str,
+    address: str,
+    artifact_files: dict[str, Path],
+) -> str | None:
+    matches: list[str] = []
+    for name in artifact_files:
+        identity = _runtime_identity(root, rpc, address, name, artifact_files)
+        if identity == "exact":
+            matches.append(name)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return sorted(matches)[0]
+    return None
+
+
 def _load_artifacts(root: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Path]]:
     by_contract: dict[str, list[dict[str, Any]]] = {}
     files: dict[str, Path] = {}
