@@ -461,6 +461,28 @@ def _print_bootstrap_discovery(meta: dict[str, Any]) -> None:
     else:
         print("  Test fixtures: none detected")
 
+    audit_targets = bootstrap.get("audit_targets") or []
+    if audit_targets:
+        print("  Persisted audit targets:")
+        for item in audit_targets[:6]:
+            target = item.get("target")
+            file_name = item.get("file") or "audit evidence"
+            live = False
+            if _is_address(target):
+                live = any(
+                    node.get("address", "").lower() == target.lower() and node.get("code_size", 0) > 0
+                    for node in (meta.get("live_nodes") or [])
+                    if isinstance(node, dict)
+                )
+            status = "live bytecode" if live else "no live bytecode"
+            print(f"    {target} [{status}] from {file_name}")
+
+    if meta.get("target") and not (meta.get("live_nodes") or []):
+        print("")
+        print(f"  Target anchor: {meta['target']} ({meta.get('target_source', 'unknown')})")
+        print("  No live contract/dependencies were discovered for the target.")
+        print("  Lowkey can still use static source, artifact, test, and bootstrap evidence.")
+
     if not meta.get("target"):
         print("")
         print(
@@ -2337,8 +2359,17 @@ def _run_walkthrough(
     current = 0
     if not actions:
         print(_render_story(root, nodes, fns, contracts, [], actors, None, flags.get("links", True), meta))
-        print("\nNo semantically executable actions were discovered.")
-        print("That is intentional: Lowkey will not substitute EOAs for contract roles.")
+        target = meta.get("target")
+        live_nodes = meta.get("live_nodes") or []
+        if target and not any(
+            isinstance(node, dict) and int(node.get("code_size") or 0) > 0
+            for node in live_nodes
+        ):
+            print("\nNo semantically executable actions were discovered.")
+            print("Target state is static-only: the persisted target has no live bytecode on the selected RPC.")
+        else:
+            print("\nNo semantically executable actions were discovered.")
+            print("That is intentional: Lowkey will not substitute EOAs for contract roles.")
         _persist(root, payload)
         return 0
 
