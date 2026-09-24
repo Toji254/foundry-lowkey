@@ -929,12 +929,34 @@ def _contract_requirement_for_parameter(
             continue
 
         callee_name = str(edge.get("to_function") or "")
+        callee_base = callee_name.split("(", 1)[0]
         callee = _function_by_name(target_model, callee_name)
         if callee:
             inputs = callee.get("inputs") or []
         else:
-            semantic = target_model.semantics.get(callee_name + "()") or target_model.semantics.get(callee_name)
+            semantic = target_model.semantics.get(callee_base + "()") or target_model.semantics.get(callee_base)
             inputs = semantic.get("inputs") or [] if isinstance(semantic, dict) else []
+
+        # Internal Solidity helpers do not appear in the public ABI and some
+        # lightweight test models intentionally omit semantic parameter metadata.
+        # In that case, inspect the helper's own external edges: if the original
+        # parameter name reaches an external call from the helper, that call gives
+        # us the required interface without inventing a type.
+        if not inputs and kind == "internal":
+            for nested_edge in target_model.calls:
+                if str(nested_edge.get("from") or "") not in {callee_base, callee_name}:
+                    continue
+                if nested_edge.get("kind") != "cross-contract":
+                    continue
+                nested_via = str(nested_edge.get("via") or "").lower().rstrip("_")
+                wanted_alias = wanted.rstrip("_")
+                if nested_via == wanted_alias:
+                    return str(
+                        nested_edge.get("interface")
+                        or nested_edge.get("to_contract")
+                        or ""
+                    ) or None
+
         if not inputs:
             continue
 
