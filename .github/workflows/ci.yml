@@ -19,7 +19,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/audit_engine.py lowkey/clone_tools.py lowkey/walkthrough.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/audit_engine.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/system_model.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -72,6 +72,7 @@ jobs:
           lk --version
           lk self-test
           lk doctor
+          lk system
           lk scan src
           lk scan src/Fixture.sol
           lk rg 'function|event' src
