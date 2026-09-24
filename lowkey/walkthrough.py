@@ -2245,8 +2245,11 @@ def _preflight_failure(
         caller,
     )
     combined = "\n".join(x for x in (err, out) if x)
-    blob = _parse_revert_blob(combined)
-    decoded = _decode_error(blob, all_errors)
+    # cast call stdout is return data on success. Revert decoding must only
+    # inspect failed calls, otherwise values such as 0x00000000 get mistaken
+    # for a four-byte custom-error selector.
+    blob = _parse_revert_blob(combined) if code != 0 else None
+    decoded = _decode_error(blob, all_errors) if code != 0 else None
     trace = None
     trace_revert_frames: list[str] = []
     if include_trace or (code != 0 and not decoded and (not blob or blob == "0x")):
@@ -2423,6 +2426,34 @@ def _known_preconditions(
     return findings
 
 
+
+def _is_token_utility_function(fn: FunctionInfo, functions: list[FunctionInfo]) -> bool:
+    """Return true for standard asset-management helpers on detected ERC20-like components."""
+    if not _looks_like_erc20(functions):
+        return False
+    return fn.name.lower() in {
+        "approve",
+        "increaseallowance",
+        "decreaseallowance",
+        "transfer",
+        "transferfrom",
+        "mint",
+        "burn",
+        "permit",
+    }
+
+
+def _is_protocol_entrypoint(fn: FunctionInfo, node: LiveNode, functions: list[FunctionInfo]) -> bool:
+    """Prefer protocol behavior over generic asset plumbing in the walkthrough."""
+    if _is_token_utility_function(fn, functions):
+        return False
+    purpose = _contract_purpose(node.artifact_contract or node.name, functions)
+    if purpose in {
+        "asset used by the protocol for value/staking",
+    }:
+        return False
+    return fn.visibility in {"external", "public"} and fn.mutability not in {"view", "pure"}
+
 def _rank_function(fn: FunctionInfo) -> int:
     if fn.mutability in {"view", "pure"}:
         return -100
@@ -2452,6 +2483,11 @@ def _rank_function(fn: FunctionInfo) -> int:
             score -= 20
     if n in {"constructor", "fallback", "receive"}:
         score = -100
+    if n in {
+        "approve", "increaseallowance", "decreaseallowance",
+        "transfer", "transferfrom", "mint", "burn", "permit",
+    }:
+        score -= 45
     return score
 
 
@@ -3867,6 +3903,8 @@ def _candidate_actions(
             continue
         funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
         for fn in funcs:
+            if not _is_protocol_entrypoint(fn, node, funcs):
+                continue
             score = _rank_function(fn)
             phase_priority, _ = _walkthrough_phase_priority(fn)
             if score <= 0 or phase_priority <= 0 or _walkthrough_is_setup_action(fn):
@@ -4079,6 +4117,7 @@ def _run_walkthrough(
                 errors,
                 include_trace=True,
             )
+            action["status"] = "READY" if action["result"].get("ok") else "BLOCKED"
 
         print(_render_story(
             root,
