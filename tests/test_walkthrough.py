@@ -171,6 +171,24 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("Pool #1", rendered)
         self.assertIn("⋯⋯⋯▶", rendered)
 
+    def test_argument_inference_uses_protocol_expiry_window(self):
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        self.assertEqual(
+            walkthrough._arg_for({"name": "expiry", "type": "uint256"}, actors, actors[0].address, 100),
+            100 + 31 * 24 * 60 * 60,
+        )
+
+    def test_role_aware_actor_selection_uses_moderator(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        observed = {"defaultoutcomemoderator": actors[1].address}
+        self.assertEqual(
+            walkthrough._actor_for_function("flagOutcome", actors, observed).name,
+            "Bob",
+        )
+
     def test_argument_inference_uses_roles(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
