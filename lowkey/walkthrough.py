@@ -117,6 +117,9 @@ class Step:
     storage_changes: list[dict[str, Any]] = field(default_factory=list)
     balance_before: dict[str, str] = field(default_factory=dict)
     balance_after: dict[str, str] = field(default_factory=dict)
+    token_balance_before: dict[str, int] = field(default_factory=dict)
+    token_balance_after: dict[str, int] = field(default_factory=dict)
+    error_reason: str | None = None
     discovered_contracts: list[dict[str, Any]] = field(default_factory=list)
     preflight: str | None = None
     runtime_contracts: list[dict[str, Any]] = field(default_factory=list)
@@ -526,11 +529,11 @@ def _cli_arg(value: Any) -> str:
     """Render a Solidity argument in a cast-friendly command-line form."""
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, (list, tuple, dict)):
-        return json.dumps(value, separators=(",", ":"))
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_cli_arg(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(f"{key}:{_cli_arg(item)}" for key, item in value.items()) + "}"
     return str(value)
-
-
 def _lab_runtime(config: dict[str, Any], target: str, model: ContractModel) -> list[RuntimeContract]:
     system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
     if not system:
@@ -636,20 +639,18 @@ def _actor_for_address(address: str | None, actors: list[Actor]) -> str | None:
 
 
 def _friendly_value(value: Any) -> str:
-    """Render generic Solidity values without assuming an asset denomination."""
+    """Render generic Solidity values in a human-readable form."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
         if value == 2**256 - 1:
             return "MAX"
         if abs(value) >= 10**9:
-            return f"{value:,} units"
+            return f"{value:,}"
         return str(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_friendly_value(item) for item in value[:4]) + (", …" if len(value) > 4 else "") + "]"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_friendly_value(item) for item in list(value)[:4]) + (", …" if len(value) > 4 else "") + "]"
     return str(value)
-
-
 def _friendly_eth(value_wei: int | None) -> str:
     try:
         value = int(value_wei or 0)
@@ -669,6 +670,83 @@ def _friendly_arg(value: Any, actors: list[Actor]) -> str:
 
 def _friendly_contract_name(step: Step) -> str:
     return str(step.contract or "Contract").replace("MockConfidencePoolModerator", "Moderator")
+
+
+def _short_error(raw: str | None) -> str:
+    text = " ".join(str(raw or "").split())
+    for prefix in ("PRECONDITION BLOCKED: ", "Error: execution reverted: ", "execution reverted: ", "Error: "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    return text[-420:] if text else "unknown failure"
+
+
+def _explain_failure(step: Step, raw: str | None, actor: str) -> str:
+    """Translate low-level failures into a plain-English reason."""
+    text = " ".join(str(raw or "").split())
+    lower = text.lower().replace(" ", "")
+    rules = [
+        ("stakingclosed", "the pool is past its staking deadline, so new deposits are closed"),
+        ("notmoderator", f"{actor} is not the configured outcome moderator"),
+        ("ownableunauthorizedaccount", f"{actor} is not the contract owner"),
+        ("outcomenotset", "the pool has no terminal outcome yet, so this claim path is unavailable"),
+        ("outcomenotaligibleforsweep", "the pool is not in a state where this sweep is allowed"),
+        ("poolnotexpired", "the pool has not reached its expiry time yet"),
+        ("withdrawsdisabled", "withdrawals are disabled because the risk window or a later registry state has been reached"),
+        ("invalidamount", "the supplied amount is invalid"),
+        ("belowminstake", "the supplied stake is below the pool's minimum stake"),
+        ("notattacker", "this caller is not the recorded attacker"),
+        ("bountyalreadyclaimed", "the attacker bounty has already been claimed"),
+        ("claimwindowexpired", "the attacker claim window has expired"),
+        ("mustclaimbountyfirst", "the bounty must be claimed before the recovery sweep"),
+        ("nothingtosweep", "there is no free balance available to sweep"),
+        ("riskwindownotreached", "the registry has not reached an active or terminal state that seals a risk window"),
+        ("agreementcorruptedawaitingmoderator", "the agreement is corrupted, but the moderator grace period is still active"),
+    ]
+    for token, explanation in rules:
+        if token in lower:
+            return explanation
+    if "parsererror" in lower or "invalidboolean" in lower or "expectedhexdigits" in lower:
+        return "Lowkey could not encode the argument for cast, so Solidity was never reached"
+    if 'data:"0x"' in lower:
+        return "the call reverted without a decoded reason; an external dependency or protocol fixture may still be unconfigured"
+    if "executionreverted" in lower:
+        return "the contract rejected this call under the current on-chain state"
+    return "the live call was not accepted"
+
+
+def _human_action_summary(step: Step, actors: list[Actor]) -> str:
+    actor = step.actor or "Caller"
+    contract = _friendly_contract_name(step)
+    function = str(step.function or "").split("(", 1)[0]
+    lower = function.lower()
+    args = step.args
+    if lower == "approve":
+        return f"{actor} approves {contract} to spend their stake tokens"
+    if lower in {"stake", "deposit"}:
+        amount = _friendly_value(args[0]) if args else "the requested amount"
+        return f"{actor} deposits {amount} stake tokens into {contract}"
+    if lower == "contributebonus":
+        amount = _friendly_value(args[0]) if args else "the requested amount"
+        return f"{actor} adds {amount} stake tokens to the bonus pool"
+    if lower == "withdraw":
+        return f"{actor} withdraws their stake from {contract}"
+    if lower.startswith("claim"):
+        return f"{actor} tries to claim their payout from {contract}"
+    if lower == "flagsurvived":
+        return f"{actor} asks the moderator to mark {contract} as survived"
+    if lower == "flagcorruptedgoodfaith":
+        return f"{actor} asks the moderator to mark {contract} corrupted and name an attacker"
+    if lower == "flagcorruptedbadfaith":
+        return f"{actor} asks the moderator to mark {contract} corrupted for recovery"
+    if lower == "setrecoveryaddress":
+        return f"{actor} changes the recovery address to {_friendly_arg(args[0], actors) if args else 'unknown'}"
+    if lower == "setexpiry":
+        return f"{actor} changes the pool expiry to {_friendly_value(args[0]) if args else 'unknown'}"
+    if lower == "setpoolscope":
+        return f"{actor} changes the allowed pool scope to {_friendly_arg(args[0], actors) if args else '[]'}"
+    if lower == "pokeriskwindow":
+        return f"{actor} asks {contract} to check the external attack registry"
+    return f"{actor} calls {contract}.{function}()"
 
 
 def _friendly_action(step: Step, actors: list[Actor]) -> list[str]:
@@ -796,6 +874,44 @@ def _snapshot_balances(rpc: str, addresses: list[str]) -> dict[str, int]:
     return result
 
 
+def _snapshot_token_balances(rpc: str, token: str | None, addresses: list[str]) -> dict[str, int]:
+    if not is_address(token):
+        return {}
+    result: dict[str, int] = {}
+    for address in dict.fromkeys(addresses):
+        code, out, _err = _cmd(["cast","call",token,"balanceOf(address)",address,"--rpc-url",rpc],timeout=8)
+        if code != 0:
+            continue
+        raw = (out or "").strip().splitlines()
+        if not raw:
+            continue
+        try:
+            result[address.lower()] = int(raw[-1], 0)
+        except (TypeError, ValueError):
+            try:
+                result[address.lower()] = int(raw[-1])
+            except (TypeError, ValueError):
+                pass
+    return result
+
+
+def _friendly_token_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
+    if not step.token_balance_before or not step.token_balance_after:
+        return []
+    names = {actor.address.lower(): actor.name for actor in actors}
+    lines = []
+    for address in sorted(set(step.token_balance_before) | set(step.token_balance_after)):
+        before = step.token_balance_before.get(address)
+        after = step.token_balance_after.get(address)
+        if before is None or after is None or before == after:
+            continue
+        label = names.get(address, _addr(address))
+        delta = after - before
+        sign = "+" if delta > 0 else "-"
+        lines.append(f"    ◆ STAKE BALANCE {label}: {sign}{_friendly_value(abs(delta))}")
+    return lines
+
+
 def _friendly_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
     if not step.balance_before or not step.balance_after:
         return []
@@ -867,71 +983,51 @@ def _render_protocol_story(
     actors: list[Actor],
     enabled: bool,
 ) -> str:
-    lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
+    lines = [_paint("PROTOCOL FLOW", BOLD + CYAN, enabled)]
     if not steps and not current:
-        return "\n".join(lines + [
-            "  ╭─ SYSTEM READY",
-            "  │",
-            "  └─ press Enter to execute the first live interaction",
+        return "\n".join([
+            "PROTOCOL FLOW",
+            "  START",
+            "    │",
+            "    ▼",
+            "  Ready for the first live interaction.",
         ])
-
-    visible = steps[-6:]
+    visible = list(steps[-8:])
     if current is not None and (not visible or visible[-1] is not current):
-        visible = visible + [current]
-
+        visible.append(current)
     for index, step in enumerate(visible):
-        status_ok = step.status == "success"
-        status_blocked = step.status in {"blocked", "reverted"}
-        icon = "✓" if status_ok else "!" if status_blocked else "●"
-        color = GREEN if status_ok else RED if status_blocked else YELLOW
-
-        lines.append("")
-        title = f"  ╭─ STEP {step.index:02d} {icon}  {step.actor}"
+        ok = step.status == "success"
+        bad = step.status in {"blocked", "reverted"}
+        icon = "✓" if ok else "✕" if bad else "●"
+        color = GREEN if ok else RED if bad else YELLOW
+        title = f"{step.index:02d} {icon} {step.actor}"
         if current is step:
-            title += "  ◀ LIVE"
-        lines.append(_paint(title, color, enabled))
-
+            title += "  ◀ NOW"
+        lines.append("")
+        lines.append(_paint(f"  ┌─ {title}", color, enabled))
+        lines.append(f"  │ {_human_action_summary(step, actors)}")
         details = _friendly_action(step, actors)
-        for detail in details:
-            lines.append("  │ " + detail)
-
-        balance_lines = _friendly_balance_lines(step, actors)
-        state_lines = _friendly_state_lines(step, actors)
-        event_lines = _friendly_event_lines(step)
-
-        if balance_lines:
-            lines.append("  │")
-            lines.append("  ├─ BALANCES")
-            lines.extend("  │   " + line.strip() for line in balance_lines[:6])
-        if state_lines:
-            lines.append("  │")
-            lines.append("  ├─ STATE UPDATES")
-            lines.extend("  │   " + line.strip() for line in state_lines[:8])
-        if event_lines:
-            lines.append("  │")
-            lines.extend("  │   " + line.strip() for line in event_lines[:4])
-
-        if step.discovered_contracts:
-            lines.append("  │")
-            lines.append("  ├─ NEW CONTRACTS")
-            for node in step.discovered_contracts[:4]:
-                lines.append(
-                    f"  │   {ARROW} {node.get('label') or node.get('model')} "
-                    f"{_addr(node.get('address'))}"
-                )
-
-        if step.error:
-            compact = " ".join(str(step.error).split())
-            lines.append("  │")
-            lines.append(f"  └─ {WARNING} {compact[-240:]}")
-        else:
-            lines.append("  ╰" + "─" * 78 + "╯")
-
+        for detail in details[1:]:
+            clean = detail.strip()
+            if clean:
+                lines.append(f"  │ {clean}")
+        if ok:
+            lines.append("  │ WHY: preflight passed and the live transaction was accepted")
+            for detail in _friendly_token_balance_lines(step, actors)[:4]:
+                lines.append(f"  │ {detail.strip()}")
+            for detail in _friendly_state_lines(step, actors)[:6]:
+                lines.append(f"  │ {detail.strip()}")
+            for detail in _friendly_event_lines(step)[:3]:
+                lines.append(f"  │ {detail.strip()}")
+        elif bad:
+            reason = step.error_reason or _explain_failure(step, step.error, step.actor)
+            lines.append(f"  │ WHY IT FAILED: {reason}")
+            lines.append(f"  │ CONTRACT RESPONSE: {_short_error(step.error)}")
+        lines.append(f"  └{'─' * 84}┘")
         if index != len(visible) - 1:
             lines.append("                 │")
             lines.append("                 ▼")
     return "\n".join(lines)
-
 
 
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
@@ -1792,34 +1888,18 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  Enter = next interaction   q = stop",
+        "  ENTER = next live interaction   Q = stop",
         "",
-        _box(
-            "ACTORS",
-            [
-                "   ".join(
-                    f"{ACTOR} {actor.name} {_addr(actor.address)}"
-                    for actor in actors
-                )
-            ],
-            width=92,
-        ),
+        _box("ACTORS", [
+            "   ".join(f"{ACTOR} {actor.name} {_addr(actor.address)}" for actor in actors)
+        ], width=92),
         "",
         _render_runtime_graph(runtime, enabled),
         "",
-        _render_live_path(steps, runtime, enabled),
-        "",
         _render_protocol_story(steps, current, actors, enabled),
     ]
-
     if current and current.storage_after:
-        recent = current.storage_after
-        board += [
-            "",
-            _paint("CURRENT STATE", BOLD + GREEN, enabled),
-            _render_storage(recent[:3], enabled),
-        ]
-
+        board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled)]
     board += ["", "  " + _slither_status(root)]
     if static:
         board.append(_paint("STATIC MODEL ONLY", YELLOW, enabled))
@@ -1903,7 +1983,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         if sys.stdout.isatty():
             # Fixed terminal canvas: each live observation replaces the previous
             # frame instead of scrolling the workflow downward.
-            sys.stdout.write("\033[2J\033[H")
+            sys.stdout.write("\033[2J\033[H\033[3J")
             sys.stdout.flush()
         print(_render_board(
             root, model, models, runtime, actors, steps, current, storage or [],
@@ -1936,16 +2016,24 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         if not ok:
             step.status="blocked"
             step.error="PRECONDITION BLOCKED: "+preflight
+            step.error_reason=_explain_failure(step, preflight, step.actor)
             steps.append(step)
             draw(step)
         else:
             actor=next((a for a in actors if a.name==step.actor),actors[0])
             balance_addresses = [a.address for a in actors] + [node.address for node in runtime]
             step.balance_before = _snapshot_balances(rpc, balance_addresses)
+            step.token_balance_before = _snapshot_token_balances(
+                rpc, observed.get("staketoken"),
+                [a.address for a in actors] + [node.address for node in runtime],
+            )
             before=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
             tx,output=_send(host,config,actor,step.address,step.function,step.args,step.value_wei)
             if not tx:
-                step.status="reverted"; step.error=output or "transaction failed"; steps.append(step)
+                step.status="reverted"
+                step.error=output or "transaction failed"
+                step.error_reason=_explain_failure(step, step.error, step.actor)
+                steps.append(step)
                 draw(step, before)
             else:
                 receipt=_receipt(rpc,tx)
@@ -1955,6 +2043,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx)
                 step.status="success" if receipt and receipt.get("status") in (None,"0x1",1) else "reverted"
+                step.error_reason = (
+                    "preflight passed and the live transaction was accepted"
+                    if step.status == "success"
+                    else _explain_failure(step, output, step.actor)
+                )
                 discovered=_discover_runtime_contracts(root,rpc,models,runtime,receipt,trace,step.index,step.address)
                 if discovered:
                     runtime.extend(discovered); step.discovered_contracts=[asdict(x) for x in discovered]
@@ -1983,6 +2076,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
 
                 after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors])
                 step.balance_after = _snapshot_balances(rpc, balance_addresses)
+                step.token_balance_after = _snapshot_token_balances(
+                    rpc, observed.get("staketoken"),
+                    [a.address for a in actors] + [node.address for node in runtime],
+                )
                 step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
                 step.runtime_contracts=[asdict(x) for x in runtime]
                 draw(step, after)
