@@ -357,6 +357,7 @@ def _resolve_walkthrough_target(
             return configured, "configured target"
         return configured, "configured target (no live bytecode)"
 
+    saved_static: list[tuple[str, str]] = []
     saved_targets = config.get("targets") or {}
     if isinstance(saved_targets, dict):
         for name, value in saved_targets.items():
@@ -364,10 +365,10 @@ def _resolve_walkthrough_target(
                 continue
             if _code_size(rpc, value) > 0:
                 return value, f"saved target '{name}'"
-            return value, f"saved target '{name}' (no live bytecode)"
+            saved_static.append((value, f"saved target '{name}' (no live bytecode)"))
 
-    # Persisted audit evidence is authoritative session state and must work
-    # even when Foundry broadcast artifacts do not exist.
+    # Persisted audit evidence is authoritative session state, but a stale
+    # offline target must not override a genuinely live broadcast deployment.
     audit_targets = bootstrap.get("audit_targets") or _extract_audit_targets(
         bootstrap.get("audit_evidence") or []
     )
@@ -385,14 +386,10 @@ def _resolve_walkthrough_target(
                 continue
             data = payload.get("data") if isinstance(payload, dict) else None
             if isinstance(data, dict) and _is_address(data.get("target")):
-                direct_evidence.append(
-                    {
-                        "target": data["target"],
-                        "file": path.name,
-                    }
-                )
+                direct_evidence.append({"target": data["target"], "file": path.name})
         audit_targets = _extract_audit_targets(direct_evidence)
 
+    audit_static: list[tuple[str, str]] = []
     for item in audit_targets:
         if not isinstance(item, dict):
             continue
@@ -400,11 +397,11 @@ def _resolve_walkthrough_target(
         if not _is_address(target):
             continue
         file_name = str(item.get("file") or "")
-        live = _code_size(rpc, target) > 0
+        if _code_size(rpc, target) > 0:
+            source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
+            return target, source
         source = f"audit evidence '{file_name}'" if file_name else "audit evidence"
-        if not live:
-            source += " (no live bytecode)"
-        return target, source
+        audit_static.append((target, source + " (no live bytecode)"))
 
     live = list(bootstrap.get("live_deployments") or [])
     live.sort(
@@ -417,6 +414,13 @@ def _resolve_walkthrough_target(
     if live:
         item = live[0]
         return str(item["address"]), f"broadcast {item['broadcast']}"
+
+    # Static evidence is still useful when no live deployment exists.
+    if audit_static:
+        return audit_static[0]
+
+    if saved_static:
+        return saved_static[0]
 
     return None, "not discovered"
 
