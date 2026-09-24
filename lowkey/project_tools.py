@@ -112,6 +112,38 @@ def _python_requirement(content: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _git_submodules(root: Path) -> list[dict[str, Any]]:
+    content = _read(root / ".gitmodules")
+    if not content:
+        return []
+
+    records: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[submodule "):
+            if current:
+                records.append(current)
+            current = {}
+            continue
+        if current is None or "=" not in stripped:
+            continue
+        key, value = (item.strip() for item in stripped.split("=", 1))
+        if key == "path":
+            current["path"] = value
+        elif key == "url":
+            current["url"] = value
+    if current:
+        records.append(current)
+
+    for item in records:
+        sub_path = root / str(item.get("path") or "")
+        item["path"] = str(item.get("path") or "")
+        item["present"] = sub_path.is_dir()
+        item["initialized"] = item["present"] and any(sub_path.iterdir())
+    return records
+
+
 def detect_project(root: str | Path = ".") -> dict[str, Any]:
     root_path = project_root(root)
     pyproject = root_path / "pyproject.toml"
@@ -208,10 +240,16 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         },
         "python": {
             "requires_python": _python_requirement(pyproject_text) if pyproject.exists() else None,
+            "version_file": (
+                _read(root_path / ".python-version").strip()
+                if (root_path / ".python-version").exists()
+                else None
+            ),
             "uv_available": bool(shutil.which("uv")),
             "venv": str(root_path / ".venv") if (root_path / ".venv").is_dir() else None,
             "declared_dependencies": _pyproject_dependencies(pyproject_text) if pyproject.exists() else [],
         },
+        "submodules": _git_submodules(root_path),
         "sources": {
             "solidity": len(sol_files),
             "vyper": len(vy_files),
@@ -550,6 +588,13 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         f"Vyper {project['sources']['vyper']}"
     )
     print(f"Roots     : {', '.join(project['source_roots'])}")
+    python = project.get("python", {})
+    if python.get("version_file"):
+        print(f"Python    : {python['version_file']}")
+    submodules = project.get("submodules", [])
+    if submodules:
+        ready = sum(1 for item in submodules if item.get("initialized"))
+        print(f"Submodules: {ready}/{len(submodules)} initialized")
     print("\nSYSTEM GRAPH")
     print("-" * 72)
     for node in graph["nodes"]:
