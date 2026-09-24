@@ -11,6 +11,10 @@ MODULE = ROOT / "lowkey" / "walkthrough.py"
 spec = importlib.util.spec_from_file_location("lowkey_walkthrough", MODULE)
 walk = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+# Python 3.14's dataclasses resolves class annotations through sys.modules.
+# Register the dynamically loaded module before executing it.
+import sys
+sys.modules[spec.name] = walk
 spec.loader.exec_module(walk)
 
 
