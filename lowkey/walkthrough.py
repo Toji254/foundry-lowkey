@@ -1391,7 +1391,7 @@ def _render_protocol_story_full(
             model = next((m for m in models if m.name == step.contract), None)
             frame = _render_interaction_graph_full(root, step, actors, model, models, enabled)
             if current is step:
-                frame += "\n  ◀ NOW"
+                frame += "\n  ◀ NOW  •  LIVE"
             lines.append(frame)
         else:
             icon = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
@@ -1400,7 +1400,8 @@ def _render_protocol_story_full(
             fn = str(step.function or "").split("(", 1)[0]
             step_model = next((m for m in models if m.name == step.contract), None)
             linked = _function_link(root, step_model, fn)
-            lines.append(f"  STEP {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{linked}({args}) • {status}")
+            value_note = f" • {_friendly_eth(step.value_wei)}" if step.value_wei else ""
+            lines.append(f"  STEP {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{linked}({args}){value_note} • {status}")
             lines.append("       │")
             lines.append("       ▼")
     return "\n".join(lines)
