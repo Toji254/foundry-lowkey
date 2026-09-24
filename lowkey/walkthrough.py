@@ -1429,99 +1429,96 @@ def _render_interaction_graph_full(
     contract = _friendly_contract_name(step)
     function = str(step.function or "").split("(", 1)[0]
     args = ", ".join(_friendly_arg(x, actors) for x in step.args)
-    linked_function = _function_link(root, model, function)
     raw_call = f"{function}({args})" if args else f"{function}()"
-    call_target = _source_target(root, model.source, model.function_locations.get(function)) if model and model.function_locations.get(function) else None
+    call_target = (
+        _source_target(root, model.source, model.function_locations.get(function))
+        if model and model.function_locations.get(function)
+        else None
+    )
     call_display = _osc8(raw_call, call_target) if call_target else raw_call
     status = "✓ SUCCESS" if step.status == "success" else "✕ BLOCKED" if step.status in {"blocked", "reverted"} else "● CHECKING"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
     lines = [
-        _paint(f"  ╭─ STEP {step.index:02d}  ·  FUNCTION {step.index:02d}  {status}", color, enabled),
+        _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
         "  │",
-        f"  │   {actor} {ARROW} {contract}.{call_display}",
-        f"  │   [technical] [{actor}] ── CALL {call_display} ──▶ [{contract}]",
-        f"  │   ↳ {_human_action_summary(step, actors)}",
-        "  │                              │",
+        f"  │   {ACTOR} {actor} {ARROW} [{contract}]",
+        f"  │       {call_display}",
+        f"  │       ↳ {_human_action_summary(step, actors)}",
     ]
+
+    input_lines = _input_story(step, model, actors) if model else []
+    if input_lines:
+        lines += ["  │", "  │   INPUTS"]
+        for item in input_lines[:8]:
+            lines.append(f"  │   ├─ {item}")
+
+    source_edges = _source_edges_for_step(model, step) if model else []
+    if source_edges:
+        impls = _implementation_mapping(models)
+        lines += ["  │", "  │   WHAT HAPPENS INSIDE", "  │", f"  │   {contract}", "  │      │"]
+        for index, edge in enumerate(source_edges[:8]):
+            target_name = str(edge.get("to_contract") or edge.get("interface") or "external")
+            concrete = impls.get(target_name, target_name)
+            fn = str(edge.get("to_function") or "unknown")
+            target_model = next((item for item in models if item.name == concrete), None)
+            if target_model is None:
+                target_model = next((item for item in models if item.name == target_name), None)
+            fn_link = _function_link(root, target_model, fn)
+            via = str(edge.get("via") or "")
+            suffix = f"   ← {via}" if via else ""
+            branch = "└─" if index == len(source_edges[:8]) - 1 else "├─"
+            edge_arrow = DOTTED if edge.get("kind") == "cross-contract" else ARROW
+            lines.append(f"  │      {branch} {edge_arrow} {target_name}.{fn_link}{suffix}")
 
     lower = function.lower()
-    if lower in {"stake", "deposit", "contributebonus", "fund", "contribute"} and step.args:
-        amount = _friendly_value(step.args[0])
-        lines.append(
-            f"  │                              ├─ token flow: {actor} ── {amount} ──▶ {contract}"
-        )
-    elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
-        lines.append(
-            f"  │                              ├─ token flow: {contract} ──▶ {actor}"
-        )
-
     if step.value_wei:
-        lines += [
-            f"  │                              ├─ sends {_friendly_eth(step.value_wei)}",
-            f"  │                              │      [{actor}] ── ETH ──▶ [{contract}]",
-        ]
-
-    input_lines = _input_story(step, model, actors)
-    for item in input_lines[:8]:
-        lines.append(f"  │                              ├─ input: {item}")
-
-    related = [
-        _actor_for_address(value, actors)
-        for value in step.args
-        if isinstance(value, str) and is_address(value)
-    ]
-    related = [name for name in related if name and name != actor]
-    if related:
-        lines.append(f"  │                              ├─ references [{related[0]}]")
+        lines += ["  │", f"  │   ETH FLOW      {actor} ── {_friendly_eth(step.value_wei)} ──▶ {contract}"]
+    if lower in {"stake", "deposit", "contributebonus", "fund", "contribute"} and step.args:
+        lines.append(f"  │   TOKEN FLOW    {actor} ── {_friendly_value(step.args[0])} ──▶ {contract}")
+    elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
+        lines.append(f"  │   TOKEN FLOW    {contract} ──▶ {actor}")
 
     if step.execution_edges:
-        lines.append("  │                              │")
-        for edge in step.execution_edges[:7]:
+        lines += ["  │", "  │   ACTUAL RUNTIME PATH", "  │      caller", "  │        │"]
+        runtime_count = min(8, len(step.execution_edges))
+        for index, edge in enumerate(step.execution_edges[:runtime_count]):
             dst = edge.get("to_contract") or _addr(edge.get("to_address"))
-            fn = str(edge.get("function") or "")
-            lines.append(
-                f"  │                              ├─ {contract} ──▶ "
-                f"{dst}.{fn}  [{edge.get('type') or 'CALL'}]"
-            )
+            fn = str(edge.get("function") or edge.get("type") or "")
+            branch = "└─" if index == runtime_count - 1 else "├─"
+            mark = " ✕" if edge.get("error") or edge.get("revert") else " ✓"
+            lines.append(f"  │       {branch} {EXTERNAL} {dst}.{fn}{mark}")
 
     if step.discovered_contracts:
-        for node in step.discovered_contracts[:4]:
-            lines.append(
-                f"  │                              ├─ CREATE2 ──▶ "
-                f"{node.get('label') or node.get('model')} {_addr(node.get('address'))}"
-            )
+        lines += ["  │", "  │   NEW CONTRACTS DISCOVERED"]
+        for node in step.discovered_contracts[:5]:
+            lines.append(f"  │   ├─ {ARROW} {node.get('label') or node.get('model')} {_addr(node.get('address'))} [{node.get('relation') or 'contract'}]")
 
     if step.status == "success":
         state_lines = _friendly_state_lines(step, actors)
         balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors)
         event_lines = _friendly_event_lines(step)
-        for item in state_lines[:6]:
-            lines.append(f"  │                              ├─ STATE: {item.strip()[2:] if item.strip().startswith('◆ ') else item.strip()}")
-        for item in balance_lines[:4]:
-            lines.append(f"  │                              ├─ BALANCE: {item.strip()}")
-        for item in event_lines[:3]:
-            lines.append(f"  │                              ├─ {item.strip()}")
-        if not state_lines and not balance_lines and not event_lines:
-            lines.append("  │                              └─ live state checked; no tracked delta")
+        lines += ["  │", "  │   WHAT CHANGED"]
+        changes = [item.strip() for item in state_lines[:7] + balance_lines[:5] + event_lines[:4] if item.strip()]
+        if changes:
+            lines.extend(f"  │   ├─ {item}" for item in changes)
+        else:
+            lines.append("  │   └─ no tracked storage, balance, or event delta")
     elif step.status in {"blocked", "reverted"}:
         reason = step.error_reason or _explain_failure(step, step.error, actor)
-        lines.append(f"  │                              ├─ WHY IT FAILED: {reason}")
+        lines += ["  │", "  │   WHY IT FAILED", f"  │   ├─ {reason}"]
         if step.failure_origin:
-            lines.append(f"  │                              ├─ LIKELY ORIGIN: {step.failure_origin}")
-        for diagnosis in step.diagnostics[:4]:
-            lines.append(f"  │                              ├─ {diagnosis}")
-        lines.append(f"  │                              └─ {_short_error(step.error)}")
+            lines.append(f"  │   ├─ likely origin: {step.failure_origin}")
+        for diagnosis in step.diagnostics[:7]:
+            lines.append(f"  │   ├─ {diagnosis}")
+        decoded = _decode_custom_error(step.error, models)
+        if decoded:
+            lines.append(f"  │   ├─ decoded error: {decoded}")
+        lines.append(f"  │   └─ raw node result: {_short_error(step.error)}")
 
-    lines.append("  │")
-    if step.reason:
-        marker = "INFERRED" if step.inferred else "LAB CONTROL"
-        lines.append(f"  │   WHY THIS STEP: {step.reason}  [{marker}]")
-    lines.append(f"  ╰{'─' * 86}╯")
+    marker = "INFERRED" if step.inferred else "LAB CONTROL"
+    lines += ["  │", f"  │   WHY THIS STEP: {step.reason} [{marker}]", "  ╰" + "─" * 86 + "╯"]
     return "\n".join(lines)
-
-
-
 def _render_protocol_story_full(
     root: Path,
     steps: list[Step],
