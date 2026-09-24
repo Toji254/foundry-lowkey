@@ -2305,6 +2305,143 @@ def _diagnose_argument_contracts(
     diagnostics.extend(_probe_boolean_getters(rpc, step, model))
     return origin, list(dict.fromkeys(diagnostics))
 
+def _mapping_argument_for_function(body: str, mapping_name: str, inputs: list[dict[str, Any]], args: list[Any]) -> tuple[str | None, Any]:
+    match = re.search(r"\\b" + re.escape(mapping_name) + r"\\s*\\[\\s*([A-Za-z_]\\w*)\\s*\\]", body)
+    if not match:
+        return None, None
+    wanted = match.group(1).lower()
+    for index, param in enumerate(inputs):
+        if index < len(args) and str(param.get("name") or "").lower() == wanted:
+            return str(param.get("name") or ""), args[index]
+    return None, None
+
+def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel, models: list[ContractModel], actor_address: str | None) -> tuple[str | None, list[str]]:
+    """Evaluate cheap source-visible guards against actual local state."""
+    try:
+        source = (root / model.source).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, []
+    name = str(step.function or "").split("(", 1)[0]
+    match = re.search(r"\\bfunction\\s+" + re.escape(name) + r"\\s*\\([^)]*\\)[^{;]*\\{", source, re.S)
+    header = match.group(0) if match else ""
+    body = _balanced_block(source, match.end() - 1) if match else ""
+    guard_region = header + "\n" + body
+    inputs = _function_inputs(model, step.function)
+    by_name = {str(param.get("name") or ("arg" + str(i + 1))).lower(): step.args[i] for i, param in enumerate(inputs) if i < len(step.args)}
+    diagnostics: list[str] = []
+    origin = None
+
+    for index, param in enumerate(inputs):
+        if index >= len(step.args) or _canonical_type(param) != "address":
+            continue
+        pname = str(param.get("name") or ("arg" + str(index + 1)))
+        value = step.args[index]
+        if re.search(r"\\b" + re.escape(pname) + r"\\s*==\\s*address\\(0\\)", body):
+            if is_address(value) and value.lower() == "0x" + "00" * 20:
+                diagnostics.append("✕ " + pname + " = zero address; source rejects it")
+                origin = origin or (model.name + "." + name + " → " + pname + " == address(0)")
+            else:
+                diagnostics.append("✓ " + pname + " is non-zero")
+
+    owner = next((item for item in model.abi if item.get("type") == "function" and item.get("name") == "owner" and not item.get("inputs") and item.get("outputs")), None)
+    if owner and actor_address and "onlyOwner" in guard_region:
+        ok, rendered = _read_contract_getter(rpc, step.address, owner)
+        value = rendered.splitlines()[-1].strip() if rendered else ""
+        if ok and is_address(value):
+            if value.lower() == actor_address.lower():
+                diagnostics.append("✓ owner() = " + _addr(value) + " matches " + step.actor)
+            else:
+                diagnostics.append("✕ owner() = " + _addr(value) + "; caller is " + step.actor)
+                origin = origin or (model.name + ".owner() does not match " + step.actor)
+
+    paused = next((item for item in model.abi if item.get("type") == "function" and item.get("name") == "paused" and not item.get("inputs") and item.get("outputs") and _canonical_type(item["outputs"][0]) == "bool"), None)
+    if paused and "whenNotPaused" in guard_region:
+        ok, rendered = _read_contract_getter(rpc, step.address, paused)
+        value = rendered.splitlines()[-1].strip().lower() if rendered else ""
+        if ok and value in {"true", "false"}:
+            if value == "true":
+                diagnostics.append("✕ paused() = true; not-paused gate rejects the call")
+                origin = origin or (model.name + ".paused() = true")
+            else:
+                diagnostics.append("✓ paused() = false; pause gate is open")
+
+    for mapping in model.mappings:
+        mapping_name = str(mapping.get("name") or "")
+        if not mapping_name or not re.search(r"\\b" + re.escape(mapping_name) + r"\\s*\\[", body):
+            continue
+        getter = next((item for item in model.abi if item.get("type") == "function" and item.get("name") == mapping_name and len(item.get("inputs") or []) == 1), None)
+        if not getter:
+            continue
+        key_name, key_value = _mapping_argument_for_function(body, mapping_name, inputs, step.args)
+        if key_name is None:
+            continue
+        ok, rendered = _read_contract_getter(rpc, step.address, getter, [key_value])
+        value = rendered.splitlines()[-1].strip() if rendered else ""
+        if not ok:
+            continue
+        marker = "✕" if value.lower() == "false" else "✓"
+        suffix = "; this mapping gate blocks the call" if marker == "✕" else ""
+        diagnostics.append(marker + " " + _pretty_identifier(mapping_name) + "(" + _friendly_arg(key_value, []) + ") = " + value + suffix)
+        if marker == "✕":
+            origin = origin or (model.name + "." + name + " → " + mapping_name + "[" + key_name + "] is false")
+
+    for param in inputs:
+        pname = str(param.get("name") or "")
+        value = by_name.get(pname.lower())
+        if not isinstance(value, int):
+            continue
+        tm = re.search(r"\\b" + re.escape(pname) + r"\\s*<\\s*block\\.timestamp\\s*\\+\\s*([A-Za-z_]\\w*)", body)
+        if not tm:
+            continue
+        seconds = _constant_duration_seconds(source, tm.group(1))
+        if seconds is None:
+            continue
+        required = _block_timestamp(rpc) + seconds
+        if value < required:
+            diagnostics.append("✕ " + pname + " is too soon; required timestamp is " + str(required))
+            origin = origin or (model.name + "." + name + " → " + pname + " violates the time guard")
+        else:
+            diagnostics.append("✓ " + pname + " clears the time guard")
+
+    for edge in _source_edges_for_step(model, step):
+        if edge.get("kind") != "cross-contract":
+            continue
+        via = str(edge.get("via") or "")
+        dependency, _ = _source_dependency_address(rpc, model, edge, step)
+        if not via or not dependency:
+            continue
+        code = _runtime_code(rpc, dependency)
+        target_name = str(edge.get("interface") or edge.get("to_contract") or "External")
+        dep_fn_name = str(edge.get("to_function") or "")
+        if code in {"", "0x"}:
+            diagnostics.append("✕ " + _pretty_identifier(via) + " = " + _addr(dependency) + " has no contract code")
+            origin = origin or (model.name + " → " + target_name + "." + dep_fn_name + " has no runtime code")
+            continue
+        dep_model = next((item for item in models if item.name.lower() == target_name.lower()), None)
+        dep_fn = _function_by_name(dep_model, dep_fn_name) if dep_model else None
+        if not dep_fn:
+            dep_fn = _build_info_function_abi(root, target_name, dep_fn_name)
+        if not dep_fn:
+            continue
+        ok, rendered = _read_contract_getter(rpc, dependency, dep_fn, _dependency_argument_values(step, model, dep_fn))
+        value = rendered.splitlines()[-1].strip() if rendered else ""
+        if not ok:
+            diagnostics.append("? " + target_name + "." + dep_fn_name + "(...) could not be read at " + _addr(dependency))
+            continue
+        if value.lower() == "false":
+            diagnostics.append("✕ " + target_name + "." + _signature(dep_fn) + " → false; dependency guard rejects the call")
+            origin = origin or (model.name + " → " + target_name + "." + dep_fn_name + " returned false")
+        elif dep_fn.get("outputs") and _canonical_type(dep_fn["outputs"][0]) == "address" and actor_address and is_address(value) and dep_fn_name.lower() == "owner":
+            if value.lower() == actor_address.lower():
+                diagnostics.append("✓ " + target_name + ".owner() = " + _addr(value) + " matches " + step.actor)
+            else:
+                diagnostics.append("✕ " + target_name + ".owner() = " + _addr(value) + "; " + step.actor + " is not the owner")
+                origin = origin or (target_name + ".owner() does not match " + step.actor)
+        else:
+            diagnostics.append("✓ " + target_name + "." + _signature(dep_fn) + " → " + value)
+
+    return origin, list(dict.fromkeys(diagnostics))
+
 def _diagnose_failed_call(
     root: Path,
     rpc: str,
@@ -2313,7 +2450,12 @@ def _diagnose_failed_call(
     models: list[ContractModel],
     actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
-    origin, diagnostics = _read_zero_address_diagnostics(rpc, step.address, model)
+    guard_origin, guard_lines = _probe_source_guards(root, rpc, step, model, models, actor_address)
+    origin = guard_origin
+    diagnostics = list(guard_lines)
+    zero_origin, zero_lines = _read_zero_address_diagnostics(rpc, step.address, model)
+    origin = origin or zero_origin
+    diagnostics.extend(zero_lines)
     source_lines = _source_guard_lines(model, step)
     diagnostics.extend(source_lines[:8])
     arg_origin, arg_diagnostics = _diagnose_argument_contracts(
