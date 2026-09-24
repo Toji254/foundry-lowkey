@@ -2054,20 +2054,6 @@ def _preflight(rpc: str, step: Step, actor_address: str | None = None) -> tuple[
     except Exception as exc:
         return False,str(exc)
 
-
-    try:
-        code, out, err = _cmd(
-            ["cast","call",step.address,step.function,*[
-                _cli_arg(x)
-                for x in step.args
-            ],"--rpc-url",rpc] + (["--value",str(step.value_wei)] if step.value_wei else []),
-            timeout=10,
-        )
-        text=(out or err or "").strip()
-        return code == 0, text[-1200:] or ("eth_call succeeded" if code==0 else "eth_call reverted")
-    except Exception as exc:
-        return False, str(exc)
-
 def _cast_json(host: Any, args: list[str], config: dict[str, Any]) -> Any:
     # Prefer the already-integrated Lowkey cast wrapper; fall back to subprocess.
     if hasattr(host, "cast_output"):
@@ -3592,6 +3578,24 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         draw(step)
 
         actor=next((a for a in actors if a.name==step.actor),actors[0])
+
+        valid_args, argument_error = _validate_step_arguments(step, current_model)
+        if not valid_args:
+            steps.pop()
+            step.status = "blocked"
+            step.error = "ARGUMENT RESOLUTION BLOCKED: " + str(argument_error)
+            step.error_reason = _explain_failure(step, step.error, step.actor)
+            step.diagnostics = [
+                "No transaction was sent because a required contract dependency could not be resolved safely"
+            ]
+            steps.append(step)
+            draw(step)
+            if not no_prompt:
+                choice = _wait_for_next_interaction(no_prompt)
+                if choice == "q":
+                    break
+            continue
+
         ok,preflight=_preflight(rpc,step,actor.address)
         steps.pop()
         step.preflight=preflight
