@@ -453,7 +453,8 @@ def run_receipt(config, tx_hash=None):
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
     code=run_cast(["receipt", tx_hash, "--async"], config)
     if record_evidence:
-        record_evidence("receipt", {"tx":tx_hash,"exit_code":code})
+        evidence_code = code if isinstance(code, int) else None
+        record_evidence("receipt", {"tx":tx_hash,"exit_code":evidence_code})
     return code if isinstance(code,int) else 0
 
 def run_trace(config,args=None):
