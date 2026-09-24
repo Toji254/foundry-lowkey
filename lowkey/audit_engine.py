@@ -1072,23 +1072,43 @@ def _project_prepare(root: str, project: dict[str, Any]) -> list[dict[str, Any]]
                 root,
             )
 
-    compilers = project.get("solidity_compilers", []) if isinstance(project, dict) else []
-    if len(compilers) == 1 and command_path("solc-select"):
-        version = str(compilers[0])
-        print(f"\n=== LOWKEY EVIDENCE: SOLC SELECT ({version}) ===")
-        command = ["solc-select", "use", version]
-        code, stdout, stderr = run_command(command, root, 900)
-        _write_step_evidence(
-            root, "solc_select", command, code, stdout, stderr,
-            reason="Select the compiler version declared by the repository before mixed-language tests/analyzers run.",
-        )
-        print(stdout.rstrip())
-        if stderr:
-            print(stderr.rstrip())
-        results.append({"label": "solc_select", "code": code, "version": version})
-
     project["submodules"] = detect_project(root).get("submodules", submodules) if detect_project else submodules
     return results
+
+
+def _select_project_solc(root: str, project: dict[str, Any]) -> dict[str, Any] | None:
+    compilers = project.get("solidity_compilers", []) if isinstance(project, dict) else []
+    if len(compilers) != 1:
+        return None
+
+    version = str(compilers[0])
+    command: list[str]
+    if command_path("solc-select"):
+        command = ["solc-select", "use", version]
+    elif command_path("uv"):
+        command = ["uv", "run", "solc-select", "use", version]
+    else:
+        return {
+            "label": "solc_select",
+            "code": 127,
+            "version": version,
+            "reason": "Neither solc-select nor uv is available on PATH.",
+        }
+
+    print(f"\n=== LOWKEY EVIDENCE: SOLC SELECT ({version}) ===")
+    code, stdout, stderr = run_command(command, root, 900)
+    _write_step_evidence(
+        root, "solc_select", command, code, stdout, stderr,
+        reason="Select the compiler version declared by repository source/deployment evidence.",
+    )
+    print(stdout.rstrip())
+    if stderr:
+        print(stderr.rstrip())
+    return {
+        "label": "solc_select",
+        "code": code,
+        "version": version,
+    }
 
 
 def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]]) -> None:
@@ -1292,6 +1312,11 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
                 print(sync_stderr.rstrip())
 
             if sync_code == 0:
+                solc_step = _select_project_solc(root, project)
+                if solc_step:
+                    results.append(solc_step)
+                if detect_project is not None:
+                    project = detect_project(root)
                 if build_dependency_graph is not None:
                     # Refresh after uv sync so imports such as Snekmate can be
                     # resolved against the actual project environment.
