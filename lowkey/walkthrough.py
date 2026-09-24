@@ -1780,6 +1780,55 @@ def _system_edges(
     return edges
 
 
+def _static_system_context(
+    bootstrap: dict[str, Any] | None,
+    contracts: dict[str, ContractInfo],
+) -> dict[str, Any]:
+    """Build a protocol-agnostic static system view from source/setup evidence."""
+    bootstrap = bootstrap or {}
+    initialization = [
+        x for x in (bootstrap.get("initialization") or [])
+        if isinstance(x, dict)
+    ]
+
+    deployed: list[str] = []
+    for item in initialization:
+        if item.get("kind") != "deploy":
+            continue
+        name = str(item.get("target") or "").strip()
+        if name and name not in deployed:
+            deployed.append(name)
+
+    project_contracts: list[str] = []
+    for name, info in contracts.items():
+        source = str(info.source or "")
+        if not source.startswith(("src/", "contracts/")):
+            continue
+        if info.kind not in {"contract", "abstract"}:
+            continue
+        project_contracts.append(name)
+    project_contracts.sort()
+
+    script_flow: dict[str, list[dict[str, Any]]] = {}
+    for item in initialization:
+        source = str(item.get("source") or "unknown")
+        script_flow.setdefault(source, []).append(
+            {
+                "kind": str(item.get("kind") or "unknown"),
+                "target": str(item.get("target") or ""),
+                "line": item.get("line"),
+                "evidence": str(item.get("evidence") or ""),
+            }
+        )
+
+    return {
+        "deployed_contracts": deployed,
+        "project_contracts": project_contracts,
+        "script_flow": script_flow,
+        "initialization_steps": len(initialization),
+    }
+
+
 def _target_label(config: dict[str, Any], target: str | None) -> str:
     if not _is_address(target):
         return "Target"
@@ -1875,15 +1924,31 @@ def _render_story(
             lines.append(f"    {item.get('file')}")
     lines.append("")
     lines.append("SYSTEM MAP")
-    if not nodes:
-        lines.append("  └─ ! no live target/dependencies discovered")
-    else:
+    static_system = meta.get("static_system") or {}
+    if nodes:
         for i, node in enumerate(nodes):
             prefix = "└─" if i == len(nodes) - 1 else "├─"
             status = "CODE" if node.code_size else "NO CODE"
             lines.append(
                 f"  {prefix} ● {node.artifact_contract or node.name:<28} {node.address} [{status}]"
             )
+        if not any(node.code_size > 0 for node in nodes):
+            lines.append("  └─ runtime graph unavailable; showing static system evidence below")
+    else:
+        lines.append("  └─ no live runtime nodes discovered")
+    deployed_contracts = static_system.get("deployed_contracts") or []
+    if deployed_contracts:
+        lines.append("")
+        lines.append("  STATIC CONTRACTS FROM SETUP/DEPLOYMENT")
+        for i, name in enumerate(deployed_contracts[:24]):
+            prefix = "└─" if i == min(len(deployed_contracts), 24) - 1 else "├─"
+            lines.append(f"    {prefix} ○ {name} [SOURCE-DEFINED]")
+    elif static_system.get("project_contracts"):
+        lines.append("")
+        lines.append("  PROJECT CONTRACTS")
+        for i, name in enumerate(static_system["project_contracts"][:24]):
+            prefix = "└─" if i == min(len(static_system["project_contracts"]), 24) - 1 else "├─"
+            lines.append(f"    {prefix} ○ {name} [SOURCE]")
     lines.append("")
     lines.append("RELATIONSHIPS")
     edges = _system_edges(nodes, functions_by_contract, contracts)
@@ -1899,10 +1964,28 @@ def _render_story(
         )
     if not shown:
         lines.append("  └─ no static/runtime relationship edges discovered")
+
+    script_flow = static_system.get("script_flow") or {}
+    if script_flow:
+        lines.append("")
+        lines.append("STATIC ASSEMBLY FLOW")
+        for source, items in list(script_flow.items())[:8]:
+            lines.append(f"  {source}")
+            for item in items[:10]:
+                kind = item.get("kind") or "step"
+                target_name = item.get("target") or ""
+                line = item.get("line")
+                suffix = f" :{line}" if line else ""
+                detail = f" {target_name}" if target_name else ""
+                lines.append(f"    {kind:<13}{detail}{suffix}")
+
     lines.append("")
     lines.append("PROTOCOL STORY")
     if not actions:
-        lines.append("  └─ no executable actions discovered")
+        if meta.get("target") and not any(node.code_size > 0 for node in nodes):
+            lines.append("  └─ live execution unavailable; static system flow is shown above")
+        else:
+            lines.append("  └─ no executable actions discovered")
     for index, action in enumerate(actions):
         mark = "◆" if current == index else "○"
         status = action.get("status", "PLANNED")
@@ -2112,6 +2195,7 @@ def _build_model(
             "known_roles": {},
             "bootstrap": bootstrap,
             "system_manifest": manifest,
+            "static_system": _static_system_context(bootstrap, contracts),
         }
         return (
             meta,
@@ -2205,6 +2289,7 @@ def _build_model(
         "known_roles": known,
         "bootstrap": bootstrap,
         "system_manifest": manifest,
+        "static_system": _static_system_context(bootstrap, contracts),
     }
     return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
 
