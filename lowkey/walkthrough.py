@@ -3037,6 +3037,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         return 2
     test_mode=any(str(x).lower()=="test" for x in args) or "--test" in args
     auto="--auto" in args or "auto" in args
+    # Adversarial walkthroughs are local-only and may bootstrap the disposable
+    # project fixture automatically when no live target exists.
+    if test_mode:
+        auto = True if "--no-auto" not in args else False
     static="--static" in args or "--no-exec" in args
     no_prompt="--yes" in args or "--non-interactive" in args or not sys.stdin.isatty()
     contract=None; max_steps=8; test_cases=24; test_seed=None
