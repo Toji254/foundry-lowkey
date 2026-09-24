@@ -783,6 +783,36 @@ def _render_contract_shapes(model: ContractModel, enabled: bool) -> str:
 
 
 
+
+def _osc8(label: str, target: str) -> str:
+    if os.environ.get("LOWKEY_NO_LINKS") or os.environ.get("NO_COLOR") == "1":
+        return label
+    return f"\033]8;;{target}\033\\{label}\033]8;;\033\\"
+
+
+def _source_target(root: Path, source: str, line: int | None = None) -> str:
+    path = (root / source).resolve()
+    if os.environ.get("TERM_PROGRAM", "").lower() == "vscode" or os.environ.get("VSCODE_PID"):
+        target = f"vscode://file/{quote(str(path), safe='/')}"
+        if line:
+            target += f":{int(line)}"
+        return target
+    target = f"file://{quote(str(path), safe='/')}"
+    if line:
+        target += f"#L{int(line)}"
+    return target
+
+
+def _function_link(root: Path, model: ContractModel | None, function: str) -> str:
+    if not model:
+        return function
+    name = str(function).split("(", 1)[0]
+    line = model.function_locations.get(name)
+    if not line:
+        return function
+    return _osc8(function, _source_target(root, model.source, line))
+
+
 def _actor_for_address(address: str | None, actors: list[Actor]) -> str | None:
     if not address:
         return None
@@ -1166,111 +1196,127 @@ def _label_for_balance_address(address: str, step: Step, actors: list[Actor]) ->
     return _addr(address)
 
 
-def _render_interaction_graph(step: Step, actors: list[Actor], enabled: bool) -> str:
-    """Render one live interaction as a human-readable transaction graph."""
+def _render_interaction_graph(
+    root: Path,
+    step: Step,
+    actors: list[Actor],
+    model: ContractModel | None,
+    models: list[ContractModel],
+    enabled: bool,
+) -> str:
     actor = step.actor or "Caller"
     contract = _friendly_contract_name(step)
     function = str(step.function or "").split("(", 1)[0]
     args = ", ".join(_friendly_arg(x, actors) for x in step.args) or "∅"
-    ok = step.status == "success"
-    bad = step.status in {"blocked", "reverted"}
-    status = "✓ CONFIRMED" if ok else "✕ BLOCKED" if bad else "● CHECKING"
-    color = GREEN if ok else RED if bad else YELLOW
+    linked_function = _function_link(root, model, function)
+    status = "✓ SUCCESS" if step.status == "success" else "✕ BLOCKED" if step.status in {"blocked", "reverted"} else "● CHECKING"
+    color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
 
     lines = [
         _paint(f"  ╭─ FUNCTION {step.index:02d}  {status}", color, enabled),
-        f"  │",
-        f"  │   [{actor}] ── CALL {function}({args}) ──▶ [{contract}]",
-        f"  │                                      │",
+        "  │",
+        f"  │   [{actor}] ── CALL {contract}.{linked_function}({args}) ──▶ [{contract}]",
+        "  │                              │",
     ]
 
     if step.value_wei:
         lines += [
-            f"  │                                      ├─ sends {_friendly_eth(step.value_wei)}",
-            f"  │                                      │      [{actor}] ── ETH ──▶ [{contract}]",
+            f"  │                              ├─ sends {_friendly_eth(step.value_wei)}",
+            f"  │                              │      [{actor}] ── ETH ──▶ [{contract}]",
         ]
 
-    related = [_actor_for_address(x, actors) for x in step.args if isinstance(x, str) and is_address(x)]
-    related = [x for x in related if x and x != actor]
+    related = [
+        _actor_for_address(value, actors)
+        for value in step.args
+        if isinstance(value, str) and is_address(value)
+    ]
+    related = [name for name in related if name and name != actor]
     if related:
-        lines.append(f"  │                                      ├─ references [{related[0]}]")
+        lines.append(f"  │                              ├─ references [{related[0]}]")
 
-    if ok:
-        token_lines = _friendly_token_balance_lines(step, actors)
-        if token_lines:
-            for item in token_lines[:3]:
-                lines.append(f"  │                                      ├─ {item.strip()}")
-        eth_lines = _friendly_balance_lines(step, actors)
-        if eth_lines:
-            for item in eth_lines[:3]:
-                lines.append(f"  │                                      ├─ {item.strip()}")
+    if step.execution_edges:
+        lines.append("  │                              │")
+        for edge in step.execution_edges[:7]:
+            dst = edge.get("to_contract") or _addr(edge.get("to_address"))
+            fn = str(edge.get("function") or "")
+            lines.append(
+                f"  │                              ├─ {contract} ──▶ "
+                f"{dst}.{fn}  [{edge.get('type') or 'CALL'}]"
+            )
 
+    if step.discovered_contracts:
+        for node in step.discovered_contracts[:4]:
+            lines.append(
+                f"  │                              ├─ CREATE2 ──▶ "
+                f"{node.get('label') or node.get('model')} {_addr(node.get('address'))}"
+            )
+
+    if step.status == "success":
         state_lines = _friendly_state_lines(step, actors)
-        if state_lines:
-            for item in state_lines[:6]:
-                lines.append(f"  │                                      ├─ WRITE {item.strip()[2:] if item.strip().startswith('◆ ') else item.strip()}")
-
+        balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors)
         event_lines = _friendly_event_lines(step)
-        if event_lines:
-            for item in event_lines[:3]:
-                lines.append(f"  │                                      └─ {item.strip()}")
-        else:
-            lines.append("  │                                      └─ state observed from live storage/chain")
-
-    elif bad:
-        reason = step.error_reason or _explain_failure(step, step.error, step.actor)
-        lines += [
-            f"  │                                      ├─ WHY IT FAILED: {reason}",
-            f"  │                                      └─ {status.replace('✕ ', '')}: {_short_error(step.error)}",
-        ]
+        for item in state_lines[:6]:
+            lines.append(f"  │                              ├─ STATE: {item.strip()[2:] if item.strip().startswith('◆ ') else item.strip()}")
+        for item in balance_lines[:4]:
+            lines.append(f"  │                              ├─ BALANCE: {item.strip()}")
+        for item in event_lines[:3]:
+            lines.append(f"  │                              ├─ {item.strip()}")
+        if not state_lines and not balance_lines and not event_lines:
+            lines.append("  │                              └─ live state checked; no tracked delta")
+    elif step.status in {"blocked", "reverted"}:
+        reason = step.error_reason or _explain_failure(step, step.error, actor)
+        lines.append(f"  │                              ├─ WHY IT FAILED: {reason}")
+        if step.failure_origin:
+            lines.append(f"  │                              ├─ LIKELY ORIGIN: {step.failure_origin}")
+        for diagnosis in step.diagnostics[:4]:
+            lines.append(f"  │                              ├─ {diagnosis}")
+        lines.append(f"  │                              └─ {_short_error(step.error)}")
 
     lines.append("  │")
     if step.reason:
         marker = "INFERRED" if step.inferred else "LAB CONTROL"
         lines.append(f"  │   WHY THIS STEP: {step.reason}  [{marker}]")
-    if step.tx_hash:
-        lines.append(f"  │   TX: {_addr(step.tx_hash)}" + (f"  • gas {step.gas_used}" if step.gas_used else ""))
     lines.append(f"  ╰{'─' * 86}╯")
     return "\n".join(lines)
 
 
+
 def _render_protocol_story(
+    root: Path,
     steps: list[Step],
     current: Step | None,
     actors: list[Actor],
+    models: list[ContractModel],
     enabled: bool,
 ) -> str:
-    lines = [_paint("LIVE JOURNEY", BOLD + CYAN, enabled)]
+    lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
     if not steps and not current:
-        return "\n".join([
-            "LIVE JOURNEY",
-            "  START",
-            "   │",
-            "   ▼",
-            "  Ready — press Enter to execute the first live function.",
+        return "\n".join(lines + [
+            "  SYSTEM READY",
+            "       │",
+            "       ▼",
+            "  Press Enter to execute the first live interaction.",
         ])
 
-    visible = list(steps[-5:])
+    visible = list(steps[-6:])
     if current is not None and current not in visible:
         visible.append(current)
 
     for index, step in enumerate(visible):
-        if current is step or index == len(visible) - 1:
-            lines.append("")
-            lines.append(_render_interaction_graph(step, actors, enabled))
+        last = index == len(visible) - 1
+        if current is step or last:
+            model = next((m for m in models if m.name == step.contract), None)
+            lines.append(_render_interaction_graph(root, step, actors, model, models, enabled))
         else:
-            ok = step.status == "success"
-            bad = step.status in {"blocked", "reverted"}
-            icon = "✓" if ok else "✕" if bad else "●"
-            status = "done" if ok else "blocked" if bad else "checked"
+            icon = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
+            status = "done" if step.status == "success" else "blocked" if step.status in {"blocked", "reverted"} else "checked"
             args = ", ".join(_friendly_arg(x, actors) for x in step.args) or "∅"
-            lines.append(
-                f"  {step.index:02d} {icon} [{step.actor}] ──▶ "
-                f"{_friendly_contract_name(step)}.{str(step.function).split('(',1)[0]}({args})  • {status}"
-            )
-            lines.append("             │")
-            lines.append("             ▼")
+            fn = str(step.function or "").split("(", 1)[0]
+            lines.append(f"  {step.index:02d} {icon} [{step.actor}] ──▶ {_friendly_contract_name(step)}.{fn}({args}) • {status}")
+            lines.append("       │")
+            lines.append("       ▼")
     return "\n".join(lines)
+
 
 
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
@@ -1311,6 +1357,159 @@ def _wait_for_next_interaction(no_prompt: bool) -> str:
                 termios.tcsetattr(fd,termios.TCSADRAIN,old)
             except Exception:
                 pass
+
+
+
+_SELECTOR_CACHE: dict[str, str] = {}
+
+
+def _selector_for(signature: str) -> str | None:
+    cached = _SELECTOR_CACHE.get(signature)
+    if cached:
+        return cached
+    code, out, _err = _cmd(["cast", "sig", signature], timeout=5)
+    if code != 0:
+        return None
+    lines = (out or "").strip().splitlines()
+    selector = lines[-1].strip().lower() if lines else None
+    if selector:
+        _SELECTOR_CACHE[signature] = selector
+    return selector
+
+
+def _selector_maps(models: list[ContractModel]) -> dict[str, tuple[str, str]]:
+    found: dict[str, tuple[str, str]] = {}
+    for model in models:
+        for signature in model.functions:
+            selector = _selector_for(signature)
+            if selector:
+                found[selector] = (model.name, signature)
+    return found
+
+
+def _trace_execution_edges(
+    root: Path,
+    rpc: str,
+    models: list[ContractModel],
+    trace: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not trace:
+        return []
+    selector_map = _selector_maps(models)
+    result: list[dict[str, Any]] = []
+
+    def walk(node: dict[str, Any], depth: int = 0, caller_contract: str | None = None) -> None:
+        if not isinstance(node, dict):
+            return
+        typ = str(node.get("type") or "CALL").upper()
+        to = node.get("to")
+        inp = str(node.get("input") or node.get("data") or "")
+        selector = inp[:10].lower() if inp.startswith("0x") and len(inp) >= 10 else ""
+        known_contract, signature = selector_map.get(selector, (None, None))
+        if isinstance(to, str) and is_address(to):
+            if not known_contract:
+                matched, _impl = _match_runtime_model(root, rpc, models, to)
+                known_contract = matched if matched != "External" else None
+            result.append({
+                "type": typ,
+                "to_address": to,
+                "from_contract": caller_contract or "caller",
+                "to_contract": known_contract or _addr(to),
+                "function": signature or selector or typ,
+                "depth": depth,
+                "error": node.get("error"),
+                "revert": node.get("revertReason"),
+            })
+        child_contract = known_contract or caller_contract
+        for child in node.get("calls") or []:
+            walk(child, depth + 1, child_contract)
+
+    walk(trace)
+    return result[:32]
+
+
+def _dependency_diagnostics(
+    root: Path,
+    rpc: str,
+    step: Step,
+    model: ContractModel,
+) -> tuple[str | None, list[str]]:
+    diagnostics: list[str] = []
+    origin: str | None = None
+    names = (
+        "registry", "implementation", "moderator", "token", "agreement",
+        "recovery", "owner", "router", "oracle", "manager", "factory",
+    )
+    for item in model.abi:
+        if item.get("type") != "function" or item.get("inputs"):
+            continue
+        if not any(token in str(item.get("name") or "").lower() for token in names):
+            continue
+        outputs = item.get("outputs") or []
+        if not outputs or str(outputs[0].get("type") or "") != "address":
+            continue
+        code, out, err = _cmd(
+            ["cast", "call", step.address, _signature(item), "--rpc-url", rpc],
+            timeout=6,
+        )
+        if code != 0:
+            continue
+        values = (out or err or "").strip().splitlines()
+        value = values[-1].strip() if values else ""
+        if not is_address(value):
+            continue
+        zero = value.lower() == "0x" + "00" * 20
+        diagnostics.append(
+            f"dependency {item.get('name')} = {_addr(value)} "
+            + ("✕ UNSET" if zero else "✓ configured")
+        )
+        if zero and origin is None:
+            origin = f"{model.name} → {item.get('name')}() → unconfigured address"
+
+    return origin, diagnostics
+
+
+def _diagnose_failed_call(
+    root: Path,
+    rpc: str,
+    step: Step,
+    model: ContractModel,
+    models: list[ContractModel],
+) -> tuple[str | None, list[str]]:
+    origin, diagnostics = _dependency_diagnostics(root, rpc, step, model)
+    try:
+        code, calldata, _err = _cmd(
+            ["cast", "calldata", step.function, *[_cli_arg(x) for x in step.args]],
+            timeout=6,
+        )
+        if code == 0 and calldata:
+            trace = _rpc_call(
+                rpc,
+                "debug_traceCall",
+                [{
+                    "from": step.address,
+                    "to": step.address,
+                    "data": calldata,
+                    "value": hex(int(step.value_wei or 0)),
+                }, {"tracer": "callTracer", "timeout": "10s"}],
+            )
+            edges = _trace_execution_edges(root, rpc, models, trace)
+            for edge in edges[:8]:
+                target = edge.get("to_contract") or _addr(edge.get("to_address"))
+                fn = edge.get("function") or edge.get("type")
+                diagnostics.append(f"call path: {target}.{fn} [{edge.get('type')}]")
+            failed = next((edge for edge in reversed(edges) if edge.get("error") or edge.get("revert")), None)
+            if failed:
+                target = failed.get("to_contract") or _addr(failed.get("to_address"))
+                fn = failed.get("function") or "unknown()"
+                origin = origin or f"{model.name} → {target}.{fn}"
+                if failed.get("revert"):
+                    diagnostics.append(f"dependency returned: {failed.get('revert')}")
+        else:
+            diagnostics.append("revert tracing could not encode the failing calldata")
+    except Exception as exc:
+        diagnostics.append(f"revert trace unavailable: {exc}")
+    return origin, list(dict.fromkeys(diagnostics))
 
 
 def _preflight(rpc: str, step: Step, actor_address: str | None = None) -> tuple[bool, str]:
@@ -2045,42 +2244,33 @@ def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> st
     return _box("LIVE EXECUTION", lines, width=92)
 
 
-def _render_connections(models: list[ContractModel], model: ContractModel, enabled: bool) -> str:
-    lines = [_paint("CONNECTION GRAPH", BOLD + WHITE, enabled)]
-    by_name = {m.name: m for m in models}
-    for base in model.bases:
-        parent = by_name.get(base)
-        if parent:
-            shared = sorted(set(parent.functions) & set(model.functions))
-            if shared:
-                for fn in shared[:8]:
-                    lines.append(f"  {base}.{fn}  {DOTTED}  {model.name}.{fn}  (override)")
-            else:
-                lines.append(f"  {base}  {DOTTED}  {model.name}  (inheritance)")
-        else:
-            lines.append(f"  {base}  {DOTTED}  {model.name}  (inherited source)")
+def _render_connections(
+    root: Path,
+    models: list[ContractModel],
+    model: ContractModel,
+    enabled: bool,
+) -> str:
+    lines = [_paint("SYSTEM CONNECTIONS", BOLD + WHITE, enabled)]
+    by_name = {item.name: item for item in models}
+
+    for base in model.bases[:10]:
+        lines.append(f"  {model.name} {DOTTED} {base}  [INHERITS]")
+
     for edge in model.calls[:24]:
-        kind = edge.get("kind")
-        arrow = EXTERNAL if kind == "cross-contract" else ARROW
+        target = by_name.get(str(edge.get("to_contract") or ""))
+        fn = str(edge.get("to_function") or "unknown()")
+        linked = _function_link(root, target, fn)
+        via = f"  via {edge.get('via')}" if edge.get("via") else ""
         lines.append(
-            f"  {model.name}.{edge.get('from')}  {arrow}  "
-            f"{edge.get('to_contract')}.{edge.get('to_function')}  "
-            f"(source edge, INFERRED)"
+            f"  {model.name}.{edge.get('from')} {EXTERNAL} "
+            f"{edge.get('to_contract')}.{linked}{via}  "
+            f"[{edge.get('certainty') or 'INFERRED'}]"
         )
-    # Source-level qualified calls are shown as INFERRED. Runtime trace edges
-    # below are the execution authority.
-    names = {m.name for m in models if m.name != model.name}
-    for other in sorted(names):
-        source_path = Path(model.source)
-        try:
-            source_text = source_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            source_text = ""
-        if re.search(r"\b" + re.escape(other) + r"\b", source_text):
-            lines.append(f"  {model.name}  {EXTERNAL}  {other}  (source reference, INFERRED)")
+
     if len(lines) == 1:
-        lines.append("  No explicit inheritance/source reference was resolved.")
+        lines.append("  no source-level cross-contract calls resolved")
     return "\n".join(lines)
+
 
 
 def _render_event_log(step: Step, enabled: bool) -> str:
@@ -2213,7 +2403,9 @@ def _render_board(
         "",
         _render_runtime_graph(runtime, enabled),
         "",
-        _render_protocol_story(steps, current, actors, enabled),
+        _render_connections(root, models, model, enabled),
+        "",
+        _render_protocol_story(root, steps, current, actors, models, enabled),
     ]
     if current and current.storage_after:
         board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled)]
@@ -2277,7 +2469,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         runtime=[RuntimeContract(target or "0x"+"00"*20,model.name,model.name,"target")]
         print("\n"+_render_plan(model,plan,_ansi_enabled(static)))
         print("\n"+_render_board(root,model,models,runtime,actors,plan,None,[],_ansi_enabled(static),True))
-        _save_artifacts(root,{"version":2,"mode":"source-guided-static","target":target,"contract":asdict(model),"contracts":_models_payload(models),"actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in plan],"runtime_contracts":[asdict(x) for x in runtime]},plan)
+        _save_artifacts(root,{"version":3,"mode":"source-guided-static","target":target,"contract":asdict(model),"contracts":_models_payload(models),"actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in plan],"runtime_contracts":[asdict(x) for x in runtime]},plan)
         return 0
 
     rpc=host.effective_rpc(config) if host and hasattr(host,"effective_rpc") else config.get("rpc")
@@ -2340,6 +2532,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             step.status="blocked"
             step.error="PRECONDITION BLOCKED: "+preflight
             step.error_reason=_explain_failure(step, preflight, step.actor)
+            step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models)
             steps.append(step)
             draw(step)
         else:
@@ -2356,6 +2549,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.status="reverted"
                 step.error=output or "transaction failed"
                 step.error_reason=_explain_failure(step, step.error, step.actor)
+                step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, models)
                 steps.append(step)
                 draw(step, before)
             else:
@@ -2366,6 +2560,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx)
+                step.execution_edges=_trace_execution_edges(root,rpc,models,trace)
                 step.status="success" if receipt and receipt.get("status") in (None,"0x1",1) else "reverted"
                 step.error_reason = (
                     "preflight passed and the live transaction was accepted"
@@ -2418,7 +2613,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     if ckey not in completed: pending.append(candidate)
 
         _save_artifacts(root,{
-            "version":2,"mode":"source-guided-live","target":target,
+            "version":3,"mode":"source-guided-live","target":target,
             "contract":asdict(model),"contracts":_models_payload(models),
             "actors":[asdict(x) for x in actors],"workflow":[asdict(x) for x in steps],
             "runtime_contracts":[asdict(x) for x in runtime],
