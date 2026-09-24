@@ -428,8 +428,8 @@ class LowkeyCastTests(unittest.TestCase):
             [],
             False,
         )
-        self.assertIn("STEP 01", rendered)
-        self.assertIn("STEP 02", rendered)
+        self.assertIn("FUNCTION 01", rendered)
+        self.assertIn("FUNCTION 02", rendered)
         self.assertIn("▼", rendered)
         self.assertIn("token flow", rendered)
         self.assertIn("Not ready", rendered)
