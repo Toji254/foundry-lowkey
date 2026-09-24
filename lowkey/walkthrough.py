@@ -1020,21 +1020,38 @@ def _read_zero_address_diagnostics(
 
 
 def _implementation_mapping(models: list[ContractModel]) -> dict[str, str]:
-    """Map first-party interfaces to concrete first-party implementations."""
+    """Map interfaces to concrete implementations without inventing relationships."""
     mapping: dict[str, str] = {}
-    for model in models:
+    concrete = [m for m in models if m.kind not in {"interface", "library", "abstract"}]
+    by_name = {m.name.lower(): m for m in concrete}
+
+    # Explicit inheritance is authoritative.
+    for model in concrete:
         for base in model.bases:
             mapping.setdefault(base, model.name)
-        # An imported interface may be referenced by a contract without being
-        # inherited directly in source (common proxy/facade pattern). The ABI
-        # and source call graph still benefit from a concrete-name hint.
-        for imported in model.imports:
-            stem = Path(imported).stem
-            if stem.startswith("I") and len(stem) > 1:
-                mapping.setdefault(stem, model.name)
+
+    # Prefer IThing -> Thing. Otherwise match by ABI function-name overlap.
+    for model in models:
+        if model.kind != "interface":
+            continue
+        stem = model.name[1:] if model.name.startswith("I") else model.name
+        direct = by_name.get(stem.lower())
+        if direct:
+            mapping[model.name] = direct.name
+            continue
+        interface_names = {sig.split("(", 1)[0] for sig in model.functions}
+        if not interface_names:
+            continue
+        scored = []
+        for candidate in concrete:
+            candidate_names = {sig.split("(", 1)[0] for sig in candidate.functions}
+            overlap = len(interface_names & candidate_names)
+            if overlap:
+                scored.append((overlap, candidate.name))
+        if scored:
+            scored.sort(key=lambda item: (-item[0], item[1].lower()))
+            mapping[model.name] = scored[0][1]
     return mapping
-
-
 def _short_error(raw: str | None) -> str:
     text = " ".join(str(raw or "").split())
     for prefix in ("PRECONDITION BLOCKED: ", "Error: execution reverted: ", "execution reverted: ", "Error: "):
