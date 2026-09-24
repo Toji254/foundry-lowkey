@@ -445,7 +445,7 @@ def _friendly_error(decoded: str | None, raw: str) -> tuple[str, str]:
     error_name = text.split("(", 1)[0].strip().casefold()
 
     messages = {
-        "staketokennotalowed": (
+        "staketokennotallowed": (
             "The factory rejected the token because it is not currently approved for staking.",
             "Use the legitimate factory setup/owner flow to approve the token, then retry pool creation.",
         ),
