@@ -364,13 +364,17 @@ def _load_system_manifest(root: Path, rpc: str, config: dict[str, Any]) -> dict[
 def _bootstrap_from_manifest(manifest: dict[str, Any] | None, rpc: str) -> dict[str, Any] | None:
     if not manifest:
         return None
-    deployments = manifest.get("deployments") or []
+    deployments = [
+        x for x in (manifest.get("deployments") or [])
+        if isinstance(x, dict)
+        and not any(part.lower() == "dry-run" for part in str(x.get("broadcast") or x.get("path") or "").split("/"))
+    ]
     audit_evidence = manifest.get("audit_evidence") or []
     return {
         "deployments": deployments,
         "live_deployments": [
             x for x in deployments
-            if isinstance(x, dict) and x.get("live") and x.get("code_size", x.get("live"))
+            if x.get("live") and x.get("code_size", x.get("live"))
         ],
         "scripts": [
             {
@@ -754,85 +758,42 @@ def _auto_bootstrap_local(
 
 
 def _print_bootstrap_discovery(meta: dict[str, Any]) -> None:
+    """Show bootstrap evidence as a concise explanation, not a command dump."""
     bootstrap = meta.get("bootstrap") or {}
-    print("BOOTSTRAP DISCOVERY")
     live = bootstrap.get("live_deployments") or []
     deployments = bootstrap.get("deployments") or []
-    if live:
-        print(f"  Live broadcast deployments: {len(live)}")
-        for item in live[:8]:
-            print(
-                f"    {item['contract']} -> {item['address']} "
-                f"({item['broadcast']})"
-            )
-    elif deployments:
-        print("  Broadcast deployments: found, but none have live bytecode on this RPC.")
-        for item in deployments[:8]:
-            print(
-                f"    {item['contract']} -> {item['address']} "
-                f"({item['broadcast']})"
-            )
-    else:
-        print("  Broadcast deployments: none found")
-
     scripts = bootstrap.get("scripts") or []
-    if scripts:
-        print("  Deployment scripts:")
-        for item in scripts[:6]:
-            print(f"    {item['path']} [{', '.join(item['signals'])}]")
-            print(f"      {item['command']}")
-    else:
-        print("  Deployment scripts: none detected")
-
     tests = bootstrap.get("tests") or []
-    if tests:
-        print("  Test fixtures:")
-        for item in tests[:6]:
-            print(f"    {item['path']} [{', '.join(item['signals'])}]")
-            print(f"      {item['command']}")
-    else:
-        print("  Test fixtures: none detected")
-
     audit_targets = bootstrap.get("audit_targets") or []
+    auto = meta.get("auto_bootstrap") or {}
+
+    print("BOOTSTRAP / ENVIRONMENT")
+    if live:
+        print(f"  ✓ Local runtime contains {len(live)} deployed contract(s).")
+    elif deployments:
+        print("  ! Deployment records exist, but none match live bytecode on this RPC.")
+    else:
+        print("  ! No current deployment records were found.")
+
+    if auto.get("status") == "success":
+        print(f"  ✓ Auto setup: {auto.get('reason', 'local setup executed')}")
+    elif auto:
+        print(f"  • Auto setup: {auto.get('reason', 'not executed')}")
+
+    if scripts:
+        safe = [x for x in scripts if _bootstrap_script_score(x) >= 0]
+        print(f"  Setup entry points: {len(safe)} safe candidate(s) found.")
+        for item in safe[:4]:
+            signals = ", ".join(str(x) for x in item.get("signals") or [])
+            print(f"    → {item.get('path')}  ({signals})")
+    else:
+        print("  Setup entry points: none detected.")
+
+    if tests:
+        print(f"  Test/fixture entry points: {len(tests)} found.")
     if audit_targets:
-        print("  Persisted audit targets:")
-        for item in audit_targets[:6]:
-            target = item.get("target")
-            file_name = item.get("file") or "audit evidence"
-            live = False
-            if _is_address(target):
-                live = any(
-                    node.get("address", "").lower() == target.lower() and node.get("code_size", 0) > 0
-                    for node in (meta.get("live_nodes") or [])
-                    if isinstance(node, dict)
-                )
-            status = "live bytecode" if live else "no live bytecode"
-            print(f"    {target} [{status}] from {file_name}")
+        print(f"  Persisted audit target(s): {len(audit_targets)} found.")
 
-    if meta.get("target") and not (meta.get("live_nodes") or []):
-        print("")
-        print(f"  Target anchor: {meta['target']} ({meta.get('target_source', 'unknown')})")
-        print("  No live contract/dependencies were discovered for the target.")
-        print("  Lowkey can still use static source, artifact, test, and bootstrap evidence.")
-
-    if not meta.get("target"):
-        print("")
-        print(
-            "  No live target was selected. Lowkey will not guess project-specific "
-            "constructor/env values or execute an arbitrary script."
-        )
-        print(
-            "  Use one of the discovered deployment entry points, then rerun "
-            "lk walkthrough; existing broadcast state is picked up automatically."
-        )
-
-
-def _eth_accounts(url: str) -> list[str]:
-    try:
-        raw = _rpc(url, "eth_accounts", [])
-        return [x for x in raw if _is_address(x)]
-    except Exception:
-        return []
 
 
 def _strip_solidity_comments(text: str) -> str:
