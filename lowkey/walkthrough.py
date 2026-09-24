@@ -3013,6 +3013,63 @@ def _failure_flow_summary(root: Path, model: ContractModel, step: Step, origin: 
         lines.append("NOT REACHED → " + ", ".join(dict.fromkeys(downstream[:5])))
     return lines
 
+def _diagnose_argument_contracts(
+    rpc: str,
+    step: Step,
+    model: ContractModel,
+    models: list[ContractModel],
+    actors: list[Actor],
+    runtime: list[RuntimeContract] | None = None,
+) -> tuple[str | None, list[str]]:
+    """Explain address arguments that source code expects to be contracts."""
+    origin = None
+    lines: list[str] = []
+    inputs = _function_inputs(model, step.function)
+    function_name = str(step.function).split("(", 1)[0]
+
+    for index, param in enumerate(inputs):
+        if index >= len(step.args) or _canonical_type(param) != "address":
+            continue
+
+        name = str(param.get("name") or f"arg{index + 1}")
+        requirement = _contract_requirement_for_parameter(
+            model,
+            function_name,
+            name,
+            models,
+        )
+        if not requirement:
+            continue
+
+        value = step.args[index]
+        shown = _friendly_arg(value, actors, runtime)
+        if not is_address(value):
+            lines.append(
+                f"✕ {name} = {shown} is not a valid address; "
+                f"source expects a live contract implementing {requirement}"
+            )
+            origin = origin or f"{model.name}.{function_name} → {name} is not a contract address"
+            continue
+
+        code = _runtime_code(rpc, value)
+        if code in {"", "0x"}:
+            lines.append(
+                f"✕ {name} = {shown} has no contract code; "
+                f"source expects {requirement}"
+            )
+            origin = origin or (
+                f"{model.name}.{function_name} → {name} points to an address with no contract code"
+            )
+        else:
+            concrete = _implementation_mapping(models).get(requirement, requirement)
+            lines.append(
+                f"✓ {name} = {shown} has live contract code; "
+                f"expected interface {requirement} ({concrete})"
+            )
+
+    return origin, list(dict.fromkeys(lines))
+
+
 def _diagnose_failed_call(
     root: Path,
     rpc: str,
@@ -3021,9 +3078,16 @@ def _diagnose_failed_call(
     models: list[ContractModel],
     actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
+    arg_actors = [Actor(step.actor or "Caller", actor_address, 0)] if actor_address else []
+    arg_origin, arg_lines = _diagnose_argument_contracts(
+        rpc, step, model, models, arg_actors
+    )
+    origin = arg_origin
+    diagnostics = list(arg_lines)
+
     guard_origin, guard_lines = _probe_source_guards(root, rpc, step, model, models, actor_address)
-    origin = guard_origin
-    diagnostics = list(guard_lines)
+    origin = origin or guard_origin
+    diagnostics.extend(guard_lines)
     zero_origin, zero_lines = _read_zero_address_diagnostics(rpc, step.address, model)
     origin = origin or zero_origin
     diagnostics.extend(zero_lines)
@@ -3059,6 +3123,7 @@ def _diagnose_failed_call(
                 diagnostics.append(f"root revert decoded as {decoded}")
 
         edges = _trace_execution_edges(root, rpc, models, trace)
+        step.execution_edges = edges
         for edge in edges[:10]:
             target = edge.get("to_contract") or _addr(edge.get("to_address"))
             fn = edge.get("function") or edge.get("type")
