@@ -2625,7 +2625,22 @@ def _function_access_label(fn: FunctionInfo, functions: list[FunctionInfo]) -> s
     gate = next((x for x in modifiers if x.lower() == "onlyowner"), None)
     gate = gate or next((x for x in modifiers if x.lower().startswith("onlyrole")), None)
     if fn.visibility in {"external", "public"}:
-        return f"{gate} only" if gate else "any external caller"
+        if gate:
+            return f"{gate} only"
+        body = fn.body or ""
+        msg_sender = re.findall(
+            r"msg\.sender\s*==\s*([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*==\s*msg\.sender",
+            body,
+        )
+        refs = [a or b for a, b in msg_sender if a or b]
+        if refs:
+            return f"only the address stored in {refs[0]}"
+        if "msg.sender" in body and any(
+            token in body.lower()
+            for token in ("require(", "revert ", "only", "authorized", "notauthorized")
+        ):
+            return "externally callable but source-gated"
+        return "any external caller"
     callers = sorted({
         candidate.name
         for candidate in functions
@@ -2744,6 +2759,110 @@ def _render_contract_surface(contract: ContractInfo, functions: list[FunctionInf
     return lines
 
 
+def _render_component_surfaces(
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    contracts: dict[str, ContractInfo],
+) -> list[str]:
+    lines = [_section("COMPONENT SURFACES / WHO TOUCHES WHAT", "cyan")]
+    shown = 0
+    for node in nodes:
+        if node.code_size <= 0:
+            continue
+        cname = node.artifact_contract or node.name
+        contract = contracts.get(cname)
+        funcs = functions_by_contract.get(cname, [])
+        if not contract:
+            continue
+
+        mutating = [
+            fn for fn in funcs
+            if fn.visibility in {"external", "public"}
+            and fn.mutability not in {"view", "pure"}
+        ]
+        mutating.sort(
+            key=lambda fn: (
+                -_walkthrough_phase_priority(fn)[0],
+                -len(fn.writes),
+                fn.name,
+            )
+        )
+        states = contract.state_vars or []
+        important_states = [
+            str(item.get("name") or "?")
+            for item in states
+            if str(item.get("name") or "")
+        ]
+
+        lines.append(
+            f"  {_paint(cname, 'bold')}  "
+            f"{_contract_purpose(cname, funcs)}"
+        )
+        if important_states:
+            lines.append(
+                f"      {_paint('STATE', 'blue')} "
+                + ", ".join(important_states[:5])
+                + (f", … +{len(important_states)-5}" if len(important_states) > 5 else "")
+            )
+        if mutating:
+            entries = []
+            for fn in mutating[:5]:
+                writes = f" → {', '.join(fn.writes[:2])}" if fn.writes else ""
+                entries.append(f"{fn.name} [{_function_access_label(fn, funcs)}]{writes}")
+            lines.append(f"      {_paint('ENTRY', 'magenta')} " + "; ".join(entries))
+        else:
+            readables = [
+                fn.name for fn in funcs
+                if fn.visibility in {"external", "public"}
+                and fn.mutability in {"view", "pure"}
+            ]
+            if readables:
+                lines.append(
+                    f"      {_paint('READ', 'cyan')} " + ", ".join(readables[:5])
+                )
+        shown += 1
+        if shown >= 8:
+            break
+    if shown == 0:
+        lines.append("  No source-backed live component surfaces were recovered.")
+    return lines
+
+
+def _render_lifecycle_summary(
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+) -> list[str]:
+    phase_items: dict[str, list[str]] = {}
+    for node in nodes:
+        if node.code_size <= 0:
+            continue
+        cname = node.artifact_contract or node.name
+        for fn in functions_by_contract.get(cname, []):
+            if fn.mutability in {"view", "pure"} or fn.visibility not in {"external", "public"}:
+                continue
+            phase = _action_phase(fn)
+            if phase in {"SETUP", "ADMIN"}:
+                continue
+            phase_items.setdefault(phase, []).append(f"{cname}.{fn.name}()")
+
+    order = ["CREATE", "PARTICIPATE", "OUTCOME", "SETTLE", "INTERACTION"]
+    lines = [_section("PROTOCOL FLOW / STATIC LIFECYCLE MAP", "yellow")]
+    emitted = 0
+    for phase in order:
+        items = phase_items.get(phase) or []
+        if not items:
+            continue
+        lines.append(
+            f"  {phase:<11} "
+            + " → ".join(items[:4])
+            + (f" → … +{len(items)-4}" if len(items) > 4 else "")
+        )
+        emitted += 1
+    if not emitted:
+        lines.append("  No lifecycle-changing entry points recovered.")
+    return lines
+
+
 def _render_state_diagnosis(actions: list[dict[str, Any]]) -> list[str]:
     blocked = [action for action in actions if str(action.get("status")) == "BLOCKED"]
     if not blocked:
@@ -2800,7 +2919,7 @@ def _render_action_card(
         msg, rec = _friendly_error(result.get("decoded_error"), result.get("raw",""))
         lines.append(f"  RESULT {_status_icon('BLOCKED')} {msg}")
         lines.append(f"  NEXT   {_paint(rec, 'yellow')}")
-        for item in action.get("diagnosis", [])[:2]:
+        for item in action.get("diagnosis", [])[:4]:
             lines.append(f"         evidence: {item}")
     return "\n".join(lines)
 
@@ -2835,7 +2954,7 @@ def _render_story(
         _paint("│ LOWKEY  /  PROTOCOL WALKTHROUGH                            │", "bold"),
         _paint("╰────────────────────────────────────────────────────────────╯", "cyan"),
         f"  Environment  Local RPC • {len(live_nodes)} live contract(s) • {len(_canonical_actor_names(actors))} actor(s)",
-        f"  Focus        {target_name} • {_short_address(target) if target else 'no target'}",
+        f"  Focus target {target_name} • {_short_address(target) if target else 'no target'}",
     ]
 
     source = str(meta.get("target_source") or "")
@@ -2866,6 +2985,8 @@ def _render_story(
         _system_edges(nodes, functions_by_contract, contracts),
         actions,
     )
+    lines += [""] + _render_lifecycle_summary(functions_by_contract, nodes)
+    lines += [""] + _render_component_surfaces(nodes, functions_by_contract, contracts)
 
     if focus:
         cname = focus.artifact_contract or focus.name
