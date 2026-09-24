@@ -2096,6 +2096,17 @@ def _probe_source_dependency_result(
     if target_model is None:
         target_model = next((item for item in models if item.name.lower() == target_name.lower()), None)
     fn_name = str(edge.get("to_function") or "")
+    if target_model is None and fn_name:
+        target_model = next(
+            (
+                item for item in models
+                if any(
+                    str(sig).split("(", 1)[0].lower() == fn_name.lower()
+                    for sig in item.functions
+                )
+            ),
+            None,
+        )
     fn_item = _function_by_name(target_model, fn_name)
     if not fn_item:
         return None, None
@@ -2189,6 +2200,8 @@ def _diagnose_failed_call(
     actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
     origin, diagnostics = _read_zero_address_diagnostics(rpc, step.address, model)
+    source_lines = _source_guard_lines(model, step)
+    diagnostics.extend(source_lines[:8])
     arg_origin, arg_diagnostics = _diagnose_argument_contracts(rpc, step, model, models)
     origin = origin or arg_origin
     diagnostics.extend(arg_diagnostics)
