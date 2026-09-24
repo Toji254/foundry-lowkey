@@ -1840,7 +1840,7 @@ def _diagnose_argument_contracts(rpc: str, step: Step, model: ContractModel) -> 
             )
             diagnostics.append(
                 f"{_pretty_identifier(label)} = {_addr(candidate)} has no contract code; "
-                f"source calls {edge.get("interface") or edge.get("to_contract")}.{edge.get("to_function")}(), "
+                f"source calls {edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}(), "
                 "so this value cannot behave like the contract the protocol expects"
             )
         else:
