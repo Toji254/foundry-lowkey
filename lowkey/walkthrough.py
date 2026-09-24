@@ -1,0 +1,1986 @@
+#!/usr/bin/env python3
+"""
+System-aware Lowkey protocol walkthrough.
+
+This module is intentionally self-contained so it can replace an existing
+lowkey/walkthrough.py without requiring changes to lk.py.
+
+Design:
+  source -> ABI -> static dependency graph -> live address graph
+        -> role/state discovery -> semantic argument synthesis
+        -> eth_call preflight -> live send (optional)
+        -> failure diagnosis + evidence
+        -> deterministic fuzz/probe mode
+
+The engine does not claim that a successful random probe is a vulnerability.
+It records observed behavior and makes every generated input replayable.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import random
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any, Iterable, Optional
+from urllib import request
+
+ZERO = "0x" + "0" * 40
+ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+HEX_RE = re.compile(r"0x[0-9a-fA-F]+$")
+
+
+@dataclass
+class FunctionInfo:
+    contract: str
+    name: str
+    inputs: list[dict[str, Any]]
+    outputs: list[dict[str, Any]]
+    mutability: str
+    signature: str
+    source: str | None = None
+    line: int | None = None
+    body: str = ""
+    modifiers: list[str] | None = None
+    calls: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:
+        self.modifiers = self.modifiers or []
+        self.calls = self.calls or []
+
+
+@dataclass
+class ContractInfo:
+    name: str
+    source: str | None
+    line: int | None
+    kind: str = "contract"
+    imports: list[str] | None = None
+    functions: list[FunctionInfo] | None = None
+    errors: list[dict[str, Any]] | None = None
+    address_vars: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        self.imports = self.imports or []
+        self.functions = self.functions or []
+        self.errors = self.errors or []
+        self.address_vars = self.address_vars or []
+
+
+@dataclass
+class LiveNode:
+    address: str
+    name: str
+    code_size: int
+    artifact_contract: str | None = None
+    discovered_from: str | None = None
+    getter: str | None = None
+
+
+def _is_address(value: Any) -> bool:
+    return isinstance(value, str) and bool(ADDRESS_RE.fullmatch(value))
+
+
+def _checksumish(value: str) -> str:
+    if not _is_address(value):
+        return value
+    # Keep exact chain value but normalize its casing for display.
+    return "0x" + value[2:].lower()
+
+
+def _rpc_url(config: dict[str, Any]) -> str:
+    return (
+        str(config.get("rpc") or os.environ.get("ETH_RPC_URL") or "http://127.0.0.1:8545")
+        .strip()
+    )
+
+
+def _rpc(url: str, method: str, params: list[Any]) -> Any:
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    ).encode()
+    req = request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with request.urlopen(req, timeout=8) as response:
+        payload = json.loads(response.read().decode())
+    if "error" in payload:
+        raise RuntimeError(str(payload["error"]))
+    return payload.get("result")
+
+
+def _code_size(url: str, address: str) -> int:
+    try:
+        code = _rpc(url, "eth_getCode", [address, "latest"])
+        return max(0, (len(code or "0x") - 2) // 2)
+    except Exception:
+        return 0
+
+
+def _latest_timestamp(url: str) -> int:
+    try:
+        block = _rpc(url, "eth_getBlockByNumber", ["latest", False])
+        return int(block["timestamp"], 16)
+    except Exception:
+        return int(time.time())
+
+
+def _eth_accounts(url: str) -> list[str]:
+    try:
+        raw = _rpc(url, "eth_accounts", [])
+        return [x for x in raw if _is_address(x)]
+    except Exception:
+        return []
+
+
+def _split_params(text: str) -> list[str]:
+    items: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for i, ch in enumerate(text):
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            item = text[start:i].strip()
+            if item:
+                items.append(item)
+            start = i + 1
+    tail = text[start:].strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _parse_decl_type(item: str) -> tuple[str, str]:
+    item = re.sub(r"\s+", " ", item.strip())
+    if not item:
+        return "bytes", ""
+    item = re.sub(r"\b(?:memory|calldata|storage|indexed)\b", " ", item)
+    item = re.sub(r"\s+", " ", item).strip()
+    parts = item.split(" ")
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[-1]
+
+
+def _canonical_abi_type(param: dict[str, Any]) -> str:
+    typ = str(param.get("type") or "bytes")
+    if typ.startswith("tuple"):
+        suffix = typ[5:]
+        components = param.get("components") or []
+        inner = ",".join(_canonical_abi_type(x) for x in components)
+        return f"({inner}){suffix}"
+    return typ
+
+
+def _function_signature_from_abi(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or "")
+    types = [_canonical_abi_type(x) for x in item.get("inputs", [])]
+    return f"{name}({','.join(types)})"
+
+
+def _load_artifacts(root: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Path]]:
+    by_contract: dict[str, list[dict[str, Any]]] = {}
+    files: dict[str, Path] = {}
+    for path in sorted(root.glob("out/**/*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        abi = data.get("abi")
+        if not isinstance(abi, list):
+            continue
+        name = str(data.get("contractName") or path.stem)
+        if name not in by_contract:
+            by_contract[name] = abi
+            files[name] = path
+    return by_contract, files
+
+
+def _parse_solidity_sources(root: Path) -> dict[str, ContractInfo]:
+    contracts: dict[str, ContractInfo] = {}
+    patterns = list(root.glob("src/**/*.sol")) + list(root.glob("contracts/**/*.sol"))
+    seen: set[Path] = set()
+    for path in patterns:
+        if not path.is_file() or path in seen:
+            continue
+        seen.add(path)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        rel = path.relative_to(root).as_posix()
+        import_list = re.findall(r'\bimport\s+(?:[^;]*?from\s+)?["\']([^"\']+)["\']\s*;', text)
+
+        for match in re.finditer(
+            r"\b(contract|interface|library)\s+([A-Za-z_]\w*)",
+            text,
+        ):
+            kind, name = match.groups()
+            line = text.count("\n", 0, match.start()) + 1
+            ci = ContractInfo(
+                name=name,
+                source=rel,
+                line=line,
+                kind=kind,
+                imports=import_list,
+            )
+            block_start = match.start()
+            next_decl = re.search(
+                r"\b(?:contract|interface|library)\s+[A-Za-z_]\w*",
+                text[match.end():],
+            )
+            block_end = (
+                match.end() + next_decl.start()
+                if next_decl
+                else len(text)
+            )
+            ci.address_vars = [
+                x.group(1)
+                for x in re.finditer(
+                    r"\baddress(?:\s+[A-Za-z_]\w+)?\s+(?:public|private|internal|external)\s+([A-Za-z_]\w*)\s*(?:=|;)",
+                    text[block_start:block_end],
+                )
+            ]
+            for fmatch in re.finditer(
+                r"\bfunction\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*([^{;]*)(?:\{|;)",
+                text[block_start:block_end],
+                flags=re.S,
+            ):
+                fname, ptext, tail = fmatch.groups()
+                pitems = _split_params(ptext)
+                inputs: list[dict[str, Any]] = []
+                for raw in pitems:
+                    typ, pname = _parse_decl_type(raw)
+                    inputs.append({"type": typ, "name": pname})
+                floc = block_start + fmatch.start()
+                fline = text.count("\n", 0, floc) + 1
+                absolute = block_start + fmatch.start()
+                brace = text.find("{", absolute, block_start + fmatch.end() + 1)
+                body = ""
+                if brace >= 0:
+                    depth = 0
+                    end = brace
+                    for j in range(brace, min(len(text), brace + 30000)):
+                        if text[j] == "{":
+                            depth += 1
+                        elif text[j] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                end = j + 1
+                                break
+                    body = text[brace:end]
+                modifiers = re.findall(
+                    r"\b(only[A-Za-z_]\w*|when[A-Za-z_]\w*|nonReentrant|initializer|payable|view|pure)\b",
+                    tail,
+                )
+                calls: list[dict[str, Any]] = []
+                for c in re.finditer(
+                    r"\b([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*\(",
+                    body,
+                ):
+                    calls.append(
+                        {
+                            "kind": "member-call",
+                            "receiver": c.group(1),
+                            "function": c.group(2),
+                        }
+                    )
+                for c in re.finditer(
+                    r"\b([A-Z][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\.\s*([A-Za-z_]\w*)\s*\(",
+                    body,
+                ):
+                    calls.append(
+                        {
+                            "kind": "typed-call",
+                            "interface": c.group(1),
+                            "receiver": c.group(2),
+                            "function": c.group(3),
+                        }
+                    )
+                sig = f"{fname}({','.join(x['type'] for x in inputs)})"
+                ci.functions.append(
+                    FunctionInfo(
+                        contract=name,
+                        name=fname,
+                        inputs=inputs,
+                        outputs=[],
+                        mutability=(
+                            "view" if re.search(r"\bview\b", tail)
+                            else "pure" if re.search(r"\bpure\b", tail)
+                            else "payable" if re.search(r"\bpayable\b", tail)
+                            else "nonpayable"
+                        ),
+                        signature=sig,
+                        source=rel,
+                        line=fline,
+                        body=body,
+                        modifiers=modifiers,
+                        calls=calls,
+                    )
+                )
+
+            for em in re.finditer(
+                r"\berror\s+([A-Za-z_]\w*)\s*\((.*?)\)\s*;",
+                text[block_start:block_end],
+                flags=re.S,
+            ):
+                err_name, err_args = em.groups()
+                err_inputs = []
+                for raw in _split_params(err_args):
+                    typ, pname = _parse_decl_type(raw)
+                    err_inputs.append({"type": typ, "name": pname})
+                ci.errors.append(
+                    {"name": err_name, "inputs": err_inputs}
+                )
+            contracts[name] = ci
+    return contracts
+
+
+def _merge_artifact_functions(
+    contracts: dict[str, ContractInfo],
+    artifacts: dict[str, list[dict[str, Any]]],
+    artifact_files: dict[str, Path],
+    root: Path,
+) -> dict[str, list[FunctionInfo]]:
+    by_contract: dict[str, list[FunctionInfo]] = {}
+    for name, abi in artifacts.items():
+        ci = contracts.get(name)
+        source_map: dict[str, tuple[str | None, int | None]] = {}
+        if ci:
+            source_map = {
+                f.signature: (f.source, f.line)
+                for f in ci.functions
+            }
+        functions: list[FunctionInfo] = []
+        for item in abi:
+            if item.get("type") != "function":
+                continue
+            sig = _function_signature_from_abi(item)
+            src, line = source_map.get(sig, (None, None))
+            functions.append(
+                FunctionInfo(
+                    contract=name,
+                    name=str(item.get("name") or ""),
+                    inputs=item.get("inputs") or [],
+                    outputs=item.get("outputs") or [],
+                    mutability=str(item.get("stateMutability") or "nonpayable"),
+                    signature=sig,
+                    source=src,
+                    line=line,
+                    body=(
+                        next(
+                            (
+                                f.body
+                                for f in (ci.functions if ci else [])
+                                if f.signature == sig
+                            ),
+                            "",
+                        )
+                    ),
+                    modifiers=(
+                        next(
+                            (
+                                f.modifiers
+                                for f in (ci.functions if ci else [])
+                                if f.signature == sig
+                            ),
+                            [],
+                        )
+                    ),
+                    calls=(
+                        next(
+                            (
+                                f.calls
+                                for f in (ci.functions if ci else [])
+                                if f.signature == sig
+                            ),
+                            [],
+                        )
+                    ),
+                )
+            )
+        by_contract[name] = functions
+    return by_contract
+
+
+def _source_link(root: Path, source: str | None, line: int | None, text: str) -> str:
+    if not source or not line:
+        return text
+    path = (root / source).resolve()
+    if not path.exists():
+        return text
+    href = f"file://{path}:{line}"
+    # OSC 8 hyperlink. Supported by modern GNOME Terminal, VS Code terminal,
+    # iTerm2 and several other terminals; unsupported terminals simply render text.
+    return f"\x1b]8;;{href}\x1b\\{text}\x1b]8;;\x1b\\"
+
+
+def _run(
+    command: list[str],
+    root: Path | None = None,
+    timeout: int = 30,
+) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(root) if root else None,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except FileNotFoundError:
+        return 127, "", f"{command[0]} not found on PATH"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"command timed out after {timeout}s"
+    except OSError as exc:
+        return 1, "", str(exc)
+
+
+def _cast_call(
+    root: Path,
+    rpc: str,
+    address: str,
+    function: FunctionInfo,
+    args: list[str],
+    caller: str | None = None,
+) -> tuple[int, str, str]:
+    cmd = ["cast", "call", address, function.signature, *args, "--rpc-url", rpc]
+    if caller and _is_address(caller):
+        cmd.extend(["--from", caller])
+    return _run(cmd, root, 30)
+
+
+def _cast_send(
+    root: Path,
+    rpc: str,
+    address: str,
+    function: FunctionInfo,
+    args: list[str],
+    caller: str,
+) -> tuple[int, str, str]:
+    cmd = [
+        "cast",
+        "send",
+        address,
+        function.signature,
+        *args,
+        "--rpc-url",
+        rpc,
+        "--from",
+        caller,
+        "--unlocked",
+    ]
+    return _run(cmd, root, 60)
+
+
+def _parse_revert_blob(text: str) -> str | None:
+    candidates = re.findall(
+        r"0x[0-9a-fA-F]{8,}",
+        text.replace('\\"', '"'),
+    )
+    if not candidates:
+        return None
+    # Prefer a blob that includes at least a full 4-byte selector.
+    for item in reversed(candidates):
+        if len(item) >= 10:
+            return item
+    return None
+
+
+def _keccak_selector(signature: str) -> str:
+    try:
+        from Crypto.Hash import keccak  # type: ignore
+        k = keccak.new(digest_bits=256)
+        k.update(signature.encode())
+        return "0x" + k.hexdigest()[:8]
+    except Exception:
+        code, out, _ = _run(["cast", "sig", signature], None, 10)
+        if code == 0:
+            m = re.search(r"0x[0-9a-fA-F]{8}", out)
+            if m:
+                return m.group(0).lower()
+    # Deliberately return an impossible sentinel; callers do not rely on it for control flow.
+    return "0x00000000"
+
+
+def _decode_word(typ: str, word: bytes) -> Any:
+    t = typ.lower()
+    if t.startswith("uint") or t.startswith("int"):
+        return int.from_bytes(word, "big", signed=t.startswith("int"))
+    if t == "bool":
+        return bool(int.from_bytes(word, "big"))
+    if t == "address":
+        return "0x" + word[-20:].hex()
+    if t.startswith("bytes") and len(t) > 5:
+        n = int(t[5:])
+        return "0x" + word[:n].hex()
+    return "0x" + word.hex()
+
+
+def _decode_error(
+    blob: str | None,
+    errors: Iterable[dict[str, Any]],
+) -> str | None:
+    if not blob or len(blob) < 10:
+        return None
+    raw = bytes.fromhex(blob[2:])
+    selector = "0x" + raw[:4].hex()
+    for err in errors:
+        name = str(err.get("name") or "")
+        inputs = err.get("inputs") or []
+        sig = f"{name}({','.join(_canonical_abi_type(x) for x in inputs)})"
+        if _keccak_selector(sig) != selector:
+            continue
+        payload = raw[4:]
+        values: list[Any] = []
+        for i, item in enumerate(inputs):
+            typ = _canonical_abi_type(item)
+            # Dynamic decoding is deliberately conservative; static errors are
+            # by far the most common and are fully decoded here.
+            if "[" in typ or typ in {"bytes", "string"} or typ.startswith("("):
+                values.append("<dynamic>")
+                continue
+            off = i * 32
+            if len(payload) < off + 32:
+                values.append("<truncated>")
+            else:
+                values.append(_decode_word(typ, payload[off:off + 32]))
+        if values:
+            return f"{name}({', '.join(str(v) for v in values)})"
+        return f"{name}()"
+    return selector
+
+
+def _all_errors(artifacts: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for abi in artifacts.values():
+        for item in abi:
+            if item.get("type") != "error":
+                continue
+            sig = _function_signature_from_abi(
+                {**item, "name": item.get("name")}
+            )
+            key = sig
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _parse_cast_value(raw: str, typ: str) -> Any:
+    text = raw.strip()
+    if typ.endswith("[]"):
+        inner = text.strip("[] ")
+        if not inner:
+            return []
+        return [
+            _parse_cast_value(part.strip(), typ[:-2])
+            for part in _split_params(inner)
+        ]
+    if _is_address(text):
+        return text
+    if text.lower() in {"true", "false"}:
+        return text.lower() == "true"
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    return text
+
+
+def _render_value(value: Any) -> str:
+    if isinstance(value, list):
+        return "[" + ", ".join(_render_value(x) for x in value) + "]"
+    return str(value)
+
+
+def _normalize_arg_for_cast(value: Any) -> str:
+    if isinstance(value, list):
+        return "[" + ",".join(_normalize_arg_for_cast(x) for x in value) + "]"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _function_by_name(functions: Iterable[FunctionInfo], name: str) -> FunctionInfo | None:
+    matches = [f for f in functions if f.name == name]
+    return matches[0] if matches else None
+
+
+def _read_simple_getter(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    function: FunctionInfo,
+    *,
+    caller: str | None = None,
+) -> tuple[Any, str]:
+    code, out, err = _cast_call(root, rpc, node.address, function, [], caller)
+    if code != 0:
+        return None, err or out
+    text = out.strip()
+    if not text:
+        return None, ""
+    outputs = function.outputs
+    if len(outputs) == 1 and str(outputs[0].get("type")) == "address":
+        m = re.search(r"0x[0-9a-fA-F]{40}", text)
+        return (m.group(0) if m else None), text
+    if len(outputs) == 1 and str(outputs[0].get("type")) == "address[]":
+        vals = re.findall(r"0x[0-9a-fA-F]{40}", text)
+        return vals, text
+    if len(outputs) == 1 and str(outputs[0].get("type")) == "bool":
+        return text.lower().split()[0] == "true", text
+    if len(outputs) == 1 and (
+        str(outputs[0].get("type") or "").startswith(("uint", "int"))
+    ):
+        m = re.search(r"-?\d+", text)
+        return (int(m.group(0)) if m else None), text
+    return text, text
+
+
+def _discover_getters(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    functions: list[FunctionInfo],
+) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for fn in functions:
+        if fn.mutability not in {"view", "pure"}:
+            continue
+        if fn.inputs:
+            continue
+        if len(fn.outputs) != 1:
+            continue
+        typ = str(fn.outputs[0].get("type") or "")
+        if typ not in {"address", "address[]", "bool"} and not typ.startswith(("uint", "int")):
+            continue
+        val, raw = _read_simple_getter(root, rpc, node, fn)
+        if val is not None:
+            values[fn.name] = val
+    return values
+
+
+def _looks_like_erc20(functions: list[FunctionInfo]) -> bool:
+    names = {f.name for f in functions}
+    return {"balanceOf", "transfer"}.issubset(names)
+
+
+def _looks_like_agreement(functions: list[FunctionInfo]) -> bool:
+    names = {f.name for f in functions}
+    return "isContractInScope" in names and "owner" in names
+
+
+def _build_live_graph(
+    root: Path,
+    rpc: str,
+    target: str,
+    label_hint: str | None,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    artifact_files: dict[str, Path],
+) -> tuple[list[LiveNode], dict[str, dict[str, Any]], dict[str, str]]:
+    nodes: list[LiveNode] = []
+    getter_data: dict[str, dict[str, Any]] = {}
+    address_names: dict[str, str] = {}
+    queue: list[tuple[str, str, str | None, str | None]] = [
+        (target, label_hint or "Target", None, None)
+    ]
+    seen: set[str] = set()
+
+    while queue and len(nodes) < 40:
+        address, label, parent, getter = queue.pop(0)
+        if not _is_address(address):
+            continue
+        key = address.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        size = _code_size(rpc, address)
+        # A target with zero code is intentionally retained so diagnostics can
+        # say "there is no contract here" instead of inventing a revert reason.
+        artifact_contract = None
+        if label in functions_by_contract:
+            artifact_contract = label
+        else:
+            for cname in functions_by_contract:
+                if cname.lower() == label.lower():
+                    artifact_contract = cname
+                    break
+        node = LiveNode(
+            address=address,
+            name=artifact_contract or label,
+            code_size=size,
+            artifact_contract=artifact_contract,
+            discovered_from=parent,
+            getter=getter,
+        )
+        nodes.append(node)
+        if size == 0:
+            continue
+
+        funcs = functions_by_contract.get(artifact_contract or "", [])
+        vals = _discover_getters(root, rpc, node, funcs)
+        getter_data[address.lower()] = vals
+
+        for gname, value in vals.items():
+            if _is_address(value) and value.lower() != ZERO.lower():
+                if _code_size(rpc, value) > 0:
+                    child_label = gname
+                    for cname, fs in functions_by_contract.items():
+                        if gname in {f.name for f in fs}:
+                            child_label = cname
+                            break
+                    queue.append((value, child_label, address, gname))
+                    address_names[value.lower()] = gname
+            elif isinstance(value, list):
+                for item in value[:20]:
+                    if _is_address(item) and _code_size(rpc, item) > 0:
+                        queue.append((item, gname, address, gname))
+                        address_names[item.lower()] = gname
+
+    return nodes, getter_data, address_names
+
+
+def _actor_context(config: dict[str, Any], rpc: str) -> dict[str, str]:
+    accounts = _eth_accounts(rpc)
+    actors: dict[str, str] = {}
+    saved = config.get("aliases") or {}
+    if isinstance(saved, dict):
+        for name, addr in saved.items():
+            if _is_address(addr):
+                actors[str(name)] = addr
+
+    defaults = ["Alice", "Bob", "Attacker"]
+    for i, addr in enumerate(accounts[:3]):
+        actors.setdefault(defaults[i], addr)
+
+    # Common lower-case aliases, used for role matching.
+    for canonical in list(actors):
+        actors[canonical.lower()] = actors[canonical]
+    return actors
+
+
+def _known_contracts(nodes: list[LiveNode], functions_by_contract: dict[str, list[FunctionInfo]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for node in nodes:
+        cname = node.artifact_contract or node.name
+        result[cname.lower()] = node.address
+        fs = functions_by_contract.get(cname, [])
+        if _looks_like_erc20(fs):
+            result.setdefault("erc20", node.address)
+        if _looks_like_agreement(fs):
+            result.setdefault("agreement", node.address)
+        if "isAgreementValid" in {f.name for f in fs}:
+            result.setdefault("safeharbor", node.address)
+        if "getAgreementState" in {f.name for f in fs}:
+            result.setdefault("attackregistry", node.address)
+    return result
+
+
+def _query_by_signature(
+    root: Path,
+    rpc: str,
+    address: str,
+    signature: str,
+    args: list[str] | None = None,
+    caller: str | None = None,
+) -> tuple[int, str, str]:
+    fn = FunctionInfo(
+        contract="Runtime",
+        name=signature.split("(", 1)[0],
+        inputs=[],
+        outputs=[],
+        mutability="view",
+        signature=signature,
+    )
+    return _cast_call(root, rpc, address, fn, args or [], caller)
+
+
+def _scope_accounts(
+    root: Path,
+    rpc: str,
+    agreement: str | None,
+    agreement_functions: list[FunctionInfo] | None,
+) -> list[str]:
+    if not agreement or not agreement_functions:
+        return []
+    fn = _function_by_name(agreement_functions, "getBattleChainScopeAddresses")
+    if not fn:
+        return []
+    val, _ = _read_simple_getter(
+        root,
+        rpc,
+        LiveNode(agreement, "Agreement", _code_size(rpc, agreement)),
+        fn,
+    )
+    return [x for x in (val or []) if _is_address(x)]
+
+
+def _find_node_by_predicate(
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    predicate: Any,
+) -> LiveNode | None:
+    for node in nodes:
+        cname = node.artifact_contract or node.name
+        if predicate(functions_by_contract.get(cname, [])):
+            return node
+    return None
+
+
+def _semantic_address(
+    param_name: str,
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    actors: dict[str, str],
+    known: dict[str, str],
+    *,
+    prefer_contract: bool = False,
+) -> str | None:
+    n = param_name.lower()
+    if "agreement" in n:
+        return known.get("agreement")
+    if "stake" in n and "token" in n or n in {"token", "staketoken"}:
+        return known.get("erc20")
+    if any(x in n for x in ("recovery", "recipient", "owner", "admin", "caller", "sender")):
+        return actors.get("alice") or actors.get("Alice")
+    if "attacker" in n:
+        return actors.get("attacker")
+    if "moderator" in n or "manager" in n:
+        for node in nodes:
+            cname = node.artifact_contract or node.name
+            if cname.lower() in {"confidencepool", "confidencepoolfactory"}:
+                continue
+            fs = functions_by_contract.get(cname, [])
+            if any(f.name == "owner" for f in fs):
+                owner_fn = _function_by_name(fs, "owner")
+                if owner_fn:
+                    val, _ = _read_simple_getter(
+                        Path.cwd(),
+                        _rpc_url({}),
+                        node,
+                        owner_fn,
+                    )
+                    if _is_address(val):
+                        return val
+        return actors.get("alice") or actors.get("Alice")
+    if any(x in n for x in ("pool", "implementation", "registry", "oracle", "factory")):
+        for key in (n, "poolimplementation", "safeharbor", "attackregistry"):
+            if key in known:
+                return known[key]
+    if prefer_contract:
+        for node in nodes:
+            if node.code_size > 0:
+                return node.address
+    return actors.get("alice") or actors.get("Alice")
+
+
+def _semantic_arg(
+    param: dict[str, Any],
+    node: LiveNode,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    now: int,
+    root: Path,
+    rpc: str,
+) -> Any:
+    typ = str(param.get("type") or "bytes")
+    name = str(param.get("name") or "").lower()
+
+    if typ == "address":
+        return _semantic_address(name, nodes, functions_by_contract, actors, known)
+
+    if typ == "address[]":
+        if "account" in name or "scope" in name:
+            agreement = known.get("agreement")
+            if agreement:
+                afn = functions_by_contract.get(
+                    next(
+                        (
+                            n.artifact_contract
+                            for n in nodes
+                            if n.address.lower() == agreement.lower()
+                        ),
+                        "Agreement",
+                    ),
+                    [],
+                )
+                scope = _scope_accounts(root, rpc, agreement, afn)
+                if scope:
+                    return scope
+        return [actors[x] for x in ("Alice", "Bob") if x in actors]
+
+    if typ.startswith("uint") or typ.startswith("int"):
+        if any(x in name for x in ("expiry", "deadline", "timestamp", "end", "until")):
+            return now + 31 * 24 * 60 * 60
+        if "minstake" in name:
+            return 1
+        if "amount" in name:
+            fs = functions_by_contract.get(node.artifact_contract or node.name, [])
+            min_fn = _function_by_name(fs, "minStake")
+            if min_fn:
+                val, _ = _read_simple_getter(
+                    root,
+                    rpc,
+                    node,
+                    min_fn,
+                )
+                if isinstance(val, int) and val > 0:
+                    return val
+            return 1
+        return 1
+
+    if typ == "bool":
+        if any(x in name for x in ("allowed", "enable", "enabled")):
+            return True
+        return False
+
+    if typ == "bytes32":
+        return "0x" + "00" * 32
+
+    if typ == "bytes":
+        return "0x"
+
+    if typ == "string":
+        return "lowkey"
+
+    # Dynamic or tuple types require a richer schema than a human-readable
+    # walkthrough should invent automatically. Leave them as unsupported.
+    return None
+
+
+def _semantic_args(
+    node: LiveNode,
+    fn: FunctionInfo,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    now: int,
+    root: Path,
+    rpc: str,
+) -> tuple[list[Any] | None, str | None]:
+    args: list[Any] = []
+    for item in fn.inputs:
+        typ = _canonical_abi_type(item)
+        if typ.startswith("(") or typ.endswith("]") and typ != "address[]":
+            # Handle address[] above; tuples and nested arrays are intentionally
+            # deferred to explicit/manual tests.
+            if typ != "address[]":
+                return None, f"complex ABI type {typ} is not auto-synthesized"
+        value = _semantic_arg(
+            item,
+            node,
+            functions_by_contract,
+            nodes,
+            actors,
+            known,
+            now,
+            root,
+            rpc,
+        )
+        if value is None:
+            return None, f"no safe semantic value for {item.get('name') or typ}"
+        args.append(value)
+
+    # ConfidencePoolFactory.createPool needs an Agreement contract, an ERC20,
+    # and a real agreement scope. Never substitute EOA actors here.
+    if fn.name == "createPool":
+        if len(fn.inputs) >= 6:
+            if not known.get("agreement"):
+                return None, "no live Agreement contract discovered"
+            if not known.get("erc20"):
+                return None, "no live ERC20 stake token discovered"
+            if not isinstance(args[5], list) or not args[5]:
+                return None, "no live BattleChain scope accounts discovered"
+    return args, None
+
+
+def _arg_values_to_strings(args: list[Any]) -> list[str]:
+    return [_normalize_arg_for_cast(x) for x in args]
+
+
+def _preflight_failure(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    fn: FunctionInfo,
+    args: list[Any],
+    caller: str,
+    all_errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    code, out, err = _cast_call(
+        root,
+        rpc,
+        node.address,
+        fn,
+        _arg_values_to_strings(args),
+        caller,
+    )
+    combined = "\n".join(x for x in (err, out) if x)
+    blob = _parse_revert_blob(combined)
+    decoded = _decode_error(blob, all_errors)
+    return {
+        "ok": code == 0,
+        "exit_code": code,
+        "stdout": out,
+        "stderr": err,
+        "revert_data": blob,
+        "decoded_error": decoded,
+        "raw": combined[-2000:],
+    }
+
+
+def _known_preconditions(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    fn: FunctionInfo,
+    args: list[Any],
+    caller: str,
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    known: dict[str, str],
+    actors: dict[str, str],
+) -> list[str]:
+    """Evaluate common source-shaped preconditions without hard-coding a project.
+
+    This is deliberately a small generic evaluator. It reports evidence-backed
+    checks instead of pretending it can symbolically solve arbitrary Solidity.
+    """
+    findings: list[str] = []
+    fs = functions_by_contract.get(node.artifact_contract or node.name, [])
+    by_name = {f.name: f for f in fs}
+    values = {str(p.get("name") or f"arg{i}"): v for i, (p, v) in enumerate(zip(fn.inputs, args))}
+    src = fn.body or ""
+
+    # Live bytecode is a first-class precondition.
+    if node.code_size == 0:
+        findings.append(f"target {node.address} has no runtime bytecode")
+
+    # Common allowlist pattern: !allowedStakeToken[token]
+    if "allowedStakeToken" in src:
+        token = values.get("stakeToken") or values.get("token")
+        afn = by_name.get("allowedStakeToken")
+        if token and afn:
+            call_args = [_normalize_arg_for_cast(token)]
+            code, out, err = _cast_call(
+                root,
+                rpc,
+                node.address,
+                afn,
+                call_args,
+                caller,
+            )
+            if code == 0 and out.strip().lower() in {"false", "0"}:
+                findings.append(f"allowedStakeToken({token}) is false")
+
+    # Expiry must provide at least 30 days in this common family of protocols.
+    # Instead of assuming the exact constant, compare the source-level shape and
+    # use the current simulated timestamp.
+    if "block.timestamp" in src and "expiry" in src and re.search(r"expiry[^;]*(?:block\.timestamp|\+|\-)", src):
+        exp = values.get("expiry")
+        if isinstance(exp, int):
+            now = _latest_timestamp(rpc)
+            if exp <= now:
+                findings.append(f"expiry {exp} is not in the future")
+            elif exp < now + 7 * 24 * 60 * 60:
+                findings.append(f"expiry {exp} is less than 7 days from the live chain")
+
+    # Agreement owner is a common factory gate.
+    if ".owner()" in src and "msg.sender" in src:
+        agreement = values.get("agreement")
+        if _is_address(agreement) and _code_size(rpc, agreement) > 0:
+            code, out, err = _query_by_signature(
+                root,
+                rpc,
+                agreement,
+                "owner()(address)",
+                [],
+            )
+            owner = re.search(r"0x[0-9a-fA-F]{40}", out)
+            if code == 0 and owner and owner.group(0).lower() != caller.lower():
+                findings.append(
+                    f"agreement.owner() is {owner.group(0)}, but caller is {caller}"
+                )
+
+    # Safe Harbor / registry boolean gate.
+    if "isAgreementValid" in src:
+        registry = known.get("safeharbor")
+        agreement = values.get("agreement")
+        if registry and _is_address(agreement):
+            code, out, err = _query_by_signature(
+                root,
+                rpc,
+                registry,
+                "isAgreementValid(address)(bool)",
+                [_normalize_arg_for_cast(agreement)],
+            )
+            if code != 0:
+                findings.append(
+                    f"safeHarborRegistry.isAgreementValid({agreement}) reverted: {(err or out).strip()[-240:]}"
+                )
+            elif out.strip().lower() in {"false", "0"}:
+                findings.append(
+                    f"safeHarborRegistry.isAgreementValid({agreement}) returned false"
+                )
+
+    # Scope array gate via agreement getter, if available.
+    if "isContractInScope" in src and "accounts" in values:
+        agreement = values.get("agreement")
+        accs = values.get("accounts")
+        if _is_address(agreement) and isinstance(accs, list):
+            for account in accs[:8]:
+                code, out, err = _query_by_signature(
+                    root,
+                    rpc,
+                    agreement,
+                    "isContractInScope(address)(bool)",
+                    [_normalize_arg_for_cast(account)],
+                )
+                if code == 0 and out.strip().lower() in {"false", "0"}:
+                    findings.append(
+                        f"agreement.isContractInScope({account}) returned false"
+                    )
+                    break
+
+    return findings
+
+
+def _rank_function(fn: FunctionInfo) -> int:
+    if fn.mutability in {"view", "pure"}:
+        return -100
+    n = fn.name.lower()
+    score = 20
+    for token, bonus in (
+        ("create", 30),
+        ("initialize", 20),
+        ("stake", 25),
+        ("deposit", 25),
+        ("contribute", 22),
+        ("borrow", 20),
+        ("withdraw", 20),
+        ("claim", 18),
+        ("redeem", 18),
+        ("release", 18),
+        ("execute", 15),
+        ("flag", 12),
+        ("resolve", 12),
+        ("sweep", 10),
+    ):
+        if token in n:
+            score += bonus
+    for token in ("set", "pause", "unpause", "upgrade", "authorize"):
+        if n.startswith(token):
+            score -= 20
+    if n in {"constructor", "fallback", "receive"}:
+        score = -100
+    return score
+
+
+def _choose_caller(
+    root: Path,
+    rpc: str,
+    node: LiveNode,
+    fn: FunctionInfo,
+    actors: dict[str, str],
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+) -> tuple[str | None, str]:
+    n = fn.name.lower()
+    # Known protocol roles first.
+    if "attacker" in n and actors.get("Attacker"):
+        return actors["Attacker"], "Attacker"
+    if n in {"claimattackerbounty"} and actors.get("Attacker"):
+        return actors["Attacker"], "Attacker"
+
+    fs = functions_by_contract.get(node.artifact_contract or node.name, [])
+    owner_fn = _function_by_name(fs, "owner")
+    if owner_fn and any(x in n for x in ("set", "pause", "unpause", "upgrade", "authorize")):
+        val, _ = _read_simple_getter(root, rpc, node, owner_fn)
+        if _is_address(val):
+            return val, "Owner"
+
+    if n in {"flagoutcome"}:
+        mod_fn = _function_by_name(fs, "outcomeModerator")
+        if mod_fn:
+            val, _ = _read_simple_getter(root, rpc, node, mod_fn)
+            if _is_address(val):
+                return val, "Moderator"
+
+    return (
+        actors.get("Alice") or actors.get("alice"),
+        "Alice",
+    )
+
+
+def _function_source(
+    root: Path,
+    contracts: dict[str, ContractInfo],
+    fn: FunctionInfo,
+) -> tuple[str | None, int | None]:
+    if fn.source and fn.line:
+        return fn.source, fn.line
+    ci = contracts.get(fn.contract)
+    if ci:
+        return ci.source, ci.line
+    return None, None
+
+
+def _system_edges(
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    contracts: dict[str, ContractInfo],
+) -> list[dict[str, str]]:
+    edges: list[dict[str, str]] = []
+
+    # Static source/import edges.
+    for cname, ci in contracts.items():
+        for imp in ci.imports:
+            edges.append(
+                {
+                    "from": cname,
+                    "to": imp,
+                    "kind": "import",
+                }
+            )
+        for fn in ci.functions:
+            for call in fn.calls or []:
+                if call["kind"] == "typed-call":
+                    edges.append(
+                        {
+                            "from": cname,
+                            "to": call["interface"],
+                            "kind": "external-call",
+                            "function": f"{fn.name} -> {call['function']}",
+                        }
+                    )
+                else:
+                    edges.append(
+                        {
+                            "from": cname,
+                            "to": call["receiver"],
+                            "kind": "member-call",
+                            "function": f"{fn.name} -> {call['function']}",
+                        }
+                    )
+
+    # Runtime getter edges connect actual addresses.
+    for node in nodes:
+        for other in nodes:
+            if node.address.lower() == other.address.lower():
+                continue
+            if other.discovered_from and other.discovered_from.lower() == node.address.lower():
+                edges.append(
+                    {
+                        "from": node.artifact_contract or node.name,
+                        "to": other.artifact_contract or other.name,
+                        "kind": f"runtime:{other.getter or 'address-returning getter'}",
+                    }
+                )
+    return edges
+
+
+def _target_label(config: dict[str, Any], target: str) -> str:
+    if str(config.get("target") or "").lower() == target.lower():
+        return str(config.get("target_contract") or config.get("labels", {}).get(target) or "Target")
+    labels = config.get("labels") or {}
+    if isinstance(labels, dict):
+        for k, v in labels.items():
+            if str(k).lower() == target.lower():
+                return str(v)
+    return "Target"
+
+
+def _pretty_error(result: dict[str, Any]) -> str:
+    decoded = result.get("decoded_error")
+    if decoded:
+        return decoded
+    raw = str(result.get("raw") or "")
+    blob = result.get("revert_data")
+    if blob:
+        return f"revert data {blob}"
+    if raw:
+        return raw.splitlines()[-1][:240]
+    return "execution reverted without returndata"
+
+
+def _persist(root: Path, payload: dict[str, Any]) -> None:
+    path = root / ".audit" / "evidence" / "walkthrough.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _render_story(
+    root: Path,
+    nodes: list[LiveNode],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    contracts: dict[str, ContractInfo],
+    actions: list[dict[str, Any]],
+    actors: dict[str, str],
+    current: int | None = None,
+) -> str:
+    lines: list[str] = []
+    lines.append("LOWKEY // SYSTEM-AWARE PROTOCOL WALKTHROUGH")
+    lines.append("")
+    lines.append("ACTORS")
+    actor_line = []
+    for name in ("Alice", "Bob", "Attacker"):
+        addr = actors.get(name)
+        if addr:
+            actor_line.append(f"◉ {name} {addr[:10]}…{addr[-8:]}")
+    lines.append("  " + "   ".join(actor_line))
+    lines.append("")
+    lines.append("SYSTEM MAP")
+    if not nodes:
+        lines.append("  └─ ! no live target/dependencies discovered")
+    else:
+        for i, node in enumerate(nodes):
+            prefix = "└─" if i == len(nodes) - 1 else "├─"
+            status = "CODE" if node.code_size else "NO CODE"
+            lines.append(
+                f"  {prefix} ● {node.artifact_contract or node.name:<28} {node.address} [{status}]"
+            )
+    lines.append("")
+    lines.append("RELATIONSHIPS")
+    edges = _system_edges(nodes, functions_by_contract, contracts)
+    shown: set[tuple[str, str, str]] = set()
+    for edge in edges:
+        key = (edge["from"], edge["to"], edge["kind"])
+        if key in shown:
+            continue
+        shown.add(key)
+        extra = f"  ({edge.get('function')})" if edge.get("function") else ""
+        lines.append(
+            f"  {edge['from']} --[{edge['kind']}]--> {edge['to']}{extra}"
+        )
+    if not shown:
+        lines.append("  └─ no static/runtime relationship edges discovered")
+    lines.append("")
+    lines.append("PROTOCOL STORY")
+    if not actions:
+        lines.append("  └─ no executable actions discovered")
+    for index, action in enumerate(actions):
+        mark = "◆" if current == index else "○"
+        status = action.get("status", "PLANNED")
+        node = action["node"]
+        fn: FunctionInfo = action["function"]
+        actor = action["actor_name"]
+        args = ", ".join(_render_value(x) for x in action.get("args", []))
+        label = f"{fn.name}({args})"
+        source = fn.source
+        line = fn.line
+        clickable = _source_link(root, source, line, label)
+        lines.append("")
+        lines.append(
+            f"  {mark} STEP {index + 1:02d} {status:<10} {actor} -> "
+            f"{node.artifact_contract or node.name}.{clickable}"
+        )
+        lines.append(
+            f"     caller: {action.get('caller') or 'unknown'}"
+        )
+        if action.get("semantic_reason"):
+            lines.append(f"     args:   {action['semantic_reason']}")
+        if action.get("result"):
+            result = action["result"]
+            if result.get("ok"):
+                lines.append("     PRECHECK: PASS")
+            else:
+                lines.append(f"     PRECHECK: BLOCKED — {_pretty_error(result)}")
+        if action.get("diagnosis"):
+            for item in action["diagnosis"][:5]:
+                lines.append(f"       ↳ {item}")
+    return "\n".join(lines)
+
+
+def _is_local_rpc(rpc: str) -> bool:
+    low = rpc.lower()
+    return any(host in low for host in ("127.0.0.1", "localhost", "::1"))
+
+
+def _mutations(value: Any, typ: str, actors: dict[str, str], rng: random.Random) -> list[Any]:
+    t = typ
+    out: list[Any] = []
+    if t.startswith("uint"):
+        vals = [0, 1, 2**8 - 1, 2**16 - 1, 2**32 - 1]
+        for v in vals:
+            if v != value:
+                out.append(v)
+        out.append(rng.randrange(0, 10**9))
+    elif t.startswith("int"):
+        out.extend([0, -1, 1, -2**127, 2**127 - 1])
+    elif t == "bool":
+        out.append(not bool(value))
+    elif t == "address":
+        for name in ("Alice", "Bob", "Attacker"):
+            addr = actors.get(name)
+            if addr and addr.lower() != str(value).lower():
+                out.append(addr)
+        out.append(ZERO)
+        out.append("0x" + secrets.token_hex(20))
+    elif t == "address[]":
+        base = list(value or [])
+        if base:
+            out.append([])
+            if len(base) > 1:
+                out.append(base[1:] + base[:1])
+                out.append(base + [base[0]])
+            out.append([ZERO] * len(base))
+        else:
+            out.append(list(actors.values())[:2])
+    elif t == "bytes32":
+        out.extend(["0x" + "00" * 32, "0x" + "ff" * 32])
+    elif t == "bytes":
+        out.extend(["0x", "0x00", "0x" + rng.randbytes(8).hex()])
+    return [x for x in out if x != value]
+
+
+def _parse_flags(argv: list[str]) -> dict[str, Any]:
+    mode = "walk"
+    rest = list(argv)
+    if rest and rest[0] == "test":
+        mode = "test"
+        rest = rest[1:]
+    flags: dict[str, Any] = {
+        "mode": mode,
+        "auto": False,
+        "steps": 12,
+        "cases": 20,
+        "seed": None,
+        "send": False,
+        "links": True,
+        "non_interactive": False,
+    }
+    i = 0
+    while i < len(rest):
+        item = rest[i]
+        if item == "--auto":
+            flags["auto"] = True
+        elif item in {"--send", "--live"}:
+            flags["send"] = True
+        elif item == "--no-links":
+            flags["links"] = False
+        elif item == "--non-interactive":
+            flags["non_interactive"] = True
+        elif item == "--steps" and i + 1 < len(rest):
+            i += 1
+            flags["steps"] = max(1, int(rest[i]))
+        elif item == "--cases" and i + 1 < len(rest):
+            i += 1
+            flags["cases"] = max(1, int(rest[i]))
+        elif item == "--seed" and i + 1 < len(rest):
+            i += 1
+            flags["seed"] = int(rest[i])
+        elif item in {"--help", "-h"}:
+            flags["help"] = True
+        i += 1
+    return flags
+
+
+def _help() -> None:
+    print(
+        """LOWKEY WALKTHROUGH
+
+  lk walkthrough --auto --steps 12
+      System-aware live walkthrough. Builds a static + runtime contract graph,
+      synthesizes semantic arguments, preflights every write, and diagnoses
+      blocked calls instead of repeating them.
+
+  lk walkthrough test --cases 50 --seed 1337
+      Deterministic active probing. Randomizes values by ABI type and semantic
+      role. Uses eth_call by default; add --send only on a local Anvil chain.
+
+  Options:
+    --send             Actually send mutating probes/interactions
+    --steps N          Number of walkthrough actions
+    --cases N          Number of mutation cases per probe
+    --seed N           Replayable random seed
+    --no-links         Disable Ctrl+Click OSC-8 source links
+    --non-interactive  Never wait for Enter
+"""
+    )
+
+
+def _build_model(
+    root: Path,
+    config: dict[str, Any],
+) -> tuple[
+    dict[str, Any],
+    dict[str, list[FunctionInfo]],
+    list[LiveNode],
+    dict[str, dict[str, Any]],
+    dict[str, ContractInfo],
+    dict[str, str],
+    dict[str, str],
+]:
+    rpc = _rpc_url(config)
+    target = str(config.get("target") or "").strip()
+    if not _is_address(target):
+        raise RuntimeError("Set a valid target before running walkthrough.")
+    artifacts, artifact_files = _load_artifacts(root)
+    contracts = _parse_solidity_sources(root)
+    functions_by_contract = _merge_artifact_functions(
+        contracts,
+        artifacts,
+        artifact_files,
+        root,
+    )
+    label = _target_label(config, target)
+    nodes, getter_data, _ = _build_live_graph(
+        root,
+        rpc,
+        target,
+        label,
+        functions_by_contract,
+        artifact_files,
+    )
+    actors = _actor_context(config, rpc)
+    known = _known_contracts(nodes, functions_by_contract)
+    # Refresh the "agreement" role using runtime getter names, because many
+    # contracts expose dependencies without naming their artifact contract.
+    for node in nodes:
+        vals = getter_data.get(node.address.lower(), {})
+        for key, value in vals.items():
+            if not _is_address(value):
+                continue
+            if "agreement" in key.lower() and _code_size(rpc, value) > 0:
+                known.setdefault("agreement", value)
+            if "token" in key.lower() and _code_size(rpc, value) > 0:
+                known.setdefault("erc20", value)
+            if "registry" in key.lower() and _code_size(rpc, value) > 0:
+                known.setdefault("safeharbor", value)
+
+    meta = {
+        "rpc": rpc,
+        "target": target,
+        "chain_timestamp": _latest_timestamp(rpc),
+        "contract_count": len(contracts),
+        "artifact_count": len(artifacts),
+        "live_nodes": [asdict(x) for x in nodes],
+        "known_roles": known,
+    }
+    return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
+
+
+def _plan_actions(
+    root: Path,
+    meta: dict[str, Any],
+    functions_by_contract: dict[str, list[FunctionInfo]],
+    nodes: list[LiveNode],
+    actors: dict[str, str],
+    known: dict[str, str],
+    all_errors: list[dict[str, Any]],
+    steps: int,
+) -> list[dict[str, Any]]:
+    rpc = str(meta["rpc"])
+    now = int(meta["chain_timestamp"])
+    actions: list[dict[str, Any]] = []
+    candidates: list[tuple[int, LiveNode, FunctionInfo]] = []
+    for node in nodes:
+        if node.code_size == 0:
+            continue
+        funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
+        for fn in funcs:
+            score = _rank_function(fn)
+            if score > 0:
+                candidates.append((score, node, fn))
+    candidates.sort(key=lambda x: (-x[0], x[1].name, x[2].name))
+
+    seen: set[tuple[str, str]] = set()
+    for _, node, fn in candidates:
+        key = (node.address.lower(), fn.signature)
+        if key in seen:
+            continue
+        seen.add(key)
+        args, reason = _semantic_args(
+            node,
+            fn,
+            functions_by_contract,
+            nodes,
+            actors,
+            known,
+            now,
+            root,
+            rpc,
+        )
+        if args is None:
+            continue
+        caller, actor_name = _choose_caller(
+            root,
+            rpc,
+            node,
+            fn,
+            actors,
+            nodes,
+            functions_by_contract,
+        )
+        if not caller:
+            continue
+        precheck = _preflight_failure(
+            root,
+            rpc,
+            node,
+            fn,
+            args,
+            caller,
+            all_errors,
+        )
+        diagnosis = []
+        if not precheck["ok"]:
+            diagnosis = _known_preconditions(
+                root,
+                rpc,
+                node,
+                fn,
+                args,
+                caller,
+                functions_by_contract,
+                nodes,
+                known,
+                actors,
+            )
+        action = {
+            "node": node,
+            "function": fn,
+            "args": args,
+            "caller": caller,
+            "actor_name": actor_name,
+            "status": "READY" if precheck["ok"] else "BLOCKED",
+            "semantic_reason": (
+                "ABI + source role synthesis"
+                if not reason
+                else reason
+            ),
+            "result": precheck,
+            "diagnosis": diagnosis,
+        }
+        actions.append(action)
+        if len(actions) >= steps:
+            break
+    return actions
+
+
+def _run_walkthrough(
+    root: Path,
+    config: dict[str, Any],
+    flags: dict[str, Any],
+) -> int:
+    meta, fns, nodes, getter_data, contracts, actors, known = _build_model(
+        root, config
+    )
+    errors = _all_errors(_load_artifacts(root)[0])
+    actions = _plan_actions(
+        root,
+        meta,
+        fns,
+        nodes,
+        actors,
+        known,
+        errors,
+        int(flags["steps"]),
+    )
+
+    payload = {
+        "mode": "walkthrough",
+        "started_at": time.time(),
+        "model": meta,
+        "actions": [],
+    }
+    current = 0
+    if not actions:
+        print(_render_story(root, nodes, fns, contracts, [], actors))
+        print("\nNo semantically executable actions were discovered.")
+        print("That is intentional: Lowkey will not substitute EOAs for contract roles.")
+        _persist(root, payload)
+        return 0
+
+    for index, action in enumerate(actions):
+        current = index
+        print("\033[2J\033[H", end="")
+        print(
+            _render_story(
+                root,
+                nodes,
+                fns,
+                contracts,
+                actions,
+                actors,
+                current,
+            )
+        )
+        if not flags["non_interactive"]:
+            try:
+                input("\n  ⏎ next   q = stop   ")
+            except EOFError:
+                pass
+
+        # Re-check just before execution because another action may have changed state.
+        node: LiveNode = action["node"]
+        fn: FunctionInfo = action["function"]
+        pre = _preflight_failure(
+            root,
+            str(meta["rpc"]),
+            node,
+            fn,
+            action["args"],
+            action["caller"],
+            errors,
+        )
+        action["result"] = pre
+        action["diagnosis"] = (
+            []
+            if pre["ok"]
+            else _known_preconditions(
+                root,
+                str(meta["rpc"]),
+                node,
+                fn,
+                action["args"],
+                action["caller"],
+                fns,
+                nodes,
+                known,
+                actors,
+            )
+        )
+        action["status"] = "READY" if pre["ok"] else "BLOCKED"
+
+        if flags.get("send") and pre["ok"]:
+            if not _is_local_rpc(str(meta["rpc"])):
+                action["send_skipped"] = "refusing remote mutating send without explicit local RPC"
+            else:
+                code, out, err = _cast_send(
+                    root,
+                    str(meta["rpc"]),
+                    node.address,
+                    fn,
+                    _arg_values_to_strings(action["args"]),
+                    action["caller"],
+                )
+                action["send"] = {
+                    "exit_code": code,
+                    "stdout": out,
+                    "stderr": err,
+                }
+                action["status"] = "SUCCESS" if code == 0 else "FAILED"
+        else:
+            action["status"] = (
+                "READY" if pre["ok"] else "BLOCKED"
+            )
+
+        payload["actions"].append(
+            {
+                **{k: v for k, v in action.items() if k not in {"node", "function"}},
+                "node": asdict(node),
+                "function": asdict(fn),
+            }
+        )
+
+    print("\033[2J\033[H", end="")
+    print(_render_story(root, nodes, fns, contracts, actions, actors, None))
+    print("\nEvidence: .audit/evidence/walkthrough.json")
+    _persist(root, payload)
+    return 0
+
+
+def _run_probe(
+    root: Path,
+    config: dict[str, Any],
+    flags: dict[str, Any],
+) -> int:
+    meta, fns, nodes, getter_data, contracts, actors, known = _build_model(
+        root, config
+    )
+    artifacts, _ = _load_artifacts(root)
+    errors = _all_errors(artifacts)
+    rng_seed = int(flags["seed"]) if flags["seed"] is not None else random.randrange(1, 2**63)
+    rng = random.Random(rng_seed)
+
+    candidates: list[tuple[LiveNode, FunctionInfo]] = []
+    for node in nodes:
+        fs = fns.get(node.artifact_contract or node.name, [])
+        for fn in fs:
+            if fn.mutability in {"view", "pure"}:
+                continue
+            args, reason = _semantic_args(
+                node,
+                fn,
+                fns,
+                nodes,
+                actors,
+                known,
+                int(meta["chain_timestamp"]),
+                root,
+                str(meta["rpc"]),
+            )
+            if args is not None:
+                candidates.append((node, fn))
+
+    records: list[dict[str, Any]] = []
+    case_budget = int(flags["cases"])
+    print("LOWKEY // ACTIVE PROTOCOL PROBING")
+    print(f"Seed: {rng_seed}")
+    print(
+        "Mode:",
+        "LIVE SEND" if flags.get("send") else "eth_call simulation",
+    )
+    print("Note: probe success is observed behavior, not a vulnerability verdict.")
+    print("")
+
+    for node, fn in candidates[: int(flags["steps"])]:
+        caller, actor_name = _choose_caller(
+            root,
+            str(meta["rpc"]),
+            node,
+            fn,
+            actors,
+            nodes,
+            fns,
+        )
+        if not caller:
+            continue
+        base, reason = _semantic_args(
+            node,
+            fn,
+            fns,
+            nodes,
+            actors,
+            known,
+            int(meta["chain_timestamp"]),
+            root,
+            str(meta["rpc"]),
+        )
+        if base is None:
+            continue
+
+        variants: list[list[Any]] = [list(base)]
+        for idx, param in enumerate(fn.inputs):
+            typ = _canonical_abi_type(param)
+            for mutation in _mutations(base[idx], typ, actors, rng):
+                candidate = list(base)
+                candidate[idx] = mutation
+                variants.append(candidate)
+                if len(variants) >= case_budget + 1:
+                    break
+            if len(variants) >= case_budget + 1:
+                break
+
+        for case_index, args in enumerate(variants[: case_budget + 1]):
+            result = _preflight_failure(
+                root,
+                str(meta["rpc"]),
+                node,
+                fn,
+                args,
+                caller,
+                errors,
+            )
+            record = {
+                "node": asdict(node),
+                "function": asdict(fn),
+                "caller": caller,
+                "actor": actor_name,
+                "case": case_index,
+                "args": args,
+                "result": result,
+                "classification": (
+                    "PASS" if result["ok"] else "REVERT"
+                ),
+            }
+            if flags.get("send") and result["ok"]:
+                if _is_local_rpc(str(meta["rpc"])):
+                    code, out, err = _cast_send(
+                        root,
+                        str(meta["rpc"]),
+                        node.address,
+                        fn,
+                        _arg_values_to_strings(args),
+                        caller,
+                    )
+                    record["send"] = {
+                        "exit_code": code,
+                        "stdout": out,
+                        "stderr": err,
+                    }
+                    record["classification"] = (
+                        "SENT" if code == 0 else "SEND_FAILED"
+                    )
+                else:
+                    record["classification"] = "PASS_SIM_ONLY"
+            records.append(record)
+            print(
+                f"{record['classification']:<12} "
+                f"{node.artifact_contract or node.name}.{fn.signature} "
+                f"case={case_index} "
+                f"args={_render_value(args)}"
+            )
+            if result["decoded_error"]:
+                print(f"  ↳ {_pretty_error(result)}")
+            if len(records) >= int(flags["steps"]) * case_budget:
+                break
+        if len(records) >= int(flags["steps"]) * case_budget:
+            break
+
+    payload = {
+        "mode": "test",
+        "seed": rng_seed,
+        "started_at": time.time(),
+        "model": meta,
+        "records": records,
+    }
+    _persist(root, payload)
+    print("\nEvidence: .audit/evidence/walkthrough.json")
+    return 0
+
+
+def run(config: dict[str, Any], args: list[str], host: Any = None) -> int:
+    """Drop-in entry point expected by Lowkey's existing lk.py dispatcher."""
+    flags = _parse_flags(args)
+    if flags.get("help"):
+        _help()
+        return 0
+
+    root = Path.cwd().resolve()
+    try:
+        if flags["mode"] == "test":
+            return _run_probe(root, config, flags)
+        return _run_walkthrough(root, config, flags)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return 130
+    except Exception as exc:
+        print(f"LOWKEY WALKTHROUGH ERROR: {exc}", file=sys.stderr)
+        return 1
