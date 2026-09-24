@@ -206,7 +206,7 @@ def run_slither_project(
         )
 
     compilers = (project or {}).get("solidity_compilers", [])
-    env = {"SOLC_VERSION": str(compilers[0])} if len(compilers) == 1 else {}
+    env = _project_solc_env(root, project)
 
     aggregate_findings: list[dict[str, Any]] = []
     file_runs: list[dict[str, Any]] = []
