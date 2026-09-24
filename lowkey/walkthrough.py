@@ -188,6 +188,7 @@ def _bootstrap_from_manifest(manifest: dict[str, Any] | None, rpc: str) -> dict[
             for x in manifest.get("tests") or []
         ],
         "adversarial": manifest.get("adversarial_evidence") or [],
+        "audit_evidence": manifest.get("audit_evidence") or [],
         "initialization": manifest.get("initialization") or [],
         "roles": manifest.get("roles") or [],
         "relationships": manifest.get("relationships") or [],
@@ -1732,6 +1733,7 @@ def _render_story(
     initialization = bootstrap.get("initialization") or []
     roles = bootstrap.get("roles") or []
     adversarial = bootstrap.get("adversarial") or []
+    audit_evidence = bootstrap.get("audit_evidence") or []
     lines.append(
         "  source: "
         + ("shared system bootstrap manifest" if manifest else "source/broadcast fallback")
@@ -1754,6 +1756,10 @@ def _render_story(
         lines.append(f"  adversarial artifacts observed: {len(adversarial)}")
         for item in adversarial[:4]:
             lines.append(f"    {item.get('path')}")
+    if audit_evidence:
+        lines.append(f"  audit evidence records observed: {len(audit_evidence)}")
+        for item in audit_evidence[:4]:
+            lines.append(f"    {item.get('file')}")
     lines.append("")
     lines.append("SYSTEM MAP")
     if not nodes:
