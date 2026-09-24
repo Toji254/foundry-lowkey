@@ -49,6 +49,14 @@ cp "$STAGE_DIR/system_model.py" "$TARGET_LOWKEY_DIR/system_model.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
+# Keep the common user-level launcher in sync when it already exists. This
+# avoids an older ~/bin/lk shadowing the freshly installed ~/.foundry/bin/lk.
+USER_BIN_DIR="$HOME/bin"
+if [ -d "$USER_BIN_DIR" ] && [ -e "$USER_BIN_DIR/lk" ]; then
+  ln -sfn "$TARGET_BIN_DIR/lk" "$USER_BIN_DIR/lk"
+fi
+hash -r 2>/dev/null || true
+
 python3 - "$REPO_DIR" "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR" <<'PY'
 import hashlib
 import json
