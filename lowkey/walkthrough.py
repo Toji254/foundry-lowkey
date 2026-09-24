@@ -2848,6 +2848,47 @@ def _prepare_obvious_prerequisite(root: Path, rpc: str, host: Any, config: dict[
 
     return None
 
+def _failure_flow_summary(root: Path, model: ContractModel, step: Step, origin: str | None) -> list[str]:
+    """Explain where a known blocker sits in the function's execution order."""
+    if not origin:
+        return []
+    name = str(step.function or "").split("(", 1)[0]
+    try:
+        source = (root / model.source).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    match = re.search(r"\bfunction\s+" + re.escape(name) + r"\s*\([^)]*\)[^{;]*\{", source, re.S)
+    body = _balanced_block(source, match.end() - 1) if match else ""
+    if not body:
+        return []
+    blocker = origin.split(" → ", 1)[-1]
+    compact = re.sub(r"\s+", " ", blocker).strip()
+    marker = compact
+    # Map diagnostic origins to a source substring so downstream calls can be shown as not reached.
+    candidate_terms = []
+    mapping_match = re.match(r"([A-Za-z_]\w*)\[", compact)
+    if mapping_match:
+        candidate_terms.append(mapping_match.group(1))
+    dep_match = re.match(r"([A-Za-z_]\w*)\.", compact)
+    if dep_match:
+        candidate_terms.append(dep_match.group(1))
+    param_match = re.match(r"([A-Za-z_]\w*)\s*==", compact)
+    if param_match:
+        candidate_terms.append(param_match.group(1))
+    blocker_pos = min((body.find(term) for term in candidate_terms if term and body.find(term) >= 0), default=-1)
+    lines = ["FIRST BLOCKER → " + marker]
+    downstream = []
+    for edge in sorted(_source_edges_for_step(model, step), key=lambda e: int(e.get("line") or 0)):
+        fn = str(edge.get("to_function") or "")
+        if not fn:
+            continue
+        positions = [m.start() for m in re.finditer(r"\b" + re.escape(fn) + r"\s*\(", body)]
+        if blocker_pos >= 0 and positions and min(positions) > blocker_pos:
+            downstream.append(str(edge.get("interface") or edge.get("to_contract") or "External") + "." + fn + "()")
+    if downstream:
+        lines.append("NOT REACHED → " + ", ".join(dict.fromkeys(downstream[:5])))
+    return lines
+
 def _diagnose_failed_call(
     root: Path,
     rpc: str,
@@ -2864,6 +2905,7 @@ def _diagnose_failed_call(
     diagnostics.extend(zero_lines)
     source_lines = _source_guard_lines(model, step)
     diagnostics.extend(source_lines[:8])
+    diagnostics = _failure_flow_summary(root, model, step, origin) + diagnostics
     arg_origin, arg_diagnostics = _diagnose_argument_contracts(
         rpc, step, model, models, caller_address=actor_address
     )
