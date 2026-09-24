@@ -272,6 +272,8 @@ def _web_connection_label(edge: dict[str, str]) -> str:
         return "uses configured dependency"
     if kind == "external-call":
         return "calls external interface"
+    if kind == "internal-call":
+        return "enters internal logic"
     return "connects to"
 
 def _web_node_name(value: str) -> str:
@@ -2353,6 +2355,13 @@ def _system_edges(
                             "function": f"{fn.name} -> {call['function']}",
                         }
                     )
+                elif call["kind"] == "internal-call":
+                    edges.append({
+                        "from": cname,
+                        "to": f"{cname}.{call['function']}",
+                        "kind": "internal-call",
+                        "function": f"{fn.name} -> {call['function']}",
+                    })
                 else:
                     receiver = call["receiver"]
                     state_or_input = set(ci.address_vars)
@@ -2788,6 +2797,7 @@ def _build_model(
             "artifact_count": len(artifacts),
             "live_nodes": [],
             "known_roles": {},
+            "runtime_getters": {},
             "bootstrap": bootstrap,
             "system_manifest": manifest,
             "static_system": _static_system_context(bootstrap, contracts),
@@ -2882,11 +2892,32 @@ def _build_model(
         "artifact_count": len(artifacts),
         "live_nodes": [asdict(x) for x in nodes],
         "known_roles": known,
+        "runtime_getters": getter_data,
         "bootstrap": bootstrap,
         "system_manifest": manifest,
         "static_system": _static_system_context(bootstrap, contracts),
     }
     return meta, functions_by_contract, nodes, getter_data, contracts, actors, known
+
+
+def _walkthrough_phase_priority(fn: FunctionInfo) -> tuple[int, str]:
+    phase = _action_phase(fn)
+    return {
+        "CREATE": 500,
+        "PARTICIPATE": 400,
+        "OUTCOME": 300,
+        "SETTLE": 200,
+        "INTERACTION": 100,
+        "SETUP": -100,
+        "ADMIN": -200,
+    }.get(phase, 0), phase
+
+
+def _walkthrough_is_setup_action(fn: FunctionInfo) -> bool:
+    n = fn.name.lower()
+    return n.startswith("initialize") or n in {
+        "setstaketokenallowed", "pause", "unpause", "upgrade"
+    }
 
 
 def _plan_actions(
@@ -2902,27 +2933,21 @@ def _plan_actions(
     rpc = str(meta["rpc"])
     now = int(meta["chain_timestamp"])
     actions: list[dict[str, Any]] = []
-    candidates: list[tuple[int, LiveNode, FunctionInfo]] = []
+    candidates: list[tuple[int, int, LiveNode, FunctionInfo]] = []
     for node in nodes:
         if node.code_size == 0:
             continue
         funcs = functions_by_contract.get(node.artifact_contract or node.name, [])
         for fn in funcs:
             score = _rank_function(fn)
-            n = fn.name.lower()
-            already_configured = any(
-                str(item.get("target") or "").lower().find(n) >= 0
-                for item in (meta.get("bootstrap") or {}).get("initialization") or []
-                if isinstance(item, dict)
-            )
-            if already_configured and (n.startswith("initialize") or n.startswith("set") or n in {"pause", "unpause", "upgrade"}):
+            phase_priority, _ = _walkthrough_phase_priority(fn)
+            if score <= 0 or phase_priority <= 0 or _walkthrough_is_setup_action(fn):
                 continue
-            if score > 0:
-                candidates.append((score, node, fn))
-    candidates.sort(key=lambda x: (-x[0], x[1].name, x[2].name))
+            candidates.append((phase_priority, score, node, fn))
+    candidates.sort(key=lambda x: (-x[0], -x[1], x[2].name, x[3].name, x[3].signature))
 
     seen: set[tuple[str, str]] = set()
-    for _, node, fn in candidates:
+    for _, _, node, fn in candidates:
         key = (node.address.lower(), fn.signature)
         if key in seen:
             continue
@@ -3006,6 +3031,9 @@ def _plan_actions(
             "caller": caller,
             "actor_name": actor_name,
             "status": "READY" if precheck["ok"] else "BLOCKED",
+            "phase": _action_phase(fn),
+            "what": _action_what(fn, node),
+            "why": _action_why(fn, node),
             "phase": _action_phase(fn),
             "what": _action_what(fn, node),
             "why": _action_why(fn, node),
