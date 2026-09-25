@@ -8,6 +8,31 @@ RECON → ATTACK → PROVE
 
 Lowkey does not replace Forge or Cast. It orchestrates them and adds the local audit workflow around them.
 
+## Integrated test-drive
+
+This branch is the integration candidate for the current Lowkey feature set. It keeps the local attack-lab/walkthrough stack and adds the project graph, reusable system bootstrap manifest, evidence engine, ripgrep evidence capture, and evidence-backed PoC generation.
+
+Useful discovery commands:
+
+~~~bash
+lk -h
+lk project
+lk system
+lk lab
+lk walkthrough --auto --steps 8
+lk audit run
+lk audit run --poc
+lk poc
+~~~
+
+### What each layer does
+
+- Project model: detects Foundry/Vyper/Hardhat/Brownie-style project structure and builds an import/dependency graph.
+- System model: records contracts, deployments, relationships, roles, initialization, tests, adversarial evidence, and audit targets in .audit/evidence/system_bootstrap.json.
+- Audit engine: runs project-aware build/test/coverage evidence, Slither when available, source triage, and PoC scaffolding. Vyper-aware preparation is retained for mixed/non-Foundry projects.
+- Protocol walkthrough: uses the richer local Foundry walkthrough/lab engine for actual stateful execution and replayable observations.
+
+lk audit and lk audit run are intentionally separate surfaces: the former is the interactive Lowkey audit console; the latter is the evidence pipeline. Neither should be read as a vulnerability verdict.
 ## Start here
 
 ~~~bash
