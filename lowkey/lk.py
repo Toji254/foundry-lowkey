@@ -5918,6 +5918,7 @@ def run_audit_poc(config, args):
             return 0
         return fail(f"Unknown lk poc option: {item}")
     root = audit_context.foundry_project_root()
+    save_config(config)
     code, _paths = audit_generate_poc(str(root), finding, name)
     return code
 
@@ -5936,6 +5937,10 @@ def run_external_audit(config, args):
         else:
             slither_args.append(item)
     root = audit_context.foundry_project_root()
+    # The evidence engine reads ~/.lowkey/config.json directly; persist the
+    # current command context first so target/RPC changes from this invocation
+    # are visible to it.
+    save_config(config)
     return audit_run_pipeline(str(root), slither_args=slither_args, generate=generate)
 
 
