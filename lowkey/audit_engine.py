@@ -23,6 +23,11 @@ try:
 except ImportError:  # pragma: no cover - supports direct/embedded installs
     build_dependency_graph = detect_project = project_source_files = None
 
+try:
+    import system_model
+except ImportError:  # pragma: no cover - keeps the engine usable standalone
+    system_model = None
+
 IMPACT_ORDER = {"high": 0, "medium": 1, "low": 2, "informational": 3, "optimization": 4}
 
 
@@ -699,6 +704,7 @@ def test_poc_candidate():
 
 
 def generate_poc(root: str = ".", finding_index: int | None = None, name: str | None = None) -> tuple[int, list[Path]]:
+    _refresh_system_model(root, "poc:start")
     evidence = read_json(evidence_dir(root) / "slither.json", {}).get("data", {})
     findings = evidence.get("findings", []) if isinstance(evidence, dict) else []
     findings = findings if isinstance(findings, list) else []
@@ -923,6 +929,22 @@ contract Poc_{slug} is Test {{
     print(f"Generated: {json_path}")
     print("\nEvidence-backed scaffold; manual proof is still required.")
     return 0, [sol_path, json_path]
+
+
+def _refresh_system_model(root: str, reason: str) -> None:
+    """Keep the reusable system bootstrap manifest synchronized with evidence."""
+    if system_model is None:
+        return
+    try:
+        system_model.refresh_manifest(
+            root,
+            rpc=_config().get("rpc"),
+            config=_config(),
+            reason=reason,
+        )
+    except Exception:
+        # The audit pipeline must remain useful even when manifest enrichment fails.
+        return
 
 
 def _evidence_data(root: str, name: str) -> dict[str, Any]:
@@ -1714,6 +1736,7 @@ def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]
 
 def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
+    _refresh_system_model(root, "audit:start")
     results: list[dict[str, Any]] = []
     outcomes: dict[str, list[dict[str, Any]]] = {
         "build": [],
