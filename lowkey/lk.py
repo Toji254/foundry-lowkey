@@ -23,6 +23,21 @@ import audit_context
 import walkthrough
 
 try:
+    import system_model
+except ImportError:
+    system_model = None
+
+try:
+    import project_tools
+except ImportError:
+    project_tools = None
+
+try:
+    from audit_engine import run_rg as audit_run_rg, run_slither as audit_run_slither, run_audit_pipeline as audit_run_pipeline, generate_poc as audit_generate_poc
+except ImportError:
+    audit_run_rg = audit_run_slither = audit_run_pipeline = audit_generate_poc = None
+
+try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
 except ImportError:
     FORGE_NATIVE_COMMANDS = set()
@@ -5820,88 +5835,332 @@ def run_version():
     print(f"Runtime: {runtime['status'].upper()} - {runtime['detail']}")
     if runtime.get("source_repo"):
         print(f"Source : {runtime['source_repo']}")
+def run_project_map(config, args):
+    if project_tools is None:
+        return fail("Project tools are not installed. Re-run install.sh from this checkout.")
+    root = audit_context.foundry_project_root()
+    try:
+        result = project_tools.render_project_map(root)
+        if args and args[0] in {"json", "--json"}:
+            print(json.dumps(result, indent=2, default=str))
+        return 0
+    except Exception as error:
+        return fail(f"Project map failed: {error}", 1)
+
+
+def run_system_model(config, args):
+    if system_model is None:
+        return fail("System model is not installed. Re-run install.sh from this checkout.")
+    root = audit_context.foundry_project_root()
+    rpc = effective_rpc(config)
+    try:
+        manifest, path = system_model.refresh_manifest(
+            root,
+            rpc=rpc,
+            config=config,
+            reason="lk system",
+        )
+        summary = system_model.summarize_manifest(manifest)
+        print("LOWKEY SYSTEM MODEL")
+        print("=" * 72)
+        print(f"Manifest      : {path}")
+        print(f"Contracts     : {summary['contracts']}")
+        print(f"Deployments   : {summary['deployments']} ({summary['live']} live)")
+        print(f"Relationships : {summary['relationships']}")
+        print(f"Roles         : {summary['roles']}")
+        print(f"Initialization: {summary['initialization_steps']}")
+        print(f"Tests         : {summary['tests']}")
+        print(f"Adversarial   : {summary['adversarial_evidence']}")
+        print(f"Audit targets : {summary['audit_targets']}")
+        if args and args[0] in {"json", "--json"}:
+            print("\n" + json.dumps(manifest, indent=2, default=str))
+        return 0
+    except Exception as error:
+        return fail(f"System model failed: {error}", 1)
+
+
+def run_audit_rg(config, args):
+    if audit_run_rg is None:
+        return fail("Audit engine is not installed. Re-run install.sh from this checkout.")
+    if not args:
+        return fail("Usage: lk rg <pattern> [path] [rg-options...]")
+    pattern = args[0]
+    path = "."
+    extra = list(args[1:])
+    if extra and not str(extra[0]).startswith("-"):
+        path = extra.pop(0)
+    root = audit_context.foundry_project_root()
+    return audit_run_rg(pattern, path, extra, str(root))
+
+
+def run_audit_poc(config, args):
+    if audit_generate_poc is None:
+        return fail("Audit engine is not installed. Re-run install.sh from this checkout.")
+    finding = None
+    name = None
+    remaining = list(args)
+    i = 0
+    while i < len(remaining):
+        item = remaining[i]
+        if item == "--finding" and i + 1 < len(remaining):
+            try:
+                finding = int(remaining[i + 1])
+            except ValueError:
+                return fail("Usage: lk poc [--finding N] [--name NAME]")
+            i += 2
+            continue
+        if item == "--name" and i + 1 < len(remaining):
+            name = remaining[i + 1]
+            i += 2
+            continue
+        if item in {"--help", "-h"}:
+            print("Usage: lk poc [--finding N] [--name NAME]")
+            return 0
+        return fail(f"Unknown lk poc option: {item}")
+    root = audit_context.foundry_project_root()
+    code, _paths = audit_generate_poc(str(root), finding, name)
+    return code
+
+
+def run_external_audit(config, args):
+    if audit_run_pipeline is None:
+        return fail("Audit engine is not installed. Re-run install.sh from this checkout.")
+    remaining = list(args)
+    if remaining and remaining[0] in {"run", "pipeline"}:
+        remaining.pop(0)
+    generate = False
+    slither_args = []
+    for item in remaining:
+        if item in {"--poc", "--generate-poc"}:
+            generate = True
+        else:
+            slither_args.append(item)
+    root = audit_context.foundry_project_root()
+    return audit_run_pipeline(str(root), slither_args=slither_args, generate=generate)
+
+
 def print_help():
-    print("""
+    print(r"""
 LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 =======================================
 
-START
-  lk audit                         Interactive audit; detects existing Anvil but never starts one
-  lk audit auto                    Autonomous local audit; starts Anvil if needed and bootstraps target
-  lk audit --checks                Same audit session with Slither + optional lint/geiger checks
-  lk audit auto --checks           Autonomous audit with Slither + optional lint/geiger checks
-  lk walkthrough [options]       Build and execute a visual whole-protocol workflow
-  lk walkthrough --auto           Auto-provision a local Anvil target when needed
-  lk walkthrough --static         Render the compiled protocol model without execution
-  lk walkthrough --contract X     Focus the workflow model on contract X
-  lk walkthrough test --auto      Randomized live probes on isolated Anvil snapshots
-  lk walkthrough test --random    Same as randomized walkthrough test
-  lk walkthrough test --cases N   Run N randomized state/call probes
-  lk walkthrough test              Randomized live probes with snapshot/revert isolation
-  lk walkthrough test --cases 50  Run 50 adversarial probes and save evidence
-  lk audit--checks                 Legacy compact alias for audit --checks
-  lk findings                      Show audit findings
-  lk focus <ID>                    Focus one finding and mark it investigating
-  lk status                        Show target and audit state
-  lk doctor                        Check the toolchain
-  lk target <address|name>         Select the contract under review
-  lk clone <repo> [dir] [options] Clone and prepare a Foundry project for auditing
-  lk lab [Contract]                 Start a local audit lab and auto-target it
-  lk lab stop                       Stop an Anvil started by Lowkey
-  lk actor <index> <name>          Name an Anvil account
-  lk actor 0 Alice                  Name Anvil account #0 as Alice
+START HERE
+  lk -h / lk --help                  Show this menu.
+  lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
+  lk build                           Compile the current Foundry project.
+  lk test                            Run the project's Forge tests.
+  lk lab                             Start/rebuild a disposable local audit lab.
+  lk target auto                     Pick the latest usable deployed target.
+  lk status                          See target, RPC, actor, ABI, and last transaction.
+  lk walkthrough --auto              Understand the whole protocol by executing a local flow.
+  lk audit                           Run the interactive audit workflow.
 
-UNDERSTAND
-  lk recon                         Inspect contract identity and runtime
-  lk functions                     List contract functions
-  lk fn <name>                     Find a function
-  lk ask <function>                Show a function's inputs
-  lk layout <Contract>             Show storage layout
-  lk risk                          Show review-surface hints
-  lk seams                         Show audit hotspots
+FIRST 10 MINUTES
+  1. Start Anvil:                  anvil
+  2. Compile:                      lk build
+  3. Build the local lab:          lk lab
+  4. See what Lowkey selected:      lk status
+  5. See the project/system map:    lk project
+                                     lk system
+  6. Understand the flow:           lk walkthrough --auto --steps 6
+  7. List the attack surface:      lk functions
+                                     lk risk
+  8. Try a read safely:             lk read <function> [args]
+  9. Preview a transaction:         lk send <function> [args] --preview
+ 10. Inspect what happened:         lk trace
 
-INTERACT
-  lk read <function> [args]         Call without changing state
-  lk send <function> [args]         Send a transaction
-  lk encode <function> [args]       Build calldata
-  lk trace [tx]                     Trace a transaction
-  lk logs                           Read contract logs
-  lk tx [tx]                        Inspect a transaction
+COMMON TERMS
+  <address>   Contract/wallet address, e.g. 0x1111...1111
+  <name>      Friendly name, e.g. Alice or escrow
+  <Contract>  Solidity contract name, e.g. Escrow
+  <function>  Solidity function name, e.g. release
+  <file>      Source file, e.g. src/EthEscrow.sol
+  <dir>       Folder, e.g. src
+  <slot>      Storage slot number, e.g. 3
+  <key>       Mapping key, e.g. an address
+  <tx>        Transaction hash
+  <rpc>       RPC URL, e.g. http://127.0.0.1:8545
 
-STORAGE
-  lk mapping <slot> <key>            Calculate and read a mapping slot
-  lk snapshot [slots]                Save storage values
-  lk diff                            Compare saved storage values
-  lk changes <function> [args]       Show storage changes from a call
+PROJECT / TARGET SETUP
+  lk target <address>               Select a contract. Example: lk target 0x...
+  lk target <name> <address>        Save + select a named target. Example: lk target escrow 0x...
+  lk target list                    List saved targets.
+  lk target auto [name]             Use a recent deployment. Example: lk target auto escrow
+  lk use <name|number>              Switch to a saved target. Example: lk use escrow
+  lk deployments                    List deployment records.
+  lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
+  lk lab [Contract]                 Create or reuse a disposable local audit environment.
+  lk lab stop                       Stop the Anvil Lowkey started.
+  lk rpc <url>                      Set RPC manually. Example: lk rpc http://127.0.0.1:8545
+  lk rpc set <name> <url>           Save an RPC profile.
+  lk rpc use <name>                 Select an RPC profile.
+  lk wallet list                    List signer profiles.
+  lk wallet set-env <name> <ENV>    Use a private key from an environment variable.
+  lk actor                          Show current actor/accounts.
+  lk actor <index> <name>           Name an Anvil account. Example: lk actor 0 Alice
+  lk actors                         List available Anvil actors.
+  lk impersonate <address> [name]   Use an existing account on a local fork.
+  lk as <actor> <command> [args]    Run one command as another actor.
 
-TEST / REPRODUCE
-  lk probe <function> [args]         Try a call without assertions
-  lk test-gen                        Turn the last send into a Forge test
-  lk fuzz                            Run Forge fuzz tests
-  lk invariant                       Run Forge invariant tests
-  lk symbolic                        Run Forge symbolic tests
-  lk mutate                          Run Forge mutation testing
-  lk brutalize                       Stress calldata/state assumptions
-  lk generate test <function> [...]  Generate a reusable Forge test
-  lk generate poc <function> [...]   Generate a PoC script
-  lk generate deployment <Contract> Generate a deployment script
+UNDERSTAND THE PROJECT
+  lk project [json]                Detect the project and print its source/dependency graph.
+                                   Example: lk project
+  lk system [json]                 Build/show the reusable system bootstrap manifest.
+                                   Example: lk system
+  lk info                          Show target, bytecode, ABI, proxy information.
+  lk recon                         Quick contract reconnaissance: balance/code/nonce.
+  lk functions [query]             List contract functions. Example: lk functions
+  lk fn <query>                    Find a function. Example: lk fn release
+  lk ask <function>                Show function inputs. Example: lk ask createEscrow
+  lk wizard <function> [mode]     Interactive argument helper.
+  lk layout <Contract>             Show Forge storage layout.
+  lk deps [src]                    Show imports/inheritance. Example: lk deps
+  lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
+  lk seams [hotspots]              Show audit hotspots.
+  lk risk                          Show ABI-level review-surface hints.
+  lk gas <function> [args]         Estimate gas. Example: lk gas release
+  lk slither [args...]             Run Slither through Lowkey's reporter.
+  lk rg <pattern> [path]           Search source and save evidence. Example: lk rg "delegatecall" src
 
-STATIC ANALYSIS
-  lk slither                        Run Slither and save findings
+INTERACT WITH CONTRACTS
+  lk read <function> [args]        Read without changing state. Example: lk read balanceOf <address>
+  lk send <function> [args]        Send a transaction. Example: lk send release --preview
+  lk send ... --preview            Encode/check without sending.
+  lk send ... --confirm            Preview, then ask before sending.
+  lk c <function> [args]           Short read alias. Example: lk c balanceOf <address>
+  lk s <function> [args]           Short send alias. Example: lk s release --preview
+  lk st ...                        Short raw-storage/low-level alias.
+  lk encode <function> [args]      Build calldata. Example: lk encode release
+  lk decode <function> <data>      Decode return data.
+  lk decode-error <data>           Decode a custom error.
+  lk event <sig> <data> [topics]   Decode event data.
+  lk raw <cast-command> [args]     Run a raw Cast command when Lowkey has no nicer wrapper.
 
-FORK / ACTORS
-  lk fork <rpc> [block]              Start a local fork
-  lk impersonate <address> [name]    Act as an existing account
-  lk rpc <url>                      Set the RPC endpoint
+STORAGE / STATE FORENSICS
+  lk mapping <slot> <key>          Calculate/read a mapping slot. Example: lk mapping 3 0x...
+  lk mapping <type> <slot> <key>   Explicitly choose the mapping key type.
+  lk namespace <id>                Calculate an ERC-7201 namespace slot.
+  lk proof <slot> [block]          Read a storage proof.
+  lk snapshot [slot ...]           Save selected storage slots.
+  lk diff                          Compare the latest storage snapshot.
+  lk changes <function> [args]     Show storage changes from a call.
+  lk state-diff <function> [args]  Alias for storage-change reproduction.
+  lk storage / slots               Use raw Cast storage tools through lk raw when needed.
 
-RAW ACCESS
-  lk forge <forge-command> [args]    Use native Forge through LK
-  lk raw <cast-command> [args]       Use native Cast through LK
+TRANSACTION FORENSICS
+  lk tx [tx]                       Inspect/decode a transaction.
+  lk receipt [tx]                  Read a transaction receipt.
+  lk trace [tx] [flags]            Replay/trace execution.
+  lk replay <tx> [flags]           Explicit transaction replay alias.
+  lk logs [args...]                Query logs.
+  lk logs --decode [args...]       Query and ABI-decode events.
+  lk last tx                       Inspect the latest sent transaction.
+  lk last trace                    Trace the latest transaction.
+  lk last logs                     Query logs using the latest transaction context.
+  lk chain                         Show chain ID/block/RPC.
+  lk label <address> <name>        Give an address a readable label.
 
-NOTES
-  Primary commands are short and self-describing.
-  Legacy aliases still work: signals, investigate, try, c, s, state-diff.
-  Analyzer results are evidence to investigate, not proof by themselves.
+REPRODUCE / ATTACK / TEST
+  lk probe <function> [args]       Try a call without assertions. Example: lk probe release
+  lk test-gen                      Turn the latest send into a Forge test.
+  lk generate test <function>      Generate a reusable Forge test.
+  lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
+  lk generate deployment <Contract> Generate a deployment script.
+  lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
+  lk fuzz [args...]                Run Forge fuzz tests.
+  lk invariant [args...]           Run Forge invariant tests.
+  lk symbolic [args...]            Run symbolic tests when configured.
+  lk mutate [args...]              Run mutation testing.
+  lk brutalize [args...]           Stress calldata/state assumptions.
+  lk cheatcodes [args...]          Show/run useful Foundry cheatcode helpers.
+  lk matrix init                   Create an attacker-state test matrix.
+  lk matrix actor ...              Add an actor to the matrix.
+  lk matrix state ...              Define a state.
+  lk matrix add ...               Add a scenario.
+  lk matrix list                   List scenarios.
+  lk matrix test <name>            Generate a Forge test skeleton for a scenario.
+
+AUDIT WORKFLOW / EVIDENCE
+  lk audit                          Interactive audit dashboard.
+  lk audit auto                    Local autonomous audit; may provision Anvil.
+  lk audit --checks                Audit plus Slither and optional lint/geiger checks.
+  lk audit auto --checks           Autonomous audit with checks.
+  lk audit run                     Full evidence pipeline: build -> tests -> coverage -> Slither -> triage.
+  lk audit run --poc               Same pipeline, then generate a PoC scaffold.
+  lk audit--checks                 Legacy compact alias for audit --checks.
+  lk finding <note>                Record a manual observation. Example: lk finding caller is not restricted
+  lk finding add <sev> <title>...  Record severity/title/text in one command.
+  lk findings                      Show stored findings/signals.
+  lk focus <id|query>              Focus one finding/review surface.
+  lk checklist                    View/reset/mark checklist items.
+  lk note <text>                   Save an audit note.
+  lk todo <text>                   Add an audit TODO.
+  lk session [start|resume|end]   Manage audit sessions.
+  lk workspace [args]             Inspect audit workspace files.
+  lk export                        Build an audit-report/ bundle.
+
+PROTOCOL WALKTHROUGH
+  lk walkthrough [options]         Build and execute a visual whole-protocol workflow.
+  lk walk [options]                Alias for walkthrough.
+  lk walkthrough --auto            Auto-provision/use a local target.
+  lk walkthrough --static          Render the compiled model without execution.
+  lk walkthrough --contract X      Focus on contract X.
+  lk walkthrough --steps 6         Limit the displayed/executed flow length.
+  lk walkthrough test --auto       Randomized live probes on isolated Anvil snapshots.
+  lk walkthrough test --cases 50   Run 50 adversarial probes and save replayable evidence.
+  Example: lk walkthrough --auto --steps 8
+
+FORK / PROXY / ABI FORENSICS
+  lk fork <rpc> [block]             Start a local fork command/state.
+  lk proxy                          Inspect an EIP-1967 proxy.
+  lk implementation                 Resolve the implementation address.
+  lk admin                          Resolve the proxy admin.
+  lk selectors                     Extract runtime function selectors.
+  lk calldata <data>                Decode calldata and selectors.
+  lk sig <function>                 Print a function signature/selector.
+  lk 4byte ...                      Extended Cast 4byte helper.
+  lk access-list ...                Build/access an access list.
+  lk constructor-args ...           Inspect constructor arguments.
+  lk creation-code ...              Inspect creation/init code.
+  lk decode-calldata ...            Decode calldata directly.
+  lk abi-encode ...                 ABI-encode arguments.
+  lk disasm ...                     Disassemble bytecode.
+  lk txpool ...                     Inspect the local transaction pool.
+  lk chisel ...                     Launch/use Foundry Chisel.
+  lk ens <name|address>             ENS forward/reverse lookup.
+  lk token <token>                  ERC20 metadata helper.
+  lk token balance <token> <holder> ERC20 holder balance helper.
+  lk snapshot/diff                   Storage snapshot + comparison.
+
+FOUNDRY SHORTCUTS
+  lk forge <forge-command> [args]   Use native Forge through Lowkey. Example: lk forge test -vvvv
+  lk build                          Shortcut for forge build. Example: lk build
+  lk test                           Shortcut for forge test. Example: lk test
+  lk script <args>                  Shortcut for forge script.
+  lk inspect <args>                 Shortcut for forge inspect.
+  lk coverage <args>                Shortcut for forge coverage.
+  lk lint / geiger                  Run those Forge tools when installed.
+  lk fmt                            Format Foundry sources.
+  lk create                         Create a new Foundry component.
+
+UTILITIES / COMPATIBILITY
+  lk context                        Show current audit/project context.
+  lk state-diff / statediff         Legacy aliases for state-diff.
+  lk try                            Legacy alias for probe.
+  lk investigate                   Legacy alias for focus/investigation.
+  lk signals                       Legacy alias for findings.
+  lk resolve / lookup               ENS lookup aliases.
+  lk erc20                         Token helper alias.
+  lk receipt / tx / trace / logs   Transaction inspection commands.
+  lk batch <file>                   Run one lk command per line.
+  lk self-test                      Run Lowkey regression tests.
+  lk doctor                        Diagnose installation/toolchain problems.
+
+SAFETY / EXPECTATIONS
+  • Preview sends before touching a chain: use --preview or --confirm.
+  • Use local Anvil/test keys while learning; do not put production keys in Lowkey.
+  • Heuristics and analyzer findings are review leads, not vulnerability verdicts.
+  • The goal is RECON → ATTACK → PROVE: understand the system, reproduce behavior, then prove impact.
 """)
 
 def dispatch_command(cmd,args,config,from_batch=False):
@@ -5961,6 +6220,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if not resolved: print(f"Unknown target: {args[0]}"); return
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
+    elif cmd=="project": return run_project_map(config,args)
+    elif cmd=="system": return run_system_model(config,args)
     elif cmd=="clone": return run_clone(config,args)
     elif cmd=="lab": return run_lab(config,args)
     elif cmd=="rpc":
@@ -6068,7 +6329,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
     elif cmd in {"audit--checks","audit-checks"}: return run_audit_mode(config, ["--checks", *args])
-    elif cmd=="audit": return run_audit_mode(config,args)
+    elif cmd=="audit":
+        if args and args[0] in {"run","pipeline"}:
+            return run_external_audit(config,args)
+        return run_audit_mode(config,args)
     elif cmd in {"walkthrough","walk"}: return walkthrough.run(config,args,host=sys.modules[__name__])
     elif cmd=="context": return run_context(config)
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
@@ -6136,6 +6400,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="risk": run_risk(config)
     elif cmd in {"seams","hotspots"}: return run_seams(config)
     elif cmd=="scan": run_scan(args)
+    elif cmd=="rg": return run_audit_rg(config,args)
+    elif cmd=="poc": return run_audit_poc(config,args)
     elif cmd=="deps": run_deps(args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
@@ -6169,7 +6435,7 @@ def main():
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
-        "audit","audit--checks","audit-checks","walkthrough","walk"
+        "audit","audit--checks","audit-checks","audit","walkthrough","walk","rg","poc","project","system"
     }
     if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks"}:
         try:
