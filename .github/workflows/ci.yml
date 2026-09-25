@@ -103,10 +103,19 @@ jobs:
           lk --h
           lk --version
           grep -q 'Runtime:' <(lk --version)
+          grep -q 'lk lab' <(lk -h)
+          grep -q 'lk walkthrough' <(lk -h)
+          grep -q 'lk system' <(lk -h)
+          grep -q 'lk project' <(lk -h)
+          grep -q 'lk audit run' <(lk -h)
+          grep -q 'lk poc' <(lk -h)
           lk self-test
           lk doctor
           lk scan src
           lk scan src/Fixture.sol
+          lk project
+          lk system
+          test -f .audit/evidence/system_bootstrap.json
           lk forge build
           lk walkthrough --static --steps 4
           test -f .audit/walkthrough/model.json
