@@ -24,7 +24,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py clone_tools.py walkthrough.py; do
+for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py clone_tools.py walkthrough.py audit_engine.py system_model.py project_tools.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
@@ -46,6 +46,9 @@ cp "$STAGE_DIR/generator.py" "$TARGET_LOWKEY_DIR/generator.py"
 cp "$STAGE_DIR/slither_tools.py" "$TARGET_LOWKEY_DIR/slither_tools.py"
 cp "$STAGE_DIR/audit_context.py" "$TARGET_LOWKEY_DIR/audit_context.py"
 cp "$STAGE_DIR/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
+cp "$STAGE_DIR/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
+cp "$STAGE_DIR/system_model.py" "$TARGET_LOWKEY_DIR/system_model.py"
+cp "$STAGE_DIR/project_tools.py" "$TARGET_LOWKEY_DIR/project_tools.py"
 cp "$STAGE_DIR/walkthrough.py" "$TARGET_LOWKEY_DIR/walkthrough.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
@@ -114,6 +117,9 @@ Files copied:
   - $TARGET_LOWKEY_DIR/slither_tools.py
   - $TARGET_LOWKEY_DIR/audit_context.py
   - $TARGET_LOWKEY_DIR/clone_tools.py
+  - $TARGET_LOWKEY_DIR/audit_engine.py
+  - $TARGET_LOWKEY_DIR/system_model.py
+  - $TARGET_LOWKEY_DIR/project_tools.py
   - $TARGET_LOWKEY_DIR/walkthrough.py
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
