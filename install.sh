@@ -35,7 +35,10 @@ python3 -m py_compile \
   "$STAGE_DIR/generator.py" \
   "$STAGE_DIR/slither_tools.py" \
   "$STAGE_DIR/audit_context.py" \
-  "$STAGE_DIR/clone_tools.py"
+  "$STAGE_DIR/clone_tools.py" \
+  "$STAGE_DIR/audit_engine.py" \
+  "$STAGE_DIR/system_model.py" \
+  "$STAGE_DIR/project_tools.py"
 bash -n "$STAGE_DIR/bin-lk"
 
 # Publish exactly the validated stage so the manifest always describes the
