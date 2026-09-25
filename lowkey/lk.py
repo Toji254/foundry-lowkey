@@ -1,3 +1,4 @@
+import hashlib
 import os
 import json
 import subprocess
@@ -6,11 +7,35 @@ import re
 import shlex
 import io
 import shutil
+import socket
+from urllib import request as urllib_request
 from contextlib import redirect_stdout
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 from difflib import SequenceMatcher
 from pathlib import Path
+
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+import audit_context
+import walkthrough
+
+try:
+    import system_model
+except ImportError:
+    system_model = None
+
+try:
+    import project_tools
+except ImportError:
+    project_tools = None
+
+try:
+    from audit_engine import run_rg as audit_run_rg, run_slither as audit_run_slither, run_audit_pipeline as audit_run_pipeline, generate_poc as audit_generate_poc
+except ImportError:
+    audit_run_rg = audit_run_slither = audit_run_pipeline = audit_generate_poc = None
 
 try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
@@ -22,7 +47,10 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 SNAPSHOT_DIR = os.path.join(CONFIG_DIR, "snapshots")
 AUDIT_DIR = os.path.expanduser("~/.lowkey/audit")
 SESSION_FILE = os.path.join(AUDIT_DIR, "session_log.txt")
+FORK_FILE = os.path.join(CONFIG_DIR, "fork.json")
 WORKSPACE_DIR = os.path.join(os.getcwd(), ".audit")
+INSTALL_MANIFEST = os.path.join(CONFIG_DIR, "install-manifest.json")
+INSTALL_MANIFEST = os.path.join(CONFIG_DIR, "install-manifest.json")
 
 AUDIT_CHECKLIST = [
     "Understand protocol purpose and trust assumptions",
@@ -43,9 +71,9 @@ AUDIT_CHECKLIST = [
 ]
 
 DEFAULT_CONFIG = {
-    "target": None, "aliases": {}, "targets": {}, "rpc": None,
+    "target": None, "target_contract": None, "aliases": {}, "targets": {}, "rpc": None,
     "rpc_profiles": {}, "actor": None, "wallets": {},
-    "abi_paths": {}, "labels": {}, "confirm_sends": False, "version": 2
+    "abi_paths": {}, "project_roots": {}, "labels": {}, "confirm_sends": False, "rpc_auto": False, "version": 4
 }
 
 _COMMAND_STATUS = 0
@@ -54,7 +82,12 @@ class CommandResult(str):
     def __new__(cls, output="", code=0):
         result = super().__new__(cls, output or "")
         result.code = code
+        result.output = str(output or "")
         return result
+
+    @property
+    def text(self):
+        return self.output
 
 def record_status(code):
     global _COMMAND_STATUS
@@ -86,8 +119,9 @@ def load_config():
         return fresh_config()
     config = fresh_config()
     config.update(loaded)
-    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "labels"]:
+    for key in ["aliases", "targets", "rpc_profiles", "wallets", "abi_paths", "project_roots", "labels"]:
         if not isinstance(config.get(key), dict): config[key] = {}
+    # ABI paths are normalized lazily after helper definitions are loaded.
     return config
 
 def save_config(config):
@@ -95,30 +129,305 @@ def save_config(config):
     tmp=CONFIG_FILE+".tmp"
     try:
         with open(tmp,"w",encoding="utf-8") as f:
-            json.dump(config,f,indent=4); f.write("\n")
+            persisted={k:v for k,v in config.items() if not str(k).startswith("_")}
+            json.dump(persisted,f,indent=4); f.write("\n")
         os.chmod(tmp,0o600); os.replace(tmp,CONFIG_FILE); os.chmod(CONFIG_FILE,0o600)
     finally:
         if os.path.exists(tmp):
             try: os.remove(tmp)
             except OSError: pass
 
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def load_install_manifest():
+    try:
+        with open(INSTALL_MANIFEST, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def runtime_sync_status():
+    """Detect stale/corrupted installed Lowkey files without mutating them."""
+    manifest = load_install_manifest()
+    if not manifest:
+        return {"status": "unknown", "detail": "no install manifest; run install.sh"}
+
+    mismatches = []
+    for path, expected in (manifest.get("files") or {}).items():
+        actual = _sha256_file(path)
+        if actual is None:
+            mismatches.append(f"missing: {path}")
+        elif actual != expected:
+            mismatches.append(f"modified: {path}")
+
+    source_repo = manifest.get("source_repo")
+    installed_sha = manifest.get("git_sha")
+    source_sha = None
+    if source_repo and os.path.isdir(os.path.join(source_repo, ".git")):
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source_repo,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                source_sha = result.stdout.strip()
+        except OSError:
+            pass
+
+    if mismatches:
+        return {
+            "status": "corrupt",
+            "detail": "; ".join(mismatches[:4]),
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    if source_sha and installed_sha and source_sha != installed_sha:
+        return {
+            "status": "stale",
+            "detail": f"source checkout is {source_sha[:12]}, installed runtime is {installed_sha[:12]}",
+            "installed_sha": installed_sha,
+            "source_sha": source_sha,
+            "source_repo": source_repo,
+        }
+    return {
+        "status": "ok",
+        "detail": f"installed runtime {installed_sha[:12]}" if installed_sha else "installed runtime verified",
+        "installed_sha": installed_sha,
+        "source_sha": source_sha,
+        "source_repo": source_repo,
+    }
 def normalize_private_key(value):
     if not value: return None
     value=str(value).strip()
     if re.fullmatch(r"(0x)?[0-9a-fA-F]{64}",value):
-        return value if value.startswith("0x") else "0x"+value
+        return value if value.lower().startswith("0x") else "0x"+value
     return None
+
+DEFAULT_ANVIL_MNEMONIC = "test test test test test test test test test test test junk"
+
+def rpc_json(url, method, params=None):
+    if not url: return None
+    try:
+        payload=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params or []}).encode()
+        req=urllib_request.Request(url, data=payload, headers={"Content-Type":"application/json"})
+        with urllib_request.urlopen(req, timeout=0.8) as response:
+            body=json.loads(response.read().decode("utf-8"))
+        if isinstance(body,dict) and body.get("error"): return None
+        return body.get("result") if isinstance(body,dict) else None
+    except Exception:
+        return None
+
+def local_port_open(host,port):
+    try:
+        with socket.create_connection((host,port),timeout=0.05): return True
+    except OSError:
+        return False
+
+def detect_anvil_rpc(preferred=None):
+    candidates=[]
+    if preferred:
+        candidates.append(preferred)
+    else:
+        env_rpc=os.environ.get("ETH_RPC_URL")
+        if env_rpc: candidates.append(env_rpc)
+        for host,port in (("127.0.0.1",8545),("127.0.0.1",8546)):
+            if local_port_open(host,port): candidates.append(f"http://{host}:{port}")
+    for url in candidates:
+        client=rpc_json(url,"web3_clientVersion",[])
+        if not client or "anvil" not in str(client).lower(): continue
+        accounts=rpc_json(url,"eth_accounts",[])
+        if not isinstance(accounts,list): accounts=[]
+        return {"url":url,"client":str(client),"accounts":[x for x in accounts if is_address(x)]}
+    return None
+
+
+def anvil_rpc_info(config):
+    explicit=config.get("rpc")
+    if explicit:
+        return detect_anvil_rpc(explicit)
+    cached=config.get("_auto_rpc_info")
+    if isinstance(cached,dict):
+        return cached
+    info=detect_anvil_rpc()
+    if info:
+        config["_auto_rpc_info"]=info
+    return info
+
+def effective_rpc(config):
+    if config.get("rpc"):
+        return config["rpc"]
+    info=anvil_rpc_info(config)
+    return info.get("url") if isinstance(info,dict) else None
+
+def derive_default_anvil_key(index):
+    try:
+        code,out,err=cast_output(["cast","wallet","private-key",DEFAULT_ANVIL_MNEMONIC,str(index)])
+    except Exception:
+        return None
+    if code != 0: return None
+    match=re.search(r"0x[0-9a-fA-F]{64}",out or "")
+    return normalize_private_key(match.group(0)) if match else None
+
+def wallet_entry_kind(entry):
+    if isinstance(entry,dict):
+        if entry.get("source") == "anvil-default": return f"anvil #{entry.get('anvil_index','?')}"
+        if entry.get("env"): return "env"
+        if entry.get("private_key"): return "key"
+    return "key"
+
+def assigned_anvil_index(config,index):
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and entry.get("source")=="anvil-default" and str(entry.get("anvil_index"))==str(index):
+            return name
+    return None
+
+def assigned_anvil_address(config,address):
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and str(entry.get("address","")).lower()==str(address).lower():
+            return name
+    return None
+
+
+def select_anvil_actor(config,index,name):
+    try:
+        index=int(index)
+    except (TypeError,ValueError):
+        return fail("Error: Anvil account index must be a number.")
+    name=str(name or "").strip()
+    if index<0:
+        return fail("Error: Anvil account index cannot be negative.")
+    if not name:
+        return fail("Error: actor name cannot be empty.")
+    info=anvil_rpc_info(config)
+    if not info:
+        return fail("Error: no Anvil node detected. Start 'anvil' or set an Anvil RPC with lk rpc <url>.")
+    accounts=info.get("accounts",[])
+    if not isinstance(accounts,list) or index>=len(accounts):
+        return fail(f"Error: Anvil account {index} does not exist on {info.get('url','the detected RPC')}.")
+    address=accounts[index]
+    assigned_index=assigned_anvil_index(config,index)
+    assigned_address=assigned_anvil_address(config,address)
+    if assigned_index and assigned_index!=name:
+        return fail(f"Error: Anvil account {index} is already assigned to '{assigned_index}'.")
+    if assigned_address and assigned_address!=name:
+        return fail(f"Error: address {address} is already assigned to '{assigned_address}'.")
+    existing=config.get("wallets",{}).get(name)
+    if existing and not (
+        isinstance(existing,dict)
+        and existing.get("source")=="anvil-default"
+        and str(existing.get("anvil_index"))==str(index)
+    ):
+        return fail(f"Error: wallet profile '{name}' already exists. Pick another actor name.")
+    config.setdefault("wallets",{})[name]={
+        "source":"anvil-default",
+        "anvil_index":index,
+        "address":address,
+    }
+    config.setdefault("labels",{})[address]=name
+    config["actor"]=name
+    save_config(config)
+    print(f"Actor selected: {name} -> Anvil account {index} ({address})")
+    print("Private key: derived only when a send is needed; not stored in Lowkey config.")
+    return 0
+
+def list_anvil_actors(config):
+    info=anvil_rpc_info(config)
+    print(f"Actor: {actor_display(config)}")
+    if not info:
+        print("Anvil: not detected")
+        return
+    accounts=info.get("accounts",[])
+    print(f"Anvil RPC: {info.get('url')}")
+    if not accounts:
+        print("No Anvil accounts reported by this RPC.")
+        return
+    print("Accounts:")
+    for index,address in enumerate(accounts):
+        owner=assigned_anvil_address(config,address)
+        marker="*" if owner==config.get("actor") else " "
+        label=f" -> {owner}" if owner else ""
+        print(f"{marker} {index:>2}: {address}{label}")
 
 def resolve_wallet_key(config,wallet_name=None):
     name=wallet_name or config.get("actor")
     if not name: return None
     entry=config.get("wallets",{}).get(name)
     if isinstance(entry,dict):
+        if entry.get("source") == "anvil-default" and entry.get("anvil_index") is not None:
+            info=anvil_rpc_info(config)
+            if not info:
+                return None
+            index=int(entry["anvil_index"])
+            accounts=info.get("accounts",[])
+            if index<0 or index>=len(accounts):
+                return None
+            recorded=str(entry.get("address","")).lower()
+            actual=str(accounts[index]).lower()
+            if recorded and recorded!=actual:
+                return None
+            key=derive_default_anvil_key(index)
+            if not key:
+                return None
+            code,derived_address,_=cast_output(["cast","wallet","address","--private-key",key])
+            if code!=0 or not derived_address:
+                return None
+            derived_address=derived_address.strip().splitlines()[-1].strip()
+            if derived_address.lower()!=actual:
+                return None
+            return key
         if entry.get("env"): return normalize_private_key(os.environ.get(entry["env"]))
         return normalize_private_key(entry.get("private_key"))
     if isinstance(entry,str): return normalize_private_key(entry)
     if isinstance(name,str) and name.startswith("env:"): return normalize_private_key(os.environ.get(name[4:]))
     return normalize_private_key(name)
+
+def actor_display(config):
+    actor=config.get("actor")
+    if not actor:
+        return "none"
+    entry=config.get("wallets",{}).get(actor)
+    if isinstance(entry,dict) and entry.get("source")=="anvil-default":
+        index=entry.get("anvil_index","?")
+        address=entry.get("address","?")
+        return f"{actor} (Anvil #{index}, {address})"
+    if isinstance(entry,dict) and entry.get("source")=="anvil-impersonated":
+        return f"{actor} (impersonated, {entry.get('address','?')})"
+    if isinstance(entry,dict) and entry.get("env"):
+        return f"{actor} (env:{entry['env']})"
+    if isinstance(entry,dict) and entry.get("private_key"):
+        return f"{actor} (local key)"
+    if is_probable_private_key(actor):
+        return "<raw private key configured>"
+    return str(actor)
+
+def actor_address(config, name=None):
+    name = name or config.get("actor")
+    if not name:
+        return None
+    entry = config.get("wallets", {}).get(name)
+    if isinstance(entry, dict) and entry.get("address"):
+        return entry["address"]
+    key = resolve_wallet_key(config, name)
+    if not key:
+        return None
+    code, address, _ = cast_output(["cast", "wallet", "address", "--private-key", key])
+    if code == 0 and address:
+        return address.strip().splitlines()[-1].strip()
+    return None
 def rpc_display(url):
     if not url: return None
     try:
@@ -210,58 +519,492 @@ def log_session(command, result):
     with open(SESSION_FILE, "a") as f:
         f.write(f"[{timestamp}] CMD: {command}\nRES: {result}\n{'-'*40}\n")
 
+def local_artifact_paths(root="."):
+    return [p for p in artifact_json_files(root) if "out" in Path(p).parts]
+
+def artifact_contract_name(path, artifact):
+    if isinstance(artifact,dict) and artifact.get("contractName"): return str(artifact["contractName"])
+    return Path(path).stem
+
+def read_artifact(path):
+    try:
+        with open(path,"r",encoding="utf-8") as f: value=json.load(f)
+        return value if isinstance(value,dict) else None
+    except (OSError,json.JSONDecodeError): return None
+
+def foundry_project_root(start="."):
+    try:
+        path=Path(start).expanduser().resolve()
+    except OSError:
+        return None
+    if path.is_file():
+        path=path.parent
+    for parent in [path,*path.parents]:
+        if (parent/"foundry.toml").is_file():
+            return str(parent)
+    return None
+
+def path_is_within(path, root):
+    try:
+        Path(path).expanduser().resolve().relative_to(Path(root).resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+def project_context_target(root=None):
+    """Return only a valid remembered target for the current project."""
+    project_root = audit_context.foundry_project_root(root)
+    context = audit_context.load(project_root)
+    target = context.get("target", {})
+    if not isinstance(target, dict) or not is_address(target.get("address")):
+        return None
+    source = target.get("source")
+    artifact = target.get("artifact")
+    contract = target.get("contract")
+    if source == "manual":
+        return target
+    if not artifact:
+        return None
+    try:
+        artifact_path = Path(os.path.expanduser(str(artifact)))
+        if not artifact_path.is_absolute():
+            artifact_path = Path(project_root) / artifact_path
+        artifact_path = artifact_path.resolve()
+    except OSError:
+        return None
+    if not artifact_path.is_file():
+        return None
+    artifact_data = read_artifact(str(artifact_path))
+    if not artifact_data or not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
+        return None
+    actual_contract = artifact_contract_name(str(artifact_path), artifact_data)
+    if contract and str(contract).lower() != str(actual_contract).lower():
+        return None
+    return target
+
+def active_project_target(config, root=None):
+    """Resolve a target for the current Foundry project before using global config."""
+    project_root = audit_context.foundry_project_root(root)
+    target = project_context_target(project_root)
+    if target:
+        return target.get("address")
+
+    global_target = config.get("target")
+    if not is_address(global_target):
+        return None
+
+    # Never reuse a target whose remembered project root belongs elsewhere.
+    configured_root = configured_project_root(global_target, config)
+    if configured_root and Path(configured_root).resolve() == Path(project_root).resolve():
+        artifact = config.get("abi_paths", {}).get(global_target)
+        contract = config.get("target_contract")
+        if artifact:
+            try:
+                artifact_path = Path(os.path.expanduser(str(artifact)))
+                if not artifact_path.is_absolute():
+                    artifact_path = Path(project_root) / artifact_path
+                artifact_path = artifact_path.resolve()
+            except OSError:
+                artifact_path = None
+            if artifact_path and artifact_path.is_file():
+                artifact_data = read_artifact(str(artifact_path))
+                if artifact_data and artifact_is_project_application(Path(project_root), str(artifact_path), artifact_data):
+                    artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
+                    if not contract or str(contract).lower() == str(artifact_contract).lower():
+                        return global_target
+    return None
+
+def activate_project_target(config, root=None):
+    """Hydrate legacy command config from the current project's target memory."""
+    project_root = audit_context.foundry_project_root(root)
+    target = project_context_target(project_root)
+    if not target:
+        if not active_project_target(config, project_root):
+            config["target"] = None
+        return None
+
+    config["target"] = target.get("address")
+    if target.get("contract"):
+        config["target_contract"] = target["contract"]
+    if target.get("artifact"):
+        config.setdefault("abi_paths", {})[target["address"]] = target["artifact"]
+    return target["address"]
+
+def project_artifact_function_matches(root, query):
+    """Find ABI functions directly from the current project's build artifacts."""
+    matches = []
+    query_lower = str(query or "").lower()
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not isinstance(artifact, dict):
+            continue
+        abi = artifact.get("abi", [])
+        if not isinstance(abi, list):
+            continue
+        contract = artifact_contract_name(path, artifact)
+        for item in abi_functions(abi):
+            signature = format_signature(item)
+            candidate = signature.lower()
+            name = str(item.get("name") or "").lower()
+            if not query_lower or query_lower in candidate or query_lower == name:
+                matches.append((contract, signature, path))
+    # Exact signatures/names first, then shortest contract/path ordering.
+    matches.sort(key=lambda item: (
+        0 if str(query).lower() == item[1].lower() else
+        1 if str(query).lower() == item[1].split("(", 1)[0].lower() else 2,
+        item[0].lower(),
+        item[1].lower(),
+    ))
+    return matches
+
+def configured_project_root(target,config):
+    roots=config.get("project_roots",{}) if isinstance(config,dict) else {}
+    root=roots.get(target) if isinstance(roots,dict) else None
+    if not root and isinstance(target,str):
+        lowered=target.lower()
+        root=next(
+            (value for address,value in roots.items()
+             if isinstance(address,str) and address.lower()==lowered),
+            None,
+        )
+    if not root:
+        return None
+    try:
+        path=Path(os.path.expanduser(str(root)))
+        if not path.is_absolute():
+            path=Path.cwd()/path
+        path=path.resolve()
+        return str(path) if path.is_dir() else None
+    except OSError:
+        return None
+
+def remember_abi_path(config,target,path):
+    if not target or not path:
+        return path
+    try:
+        absolute=str(Path(os.path.expanduser(str(path))).resolve())
+    except OSError:
+        return path
+    if not os.path.exists(absolute):
+        return path
+
+    root=foundry_project_root(absolute)
+    # Persist the resolved artifact as an absolute path. The project root is
+    # still remembered separately for project-scoped operations, but artifact
+    # reads must never depend on the caller's current working directory.
+    stored=absolute
+
+    changed=False
+    if config.setdefault("abi_paths",{}).get(target)!=stored:
+        config["abi_paths"][target]=stored
+        changed=True
+    if root and configured_project_root(target,config)!=root:
+        config.setdefault("project_roots",{})[target]=root
+        changed=True
+    if changed:
+        config["_config_dirty"]=True
+    return absolute
+
+def resolve_abi_path(config,target,path=None):
+    if not target:
+        return None
+    if path is None:
+        path=config.get("abi_paths",{}).get(target)
+    if not path:
+        return None
+
+    expanded=os.path.expanduser(str(path))
+    if os.path.isabs(expanded):
+        return remember_abi_path(config,target,expanded)
+
+    if os.path.exists(expanded):
+        return remember_abi_path(config,target,expanded)
+
+    root=configured_project_root(target,config)
+    if root:
+        candidate=os.path.join(root,expanded)
+        if os.path.exists(candidate):
+            return remember_abi_path(config,target,candidate)
+    return None
+
+def auto_abi_path(target,config):
+    if not target or not is_address(target):
+        return None
+
+    search_roots=["."]
+    remembered_root=configured_project_root(target,config)
+    if remembered_root and os.path.abspath(remembered_root)!=os.path.abspath("."):
+        search_roots.insert(0,remembered_root)
+
+    paths=[]
+    for root in search_roots:
+        paths.extend(local_artifact_paths(root))
+    preferred=config.get("target_contract")
+    candidate_addresses=[target]
+
+    if not preferred:
+        for record in discover_deployments("."):
+            if str(record.get("address","")).lower()==target.lower():
+                preferred=record.get("contract")
+                if preferred:
+                    config["target_contract"]=preferred
+                break
+
+    rpc=effective_rpc(config)
+    if rpc:
+        code,implementation,error=cast_output(["cast","implementation",target,"--rpc-url",rpc])
+        if code==0 and is_address(implementation):
+            implementation=implementation.strip().splitlines()[-1].strip()
+            if implementation.lower()!=target.lower():
+                candidate_addresses.insert(0,implementation)
+                if not preferred:
+                    for record in discover_deployments("."):
+                        if str(record.get("address","")).lower()==implementation.lower():
+                            preferred=record.get("contract")
+                            if preferred:
+                                config["target_contract"]=preferred
+                            break
+
+    if preferred:
+        preferred_lower=str(preferred).lower()
+        for path in paths:
+            artifact=read_artifact(path)
+            name=artifact_contract_name(path,artifact).lower()
+            if name==preferred_lower or Path(path).stem.lower()==preferred_lower:
+                remember_abi_path(config,target,path)
+                return path
+
+    if rpc:
+        for candidate in candidate_addresses:
+            code,runtime,_=cast_output(["cast","code",candidate,"--rpc-url",rpc])
+            if code!=0 or not runtime or not runtime.startswith("0x") or runtime=="0x":
+                continue
+            for path in paths:
+                artifact=read_artifact(path)
+                deployed=artifact.get("deployedBytecode") if isinstance(artifact,dict) else None
+                if isinstance(deployed,dict):
+                    deployed=deployed.get("object")
+                if isinstance(deployed,str) and deployed.lower()==runtime.lower():
+                    remember_abi_path(config,target,path)
+                    config["target_contract"]=artifact_contract_name(path,artifact)
+                    return path
+
+    return None
+
 def load_abi(target,config):
+    if not target: return []
     abi_paths=config.get("abi_paths",{})
     abi_path=abi_paths.get(target)
     if not abi_path and isinstance(target,str):
         lowered=target.lower()
         abi_path=next((path for address,path in abi_paths.items() if isinstance(address,str) and address.lower()==lowered),None)
+    abi_path=resolve_abi_path(config,target,abi_path)
+    if not abi_path:
+        abi_path=auto_abi_path(target,config)
     if not abi_path or not os.path.exists(abi_path): return []
     try:
         with open(abi_path,"r",encoding="utf-8") as f: artifact=json.load(f)
         abi=artifact.get("abi",[]) if isinstance(artifact,dict) else artifact
+        if isinstance(artifact,dict) and artifact.get("contractName") and not config.get("target_contract"):
+            config["target_contract"]=artifact.get("contractName")
         return abi if isinstance(abi,list) else []
     except (OSError,json.JSONDecodeError): return []
+
+def source_public_storage_names(root="."):
+    names=set()
+    for path in source_sol_files(root):
+        try:
+            source=Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for statement in source.split(";"):
+            lowered=statement.lower()
+            if any(token in lowered for token in ("function ", "event ", "error ", "modifier ", "constructor(")):
+                continue
+            if re.search(r"\b(?:constant|immutable)\b", statement):
+                continue
+            match=re.search(r"\bpublic\s+([A-Za-z_]\w*)\s*(?:=|$)", statement)
+            if match:
+                names.add(match.group(1))
+    return names
+
+
+def storage_getter_names(target,config,abi):
+    path=resolve_abi_path(config,target)
+    if not path:
+        path=auto_abi_path(target,config)
+
+    labels=set()
+    artifact={}
+    if path and os.path.exists(path):
+        artifact=read_artifact(path) or {}
+        layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
+        storage=layout.get("storage",[]) if isinstance(layout,dict) else []
+        labels.update(
+            entry.get("label")
+            for entry in storage
+            if isinstance(entry,dict) and entry.get("label")
+        )
+
+    # Foundry artifacts do not always contain storageLayout. Ask Forge for the
+    # authoritative layout when we are inside a Foundry project, so public
+    # mapping/struct getters are still classified correctly.
+    if not labels:
+        # The artifact we loaded is the authority for the contract name. Do not
+        # let a stale target_contract config entry point Forge at another contract.
+        contract_name = artifact.get("contractName") if isinstance(artifact,dict) else None
+        if not contract_name:
+            contract_name = config.get("target_contract")
+
+        if contract_name:
+            inspect_commands = [
+                ["forge","inspect",str(contract_name),"storage-layout","--json"],
+                ["forge","inspect",str(contract_name),"storage-layout"],
+            ]
+            for command in inspect_commands:
+                code,out,_=cast_output(command)
+                if code!=0 or not out:
+                    continue
+                try:
+                    payload=json.loads(out)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload,dict):
+                    layout=payload.get("storageLayout") or payload.get("storage") or payload
+                else:
+                    layout=payload
+                storage=layout if isinstance(layout,list) else []
+                labels.update(
+                    entry.get("label")
+                    for entry in storage
+                    if isinstance(entry,dict) and entry.get("label")
+                )
+                if labels:
+                    break
+
+    if not labels:
+        labels.update(source_public_storage_names("."))
+    
+    return {
+        item.get("name")
+        for item in abi
+        if item.get("type")=="function"
+        and item.get("stateMutability") in {"view","pure"}
+        and item.get("name") in labels
+    }
 def run_chain(config):
+    rpc=effective_rpc(config)
     chain_id = run_cast(["chain-id"], config, capture=True)
     block = run_cast(["block-number"], config, capture=True)
     print(f"Chain ID: {chain_id or 'Unknown'}")
     print(f"Block:    {block or 'Unknown'}")
-    print(f"RPC:      {config.get('rpc') or 'Not configured'}")
-
+    if rpc:
+        mode="manual" if config.get("rpc") else "auto Anvil"
+        print(f"RPC:      {rpc} ({mode})")
+    else:
+        print("RPC:      Not configured / no local Anvil detected")
 def run_abi(config):
     target = config.get("target")
     if not target:
-        print("Error: Set target first.")
-        return
+        return fail("Error: Set target first.")
     abi = load_abi(target, config)
     if not abi:
-        print("Error: No ABI loaded for the current target.")
-        return
-    groups = {
-        "READ": [item for item in abi if item.get("type") == "function" and item.get("stateMutability") in ["view", "pure"]],
-        "WRITE": [item for item in abi if item.get("type") == "function" and item.get("stateMutability") not in ["view", "pure"]],
-        "EVENTS": [item for item in abi if item.get("type") == "event"],
-        "ERRORS": [item for item in abi if item.get("type") == "error"],
-    }
-    print(f"ABI: {config['abi_paths'].get(target)}")
-    for group, items in groups.items():
+        return fail("Error: No ABI loaded for the current target.")
+    getter_names=storage_getter_names(target,config,abi)
+    groups = [
+        ("WRITE", [item for item in abi if item.get("type")=="function" and item.get("stateMutability") not in {"view","pure"}]),
+        ("READ", [item for item in abi if item.get("type")=="function" and item.get("stateMutability") in {"view","pure"} and item.get("name") not in getter_names]),
+        ("STORAGE GETTERS", [item for item in abi if item.get("type")=="function" and item.get("name") in getter_names]),
+        ("EVENTS", [item for item in abi if item.get("type")=="event"]),
+        ("ERRORS", [item for item in abi if item.get("type")=="error"]),
+    ]
+    path=resolve_abi_path(config,target) or auto_abi_path(target,config)
+    print(f"ABI: {path or 'not loaded'}")
+    for group, items in groups:
         if items:
             print(f"\n{group}")
             for item in items:
                 print(f"  {format_signature(item)}")
-
 def run_functions(config,query=None):
-    target=config.get("target")
-    if not target: return fail("Error: Set target first.")
+    root=audit_context.foundry_project_root()
+    target=active_project_target(config,root)
+    if not target:
+        explicit_target=config.get("target")
+        explicit_abi=config.get("abi_paths",{}).get(explicit_target) if isinstance(config.get("abi_paths"),dict) else None
+        if is_address(explicit_target) and explicit_abi and os.path.exists(os.path.expanduser(str(explicit_abi))):
+            target=explicit_target
+    if not target:
+        explicit_target=config.get("target")
+        explicit_abi=config.get("abi_paths",{}).get(explicit_target) if isinstance(config.get("abi_paths"),dict) else None
+        if is_address(explicit_target) and explicit_abi and os.path.exists(os.path.expanduser(str(explicit_abi))):
+            target=explicit_target
+    if not target:
+        if not query:
+            return fail("Error: no project target selected. Use 'lk fn <function>' to search build artifacts, or deploy and run 'lk target auto'.")
+        matches=project_artifact_function_matches(root,query)
+        if not matches:
+            return fail(f"Error: no built-project function matched '{query}'. Run 'forge build' first.")
+        print("LOWKEY BUILD FUNCTION")
+        print("====================")
+        print(f"Query:   {query}")
+
+        def artifact_kind(contract, path):
+            lowered_contract = str(contract).lower()
+            lowered_path = str(path).lower()
+            if "/mocks/" in lowered_path or lowered_contract.startswith("mock"):
+                return "test mock"
+            # Solidity interfaces conventionally use an I-prefixed contract name.
+            if str(contract).startswith("I") and len(str(contract)) > 1 and str(contract)[1].isupper():
+                return "interface"
+            if "/interfaces/" in lowered_path:
+                return "interface"
+            return "implementation"
+
+        ranked = sorted(
+            matches,
+            key=lambda item: (
+                0 if artifact_kind(item[0], item[2]) == "implementation" else
+                1 if artifact_kind(item[0], item[2]) == "interface" else 2,
+                item[0].lower(),
+            ),
+        )
+        primary = next((item for item in ranked if artifact_kind(item[0], item[2]) == "implementation"), ranked[0])
+        contract, signature, path = primary
+
+        print(f"Found:   {contract}::{signature}")
+        print(f"ABI:     {path}")
+
+        others = [
+            f"{c} ({artifact_kind(c, p)})"
+            for c, s, p in ranked
+            if (c, s, p) != primary
+        ]
+        if others:
+            print(f"Other:   {', '.join(others)}")
+
+        print("Live:    none")
+        print("Next:    deploy a target before using lk changes/trace.")
+        return 0
+
     functions=abi_functions(load_abi(target,config))
     if not functions: return fail("Error: No ABI functions loaded for the current target.")
+    getter_names=storage_getter_names(target,config,functions)
     if query:
         functions=sorted(functions,key=lambda item:function_score(item,query),reverse=True)[:8]
+    groups=[
+        ("WRITE FUNCTIONS",[item for item in functions if item.get("stateMutability") not in {"view","pure"}]),
+        ("READ FUNCTIONS",[item for item in functions if item.get("stateMutability") in {"view","pure"} and item.get("name") not in getter_names]),
+        ("STORAGE GETTERS",[item for item in functions if item.get("name") in getter_names]),
+    ]
+    if query:
         print(f"Function matches for '{query}':")
-    else: print("Functions:")
-    for index,item in enumerate(functions,1):
-        print(f"{index:>2}. {item.get('stateMutability','unknown').upper():10} {format_signature(item)}")
+    for title,items in groups:
+        if not items:
+            continue
+        print(f"\n{title}:")
+        for index,item in enumerate(items,1):
+            suffix="  [public storage getter]" if title=="STORAGE GETTERS" else ""
+            print(f"  {index:>2}. {format_signature(item)}{suffix}")
 def run_info(config):
     target = config.get("target")
     if not target:
@@ -296,8 +1039,10 @@ def cast_output(args,input_text=None):
     result=subprocess.run(args,capture_output=True,text=True,input=input_text)
     return result.returncode,result.stdout.strip(),result.stderr.strip()
 def abi_selector(signature):
-    output, _ = cast_output(["cast", "sig", signature])
-    return output.splitlines()[0].strip() if output else None
+    code, output, _ = cast_output(["cast", "sig", signature])
+    if code != 0 or not output:
+        return None
+    return output.splitlines()[0].strip()
 
 def decode_abi_input(signature,data):
     payload=data[10:] if data.startswith("0x") and len(data)>=10 else data
@@ -320,7 +1065,8 @@ def run_tx(config,args):
     if not tx_hash: return fail("Usage: lk tx <transaction-hash> (or save a transaction first)")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
     command=["cast","tx",tx_hash,"--json"]
-    if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
+    rpc=effective_rpc(config)
+    if rpc: command.extend(["--rpc-url",rpc])
     code,output,error=cast_output(command)
     if code!=0 and not output:
         print(error or "cast tx failed",file=sys.stderr)
@@ -358,7 +1104,17 @@ def run_receipt(config, tx_hash=None):
     tx_hash = tx_hash or last_transaction(config)
     if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
     if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
-    return run_cast(["receipt", tx_hash, "--async"], config)
+    code = run_cast(["receipt", tx_hash, "--async"], config)
+    root = audit_context.foundry_project_root()
+    audit_context.set_latest(root, tx_hash=tx_hash)
+    audit_context.record_tool(
+        "receipt",
+        root,
+        status="completed" if code == 0 else "failed",
+        summary=f"transaction receipt {tx_hash[:10]}...",
+        data={"tx_hash": tx_hash, "exit_code": code},
+    )
+    return code
 
 def run_trace(config,args=None):
     args=list(args or [])
@@ -373,7 +1129,12 @@ def run_trace(config,args=None):
     if grep:
         matched=[line for line in (output or "").splitlines() if grep.lower() in line.lower()]
         print("\n".join(matched) if matched else f"No trace lines matched '{grep}'.")
-    else: run_cast(["run",tx_hash]+args,config)
+    else:
+        result=run_cast(["run",tx_hash]+args,config)
+        root=audit_context.foundry_project_root()
+        audit_context.set_latest(root,tx_hash=tx_hash,trace=tx_hash)
+        audit_context.record_tool("trace",root,status="completed",summary=f"transaction trace {tx_hash[:10]}...",data={"tx_hash":tx_hash})
+        return result
 def decode_event_log(config,log):
     topics=log.get("topics",[]) if isinstance(log,dict) else []
     data=log.get("data","0x") if isinstance(log,dict) else "0x"
@@ -402,7 +1163,8 @@ def run_logs(config,args):
     if decode: args.remove("--decode")
     if not decode: run_cast(["logs"]+args,config); return
     command=["cast","logs","--json"]+args
-    if config.get("rpc"): command.extend(["--rpc-url",config["rpc"]])
+    rpc=effective_rpc(config)
+    if rpc: command.extend(["--rpc-url",rpc])
     code,output,error=cast_output(command)
     if code!=0:
         print(error or "cast logs failed",file=sys.stderr)
@@ -422,12 +1184,21 @@ def apply_labels(text, config):
         text = text.replace(addr, f"{label} ({addr})")
     return text
 
-def humanize_value(text):
-    wei_pattern=r'\b(0x)?(\d{18,})\b'
+def humanize_value(text, assume_wei=False):
+    if text is None:
+        return text
+    if not assume_wei:
+        return str(text)
+    value = str(text)
+    wei_pattern = r'\b(0x)?(\d+)\b'
     def replace_wei(match):
-        eth_val=int(match.group(2))/10**18
+        try:
+            raw = int(match.group(2))
+        except ValueError:
+            return match.group(0)
+        eth_val = raw / 10**18
         return f"{match.group(0)} [~{eth_val:.4f} ETH]"
-    return re.sub(wei_pattern,replace_wei,text)
+    return re.sub(wei_pattern, replace_wei, value)
 def is_address(value):
     return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}",value))
 def is_nonzero_slot(value):
@@ -436,6 +1207,67 @@ def is_nonzero_slot(value):
     except (TypeError, ValueError):
         return False
 
+def format_send_summary(output, config, call=None):
+    output=str(output or "")
+
+    def field(name):
+        import re
+        match=re.search(rf"(?m)^{name}\s+(.*)$", output)
+        return match.group(1).strip() if match else None
+
+    def display_address(value):
+        if not value or not is_address(value):
+            return value
+
+        lowered=value.lower()
+
+        # User-defined wallet names take priority.
+        for name, entry in config.get("wallets",{}).items():
+            if isinstance(entry,dict) and str(entry.get("address","")).lower()==lowered:
+                return f"{name} ({value})"
+
+        # Then user-defined labels.
+        for address, label in config.get("labels",{}).items():
+            if str(address).lower()==lowered:
+                return f"{label} ({value})"
+
+        # Finally named targets/aliases such as "escrow".
+        for name, address in target_aliases(config).items():
+            if str(address).lower()==lowered:
+                return f"{name} ({value})"
+
+        return value
+
+    tx_hash=field("transactionHash")
+    block=field("blockNumber")
+    gas=field("gasUsed")
+    sender=display_address(field("from"))
+    target=display_address(field("to"))
+    status=field("status")
+
+    status_text="SUCCESS" if status and status.startswith("1") else "REVERTED"
+
+    lines=[
+        "TRANSACTION",
+        "===========",
+    ]
+
+    if call:
+        lines.append(f"Call:      {call}")
+    if sender:
+        lines.append(f"From:      {sender}")
+    if target:
+        lines.append(f"To:        {target}")
+    lines.append(f"Status:    {status_text}")
+    if block:
+        lines.append(f"Block:     {block}")
+    if gas:
+        lines.append(f"Gas used:  {gas}")
+    if tx_hash:
+        lines.append(f"Tx hash:   {tx_hash}")
+
+    return "\n".join(lines)
+
 def run_cast(args,config,capture=False):
     if not args:
         result=CommandResult("",2)
@@ -443,6 +1275,28 @@ def run_cast(args,config,capture=False):
         return result if capture else result.code
     action=args[0]; shortcut_map={"c":"call","s":"send","st":"storage"}; cast_cmd=shortcut_map.get(action,action)
     remaining=list(args[1:]); target=config.get("target")
+
+    # --as/--actor belongs to Lowkey, not Cast. Consume it here so it
+    # selects the signer for this invocation without changing config["actor"].
+    actor_override=None
+    cleaned=[]
+    index=0
+    while index < len(remaining):
+        token=remaining[index]
+        if token in {"--as","--actor"}:
+            if index+1 >= len(remaining):
+                result=CommandResult(f"Error: {token} needs an actor name",2)
+                record_status(result.code)
+                if capture: return result
+                print(str(result),file=sys.stderr)
+                return result.code
+            actor_override=remaining[index+1]
+            index += 2
+            continue
+        cleaned.append(token)
+        index += 1
+    remaining=cleaned
+
     if cast_cmd in {"call","send","storage"}:
         if remaining and is_address(remaining[0]): target=remaining.pop(0)
         if not target:
@@ -460,19 +1314,43 @@ def run_cast(args,config,capture=False):
                 record_status(result.code)
                 print(str(result),file=sys.stderr)
                 return result if capture else result.code
+        try:
+            abi=load_abi(target,config)
+            matches=matching_functions(abi,remaining[0]) if abi else []
+            if len(matches)==1:
+                remaining[1:]=prepare_argument_values(config,matches[0],remaining[1:])
+        except ValueError as error:
+            result=CommandResult(f"Error: {error}",2)
+            record_status(result.code)
+            print(str(result),file=sys.stderr)
+            return result if capture else result.code
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
     bypass="--yes" in remaining
     for flag in ["--preview","--dry-run","--confirm","--yes"]:
         while flag in remaining: remaining.remove(flag)
     cmd.extend(remaining)
-    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price"}
-    if cast_cmd in rpc_commands and config.get("rpc") and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",config["rpc"]])
-    actor=config.get("actor")
-    actor_key=resolve_wallet_key(config)
-    if cast_cmd=="send" and actor and actor in config.get("wallets",{}) and not actor_key:
+    rpc_commands={"balance","call","send","storage","chain-id","block-number","code","codesize","codehash","nonce","logs","receipt","run","tx","estimate","implementation","admin","proof","lookup-address","resolve-name","erc20-token","block","gas-price","rpc","access-list"}
+    active_rpc=effective_rpc(config)
+    if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
+    actor=actor_override or config.get("actor")
+    actor_entry=config.get("wallets",{}).get(actor) if actor else None
+    actor_key=resolve_wallet_key(config,actor) if cast_cmd=="send" else None
+    if cast_cmd=="send" and isinstance(actor_entry,dict) and actor_entry.get("source")=="anvil-impersonated":
+        address=actor_entry.get("address")
+        if not is_address(address):
+            return fail("Error: impersonated actor has no valid address.")
+        if "--from" not in cmd and not any(arg.startswith("--from=") for arg in cmd):
+            cmd.extend(["--from",address])
+        if "--unlocked" not in cmd:
+            cmd.append("--unlocked")
+    elif cast_cmd=="send" and actor and actor in config.get("wallets",{}) and not actor_key:
+        entry=config.get("wallets",{}).get(actor)
+        if isinstance(entry,dict) and entry.get("source")=="anvil-default":
+            return fail("Error: current Anvil actor cannot be used on this RPC. Make sure the selected actor belongs to the detected Anvil node.")
         return fail(f"Error: signer profile '{actor}' has no usable private key. Check its environment variable.")
-    if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd): cmd.extend(["--private-key",actor_key])
+    if cast_cmd=="send" and actor_key and "--private-key" not in " ".join(cmd):
+        cmd.extend(["--private-key",actor_key])
     safe_cmd=redact_secrets(shlex.join(cmd))
     if not capture: print(f"DEBUG: Executing -> {safe_cmd}")
     if cast_cmd=="send" and preview:
@@ -486,11 +1364,28 @@ def run_cast(args,config,capture=False):
         code,out,err=cast_output(cmd); final=out or err; log_session(safe_cmd,final)
         if cast_cmd=="send" and out:
             match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
-            if match: config["last_tx"]=match.group(1); config["last_tx_block"]=None; save_config(config)
+            if match:
+                tx_hash=match.group(1)
+                config["last_tx"]=tx_hash; config["last_tx_block"]=None; save_config(config)
+                call=remaining[0] if remaining and "(" in remaining[0] else None
+                root=audit_context.foundry_project_root()
+                audit_context.set_latest(root,tx_hash=tx_hash,function=call)
+                audit_context.emit(
+                    "transaction",
+                    root,
+                    tool="cast",
+                    summary=call or "transaction sent",
+                    data={"tx_hash":tx_hash,"function":call},
+                )
         result=CommandResult(final,code)
         record_status(code)
         if capture: return result
-        if out: print(humanize_value(apply_labels(out,config)))
+        if out:
+            if cast_cmd=="send":
+                call=remaining[0] if remaining and "(" in remaining[0] else None
+                print(format_send_summary(out,config,call))
+            else:
+                print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
         if err:
             if code!=0 and "execution reverted" in err.lower(): err="REVERT: "+err
             print(apply_labels(err,config),file=sys.stderr)
@@ -511,7 +1406,7 @@ def run_cast(args,config,capture=False):
 def run_recon(config):
     target=config.get("target")
     if not target:
-        print("Error: Set target first."); return
+        return fail("Error: Set target first.")
     print(f"CONTRACT RECON: {target}\n" + "="*52)
     balance=run_cast(["balance",target],config,capture=True)
     code=run_cast(["code",target],config,capture=True) or ""
@@ -548,7 +1443,7 @@ def inspect_proxy(config, quiet=False):
 def run_proxy(config):
     target=config.get("target")
     if not target:
-        print("Error: Set target first."); return
+        return fail("Error: Set target first.")
     detected=inspect_proxy(config)
     if not detected: return
     implementation=run_cast(["implementation",target],config,capture=True)
@@ -565,13 +1460,16 @@ def run_mapping(config,*args):
     if key_type=="address" and not is_address(key):
         return fail(f"Error: invalid address mapping key: {key}")
     computed=run_cast(["index",key_type,key,slot],config,capture=True)
-    if not computed: return fail("Error: could not compute mapping slot.")
-    print(f"Mapping slot: {computed}"); run_cast(["st",computed],config)
-def snapshot_path(config):
-    target=config.get("target") or "no-target"; chain=run_cast(["chain-id"],config,capture=True) or "unknown-chain"
-    safe_target=re.sub(r"[^0-9a-fA-Fx_-]","_",target); directory=os.path.join(SNAPSHOT_DIR,str(chain)); os.makedirs(directory,exist_ok=True)
-    return os.path.join(directory,f"{safe_target}.json")
-
+    result_code=getattr(computed,"code",0 if computed else 1)
+    if result_code != 0:
+        return fail("Error: could not compute mapping slot.")
+    computed=str(computed).strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",computed):
+        return fail("Error: could not compute mapping slot.")
+    if run_mapping_human_view(config,slot,key_type,key,computed):
+        return 0
+    print(f"Mapping slot: {computed}")
+    return run_cast(["st",computed],config)
 def snapshot_path(config,chain=None):
     target=config.get("target") or "no-target"
     chain=chain or run_cast(["chain-id"],config,capture=True) or "unknown-chain"
@@ -581,7 +1479,7 @@ def snapshot_path(config,chain=None):
 
 def run_snapshot(config,slots=None):
     if not config.get("target"):
-        print("Error: Set target first."); return
+        return fail("Error: Set target first.")
     values=list(slots or [])
     block=None
     if "--block" in values:
@@ -604,7 +1502,7 @@ def run_diff(config):
     path=snapshot_path(config)
     if not os.path.exists(path): print("No snapshot for the current target/chain."); return
     try: old=json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError,json.JSONDecodeError): print("Error: invalid snapshot."); return
+    except (OSError,json.JSONDecodeError): return fail("Error: invalid snapshot.")
     old_slots=old.get("slots",old); print(f"Snapshot block: {old.get('block','unknown')}")
     changed=0
     for slot,old_val in old_slots.items():
@@ -621,6 +1519,54 @@ def run_finding(config, note):
     if os.path.isdir(WORKSPACE_DIR):
         with open(workspace_finding, "a") as f:
             f.write(line)
+
+    # Keep manually recorded findings in the same shared ledger as analyzer signals.
+    impact = "Unknown"
+    title = str(note)
+    description = str(note)
+    match = re.match(r"^\[([A-Za-z]+)\]\s*(.*)$", str(note))
+    if match:
+        level = match.group(1).lower()
+        impact = {
+            "high": "High",
+            "medium": "Medium",
+            "low": "Low",
+            "info": "Informational",
+            "informational": "Informational",
+        }.get(level, "Unknown")
+        remainder = match.group(2).strip()
+        if ":" in remainder:
+            title, description = remainder.split(":", 1)
+            title = title.strip()
+            description = description.strip()
+        else:
+            title = remainder
+
+    root = audit_context.foundry_project_root()
+    focus = audit_context.load(root).get("focus")
+    signal = {
+        "tool": "manual",
+        "check": "manual",
+        "title": title or "Manual finding",
+        "impact": impact,
+        "confidence": "Manual",
+        "file": focus.get("file") if isinstance(focus, dict) else "",
+        "line": focus.get("line") if isinstance(focus, dict) else None,
+        "column": focus.get("column") if isinstance(focus, dict) else None,
+        "function": focus.get("function") if isinstance(focus, dict) else None,
+        "description": description,
+        "next": "Validate the security property with source review and a reproducible Foundry test.",
+        "status": "open",
+    }
+    audit_context.add_signal(signal, root)
+    audit_context.emit(
+        "manual-finding",
+        root,
+        tool="manual",
+        summary=title or "Manual finding",
+        data=signal,
+    )
+
     print("Finding recorded.")
 
 def workspace_paths():
@@ -673,10 +1619,10 @@ def run_matrix(config,args):
             if not os.path.exists(path): write_json_file(path,default)
         print("Attacker-state matrix initialized."); return
     if not os.path.exists(paths["matrix_scenarios"]):
-        print("Error: Run lk matrix init first."); return
+        return fail("Error: Run lk matrix init first.")
     if action=="actor" and len(args)==3:
         if not is_address(args[2]):
-            print("Error: actor address must be a 20-byte hex address."); return
+            return fail("Error: actor address must be a 20-byte hex address.")
         actors=read_json_file(paths["matrix_actors"],{})
         actors[args[1]]={"address":args[2],"label":args[1]}
         write_json_file(paths["matrix_actors"],actors)
@@ -684,7 +1630,7 @@ def run_matrix(config,args):
     if action=="add" and len(args)>=5:
         name=args[1]
         if name in {item.get("name") for item in read_json_file(paths["matrix_scenarios"],[])}:
-            print(f"Error: Scenario already exists: {name}"); return
+            return fail(f"Error: Scenario already exists: {name}")
         scenario={
             "name":name,"target":config.get("target"),"function":args[2],"actor":args[3],
             "expected":" ".join(args[4:]),
@@ -705,32 +1651,69 @@ def run_matrix(config,args):
     if action=="test" and len(args)==2:
         scenario=next((item for item in scenarios if item.get("name")==args[1]),None)
         if not scenario:
-            print(f"Error: Scenario not found: {args[1]}"); return
+            return fail(f"Error: Scenario not found: {args[1]}")
         identifier=solidity_identifier(scenario["name"])
         actor=read_json_file(paths["matrix_actors"],{}).get(scenario["actor"],{}).get("address")
-        actor_line=f"    address actor = {actor};\n" if actor else ""
-        prank_line="        vm.prank(actor);\n" if actor else ""
-        target=scenario["target"] if is_address(scenario.get("target")) else "address(0)"
-        template=f'''pragma solidity ^0.8.20;
-import "forge-std/Test.sol";
+        target=scenario["target"] if is_address(scenario.get("target")) else "0x" + "0"*40
+        if not actor:
+            return fail(f"Error: Matrix actor '{scenario['actor']}' has no address.")
+        target_literal=solidity_address_literal(target)
+        actor_literal=solidity_address_literal(actor)
+        config_target=config.get("target")
+        abi=load_abi(config_target or target,config) if config_target else []
+        matches=matching_functions(abi,scenario["function"])
+        if len(matches)>1:
+            return fail(f"Error: Matrix function '{scenario['function']}' is overloaded; use the exact signature.")
+        signature=format_signature(matches[0]) if matches else scenario["function"]
+        default_args=[]
+        if matches:
+            for param in matches[0].get("inputs",[]):
+                ptype=canonical_type(param)
+                if ptype.startswith("address"):
+                    default_args.append("address(0)")
+                elif ptype.startswith("bool"):
+                    default_args.append("false")
+                elif ptype.startswith("bytes") and ptype not in {"bytes"}:
+                    default_args.append("bytes32(0)" if ptype=="bytes32" else "hex\"\"")
+                elif ptype=="bytes":
+                    default_args.append("hex\"\"")
+                elif ptype.startswith("string"):
+                    default_args.append("\"\"")
+                elif ptype.startswith("tuple") or ptype.startswith("("):
+                    default_args.append("hex\"\"")
+                else:
+                    default_args.append("0")
+        calldata="0x"
+        if config_target and matches:
+            code,encoded,error=cast_output(["cast","calldata",signature,*[x.replace("address(0)","0x0000000000000000000000000000000000000000") if x.startswith("address(0)") else x for x in default_args]])
+            if code==0 and encoded:
+                calldata=encoded
+        expected=str(scenario.get("expected","")).lower()
+        expects_revert=any(word in expected for word in ("revert","fail","reject","unauthor"))
+        assertion = "assertFalse(success);" if expects_revert else "assertTrue(success);"
+        template=f'''// Generated by LowkeyCast matrix.
+pragma solidity ^0.8.20;
+import {{Test}} from "forge-std/Test.sol";
+import {{console2}} from "forge-std/console2.sol";
 
 contract Matrix_{identifier} is Test {{
-    address target = {target};
-{actor_line}
+    address constant TARGET = {target_literal};
+    address constant ACTOR = {actor_literal};
+
     function test_{identifier}() public {{
-        // Arrange: establish the precondition described in the scenario.
-{prank_line}        // Act: call {scenario["function"]}
-        // TODO: encode arguments and invoke the target.
-        // Assert: expected outcome: {scenario["expected"]}
+        vm.prank(ACTOR);
+        (bool success, bytes memory data) = TARGET.call(hex"{calldata.removeprefix('0x')}");
+        console2.log("Scenario", "{scenario["name"]}");
+        console2.log("Function", "{signature}");
+        console2.log("Success", success);
+        if (!success) console2.logBytes(data);
+        {assertion}
     }}
 }}
 '''
-        os.makedirs("test",exist_ok=True)
-        base=os.path.join("test",f"Matrix_{identifier}.t.sol")
-        filename=base if not os.path.exists(base) else os.path.join("test",f"Matrix_{identifier}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
-        Path(filename).write_text(template,encoding="utf-8")
-        print(f"Matrix test skeleton generated: {filename}"); return
-    print("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
+        path=write_generated_test("matrix_"+identifier,template)
+        return run_foundry(["test","--match-path",Path(path).as_posix(),"-vvvv"])
+    return fail("Usage: lk matrix init | actor <name> <address> | state <name> <desc> | add <name> <function> <actor> <expected> | list | test <name>")
 
 def run_note(note):
     if not note:
@@ -771,7 +1754,7 @@ def run_session_lifecycle(config, action):
 
 def run_export(config):
     paths=workspace_paths(); export_dir=os.path.join(os.getcwd(),"audit-report"); os.makedirs(export_dir,exist_ok=True)
-    lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(config.get('rpc')) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Not loaded'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Findings",""]
+    lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(effective_rpc(config)) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Auto-discovered when needed'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Findings",""]
     finding_path=paths["findings"] if os.path.exists(paths["findings"]) else os.path.join(AUDIT_DIR,"findings.md")
     lines.append(Path(finding_path).read_text(encoding="utf-8") if os.path.exists(finding_path) else "No findings recorded.")
     lines += ["","## Checklist",""]
@@ -780,13 +1763,13 @@ def run_export(config):
     Path(os.path.join(export_dir,"report.md")).write_text("\n".join(lines),encoding="utf-8")
     for name,source in [("notes.md",paths["notes"]),("TODO.md",paths["todos"]),("session.log",paths["session"]),("matrix_actors.json",paths["matrix_actors"]),("matrix_states.json",paths["matrix_states"]),("matrix_scenarios.json",paths["matrix_scenarios"])]:
         if os.path.exists(source): Path(os.path.join(export_dir,name)).write_text(Path(source).read_text(encoding="utf-8"),encoding="utf-8")
-    Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(config.get("rpc")),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
+    Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(effective_rpc(config)),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
     print(f"Audit report exported: {export_dir}")
 def run_self_test():
     checks=[
         ("address validation",is_address("0x"+"1"*40) and not is_address("0x"+"1"*64) and not is_address(None)),
         ("slot validation",is_nonzero_slot("0x"+"1"+"0"*63) and not is_nonzero_slot("not-hex")),
-        ("ETH formatting","1.0000 ETH" in humanize_value("1000000000000000000")),
+        ("ETH formatting","1.0000 ETH" in humanize_value("1000000000000000000", assume_wei=True)),
         ("secret redaction","<redacted>" in redact_secrets("--private-key 0x"+"1"*64)),
         ("jwt redaction","<redacted>" in redact_secrets("--jwt-secret supersecret")),
         ("rpc redaction","sensitive-token" not in redact_secrets("--rpc-url https://example.com/sensitive-token")),
@@ -795,6 +1778,8 @@ def run_self_test():
         ("output signature",format_output_signature({"name":"f","inputs":[{"type":"address"}],"outputs":[{"type":"uint256"}]})=="f(address)(uint256)"),
         ("target alias resolution",resolve_target_ref({"aliases":{"one":"0x"+"1"*40},"targets":{}},"one")=="0x"+"1"*40),
         ("safe solidity identifier",solidity_identifier("unauthorized release #1")=="unauthorized_release__1"),
+        ("solidity address literal","address(uint160(0x00" in solidity_address_literal("0x"+"1"*40)),
+        ("lab options",split_lab_options(["release","1","--actor","Alice","--value","1ether"])[1:] == ("Alice","1ether",False)),
     ]
     failed=[name for name,passed in checks if not passed]
     for name,passed in checks: print(f"{'PASS' if passed else 'FAIL'}  {name}")
@@ -806,7 +1791,7 @@ def run_doctor():
     failures=0
     print("Lowkey doctor")
     print("============")
-    for name in ("python3", "cast", "forge", "anvil"):
+    for name in ("python3", "cast", "forge", "anvil", "chisel"):
         path=shutil.which(name)
         if not path:
             print(f"FAIL  {name}: not found")
@@ -824,6 +1809,20 @@ def run_doctor():
         else:
             print(f"FAIL  {name}: {path} ({version})")
             failures+=1
+    slither=shutil.which("slither")
+    if slither:
+        try:
+            result=subprocess.run([slither,"--version"],capture_output=True,text=True)
+            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
+            if result.returncode==0:
+                print(f"PASS  slither: {slither} ({version})")
+            else:
+                print(f"WARN  slither: {slither} ({version})")
+        except OSError as error:
+            print(f"WARN  slither: {error}")
+    else:
+        print("NOTE  slither: not found (optional static analyzer)")
+
     forge=shutil.which("forge")
     if forge:
         try:
@@ -839,10 +1838,28 @@ def run_doctor():
         except OSError as error:
             print(f"FAIL  forge command check: {error}")
             failures+=1
+    if forge:
+        try:
+            help_result=subprocess.run([forge,"test","--help"],capture_output=True,text=True)
+            help_text=(help_result.stdout or "")+(help_result.stderr or "")
+            for label,flag in (("forge mutation","--mutate"),("forge symbolic","--symbolic"),("forge brutalize","--brutalize"),("forge rerun","--rerun")):
+                if flag in help_text:
+                    print(f"PASS  {label}: {flag}")
+                else:
+                    print(f"FAIL  {label}: {flag} not advertised by this Forge")
+                    failures+=1
+        except OSError as error:
+            print(f"FAIL  forge test feature check: {error}")
+            failures+=1
+
     for command,args in (("cast decode-event",["cast","decode-event","--help"]),
                          ("cast receipt",["cast","receipt","--help"]),
                          ("cast sig-event",["cast","sig-event","--help"]),
-                         ("forge inspect",["forge","inspect","--help"])):
+                         ("forge inspect",["forge","inspect","--help"]),
+                         ("cast pretty-calldata",["cast","pretty-calldata","--help"]),
+                         ("cast tx-pool",["cast","tx-pool","--help"]),
+                         ("cast disassemble",["cast","disassemble","--help"]),
+                         ("chisel",["chisel","--help"])):
         if not shutil.which(args[0]):
             print(f"FAIL  dependency command: {command} (binary not found)")
             failures+=1
@@ -859,15 +1876,16 @@ def run_doctor():
     return 1 if failures else 0
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
-        print("Error: No session history found."); return
+        return fail("Error: No session history found.")
     lines=Path(SESSION_FILE).read_text(encoding="utf-8").splitlines()
     last_send=next((line.split("CMD: ",1)[1].strip() for line in reversed(lines) if "CMD: cast send " in line),None)
     if not last_send:
-        print("Error: No send transaction found in session."); return
+        return fail("Error: No send transaction found in session.")
     try:
         parts=shlex.split(last_send)
         send_index=parts.index("send")
         target=parts[send_index+1]; func=parts[send_index+2]
+        target_literal=solidity_address_literal(target) if is_address(target) else target
         positional=[]; value="0"; index=send_index+3
         while index<len(parts):
             if parts[index]=="--value" and index+1<len(parts):
@@ -877,10 +1895,10 @@ def run_test_gen(config):
             positional.append(parts[index]); index+=1
         code,encoded,error=cast_output(["cast","calldata",func,*positional])
         if code!=0 and not encoded:
-            print(f"Error generating calldata: {error}"); return
+            return fail(f"Error generating calldata: {error}")
         calldata=encoded.removeprefix("0x")
     except (ValueError,IndexError) as error:
-        print(f"Error generating test: {error}"); return
+        return fail(f"Error generating test: {error}")
     value_expression=value
     for unit in ["ether","gwei","wei"]:
         if unit in value_expression and " " not in value_expression:
@@ -889,7 +1907,7 @@ def run_test_gen(config):
 import "forge-std/Test.sol";
 
 contract Exploit_Reproduction is Test {{
-    address constant TARGET = {target};
+    address constant TARGET = {target_literal};
 
     function test_reproduce() public {{
         uint256 value = {value_expression};
@@ -903,6 +1921,8 @@ contract Exploit_Reproduction is Test {{
     filename=os.path.join("test",f"Exploit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
     Path(filename).write_text(test,encoding="utf-8")
     print(f"Exploit reproduction generated: {filename}")
+    root=audit_context.foundry_project_root()
+    audit_context.record_tool("generator",root,status="completed",summary="exploit reproduction generated",data={"mode":"test-gen","output":filename,"function":func,"target":target})
 def run_checklist(config,action=None,item=None):
     path=os.path.join(AUDIT_DIR,"CHECKLIST.md"); os.makedirs(AUDIT_DIR,exist_ok=True)
     if not os.path.exists(path): Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8")
@@ -948,14 +1968,1162 @@ def run_deployments(config):
         seen.add(key); print(f"{r['contract']:<24} {r['address']}  {r['file']}")
 
 def run_auto_target(config,name=None):
-    records=discover_deployments(".")
-    if not records: print("No deployment found in broadcast/."); return
-    record=records[0]; alias=name or record["contract"]
-    config["aliases"][alias]=record["address"]; config["targets"][alias]=record["address"]; config["target"]=record["address"]
-    for path in artifact_json_files("."):
-        if os.path.join(".","out") in path and os.path.basename(path)==f"{record['contract']}.json":
-            config["abi_paths"][record["address"]]=path; print(f"ABI auto-loaded: {path}"); break
-    save_config(config); print(f"Target selected: {alias} -> {record['address']}")
+    root=audit_context.foundry_project_root()
+    records=discover_deployments(root)
+    if not records:
+        existing=project_context_target(root)
+        if existing:
+            print(f"Target already remembered for this project: {existing.get('contract') or 'unknown'} -> {existing.get('address')}")
+            return 0
+        return fail("No deployment found in broadcast/. Build artifacts exist, but a live target still needs deployment.")
+
+    record=None
+    if name:
+        requested=str(name).strip().lower()
+        record=next(
+            (item for item in records if str(item.get("contract","")).strip().lower()==requested),
+            None,
+        )
+        if record is None:
+            available=", ".join(dict.fromkeys(str(item.get("contract","Unknown")) for item in records))
+            return fail(
+                f"Error: no broadcast deployment found for '{name}'."
+                + (f" Available: {available}" if available else "")
+            )
+    else:
+        record=records[0]
+
+    alias=name or record["contract"]
+    config["aliases"][alias]=record["address"]
+    config["targets"][alias]=record["address"]
+    config["target"]=record["address"]
+
+    artifact_path=None
+    for path in local_artifact_paths(root):
+        artifact=read_artifact(path) or {}
+        contract_name=artifact_contract_name(path,artifact)
+        if contract_name.lower()==str(record["contract"]).lower():
+            artifact_path=path
+            config["abi_paths"][record["address"]]=path
+            print(f"ABI auto-loaded: {path}")
+            break
+
+    config["target_contract"]=record["contract"]
+    save_config(config)
+    audit_context.set_target(
+        root,
+        address=record["address"],
+        contract=record["contract"],
+        artifact=artifact_path,
+        source="auto",
+    )
+    print(f"Target selected: {alias} -> {record['address']}")
+    return 0
+
+
+def _confidence_pool_lab_supported(root):
+    """Return True when this project has the concrete fixture pieces for a safe local system lab."""
+    root = audit_context.foundry_project_root(root) or root
+    required = [
+        Path(root) / "src/ConfidencePool.sol",
+        Path(root) / "src/ConfidencePoolFactory.sol",
+        Path(root) / "src/mocks/MockConfidencePoolModerator.sol",
+        Path(root) / "test/mocks/MockERC20.sol",
+        Path(root) / "test/mocks/MockAttackRegistry.sol",
+        Path(root) / "test/mocks/MockSafeHarborRegistry.sol",
+        Path(root) / "test/mocks/MockAgreement.sol",
+    ]
+    return all(path.is_file() for path in required)
+
+
+def ensure_confidence_pool_lab_script(root):
+    """Generate a disposable, project-native ConfidencePool system harness once."""
+    root = audit_context.foundry_project_root(root) or root
+    if not _confidence_pool_lab_supported(root):
+        return None
+
+    path = Path(root) / "script" / "LowkeyAutoConfidencePoolLab.s.sol"
+    marker = "LOWKEY_AUTO_LAB_VERSION = 2"
+    if path.is_file():
+        try:
+            existing = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing = ""
+        if marker in existing:
+            return str(path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    source = r'''// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
+
+// LOWKEY_AUTO_LAB_VERSION = 2
+
+import {Script} from "forge-std/Script.sol";
+import {console2} from "forge-std/console2.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+import {ConfidencePool} from "src/ConfidencePool.sol";
+import {ConfidencePoolFactory} from "src/ConfidencePoolFactory.sol";
+import {MockConfidencePoolModerator} from "src/mocks/MockConfidencePoolModerator.sol";
+
+import {MockERC20} from "test/mocks/MockERC20.sol";
+import {MockAttackRegistry} from "test/mocks/MockAttackRegistry.sol";
+import {MockSafeHarborRegistry} from "test/mocks/MockSafeHarborRegistry.sol";
+import {MockAgreement} from "test/mocks/MockAgreement.sol";
+import {IAttackRegistry} from "@battlechain/interface/IAttackRegistry.sol";
+
+/// @notice Disposable local system environment for Lowkey protocol walkthroughs.
+/// @dev Never use this harness for a real deployment.
+contract LowkeyAutoConfidencePoolLab is Script {
+    function run() external {
+        uint256 aliceKey = vm.envUint("LOWKEY_LAB_KEY");
+        uint256 bobKey = vm.envUint("LOWKEY_BOB_KEY");
+        address alice = vm.addr(aliceKey);
+        address bob = vm.addr(bobKey);
+
+        vm.startBroadcast(aliceKey);
+
+        MockERC20 token = new MockERC20();
+        MockAttackRegistry attackRegistry = new MockAttackRegistry();
+        MockSafeHarborRegistry registry = new MockSafeHarborRegistry();
+
+        MockAgreement agreement = new MockAgreement(alice);
+        agreement.setContractInScope(alice, true);
+        agreement.setContractInScope(bob, true);
+
+        registry.setAttackRegistry(address(attackRegistry));
+        registry.setAgreementValid(address(agreement), true);
+        attackRegistry.setAgreementState(IAttackRegistry.ContractState.NEW_DEPLOYMENT);
+
+        MockConfidencePoolModerator moderator = new MockConfidencePoolModerator();
+
+        ConfidencePool poolImplementation = new ConfidencePool();
+        ConfidencePoolFactory factoryImplementation = new ConfidencePoolFactory();
+
+        bytes memory initData = abi.encodeCall(
+            ConfidencePoolFactory.initialize,
+            (address(registry), address(poolImplementation), address(moderator))
+        );
+        ConfidencePoolFactory factory = ConfidencePoolFactory(
+            address(new ERC1967Proxy(address(factoryImplementation), initData))
+        );
+
+        factory.setStakeTokenAllowed(address(token), true);
+
+        token.mint(alice, 100 ether);
+        token.mint(bob, 100 ether);
+
+        // Intentionally stop before createPool(). The walkthrough must observe the
+        // factory -> clone -> initialized-pool transition as a real user interaction,
+        // rather than hiding it inside environment bootstrap.
+        vm.stopBroadcast();
+
+        console2.log("LOWKEY_TARGET", address(factory));
+        console2.log("LOWKEY_FACTORY", address(factory));
+        console2.log("LOWKEY_POOL_IMPLEMENTATION", address(poolImplementation));
+        console2.log("LOWKEY_STAKE_TOKEN", address(token));
+        console2.log("LOWKEY_ATTACK_REGISTRY", address(attackRegistry));
+        console2.log("LOWKEY_SAFE_HARBOR_REGISTRY", address(registry));
+        console2.log("LOWKEY_AGREEMENT", address(agreement));
+        console2.log("LOWKEY_MODERATOR", address(moderator));
+        console2.log("LOWKEY_ALICE", alice);
+        console2.log("LOWKEY_BOB", bob);
+    }
+}
+'''
+    path.write_text(source, encoding="utf-8")
+    return str(path)
+
+
+def parse_lab_system(output):
+    """Parse Lowkey system markers emitted by a project lab adapter."""
+    labels = {
+        "factory": "LOWKEY_FACTORY",
+        "pool_implementation": "LOWKEY_POOL_IMPLEMENTATION",
+        "stake_token": "LOWKEY_STAKE_TOKEN",
+        "attack_registry": "LOWKEY_ATTACK_REGISTRY",
+        "safe_harbor_registry": "LOWKEY_SAFE_HARBOR_REGISTRY",
+        "agreement": "LOWKEY_AGREEMENT",
+        "moderator": "LOWKEY_MODERATOR",
+        "alice": "LOWKEY_ALICE",
+        "bob": "LOWKEY_BOB",
+    }
+    system = {}
+    text = str(output or "")
+    # Preserve the known protocol vocabulary for richer built-in recipes.
+    for key, marker in labels.items():
+        match = re.search(
+            rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
+            text,
+        )
+        if match:
+            system[key] = match.group(1)
+
+    # Also accept arbitrary LOWKEY_<NAME> address markers from project adapters.
+    # This keeps the system model extensible beyond ConfidencePool.
+    for match in re.finditer(
+        r"(?m)^\s*LOWKEY_([A-Z][A-Z0-9_]*)\s*:?\s*(0x[0-9a-fA-F]{40})\s*$",
+        text,
+    ):
+        key = re.sub(r"[^a-z0-9]+", "_", match.group(1).lower()).strip("_")
+        system.setdefault(key, match.group(2))
+    return system
+
+
+LOCAL_LAB_SCRIPTS = (
+    "script/LocalAudit.s.sol",
+    "script/LocalDeploy.s.sol",
+    "script/DeployLocal.s.sol",
+)
+
+def discover_local_lab_script(root="."):
+    root = audit_context.foundry_project_root(root) or root
+    for relative in LOCAL_LAB_SCRIPTS:
+        path = os.path.join(root, relative)
+        if os.path.isfile(path):
+            return path
+
+    generated = ensure_confidence_pool_lab_script(root)
+    if generated:
+        return generated
+    return None
+
+def parse_lab_marker(output, marker="LOWKEY_TARGET"):
+    match = re.search(
+        rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
+        str(output or ""),
+    )
+    return match.group(1) if match else None
+
+def parse_deployed_address(output):
+    text = str(output or "")
+    patterns = [
+        r"(?i)\bDeployed to:\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bContract Address:\s*(0x[0-9a-fA-F]{40})",
+        r'(?i)"deployedTo"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+        r'(?i)"deployed_to"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+        r'(?i)"contractAddress"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    # Last-resort fallback for Forge output that labels an address on the same
+    # line with additional status text. Keep the label requirement to avoid
+    # accidentally selecting an unrelated address from compiler output.
+    return None
+
+def _configured_src_prefix(root):
+    root_path = Path(root).expanduser().resolve()
+    src_prefix = "src"
+    try:
+        foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'(?m)^\\s*src\\s*=\\s*"([^"]+)"', foundry)
+        if match:
+            src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
+    except OSError:
+        pass
+    return src_prefix
+
+
+def artifact_source_name(artifact, path, root=None):
+    if isinstance(artifact, dict) and artifact.get("sourceName"):
+        return str(artifact.get("sourceName")).replace("\\", "/").lstrip("./")
+
+    metadata = artifact.get("metadata") if isinstance(artifact, dict) else None
+    if isinstance(metadata, str):
+        try:
+            payload = json.loads(metadata)
+            sources = payload.get("sources", {})
+            if isinstance(sources, dict):
+                contract_dir = Path(path).parent.name
+                contract_name = artifact_contract_name(path, artifact)
+                preferred = [
+                    name for name in sources
+                    if Path(name).name == contract_dir
+                    or Path(name).stem == contract_dir
+                    or Path(name).stem == contract_name
+                ]
+                if root is not None:
+                    src_prefix = _configured_src_prefix(root)
+                    root_path = Path(root).expanduser().resolve()
+                    for name in preferred:
+                        normalized = str(name).replace("\\", "/").lstrip("./")
+                        candidate = root_path / normalized
+                        if (normalized == src_prefix or normalized.startswith(src_prefix + "/")) and candidate.is_file():
+                            return normalized
+                if preferred:
+                    return str(preferred[0]).replace("\\", "/").lstrip("./")
+                if root is None and sources:
+                    return str(next(iter(sources))).replace("\\", "/").lstrip("./")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # When Foundry did not retain sourceName, recover the source only from
+    # the current project source tree. Never invent a source path from the
+    # artifact directory alone.
+    if root is not None:
+        root_path = Path(root).expanduser().resolve()
+        src_prefix = _configured_src_prefix(root_path)
+        src_root = root_path / src_prefix
+        contract_name = artifact_contract_name(path, artifact)
+        contract_dir = Path(path).parent.name
+
+        candidates = []
+        direct = src_root / contract_dir
+        if direct.is_file():
+            candidates.append(direct)
+
+        named = sorted(src_root.rglob(f"{contract_name}.sol")) if src_root.is_dir() else []
+        candidates.extend(p for p in named if p not in candidates)
+
+        for candidate in candidates:
+            try:
+                normalized = candidate.relative_to(root_path).as_posix()
+            except ValueError:
+                continue
+            if normalized == src_prefix or normalized.startswith(src_prefix + "/"):
+                return normalized
+
+    return None
+
+def artifact_constructor_inputs(artifact):
+    abi = artifact.get("abi", []) if isinstance(artifact, dict) else []
+    constructors = [item for item in abi if isinstance(item, dict) and item.get("type") == "constructor"]
+    return constructors[0].get("inputs", []) if constructors else []
+
+def artifact_has_initializer(artifact):
+    abi = artifact.get("abi", []) if isinstance(artifact, dict) else []
+    return any(
+        isinstance(item, dict)
+        and item.get("type") == "function"
+        and str(item.get("name") or "").lower().startswith("initialize")
+        for item in abi
+    )
+
+def artifact_is_deployable(artifact):
+    if not isinstance(artifact, dict):
+        return False
+    bytecode = artifact.get("bytecode", {})
+    if isinstance(bytecode, dict):
+        obj = str(bytecode.get("object") or "")
+    else:
+        obj = str(bytecode or "")
+    return bool(obj and obj not in {"0x", "0X"})
+
+def artifact_is_project_application(root, path, artifact):
+    """Return True only for first-party deployable application contracts."""
+    if not artifact_is_deployable(artifact):
+        return False
+
+    root_path = Path(root).expanduser().resolve()
+    source = artifact_source_name(artifact, path, root)
+    if not source:
+        return False
+
+    normalized = str(source).replace("\\", "/").lstrip("./")
+    src_prefix = "src"
+    try:
+        foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', foundry)
+        if match:
+            src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
+    except OSError:
+        pass
+
+    if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
+        return False
+
+    source_path = root_path / normalized
+    # A deployable artifact must resolve to an actual first-party source file.
+    # This is intentionally strict: a fabricated fallback such as
+    # src/Address.sol must never make a dependency look application-owned.
+    if not source_path.is_file():
+        return False
+
+    try:
+        source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+    contract_name = artifact_contract_name(path, artifact)
+    if re.search(r"\blibrary\s+" + re.escape(contract_name) + r"\b", source_text):
+        return False
+    if re.search(r"\binterface\s+" + re.escape(contract_name) + r"\b", source_text):
+        return False
+    return True
+
+
+def discover_audit_target_contract(root):
+    """Choose a likely protocol-root application contract from audit + source topology."""
+    artifacts = {}
+    scores = {}
+    sources = {}
+
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        source = artifact_source_name(artifact, path)
+        if not source:
+            # Static target discovery may operate on sparse fixtures that omit
+            # sourceName. This fallback is for ranking only; generic deployment
+            # still requires a real source-backed application artifact.
+            source = f"src/{artifact_contract_name(path, artifact)}.sol"
+        normalized = str(source).replace("\\", "/").lstrip("./")
+        src_prefix = "src"
+        try:
+            foundry = (Path(root) / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+            match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', foundry)
+            if match:
+                src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
+        except OSError:
+            pass
+        if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
+            continue
+        name = artifact_contract_name(path, artifact)
+        key = str(name).lower()
+        artifacts[key] = str(name)
+        scores.setdefault(key, 0)
+        source = artifact_source_name(artifact, path)
+        sources[key] = source or str(path)
+
+        lowered = key
+        if lowered.endswith(("factory", "router", "manager", "coordinator", "controller")):
+            # Whole-protocol walkthroughs need a system root rather than the
+            # deepest leaf with the most static-analysis findings.
+            scores[key] += 500
+        if artifact_has_initializer(artifact):
+            scores[key] += 20
+
+    if not artifacts:
+        return None
+
+    # Audit evidence is still the strongest signal for the contract under review.
+    for signal in audit_context.signals(root, "open"):
+        if not isinstance(signal, dict):
+            continue
+        path = str(signal.get("file") or "")
+        parts = Path(path).parts
+        if "src" not in parts or not path.lower().endswith(".sol"):
+            continue
+        name = Path(path).stem
+        lowered = path.lower()
+        if "/interfaces/" in lowered or name.lower().startswith("i"):
+            continue
+        key = str(name).lower()
+        if key not in scores:
+            continue
+        impact = str(signal.get("impact") or "").lower()
+        weight = {"high": 100, "medium": 50, "low": 10, "informational": 2}.get(impact, 5)
+        scores[key] += weight
+
+    # A contract that explicitly references another first-party application contract
+    # is usually a protocol root (factory/router -> pool/token/etc.).
+    contract_names = {name for name in artifacts.values()}
+    for key, source in sources.items():
+        try:
+            source_text = (Path(root) / source).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source_text = ""
+        for other in contract_names:
+            if other.lower() == key:
+                continue
+            if re.search(r"\b" + re.escape(other) + r"\b", source_text):
+                scores[key] += 30
+                break
+
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return artifacts[ranked[0][0]] if ranked else None
+
+def discover_generic_lab_contract(root, query=None):
+    matches = project_artifact_function_matches(root, query) if query else []
+    preferred_contracts = []
+    for contract, _signature, path in matches:
+        if contract not in preferred_contracts:
+            preferred_contracts.append(contract)
+
+    candidates = []
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not artifact_is_project_application(root, path, artifact):
+            continue
+        contract = artifact_contract_name(path, artifact)
+        lowered_path = str(path).lower()
+        lowered_contract = contract.lower()
+        if "/interfaces/" in lowered_path or lowered_contract.startswith("i"):
+            continue
+        score = 50
+        if query and lowered_contract == str(query).strip().lower():
+            score = -50
+        elif contract in preferred_contracts:
+            score = 0 + preferred_contracts.index(contract)
+        elif "/mocks/" in lowered_path or lowered_contract.startswith("mock"):
+            score = 100
+        elif "test" in lowered_path:
+            score = 90
+        constructor_inputs = artifact_constructor_inputs(artifact)
+        source = artifact_source_name(artifact, path)
+        fqn = f"{source}:{contract}" if source else None
+        if not fqn:
+            continue
+        candidates.append((score, contract, path, artifact, constructor_inputs, fqn))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[1].lower(), item[2]))
+    return candidates[0]
+
+def set_lab_target(config, root, target, contract, artifact):
+    config["target"] = target
+    config["target_contract"] = contract
+    if artifact:
+        config.setdefault("abi_paths", {})[target] = artifact
+    config.setdefault("aliases", {})[contract] = target
+    config.setdefault("targets", {})[contract] = target
+    save_config(config)
+    audit_context.set_target(
+        root,
+        address=target,
+        contract=contract,
+        artifact=artifact,
+        source="project-lab",
+    )
+    audit_context.update(root, actor=actor_display(config), rpc=effective_rpc(config))
+
+def repo_clone_url(value):
+    value = str(value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
+        return f"https://github.com/{value}.git"
+    return value
+
+def repo_clone_name(value):
+    value = str(value or "").strip().rstrip("/")
+    tail = value.rsplit("/", 1)[-1]
+    if ":" in tail and not value.startswith(("http://", "https://", "ssh://")):
+        tail = tail.rsplit(":", 1)[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    return tail
+
+def project_anvil_state_path(root):
+    return os.path.join(root, ".audit", "anvil.json")
+
+def write_project_anvil_state(root, state):
+    path = project_anvil_state_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Path(path).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+def read_project_anvil_state(root):
+    path = project_anvil_state_path(root)
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+def stop_project_anvil(root):
+    state = read_project_anvil_state(root)
+    if not isinstance(state, dict) or not state.get("auto_started"):
+        print("Project Anvil: not managed by Lowkey.")
+        return 0
+    pid = state.get("pid")
+    if isinstance(pid, int):
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    try:
+        os.remove(project_anvil_state_path(root))
+    except OSError:
+        pass
+    print(f"Project Anvil stopped: PID {pid or 'unknown'}")
+    return 0
+
+def ensure_project_anvil(config, root):
+    info = anvil_rpc_info(config)
+    if info:
+        return info
+
+    if config.get("rpc"):
+        return None
+
+    existing = read_project_anvil_state(root)
+    if isinstance(existing, dict):
+        pid = existing.get("pid")
+        rpc = existing.get("rpc")
+        if isinstance(pid, int) and isinstance(rpc, str) and local_port_open("127.0.0.1", int(rpc.rsplit(":", 1)[-1])):
+            info = detect_anvil_rpc(rpc)
+            if info:
+                config["_auto_rpc_info"] = info
+                return info
+        try:
+            os.remove(project_anvil_state_path(root))
+        except OSError:
+            pass
+
+    binary = tool_path("anvil")
+    if not binary:
+        return None
+
+    port = None
+    for candidate in range(8545, 8556):
+        if not local_port_open("127.0.0.1", candidate):
+            port = candidate
+            break
+    if port is None:
+        return None
+
+    rpc = f"http://127.0.0.1:{port}"
+    log_path = os.path.join(root, ".audit", "anvil.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    try:
+        log = open(log_path, "a", encoding="utf-8")
+        process = subprocess.Popen(
+            [binary, "--port", str(port), "--silent"],
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+        log.close()
+    except (OSError, ValueError) as error:
+        try:
+            log.close()
+        except Exception:
+            pass
+        print(f"Warning: Lowkey could not start project Anvil: {error}", file=sys.stderr)
+        return None
+
+    for _ in range(40):
+        info = detect_anvil_rpc(rpc)
+        if info:
+            state = {
+                "auto_started": True,
+                "pid": process.pid,
+                "rpc": rpc,
+                "started": datetime.now().isoformat(timespec="seconds"),
+            }
+            write_project_anvil_state(root, state)
+            config["_auto_rpc_info"] = info
+            return info
+        if process.poll() is not None:
+            return None
+        import time
+        time.sleep(0.1)
+
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    return None
+
+def run_clone(config, args):
+    """Clone with the cache-aware engine, then perform full Lowkey onboarding."""
+    try:
+        from clone_tools import (
+            parse_clone_args,
+            resolve_destination,
+            run_clone as clone_project,
+        )
+    except ImportError as exc:
+        return fail(f"Error: Lowkey clone engine unavailable: {exc}")
+
+    try:
+        repo_url, destination_arg, depth, jobs, use_cache = parse_clone_args(args)
+        destination = resolve_destination(repo_url, destination_arg)
+    except SystemExit:
+        return 0
+    except (ValueError, TypeError) as exc:
+        return fail(str(exc))
+
+    if destination.exists():
+        # clone_tools safely resumes an existing matching repository; let it own
+        # the clone semantics rather than rejecting a recoverable partial checkout.
+        pass
+
+    code = clone_project(args)
+    if code != 0:
+        return code
+    if not (destination / "foundry.toml").is_file():
+        return fail(f"Error: {destination} is not a Foundry project (foundry.toml missing).")
+
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(destination)
+        root = str(destination)
+
+        print("\n[1/3] Building project...")
+        build = run_foundry(["build"], capture=True)
+        if build.code != 0:
+            tail = "\n".join(build.text.splitlines()[-20:]) if build.text else "forge build failed"
+            return fail(f"Error: build failed.\n{tail}", build.code)
+        print("PASS  build")
+
+        print("\n[2/3] Running connected audit...")
+        audit_code = run_audit(config, ["--checks"])
+        if audit_code != 0:
+            print("Warning: connected audit did not finish cleanly.", file=sys.stderr)
+
+        print("\n[3/3] Preparing local audit lab...")
+        info = ensure_project_anvil(config, root)
+        if not info:
+            print("LAB   : deferred (no local Anvil could be started).", file=sys.stderr)
+            lab_code = 1
+        else:
+            lab_code = run_lab(config, [])
+
+        print("\nLOWKEY CLONE ONBOARDING")
+        print("=======================")
+        print(f"Project : {root}")
+        print(f"Mode    : {'shallow' if depth else 'full'} / {jobs} jobs / cache={'on' if use_cache else 'off'}")
+        if lab_code == 0 and audit_code == 0:
+            print("Status  : READY FOR AUDIT")
+            print("Next    : lk findings")
+        elif audit_code == 0:
+            print("Status  : STATIC AUDIT READY; LIVE LAB NEEDS ATTENTION")
+            print("Next    : lk lab")
+        else:
+            print("Status  : ONBOARDING NEEDS ATTENTION")
+            print("Next    : lk audit")
+        return 0 if audit_code == 0 and lab_code == 0 else 1
+    finally:
+        os.chdir(previous_cwd)
+
+
+def _generate_factory_upgradeable_lab(root, target_contract, artifact, accounts):
+    """Generate a local-only proxy fixture for an upgradeable factory + pool mock pattern."""
+    if not artifact_has_initializer(artifact):
+        return None
+
+    contract_lower = str(target_contract).lower()
+    if not contract_lower.endswith("factory"):
+        return None
+
+    source = artifact_source_name(artifact, "")
+    if not source:
+        return None
+
+    abi = artifact.get("abi", [])
+    initialize = next(
+        (
+            item for item in abi
+            if isinstance(item, dict)
+            and item.get("type") == "function"
+            and str(item.get("name") or "").lower() == "initialize"
+        ),
+        None,
+    )
+    if not initialize:
+        return None
+
+    names = [str(item.get("name") or "").lower().replace("_", "") for item in initialize.get("inputs", [])]
+    required = {"safeharborregistry", "poolimplementation", "defaultoutcomemoderator"}
+    if not required.issubset(set(names)):
+        return None
+
+    mock_paths = {}
+    for filename in ("MockERC20.sol", "MockAgreement.sol", "MockSafeHarborRegistry.sol"):
+        matches = list(Path(root).glob(f"test/mocks/{filename}"))
+        if matches:
+            mock_paths[filename] = f"test/mocks/{filename}"
+    if len(mock_paths) != 3:
+        return None
+
+    # Select the first application contract whose name contains "pool" and exposes initialize.
+    pool_artifact = None
+    pool_name = None
+    for path in local_artifact_paths(root):
+        data = read_artifact(path)
+        if not artifact_is_project_application(root, path, data):
+            continue
+        name = artifact_contract_name(path, data)
+        if "pool" in name.lower() and artifact_has_initializer(data):
+            pool_artifact, pool_name = data, name
+            break
+    if not pool_artifact:
+        return None
+
+    source_path = str(source).replace("\\", "/")
+    target_import = f'import {{ {target_contract} }} from "{source_path}";'
+    pool_source = artifact_source_name(pool_artifact, "")
+    if not pool_source:
+        return None
+
+    safe_source = source_path.rsplit("/", 1)[-1]
+    # Keep the generated adapter in Foundry's normal script tree so
+    # forge script resolves it consistently across profiles.
+    contract_file = root / "script"
+    contract_file.mkdir(parents=True, exist_ok=True)
+    script = contract_file / f"LowkeyAutoLab_{re.sub(r'[^A-Za-z0-9_]', '_', target_contract)}.s.sol"
+
+    alice = accounts[0]
+    bob = accounts[1] if len(accounts) > 1 else accounts[0]
+    code = f'''// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {{Script}} from "forge-std/Script.sol";
+import {{console2}} from "forge-std/console2.sol";
+{target_import}
+import {{ {pool_name} }} from "{pool_source}";
+import {{MockERC20}} from "test/mocks/MockERC20.sol";
+import {{MockAgreement}} from "test/mocks/MockAgreement.sol";
+import {{MockSafeHarborRegistry}} from "test/mocks/MockSafeHarborRegistry.sol";
+import {{ERC1967Proxy}} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+
+contract LowkeyAutoLab_{re.sub(r"[^A-Za-z0-9_]", "_", target_contract)} is Script {{
+    function run() external {{
+        address alice = {alice};
+        address bob = {bob};
+        address scopeAccount = address(0xC0FFEE);
+
+        vm.startBroadcast();
+
+        MockERC20 token = new MockERC20();
+        MockSafeHarborRegistry registry = new MockSafeHarborRegistry();
+        {pool_name} poolImplementation = new {pool_name}();
+        MockAgreement agreement = new MockAgreement(alice);
+
+        agreement.setContractInScope(scopeAccount, true);
+        registry.setAgreementValid(address(agreement), true);
+        token.mint(alice, 1000000 ether);
+        token.mint(bob, 1000000 ether);
+
+        {target_contract} impl = new {target_contract}();
+        bytes memory initData = abi.encodeCall(
+            {target_contract}.initialize,
+            (address(registry), address(poolImplementation), bob)
+        );
+        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
+        {target_contract} factory = {target_contract}(address(proxy));
+        factory.setStakeTokenAllowed(address(token), true);
+
+        vm.stopBroadcast();
+
+        console2.log("LOWKEY_TARGET", address(factory));
+        console2.log("LOWKEY_OBSERVED staketoken", address(token));
+        console2.log("LOWKEY_OBSERVED safeharborregistry", address(registry));
+        console2.log("LOWKEY_OBSERVED poolimplementation", address(poolImplementation));
+        console2.log("LOWKEY_OBSERVED agreement", address(agreement));
+        console2.log("LOWKEY_OBSERVED recoveryaddress", bob);
+        console2.log("LOWKEY_OBSERVED scope", scopeAccount);
+        console2.log("LOWKEY_OBSERVED defaultoutcomemoderator", bob);
+    }}
+}}
+'''
+    script.write_text(code, encoding="utf-8")
+    return script
+
+def run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested=None):
+    if requested:
+        # Explicit contract requests may still use the normal generic path.
+        return None
+    candidates = discover_generic_lab_contract(root)
+    if not candidates:
+        return None
+    _score, contract, path, artifact, _constructor_inputs, _fqn = candidates
+    script = _generate_factory_upgradeable_lab(root, contract, artifact, accounts)
+    if not script:
+        return None
+
+    relative = os.path.relpath(script, root)
+    script_contract = script.stem
+    print("LOWKEY LOCAL AUDIT LAB")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Script  : {relative}")
+    print(f"Target  : {contract} (proxy fixture)")
+    print(f"RPC     : {rpc_display(rpc)}")
+    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print("Mode    : automatic upgradeable protocol fixture")
+    print("Action  : deploying implementation + dependencies + ERC1967 proxy...")
+
+    result = run_foundry(
+        ["script", f"{relative}:{script_contract}", "--rpc-url", rpc, "--broadcast", "--private-key", key],
+        capture=True,
+    )
+    output = result.text
+    if result.code != 0:
+        tail = "\n".join(output.splitlines()[-30:]) if output else "forge script failed"
+        return fail(f"Error: automatic protocol fixture failed.\n{tail}", result.code)
+
+    target = parse_lab_marker(output)
+    if not target:
+        return fail("Error: automatic protocol fixture did not report LOWKEY_TARGET.")
+
+    observed = parse_lab_observations(output)
+    config["_walkthrough_observed"] = observed
+    config["actor"] = "lab-deployer"
+    config.setdefault("wallets", {})["lab-deployer"] = {
+        "source": "anvil-default", "anvil_index": 0, "address": accounts[0],
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    artifact_path = path
+    set_lab_target(config, root, target, contract, artifact_path)
+    print(f"Target  : {contract} proxy -> {target}")
+    print(f"ABI     : {artifact_path}")
+    print(f"Fixture : {relative}")
+    print(f"Observed bootstrap values: {len(observed)}")
+    return 0
+
+def parse_lab_observations(output):
+    observed = {}
+    for match in re.finditer(
+        r"LOWKEY_OBSERVED(?:\s+|:)\s*([A-Za-z0-9_]+)\s+(0x[0-9a-fA-F]{40})",
+        str(output or ""),
+    ):
+        observed[match.group(1).lower()] = match.group(2)
+    return observed
+
+def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
+    relative = os.path.relpath(script, root)
+    print("LOWKEY LOCAL AUDIT LAB")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Script  : {relative}")
+    print(f"RPC     : {rpc_display(rpc)}")
+    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print("Mode    : project lab adapter")
+    print("Action  : deploying disposable local test environment...")
+
+    script_contract = Path(script).stem
+    previous_lab_key = os.environ.get("LOWKEY_LAB_KEY")
+    previous_bob_key = os.environ.get("LOWKEY_BOB_KEY")
+    bob_key = derive_default_anvil_key(1) or key
+    os.environ["LOWKEY_LAB_KEY"] = str(int(str(key), 16))
+    os.environ["LOWKEY_BOB_KEY"] = str(int(str(bob_key), 16))
+    try:
+        result = run_foundry(
+            [
+                "script",
+                f"{relative}:{script_contract}",
+                "--rpc-url",
+                rpc,
+                "--broadcast",
+                "--private-key",
+                key,
+            ],
+            capture=True,
+        )
+    finally:
+        if previous_lab_key is None:
+            os.environ.pop("LOWKEY_LAB_KEY", None)
+        else:
+            os.environ["LOWKEY_LAB_KEY"] = previous_lab_key
+        if previous_bob_key is None:
+            os.environ.pop("LOWKEY_BOB_KEY", None)
+        else:
+            os.environ["LOWKEY_BOB_KEY"] = previous_bob_key
+    output = result.text
+    if result.code != 0:
+        tail = "\n".join(output.splitlines()[-20:]) if output else "forge script failed"
+        return fail(f"Error: local lab deployment failed.\n{tail}", result.code)
+
+    target = parse_lab_marker(output)
+    if not target:
+        return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
+
+    system = parse_lab_system(output)
+    effective_target = target
+    if system:
+        # A system adapter may expose multiple live contracts. When it provides a
+        # factory, make that the walkthrough entry point so the child lifecycle is
+        # observed in realtime instead of being hidden during bootstrap.
+        if is_address(system.get("factory")):
+            effective_target = system["factory"]
+        elif is_address(system.get("pool")):
+            effective_target = system["pool"]
+        else:
+            system["pool"] = target
+        config["lab_system"] = system
+        config["_walkthrough_recipe"] = "confidence-pool"
+        names = {
+            "factory": "ConfidencePoolFactory",
+            "pool_implementation": "ConfidencePool",
+            "stake_token": "StakeToken",
+            "attack_registry": "MockAttackRegistry",
+            "safe_harbor_registry": "MockSafeHarborRegistry",
+            "agreement": "MockAgreement",
+            "moderator": "MockConfidencePoolModerator",
+        }
+        for alias, address in system.items():
+            if alias in {"alice", "bob"}:
+                continue
+            label = names.get(alias, alias)
+            config.setdefault("aliases", {})[label] = address
+            config.setdefault("targets", {})[label] = address
+
+    # Let the live target drive ABI discovery. This is important for proxies:
+    # the deployed address may be a proxy while the useful ABI lives on its implementation.
+    config["target_contract"] = None
+    artifact = auto_abi_path(effective_target, config)
+    contract = config.get("target_contract") or "auto-detected"
+
+    config["actor"] = "lab-deployer"
+    config.setdefault("wallets", {})["lab-deployer"] = {
+        "source": "anvil-default",
+        "anvil_index": 0,
+        "address": accounts[0],
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    set_lab_target(config, root, effective_target, contract, artifact)
+
+    print(f"Target  : {contract} -> {effective_target}")
+    print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
+    print("Ready   : lk changes <function> ... | lk trace")
+    return 0
+
+def run_generic_lab(config, root, rpc, accounts, key, requested=None):
+    candidate = discover_generic_lab_contract(root, requested)
+    if not candidate:
+        return fail(
+            "Lowkey could not find a deployable built contract for the local lab. "
+            "Run 'forge build' and optionally specify a contract: lk lab <Contract>."
+        )
+
+    _score, contract, path, artifact, constructor_inputs, fqn = candidate
+
+    print("LOWKEY LOCAL AUDIT LAB")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Target  : {contract}")
+    print(f"RPC     : {rpc_display(rpc)}")
+    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print("Mode    : generic artifact deployment")
+
+    values = []
+    for index, param in enumerate(constructor_inputs, 1):
+        label = param.get("name") or f"arg{index}"
+        ptype = canonical_type(param)
+        try:
+            value = input(f"Constructor {label} ({ptype}): ").strip()
+        except EOFError:
+            return fail("Local lab cancelled.")
+        if not value:
+            return fail(f"Constructor argument '{label}' is required.")
+        values.append(value)
+
+    print(f"Action  : deploying {contract}...")
+    create_args = ["create", fqn]
+    if values:
+        create_args.extend(["--constructor-args", *values])
+    create_args.extend(["--rpc-url", rpc, "--private-key", key, "--broadcast"])
+    result = run_foundry(create_args, capture=True)
+    output = result.text
+    if result.code != 0:
+        tail = "\n".join(output.splitlines()[-20:]) if output else "forge create failed"
+        return fail(f"Error: generic lab deployment failed.\n{tail}", result.code)
+
+    target = parse_deployed_address(output)
+    if not target:
+        return fail("Error: deployment succeeded, but Lowkey could not read the deployed address.")
+
+    has_initializer = artifact_has_initializer(artifact)
+    if has_initializer:
+        print(f"Target  : {contract} -> {target}")
+        print(f"ABI     : {path}")
+        print("Status  : NOT A LIVE TARGET")
+        print("Reason  : this artifact exposes initialize(); generic deployment created the implementation only.")
+        print("Next    : use the project-aware fixture/proxy bootstrap instead.")
+        return 1
+
+    config["actor"] = "lab-deployer"
+    config.setdefault("wallets", {})["lab-deployer"] = {
+        "source": "anvil-default",
+        "anvil_index": 0,
+        "address": accounts[0],
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    set_lab_target(config, root, target, contract, path)
+
+    print(f"Target  : {contract} -> {target}")
+    print(f"ABI     : {path}")
+    print("Ready   : lk read ... | lk changes ... | lk trace")
+    return 0
+
+def run_lab(config,args):
+    if args and args[0].lower() in {"help","-h","--help"}:
+        print("Usage: lk lab [Contract]")
+        print("Start a disposable local audit lab and auto-connect its target.")
+        print("A project-specific lab adapter is preferred; otherwise Lowkey uses generic deployment.")
+        return 0
+
+    root = audit_context.foundry_project_root()
+    if not root:
+        return fail("Error: this command must be run inside a Foundry project.")
+
+    if args and args[0].lower() == "stop":
+        return stop_project_anvil(root)
+
+    requested = str(args[0]).strip() if args else None
+    script = discover_local_lab_script(root)
+
+    # Known upgradeable ConfidencePool systems require a real local harness:
+    # implementation-only deployment leaves initialize() unset and produces a
+    # misleading walkthrough full of precondition failures.
+    auto_selected = requested or discover_audit_target_contract(root)
+
+    # Prefer the complete local ConfidencePool fixture to implementation-only deployment.
+    if not requested or str(requested).lower() in {"confidencepool", "confidencepoolfactory", "confidencepooltest"}:
+        try:
+            generated = ensure_confidence_pool_lab_script(root)
+            if generated:
+                script = generated
+        except Exception as exc:
+            print(f"Warning: ConfidencePool fixture generation skipped: {exc}", file=sys.stderr)
+    if auto_selected and str(auto_selected).lower() in {"confidencepool", "confidencepoolfactory"}:
+        try:
+            generated = ensure_confidence_pool_lab_script(root)
+            if generated:
+                script = generated
+        except Exception as exc:
+            print(f"Warning: ConfidencePool lab adapter unavailable: {exc}", file=sys.stderr)
+
+    rpc = effective_rpc(config)
+    info = anvil_rpc_info(config)
+    if not info and not config.get("rpc"):
+        info = ensure_project_anvil(config, root)
+        rpc = effective_rpc(config)
+    if config.get("rpc") and not info:
+        return fail("Error: the configured RPC is not an Anvil node.")
+    if not rpc or not info:
+        return fail("Error: no local Anvil detected and Lowkey could not start one.")
+
+    accounts = info.get("accounts", [])
+    if not accounts:
+        return fail("Error: the detected Anvil node reported no accounts.")
+    key = derive_default_anvil_key(0)
+    if not key:
+        return fail("Error: could not derive the default Anvil account #0 key.")
+
+    if script and (not requested or requested.lower() not in {"generic", "forge", "artifact"}):
+        return run_project_lab_script(config, root, script, rpc, accounts, key, requested)
+
+    # Auto-build a disposable proxy + fixture for common upgradeable factory protocols.
+    if not requested:
+        fixture_code = run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested)
+        if fixture_code is not None:
+            return fixture_code
+
+    # No adapter? Prefer the audit evidence; it usually points at the application's
+    # most security-relevant implementation contract.
+    if not requested:
+        requested = discover_audit_target_contract(root)
+
+    if not requested:
+        context = audit_context.load(root)
+        focus = context.get("focus") or {}
+        focus_id = focus.get("signal_id") if isinstance(focus, dict) else None
+        if focus_id:
+            signal = next(
+                (
+                    item for item in audit_context.signals(root)
+                    if isinstance(item, dict) and item.get("id") == focus_id
+                ),
+                None,
+            )
+            if isinstance(signal, dict) and signal.get("function"):
+                requested = str(signal.get("function")).split("(", 1)[0]
+
+    return run_generic_lab(config, root, rpc, accounts, key, requested)
 
 def run_ens(config,args):
     if not args: print("Usage: lk ens <name|address>"); return
@@ -969,7 +3137,7 @@ def run_token(config,args):
     for action in ["name","symbol","decimals","total-supply"]: run_cast(["erc20-token",action,args[0]],config)
 
 def run_decode(config,args):
-    if len(args)<2: print("Usage: lk decode <function> <return-data>"); return
+    if len(args)<2: return fail("Usage: lk decode <function> <return-data>")
     matches=matching_functions(load_abi(config.get("target"),config),args[0])
     if len(matches)!=1: print("Error: function must resolve to exactly one ABI entry."); return
     item=matches[0]
@@ -1031,17 +3199,1496 @@ def event_payload(data,topics):
     return "0x"+"".join(parts)
 
 def run_namespace(config,args):
-    if len(args)!=1: print("Usage: lk namespace <erc7201-namespace-id>"); return
+    if len(args)!=1: return fail("Usage: lk namespace <erc7201-namespace-id>")
     run_cast(["index-erc7201",args[0]],config)
 
 def run_proof(config,args):
-    if not args: print("Usage: lk proof <slot> [block]"); return
+    if not args: return fail("Usage: lk proof <slot> [block]")
     run_cast(["proof",config.get("target"),args[0]]+(["--block",args[1]] if len(args)>1 else []),config)
 
+
+def tool_path(name):
+    return shutil.which(name)
+
+def run_foundry(args, capture=False):
+    binary = tool_path("forge")
+    root = audit_context.foundry_project_root()
+    command_name = args[0] if args else "forge"
+    if not binary:
+        message = "Error: forge was not found on PATH. Install Foundry first."
+        audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
+        result = CommandResult(message, 127)
+        record_status(result.code)
+        if capture:
+            return result
+        print(message, file=sys.stderr)
+        return result.code
+    try:
+        completed = subprocess.run([binary, *args], capture_output=capture, text=True)
+    except OSError as error:
+        message = f"Error executing forge: {error}"
+        audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
+        result = CommandResult(message, 1)
+        record_status(result.code)
+        if capture:
+            return result
+        print(message, file=sys.stderr)
+        return result.code
+
+    code = completed.returncode
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    output = "\n".join(part for part in (stdout, stderr) if part).strip()
+    audit_context.emit(
+        "forge-command",
+        root,
+        tool="forge",
+        status="completed" if code == 0 else "failed",
+        summary=f"forge {command_name}",
+        data={"command": command_name, "exit_code": code},
+    )
+
+    if capture:
+        result = CommandResult(output, code)
+        record_status(code)
+        return result
+
+    record_status(code)
+    return code
+
+def run_tool(name, args=None):
+    binary = tool_path(name)
+    if not binary:
+        return fail(f"Error: {name} was not found on PATH. Install/update Foundry first.")
+    try:
+        return record_status(subprocess.run([binary, *(args or [])]).returncode)
+    except OSError as error:
+        return fail(f"Error executing {name}: {error}", 1)
+
+def split_lab_options(args):
+    values=[]
+    actor=None
+    value="auto"
+    keep=False
+    index=0
+    raw=list(args or [])
+    while index < len(raw):
+        token=raw[index]
+        if token in {"--actor","--as"}:
+            if index+1>=len(raw):
+                raise ValueError(f"{token} needs an actor name")
+            actor=raw[index+1]
+            index+=2
+            continue
+        if token in {"--value","--eth"}:
+            if index+1>=len(raw):
+                raise ValueError(f"{token} needs an ETH amount")
+            value=raw[index+1]
+            index+=2
+            if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
+                value=f"{value} {raw[index]}"
+                index+=1
+            continue
+        if token=="--keep":
+            keep=True
+            index+=1
+            continue
+        values.append(token)
+        index+=1
+    return values,actor,value,keep
+
+def solidity_value(value):
+    value=str(value or "0").strip()
+    value=re.sub(r"(?i)(?<=\d)(ether|gwei|wei)\b", r" \1", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+def validate_solidity_value(value):
+    normalized=solidity_value(value)
+    if not re.fullmatch(r"\d+(?:\.\d+)?(?:\s*(?:ether|gwei|wei))?", normalized, re.I):
+        raise ValueError(f"invalid ETH value '{value}'")
+    return normalized
+
+
+def validate_calldata(value):
+    normalized=str(value or "").removeprefix("0x")
+    if not re.fullmatch(r"[0-9a-fA-F]*", normalized):
+        raise ValueError("calldata must contain only hexadecimal bytes")
+    if len(normalized) % 2:
+        raise ValueError("calldata must contain complete bytes")
+    return normalized
+
+def normalize_numeric_argument(value, item_type):
+    text=str(value).strip()
+    match=re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|ether)",text,re.I)
+    if not match or not (item_type.startswith("uint") or item_type.startswith("int")):
+        return value
+    try:
+        number=Decimal(match.group(1))
+        unit=match.group(2).lower()
+        scale={"wei":Decimal(1),"gwei":Decimal(10**9),"ether":Decimal(10**18)}[unit]
+        scaled=number*scale
+        if scaled != scaled.to_integral_value():
+            raise ValueError(f"non-integer value '{value}' cannot be passed to {item_type}")
+        return str(int(scaled))
+    except InvalidOperation as error:
+        raise ValueError(f"invalid numeric value '{value}'") from error
+
+
+def resolve_argument_aliases(config, function_item, values):
+    values=list(values)
+    inputs=function_item.get("inputs",[]) if isinstance(function_item,dict) else []
+    if len(values)!=len(inputs):
+        return values
+
+    resolved=[]
+    for item,value in zip(inputs,values):
+        item_type=canonical_type(item)
+        if item_type=="address":
+            name=str(value).strip()
+            if not is_address(name):
+                address=actor_address(config,name)
+                if address:
+                    value=address
+        value=normalize_numeric_argument(value,item_type)
+        resolved.append(value)
+    return resolved
+
+
+def prepare_argument_values(config, function_item, values):
+    raw=list(values)
+    inputs=function_item.get("inputs",[]) if isinstance(function_item,dict) else []
+    prepared=[]
+    index=0
+
+    for item in inputs:
+        if index >= len(raw):
+            break
+        item_type=canonical_type(item)
+        value=raw[index]
+        if (
+            (item_type.startswith("uint") or item_type.startswith("int"))
+            and index + 1 < len(raw)
+            and str(raw[index + 1]).lower() in {"wei","gwei","ether"}
+        ):
+            value=f"{value} {raw[index + 1]}"
+            index += 2
+        else:
+            index += 1
+        prepared.append(value)
+
+    if index != len(raw):
+        return raw
+    return resolve_argument_aliases(config, function_item, prepared)
+
+
+def encode_target_call(config, function, values):
+    target=config.get("target")
+    if not target:
+        raise ValueError("Set a target first.")
+    values=list(values)
+    if any(str(value).strip()=="..." for value in values):
+        raise ValueError("Replace '...' with real argument values. Use 'lk ask <function>' to see the required parameters.")
+
+    signature=function
+    if "(" not in signature or ")" not in signature:
+        signature=resolve_function(signature,target,config)
+
+    abi=load_abi(target,config)
+    matches=matching_functions(abi,signature) if abi else []
+    if len(matches)==1:
+        values=prepare_argument_values(config,matches[0],values)
+        inputs=matches[0].get("inputs",[])
+        if len(values)!=len(inputs):
+            expected=", ".join(
+                f"{item.get('name') or 'arg'+str(index+1)}:{canonical_type(item)}"
+                for index,item in enumerate(inputs)
+            )
+            suffix=f" Expected: {expected}." if expected else ""
+            raise ValueError(
+                f"{format_signature(matches[0])} expects {len(inputs)} argument(s), got {len(values)}.{suffix}"
+            )
+
+    code,encoded,error=cast_output(["cast","calldata",signature,*values])
+    if code!=0 or not encoded:
+        raise ValueError(error or "cast calldata failed")
+    return signature, validate_calldata(encoded)
+
+def solidity_address_literal(address):
+    if not is_address(address):
+        raise ValueError(f"invalid Solidity address literal: {address}")
+    return f"address(uint160(0x00{address[2:]}))"
+
+def generated_test_path(prefix, content=None):
+    os.makedirs("test",exist_ok=True)
+    safe=solidity_identifier(prefix)
+    suffix=(
+        hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
+        if content is not None
+        else datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    )
+    return os.path.join("test", f"Lowkey_{safe}_{suffix}.t.sol")
+
+def write_generated_test(prefix, content, announce=True):
+    path=generated_test_path(prefix, content)
+    temporary=Path(path + ".tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
+    if announce:
+        print(f"Lowkey generated test: {path}")
+    return path
+
+def discard_generated_test(path):
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+def resolve_lab_value(config, signature, raw_values, value_option):
+    if value_option not in {None, "", "auto"}:
+        return value_option
+
+    abi=load_abi(config.get("target"),config)
+    matches=matching_functions(abi,signature) if abi else []
+    if len(matches)!=1 or matches[0].get("stateMutability")!="payable":
+        return "0"
+
+    raw=list(raw_values or [])
+    for index,token in enumerate(raw):
+        text=str(token).strip()
+        if re.fullmatch(r"(?i)(?:[0-9]+(?:\\.[0-9]+)?)(?:ether|gwei|wei)",text):
+            return text
+        if (
+            re.fullmatch(r"[0-9]+(?:\\.[0-9]+)?",text)
+            and index+1<len(raw)
+            and str(raw[index+1]).lower() in {"ether","gwei","wei"}
+        ):
+            return f"{text} {raw[index+1]}"
+    return "0"
+
+
+def local_foundry_test_args(config, path):
+    args=["test","--match-path",Path(path).as_posix(),"-vv"]
+    rpc=effective_rpc(config)
+    if rpc and anvil_rpc_info(config):
+        args[1:1]=["--fork-url",rpc]
+    return args
+
+
+def configured_actor_addresses(config):
+    result=[]
+    for name,entry in config.get("wallets",{}).items():
+        address=entry.get("address") if isinstance(entry,dict) else None
+        if not address:
+            address=actor_address(config,name)
+        if is_address(address):
+            result.append((name,address))
+    if result:
+        return result
+    info=anvil_rpc_info(config)
+    accounts=info.get("accounts",[]) if info else []
+    return [(f"actor{index}",address) for index,address in enumerate(accounts[:5])]
+
+def run_probe(config,args):
+    if not args:
+        return fail("Usage: lk probe <function> [args...] [--actor NAME] [--value AMOUNT]")
+    try:
+        values,actor,value,_keep=split_lab_options(args)
+        if not values:
+            raise ValueError("function is required")
+        signature,calldata=encode_target_call(config,values[0],values[1:])
+        value=validate_solidity_value(resolve_lab_value(config,signature,values[1:],value))
+        target=config.get("target")
+        actors=[]
+        if actor:
+            address=actor_address(config,actor)
+            if not address:
+                raise ValueError(f"unknown actor: {actor}")
+            actors=[(actor,address)]
+        else:
+            actors=configured_actor_addresses(config)
+        if not actors:
+            raise ValueError("No actors configured. Use lk actor <index> <name> first.")
+        calls=[]
+        target_literal=solidity_address_literal(target)
+        for index,(name,address) in enumerate(actors):
+            actor_literal=solidity_address_literal(address)
+            calls.append(f'''        {{
+            address actor = {actor_literal};
+            console2.log("ACTOR {name} {address}");
+            vm.deal(actor, 100 ether);
+            vm.startPrank(actor);
+            (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
+            vm.stopPrank();
+            console2.log("SUCCESS", success);
+            if (!success) console2.logBytes(data);
+        }}''')
+        body=f'''// Generated by LowkeyCast. This is a non-asserting probe: it records behavior.
+pragma solidity ^0.8.20;
+
+import {{Test}} from "forge-std/Test.sol";
+import {{console2}} from "forge-std/console2.sol";
+
+contract LowkeyProbe is Test {{
+    address constant TARGET = {target_literal};
+    uint256 constant VALUE = {solidity_value(value)};
+
+    function test_probe() public {{
+        // Function: {signature}
+{chr(10).join(calls)}
+    }}
+}}
+'''
+        path=write_generated_test("probe_"+signature.split("(",1)[0],body)
+        code=run_foundry(local_foundry_test_args(config,path))
+        if code != 0:
+            discard_generated_test(path)
+        return code
+    except (ValueError,IndexError) as error:
+        return fail(f"Error: {error}")
+
+def storage_layout_details(config):
+    target=config.get("target")
+    paths=[]
+    if target:
+        preferred_path=resolve_abi_path(config,target) or auto_abi_path(target,config)
+        if preferred_path:
+            paths.append(preferred_path)
+    contracts=[]
+    configured=config.get("target_contract")
+    if configured:
+        contracts.append(str(configured))
+
+    # Prefer the target artifact's own storageLayout when available. It is tied
+    # to the exact ABI/artifact Lowkey selected, so it avoids stale contract-name
+    # config causing the decoder to silently give up.
+    for path in paths:
+        artifact=read_artifact(path) or {}
+        name=artifact.get("contractName")
+        if name and str(name) not in contracts:
+            contracts.append(str(name))
+
+        # Some Foundry-compatible artifacts contain ABI/bytecode/metadata
+        # but omit contractName and storageLayout. In that case the artifact
+        # filename still gives us a trustworthy contract name, e.g.
+        # ./out/EthEscrow.sol/Escrow.json -> Escrow.
+        if not name:
+            fallback=Path(path).stem
+            if fallback and fallback not in contracts:
+                contracts.append(fallback)
+
+        layout=artifact.get("storageLayout",{}) if isinstance(artifact,dict) else {}
+        if isinstance(layout,dict):
+            storage=layout.get("storage",[])
+            types=layout.get("types",{})
+            if isinstance(storage,list) and isinstance(types,dict) and storage and types:
+                return types, storage
+
+    # The exact artifact may omit storageLayout. Ask Forge, trying every
+    # trustworthy contract name we have for the selected target.
+    if not contracts:
+        return {}, []
+
+    # Forge inspect is project-relative. When the target artifact belongs to
+    # another Foundry project, execute inspect from that project's root rather
+    # than from whatever directory the auditor happens to be standing in.
+    inspect_cwd=configured_project_root(target,config)
+    if not inspect_cwd and paths:
+        inspect_cwd=foundry_project_root(paths[0])
+
+    for contract in contracts:
+        try:
+            completed=subprocess.run(
+                ["forge","inspect",contract,"storage-layout","--json"],
+                capture_output=True,
+                text=True,
+                cwd=inspect_cwd or None,
+            )
+            code=completed.returncode
+            out=completed.stdout.strip()
+        except OSError:
+            continue
+        if code!=0 or not out:
+            continue
+        try:
+            payload=json.loads(out)
+        except json.JSONDecodeError:
+            continue
+        storage=payload.get("storage",[]) if isinstance(payload,dict) else []
+        types=payload.get("types",{}) if isinstance(payload,dict) else {}
+        if isinstance(storage,list) and isinstance(types,dict) and storage and types:
+            return types, storage
+    return {}, []
+
+
+def source_mapping_declarations(root):
+    """Return generic mapping declarations discovered in Solidity source files."""
+    base = Path(root)
+    if not base.exists():
+        return []
+
+    structs = {}
+    struct_pattern = re.compile(r"\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([\s\S]*?)\}")
+    field_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+
+    for path in sorted(base.rglob("*.sol")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in struct_pattern.finditer(source):
+            fields = []
+            for field in field_pattern.finditer(match.group(2)):
+                fields.append((field.group(2), field.group(1)))
+            structs[match.group(1)] = fields
+
+    mapping_pattern = re.compile(
+        r"\bmapping\s*\(\s*([^=)]+?)\s*=>\s*([^)]*?)\)\s*"
+        r"(?:public|private|internal|external)?\s*"
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*;"
+    )
+
+    declarations = []
+    for path in sorted(base.rglob("*.sol")):
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        for match in mapping_pattern.finditer(source):
+            key_raw = " ".join(match.group(1).split())
+            value_raw = " ".join(match.group(2).split())
+            name = match.group(3)
+
+            key_parts = key_raw.split()
+            value_parts = value_raw.split()
+            key_type = key_parts[0] if key_parts else key_raw
+            value_type = value_parts[0] if value_parts else value_raw
+
+            declarations.append({
+                "file": str(path),
+                "label": name,
+                "key_type": key_type,
+                "value_type": value_type,
+                "fields": list(structs.get(value_type, [])),
+            })
+
+    return declarations
+
+
+def storage_type_label(types, type_id):
+    if not isinstance(type_id,str):
+        return ""
+    info=types.get(type_id,{}) if isinstance(types,dict) else {}
+    label=str(info.get("label") or type_id)
+    # Foundry normally gives human labels ("address", "uint256"), but some
+    # layouts expose internal ids such as "t_address" / "t_uint256".
+    if label.startswith("t_"):
+        label=label[2:]
+    return label
+
+
+def storage_slot_int(value):
+    text=str(value).strip()
+    try:
+        return int(text,16) if text.lower().startswith("0x") else int(text,10)
+    except (TypeError,ValueError):
+        return None
+
+
+def mapping_layout_entry(config, base_slot, key_type):
+    types,storage=storage_layout_details(config)
+    if not types or not storage:
+        return None, types
+
+    base_int=storage_slot_int(base_slot)
+    if base_int is None:
+        return None, types
+
+    for entry in storage:
+        entry_slot=storage_slot_int(entry.get("slot"))
+        if entry_slot != base_int:
+            continue
+        mapping_type=types.get(entry.get("type"),{})
+        if mapping_type.get("encoding")!="mapping":
+            continue
+        actual_key=storage_type_label(types,mapping_type.get("key"))
+        if actual_key == key_type or (
+            key_type=="uint256" and str(actual_key).startswith(("uint","int"))
+        ):
+            return entry, types
+    return None, types
+
+
+def decode_storage_member(raw, type_id, types, offset=0):
+    raw=str(raw).strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",raw):
+        return raw
+    info=types.get(type_id,{}) if isinstance(type_id,str) else {}
+    label=storage_type_label(types,type_id)
+    nbytes=info.get("numberOfBytes")
+    try:
+        width=int(str(nbytes),0) if nbytes is not None else 32
+    except (TypeError,ValueError):
+        width=32
+    try:
+        byte_offset=int(str(offset),0)
+    except (TypeError,ValueError):
+        byte_offset=0
+
+    raw_int=int(raw,16)
+    mask=(1 << (width*8))-1 if width < 32 else (1 << 256)-1
+    value_int=(raw_int >> (byte_offset*8)) & mask
+
+    lowered=label.lower()
+    if lowered=="address" or lowered.startswith("contract "):
+        if value_int==0:
+            return "none"
+        return f"0x{value_int:040x}"
+    if lowered=="bool":
+        return "true" if value_int else "false"
+    if lowered.startswith("uint") or lowered.startswith("int") or lowered.startswith("enum "):
+        return str(value_int)
+    return "0x"+format(value_int,"064x")
+
+
+def format_mapping_member(config, raw, member, types):
+    value=decode_storage_member(
+        raw,
+        member.get("type"),
+        types,
+        member.get("offset",0),
+    )
+    if value=="none":
+        return value
+    if is_address(value):
+        name=assigned_anvil_address(config,value)
+        return f"{name} ({value})" if name else value
+    if re.fullmatch(r"[0-9]+",str(value)):
+        label=str(member.get("label","")).lower()
+        if any(token in label for token in ("amount","value","balance")):
+            try:
+                wei=int(value)
+                if wei >= 10**9:
+                    return f"{wei} wei [~{wei/10**18:.4f} ETH]"
+            except ValueError:
+                pass
+        return value
+    return value
+
+
+def run_mapping_human_view(config, base_slot, key_type, key, mapped_slot):
+    entry,types=mapping_layout_entry(config,base_slot,key_type)
+    if not entry:
+        return False
+
+    mapping_type=types.get(entry.get("type"),{})
+    value_type=types.get(mapping_type.get("value"),{})
+    members=value_type.get("members",[]) if isinstance(value_type,dict) else []
+    if not members:
+        return False
+
+    mapping_name=entry.get("label","mapping")
+    key_display=display_storage_key(config,key)
+    print(f"Mapping:      {mapping_name}")
+    print(f"Key:          {key_display}")
+    print(f"Base slot:    {base_slot}")
+    print(f"Value slot:   {mapped_slot}")
+    print("Fields:")
+
+    for member in members:
+        try:
+            member_offset=int(str(member.get("slot","0")),0)
+        except (TypeError,ValueError):
+            member_offset=0
+        slot_int=storage_slot_int(mapped_slot)
+        if slot_int is None:
+            return False
+        full_slot="0x"+format(slot_int+member_offset,"064x")
+        raw=run_cast(["st",full_slot],config,capture=True)
+        code=getattr(raw,"code",0)
+        if code!=0:
+            print(f"  {member.get('label','field'):<16} <unreadable>")
+            continue
+        shown=format_mapping_member(config,str(raw),member,types)
+        print(f"  {member.get('label','field'):<16} {shown}")
+    print("  raw mapping slot  ", mapped_slot)
+    return True
+
+
+def lab_argument_candidates(config, signature, raw_values, actor_address_value=None):
+    abi=load_abi(config.get("target"),config)
+    matches=matching_functions(abi,signature) if abi else []
+    candidates=[]
+    if len(matches)==1:
+        inputs=matches[0].get("inputs",[])
+        values=list(raw_values or [])
+        # The helper understands "1 ether" as one uint argument.
+        prepared=prepare_argument_values(config,matches[0],values)
+        for item,value in zip(inputs,prepared):
+            item_type=canonical_type(item)
+            if item_type in {"address","bytes32"}:
+                candidates.append((item_type,value))
+            elif item_type.startswith("uint") or item_type.startswith("int"):
+                normalized=normalize_numeric_argument(value,item_type)
+                if re.fullmatch(r"[0-9]+",str(normalized)):
+                    candidates.append((item_type,normalized))
+    if actor_address_value:
+        candidates.append(("address",actor_address_value))
+
+    for _,address in configured_actor_addresses(config):
+        candidates.append(("address",address))
+
+    for number in range(0,17):
+        candidates.append(("uint256",str(number)))
+
+    seen=set()
+    result=[]
+    for key_type,key in candidates:
+        marker=(key_type.lower(),str(key).lower())
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append((key_type,key))
+    return result
+
+
+def mapping_slot_matches(config, signature, raw_values, actor_address_value, changed_slots):
+    types,storage=storage_layout_details(config)
+    if not storage or not types:
+        return {}
+
+    labels={}
+    candidates=lab_argument_candidates(config,signature,raw_values,actor_address_value)
+    for entry in storage:
+        type_id=entry.get("type")
+        info=types.get(type_id,{}) if isinstance(type_id,str) else {}
+        if info.get("encoding")!="mapping":
+            continue
+        key_type_id=info.get("key")
+        value_type_id=info.get("value")
+        key_label=storage_type_label(types,key_type_id)
+        base_slot=entry.get("slot")
+        if not key_label or base_slot is None:
+            continue
+
+        for candidate_type,candidate_value in candidates:
+            if candidate_type!=key_label:
+                if not (candidate_type=="uint256" and str(key_label).startswith(("uint","int"))):
+                    continue
+            code,out,_=cast_output(["cast","index",str(key_label),str(candidate_value),str(base_slot)])
+            if code!=0 or not out:
+                continue
+            mapped_slot=out.splitlines()[-1].strip().lower()
+            if mapped_slot.startswith("0x"):
+                mapped_slot=mapped_slot[2:].zfill(64)
+            key_display=display_storage_key(config,candidate_value)
+            value_info=types.get(value_type_id,{}) if isinstance(value_type_id,str) else {}
+            members=value_info.get("members",[]) if isinstance(value_info,dict) else []
+
+            if not members:
+                for changed in changed_slots:
+                    if changed.lower().removeprefix("0x").zfill(64)==mapped_slot:
+                        labels[changed.lower()]=("%s[%s]"%(entry.get("label","mapping"),key_display),value_type_id)
+            else:
+                try:
+                    base_int=int(mapped_slot,16)
+                except ValueError:
+                    continue
+                for member in members:
+                    try:
+                        member_slot=base_int+int(str(member.get("slot","0")),0)
+                    except ValueError:
+                        continue
+                    full="0x"+format(member_slot,"064x")
+                    if full.lower() in {x.lower() for x in changed_slots}:
+                        labels[full.lower()]=(
+                            "%s[%s].%s"%(
+                                entry.get("label","mapping"),
+                                key_display,
+                                member.get("label","field")
+                            ),
+                            member.get("type")
+                        )
+            if labels:
+                # Keep looking for other mappings/keys; a function can touch more than one.
+                pass
+    return labels
+
+
+def display_storage_key(config, value):
+    text_value=str(value)
+    if is_address(text_value):
+        name=assigned_anvil_address(config,text_value)
+        return name or text_value
+    return text_value
+
+
+def decode_storage_value(raw, type_id, types, path=""):
+    raw=str(raw).strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}",raw):
+        return raw
+    label=storage_type_label(types,type_id)
+    lowered=label.lower()
+
+    if lowered=="address" or lowered.startswith("contract "):
+        value="0x"+raw[-40:]
+        if int(raw[-40:],16)==0:
+            return "none"
+        return value
+
+    if lowered=="bool":
+        return "true" if int(raw,16)!=0 else "false"
+
+    if lowered.startswith("uint") or lowered.startswith("int") or lowered.startswith("enum "):
+        return str(int(raw,16))
+
+    return raw
+
+
+def format_storage_value(config, raw, type_id, types, label, eth_sent_wei=None):
+    value=decode_storage_value(raw,type_id,types,label)
+    if value=="none":
+        return "none"
+    if is_address(value):
+        return assigned_anvil_address(config,value) or value
+    if re.fullmatch(r"[0-9]+",value or ""):
+        lowered=label.lower()
+        if eth_sent_wei is not None and any(x in lowered for x in ("amount","balance","value")):
+            numeric=int(value)
+            if numeric == 0:
+                return "0 ETH"
+            if numeric == eth_sent_wei:
+                eth=eth_sent_wei/10**18
+                return f"{eth:g} ETH"
+        return value
+    return value
+
+
+def _extract_state_diff_json_slots(text_output):
+    begin="STATE_DIFF_JSON_BEGIN"
+    end="STATE_DIFF_JSON_END"
+    start=text_output.find(begin)
+    if start<0:
+        return []
+    start=text_output.find("\n",start)
+    if start<0:
+        return []
+    finish=text_output.find(end,start)
+    if finish<0:
+        return []
+    raw=text_output[start:finish].strip()
+    if not raw:
+        return []
+    try:
+        payload=json.loads(raw)
+    except json.JSONDecodeError:
+        first=raw.find("{")
+        last=raw.rfind("}")
+        if first<0 or last<=first:
+            return []
+        try:
+            payload=json.loads(raw[first:last+1])
+        except json.JSONDecodeError:
+            return []
+
+    slots=[]
+
+    def valid_slot(value):
+        return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{64}",value))
+
+    def valid_value(value):
+        return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{64}",value))
+
+    def visit(node):
+        if isinstance(node,dict):
+            # AccountAccess / StorageAccess shaped records.
+            slot=node.get("slot")
+            before=node.get("previousValue",node.get("previous",node.get("oldValue",node.get("original"))))
+            after=node.get("newValue",node.get("new",node.get("current")))
+            is_write=node.get("isWrite")
+            reverted=node.get("reverted",False)
+            if valid_slot(slot) and valid_value(before) and valid_value(after):
+                if (is_write is True or is_write is None) and not reverted and before.lower()!=after.lower():
+                    slots.append({"slot":slot,"from":before,"to":after})
+
+            # Some JSON state-diff formats use the slot itself as the dictionary key.
+            for key,value in node.items():
+                if valid_slot(key) and isinstance(value,dict):
+                    nested_before=value.get("previousValue",value.get("previous",value.get("oldValue",value.get("original"))))
+                    nested_after=value.get("newValue",value.get("new",value.get("current")))
+                    if valid_value(nested_before) and valid_value(nested_after) and nested_before.lower()!=nested_after.lower():
+                        slots.append({"slot":key,"from":nested_before,"to":nested_after})
+                visit(value)
+        elif isinstance(node,list):
+            for item in node:
+                visit(item)
+
+    visit(payload)
+    unique={}
+    for item in slots:
+        unique[item["slot"].lower()]=item
+    return list(unique.values())
+
+
+def parse_state_diff_output(output):
+    text_output=str(output or "")
+    clean_output=re.sub(r"\x1b\[[0-9;]*m","",text_output)
+
+    gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",clean_output)
+    call_match=re.search(r"(?m)^\s*CALL\s+(.+)$",clean_output)
+    success_match=re.search(r"(?m)^\s*SUCCESS\s+(true|false)\s*$",clean_output,re.I)
+    eth_match=re.search(r"(?m)^\s*ETH_SENT\s+([0-9]+)\s*$",clean_output)
+    change_match=re.search(r"(?m)^\s*STORAGE_CHANGES\s+([0-9]+)\s*$",clean_output)
+    fallback_match=re.search(r"(?m)^\s*FALLBACK_WRITES\s+([0-9]+)\s*$",clean_output)
+
+    slots=_extract_state_diff_json_slots(clean_output)
+    lines=[line.strip() for line in clean_output.splitlines()]
+    for index,line in enumerate(lines):
+        if line=="SLOT" and index+5<len(lines):
+            slot=lines[index+1]
+            if lines[index+2]=="FROM" and lines[index+4]=="TO":
+                before=lines[index+3]
+                after=lines[index+5]
+                if re.fullmatch(r"0x[0-9a-fA-F]{64}",slot) and re.fullmatch(r"0x[0-9a-fA-F]{64}",after):
+                    if before=="unknown" or re.fullmatch(r"0x[0-9a-fA-F]{64}",before):
+                        slots.append({"slot":slot,"from":before,"to":after})
+
+    dedup={}
+    for item in slots:
+        dedup[item["slot"].lower()]=item
+
+    return {
+        "gas":int(gas_match.group(1)) if gas_match else None,
+        "call":call_match.group(1).strip() if call_match else None,
+        "success":success_match.group(1).lower()=="true" if success_match else None,
+        "eth_sent":int(eth_match.group(1)) if eth_match else 0,
+        "changes_expected":int(change_match.group(1)) if change_match else len(dedup),
+        "fallback_writes":int(fallback_match.group(1)) if fallback_match else 0,
+        "state_diff_json":bool(_extract_state_diff_json_slots(clean_output)),
+        "slots":list(dedup.values()),
+        "raw":text_output,
+    }
+
+def format_lab_value(text_value, address_map=None):
+    text_value=str(text_value)
+    if is_address(text_value):
+        if address_map and text_value.lower() in address_map:
+            return address_map[text_value.lower()]
+    return text_value
+
+
+def format_call_display(config, signature, raw_values):
+    abi=load_abi(config.get("target"),config)
+    matches=matching_functions(abi,signature) if abi else []
+    if len(matches)!=1:
+        return signature
+    prepared=prepare_argument_values(config,matches[0],raw_values)
+    inputs=matches[0].get("inputs",[])
+    rendered=[]
+    address_map={}
+    for name,entry in config.get("wallets",{}).items():
+        if isinstance(entry,dict) and is_address(entry.get("address")):
+            address_map[entry["address"].lower()]=name
+    for item,value in zip(inputs,prepared):
+        item_type=canonical_type(item)
+        shown=str(value)
+        if item_type=="address":
+            shown=address_map.get(shown.lower(),shown)
+        rendered.append(shown)
+    return f"{matches[0].get('name','<function>')}({', '.join(rendered)})"
+
+
+def candidate_storage_slots(config, signature, raw_values, actor_address):
+    """Build a conservative set of slots to snapshot before/after an experiment.
+
+    We always inspect the first 16 direct slots, then add mapping slots derived
+    from function arguments, the current actor, configured actors, and small
+    integer keys. This keeps the generated experiment compatible with older
+    forge-std versions while still catching common mappings/structs.
+    """
+    slots={i for i in range(16)}
+    types,storage=storage_layout_details(config)
+    candidates=lab_argument_candidates(config,signature,raw_values,actor_address)
+
+    for entry in storage:
+        base_raw=entry.get("slot")
+        base=storage_slot_int(base_raw)
+        if base is None:
+            continue
+        type_id=entry.get("type")
+        info=types.get(type_id,{}) if isinstance(type_id,str) else {}
+
+        if info.get("encoding")=="mapping":
+            key_type_id=info.get("key")
+            value_type_id=info.get("value")
+            key_label=storage_type_label(types,key_type_id)
+            if not key_label:
+                continue
+            value_info=types.get(value_type_id,{}) if isinstance(value_type_id,str) else {}
+            members=value_info.get("members",[]) if isinstance(value_info,dict) else []
+            for candidate_type,candidate_value in candidates:
+                if candidate_type!=key_label and not (
+                    candidate_type=="uint256" and str(key_label).startswith(("uint","int"))
+                ):
+                    continue
+                code,out,_=cast_output([
+                    "cast","index",str(key_label),str(candidate_value),str(base)
+                ])
+                if code!=0 or not out:
+                    continue
+                try:
+                    mapped=storage_slot_int(out.splitlines()[-1].strip())
+                except Exception:
+                    mapped=None
+                if mapped is None:
+                    continue
+                slots.add(mapped)
+                for member in members:
+                    try:
+                        offset=int(str(member.get("slot","0")),0)
+                    except (TypeError,ValueError):
+                        offset=0
+                    slots.add(mapped+offset)
+        else:
+            slots.add(base)
+            members=info.get("members",[]) if isinstance(info,dict) else []
+            for member in members:
+                try:
+                    offset=int(str(member.get("slot","0")),0)
+                except (TypeError,ValueError):
+                    offset=0
+                slots.add(base+offset)
+
+    return sorted({int(slot) for slot in slots if int(slot)>=0})
+
+
+def run_state_diff(config,args):
+    if not args:
+        return fail("Usage: lk changes <function> [args...] [--as ACTOR] [--eth AMOUNT]")
+    try:
+        values,actor,value,_keep=split_lab_options(args)
+        if not values:
+            raise ValueError("function is required")
+        signature,calldata=encode_target_call(config,values[0],values[1:])
+        value=validate_solidity_value(resolve_lab_value(config,signature,values[1:],value))
+        target=config.get("target")
+        selected_actor=actor or config.get("actor")
+        address=actor_address(config,selected_actor)
+        if not address:
+            raise ValueError("Choose an actor first with lk actor <index> <name>.")
+
+        target_literal=solidity_address_literal(target)
+        actor_literal=solidity_address_literal(address)
+        body=f'''// Generated by LowkeyCast. Snapshots candidate storage slots around a concrete call.
+pragma solidity ^0.8.20;
+
+import {{Test}} from "forge-std/Test.sol";
+import {{console2}} from "forge-std/console2.sol";
+
+contract LowkeyStateDiff is Test {{
+    address constant TARGET = {target_literal};
+    address constant ACTOR = {actor_literal};
+    uint256 constant VALUE = {solidity_value(value)};
+
+    function test_state_diff() public {{
+        vm.deal(ACTOR, 100 ether);
+
+        uint256 candidateCount = {len(candidate_storage_slots(config, signature, values[1:], address))};
+        require(candidateCount > 0, "Lowkey: no candidate storage slots");
+
+        bytes32[] memory slots = new bytes32[](candidateCount);
+        bytes32[] memory beforeValues = new bytes32[](candidateCount);
+        bytes32[] memory afterValues = new bytes32[](candidateCount);
+
+{chr(10).join(f"        slots[{i}] = bytes32(uint256({slot}));" for i,slot in enumerate(candidate_storage_slots(config, signature, values[1:], address)) )}
+
+        for (uint256 i = 0; i < slots.length; i++) {{
+            beforeValues[i] = vm.load(TARGET, slots[i]);
+        }}
+
+        vm.prank(ACTOR);
+        (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
+
+        for (uint256 i = 0; i < slots.length; i++) {{
+            afterValues[i] = vm.load(TARGET, slots[i]);
+        }}
+
+        console2.log("CALL", "{signature}");
+        console2.log("SUCCESS", success);
+        console2.log("ETH_SENT", VALUE);
+        console2.log("SLOTS_SCANNED", slots.length);
+
+        if (!success) {{
+            console2.log("REVERT_DATA");
+            console2.logBytes(data);
+            return;
+        }}
+
+        uint256 changed = 0;
+        for (uint256 i = 0; i < slots.length; i++) {{
+            if (beforeValues[i] != afterValues[i]) {{
+                changed++;
+                console2.log("SLOT");
+                console2.logBytes32(slots[i]);
+                console2.log("FROM");
+                console2.logBytes32(beforeValues[i]);
+                console2.log("TO");
+                console2.logBytes32(afterValues[i]);
+            }}
+        }}
+
+        console2.log("STORAGE_CHANGES", changed);
+    }}
+}}
+'''
+        path=write_generated_test("state-diff_"+signature.split("(",1)[0],body,announce=False)
+        result=run_foundry(local_foundry_test_args(config,path),capture=True)
+        output=result.text
+        parsed=parse_state_diff_output(output)
+        if result.code!=0:
+            discard_generated_test(path)
+            tail="\n".join(output.splitlines()[-18:]) if output else "forge test failed"
+            return fail(f"Error: changes could not run.\n{tail}",result.code)
+
+        address_map={}
+        for name,entry in config.get("wallets",{}).items():
+            if isinstance(entry,dict) and is_address(entry.get("address")):
+                address_map[entry["address"].lower()]=name
+
+        types,_storage=storage_layout_details(config)
+        raw_args=values[1:]
+        labels=mapping_slot_matches(config,signature,raw_args,address, [item["slot"] for item in parsed["slots"]])
+
+        print("CHANGES")
+        print("=======")
+        print(f"Call:      {format_call_display(config,signature,raw_args)}")
+        print(f"Caller:    {selected_actor or address}")
+        eth_sent=parsed["eth_sent"]
+        print(f"ETH sent:  {eth_sent/10**18:g} ETH" if eth_sent%10**18==0 else f"ETH sent:  {eth_sent} wei")
+        status="SUCCESS" if parsed["success"] else "REVERTED"
+        print(f"Result:    {status}")
+        if parsed["gas"] is not None:
+            print(f"Gas:       {parsed['gas']}")
+        print(f"Storage:   {len(parsed['slots'])} change(s)")
+        root=audit_context.foundry_project_root()
+        audit_context.update(root, latest={"function":signature, "value":str(parsed["eth_sent"]), "calldata":calldata, "state_diff":"recorded"})
+        audit_context.record_tool("state-diff", root, status="completed", summary=f"{len(parsed['slots'])} storage change(s)", data={"function":signature, "generated_test":path})
+
+        storage_evidence = []
+        if parsed["slots"]:
+            print("\nStorage changes:")
+        for item in parsed["slots"]:
+            slot=item["slot"].lower()
+            decoded=labels.get(slot)
+            if isinstance(decoded,tuple):
+                label,type_id=decoded
+            else:
+                label=decoded or f"slot {slot}"
+                type_id=None
+            before=format_storage_value(config,item["from"],type_id,types,label,eth_sent)
+            after=format_storage_value(config,item["to"],type_id,types,label,eth_sent)
+            print(f"  {label}")
+            print(f"    {before}  ->  {after}")
+            storage_evidence.append({
+                "slot": slot,
+                "label": label,
+                "type": type_id,
+                "from": item["from"],
+                "to": item["to"],
+                "from_display": before,
+                "to_display": after,
+            })
+            print(f"    slot: {slot}")
+
+        if parsed["changes_expected"]!=len(parsed["slots"]):
+            print(f"\nNote: Forge reported {parsed['changes_expected']} changed slots; Lowkey decoded {len(parsed['slots'])}.")
+
+        evidence={
+            "kind":"state-diff",
+            "function":signature,
+            "calldata":calldata,
+            "caller":selected_actor or address,
+            "actor":selected_actor,
+            "success":parsed["success"],
+            "gas":parsed["gas"],
+            "eth_sent_wei":parsed["eth_sent"],
+            "changes_expected":parsed["changes_expected"],
+            "fallback_writes":parsed["fallback_writes"],
+            "state_diff_json":parsed["state_diff_json"],
+            "storage_changes":storage_evidence,
+            "generated_test":path,
+        }
+        focus=audit_context.load(root).get("focus")
+        focus_signal_id=focus.get("signal_id") if isinstance(focus,dict) else None
+        if focus_signal_id:
+            linked=audit_context.attach_signal_evidence(focus_signal_id,evidence,root)
+            if linked:
+                print(f"\nEvidence linked: {focus_signal_id}")
+            else:
+                print(f"\nWarning: investigation focus {focus_signal_id} no longer exists; evidence was not linked.",file=sys.stderr)
+
+        if not parsed["slots"]:
+            if parsed["success"]:
+                print("No storage values changed.")
+            print(f"\nTest: {path}")
+            return 0
+
+        print(f"\nTest: {path}")
+        return 0
+    except (ValueError,IndexError) as error:
+        return fail(f"Error: {error}")
+
+
+def run_cast_deep(config,args):
+    if not args:
+        return fail("Usage: lk <4byte|4byte-calldata|4byte-event|access-list|interface|constructor-args|creation-code|decode-calldata|abi-encode> ...")
+    command=args[0]
+    values=list(args[1:])
+    if command=="interface":
+        if values:
+            return run_cast(["interface",*values],config)
+        target=config.get("target")
+        if not target:
+            return fail("Error: Set target or provide an ABI path.")
+        path=resolve_abi_path(config,target) or auto_abi_path(target,config)
+        if not path:
+            return fail("Error: no local ABI found for the current target.")
+        return run_cast(["interface",path],config)
+    if command in {"constructor-args","creation-code"}:
+        target=values[0] if values else config.get("target")
+        if not target:
+            return fail(f"Usage: lk {command} <address>")
+        result=run_cast([command,target,*values[1:]],config,capture=True)
+        result_code=getattr(result,"code",result if isinstance(result,int) else 1)
+        result_text=getattr(result,"text",str(result or ""))
+        if result_code != 0 and effective_rpc(config) and anvil_rpc_info(config):
+            lowered=result_text.lower()
+            if "etherscan" in lowered or "constructor" in lowered or "creation" in lowered:
+                return fail(
+                    f"Error: {command} needs creation/deployment data that this local Anvil state may not contain."
+                )
+        print(result_text)
+        return result_code
+    if command=="access-list":
+        target=config.get("target")
+        if values and is_address(values[0]):
+            target=values.pop(0)
+        if not target:
+            return fail("Usage: lk access-list [address] <function> [args]")
+        if not values:
+            return run_cast(["access-list",target],config)
+        function=values[0]
+        if "(" not in function or ")" not in function:
+            try:
+                function=resolve_function(function,target,config)
+            except ValueError as error:
+                return fail(f"Error: {error}")
+        return run_cast(["access-list",target,function,*values[1:]],config)
+    if command=="decode-calldata":
+        if not values:
+            return fail("Usage: lk decode-calldata <0x...> | lk decode-calldata '<signature>' <0x...>")
+        if len(values)==1:
+            data=values[0]
+            if not re.fullmatch(r"0x[0-9a-fA-F]*",data or "") or len(data)<10 or len(data)%2:
+                return fail("Error: calldata must be even-length hex beginning with 0x.")
+            target=config.get("target")
+            matches=[]
+            for item in abi_functions(load_abi(target,config)):
+                signature=format_signature(item)
+                selector=abi_selector(signature)
+                if selector and selector.lower()==data[:10].lower():
+                    matches.append(signature)
+            if len(matches)==1:
+                print(f"Signature: {matches[0]}")
+                return run_cast(["decode-calldata",matches[0],data],config)
+            if len(matches)>1:
+                print("Ambiguous selector; use an exact signature:")
+                for signature in matches:
+                    print(f"  {signature}")
+                return fail("Error: multiple ABI functions match this selector.")
+            return fail("Error: no unique ABI signature for this calldata. Use lk 4byte-calldata or provide the signature explicitly.")
+        return run_cast(["decode-calldata",*values],config)
+    if command=="abi-encode":
+        if not values:
+            return fail("Usage: lk abi-encode <type[,type...]> [args...]")
+        signature=values[0]
+        if "(" not in signature:
+            signature=f"lowkey({signature})"
+        return run_cast(["abi-encode",signature,*values[1:]],config)
+    if command in {"4byte","4byte-calldata","4byte-event"}:
+        if not values:
+            return fail(f"Usage: lk {command} <value>")
+        return run_cast([command,*values],config)
+    return fail(f"Error: unsupported Cast power command: {command}")
+
+def run_calldata(config,args):
+    if len(args)!=1:
+        return fail("Usage: lk calldata <raw-calldata>")
+    data=args[0]
+    if not re.fullmatch(r"0x[0-9a-fA-F]*",data) or len(data)<10 or len(data)%2:
+        return fail("Error: calldata must be even-length hex beginning with 0x.")
+    print(f"Selector: {data[:10]}")
+    abi=load_abi(config.get("target"),config)
+    matches=[]
+    for item in abi_functions(abi):
+        signature=format_signature(item)
+        selector=abi_selector(signature)
+        if selector and selector.lower()==data[:10].lower():
+            matches.append((signature,item))
+    if len(matches)==1:
+        signature,item=matches[0]
+        print(f"ABI:      {signature}")
+        print(f"Args:     {decode_abi_input(signature,data)}")
+    elif len(matches)>1:
+        print("ABI:      ambiguous")
+        for signature,_ in matches:
+            print(f"  {signature}")
+    else:
+        print("ABI:      unknown")
+        code,out,error=cast_output(["cast","4byte-calldata",data])
+        if out:
+            print(out)
+        elif error:
+            print(error,file=sys.stderr)
+            record_status(code)
+    code,out,error=cast_output(["cast","pretty-calldata",data])
+    if out:
+        print("\nPretty calldata:")
+        print(out)
+    elif error:
+        print(error,file=sys.stderr)
+    return 0
+
+def run_txpool(config,args):
+    rpc=effective_rpc(config)
+    if not rpc:
+        return fail("Error: an RPC is required for txpool inspection. Start Anvil or set lk rpc <url>.")
+
+    mode=(args[0].lower() if args else "status")
+    methods={
+        "status":"txpool_status",
+        "content":"txpool_content",
+        "pending":"txpool_content",
+    }
+    method=methods.get(mode)
+    if not method:
+        return fail("Usage: lk txpool [status|content]")
+
+    result=rpc_json(rpc,method,[])
+    if result is None:
+        return fail(f"Error: RPC method {method} is unavailable on {rpc}.")
+
+    if mode=="status":
+        pending=result.get("pending","?") if isinstance(result,dict) else "?"
+        queued=result.get("queued","?") if isinstance(result,dict) else "?"
+        print("TXPOOL")
+        print(f"  pending: {pending}")
+        print(f"  queued:  {queued}")
+        return 0
+
+    print(json.dumps(result,indent=2))
+    return 0
+
+def run_disasm(config,args):
+    values=list(args)
+    if not values:
+        target=config.get("target")
+        if not target:
+            return fail("Usage: lk disasm [bytecode|address]")
+        values=[run_cast(["code",target],config,capture=True)]
+    elif len(values)==1 and is_address(values[0]):
+        values=[run_cast(["code",values[0]],config,capture=True)]
+    if not values[0] or not str(values[0]).startswith("0x"):
+        return fail("Error: no bytecode available.")
+    return run_cast(["disassemble",values[0]],config)
+
+def runtime_selector_set(code):
+    raw=code if isinstance(code,str) else str(code)
+    return set(re.findall(r"(?i)0x[0-9a-f]{8}(?![0-9a-f])",raw))
+
+def run_selector_compare(config,args):
+    values=list(args)
+    if values and values[0]=="--compare":
+        values.pop(0)
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    runtime=values[0] if values else run_cast(["code",target],config,capture=True)
+    if not runtime or not str(runtime).startswith("0x"):
+        return fail("Error: no runtime bytecode available.")
+    _,selector_output,_=cast_output(["cast","selectors",runtime])
+    runtime_selectors=runtime_selector_set(selector_output)
+    abi=load_abi(target,config)
+    abi_map={}
+    for item in abi_functions(abi):
+        signature=format_signature(item)
+        selector=abi_selector(signature)
+        if selector:
+            abi_map[selector.lower()]=signature
+    print("SELECTOR COMPARISON")
+    print("===================")
+    print("ABI SELECTORS:")
+    for selector,signature in sorted(abi_map.items()):
+        print(f"  {selector}  {signature}")
+    print("\nRUNTIME SELECTORS:")
+    for selector in sorted(runtime_selectors):
+        print(f"  {selector}  {abi_map.get(selector,'<not in loaded ABI>')}")
+    abi_only=sorted(set(abi_map)-runtime_selectors)
+    runtime_only=sorted(runtime_selectors-set(abi_map))
+    print("\nABI-ONLY:")
+    for selector in abi_only:
+        print(f"  {selector}  {abi_map[selector]}")
+    if not abi_only:
+        print("  none")
+    print("\nRUNTIME-ONLY:")
+    for selector in runtime_only:
+        print(f"  {selector}")
+    if not runtime_only:
+        print("  none")
+    print("\nReview note: selector extraction is a lead, not proof of hidden functionality.")
+    return 0
+
+def run_chisel(args):
+    return run_tool("chisel",args)
+
+def run_fuzz(args):
+    values=list(args)
+    mode=values.pop(0) if values and not values[0].startswith("-") else None
+    if mode in {"replay","rerun"}:
+        print("Replaying persisted Forge test failures...")
+        return run_foundry(["test","--rerun",*values])
+    if mode in {"failures","corpus"}:
+        roots=[
+            os.path.expanduser("~/.foundry/cache/fuzz/failures"),
+            os.path.expanduser("~/.foundry/cache/invariant/failures"),
+            os.path.expanduser("~/.foundry/cache/test-failures"),
+        ]
+        found=0
+        for root in roots:
+            if os.path.exists(root):
+                print(f"\n{root}")
+                if os.path.isdir(root):
+                    entries=sorted(os.path.relpath(p,root) for p in Path(root).rglob("*") if p.is_file())
+                    for entry in entries[:100]:
+                        print(f"  {entry}")
+                        found+=1
+                else:
+                    print("  present")
+                    found+=1
+        if not found:
+            print("No persisted Forge failure/corpus files found.")
+        return 0
+    if mode=="watch":
+        return run_foundry(["test","--watch",*values])
+    print("Running Forge fuzz/test campaign. Fuzz tests are discovered by Forge itself.")
+    return run_foundry(["test",*values])
+
+def run_invariant(config,args):
+    values=list(args)
+    if values and values[0]=="new":
+        if len(values)<2:
+            return fail("Usage: lk invariant new <ContractName>")
+        contract=values[1]
+        target=config.get("target") or "0x" + "0"*40
+        target_literal=solidity_address_literal(target) if is_address(target) else "address(0)"
+        body=f'''// Generated by LowkeyCast.
+pragma solidity ^0.8.20;
+
+import {{Test}} from "forge-std/Test.sol";
+
+contract Invariant_{solidity_identifier(contract)} is Test {{
+    address constant TARGET = {target_literal};
+
+    function invariant_target_code_stable() public view {{
+        if (TARGET != address(0)) {{
+            assertGt(TARGET.code.length, 0);
+        }}
+    }}
+}}
+'''
+        path=write_generated_test("invariant_"+contract,body)
+        code=run_foundry(["test","--match-path",Path(path).as_posix()])
+        if code==0:
+            print("Invariant starter compiles. Edit it to add handlers and protocol invariants.")
+        return code
+    match_present=any(values[index]=="--match-test" for index in range(len(values)))
+    if not match_present:
+        values=["--match-test","invariant_.*",*values]
+    print("Running Forge invariant-focused tests...")
+    return run_foundry(["test",*values])
+
+def run_mutate(args):
+    print("Running native Foundry mutation testing.")
+    return run_foundry(["test","--mutate",*args])
+
+def run_symbolic(args):
+    values=list(args)
+    emit=False
+    if values and values[0]=="emit":
+        values.pop(0)
+        emit=True
+    if emit and "--emit-regression" not in values:
+        values.append("--emit-regression")
+    print("Running native Foundry symbolic testing.")
+    return run_foundry(["test","--symbolic",*values])
+
+
+def run_cheatcodes(args):
+    snippets = {
+        "prank": 'vm.prank(alice);\\ntarget.withdraw();',
+        "start-prank": 'vm.startPrank(attacker);\\n...\\nvm.stopPrank();',
+        "deal": 'vm.deal(attacker, 100 ether);',
+        "warp": 'vm.warp(block.timestamp + 7 days);',
+        "roll": 'vm.roll(block.number + 100);',
+        "store": 'vm.store(address(target), bytes32(uint256(slot)), bytes32(value));',
+        "load": 'bytes32 raw = vm.load(address(target), bytes32(uint256(slot)));',
+        "etch": 'vm.etch(address(dependency), maliciousCode);',
+        "mock": 'vm.mockCall(address(oracle), abi.encodeWithSignature("getPrice()"), abi.encode(0));',
+        "state-diff": 'vm.startStateDiffRecording();\\n...\\nVm.AccountAccess[] memory d = vm.stopAndReturnStateDiff();',
+        "ffi": 'vm.ffi(cmds); // LAB ONLY: executes an external process',
+    }
+    if not args or args[0] in {"list","help"}:
+        print("Lowkey cheatcode lab")
+        print("====================")
+        for name in snippets:
+            suffix="  [LAB ONLY]" if name=="ffi" else ""
+            print(f"  {name:<11}{suffix}")
+        print("\\nUse: lk cheatcode <name>")
+        return 0
+    name=args[0].lower()
+    if name not in snippets:
+        return fail(f"Error: unknown cheatcode '{name}'. Use lk cheatcodes.")
+    print(f"CHEATCODE: {name}")
+    print(snippets[name])
+    if name=="ffi":
+        print("Warning: vm.ffi executes an external command from the test environment.")
+    return 0
+
+def run_brutalize(args):
+    print("Running Foundry brutalize testing.")
+    print("Foundry may corrupt selected inputs to exercise assumptions around calldata/state handling.")
+    return run_foundry(["test","--brutalize",*args])
+
+def run_fuzz_help():
+    print("""Lowkey LAB testing:
+  lk fuzz                    Run Forge tests (including fuzz tests)
+  lk fuzz --fuzz-runs N      Set Forge fuzz iterations
+  lk fuzz replay             Replay persisted failures
+  lk fuzz failures            Show persisted fuzz/invariant failure artifacts
+  lk invariant                Run invariant_* tests
+  lk invariant new <Contract> Generate a compiling invariant starter
+  lk mutate                   Run Forge mutation testing
+  lk symbolic                 Run Forge symbolic testing
+  lk symbolic emit            Ask Forge to emit regression cases
+""")
+
 def run_selectors(config,args):
+    if "--compare" in args:
+        return run_selector_compare(config,args)
     code=args[0] if args else run_cast(["code",config.get("target")],config,capture=True)
-    if not code or not str(code).startswith("0x"): return fail("Error: no runtime bytecode available.")
-    run_cast(["selectors",code],config)
+    if not code or not str(code).startswith("0x"):
+        return fail("Error: no runtime bytecode available.")
+    return run_cast(["selectors",code],config)
 
 def run_layout(args):
     if not args: return fail("Usage: lk layout <ContractName>")
@@ -1071,50 +4718,140 @@ def source_sol_files(root):
     return sorted(paths)
 
 def run_scan(args):
-    root=args[0] if args else "src"
-    if not os.path.exists(root): return fail(f"Path not found: {root}")
+    root = args[0] if args else "src"
+    if not os.path.exists(root):
+        return fail(f"Path not found: {root}")
     if not os.path.isdir(root) and not root.endswith(".sol"):
         return fail(f"Path is not a Solidity file or directory: {root}")
-    patterns=[
-        ("REENTRANCY REVIEW",re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
-        ("ETH TRANSFER REVIEW",re.compile(r"\.(transfer|send)\s*\(")),
-        ("TX.ORIGIN",re.compile(r"\btx\.origin\b")),("DELEGATECALL",re.compile(r"\bdelegatecall\b")),
-        ("SELFDESTRUCT",re.compile(r"\bselfdestruct\s*\(")),("UNCHECKED",re.compile(r"\bunchecked\s*\{")),
-        ("ASSEMBLY",re.compile(r"\bassembly\s*\{")),("ENCODE_PACKED",re.compile(r"\babi\.encodePacked\s*\(")),
-        ("TIMESTAMP",re.compile(r"\bblock\.timestamp\b")),("BLOCKHASH",re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
-        ("PREVRANDAO",re.compile(r"\bblock\.prevrandao\b")),("ECRECOVER",re.compile(r"\becrecover\s*\(")),
-        ("CREATE2",re.compile(r"\bcreate2\b"))]
-    hits=0
+    patterns = [
+        ("REENTRANCY REVIEW", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
+        ("ETH TRANSFER REVIEW", re.compile(r"\.(transfer|send)\s*\(")),
+        ("TX.ORIGIN", re.compile(r"\btx\.origin\b")),
+        ("DELEGATECALL", re.compile(r"\bdelegatecall\b")),
+        ("SELFDESTRUCT", re.compile(r"\bselfdestruct\s*\(")),
+        ("UNCHECKED", re.compile(r"\bunchecked\s*\{")),
+        ("ASSEMBLY", re.compile(r"\bassembly\s*\{")),
+        ("ENCODE_PACKED", re.compile(r"\babi\.encodePacked\s*\(")),
+        ("TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
+        ("BLOCKHASH", re.compile(r"\bblock\.hash\s*\(|\bblockhash\s*\(")),
+        ("PREVRANDAO", re.compile(r"\bblock\.prevrandao\b")),
+        ("ECRECOVER", re.compile(r"\becrecover\s*\(")),
+        ("CREATE2", re.compile(r"\bcreate2\b")),
+    ]
+    markers = []
     for path in source_sol_files(root):
-        try: lines=Path(path).read_text(encoding="utf-8").splitlines()
-        except OSError: continue
-        for lineno,line in enumerate(lines,1):
-            for label,pattern in patterns:
+        try:
+            lines = Path(path).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for lineno, line in enumerate(lines, 1):
+            for label, pattern in patterns:
                 if pattern.search(line):
-                    hits+=1; print(f"{path}:{lineno}: [{label}] {line.strip()}")
-    print(f"\nReview markers: {hits}"); print("These are source-level review markers, not vulnerability verdicts.")
-
+                    item = {
+                        "file": os.path.relpath(path, os.path.dirname(root) if os.path.isfile(root) else "."),
+                        "line": lineno,
+                        "label": label,
+                        "text": line.strip(),
+                    }
+                    markers.append(item)
+                    print(f"{path}:{lineno}: [{label}] {line.strip()}")
+    print(f"\nReview markers: {len(markers)}")
+    print("These are source-level review markers, not vulnerability verdicts.")
+    audit_root = audit_context.foundry_project_root()
+    audit_context.record_tool(
+        "source-triage",
+        audit_root,
+        status="completed",
+        summary=f"{len(markers)} source review marker(s)",
+        data={"count": len(markers), "markers": markers},
+    )
+    return 0
 def run_deps(args):
-    root=args[0] if args else "src"; files=source_sol_files(root)
-    if not files: print(f"No Solidity files found under {root}."); return
+    root=args[0] if args else "."
+    if not os.path.exists(root):
+        return fail(f"Path not found: {root}")
+    if os.path.isfile(root) and not root.endswith(".sol"):
+        return fail(f"Path is not a Solidity file: {root}")
+    files=source_sol_files(root)
+    if not files:
+        print(f"No Solidity files found under {root}.")
+        return
+    display_root=os.path.dirname(root) if os.path.isfile(root) else root
+    matches=0
     print("Dependency / inheritance map:")
     for path in files:
-        try: text_content=Path(path).read_text(encoding="utf-8")
-        except OSError: continue
-        rel=os.path.relpath(path,root)
-        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content): print(f"  {rel} -> import {imported}")
+        try:
+            text_content=Path(path).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        rel=os.path.relpath(path,display_root)
+        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
+            matches+=1
+            print(f"  {rel} -> imports {imported}")
         for contract in re.finditer(r"\b(contract|interface|library)\s+(\w+)(?:\s+is\s+([^{]+))?",text_content):
             for parent in [p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]:
+                matches+=1
                 print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
+    if matches==0:
+        print("No imports or inheritance relationships detected.")
+
+def run_seams(config):
+    target=config.get("target")
+    if not target:
+        return fail("Error: Set target first.")
+    abi=load_abi(target,config)
+    funcs=abi_functions(abi)
+    if not funcs:
+        return fail("Error: No ABI functions loaded for the current target.")
+
+    print("AUDIT SEAMS / HOTSPOTS")
+    print("======================")
+    print("Heuristic cross-surface leads. Treat these as places to investigate, not findings.")
+
+    for item in funcs:
+        name=item.get("name","<anonymous>")
+        signature=format_signature(item)
+        signals=[]
+        mutable=item.get("stateMutability") not in {"view","pure"}
+        payable=item.get("stateMutability")=="payable"
+        address_input=any(canonical_type(p).startswith("address") for p in item.get("inputs",[]))
+        asset_name=any(token in name.lower() for token in ("withdraw","transfer","send","execute","mint","burn","sweep","claim","release"))
+        auth_name=any(token in name.lower() for token in ("owner","admin","role","authorize","pause","upgrade"))
+        callbackish=any(token in name.lower() for token in ("call","callback","execute","hook","flash"))
+        if mutable and address_input:
+            signals.append("state-write + address input")
+        if mutable and asset_name:
+            signals.append("state-write + asset/value flow")
+        if mutable and payable:
+            signals.append("state-write + payable")
+        if auth_name and mutable:
+            signals.append("authorization + state transition")
+        if callbackish and mutable:
+            signals.append("external/callback surface + state transition")
+        if item.get("inputs") and any(canonical_type(p).startswith(("bytes","tuple","string")) for p in item.get("inputs",[])):
+            signals.append("complex user-controlled data")
+        if signals:
+            print(f"\n{signature}")
+            for signal in signals:
+                print(f"  - {signal}")
+    print("\nSEAM CHECKLIST")
+    print("  authorization ↔ state transition")
+    print("  external call ↔ accounting")
+    print("  callback ↔ reentrancy")
+    print("  token/oracle read ↔ value decision")
+    print("  proxy/implementation ↔ storage layout")
+    print("  user input ↔ numeric/encoding assumptions")
+    return 0
 
 def run_risk(config):
     target=config.get("target")
     if not target:
-        print("Error: Set target first."); return
+        return fail("Error: Set target first.")
     funcs=abi_functions(load_abi(target,config))
     if not funcs:
         print("Error: No ABI functions loaded."); return
     print("Function review-surface heuristic:")
+    rows = []
     for item in funcs:
         name=item.get("name","").lower(); signals=[]
         if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
@@ -1122,13 +4859,25 @@ def run_risk(config):
         if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
         if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
         if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
-        print(f"{format_signature(item):55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+        signature = format_signature(item)
+        row = {"signature": signature, "signals": signals}
+        rows.append(row)
+        print(f"{signature:55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+    root = audit_context.foundry_project_root()
+    audit_context.record_tool(
+        "risk",
+        root,
+        status="completed",
+        summary=f"{len(rows)} ABI function(s) reviewed",
+        data={"target": target, "functions": rows},
+    )
+
 def run_gas(config,args):
     if not args:
-        print("Usage: lk gas <function> [args]"); return
+        return fail("Usage: lk gas <function> [args]")
     target=config.get("target")
     if not target:
-        print("Error: Set target first."); return
+        return fail("Error: Set target first.")
     values=list(args)
     if values and ("(" not in values[0] or ")" not in values[0]):
         try: values[0]=resolve_function(values[0],target,config)
@@ -1162,50 +4911,723 @@ def run_batch(config,args):
             command_args.append("--confirm")
         if command=="raw": run_raw(config,command_args)
         else: dispatch_command(command,command_args,config,from_batch=True)
-def run_audit_mode(config):
-    print("\n=== LOWKEYCAST AUDIT MODE ===")
-    while True:
-        print(f"\nTarget: {config.get('target') or 'none'} | RPC: {rpc_display(config.get('rpc')) or 'none'}")
-        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments   0) exit")
-        try: choice=input("lk> ").strip()
-        except EOFError: return
-        if choice=="1": run_recon(config)
-        elif choice=="2": run_functions(config)
-        elif choice=="3": run_risk(config)
-        elif choice=="4": run_checklist(config)
-        elif choice=="5": run_targets(config)
-        elif choice=="6": run_deployments(config)
-        elif choice=="0": return
-        else: print("Unknown option.")
+def _full_evidence_pass(config):
+    """Run the extended audit pass and source triage as one investigation action."""
+    root = audit_context.foundry_project_root()
+    try:
+        scan_code = run_scan([])
+    except Exception as exc:
+        print(f"Warning: source triage failed: {exc}", file=sys.stderr)
+        scan_code = 1
+    audit_code = run_audit(config, ["--checks"])
+    return audit_code if audit_code != 0 else scan_code
 
-def actor_display(config):
-    actor=config.get("actor")
-    if not actor: return "none"
-    if actor in config.get("wallets",{}): return str(actor)
-    if is_probable_private_key(actor): return "<raw private key configured>"
-    return str(actor)
+
+def _generate_connected_poc(config):
+    """Generate the current investigation PoC from the shared evidence context."""
+    try:
+        from generator import run_generate
+        return run_generate(config, ["poc"])
+    except Exception as exc:
+        print(f"Warning: connected PoC generation failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def _bind_detected_anvil(config, info):
+    """Hydrate the current audit session from a detected Anvil without starting it."""
+    if not isinstance(info, dict):
+        return None
+
+    config["_auto_rpc_info"] = info
+    accounts = info.get("accounts", [])
+    if not isinstance(accounts, list) or not accounts:
+        return None
+
+    account0 = accounts[0]
+    current_actor = config.get("actor")
+    current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
+
+    # Never replace an explicitly configured key/env actor. Rebind only a stale
+    # Anvil-derived actor or an empty actor slot.
+    keep_actor = False
+    if isinstance(current_entry, dict):
+        source = current_entry.get("source")
+        recorded = str(current_entry.get("address", "")).lower()
+        keep_actor = source not in {"anvil-default", "anvil-impersonated"} or (
+            recorded and recorded in {str(address).lower() for address in accounts}
+        )
+
+    if not current_actor or not keep_actor:
+        config.setdefault("wallets", {})["lab-deployer"] = {
+            "source": "anvil-default",
+            "anvil_index": 0,
+            "address": account0,
+        }
+        config.setdefault("labels", {})[account0] = "lab-deployer"
+        config["actor"] = "lab-deployer"
+        # The actor profile contains only public account metadata; the private key
+        # is still derived on demand from Anvil's default mnemonic.
+        save_config(config)
+
+    return info
+
+
+def _set_audit_auto_target(config, root, address, contract=None, artifact=None, source="auto-detected"):
+    """Persist a project-scoped target selected by the audit bootstrap."""
+    if not is_address(address):
+        return None
+    config["target"] = address
+    if contract:
+        config["target_contract"] = contract
+    if artifact:
+        config.setdefault("abi_paths", {})[address] = artifact
+    if contract:
+        config.setdefault("aliases", {})[contract] = address
+        config.setdefault("targets", {})[contract] = address
+    audit_context.set_target(
+        root,
+        address=address,
+        contract=contract,
+        artifact=artifact,
+        source=source,
+    )
+    audit_context.update(root, actor=actor_display(config), rpc=effective_rpc(config))
+    save_config(config)
+    return address
+
+
+def _live_target_is_proxy(rpc, address):
+    if not rpc or not is_address(address):
+        return False
+    try:
+        code, implementation, _err = cast_output(["cast", "implementation", address, "--rpc-url", rpc])
+    except Exception:
+        return False
+    if code != 0:
+        return False
+    implementation = str(implementation or "").strip().splitlines()[-1] if implementation else ""
+    return is_address(implementation) and implementation.lower() != str(address).lower()
+
+def _live_target_candidate(config, root, contract_name=None):
+    """Find a saved target matching a current-project contract and live on the detected Anvil."""
+    info = anvil_rpc_info(config)
+    rpc = info.get("url") if isinstance(info, dict) else effective_rpc(config)
+    if not rpc:
+        return None
+
+    artifacts_by_name = {}
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not isinstance(artifact, dict):
+            continue
+        name = artifact_contract_name(path, artifact)
+        if artifact_is_project_application(root, path, artifact):
+            artifacts_by_name[str(name).lower()] = (str(name), path)
+
+    aliases = target_aliases(config)
+    preferred = str(contract_name or "").strip().lower()
+
+    candidates = []
+    for alias, address in aliases.items():
+        key = str(alias).strip().lower()
+        artifact_info = artifacts_by_name.get(key)
+        if not artifact_info:
+            continue
+        try:
+            code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
+        except Exception:
+            continue
+        if code != 0 or not str(runtime or "").strip() or str(runtime).strip() == "0x":
+            continue
+        contract, artifact = artifact_info
+        # An implementation contract with an initializer is not a usable live
+        # application target for autonomous walkthrough mode. Prefer its proxy.
+        if artifact_has_initializer(read_artifact(artifact) or {}) and not _live_target_is_proxy(rpc, address):
+            continue
+        priority = 0 if preferred and key == preferred else 1
+        if is_address(config.get("target")) and str(config.get("target")).lower() == str(address).lower():
+            priority -= 2
+        candidates.append((priority, contract.lower(), address.lower(), contract, address, artifact))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[:3])
+    # Without a preferred contract, multiple live aliases are ambiguous. Do not
+    # silently choose one merely because its name sorts first.
+    if len(candidates) > 1 and not preferred:
+        return None
+    best = candidates[0]
+    return {
+        "contract": best[3],
+        "address": best[4],
+        "artifact": best[5],
+    }
+
+
+def _focused_audit_target_contract(root):
+    """Return the built contract associated with the current investigation focus."""
+    context = audit_context.load(root)
+    focus = context.get("focus", {}) if isinstance(context, dict) else {}
+    signal_id = focus.get("signal_id") if isinstance(focus, dict) else None
+    if not signal_id:
+        return None
+
+    signal = next(
+        (
+            item for item in audit_context.signals(root, None)
+            if isinstance(item, dict) and item.get("id") == signal_id
+        ),
+        None,
+    )
+    if not isinstance(signal, dict):
+        return None
+
+    file_name = str(signal.get("file") or "")
+    source_name = Path(file_name).stem if file_name else ""
+    if not source_name:
+        return None
+
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not artifact_is_project_application(root, path, artifact):
+            continue
+        contract = artifact_contract_name(path, artifact)
+        if str(contract).lower() == source_name.lower():
+            return str(contract)
+    return None
+
+
+def _bootstrap_audit_target(config, root, allow_deploy=False):
+    """Resolve a live project target without guessing across unrelated projects."""
+    existing = project_context_target(root)
+    if existing:
+        artifact = existing.get("artifact")
+        source = existing.get("source")
+        stale_implementation = False
+        if source != "manual" and artifact:
+            artifact_data = read_artifact(str(artifact))
+            if artifact_has_initializer(artifact_data or {}):
+                stale_implementation = not _live_target_is_proxy(effective_rpc(config), existing.get("address"))
+        existing_contract = str(existing.get("contract") or "").lower()
+        rebuild_protocol_fixture = (
+            existing_contract in {"confidencepool", "confidencepoolfactory"}
+            and not isinstance(config.get("lab_system"), dict)
+        )
+        if stale_implementation:
+            print(
+                f"Existing target ignored: {existing.get('contract') or 'implementation'} "
+                "is an implementation contract, not a configured proxy target."
+            )
+        elif rebuild_protocol_fixture:
+            print(
+                f"Existing target deferred: {existing.get('contract') or 'protocol'} "
+                "needs the project-aware local protocol fixture."
+            )
+        else:
+            # A remembered target is only trusted when it is present on the live
+            # local node and its artifact identity matches a first-party application.
+            live_existing = _live_target_candidate(
+                config, root, existing.get("contract")
+            )
+            if live_existing:
+                return _set_audit_auto_target(
+                    config,
+                    root,
+                    live_existing["address"],
+                    live_existing["contract"],
+                    live_existing["artifact"],
+                )
+
+            # For explicit manual targets we preserve the old behavior.
+            if source == "manual":
+                activate_project_target(config, root)
+                return existing.get("address")
+
+    # Whole-protocol bootstrap prefers an inferred protocol root (factory/router/etc.)
+    # over a single focused finding's child implementation. The investigation focus still
+    # remains available when no protocol-root candidate can be inferred.
+    preferred_contract = discover_audit_target_contract(root) or _focused_audit_target_contract(root)
+    if existing and source != "manual":
+        config["target"] = None
+        config["target_contract"] = None
+    candidate = _live_target_candidate(config, root, preferred_contract)
+    if candidate:
+        return _set_audit_auto_target(
+            config,
+            root,
+            candidate["address"],
+            candidate["contract"],
+            candidate["artifact"],
+        )
+
+    # A broadcast deployment is deterministic and safe to reconnect to.
+    before = active_project_target(config, root)
+    if not before and discover_deployments(root):
+        code = run_auto_target(config, preferred_contract)
+        if code == 0 and is_address(config.get("target")):
+            return config.get("target")
+
+    if not allow_deploy:
+        if preferred_contract:
+            print(
+                f"Target not auto-selected: no live saved target or broadcast deployment matched {preferred_contract}."
+            )
+        else:
+            print("Target not auto-selected: choose one with 'lk target <name> <address>' or run 'lk lab'.")
+        return None
+
+    # Auto mode may provision a disposable local target. Never synthesize
+    # constructor arguments: project adapters are trusted, while generic
+    # deployment is only automatic when the selected artifact needs no args.
+    script = discover_local_lab_script(root)
+    if script:
+        code = run_lab(config, [])
+        if code == 0 and is_address(config.get("target")):
+            return config.get("target")
+        return None
+
+    candidate_contract = preferred_contract
+    generic = discover_generic_lab_contract(root, candidate_contract) if candidate_contract else discover_generic_lab_contract(root)
+    if generic:
+        _score, _contract, _path, _artifact, constructor_inputs, _fqn = generic
+        if not constructor_inputs:
+            code = run_lab(config, [])
+            if code == 0 and is_address(config.get("target")):
+                return config.get("target")
+        else:
+            print(
+                f"Auto target provisioning skipped: {generic[1]} requires "
+                f"{len(constructor_inputs)} constructor argument(s)."
+            )
+    else:
+        print("Auto target provisioning skipped: no safe deployable application contract was found.")
+
+    return None
+
+
+def run_audit_mode(config, args=None, interactive=None):
+    """Run the connected audit session with optional autonomous local bootstrap."""
+    args = list(args or [])
+    auto_mode = any(str(item).lower() == "auto" for item in args)
+    checks = "--checks" in args
+    walkthrough_mode = "--walkthrough" in args
+    force_noninteractive = "--non-interactive" in args
+    force_interactive = "--interactive" in args
+    mode_args = ["--checks"] if checks else []
+
+    root = audit_context.foundry_project_root()
+    if not root:
+        return fail("Error: 'lk audit' must be run inside a Foundry project.")
+
+    config["audit_project"] = str(root)
+    save_config(config)
+
+    # Plain audit is deliberately non-owning: it discovers an existing Anvil but
+    # never starts one. Auto mode owns a project Anvil only when none is detected.
+    info = anvil_rpc_info(config)
+    started = False
+    if auto_mode and not info and not config.get("rpc"):
+        info = ensure_project_anvil(config, root)
+        started = bool(info)
+
+    if info:
+        _bind_detected_anvil(config, info)
+        print(f"Anvil   : {'started by Lowkey' if started else 'detected; using existing node'}")
+        print(f"RPC     : {rpc_display(effective_rpc(config))}")
+        print(f"Actor   : {actor_display(config)}")
+    elif auto_mode and config.get("rpc"):
+        print("Anvil   : no Anvil detected at the configured RPC; Lowkey will not override the explicit RPC.")
+    else:
+        print("Anvil   : not detected; continuing static audit only.")
+
+    run_workspace(config, ["init"])
+    run_matrix(config, ["init"])
+    run_checklist(config)
+    if not config.get("session_active"):
+        run_session_lifecycle(config, "start")
+    else:
+        run_session_lifecycle(config, "resume")
+
+    print("\n=== LOWKEYCAST AUDIT MODE ===")
+    print("Starting connected audit baseline...")
+    baseline_code = 0
+
+    # Source triage comes first so a fresh project can use newly discovered
+    # signals to select the most relevant live target before the connected audit.
+    try:
+        scan_code = run_scan([])
+    except Exception as exc:
+        print(f"Warning: source triage failed: {exc}", file=sys.stderr)
+        scan_code = 1
+
+    target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
+    if target:
+        _sync_audit_context(config, root)
+
+    audit_code = run_audit(config, mode_args)
+    if walkthrough_mode:
+        walkthrough_args = ["--auto"] if auto_mode else []
+        walkthrough_args.append("--yes" if force_noninteractive or not sys.stdin.isatty() else "--interactive")
+        walkthrough_code = walkthrough.run(config, walkthrough_args, host=sys.modules[__name__])
+        if walkthrough_code != 0 and audit_code == 0:
+            audit_code = walkthrough_code
+    if audit_code != 0:
+        baseline_code = audit_code
+    elif scan_code != 0:
+        baseline_code = scan_code
+
+    if baseline_code != 0:
+        print("\nBaseline completed with review-needed status; the investigation menu is still available.")
+
+    if force_noninteractive:
+        interactive = False
+    elif force_interactive:
+        interactive = True
+    elif interactive is None:
+        interactive = bool(sys.stdin.isatty()) and str(os.environ.get("CI", "")).lower() not in {"1", "true", "yes"}
+
+    if not interactive:
+        print("Non-interactive environment: audit menu skipped.")
+        return baseline_code
+
+    while True:
+        context = audit_context.load(root)
+        target = context.get("target") if isinstance(context.get("target"), dict) else {}
+        target_label = target.get("contract") or target.get("address") or config.get("target") or "none"
+        print(f"\nTarget: {target_label} | RPC: {rpc_display(effective_rpc(config)) or 'none'}")
+        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments")
+        print("7) full evidence pass   8) generate PoC   0) exit")
+        print("9) protocol walkthrough")
+        try:
+            choice = input("lk> ").strip()
+        except EOFError:
+            print()
+            return baseline_code
+
+        if choice == "1":
+            run_recon(config)
+        elif choice == "2":
+            run_functions(config)
+        elif choice == "3":
+            run_risk(config)
+        elif choice == "4":
+            run_checklist(config)
+        elif choice == "5":
+            run_targets(config)
+        elif choice == "6":
+            run_deployments(config)
+        elif choice == "7":
+            code = _full_evidence_pass(config)
+            if code == 0:
+                print("Full evidence pass completed.")
+            else:
+                print("Full evidence pass needs review.", file=sys.stderr)
+        elif choice == "8":
+            code = _generate_connected_poc(config)
+            if code == 0:
+                print("Connected PoC scaffold refreshed.")
+        elif choice == "9":
+            code = walkthrough.run(config, [], host=sys.modules[__name__])
+            if code != 0:
+                print("Protocol walkthrough needs review.", file=sys.stderr)
+        elif choice == "0":
+            return baseline_code
+        else:
+            print("Unknown option. Choose 0-9.")
+
+
+
+def _signal_evidence(signal):
+    evidence = signal.get("evidence", []) if isinstance(signal, dict) else []
+    return [item for item in evidence if isinstance(item, dict)] if isinstance(evidence, list) else []
+
+def _render_signal_evidence(signal, prefix="   "):
+    evidence = _signal_evidence(signal)
+    if not evidence:
+        return
+    print(f"\n{prefix}Evidence ({len(evidence)}):")
+    for index, item in enumerate(evidence, 1):
+        kind = str(item.get("kind") or "evidence").replace("-", " ").title()
+        function = item.get("function") or "unknown function"
+        success = item.get("success")
+        status = "SUCCESS" if success else "REVERTED" if success is False else "UNKNOWN"
+        print(f"{prefix}  {index}. {kind} — {function} — {status}")
+        caller = item.get("caller") or item.get("actor")
+        if caller:
+            print(f"{prefix}     Caller      : {caller}")
+        if item.get("eth_sent_wei") is not None:
+            try:
+                wei = int(item.get("eth_sent_wei"))
+                rendered = f"{wei / 10**18:g} ETH" if wei % 10**18 == 0 else f"{wei} wei"
+                print(f"{prefix}     ETH sent    : {rendered}")
+            except (TypeError, ValueError):
+                print(f"{prefix}     ETH sent    : {item.get('eth_sent_wei')}")
+        if item.get("gas") is not None:
+            print(f"{prefix}     Gas         : {item.get('gas')}")
+        changes = item.get("storage_changes", [])
+        if not isinstance(changes, list) or not changes:
+            print(f"{prefix}     Storage     : no changed slots")
+            continue
+        print(f"{prefix}     Storage     : {len(changes)} changed slot(s)")
+        for change in changes:
+            label = change.get("label") or f"slot {change.get('slot', 'unknown')}"
+            before = change.get("from_display", change.get("from", "unknown"))
+            after = change.get("to_display", change.get("to", "unknown"))
+            slot = change.get("slot", "unknown")
+            print(f"{prefix}       {label}")
+            print(f"{prefix}         {before}  ->  {after}")
+            print(f"{prefix}         slot: {slot}")
+
+def run_investigate(config, args):
+    root = audit_context.foundry_project_root()
+    if not args or args[0].lower() in {"help", "-h", "--help"}:
+        print("Usage: lk focus <SIGNAL_ID>")
+        print("Focus one audit finding and mark it as investigating.")
+        print("Use: lk findings to list signal IDs.")
+        return 0
+
+    if args[0].lower() == "clear":
+        context = audit_context.load(root)
+        context["focus"] = None
+        audit_context.save(context, root)
+        audit_context.emit("focus-cleared", root, tool="lowkey", summary="investigation focus cleared")
+        print("Investigation focus cleared.")
+        return 0
+
+    signal = audit_context.set_focus(args[0], root)
+    if not signal:
+        return fail(f"Error: signal '{args[0]}' was not found.")
+
+    print("LOWKEY INVESTIGATION FOCUS")
+    print("==========================")
+    print(f"Signal     : {signal.get('id')}")
+    print(f"Issue      : {signal.get('title')}")
+    print(f"Impact     : {signal.get('impact', 'Unknown')}")
+    print(f"Confidence : {signal.get('confidence', 'Unknown')}")
+    print(f"Location   : {audit_context.source_link(signal.get('file'), signal.get('line'), signal.get('column'), root)}")
+    if signal.get("function"):
+        print(f"Function   : {signal.get('function')}")
+    if signal.get("description"):
+        print(f"Observed   : {signal.get('description')}")
+    if signal.get("meaning"):
+        print(f"Meaning    : {signal.get('meaning')}")
+    if signal.get("why"):
+        print(f"Why        : {signal.get('why')}")
+    if signal.get("next"):
+        print(f"Next move  : {signal.get('next')}")
+    actions = signal.get("actions", [])
+    if isinstance(actions, list) and actions:
+        print("Suggested  : " + " -> ".join(str(item) for item in actions))
+
+    _render_signal_evidence(signal)
+    print("\nUseful commands:")
+    function = signal.get("function")
+    if function:
+        safe_function = shlex.quote(str(function))
+        print(f"  lk fn {safe_function}")
+        print(f"  lk ask {safe_function}")
+        print(f"  lk changes {safe_function}")
+        print("  lk trace")
+        print(f"  lk generate test {safe_function}")
+        print("    (add concrete arguments or --calldata when you are ready to reproduce it)")
+    print("  lk findings")
+    print("  lk context")
+    return 0
+
+def _sync_audit_context(config, root=None):
+    root = root or audit_context.foundry_project_root()
+    existing = audit_context.load(root)
+    existing_target = project_context_target(root) or {}
+    target = dict(existing_target)
+
+    # Project-local target memory wins. A global target from another Foundry
+    # project must never leak into this context.
+    if not target:
+        global_target = active_project_target(config, root)
+        if global_target:
+            target = {
+                "address": global_target,
+                "contract": config.get("target_contract"),
+                "artifact": config.get("abi_paths", {}).get(global_target),
+                "source": "legacy-global",
+            }
+        else:
+            # Clear stale target fields left by older Lowkey versions. The context updater
+            # merges nested dictionaries, so explicit nulls prevent a target from another
+            # Foundry project leaking into the current project.
+            target = {
+                "address": None,
+                "contract": None,
+                "artifact": None,
+                "source": "project-auto",
+            }
+
+    actor = actor_display(config)
+    if actor == "none":
+        actor = existing.get("actor")
+
+    rpc = effective_rpc(config) or existing.get("rpc")
+    latest = dict(existing.get("latest", {}))
+    if config.get("last_tx"):
+        latest["tx_hash"] = config.get("last_tx")
+
+    return audit_context.update(
+        root,
+        target=target,
+        actor=actor,
+        rpc=rpc,
+        latest=latest,
+    )
+
+
+def run_audit(config, args):
+    if args and args[0].lower() in {"help", "-h", "--help"}:
+        print("Usage: lk audit [auto] [--checks] [--interactive|--non-interactive]")
+        print("Run the connected audit session. Plain 'lk audit' detects and uses an existing Anvil but never starts one.")
+        print("'lk audit auto' may start a Lowkey-managed project Anvil and bootstrap a safe local target.")
+        print("Use --checks for Slither and optional lint/geiger checks; non-interactive environments skip the menu.")
+        return 0
+
+    root = audit_context.foundry_project_root()
+    _sync_audit_context(config, root)
+
+    try:
+        from forge_tools import run_audit as run_forge_audit
+    except ImportError as exc:
+        return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
+
+    # Preserve the user's audit mode. Plain 'lk audit' is the baseline pipeline;
+    # '--checks' explicitly opts into Slither and optional lint/geiger checks.
+    forge_args = list(args)
+    return_code = run_forge_audit(forge_args)
+
+    audit_context.record_tool(
+        "audit",
+        root,
+        status="completed" if return_code == 0 else "failed",
+        summary="connected audit pipeline",
+        data={"exit_code": return_code},
+    )
+    return return_code
+
+def refresh_generated_poc(config):
+    """Refresh the connected PoC scaffold after audit evidence or a concrete send."""
+    root = audit_context.foundry_project_root()
+    latest = audit_context.load(root).get("latest", {})
+    if not isinstance(latest, dict) or not latest.get("tx_hash"):
+        return 0
+    try:
+        from generator import run_generate
+        return run_generate(config, ["poc"])
+    except Exception as exc:
+        print(f"Warning: PoC scaffold refresh skipped: {exc}", file=sys.stderr)
+        return 0
+def run_context(config):
+    root = audit_context.foundry_project_root()
+    _sync_audit_context(config, root)
+    print("LOWKEY AUDIT CONTEXT")
+    print("====================")
+    print(audit_context.human_snapshot(root))
+    print(f"Context : {audit_context.context_path(root)}")
+    print(f"Events  : {audit_context.events_path(root)}")
+
+def run_signals(config, args):
+    root = audit_context.foundry_project_root()
+
+    if args and args[0].lower() in {"set", "status"}:
+        if len(args) < 3:
+            return fail("Usage: lk signals set <SIGNAL_ID> <open|investigating|proven|dismissed> [note]")
+        signal_id = args[1]
+        status = args[2].lower()
+        note = " ".join(args[3:]) if len(args) > 3 else None
+        try:
+            signal = audit_context.update_signal_status(signal_id, status, root, note=note)
+        except ValueError as error:
+            return fail(f"Error: {error}")
+        if not signal:
+            return fail(f"Error: signal '{signal_id}' was not found.")
+        print(f"Signal updated: {signal_id} -> {status}")
+        return 0
+
+    requested = args[0].lower() if args else "open"
+    status = requested if requested in {"open", "closed", "all", "investigating", "proven", "dismissed"} else "open"
+    selected = audit_context.signals(root, None if status == "all" else status)
+
+    print("LOWKEY AUDIT SIGNALS")
+    print("====================")
+    if not selected:
+        print(f"No {status} audit signals recorded.")
+        return 0
+
+    for index, signal in enumerate(selected, 1):
+        location = audit_context.source_link(
+            signal.get("file"),
+            signal.get("line"),
+            signal.get("column"),
+            root,
+        )
+
+        print(f"\n{index}. {signal.get('title') or 'Audit signal'}")
+        print(f"   ID         : {signal.get('id')}")
+        print(f"   Source     : {signal.get('tool')}")
+        print(f"   Impact     : {signal.get('impact', 'Unknown')}")
+        print(f"   Confidence : {signal.get('confidence', 'Unknown')}")
+        print(f"   Location   : {location}")
+        if signal.get("description"):
+            print(f"   Observation: {signal['description']}")
+        if signal.get("next"):
+            print(f"   Next       : {signal['next']}")
+        if signal.get("triage_note"):
+            print(f"   Note       : {signal['triage_note']}")
+        print(f"   Status     : {signal.get('status', 'open')}")
+        evidence = _signal_evidence(signal)
+        if evidence:
+            print(f"   Evidence   : {len(evidence)} captured")
+            _render_signal_evidence(signal, prefix="      ")
+    return 0
 
 def run_status(config):
-    print(f"Target : {config.get('target') or 'none'}")
-    print(f"RPC    : {rpc_display(config.get('rpc')) or 'none'}")
+    target=config.get("target")
+    if target:
+        load_abi(target,config)
+    rpc=effective_rpc(config)
+    print(f"Target : {target or 'none'}")
+    if rpc:
+        mode="manual" if config.get("rpc") else "auto Anvil"
+        print(f"RPC    : {rpc} ({mode})")
+    else:
+        print("RPC    : none (no local Anvil detected)")
     print(f"Actor  : {actor_display(config)}")
-    print(f"ABI    : {config.get('abi_paths',{}).get(config.get('target')) or 'not loaded'}")
-    print(f"LastTX : {config.get('last_tx') or 'none'}")
-
+    abi=resolve_abi_path(config,target) if target else None
+    contract=config.get("target_contract") or "unknown"
+    print(f"ABI    : {abi or 'auto/not found'}")
+    print(f"Contract: {contract}")
+    print(f"Last tx: {config.get('last_tx') or 'none'}")
+    root = audit_context.foundry_project_root()
+    context = audit_context.load(root)
+    open_signals = len(audit_context.signals(root, "open"))
+    print(f"Signals: {open_signals} open")
+    focus = context.get("focus")
+    if isinstance(focus, dict) and focus.get("signal_id"):
+        print(f"Focus  : {focus.get('signal_id')} — {focus.get('title') or 'audit signal'}")
+    for tool_name in ("slither", "forge", "generator"):
+        state = context.get("tools", {}).get(tool_name, {})
+        if isinstance(state, dict) and state.get("status"):
+            print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
 def run_wizard(config,args):
     if not args:
-        print("Usage: lk wizard <function> [call|send|encode]")
-        return
+        return fail("Usage: lk wizard <function> [call|send|encode]")
     mode=args[1].lower() if len(args)>1 else "call"
     if mode not in {"call","send","encode"}:
-        print("Mode must be call, send, or encode."); return
+        return fail("Mode must be call, send, or encode.")
     target=config.get("target")
     if not target:
-        print("Error: Set target first."); return
+        return fail("Error: Set target first.")
     funcs=abi_functions(load_abi(target,config))
     matches=matching_functions(funcs,args[0])
     if len(matches)!=1:
-        print("Function must resolve to exactly one ABI entry.")
+        return fail("Error: Function must resolve to exactly one ABI entry.")
         for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]:
             print(" ",format_signature(item))
         return
@@ -1214,139 +5636,586 @@ def run_wizard(config,args):
     for index,param in enumerate(item.get("inputs",[]),1):
         label=param.get("name") or f"arg{index}"
         try: value=input(f"{label} ({canonical_type(param)}): ").strip()
-        except EOFError: print("Wizard cancelled."); return
+        except EOFError: print("Wizard cancelled."); return 0
         if not value:
-            print("Argument values are required."); return
+            return fail("Argument values are required.")
         values.append(value)
     if mode=="encode": run_cast(["calldata",signature,*values],config)
     elif mode=="send": run_cast(["send",signature,*values,"--confirm"],config)
     else: run_cast(["call",signature,*values],config)
+
+
+
+def run_impersonate(config,args):
+    if not args or not is_address(args[0]):
+        return fail("Usage: lk impersonate <address> [name]")
+    address=args[0]
+    name=args[1] if len(args)>1 else f"actor_{address[-6:]}"
+    rpc=effective_rpc(config)
+    info=anvil_rpc_info(config)
+    if not rpc or not info:
+        return fail("Error: an Anvil RPC is required for impersonation.")
+    if assigned_anvil_address(config,address) and assigned_anvil_address(config,address)!=name:
+        return fail(f"Error: address {address} is already assigned to '{assigned_anvil_address(config,address)}'.")
+    result=run_cast(["rpc","anvil_impersonateAccount",address],config,capture=True)
+    if result.code!=0:
+        return fail(f"Error: Anvil impersonation failed: {result.text or 'unknown error'}", result.code or 1)
+    config.setdefault("wallets",{})[name]={
+        "source":"anvil-impersonated",
+        "address":address,
+    }
+    config["actor"]=name
+    config.setdefault("labels",{})[address]=name
+    save_config(config)
+    print(f"Actor selected: {name} -> impersonated {address}")
+    return 0
+
+def run_as(config,args):
+    if len(args)<2:
+        return fail("Usage: lk as <actor> <command> [args...]")
+    actor=args[0]
+    if actor not in config.get("wallets",{}):
+        return fail(f"Error: unknown actor '{actor}'. Use lk actor to list actors.")
+    if args[1]=="as":
+        return fail("Error: nested actor switching is not supported.")
+    previous=config.get("actor")
+    config["actor"]=actor
+    try:
+        return dispatch_command(args[1],args[2:],config,from_batch=True)
+    finally:
+        config["actor"]=previous
 
 def run_replay(config,args):
     if not args:
         print("Usage: lk replay <transaction-hash> [trace flags...]"); return
     run_trace(config,args)
 
-def run_fork(args):
+def fork_state():
+    return read_json_file(FORK_FILE,{}) if os.path.exists(FORK_FILE) else {}
+
+def fork_running(state):
+    pid=state.get("pid")
+    if not isinstance(pid,int):
+        return False
+    try:
+        os.kill(pid,0)
+        return True
+    except OSError:
+        return False
+
+
+def run_fork_state(config,args):
+    if not args or args[0] in {"help","-h","--help"}:
+        print("Usage: lk fork dump [file] | lk fork load <file>")
+        return 0
+    rpc=effective_rpc(config)
+    if not rpc or not anvil_rpc_info(config):
+        return fail("Error: a running Anvil RPC is required.")
+    action=args[0]
+    if action=="dump":
+        path=os.path.expanduser(args[1] if len(args)>1 else "anvil-state.json")
+        state=rpc_json(rpc,"anvil_dumpState",[])
+        if not isinstance(state,str):
+            return fail("Error: Anvil did not return a state snapshot.")
+        Path(path).write_text(state,encoding="utf-8")
+        print(f"Anvil state dumped: {path}")
+        return 0
+    if action=="load":
+        if len(args)!=2:
+            return fail("Usage: lk fork load <file>")
+        path=os.path.expanduser(args[1])
+        if not os.path.exists(path):
+            return fail(f"Error: state file not found: {path}")
+        try:
+            state=Path(path).read_text(encoding="utf-8").strip()
+        except OSError as error:
+            return fail(f"Error reading state file: {error}")
+        if not re.fullmatch(r"0x[0-9a-fA-F]+",state):
+            return fail("Error: state file does not contain an Anvil hex snapshot.")
+        result=rpc_json(rpc,"anvil_loadState",[state])
+        if result is not True:
+            return fail("Error: Anvil rejected the state snapshot.")
+        print(f"Anvil state loaded: {path}")
+        return 0
+    return fail("Usage: lk fork dump [file] | lk fork load <file>")
+
+def run_fork(args, config=None):
+    config=config or load_config()
+    values=list(args)
+    if not values:
+        return fail("Usage: lk fork <rpc-url> [block] [--port PORT] | lk fork status | lk fork stop")
+    if values[0] in {"dump","load"}:
+        return run_fork_state(config,values)
+    if values[0]=="status":
+        state=fork_state()
+        if state and fork_running(state):
+            print(f"Fork: running (PID {state.get('pid')})")
+            print(f"RPC:  {state.get('local_rpc','unknown')}")
+            if state.get("block"):
+                print(f"Block: {state['block']}")
+            return 0
+        print("Fork: stopped")
+        return 0
+    if values[0]=="stop":
+        state=fork_state()
+        pid=state.get("pid")
+        if isinstance(pid,int) and fork_running(state):
+            try:
+                os.kill(pid,15)
+            except OSError:
+                pass
+            print(f"Fork stopped (PID {pid}).")
+        else:
+            print("Fork is not running.")
+        try:
+            os.remove(FORK_FILE)
+        except OSError:
+            pass
+        if config.get("rpc")==state.get("local_rpc"):
+            config["rpc"]=None
+            save_config(config)
+        return 0
+    rpc=values.pop(0)
+    block=None
+    port=8546
+    index=0
+    extra=[]
+    while index<len(values):
+        token=values[index]
+        if token=="--port":
+            if index+1>=len(values):
+                return fail("Usage: lk fork <rpc-url> [block] [--port PORT]")
+            try: port=int(values[index+1])
+            except ValueError: return fail("Error: fork port must be a number.")
+            index+=2; continue
+        if block is None and not token.startswith("-"):
+            block=token; index+=1; continue
+        extra.append(token); index+=1
+    if fork_running(fork_state()):
+        return fail("Error: a Lowkey fork is already running. Use lk fork stop first.")
+    if not tool_path("anvil"):
+        return fail("Error: anvil was not found on PATH. Install Foundry first.")
+    if local_port_open("127.0.0.1",port):
+        return fail(f"Error: port {port} is already in use.")
+    command=["anvil","--fork-url",rpc,"--port",str(port),"--auto-impersonate","--silent"]
+    if block is not None:
+        command.extend(["--fork-block-number",block])
+    command.extend(extra)
+    log_path=os.path.join(AUDIT_DIR,"fork.log")
+    os.makedirs(AUDIT_DIR,exist_ok=True)
+    try:
+        with open(log_path,"a",encoding="utf-8") as log:
+            process=subprocess.Popen(command,stdout=log,stderr=log,start_new_session=True)
+    except (OSError,ValueError) as error:
+        return fail(f"Error starting fork: {error}",1)
+    for _ in range(30):
+        if rpc_json(f"http://127.0.0.1:{port}","eth_chainId",[]):
+            break
+        if process.poll() is not None:
+            return fail(f"Error: fork exited early. See {log_path}.")
+        import time
+        time.sleep(0.1)
+    else:
+        try: process.terminate()
+        except OSError: pass
+        return fail(f"Error: fork did not become ready. See {log_path}.")
+    state={"pid":process.pid,"local_rpc":f"http://127.0.0.1:{port}","block":block,"started":datetime.now().isoformat(timespec="seconds")}
+    Path(FORK_FILE).write_text(json.dumps(state,indent=4),encoding="utf-8")
+    config["rpc"]=state["local_rpc"]
+    save_config(config)
+    print(f"Fork started: {state['local_rpc']}")
+    if block is not None:
+        print(f"Fork block: {block}")
+    print(f"PID: {process.pid}")
+    print("Lowkey RPC switched to the local fork.")
+    return 0
+def run_version():
+    runtime = runtime_sync_status()
+    print("LowkeyCast 2.1 — Foundry Attack Lab")
+    print(f"Runtime: {runtime['status'].upper()} - {runtime['detail']}")
+    if runtime.get("source_repo"):
+        print(f"Source : {runtime['source_repo']}")
+def run_project_map(config, args):
+    if project_tools is None:
+        return fail("Project tools are not installed. Re-run install.sh from this checkout.")
+    root = audit_context.foundry_project_root()
+    try:
+        result = project_tools.render_project_map(root)
+        if args and args[0] in {"json", "--json"}:
+            print(json.dumps(result, indent=2, default=str))
+        return 0
+    except Exception as error:
+        return fail(f"Project map failed: {error}", 1)
+
+
+def run_system_model(config, args):
+    if system_model is None:
+        return fail("System model is not installed. Re-run install.sh from this checkout.")
+    root = audit_context.foundry_project_root()
+    rpc = effective_rpc(config)
+    try:
+        manifest, path = system_model.refresh_manifest(
+            root,
+            rpc=rpc,
+            config=config,
+            reason="lk system",
+        )
+        summary = system_model.summarize_manifest(manifest)
+        print("LOWKEY SYSTEM MODEL")
+        print("=" * 72)
+        print(f"Manifest      : {path}")
+        print(f"Contracts     : {summary['contracts']}")
+        print(f"Deployments   : {summary['deployments']} ({summary['live']} live)")
+        print(f"Relationships : {summary['relationships']}")
+        print(f"Roles         : {summary['roles']}")
+        print(f"Initialization: {summary['initialization_steps']}")
+        print(f"Tests         : {summary['tests']}")
+        print(f"Adversarial   : {summary['adversarial_evidence']}")
+        print(f"Audit targets : {summary['audit_targets']}")
+        if args and args[0] in {"json", "--json"}:
+            print("\n" + json.dumps(manifest, indent=2, default=str))
+        return 0
+    except Exception as error:
+        return fail(f"System model failed: {error}", 1)
+
+
+def run_audit_rg(config, args):
+    if audit_run_rg is None:
+        return fail("Audit engine is not installed. Re-run install.sh from this checkout.")
     if not args:
-        print("Usage: lk fork <rpc-url> [block-number]"); return
-    rpc=args[0]
-    command=["anvil","--fork-url",rpc]
-    if len(args)>1: command.extend(["--fork-block-number",args[1]])
-    print("Start a local fork with:")
-    print("  "+redact_secrets(shlex.join(command)))
-    print("Then point LowkeyCast at it:")
-    print("  lk rpc http://127.0.0.1:8545")
+        return fail("Usage: lk rg <pattern> [path] [rg-options...]")
+    pattern = args[0]
+    path = "."
+    extra = list(args[1:])
+    if extra and not str(extra[0]).startswith("-"):
+        path = extra.pop(0)
+    root = audit_context.foundry_project_root()
+    return audit_run_rg(pattern, path, extra, str(root))
+
+
+def run_audit_poc(config, args):
+    if audit_generate_poc is None:
+        return fail("Audit engine is not installed. Re-run install.sh from this checkout.")
+    finding = None
+    name = None
+    remaining = list(args)
+    i = 0
+    while i < len(remaining):
+        item = remaining[i]
+        if item == "--finding" and i + 1 < len(remaining):
+            try:
+                finding = int(remaining[i + 1])
+            except ValueError:
+                return fail("Usage: lk poc [--finding N] [--name NAME]")
+            i += 2
+            continue
+        if item == "--name" and i + 1 < len(remaining):
+            name = remaining[i + 1]
+            i += 2
+            continue
+        if item in {"--help", "-h"}:
+            print("Usage: lk poc [--finding N] [--name NAME]")
+            return 0
+        return fail(f"Unknown lk poc option: {item}")
+    root = audit_context.foundry_project_root()
+    save_config(config)
+    code, _paths = audit_generate_poc(str(root), finding, name)
+    return code
+
+
+def run_external_audit(config, args):
+    if audit_run_pipeline is None:
+        return fail("Audit engine is not installed. Re-run install.sh from this checkout.")
+    remaining = list(args)
+    if remaining and remaining[0] in {"run", "pipeline"}:
+        remaining.pop(0)
+    generate = False
+    slither_args = []
+    for item in remaining:
+        if item in {"--poc", "--generate-poc"}:
+            generate = True
+        else:
+            slither_args.append(item)
+    root = audit_context.foundry_project_root()
+    # The evidence engine reads ~/.lowkey/config.json directly; persist the
+    # current command context first so target/RPC changes from this invocation
+    # are visible to it.
+    save_config(config)
+    return audit_run_pipeline(str(root), slither_args=slither_args, generate=generate)
+
+
 def print_help():
-    print("""
-LowkeyCast - Foundry auditor interface
+    print(r"""
+LOWKEY — SMART CONTRACT AUDITOR CONSOLE
+=======================================
 
-CORE
-  lk target <addr>                    Set target
-  lk target <name> <addr>             Save + select target
-  lk target list                      List saved targets
-  lk target auto [name]               Use latest broadcast deployment
-  lk use <name|number>                Switch target
-  lk deployments                      List deployments
-  lk status                           Show target/RPC/actor/ABI/last tx
-  lk rpc <url>                        Set RPC
-  lk rpc set <name> <url>             Save RPC profile
-  lk rpc use <name>                   Select RPC profile
-  lk wallet list                      List signer profiles
-  lk wallet set <name> <private-key>  Save local test key (plaintext on disk)
-  lk wallet set-env <name> <ENV_VAR>  Use environment-backed signer
-  lk wallet use <name>                Select signer
-  lk wallet remove <name>             Remove signer
-  lk actor reset                      Clear signer
+START HERE
+  lk -h / lk --help                  Show this menu.
+  lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
+  lk build                           Compile the current Foundry project.
+  lk test                            Run the project's Forge tests.
+  lk lab                             Start/rebuild a disposable local audit lab.
+  lk target auto                     Pick the latest usable deployed target.
+  lk status                          See target, RPC, actor, ABI, and last transaction.
+  lk walkthrough --auto              Understand the whole protocol by executing a local flow.
+  lk audit                           Run the interactive audit workflow.
 
-ABI / INTERACTION
-  lk abi <path>                       Load ABI
-  lk abi auto                         Auto-load ABI
-  lk functions [query]                List/fuzzy-find functions
-  lk fn <query>                       Fuzzy-find functions
-  lk ask <function>                   Show argument names/types
-  lk wizard <function> [mode]         Prompt for call/send/encode arguments
-  lk c <func> [args]                  Read
-  lk s <func> [args]                  Send
-  lk s ... --preview                  Preview without sending
-  lk s ... --confirm                  Preview + confirmation prompt
-  lk encode <func> [args]             Build calldata
-  lk decode <function> <return-data>  Decode return values
-  lk decode-error <revert-data>       Decode custom error
-    lk event <sig> <data> [topic0 indexed-topic ...]
-                                                                            Topics are prepended to one Cast DATA payload
-  lk tx [hash]                        Inspect/decode transaction
-  lk raw <cast-command> ...           Raw Cast bypass
+FIRST 10 MINUTES
+  1. Start Anvil:                  anvil
+  2. Compile:                      lk build
+  3. Build the local lab:          lk lab
+  4. See what Lowkey selected:      lk status
+  5. See the project/system map:    lk project
+                                     lk system
+  6. Understand the flow:           lk walkthrough --auto --steps 6
+  7. List the attack surface:      lk functions
+                                     lk risk
+  8. Try a read safely:             lk read <function> [args]
+  9. Preview a transaction:         lk send <function> [args] --preview
+ 10. Inspect what happened:         lk trace
 
-INSPECTION
-  lk info                             Target/chain/code/ABI/proxy
-  lk recon                            Balance/codehash/codesize/nonce
-  lk proxy                            Proxy + implementation/admin
-  lk implementation                   Resolve implementation
-  lk admin                            Resolve proxy admin
-  lk selectors                        Extract runtime selectors
-  lk mapping <slot> <key>             Compute/read mapping slot
-  lk mapping <type> <slot> <key>      Explicit key type
-  lk namespace <id>                   ERC-7201 namespace slot
-  lk proof <slot> [block]             Storage proof
-  lk snapshot [slot ...]              Save target/chain-scoped storage
-  lk diff                             Compare snapshot
-  lk ens <name|address>               ENS lookup
-  lk token <token>                    ERC20 metadata
-  lk token balance <token> <holder>   ERC20 balance
+COMMON TERMS
+  <address>   Contract/wallet address, e.g. 0x1111...1111
+  <name>      Friendly name, e.g. Alice or escrow
+  <Contract>  Solidity contract name, e.g. Escrow
+  <function>  Solidity function name, e.g. release
+  <file>      Source file, e.g. src/EthEscrow.sol
+  <dir>       Folder, e.g. src
+  <slot>      Storage slot number, e.g. 3
+  <key>       Mapping key, e.g. an address
+  <tx>        Transaction hash
+  <rpc>       RPC URL, e.g. http://127.0.0.1:8545
 
-SOURCE TRIAGE
-  lk scan [src]                       High-signal Solidity review markers
-  lk deps [src]                       Import/inheritance map
-  lk layout <ContractName>            Forge storage layout
-  lk risk                             ABI-level function risk heuristic
-  lk gas <func> [args]                Estimate gas
-  lk trace [tx] [flags]               Replay/trace transaction
-  lk replay <tx> [flags...]            Explicit replay alias
-  lk fork <rpc-url> [block]           Print Anvil fork command
-  lk logs [args...]                   Query logs
-  lk logs --decode [args...]          Query + decode ABI events
+PROJECT / TARGET SETUP
+  lk target <address>               Select a contract. Example: lk target 0x...
+  lk target <name> <address>        Save + select a named target. Example: lk target escrow 0x...
+  lk target list                    List saved targets.
+  lk target auto [name]             Use a recent deployment. Example: lk target auto escrow
+  lk use <name|number>              Switch to a saved target. Example: lk use escrow
+  lk deployments                    List deployment records.
+  lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
+  lk lab [Contract]                 Create or reuse a disposable local audit environment.
+  lk lab stop                       Stop the Anvil Lowkey started.
+  lk rpc <url>                      Set RPC manually. Example: lk rpc http://127.0.0.1:8545
+  lk rpc set <name> <url>           Save an RPC profile.
+  lk rpc use <name>                 Select an RPC profile.
+  lk wallet list                    List signer profiles.
+  lk wallet set-env <name> <ENV>    Use a private key from an environment variable.
+  lk actor                          Show current actor/accounts.
+  lk actor <index> <name>           Name an Anvil account. Example: lk actor 0 Alice
+  lk actors                         List available Anvil actors.
+  lk impersonate <address> [name]   Use an existing account on a local fork.
+  lk as <actor> <command> [args]    Run one command as another actor.
 
-AUDIT OS
-  lk audit                            Interactive dashboard
-  lk finding <note>                   Record observation
-  lk finding add <severity> <title> <text>
-  lk checklist                       View/mark/reset checklist
-  lk matrix init                      Initialize attacker-state matrix
-  lk matrix actor <name> <addr>       Add actor
-  lk matrix state <name> <desc>       Add state definition
-  lk matrix add <name> <func> <actor> <expected>
-  lk matrix list                      List scenarios
-  lk matrix test <name>               Generate Forge test skeleton
-  lk test-gen                         Reproduce latest send as Forge test
-  lk note <text>                      Save audit note
-  lk todo <text>                      Add audit TODO
-  lk session [start|resume|end]       Audit session lifecycle
-  lk export                           Build audit-report/
-  lk batch <file>                     Run one lk command per line
-  lk self-test                        Run regression checks
-    lk doctor                           Check Python, Foundry, Cast, and Anvil
+UNDERSTAND THE PROJECT
+  lk project [json]                Detect the project and print its source/dependency graph.
+                                   Example: lk project
+  lk system [json]                 Build/show the reusable system bootstrap manifest.
+                                   Example: lk system
+  lk info                          Show target, bytecode, ABI, proxy information.
+  lk recon                         Quick contract reconnaissance: balance/code/nonce.
+  lk functions [query]             List contract functions. Example: lk functions
+  lk fn <query>                    Find a function. Example: lk fn release
+  lk ask <function>                Show function inputs. Example: lk ask createEscrow
+  lk wizard <function> [mode]     Interactive argument helper.
+  lk layout <Contract>             Show Forge storage layout.
+  lk deps [src]                    Show imports/inheritance. Example: lk deps
+  lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
+  lk seams [hotspots]              Show audit hotspots.
+  lk risk                          Show ABI-level review-surface hints.
+  lk gas <function> [args]         Estimate gas. Example: lk gas release
+  lk slither [args...]             Run Slither through Lowkey's reporter.
+  lk rg <pattern> [path]           Search source and save evidence. Example: lk rg "delegatecall" src
 
-FORENSICS
-  lk receipt [tx]                     Transaction receipt
-  lk last [tx|trace|logs]             Reuse latest transaction
-  lk c ...                            Cast call shortcut
-  lk s ...                            Cast send shortcut
-  lk st ...                           Cast storage shortcut
+INTERACT WITH CONTRACTS
+  lk read <function> [args]        Read without changing state. Example: lk read balanceOf <address>
+  lk send <function> [args]        Send a transaction. Example: lk send release --preview
+  lk send ... --preview            Encode/check without sending.
+  lk send ... --confirm            Preview, then ask before sending.
+  lk c <function> [args]           Short read alias. Example: lk c balanceOf <address>
+  lk s <function> [args]           Short send alias. Example: lk s release --preview
+  lk st ...                        Short raw-storage/low-level alias.
+  lk encode <function> [args]      Build calldata. Example: lk encode release
+  lk decode <function> <data>      Decode return data.
+  lk decode-error <data>           Decode a custom error.
+  lk event <sig> <data> [topics]   Decode event data.
+  lk raw <cast-command> [args]     Run a raw Cast command when Lowkey has no nicer wrapper.
+
+STORAGE / STATE FORENSICS
+  lk mapping <slot> <key>          Calculate/read a mapping slot. Example: lk mapping 3 0x...
+  lk mapping <type> <slot> <key>   Explicitly choose the mapping key type.
+  lk namespace <id>                Calculate an ERC-7201 namespace slot.
+  lk proof <slot> [block]          Read a storage proof.
+  lk snapshot [slot ...]           Save selected storage slots.
+  lk diff                          Compare the latest storage snapshot.
+  lk changes <function> [args]     Show storage changes from a call.
+  lk state-diff <function> [args]  Alias for storage-change reproduction.
+  lk storage / slots               Use raw Cast storage tools through lk raw when needed.
+
+TRANSACTION FORENSICS
+  lk tx [tx]                       Inspect/decode a transaction.
+  lk receipt [tx]                  Read a transaction receipt.
+  lk trace [tx] [flags]            Replay/trace execution.
+  lk replay <tx> [flags]           Explicit transaction replay alias.
+  lk logs [args...]                Query logs.
+  lk logs --decode [args...]       Query and ABI-decode events.
+  lk last tx                       Inspect the latest sent transaction.
+  lk last trace                    Trace the latest transaction.
+  lk last logs                     Query logs using the latest transaction context.
+  lk chain                         Show chain ID/block/RPC.
+  lk label <address> <name>        Give an address a readable label.
+
+REPRODUCE / ATTACK / TEST
+  lk probe <function> [args]       Try a call without assertions. Example: lk probe release
+  lk test-gen                      Turn the latest send into a Forge test.
+  lk generate test <function>      Generate a reusable Forge test.
+  lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
+  lk generate deployment <Contract> Generate a deployment script.
+  lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
+  lk fuzz [args...]                Run Forge fuzz tests.
+  lk invariant [args...]           Run Forge invariant tests.
+  lk symbolic [args...]            Run symbolic tests when configured.
+  lk mutate [args...]              Run mutation testing.
+  lk brutalize [args...]           Stress calldata/state assumptions.
+  lk cheatcodes [args...]          Show/run useful Foundry cheatcode helpers.
+  lk matrix init                   Create an attacker-state test matrix.
+  lk matrix actor ...              Add an actor to the matrix.
+  lk matrix state ...              Define a state.
+  lk matrix add ...               Add a scenario.
+  lk matrix list                   List scenarios.
+  lk matrix test <name>            Generate a Forge test skeleton for a scenario.
+
+AUDIT WORKFLOW / EVIDENCE
+  lk audit                          Interactive audit dashboard.
+  lk audit auto                    Local autonomous audit; may provision Anvil.
+  lk audit --checks                Audit plus Slither and optional lint/geiger checks.
+  lk audit auto --checks           Autonomous audit with checks.
+  lk audit run                     Full evidence pipeline: build -> tests -> coverage -> Slither -> triage.
+  lk audit run --poc               Same pipeline, then generate a PoC scaffold.
+  lk audit--checks                 Legacy compact alias for audit --checks.
+  lk finding <note>                Record a manual observation. Example: lk finding caller is not restricted
+  lk finding add <sev> <title>...  Record severity/title/text in one command.
+  lk findings                      Show stored findings/signals.
+  lk focus <id|query>              Focus one finding/review surface.
+  lk checklist                    View/reset/mark checklist items.
+  lk note <text>                   Save an audit note.
+  lk todo <text>                   Add an audit TODO.
+  lk session [start|resume|end]   Manage audit sessions.
+  lk workspace [args]             Inspect audit workspace files.
+  lk export                        Build an audit-report/ bundle.
+
+PROTOCOL WALKTHROUGH
+  lk walkthrough [options]         Build and execute a visual whole-protocol workflow.
+  lk walk [options]                Alias for walkthrough.
+  lk walkthrough --auto            Auto-provision/use a local target.
+  lk walkthrough --static          Render the compiled model without execution.
+  lk walkthrough --contract X      Focus on contract X.
+  lk walkthrough --steps 6         Limit the displayed/executed flow length.
+  lk walkthrough test --auto       Randomized live probes on isolated Anvil snapshots.
+  lk walkthrough test --cases 50   Run 50 adversarial probes and save replayable evidence.
+  Example: lk walkthrough --auto --steps 8
+
+FORK / PROXY / ABI FORENSICS
+  lk fork <rpc> [block]             Start a local fork command/state.
+  lk proxy                          Inspect an EIP-1967 proxy.
+  lk implementation                 Resolve the implementation address.
+  lk admin                          Resolve the proxy admin.
+  lk selectors                     Extract runtime function selectors.
+  lk calldata <data>                Decode calldata and selectors.
+  lk sig <function>                 Print a function signature/selector.
+  lk 4byte ...                      Extended Cast 4byte helper.
+  lk access-list ...                Build/access an access list.
+  lk constructor-args ...           Inspect constructor arguments.
+  lk creation-code ...              Inspect creation/init code.
+  lk decode-calldata ...            Decode calldata directly.
+  lk abi-encode ...                 ABI-encode arguments.
+  lk disasm ...                     Disassemble bytecode.
+  lk txpool ...                     Inspect the local transaction pool.
+  lk chisel ...                     Launch/use Foundry Chisel.
+  lk ens <name|address>             ENS forward/reverse lookup.
+  lk token <token>                  ERC20 metadata helper.
+  lk token balance <token> <holder> ERC20 holder balance helper.
+  lk snapshot/diff                   Storage snapshot + comparison.
+
+FOUNDRY SHORTCUTS
+  lk forge <forge-command> [args]   Use native Forge through Lowkey. Example: lk forge test -vvvv
+  lk build                          Shortcut for forge build. Example: lk build
+  lk test                           Shortcut for forge test. Example: lk test
+  lk script <args>                  Shortcut for forge script.
+  lk inspect <args>                 Shortcut for forge inspect.
+  lk coverage <args>                Shortcut for forge coverage.
+  lk lint / geiger                  Run those Forge tools when installed.
+  lk fmt                            Format Foundry sources.
+  lk create                         Create a new Foundry component.
+
+UTILITIES / COMPATIBILITY
+  lk context                        Show current audit/project context.
+  lk state-diff / statediff         Legacy aliases for state-diff.
+  lk try                            Legacy alias for probe.
+  lk investigate                   Legacy alias for focus/investigation.
+  lk signals                       Legacy alias for findings.
+  lk resolve / lookup               ENS lookup aliases.
+  lk erc20                         Token helper alias.
+  lk receipt / tx / trace / logs   Transaction inspection commands.
+  lk batch <file>                   Run one lk command per line.
+  lk self-test                      Run Lowkey regression tests.
+  lk doctor                        Diagnose installation/toolchain problems.
+
+SAFETY / EXPECTATIONS
+  • Preview sends before touching a chain: use --preview or --confirm.
+  • Use local Anvil/test keys while learning; do not put production keys in Lowkey.
+  • Heuristics and analyzer findings are review leads, not vulnerability verdicts.
+  • The goal is RECON → ATTACK → PROVE: understand the system, reproduce behavior, then prove impact.
 """)
+
 def dispatch_command(cmd,args,config,from_batch=False):
-    if cmd in {"--help","-h","help"}: print_help()
-    elif cmd in {"--version","-V","version"}: print("LowkeyCast 2.0")
+    activate_project_target(config)
+    if cmd in {"--h","--help","-h","help"}: print_help()
+    elif cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
-        if not args: print(f"Current target: {config.get('target') or 'none'}"); return
-        if args[0]=="reset": config["target"]=None
-        elif args[0]=="list": run_targets(config); return
-        elif args[0]=="auto": run_auto_target(config,args[1] if len(args)>1 else None); return
+        root=audit_context.foundry_project_root()
+        current=active_project_target(config,root)
+        if not args:
+            project=project_context_target(root)
+            if project:
+                print(f"Current project target: {project.get('contract') or 'unknown'} -> {project.get('address')}")
+            else:
+                print(f"Current project target: {current or 'none'}")
+            return
+        if args[0]=="reset":
+            config["target"]=None
+            audit_context.set_target(root, address=None, contract=None, artifact=None, source="project")
+        elif args[0]=="list":
+            run_targets(config); return
+        elif args[0]=="auto":
+            return run_auto_target(config,args[1] if len(args)>1 else None)
         elif len(args)==1:
             resolved=resolve_target_ref(config,args[0])
-            if not resolved: return fail("Error: target must be a valid address or saved alias.")
-            config["target"]=resolved
-        elif len(args)==2 and is_address(args[1]): config["aliases"][args[0]]=args[1]; config["targets"][args[0]]=args[1]; config["target"]=args[1]
+            if resolved:
+                config["target"]=resolved
+            elif is_address(args[0]):
+                config["target"]=args[0]
+            else:
+                return run_auto_target(config,args[0])
+            audit_context.set_target(
+                root,
+                address=config["target"],
+                contract=config.get("target_contract"),
+                artifact=config.get("abi_paths",{}).get(config["target"]),
+                source="manual",
+            )
+        elif len(args)==2 and is_address(args[1]):
+            config["aliases"][args[0]]=args[1]
+            config["targets"][args[0]]=args[1]
+            config["target"]=args[1]
+            config["target_contract"]=args[0]
+            audit_context.set_target(
+                root,
+                address=args[1],
+                contract=args[0],
+                artifact=config.get("abi_paths",{}).get(args[1]),
+                source="manual",
+            )
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
     elif cmd in {"targets","target-list"}: run_targets(config)
@@ -1356,8 +6225,16 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if not resolved: print(f"Unknown target: {args[0]}"); return
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
+    elif cmd=="project": return run_project_map(config,args)
+    elif cmd=="system": return run_system_model(config,args)
+    elif cmd=="clone": return run_clone(config,args)
+    elif cmd=="lab": return run_lab(config,args)
     elif cmd=="rpc":
-        if not args: print(f"RPC: {rpc_display(config.get('rpc')) or 'none'}"); return
+        if not args:
+            rpc=effective_rpc(config)
+            mode="manual" if config.get("rpc") else "auto Anvil"
+            print(f"RPC: {rpc_display(rpc) or 'none'} ({mode})" if rpc else "RPC: none (no local Anvil detected)")
+            return
         sub=args[0]
         if sub=="reset": config["rpc"]=None
         elif sub=="set" and len(args)==3: config["rpc_profiles"][args[1]]=args[2]; config["rpc"]=args[2]
@@ -1368,7 +6245,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
         save_config(config)
     elif cmd=="wallet":
         if args and args[0]=="list":
-            for name,entry in config.get("wallets",{}).items(): print(f"{name}: {'env' if isinstance(entry,dict) and entry.get('env') else 'key'}")
+            for name,entry in config.get("wallets",{}).items():
+                print(f"{name}: {wallet_entry_kind(entry)}")
         elif len(args)==3 and args[0]=="set":
             key=normalize_private_key(args[2])
             if not key: print("Invalid private key format."); return
@@ -1385,37 +6263,85 @@ def dispatch_command(cmd,args,config,from_batch=False):
             save_config(config)
         else: return fail("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
     elif cmd=="actor":
-        if args and args[0]=="reset": config["actor"]=None; save_config(config)
-        elif args: config["actor"]=args[0]; save_config(config)
-        else: print(f"Actor: {actor_display(config)}")
+        if args and args[0]=="reset":
+            config["actor"]=None
+            save_config(config)
+        elif len(args)>=2 and args[0].isdigit():
+            return select_anvil_actor(config,args[0],args[1])
+        elif len(args)==1 and args[0] in config.get("wallets",{}):
+            config["actor"]=args[0]
+            save_config(config)
+            print(f"Actor selected: {actor_display(config)}")
+        elif not args:
+            list_anvil_actors(config)
+        else:
+            return fail("Usage: lk actor <index> <name> | lk actor [existing-name] | lk actor reset")
     elif cmd=="abi":
         target=config.get("target")
-        if not target: print("Error: Set target first."); return
-        if args:
-            if args[0]=="auto":
-                records=discover_deployments("."); match=next((x for x in records if x["address"]==target),None)
-                if match:
-                    for path in artifact_json_files("."):
-                        if os.path.join(".","out") in path and os.path.basename(path)==f"{match['contract']}.json":
-                            config["abi_paths"][target]=path; break
-            else: config["abi_paths"][target]=args[0]
+        if not target: return fail("Error: Set target first.")
+        if not args:
+            run_abi(config)
+        elif args[0]=="auto":
+            path=auto_abi_path(target,config)
+            if not path: return fail("Error: could not auto-discover an ABI for the current target.")
+            print(f"ABI auto-loaded: {path}")
+        else:
+            path=os.path.expanduser(args[0])
+            if not os.path.exists(path):
+                return fail(f"Error: ABI file not found: {path}")
+            remember_abi_path(config,target,path)
+            config["target_contract"]=artifact_contract_name(path,read_artifact(path))
             save_config(config)
-        else: run_abi(config)
+            config.pop("_config_dirty",None)
+            print(f"ABI override saved: {path}")
+    elif cmd in {"read"}:
+        return run_cast(["call",*args],config)
+    elif cmd in {"send"}:
+        return run_cast(["send",*args],config)
+    elif cmd in {"try","probe"}:
+        return run_probe(config,args)
+    elif cmd in {"changes","state-diff"}:
+        return run_state_diff(config,args)
     elif cmd=="functions": run_functions(config,args[0] if args else None)
     elif cmd=="fn": run_functions(config," ".join(args) if args else None)
     elif cmd=="wizard": run_wizard(config,args)
     elif cmd=="replay": run_replay(config,args)
-    elif cmd=="fork": run_fork(args)
+    elif cmd=="fork": return run_fork(args,config)
     elif cmd=="ask":
-        if not args: print("Usage: lk ask <function>"); return
-        funcs=abi_functions(load_abi(config.get("target"),config)); matches=matching_functions(funcs,args[0])
+        if not args: return fail("Usage: lk ask <function>")
+        query=args[0]
+        root=audit_context.foundry_project_root()
+        target=active_project_target(config,root)
+        funcs=abi_functions(load_abi(target,config)) if target else []
+        if not funcs:
+            artifact_matches=project_artifact_function_matches(root,query)
+            if not artifact_matches:
+                return fail(f"Error: no built-project function matched '{query}'. Run 'forge build' first.")
+            print(f"Built-project function matches for '{query}':")
+            for contract,signature,path in artifact_matches[:8]:
+                print(f"  {contract}::{signature}")
+            print("Use a deployed project target when you need live-chain details.")
+            return 0
+        matches=matching_functions(funcs,query)
         if len(matches)!=1:
-            for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]: print(" ",format_signature(item))
+            for item in sorted(funcs,key=lambda x:function_score(x,query),reverse=True)[:8]:
+                print(" ",format_signature(item))
         else:
-            item=matches[0]; print(f"Function: {format_signature(item)}")
-            for index,param in enumerate(item.get("inputs",[]),1): print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
+            item=matches[0]
+            print(f"Function: {format_signature(item)}")
+            for index,param in enumerate(item.get("inputs",[]),1):
+                print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
+    elif cmd in {"audit--checks","audit-checks"}: return run_audit_mode(config, ["--checks", *args])
+    elif cmd=="audit":
+        if args and args[0] in {"run","pipeline"}:
+            return run_external_audit(config,args)
+        return run_audit_mode(config,args)
+    elif cmd in {"walkthrough","walk"}: return walkthrough.run(config,args,host=sys.modules[__name__])
+    elif cmd=="context": return run_context(config)
+    elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
+    elif cmd in {"findings", "signals", "signal"}: return run_signals(config,args)
     elif cmd=="chain": run_chain(config)
     elif cmd=="encode": run_encode(config,args)
     elif cmd=="sig": run_signature(args)
@@ -1433,7 +6359,22 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"mapping","map"}: run_mapping(config,*args)
     elif cmd=="namespace": run_namespace(config,args)
     elif cmd=="proof": run_proof(config,args)
-    elif cmd=="selectors": run_selectors(config,args)
+    elif cmd=="selectors": return run_selectors(config,args)
+    elif cmd=="calldata": return run_calldata(config,args)
+    elif cmd in {"4byte","4byte-calldata","4byte-event","access-list","interface","constructor-args","creation-code","decode-calldata","abi-encode"}: return run_cast_deep(config,[cmd,*args])
+    elif cmd=="disasm": return run_disasm(config,args)
+    elif cmd=="txpool": return run_txpool(config,args)
+    elif cmd=="chisel": return run_chisel(args)
+    elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
+    elif cmd=="as": return run_as(config,args)
+    elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
+    elif cmd=="fuzz": return run_fuzz(args)
+    elif cmd=="invariant": return run_invariant(config,args)
+    elif cmd=="mutate": return run_mutate(args)
+    elif cmd=="symbolic": return run_symbolic(args)
+    elif cmd=="brutalize": return run_brutalize(args)
+    elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
+    elif cmd in {"actors","actor-list"}: return list_anvil_actors(config)
     elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
     elif cmd in {"token","erc20"}: run_token(config,args)
     elif cmd=="snapshot": run_snapshot(config,args)
@@ -1462,13 +6403,15 @@ def dispatch_command(cmd,args,config,from_batch=False):
             states=read_json_file(paths["matrix_states"],{}); states[args[1]]={"description":" ".join(args[2:])}; write_json_file(paths["matrix_states"],states); print(f"Matrix state saved: {args[1]}")
         else: run_matrix(config,args)
     elif cmd=="risk": run_risk(config)
+    elif cmd in {"seams","hotspots"}: return run_seams(config)
     elif cmd=="scan": run_scan(args)
+    elif cmd=="rg": return run_audit_rg(config,args)
+    elif cmd=="poc": return run_audit_poc(config,args)
     elif cmd=="deps": run_deps(args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
     elif cmd=="raw": run_raw(config,args)
     elif cmd=="batch": run_batch(config,args)
-    elif cmd=="audit": run_audit_mode(config)
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": run_receipt(config,args[0] if args else None)
@@ -1484,12 +6427,38 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else: run_cast([cmd]+args,config)
 
+
 def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
     config=load_config()
+    root = audit_context.foundry_project_root()
+    _sync_audit_context(config, root)
     if len(sys.argv)<2: print_help(); return
     result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+    evidence_commands={
+        "scan","slither","changes","state-diff","trace","logs","tx","receipt",
+        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
+        "audit","audit--checks","audit-checks","audit","walkthrough","walk","rg","poc","project","system"
+    }
+    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks"}:
+        try:
+            refresh_generated_poc(config)
+        except Exception as error:
+            print(f"Warning: automatic PoC refresh failed: {error}", file=sys.stderr)
+    if config.pop("_config_dirty",False):
+        save_config(config)
+    final_root = audit_context.foundry_project_root()
+    _sync_audit_context(config, final_root)
+    audit_context.emit(
+        "lk-command",
+        final_root,
+        tool="lk",
+        status="completed" if (not isinstance(result,int) or result == 0) else "failed",
+        summary=sys.argv[1],
+        data={"command": sys.argv[1], "exit_code": result if isinstance(result,int) else 0},
+    )
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 

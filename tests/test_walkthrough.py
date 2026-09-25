@@ -1,0 +1,1466 @@
+import importlib.util
+import json
+import pathlib
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE = ROOT / "lowkey" / "walkthrough.py"
+
+spec = importlib.util.spec_from_file_location("walkthrough", MODULE)
+walkthrough = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = walkthrough
+spec.loader.exec_module(walkthrough)
+
+
+class WalkthroughTests(unittest.TestCase):
+
+    def test_source_semantics_capture_guards_and_state_writes(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            storage={"storage": [{"label": "balance", "slot": "0", "type": "uint256"}]},
+        )
+        model.mappings = [{"name": "balances", "key_type": "address", "value_type": "uint256"}]
+        source = """
+        contract Demo {
+            mapping(address => uint256) balances;
+            function deposit(uint256 amount) external {
+                if (amount == 0) revert ZeroAmount();
+                balances[msg.sender] += amount;
+            }
+        }
+        """
+        model.functions = ["deposit(uint256)"]
+        model.calls = []
+        model.semantics = walkthrough._function_semantics(model, source)
+        self.assertIn("deposit()", model.semantics)
+        self.assertTrue(model.semantics["deposit()"]["guards"])
+        self.assertIn("balances", model.semantics["deposit()"]["writes"])
+
+    def test_protocol_observation_merge_prefers_live_dependency_roles(self):
+        config = {
+            "lab_system": {"stake_token": "0x" + "1" * 40},
+            "aliases": {"Agreement": "0x" + "2" * 40},
+        }
+        runtime = [
+            walkthrough.RuntimeContract("0x" + "3" * 40, "Pool", "Pool #1", "CLONE"),
+        ]
+        merged = walkthrough._merge_protocol_observations({}, config=config, runtime=runtime)
+        self.assertEqual(merged["staketoken"], "0x" + "1" * 40)
+        self.assertEqual(merged["agreement"], "0x" + "2" * 40)
+        self.assertEqual(merged["pool"], "0x" + "3" * 40)
+
+    def test_system_workflow_map_includes_source_and_live_edges(self):
+        factory = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["create()"],
+            calls=[{
+                "kind": "cross-contract",
+                "from": "create",
+                "to_contract": "Child",
+                "to_function": "initialize",
+                "via": "child",
+            }],
+        )
+        child = walkthrough.ContractModel(
+            name="Child",
+            source="src/Child.sol",
+            artifact="out/Child.sol/Child.json",
+        )
+        runtime = [walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "Factory", "system")]
+        rendered = walkthrough._render_system_workflow_graph(
+            pathlib.Path("/tmp/project"), [factory, child], runtime, factory, False
+        )
+        self.assertIn("create()", rendered)
+        self.assertIn("Child.initialize()", rendered)
+
+    def test_clickable_function_call_uses_source_target(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            functions=["setValue(uint256)"],
+            function_locations={"setValue": 17},
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        step = walkthrough.Step(
+            1, "Alice", "Demo", "0x" + "2" * 40, "setValue(uint256)", [7], status="planned"
+        )
+        rendered = walkthrough._render_interaction_graph(
+            pathlib.Path("/tmp/project"), step, actors, model, [model], False
+        )
+        self.assertIn("setValue(7)", rendered)
+        self.assertIn("file:///tmp/project/src/Demo.sol#L17", rendered)
+
+    def test_cli_arg_lowercases_booleans(self):
+        self.assertEqual(walkthrough._cli_arg(True), "true")
+        self.assertEqual(walkthrough._cli_arg(False), "false")
+
+    def test_protocol_root_and_child_are_inferred_from_source_graph(self):
+        factory = walkthrough.ContractModel(
+            name="DemoFactory",
+            source="src/DemoFactory.sol",
+            artifact="out/DemoFactory.sol/DemoFactory.json",
+            abi=[{
+                "type": "function",
+                "name": "initialize",
+                "inputs": [{"name": "implementation", "type": "address"}],
+                "outputs": [],
+            }, {
+                "type": "function",
+                "name": "createPool",
+                "inputs": [],
+                "outputs": [],
+            }],
+            functions=["initialize(address)", "createPool()"],
+            calls=[{
+                "kind": "cross-contract",
+                "from": "createPool",
+                "to_contract": "IPool",
+                "to_function": "initialize",
+                "via": "pool",
+            }],
+        )
+        pool = walkthrough.ContractModel(
+            name="Pool",
+            source="src/Pool.sol",
+            artifact="out/Pool.sol/Pool.json",
+            abi=[{
+                "type": "function",
+                "name": "initialize",
+                "inputs": [],
+                "outputs": [],
+            }],
+            functions=["initialize()"],
+        )
+        self.assertEqual(walkthrough._infer_protocol_root([factory, pool]).name, "DemoFactory")
+        self.assertEqual(walkthrough._infer_child_model(factory, [factory, pool]).name, "Pool")
+
+    def test_adversarial_random_values_include_roles_and_extremes(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+            walkthrough.Actor("Attacker", "0x" + "3" * 40, 2),
+        ]
+        rng = __import__("random").Random(7)
+        seen = set()
+        for _ in range(80):
+            value = walkthrough._random_sol_value(
+                {"name": "recipient", "type": "address"},
+                actors,
+                "0x" + "4" * 40,
+                rng,
+                {},
+            )
+            seen.add(value)
+        self.assertIn(actors[0].address, seen)
+        self.assertIn(actors[1].address, seen)
+
+        numeric = {
+            walkthrough._random_sol_value(
+                {"name": "amount", "type": "uint256"},
+                actors,
+                "0x" + "4" * 40,
+                rng,
+                {},
+            )
+            for _ in range(100)
+        }
+        self.assertIn(0, numeric)
+        self.assertIn(2**256 - 1, numeric)
+
+    def test_compiler_ast_edges_capture_interface_calls_and_contract_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = "pragma solidity ^0.8.20; contract Factory { function create() external { child.initialize(); IRegistry(address(registry)).check(); } address registry; }"
+            (root / "src" / "Factory.sol").write_text(source, encoding="utf-8")
+            ast = {
+                "nodeType":"SourceUnit", "src":"0:1:0",
+                "nodes":[
+                    {"nodeType":"ContractDefinition","id":1,"name":"Factory",
+                     "nodes":[
+                        {"nodeType":"FunctionDefinition","id":2,"name":"create","src":"34:80:0",
+                         "body":{"nodeType":"Block","src":"60:50:0","statements":[
+                            {"nodeType":"ExpressionStatement","expression":{"nodeType":"FunctionCall","src":"70:10:0",
+                             "expression":{"nodeType":"MemberAccess","memberName":"initialize",
+                              "expression":{"nodeType":"Identifier","name":"child","referencedDeclaration":3,"typeDescriptions":{"typeString":"contract Child storage ref"}}},
+                             "arguments":[]}},
+                            {"nodeType":"ExpressionStatement","expression":{"nodeType":"FunctionCall","src":"90:25:0",
+                             "expression":{"nodeType":"MemberAccess","memberName":"check",
+                              "expression":{"nodeType":"FunctionCall","src":"90:18:0","expression":{"nodeType":"Identifier","name":"IRegistry"},"arguments":[{"nodeType":"Identifier","name":"registry"}]},
+                              "arguments":[]}},
+                             }
+                         ]}}
+                     ]},
+                    {"nodeType":"VariableDeclaration","id":3,"name":"child","typeDescriptions":{"typeString":"contract Child storage ref"}},
+                ]
+            }
+            payload={"output":{"sources":{"src/Factory.sol":{"ast":ast}, "src/Child.sol":{}, "src/IRegistry.sol":{}}, "contracts":{}}}
+            (root / "out" / "build-info").mkdir(parents=True)
+            (root / "out" / "build-info" / "x.json").write_text(json.dumps(payload), encoding="utf-8")
+            model=walkthrough.ContractModel(name="Factory",source="src/Factory.sol",artifact="out/Factory.sol/Factory.json",functions=["create()"])
+            edges=walkthrough._build_info_ast_calls(root,model)
+        self.assertTrue(any(e.get("to_function")=="initialize" and e.get("to_contract")=="Child" for e in edges))
+        self.assertTrue(any(e.get("to_function")=="check" and e.get("interface")=="IRegistry" for e in edges))
+
+    def test_contract_requirement_follows_internal_helper_and_forwarded_argument(self):
+        factory = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function",
+                "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+            }],
+            functions=["createPool(address)", "_create(address)"],
+            calls=[
+                {
+                    "kind": "internal",
+                    "from": "createPool",
+                    "to_contract": "Factory",
+                    "to_function": "_create(address)",
+                    "argument_names": ["agreement"],
+                },
+            ],
+        )
+        helper = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[
+                {
+                    "type": "function",
+                    "name": "_create",
+                    "inputs": [{"name": "agreement_", "type": "address"}],
+                }
+            ],
+            functions=["_create(address)"],
+            calls=[],
+        )
+        helper.calls = [
+            {
+                "kind": "cross-contract",
+                "from": "_create",
+                "to_contract": "IAgreement",
+                "to_function": "owner",
+                "via": "agreement_",
+                "argument_names": [],
+            }
+        ]
+
+        # The catalog can contain one model object per source; the recursion uses
+        # the same model for internal calls, so test that path directly.
+        factory.calls.append({
+            "kind": "cross-contract",
+            "from": "_create",
+            "to_contract": "IAgreement",
+            "to_function": "owner",
+            "via": "agreement",
+            "argument_names": [],
+        })
+        self.assertEqual(
+            walkthrough._contract_requirement_for_parameter(
+                factory,
+                "createPool",
+                "agreement",
+                [factory],
+            ),
+            "IAgreement",
+        )
+
+    def test_empty_revert_explanation_points_to_dependency_layer(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Factory",
+            "0x" + "1" * 40,
+            "create(address)",
+            ["0x" + "2" * 40],
+            status="blocked",
+            error='server returned an error response: error code 3: execution reverted, data: "0x"',
+        )
+        text = walkthrough._explain_failure(step, step.error, "Alice")
+        self.assertIn("dependency call", text)
+        self.assertIn("empty revert payload", text)
+
+    def test_live_story_keeps_previous_steps_compact_and_current_step_expanded(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        model = walkthrough.ContractModel(
+            name="Pool",
+            source="src/Pool.sol",
+            artifact="out/Pool.sol/Pool.json",
+            functions=["deposit()", "withdraw()"],
+            function_locations={"deposit": 10, "withdraw": 20},
+        )
+        first = walkthrough.Step(
+            1, "Alice", "Pool", "0x" + "3" * 40,
+            "deposit()", [], value_wei=10**18, status="success",
+        )
+        second = walkthrough.Step(
+            2, "Bob", "Pool", "0x" + "3" * 40,
+            "withdraw()", [], status="checking",
+        )
+        rendered = walkthrough._render_protocol_story_full(
+            pathlib.Path("/tmp/project"),
+            [first, second],
+            second,
+            actors,
+            [model],
+            False,
+        )
+        self.assertIn("01", rendered)
+        self.assertIn("02", rendered)
+        self.assertIn("▼", rendered)
+        self.assertIn("Pool.withdraw()", rendered)
+
+    def test_test_flow_hints_capture_ordered_behavior_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=pathlib.Path(tmp)
+            (root/"test").mkdir()
+            (root/"test"/"Flow.t.sol").write_text(
+                """contract Flow { function testLifecycle() external { factory.setAllowed(token, true); factory.createPool(a); pool.stake(1); pool.withdraw(1); } }""",
+                encoding="utf-8"
+            )
+            model=walkthrough.ContractModel(
+                name="Factory",source="src/Factory.sol",artifact="out/Factory.sol/Factory.json",
+                abi=[
+                    {"type":"function","name":"setAllowed","inputs":[]},
+                    {"type":"function","name":"createPool","inputs":[]},
+                    {"type":"function","name":"stake","inputs":[]},
+                    {"type":"function","name":"withdraw","inputs":[]},
+                ],
+            )
+            hints=walkthrough._test_flow_hints(root,model)
+        self.assertLess(hints["setAllowed"][0], hints["createPool"][0])
+        self.assertLess(hints["createPool"][0], hints["stake"][0])
+        self.assertLess(hints["stake"][0], hints["withdraw"][0])
+
+    def test_system_live_core_is_protocol_agnostic(self):
+        config = {
+            "target": "0x" + "1" * 40,
+            "lab_system": {
+                "root": "0x" + "1" * 40,
+                "root_model": "DemoRouter",
+                "vault": "0x" + "2" * 40,
+                "vault_model": "DemoVault",
+            },
+        }
+        def fake_code(rpc, address):
+            return "0x6000" if address in {"0x" + "1" * 40, "0x" + "2" * 40} else "0x"
+        with patch.object(walkthrough, "_runtime_code", side_effect=fake_code):
+            self.assertTrue(walkthrough._system_has_live_core(config, "http://127.0.0.1:8545"))
+    def test_failure_flow_summary_shows_first_blocker_and_unreached_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Factory.sol").write_text(
+                """contract Factory { mapping(address => bool) public allowed; function create(address token) external { if (!allowed[token]) revert(); IRegistry(registry).check(); IAgreement(agreement).owner(); } address registry; address agreement; }""",
+                encoding="utf-8",
+            )
+            model = walkthrough.ContractModel(
+                name="Factory", source="src/Factory.sol", artifact="out/Factory.sol/Factory.json",
+                abi=[{"type":"function","name":"create","inputs":[{"name":"token","type":"address"}]}],
+                functions=["create(address)"],
+                calls=[
+                    {"kind":"cross-contract","from":"create","to_contract":"IRegistry","to_function":"check","via":"registry"},
+                    {"kind":"cross-contract","from":"create","to_contract":"IAgreement","to_function":"owner","via":"agreement"},
+                ],
+            )
+            step = walkthrough.Step(1,"Alice","Factory","0x"+"1"*40,"create(address)",["0x"+"2"*40])
+            lines = walkthrough._failure_flow_summary(root, model, step, "Factory.create → allowed[token] is false")
+        joined=" ".join(lines)
+        self.assertIn("FIRST BLOCKER", joined)
+        self.assertIn("allowed[token] is false", joined)
+        self.assertIn("NOT REACHED", joined)
+        self.assertIn("IRegistry.check()", joined)
+    def test_infer_protocol_root_has_plain_application_fallback(self):
+        plain=walkthrough.ContractModel(
+            name="Vault",source="src/Vault.sol",artifact="out/Vault.sol/Vault.json",kind="contract",
+            abi=[{"type":"function","name":"deposit","inputs":[],"stateMutability":"nonpayable"}],
+            functions=["deposit()"],
+        )
+        self.assertEqual(walkthrough._infer_protocol_root([plain]).name,"Vault")
+    def test_source_guard_probe_identifies_exact_mapping_key_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = """
+            pragma solidity ^0.8.20;
+            contract DemoFactory {
+                mapping(address => bool) public allowedToken;
+                address public ownerAddress;
+                function owner() external view returns (address) { return ownerAddress; }
+                function createPool(address agreement, address token, uint256 expiry) external onlyOwner {
+                    if (agreement == address(0)) revert();
+                    if (!allowedToken[token]) revert();
+                    if (expiry < block.timestamp + MIN_LEAD) revert();
+                }
+                uint256 constant MIN_LEAD = 30 days;
+            }
+            """
+            (root / "src" / "DemoFactory.sol").write_text(source, encoding="utf-8")
+            model = walkthrough.ContractModel(
+                name="DemoFactory", source="src/DemoFactory.sol", artifact="out/DemoFactory.sol/DemoFactory.json",
+                abi=[
+                    {"type":"function","name":"createPool","inputs":[
+                        {"name":"agreement","type":"address"},{"name":"token","type":"address"},{"name":"expiry","type":"uint256"}],
+                        "outputs":[],"stateMutability":"nonpayable"},
+                    {"type":"function","name":"allowedToken","inputs":[{"name":"","type":"address"}],
+                        "outputs":[{"type":"bool"}],"stateMutability":"view"},
+                    {"type":"function","name":"owner","inputs":[],"outputs":[{"type":"address"}],"stateMutability":"view"},
+                ],
+                functions=["createPool(address,address,uint256)"],
+                mappings=[{"name":"allowedToken","key_type":"address","value_type":"bool"}],
+            )
+            step = walkthrough.Step(1,"Bob","DemoFactory","0x"+"3"*40,"createPool(address,address,uint256)",
+                                   ["0x"+"4"*40,"0x"+"5"*40,100],status="blocked")
+            alice = "0x" + "1"*40
+            with patch.object(
+                walkthrough,
+                "_read_contract_getter",
+                side_effect=[(True, alice), (True, "false")],
+            ), patch.object(
+                walkthrough,
+                "_block_timestamp",
+                return_value=100,
+            ):
+                origin, lines = walkthrough._probe_source_guards(root,"http://127.0.0.1:8545",step,model,[model],alice)
+        self.assertIn("allowedToken", " ".join(lines))
+        self.assertTrue(any(line.startswith("✕") and "allowedToken" in line for line in lines))
+        self.assertIn("allowedToken[token] is false", origin)
+
+    def test_output_signature_includes_return_types_for_live_getters(self):
+        item = {"name":"owner","inputs":[],"outputs":[{"type":"address"}],"type":"function"}
+        self.assertEqual(walkthrough._output_signature(item), "owner()(address)")
+
+    def test_lab_runtime_is_protocol_name_agnostic(self):
+        config = {
+            "lab_system": {
+                "root": "0x"+"1"*40, "root_model":"DemoRouter",
+                "router": "0x"+"1"*40, "router_model":"DemoRouter",
+                "vault": "0x"+"2"*40, "vault_model":"DemoVault",
+            }
+        }
+        router = walkthrough.ContractModel(name="DemoRouter",source="src/DemoRouter.sol",artifact="out/DemoRouter.sol/DemoRouter.json")
+        vault = walkthrough.ContractModel(name="DemoVault",source="src/DemoVault.sol",artifact="out/DemoVault.sol/DemoVault.json")
+        runtime = walkthrough._lab_runtime(config,"0x"+"1"*40,router,[router,vault])
+        self.assertTrue(any(node.label == "DemoRouter" for node in runtime))
+        self.assertTrue(any(node.label == "DemoVault" and node.relation == "DEPENDENCY" for node in runtime))
+
+    def test_random_test_mode_keeps_extreme_values_generic(self):
+        actors=[walkthrough.Actor("Alice","0x"+"1"*40,0), walkthrough.Actor("Bob","0x"+"2"*40,1), walkthrough.Actor("Attacker","0x"+"3"*40,2)]
+        rng=__import__("random").Random(1234)
+        values={walkthrough._random_sol_value({"name":"value","type":"uint256"},actors,"0x"+"4"*40,rng,{}) for _ in range(100)}
+        self.assertIn(0,values)
+        self.assertIn(2**256-1,values)
+    def test_confidence_pool_recipe_contains_lifecycle(self):
+        config={
+            "target":"0x"+"1"*40,
+            "_walkthrough_recipe":"confidence-pool",
+            "lab_system":{
+                "pool":"0x"+"1"*40,
+                "stake_token":"0x"+"2"*40,
+                "attack_registry":"0x"+"3"*40,
+                "moderator":"0x"+"4"*40,
+            },
+        }
+        actors=[
+            walkthrough.Actor("Alice","0x"+"a"*40,0),
+            walkthrough.Actor("Bob","0x"+"b"*40,1),
+        ]
+        recipe=walkthrough._confidence_pool_recipe(config,actors)
+        names=[s.function for s in recipe]
+        self.assertIn("contributeBonus(uint256)",names)
+        self.assertIn("stake(uint256)",names)
+        self.assertIn("pokeRiskWindow()",names)
+        self.assertIn("flagSurvived(address)",names)
+        self.assertIn("claimSurvived()",names)
+
+    def test_struct_mapping_and_functions_are_modelled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "out" / "Demo.sol").mkdir(parents=True)
+            (root / "src" / "Demo.sol").write_text(
+                """
+                pragma solidity ^0.8.20;
+                contract Demo {
+                    struct Position { address owner; uint256 amount; }
+                    mapping(address => Position) public positions;
+                    uint256[] public ids;
+                    modifier onlyOwner() { _; }
+                    event Deposited(address indexed user, uint256 amount);
+                    function deposit(uint256 amount) external payable { positions[msg.sender].amount += amount; }
+                    function withdraw(uint256 amount) external { positions[msg.sender].amount -= amount; }
+                }
+                """,
+                encoding="utf-8",
+            )
+            artifact = {
+                "contractName": "Demo",
+                "sourceName": "src/Demo.sol",
+                "abi": [
+                    {"type": "function", "name": "deposit", "stateMutability": "payable",
+                     "inputs": [{"name": "amount", "type": "uint256"}], "outputs": []},
+                    {"type": "function", "name": "withdraw", "stateMutability": "nonpayable",
+                     "inputs": [{"name": "amount", "type": "uint256"}], "outputs": []},
+                    {"type": "event", "name": "Deposited", "inputs": []},
+                ],
+                "storageLayout": {"storage": [], "types": {}},
+            }
+            (root / "out" / "Demo.sol" / "Demo.json").write_text(json.dumps(artifact), encoding="utf-8")
+            models = walkthrough._artifact_models(root)
+        self.assertEqual(len(models), 1)
+        model = models[0]
+        self.assertIn("deposit(uint256)", model.functions)
+        self.assertIn("withdraw(uint256)", model.functions)
+        self.assertIn("Position", model.structs)
+        self.assertEqual(model.structs["Position"][0].name, "owner")
+        self.assertEqual(model.mappings[0]["name"], "positions")
+        self.assertEqual(model.arrays[0]["name"], "ids")
+        self.assertIn("onlyOwner", model.modifiers)
+
+
+    def test_artifacts_are_scoped_to_project_source_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            entries = [
+                ("src/App.sol", "App"),
+                ("lib/Dependency.sol", "Dependency"),
+                ("test/AppTest.t.sol", "AppTest"),
+            ]
+            for source, name in entries:
+                source_path = root / source
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(
+                    f"pragma solidity ^0.8.20; contract {name} {{ function ping() external {{}} }}",
+                    encoding="utf-8",
+                )
+                out = root / "out" / (pathlib.Path(source).stem + ".sol")
+                out.mkdir(parents=True, exist_ok=True)
+                (out / f"{name}.json").write_text(
+                    json.dumps({
+                        "contractName": name,
+                        "sourceName": source,
+                        "abi": [{"type": "function", "name": "ping", "stateMutability": "nonpayable", "inputs": [], "outputs": []}],
+                    }),
+                    encoding="utf-8",
+                )
+            models = walkthrough._artifact_models(root)
+        self.assertEqual([model.name for model in models], ["App"])
+
+    def test_artifact_source_path_fallback_handles_missing_source_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            (root / "src" / "Fixture.sol").write_text(
+                "pragma solidity ^0.8.20; contract Fixture { function ping() external {} }",
+                encoding="utf-8",
+            )
+            out = root / "out" / "Fixture.sol"
+            out.mkdir(parents=True)
+            (out / "Fixture.json").write_text(
+                json.dumps({
+                    "contractName": "Fixture",
+                    "abi": [{"type": "function", "name": "ping", "stateMutability": "nonpayable", "inputs": [], "outputs": []}],
+                }),
+                encoding="utf-8",
+            )
+            models = walkthrough._artifact_models(root)
+        self.assertEqual([model.name for model in models], ["Fixture"])
+        self.assertEqual(models[0].source, "src/Fixture.sol")
+
+    def test_planner_excludes_setup_and_admin_controls(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[
+                {"type": "function", "name": "initialize", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "acceptOwnership", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "pause", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "createPool", "stateMutability": "nonpayable", "inputs": []},
+            ],
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        steps = walkthrough.plan_workflow(model, actors, actors[0].address, 100, 8)
+        self.assertEqual([step.function for step in steps], ["createPool()"])
+
+    def test_runtime_discovery_marks_clones_as_live_contracts(self):
+        child = walkthrough.ContractModel(
+            name="Child",
+            source="src/Child.sol",
+            artifact="out/Child.sol/Child.json",
+        )
+        known = [walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "Factory", "target")]
+        trace = {"type": "CREATE2", "from": "0x" + "1" * 40, "result": "0x" + "3" * 40}
+        with patch.object(walkthrough, "_runtime_code", return_value="0x1234"),              patch.object(walkthrough, "_match_runtime_model", return_value=("Child", "0x" + "2" * 40)):
+            found = walkthrough._discover_runtime_contracts(
+                pathlib.Path("."),
+                "http://127.0.0.1:8545",
+                [child],
+                known,
+                None,
+                trace,
+                1,
+                "0x" + "1" * 40,
+            )
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].model, "Child")
+        self.assertEqual(found[0].relation, "CLONE")
+        self.assertEqual(found[0].parent, "0x" + "1" * 40)
+
+    def test_runtime_graph_shows_parent_child_relation(self):
+        runtime = [
+            walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "Factory", "target"),
+            walkthrough.RuntimeContract(
+                "0x" + "2" * 40,
+                "Pool",
+                "Pool #1",
+                "CLONE",
+                "0x" + "1" * 40,
+                1,
+                "0x" + "3" * 40,
+            ),
+        ]
+        rendered = walkthrough._render_runtime_graph(runtime, enabled=False)
+        self.assertIn("Factory", rendered)
+        self.assertIn("Pool #1", rendered)
+        self.assertIn("⋯⋯⋯▶", rendered)
+
+    def test_argument_inference_uses_protocol_expiry_window(self):
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        self.assertEqual(
+            walkthrough._arg_for({"name": "expiry", "type": "uint256"}, actors, actors[0].address, 100),
+            100 + 31 * 24 * 60 * 60,
+        )
+
+    def test_role_aware_actor_selection_uses_moderator(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        observed = {"defaultoutcomemoderator": actors[1].address}
+        self.assertEqual(
+            walkthrough._actor_for_function("flagOutcome", actors, observed).name,
+            "Bob",
+        )
+
+    def test_contract_typed_address_uses_observed_dependency(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address,address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        agreement = "0x" + "9" * 40
+        value = walkthrough._arg_for(
+            {"name": "agreement", "type": "address"},
+            actors,
+            actors[0].address,
+            100,
+            {"agreement": agreement},
+            model,
+            "createPool",
+        )
+        self.assertEqual(value, agreement)
+
+    def test_contract_typed_address_never_falls_back_to_actor(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function",
+                "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+            functions=["createPool(address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        value = walkthrough._arg_for(
+            {"name": "agreement", "type": "address"},
+            actors,
+            actors[0].address,
+            100,
+            {},
+            model,
+            "createPool",
+        )
+        self.assertIsNone(value)
+
+    def test_validate_step_arguments_blocks_missing_contract_dependency(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function",
+                "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+            functions=["createPool(address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Factory",
+            "0x" + "2" * 40,
+            "createPool(address)",
+            [None],
+        )
+        ok, reason = walkthrough._validate_step_arguments(step, model)
+        self.assertFalse(ok)
+        self.assertIn("agreement", reason)
+        self.assertIn("IAgreement", reason)
+
+    def test_live_recipe_arguments_are_authoritative(self):
+        token = "0x" + "a" * 40
+        agreement = "0x" + "b" * 40
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        config = {
+            "target": "0x" + "3" * 40,
+            "lab_system": {
+                "factory": "0x" + "3" * 40,
+                "stake_token": token,
+                "agreement": agreement,
+                "moderator": "0x" + "4" * 40,
+            },
+        }
+        recipe = walkthrough._confidence_pool_factory_recipe(config, actors, 100)
+        create = next(step for step in recipe if step.function.startswith("createPool("))
+        self.assertFalse(create.inferred)
+        self.assertEqual(create.args[0], agreement)
+        self.assertEqual(create.args[1], token)
+        self.assertEqual(create.args[4], actors[1].address)
+
+    def test_auxiliary_project_models_are_available_for_runtime_decoding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "test" / "mocks").mkdir(parents=True)
+            (root / "out" / "Demo.sol").mkdir(parents=True)
+            (root / "out" / "MockToken.sol").mkdir(parents=True)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "src"\n',
+                encoding="utf-8",
+            )
+            (root / "src" / "Demo.sol").write_text(
+                "pragma solidity ^0.8.20; contract Demo { function ping() external {} }",
+                encoding="utf-8",
+            )
+            (root / "test" / "mocks" / "MockToken.sol").write_text(
+                "pragma solidity ^0.8.20; contract MockToken { function transfer(address,uint256) external {} }",
+                encoding="utf-8",
+            )
+            (root / "out" / "Demo.sol" / "Demo.json").write_text(
+                json.dumps({
+                    "contractName": "Demo",
+                    "sourceName": "src/Demo.sol",
+                    "abi": [{"type":"function","name":"ping","inputs":[],"outputs":[]}],
+                }),
+                encoding="utf-8",
+            )
+            (root / "out" / "MockToken.sol" / "MockToken.json").write_text(
+                json.dumps({
+                    "contractName": "MockToken",
+                    "sourceName": "test/mocks/MockToken.sol",
+                    "abi": [{
+                        "type":"function","name":"transfer",
+                        "inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],
+                        "outputs":[{"type":"bool"}],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            app_models = walkthrough._artifact_models(root)
+            all_models = walkthrough._artifact_models(root, include_aux=True)
+
+        self.assertEqual([item.name for item in app_models], ["Demo"])
+        self.assertIn("MockToken", [item.name for item in all_models])
+
+    def test_contract_typed_address_uses_observed_dependency(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address,address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        agreement = "0x" + "9" * 40
+        value = walkthrough._arg_for(
+            {"name": "agreement", "type": "address"},
+            actors,
+            actors[0].address,
+            100,
+            {"agreement": agreement},
+            model,
+            "createPool",
+        )
+        self.assertEqual(value, agreement)
+
+    def test_contract_typed_address_never_falls_back_to_actor(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        value = walkthrough._arg_for(
+            {"name": "agreement", "type": "address"},
+            actors,
+            actors[0].address,
+            100,
+            {},
+            model,
+            "createPool",
+        )
+        self.assertIsNone(value)
+
+    def test_validate_step_arguments_blocks_missing_contract_dependency(self):
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address)"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+            ],
+        )
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Factory",
+            "0x" + "2" * 40,
+            "createPool(address)",
+            [None],
+        )
+        ok, reason = walkthrough._validate_step_arguments(step, model)
+        self.assertFalse(ok)
+        self.assertIn("agreement", reason)
+        self.assertIn("IAgreement", reason)
+
+    def test_live_recipe_arguments_are_authoritative(self):
+        token = "0x" + "a" * 40
+        agreement = "0x" + "b" * 40
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        config = {
+            "target": "0x" + "3" * 40,
+            "lab_system": {
+                "factory": "0x" + "3" * 40,
+                "stake_token": token,
+                "agreement": agreement,
+                "moderator": "0x" + "4" * 40,
+            },
+        }
+        recipe = walkthrough._confidence_pool_factory_recipe(config, actors, 100)
+        create = next(step for step in recipe if step.function.startswith("createPool("))
+        self.assertFalse(create.inferred)
+        self.assertEqual(create.args[0], agreement)
+        self.assertEqual(create.args[1], token)
+        self.assertEqual(create.args[4], actors[1].address)
+
+    def test_auxiliary_project_models_are_available_for_runtime_decoding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "test" / "mocks").mkdir(parents=True)
+            (root / "out" / "Demo.sol").mkdir(parents=True)
+            (root / "out" / "MockToken.sol").mkdir(parents=True)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "src"\n',
+                encoding="utf-8",
+            )
+            (root / "src" / "Demo.sol").write_text(
+                "pragma solidity ^0.8.20; contract Demo { function ping() external {} }",
+                encoding="utf-8",
+            )
+            (root / "test" / "mocks" / "MockToken.sol").write_text(
+                "pragma solidity ^0.8.20; contract MockToken { function transfer(address,uint256) external {} }",
+                encoding="utf-8",
+            )
+            (root / "out" / "Demo.sol" / "Demo.json").write_text(
+                json.dumps({
+                    "contractName": "Demo",
+                    "sourceName": "src/Demo.sol",
+                    "abi": [{"type":"function","name":"ping","inputs":[],"outputs":[]}],
+                }),
+                encoding="utf-8",
+            )
+            (root / "out" / "MockToken.sol" / "MockToken.json").write_text(
+                json.dumps({
+                    "contractName": "MockToken",
+                    "sourceName": "test/mocks/MockToken.sol",
+                    "abi": [{
+                        "type":"function","name":"transfer",
+                        "inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],
+                        "outputs":[{"type":"bool"}],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            app_models = walkthrough._artifact_models(root)
+            all_models = walkthrough._artifact_models(root, include_aux=True)
+
+        self.assertEqual([item.name for item in app_models], ["Demo"])
+        self.assertIn("MockToken", [item.name for item in all_models])
+
+    def test_argument_inference_uses_roles(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+            walkthrough.Actor("Attacker", "0x" + "3" * 40, 2),
+        ]
+        self.assertEqual(
+            walkthrough._arg_for({"name": "recipient", "type": "address"}, actors, actors[0].address, 100),
+            actors[1].address,
+        )
+        self.assertEqual(
+            walkthrough._arg_for({"name": "attacker", "type": "address"}, actors, actors[0].address, 100),
+            actors[2].address,
+        )
+        self.assertEqual(
+            walkthrough._arg_for({"name": "deadline", "type": "uint256"}, actors, actors[0].address, 100),
+            3700,
+        )
+
+    def test_phase_order_puts_flag_before_claims(self):
+        self.assertLess(
+            walkthrough._phase_score("flagOutcome")[0],
+            walkthrough._phase_score("claimAttackerBounty")[0],
+        )
+        self.assertLess(
+            walkthrough._phase_score("flagOutcome")[1],
+            walkthrough._phase_score("claimAttackerBounty")[1],
+        )
+
+    def test_planner_covers_multiple_phases(self):
+        model = walkthrough.ContractModel(
+            name="Pool",
+            source="src/Pool.sol",
+            artifact="out/Pool.sol/Pool.json",
+            abi=[
+                {"type": "function", "name": "create", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "deposit", "stateMutability": "payable", "inputs": []},
+                {"type": "function", "name": "withdraw", "stateMutability": "nonpayable", "inputs": []},
+                {"type": "function", "name": "pause", "stateMutability": "nonpayable", "inputs": []},
+            ],
+        )
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        steps = walkthrough.plan_workflow(model, actors, actors[0].address, 100, 8)
+        self.assertGreaterEqual(len(steps), 2)
+        self.assertNotIn("pause()", [s.function for s in steps])
+        self.assertEqual(steps[0].function, "create()")
+        self.assertEqual(steps[1].function, "deposit()")
+
+    def test_source_call_edges_are_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "out" / "Demo.sol").mkdir(parents=True)
+            (root / "src" / "Demo.sol").write_text(
+                """
+                pragma solidity ^0.8.20;
+                contract Demo {
+                    function start() external { finish(1); }
+                    function finish(uint256 value) internal {}
+                }
+                """,
+                encoding="utf-8",
+            )
+            artifact = {
+                "contractName": "Demo",
+                "sourceName": "src/Demo.sol",
+                "abi": [
+                    {"type": "function", "name": "start", "stateMutability": "nonpayable",
+                     "inputs": [], "outputs": []},
+                    {"type": "function", "name": "finish", "stateMutability": "internal",
+                     "inputs": [{"name": "value", "type": "uint256"}], "outputs": []},
+                ],
+            }
+            (root / "out" / "Demo.sol" / "Demo.json").write_text(json.dumps(artifact), encoding="utf-8")
+            model = walkthrough._artifact_models(root)[0]
+        self.assertTrue(any(
+            edge["from"] == "start" and edge["to_function"] == "finish(uint256)"
+            for edge in model.calls
+        ))
+
+    def test_dependency_probe_reports_false_result(self):
+        source_model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function", "name": "createPool",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [], "stateMutability": "nonpayable",
+            }],
+            functions=["createPool(address)"],
+            calls=[{
+                "kind": "cross-contract",
+                "from": "createPool",
+                "to_contract": "IRegistry",
+                "to_function": "isValid",
+                "via": "registry",
+            }],
+        )
+        registry = walkthrough.ContractModel(
+            name="Registry",
+            source="src/Registry.sol",
+            artifact="out/Registry.sol/Registry.json",
+            abi=[{
+                "type": "function", "name": "isValid",
+                "inputs": [{"name": "agreement", "type": "address"}],
+                "outputs": [{"type": "bool"}], "stateMutability": "view",
+            }],
+        )
+        step = walkthrough.Step(
+            1, "Alice", "Factory", "0x" + "1" * 40,
+            "createPool(address)", ["0x" + "2" * 40], status="blocked"
+        )
+        def fake_cmd(args, timeout=8):
+            if args[:3] == ["cast", "call", "0x" + "3" * 40]:
+                return 0, "false\n", ""
+            return 1, "", "not found"
+        with patch.object(walkthrough, "_runtime_code", return_value="0x6000"), patch.object(walkthrough, "_cmd", side_effect=fake_cmd):
+            origin, rendered = walkthrough._probe_source_dependency_result(
+                "http://127.0.0.1:8545", step, source_model,
+                source_model.calls[0], "0x" + "3" * 40, [source_model, registry]
+            )
+        self.assertIn("false", rendered)
+        self.assertIn("returned false", origin)
+    def test_friendly_renderer_has_no_host_dependency(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        self.assertEqual(walkthrough._friendly_arg(actors[0].address, actors), "Alice")
+        self.assertEqual(walkthrough._friendly_arg(True, actors), "true")
+        self.assertEqual(walkthrough._friendly_arg(False, actors), "false")
+
+    def test_target_from_host_prefers_factory_from_project_system_adapter(self):
+        factory = "0x" + "1" * 40
+        config = {
+            "target": "0x" + "9" * 40,
+            "target_contract": "DemoFactory",
+            "rpc": "http://127.0.0.1:8545",
+            "lab_system": {
+                "factory": factory,
+                "root": factory,
+                "root_model": "DemoFactory",
+                "pool": "0x" + "2" * 40,
+                "child_model": "DemoPool",
+            },
+        }
+
+        class Host:
+            def anvil_rpc_info(self, _config):
+                return {"url": "http://127.0.0.1:8545", "accounts": ["0x" + "a" * 40]}
+
+            def _bind_detected_anvil(self, _config, _info):
+                return None
+
+            def discover_local_lab_script(self, _root):
+                return None
+
+            def _bootstrap_audit_target(self, _config, _root, allow_deploy=True):
+                return _config["target"]
+
+        with patch.object(walkthrough, "_runtime_code", return_value="0x6000"):
+            target, contract = walkthrough._target_from_host(
+                Host(), config, pathlib.Path("."), None, True
+            )
+        self.assertEqual(target, factory)
+        self.assertEqual(contract, "DemoFactory")
+
+    def test_connection_renderer_explains_factory_lifecycle(self):
+        factory = walkthrough.ContractModel(
+            name="ConfidencePoolFactory",
+            source="src/ConfidencePoolFactory.sol",
+            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
+            functions=["createPool(address,address,uint256,uint256,address,address[])"],
+            calls=[
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IAgreement",
+                    "to_function": "owner",
+                    "via": "agreement",
+                },
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "IBattleChainSafeHarborRegistry",
+                    "to_function": "isAgreementValid",
+                    "via": "safeHarborRegistry",
+                },
+                {
+                    "kind": "cross-contract",
+                    "from": "createPool",
+                    "to_contract": "ConfidencePool",
+                    "to_function": "initialize",
+                    "via": "pool",
+                },
+            ],
+        )
+        rendered = walkthrough._render_connections(
+            pathlib.Path("/tmp/project"),
+            [factory],
+            factory,
+            enabled=False,
+        )
+        self.assertIn("checks who owns the Agreement", rendered)
+        self.assertIn("asks the Safe Harbor Registry whether the Agreement is valid", rendered)
+        self.assertIn("creates a new ConfidencePool clone", rendered)
+
+    def test_system_map_uses_readable_relationship_labels(self):
+        runtime = [
+            walkthrough.RuntimeContract("0x" + "1" * 40, "Factory", "ConfidencePoolFactory", "system"),
+            walkthrough.RuntimeContract(
+                "0x" + "2" * 40,
+                "Pool",
+                "ConfidencePool",
+                "CLONE",
+                "0x" + "1" * 40,
+                1,
+                "0x" + "3" * 40,
+            ),
+        ]
+        rendered = walkthrough._render_runtime_graph(runtime, enabled=False)
+        self.assertIn("protocol entry point", rendered)
+        self.assertIn("creates / clones", rendered)
+        self.assertIn("ConfidencePool", rendered)
+
+    def test_protocol_story_connects_steps_with_arrows(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        steps = [
+            walkthrough.Step(
+                1, "Alice", "Pool", "0x" + "3" * 40,
+                "deposit()", [], value_wei=10**18, status="success",
+            ),
+            walkthrough.Step(
+                2, "Bob", "Pool", "0x" + "3" * 40,
+                "withdraw()", [], status="planned",
+            ),
+        ]
+        rendered = walkthrough._render_protocol_story(steps, steps[1], actors, enabled=False)
+        self.assertIn("Alice ────▶ Pool.deposit()", rendered)
+        self.assertIn("1 ETH", rendered)
+        self.assertIn("▼", rendered)
+        self.assertIn("Bob ────▶ Pool.withdraw()", rendered)
+        self.assertIn("◀ LIVE", rendered)
+
+    def test_cli_arg_normalizes_bool_and_arrays(self):
+        self.assertEqual(walkthrough._cli_arg(True), "true")
+        self.assertEqual(walkthrough._cli_arg(False), "false")
+        self.assertEqual(
+            walkthrough._cli_arg(["0x" + "1" * 40, "0x" + "2" * 40]),
+            "[0x" + "1" * 40 + ",0x" + "2" * 40 + "]",
+        )
+
+    def test_confidence_pool_recipe_uses_correct_registry_ordinals(self):
+        config = {
+            "target": "0x" + "1" * 40,
+            "_walkthrough_recipe": "confidence-pool",
+            "lab_system": {
+                "pool": "0x" + "1" * 40,
+                "stake_token": "0x" + "2" * 40,
+                "attack_registry": "0x" + "3" * 40,
+                "moderator": "0x" + "4" * 40,
+            },
+        }
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "a" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "b" * 40, 1),
+        ]
+        recipe = walkthrough._confidence_pool_recipe(config, actors)
+        state_updates = {
+            s.args[0]: s.reason
+            for s in recipe
+            if s.function == "setAgreementState(uint8)"
+        }
+        self.assertEqual(state_updates[3], "LAB CONTROL: agreement enters UNDER_ATTACK")
+        self.assertEqual(state_updates[5], "LAB CONTROL: agreement reaches PRODUCTION")
+
+    def test_failure_explainer_is_plain_english(self):
+        step = walkthrough.Step(1, "Alice", "Pool", "0x" + "3"*40, "stake(uint256)", [1], status="blocked")
+        self.assertIn("staking deadline",
+                      walkthrough._explain_failure(step, "execution reverted: StakingClosed", "Alice"))
+        self.assertIn("not the configured outcome moderator",
+                      walkthrough._explain_failure(step, "execution reverted: NotModerator", "Alice"))
+
+    def test_protocol_flow_connects_steps_and_explains_failure(self):
+        actors=[walkthrough.Actor("Alice","0x"+"1"*40,0), walkthrough.Actor("Bob","0x"+"2"*40,1)]
+        bad=walkthrough.Step(1,"Alice","Pool","0x"+"3"*40,"stake(uint256)",[1],status="blocked",
+                             error="PRECONDITION BLOCKED: execution reverted: StakingClosed")
+        bad.error_reason=walkthrough._explain_failure(bad,bad.error,bad.actor)
+        good=walkthrough.Step(2,"Bob","Pool","0x"+"3"*40,"withdraw()",[],status="success")
+        rendered=walkthrough._render_protocol_story([bad,good],good,actors,False)
+        self.assertIn("WHY IT FAILED",rendered)
+        self.assertIn("staking deadline",rendered)
+        self.assertIn("▼",rendered)
+        self.assertIn("◀ NOW",rendered)
+
+    def test_token_balance_lines_show_real_deltas(self):
+        actor=walkthrough.Actor("Alice","0x"+"1"*40,0)
+        step=walkthrough.Step(1,"Alice","Pool","0x"+"2"*40,"stake(uint256)",[1],status="success")
+        step.token_balance_before={actor.address.lower():10}
+        step.token_balance_after={actor.address.lower():9}
+        self.assertIn("STAKE BALANCE Alice: -1",
+                      walkthrough._friendly_token_balance_lines(step,[actor]))
+
+    def test_auto_walkthrough_does_not_resurrect_stale_config_target(self):
+        config = {
+            "target": "0x" + "9" * 40,
+            "target_contract": "ConfidencePool",
+            "rpc": "http://127.0.0.1:8545",
+        }
+
+        class Host:
+            def anvil_rpc_info(self, _config):
+                return {"url": "http://127.0.0.1:8545", "accounts": ["0x" + "1" * 40]}
+
+            def _bind_detected_anvil(self, _info):
+                return None
+
+            def _bootstrap_audit_target(self, _config, _root, allow_deploy=True):
+                return None
+
+        target, _ = walkthrough._target_from_host(
+            Host(), config, pathlib.Path("."), None, True
+        )
+        self.assertIsNone(target)
+
+    def test_live_path_renders_connected_interactions(self):
+        steps = [
+            walkthrough.Step(1, "Alice", "Factory", "0x" + "1" * 40,
+                              "createPool(address,address,uint256,uint256,address,address[])", 
+                              ["0x" + "2" * 40, "0x" + "3" * 40, 100, 1, "0x" + "4" * 40, ["0x" + "5" * 40]],
+                              status="success"),
+        ]
+        rendered = walkthrough._render_live_path(steps, [], enabled=False)
+        self.assertIn("Alice", rendered)
+        self.assertIn("createPool", rendered)
+        self.assertIn("───▶", rendered)
+        self.assertIn("✓", rendered)
+
+    def test_visual_renderer_has_distinct_protocol_shapes(self):
+        storage = [
+            {
+                "label": "balances",
+                "slot": "0",
+                "type": "mapping(address => uint256)",
+                "encoding": "mapping",
+                "mapping": {
+                    "key_type": "address",
+                    "value_type": "uint256",
+                    "rows": [{"key": "0x" + "1" * 40, "slot": "0xab", "value": 7}],
+                },
+            },
+            {
+                "label": "position",
+                "slot": "1",
+                "type": "Position",
+                "struct": {
+                    "type": "Position",
+                    "fields": [
+                        {"name": "owner", "type": "address", "slot": "1", "value": "0x" + "1" * 40},
+                        {"name": "amount", "type": "uint256", "slot": "2", "value": 7},
+                    ],
+                },
+            },
+        ]
+        rendered = walkthrough._render_storage(storage, enabled=False)
+        self.assertIn("▣ MAPPING balances", rendered)
+        self.assertIn("▤ STRUCT Position", rendered)
+        self.assertIn("→", rendered)
+
+    def test_replay_script_contains_only_successful_steps(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+        )
+        good = walkthrough.Step(1, "Alice", "Demo", "0x" + "1" * 40, "ping(uint256)", [7], status="success")
+        bad = walkthrough.Step(2, "Bob", "Demo", "0x" + "1" * 40, "bad()", [], status="reverted")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = walkthrough._generate_replay_script(pathlib.Path(tmp), model, "0x" + "1" * 40, [good, bad])
+            content = path.read_text(encoding="utf-8")
+        self.assertIn("ping(uint256)", content)
+        self.assertNotIn("bad()", content)
+        self.assertIn('LOWKEY_ALICE_KEY', content)
+        self.assertEqual(content.count("(bool ok_"), 1)
+
+    def test_replay_script_uses_exact_calldata_and_valid_literals(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+        )
+        alice = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+        good = walkthrough.Step(
+            1,
+            "Alice",
+            "Demo",
+            alice,
+            "set(bool,address)",
+            [True, "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"],
+            value_wei=10**18,
+            calldata="0xabcdef",
+            status="success",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = walkthrough._generate_replay_script(pathlib.Path(tmp), model, "0x" + "1" * 40, [good])
+            content = path.read_text(encoding="utf-8")
+        self.assertIn("target_1 = address(uint160(0x70997970c51812dc3a010c7d01b50e0d17dc79c8));", content)
+        self.assertIn('.call{value: 1000000000000000000}(hex"abcdef");', content)
+        self.assertIn("bool ok_1", content)
+        self.assertNotIn("bool ok, )", content)
+        self.assertNotIn("address target_1 = 0x70997970c51812dc3a010c7d01b50e0d17dc79c8;", content)
+
+
+    def test_actual_call_tree_is_connected(self):
+        step = walkthrough.Step(
+            1, "Alice", "Factory", "0x" + "1" * 40,
+            "createPool()", [], status="success",
+        )
+        step.execution_edges = [
+            {"depth": 0, "to_contract": "Factory", "function": "createPool()"},
+            {"depth": 1, "to_contract": "Agreement", "function": "owner()"},
+            {"depth": 1, "to_contract": "ConfidencePool", "function": "initialize()"},
+            {"depth": 2, "to_contract": "Registry", "function": "isAgreementValid(address)"},
+        ]
+        actors = [walkthrough.Actor("Alice", "0x" + "a" * 40, 0)]
+        rendered = walkthrough._render_actual_call_tree(step, [], False)
+        self.assertIn("Alice ──▶ Factory.createPool()", rendered)
+        self.assertIn("├─▶ Agreement.owner()", rendered)
+        self.assertIn("├─▶ ConfidencePool.initialize()", rendered)
+        self.assertIn("Registry.isAgreementValid(address)  ✓", rendered)
+
+    def test_live_interaction_graph_reads_like_a_protocol_story(self):
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "deposit(address)",
+            ["0x" + "2" * 40],
+            value_wei=10**18,
+            status="success",
+            reason="Alice funds the escrow for Bob",
+            inferred=False,
+        )
+        step.balance_before = {
+            actors[0].address.lower(): 10**18,
+            actors[1].address.lower(): 0,
+            step.address.lower(): 0,
+        }
+        step.balance_after = {
+            actors[0].address.lower(): 0,
+            actors[1].address.lower(): 10**18,
+            step.address.lower(): 0,
+        }
+        rendered = walkthrough._render_interaction_graph(step, actors, False)
+        self.assertIn("Alice ────▶ Escrow.deposit(Bob)", rendered)
+        self.assertIn("sends 1 ETH", rendered)
+        self.assertIn("ETH Bob: +1 ETH", rendered)
+        self.assertIn("Alice sends 1 ETH to Escrow to fund the escrow for Bob", rendered)
+        self.assertIn("WHY THIS STEP: Alice funds the escrow for Bob [LAB CONTROL]", rendered)
+
+
+
+if __name__ == "__main__":
+    unittest.main()

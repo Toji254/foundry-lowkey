@@ -6,9 +6,18 @@ if [[ "${1:-}" == "forge" ]]; then
     exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
 fi
 
+if [[ "${1:-}" == "slither" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/slither_tools.py" "$@"
+fi
+
 case "${1:-}" in
-    build|test|script|inspect|coverage|lint|geiger|fmt|clone|fuzz|lsp)
+    build|test|script|inspect|coverage|lint|geiger|fmt|lsp|create|verify-contract|verify-check|verify-bytecode|tree|install|remove|update|init|clean|cache|config|remappings|bind|bind-json|doc|compiler|eip712|soldeer|completions|flatten)
         exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
+        ;;
+    generate)
+        shift
+        exec python3 "$HOME/.lowkey/generator.py" "${@}"
         ;;
 esac
 
