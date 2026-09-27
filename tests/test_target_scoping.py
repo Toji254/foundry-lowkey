@@ -86,6 +86,30 @@ class TargetScopingTests(unittest.TestCase):
                 "0x1111111111111111111111111111111111111111",
             )
 
+    def test_vyper_builder_source_filter_excludes_test_and_mock_trees(self):
+        import sys
+
+        forge_module_path = ROOT / "lowkey" / "forge_tools.py"
+        forge_spec = importlib.util.spec_from_file_location("lowkey_forge_tools", forge_module_path)
+        forge_tools = importlib.util.module_from_spec(forge_spec)
+        assert forge_spec.loader is not None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "contracts").mkdir()
+            (root / "contracts" / "ScrvusdOracleV2.vy").write_text("# app\n", encoding="utf-8")
+            (root / "tests" / "shared" / "contracts").mkdir(parents=True)
+            (root / "tests" / "shared" / "contracts" / "BlockHashOracleMock.vy").write_text("# mock\n", encoding="utf-8")
+
+            forge_tools.project_tools = None
+            forge_spec.loader.exec_module(forge_tools)
+            sources = forge_tools._project_vyper_sources(root)
+
+            self.assertEqual(
+                [p.relative_to(root).as_posix() for p in sources],
+                ["contracts/ScrvusdOracleV2.vy"],
+            )
+
     def test_test_only_vyper_mock_is_not_application_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
