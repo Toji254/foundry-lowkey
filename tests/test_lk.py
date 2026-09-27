@@ -3016,6 +3016,33 @@ contract BountyArena {
         self.assertIn("owner/admin", why)
         self.assertIn("untrusted actor", next_step)
 
+    def test_benchmark_adapter_is_protocol_pluggable(self):
+        model = lk.walkthrough.ContractModel(
+            name="Counter",
+            source="src/Counter.sol",
+            artifact="out/Counter.sol/Counter.json",
+            functions=["increment()"],
+        )
+        adapter = importlib.import_module("lowkey.walkthrough_benchmarks")
+        self.assertIsNone(adapter.get_benchmark_adapter(model, [model], {}))
+
+    def test_confidence_pool_benchmark_adapter_matches_only_confidence_pool_system(self):
+        model = lk.walkthrough.ContractModel(
+            name="ConfidencePoolFactory",
+            source="src/ConfidencePoolFactory.sol",
+            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
+            functions=["createPool(address,address,uint256,uint256,address,address[])"],
+        )
+        child = lk.walkthrough.ContractModel(
+            name="ConfidencePool",
+            source="src/ConfidencePool.sol",
+            artifact="out/ConfidencePool.sol/ConfidencePool.json",
+        )
+        adapter = importlib.import_module("lowkey.walkthrough_benchmarks")
+        selected = adapter.get_benchmark_adapter(model, [model, child], {})
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.adapter_id, "confidence-pool")
+
     def test_confidence_pool_stateful_benchmarks_cover_known_attack_stories(self):
         actors = [
             lk.walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
