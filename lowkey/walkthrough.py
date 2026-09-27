@@ -5408,6 +5408,7 @@ def _run_stateful_benchmark(
             )
             story_steps.append(step)
             all_steps.append(step)
+            adapter.observe_step(story, step, rpc, target_info, actors)
             label = f"+{action.get('seconds', 0)}s" if action.get('kind') == 'time' else str(step.function).split('(', 1)[0]
             mark = '✓' if step.status == 'success' else '✕'
             print(f"     {mark} {step.index:02d}  {step.actor} → {label}")
