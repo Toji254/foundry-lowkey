@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Sequence
 
 try:
+    import audit_context
+except ImportError:  # pragma: no cover
+    audit_context = None
+
+try:
     from project_tools import (
         build_dependency_graph,
         detect_project,
@@ -388,6 +393,37 @@ def _config() -> dict[str, Any]:
     return read_json(Path(os.path.expanduser("~/.lowkey/config.json")), {})
 
 
+def _project_config(root: str | Path = ".") -> dict[str, Any]:
+    """Load global settings, then let the current project's context override target state."""
+    config = _config()
+    if audit_context is None:
+        return config
+    try:
+        context = audit_context.load(Path(root))
+    except Exception:
+        return config
+    target = context.get("target", {}) if isinstance(context, dict) else {}
+    if not isinstance(target, dict):
+        return config
+    address = target.get("address")
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(address or "")):
+        return config
+
+    config = dict(config)
+    config["target"] = address
+    if target.get("contract"):
+        config["target_contract"] = target["contract"]
+    if target.get("artifact"):
+        config.setdefault("abi_paths", {})[address] = target["artifact"]
+
+    latest = context.get("latest", {}) if isinstance(context, dict) else {}
+    if isinstance(latest, dict) and latest.get("tx_hash"):
+        config["last_tx"] = latest["tx_hash"]
+    if isinstance(context.get("rpc"), str) and context.get("rpc"):
+        config["rpc"] = context["rpc"]
+    return config
+
+
 def _load_abi(config: dict[str, Any], target: str | None) -> list[dict[str, Any]]:
     if not target:
         return []
@@ -731,7 +767,7 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
     evidence_records = sorted(
         p.stem for p in evidence_dir(root).glob("*.json") if p.name != "manifest.json"
     )
-    config = _config()
+    config = _project_config(root)
     project = detect_project(root) if detect_project else {"kind": "generic"}
     target = config.get("target")
     abi_map = _abi_functions(_load_abi(config, target))
