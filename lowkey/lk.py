@@ -33,7 +33,7 @@ except ImportError:
     project_tools = None
 
 try:
-    from audit_engine import run_rg as audit_run_rg, run_slither as audit_run_slither, run_audit_pipeline as audit_run_pipeline, generate_poc as audit_generate_poc
+    from audit_engine import run_rg as audit_run_rg, run_slither as audit_run_slither, run_audit_pipeline as audit_run_pipeline, generate_poc as audit_generate_poc, run_source_triage as audit_run_source_triage
 except ImportError:
     audit_run_rg = audit_run_slither = audit_run_pipeline = audit_generate_poc = None
 
@@ -4873,12 +4873,75 @@ def source_sol_files(root):
             if filename.endswith(".sol"): paths.append(os.path.join(path,filename))
     return sorted(paths)
 
+def _strip_scan_comments(text: str) -> str:
+    """Comment-aware filtering for legacy 'lk scan' custom paths."""
+    chars = list(text)
+    state = "code"
+    quote = ""
+    escape = False
+    i = 0
+    while i < len(chars):
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < len(chars) else ""
+        if state == "code":
+            if ch == "/" and nxt == "*":
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                state = "block"
+                continue
+            if ch == "/" and nxt == "/":
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                state = "line"
+                continue
+            if ch in {"'", '"'}:
+                quote = ch
+                escape = False
+                state = "string"
+            i += 1
+            continue
+        if state == "line":
+            if ch == "\n":
+                state = "code"
+            elif ch != "\n":
+                chars[i] = " "
+            i += 1
+            continue
+        if state == "block":
+            if ch == "*" and nxt == "/":
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                state = "code"
+                continue
+            if ch != "\n":
+                chars[i] = " "
+            i += 1
+            continue
+        if escape:
+            escape = False
+        elif ch == "\\":
+            escape = True
+        elif ch == quote:
+            quote = ""
+            state = "code"
+        i += 1
+    return "".join(chars)
+
+
 def run_scan(args):
     root = args[0] if args else "src"
     if not os.path.exists(root):
         return fail(f"Path not found: {root}")
     if not os.path.isdir(root) and not root.endswith(".sol"):
         return fail(f"Path is not a Solidity file or directory: {root}")
+
+    if not args and audit_run_source_triage is not None:
+        audit_root = audit_context.foundry_project_root()
+        try:
+            return audit_run_source_triage(str(audit_root))
+        except Exception as exc:
+            return fail(f"Source triage failed: {exc}", 1)
+
     patterns = [
         ("REENTRANCY REVIEW", re.compile(r"\.(?:call|delegatecall|staticcall)\s*(?:\{|\()")),
         ("ETH TRANSFER REVIEW", re.compile(r"\.(transfer|send)\s*\(")),
@@ -4897,10 +4960,10 @@ def run_scan(args):
     markers = []
     for path in source_sol_files(root):
         try:
-            lines = Path(path).read_text(encoding="utf-8").splitlines()
+            lines = _strip_scan_comments(Path(path).read_text(encoding="utf-8"))
         except OSError:
             continue
-        for lineno, line in enumerate(lines, 1):
+        for lineno, line in enumerate(lines.splitlines(), 1):
             for label, pattern in patterns:
                 if pattern.search(line):
                     item = {
@@ -4922,6 +4985,18 @@ def run_scan(args):
         data={"count": len(markers), "markers": markers},
     )
     return 0
+
+
+def _full_evidence_pass(config):
+    """Run the integrated evidence engine instead of the legacy Forge audit."""
+    try:
+        return run_external_audit(config, ["run"])
+    except Exception as exc:
+        print(f"Warning: integrated evidence pipeline failed: {exc}", file=sys.stderr)
+        return 1
+
+
+
 def run_deps(args):
     root=args[0] if args else "."
     if not os.path.exists(root):
@@ -5420,6 +5495,9 @@ def run_audit_mode(config, args=None, interactive=None):
     target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
     if target:
         _sync_audit_context(config, root)
+    else:
+        print("Target : none configured for this project")
+        print("         Static audit can continue; use 'lk lab' (or 'lk audit auto') for a live local target.")
 
     audit_code = run_audit(config, mode_args)
     if walkthrough_mode:
