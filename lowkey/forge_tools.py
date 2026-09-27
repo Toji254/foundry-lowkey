@@ -642,7 +642,7 @@ def run_audit(args: Sequence[str]) -> int:
     if not has_verbosity(forwarded):
         test_cmd.insert(1, "-vvv")
     if not _has_path_filter(forwarded):
-        test_cmd.extend(["--no-match-path", "test/Lowkey_*", "--no-match-path", "test/Poc_*"])
+        test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
     coverage_cmd = ["coverage", *forwarded]
     coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded, quiet=quiet))
     steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
