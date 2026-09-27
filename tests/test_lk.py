@@ -477,6 +477,51 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertIn('cast send "$TARGET"', content)
             self.assertIn("increment(uint256)", content)
 
+    def test_walkthrough_transaction_evidence_is_clickable_and_confirmable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tx_hash = "0x" + "1" * 64
+            step = lk.walkthrough.Step(
+                1,
+                "Alice",
+                "Fixture",
+                "0x" + "2" * 40,
+                "deposit(uint256)",
+                [123],
+                value_wei=123,
+                status="success",
+                tx_hash=tx_hash,
+                calldata="0xdeadbeef",
+            )
+            receipt = {
+                "status": "0x1",
+                "blockNumber": "0x2a",
+                "gasUsed": "0x5208",
+            }
+            transaction = {
+                "hash": tx_hash,
+                "from": "0x" + "3" * 40,
+                "to": step.address,
+                "value": hex(123),
+                "nonce": "0x1",
+                "gas": "0x100000",
+                "input": "0xdeadbeef",
+                "blockNumber": "0x2a",
+            }
+            with patch.object(lk.walkthrough, "_rpc_call", return_value=transaction):
+                page = lk.walkthrough._write_transaction_evidence(
+                    root, "http://127.0.0.1:8545", step, receipt
+                )
+            self.assertIsNotNone(page)
+            self.assertTrue(pathlib.Path(page).is_file())
+            content = pathlib.Path(page).read_text(encoding="utf-8")
+            self.assertIn(tx_hash, content)
+            self.assertIn("CONFIRMED / SUCCESS", content)
+            self.assertIn("cast tx " + tx_hash, content)
+            link = lk.walkthrough._transaction_link(root, tx_hash)
+            self.assertIn("\\x1b]8;;file://", link)
+            self.assertIn("transactions/" + tx_hash + ".html", link)
+
     def test_walkthrough_empty_revert_explains_contract_argument(self):
         model = lk.walkthrough.ContractModel(
             name="Factory",
