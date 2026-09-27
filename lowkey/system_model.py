@@ -168,9 +168,45 @@ def _extract_source_signals(path: Path, root: Path) -> dict[str, Any]:
     }
 
 
+def _configured_src_prefix(root: Path) -> str:
+    prefix = "src"
+    try:
+        foundry = (root / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'(?m)^\s*src\s*=\s*["\']([^"\']+)["\']', foundry)
+        if match:
+            prefix = match.group(1).strip().rstrip("/\\")
+    except OSError:
+        pass
+    return prefix.replace("\\", "/")
+
+
+def _artifact_source_path(root: Path, artifact_path: Path, payload: dict[str, Any]) -> Path | None:
+    source = payload.get("sourceName")
+    normalized = str(source).replace("\\", "/").lstrip("./") if source else ""
+    if normalized:
+        candidate = root / normalized
+        if candidate.is_file() and normalized.startswith(_configured_src_prefix(root) + "/"):
+            return candidate
+
+    contract = str(payload.get("contractName") or artifact_path.stem)
+    src_root = root / _configured_src_prefix(root)
+    candidates = [
+        src_root / f"{contract}.sol",
+        src_root / artifact_path.parent.name,
+    ]
+    if src_root.is_dir():
+        candidates.extend(sorted(src_root.rglob(f"{contract}.sol")))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _artifact_contract_map(root: Path) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for path in _project_files(root, "out/**/*.json"):
+        if "build-info" in path.parts:
+            continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -178,9 +214,19 @@ def _artifact_contract_map(root: Path) -> dict[str, dict[str, Any]]:
         abi = payload.get("abi")
         if not isinstance(abi, list):
             continue
+        source_path = _artifact_source_path(root, path, payload)
+        if source_path is None:
+            continue
         contract = str(payload.get("contractName") or path.stem)
+        try:
+            relative_source = source_path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if not relative_source.startswith(_configured_src_prefix(root) + "/"):
+            continue
         result[contract] = {
             "artifact": path.relative_to(root).as_posix(),
+            "source": relative_source,
             "sha256": _sha256(path),
             "abi_functions": [
                 {
@@ -500,6 +546,7 @@ def build_manifest(
     scripts = [
         _extract_source_signals(path, root_path)
         for path in _project_files(root_path, "script/**/*.s.sol")
+        if not path.name.startswith("Lowkey")
     ]
     deployments = _extract_broadcasts(root_path, rpc)
     artifacts = _artifact_contract_map(root_path)
