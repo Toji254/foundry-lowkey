@@ -2923,6 +2923,13 @@ contract BountyArena {
         self.assertIsNone(origin)
         self.assertTrue(any("could not encode" in item for item in diagnostics))
 
+
+    def test_event_decoder_error_propagates_nonzero_status(self):
+        config = {"target": None}
+        with patch.object(lk, "cast_output", return_value=(0, "", "Error: ABI decoding failed: buffer overrun while deserializing")):
+            result = lk.run_event(config, ["Ping(uint256)", "0xdeadbeef"])
+        self.assertNotEqual(result, 0)
+
 if __name__ == "__main__":
     unittest.main()
 
