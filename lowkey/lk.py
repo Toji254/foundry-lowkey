@@ -4667,21 +4667,6 @@ def run_lab(config,args):
     script = discover_local_lab_script(root, auto_selected)
     fixture = discover_local_lab_fixture(root, auto_selected) if auto_selected else None
 
-    if not requested or str(requested).lower() in {"confidencepool", "confidencepoolfactory", "confidencepooltest"}:
-        try:
-            generated = ensure_confidence_pool_lab_script(root)
-            if generated:
-                script = generated
-        except Exception as exc:
-            print(f"Warning: ConfidencePool fixture generation skipped: {exc}", file=sys.stderr)
-    if auto_selected and str(auto_selected).lower() in {"confidencepool", "confidencepoolfactory"}:
-        try:
-            generated = ensure_confidence_pool_lab_script(root)
-            if generated:
-                script = generated
-        except Exception as exc:
-            print(f"Warning: ConfidencePool lab adapter unavailable: {exc}", file=sys.stderr)
-
     rpc = effective_rpc(config)
     info = anvil_rpc_info(config)
 
