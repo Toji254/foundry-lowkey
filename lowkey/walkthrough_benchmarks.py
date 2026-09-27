@@ -66,6 +66,7 @@ class WalkthroughBenchmarkAdapter(Protocol):
         target: str,
         now: int,
     ) -> list[core.Step]: ...
+    def manages_child_prerequisites(self, model: core.ContractModel) -> bool: ...
 
     def assess(
         self,
@@ -105,6 +106,9 @@ class ConfidencePoolBenchmarkAdapter:
         if str(model.name).lower() == "confidencepool":
             return core._confidence_pool_recipe(config, actors, pool_override=target, now=now)
         return []
+
+    def manages_child_prerequisites(self, model):
+        return str(model.name).lower() == "confidencepool"
 
     def prepare(self, root, config, host, rpc, actors, model, models):
         pool, reason = _confidence_pool_live_pool(rpc, config, host, actors)
