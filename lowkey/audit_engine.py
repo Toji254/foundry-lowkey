@@ -407,6 +407,9 @@ def _project_config(root: str | Path = ".") -> dict[str, Any]:
         return config
     address = target.get("address")
     if not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(address or "")):
+        config = dict(config)
+        config["target"] = None
+        config.pop("target_contract", None)
         return config
 
     config = dict(config)
