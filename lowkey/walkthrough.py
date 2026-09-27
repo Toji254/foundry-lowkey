@@ -1875,16 +1875,49 @@ def _osc8(label: str, target: str) -> str:
 
 
 def _source_target(root: Path, source: str, line: int | None = None) -> str:
+    """Return a terminal-safe local source URI.
+
+    Prefer an editor URI when Lowkey can identify VS Code/Cursor; plain file://
+    remains the standards-based fallback. LOWKEY_EDITOR_LINK can force
+    vscode, cursor or file for a user's preferred environment.
+    """
     path = (root / source).resolve()
-    if os.environ.get("TERM_PROGRAM", "").lower() == "vscode" or os.environ.get("VSCODE_PID"):
-        target = f"vscode://file/{quote(str(path), safe='/')}"
+    encoded = quote(str(path), safe="/")
+    forced = str(os.environ.get("LOWKEY_EDITOR_LINK") or "").strip().lower()
+
+    vscode_context = (
+        str(os.environ.get("TERM_PROGRAM") or "").lower() == "vscode"
+        or bool(os.environ.get("VSCODE_PID"))
+    )
+    cursor_context = (
+        str(os.environ.get("TERM_PROGRAM") or "").lower() == "cursor"
+        or bool(os.environ.get("CURSOR_TRACE"))
+    )
+
+    use_vscode = forced in {"vscode", "code"} or (
+        not forced and (vscode_context or bool(shutil.which("code")))
+    )
+    use_cursor = forced == "cursor" or (
+        not forced and not use_vscode
+        and (cursor_context or bool(shutil.which("cursor")))
+    )
+
+    if use_vscode:
+        target = f"vscode://file/{encoded}"
         if line:
             target += f":{int(line)}"
         return target
-    target = f"file://{quote(str(path), safe='/')}"
-    if line:
-        target += f"#L{int(line)}"
-    return target
+
+    if use_cursor:
+        target = f"cursor://file/{encoded}"
+        if line:
+            target += f":{int(line)}"
+        return target
+
+    # Do not append #L fragments to file://. Desktop URI handlers frequently
+    # ignore or reject them, which can make an otherwise valid hyperlink appear
+    # to do nothing.
+    return f"file://{encoded}"
 
 
 def _transaction_evidence_path(root: Path, tx_hash: str) -> Path:
