@@ -3746,7 +3746,14 @@ def run_lab(config,args):
             return fail(f"Error: Vyper build layer unavailable: {exc}")
         build_code = run_vyper_build(quiet=True)
         if build_code != 0:
-            return fail("Error: current Vyper project could not be built; refusing to guess a live target.", 1)
+            # Vyper projects can contain unrelated application contracts that do
+            # not compile in isolation. Keep the safe target-discovery gate below:
+            # only successfully compiled, first-party artifacts may become a lab target.
+            print(
+                "Warning: Vyper build reported failures; Lowkey will use only successfully "
+                "compiled first-party artifacts.",
+                file=sys.stderr,
+            )
 
     if args and args[0].lower() == "stop":
         return stop_project_anvil(root)
