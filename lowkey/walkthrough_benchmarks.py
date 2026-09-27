@@ -358,14 +358,27 @@ def _assess_confidence_pool_story(
 
 
 
+_REGISTERED_BENCHMARK_ADAPTERS: list[type] = [ConfidencePoolBenchmarkAdapter]
+
+
+def register_benchmark_adapter(adapter_type: type) -> type:
+    """Register a benchmark adapter without changing the walkthrough core."""
+    if adapter_type not in _REGISTERED_BENCHMARK_ADAPTERS:
+        _REGISTERED_BENCHMARK_ADAPTERS.append(adapter_type)
+    return adapter_type
+
+
 def get_benchmark_adapter(
     model: core.ContractModel,
     models: list[core.ContractModel],
     config: dict[str, Any],
 ) -> WalkthroughBenchmarkAdapter | None:
     """Return the first registered adapter matching the current project."""
-    adapters = [ConfidencePoolBenchmarkAdapter()]
-    for adapter in adapters:
+    for adapter_type in _REGISTERED_BENCHMARK_ADAPTERS:
+        try:
+            adapter = adapter_type()
+        except TypeError:
+            continue
         if adapter.matches(model, models, config):
             return adapter
     return None
