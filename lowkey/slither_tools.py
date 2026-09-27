@@ -504,6 +504,8 @@ def run_default(root: Path, extra: Sequence[str] = (), quiet: bool = False) -> i
     command.extend(["--json", str(json_path), "--sarif", str(sarif_path)])
     command.extend(extra)
 
+    scope = _target_scope(root)
+
     if not quiet:
         print("=== LOWKEY SLITHER ===")
         print(f"Project : {root}")
@@ -528,7 +530,7 @@ def run_default(root: Path, extra: Sequence[str] = (), quiet: bool = False) -> i
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
                 if not quiet:
-                    _summary(payload, root)
+                    _summary(payload, root, scope)
                 detectors = payload.get("results", {}).get("detectors", [])
                 if not isinstance(detectors, list):
                     detectors = []
@@ -541,7 +543,12 @@ def run_default(root: Path, extra: Sequence[str] = (), quiet: bool = False) -> i
     audit_context.record_tool(
         "slither", root, status="completed" if result.returncode == 0 else "failed",
         summary=f"{len(detectors)} static-analysis finding(s) reported",
-        data={"json": str(json_path), "sarif": str(sarif_path), "finding_count": len(detectors)},
+        data={
+            "json": str(json_path),
+            "sarif": str(sarif_path),
+            "finding_count": len(detectors),
+            "scope": scope,
+        },
     )
 
     show_specialized_output = any(option in extra for option in ("--print", "--list-detectors", "--list-printers", "--checklist"))
