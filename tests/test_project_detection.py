@@ -191,7 +191,7 @@ class ProjectDetectionTests(unittest.TestCase):
                     ["uv", "run", "pytest", "-q"],
                 )
 
-    def test_native_vyper_runs_nested_python_submodule_tests_from_submodule_root(self):
+    def test_native_vyper_ignores_test_submodules_in_parent_pytest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             nested = root / "tests" / "scrvusd" / "contracts" / "scrvusd"
@@ -199,28 +199,41 @@ class ProjectDetectionTests(unittest.TestCase):
                 '[submodule "scrvusd"]\n\tpath = tests/scrvusd/contracts/scrvusd\n\turl = https://example.com/scrvusd.git\n',
                 encoding="utf-8",
             )
-            (root / "pyproject.toml").write_text("[project]\nname = \"root-demo\"\n", encoding="utf-8")
-            (root / "test_root.py").write_text("def test_root(): pass\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                "[project]\nname = \"root-demo\"\n",
+                encoding="utf-8",
+            )
+            (root / "test_root.py").write_text(
+                "def test_root(): pass\n",
+                encoding="utf-8",
+            )
             (nested / "tests").mkdir(parents=True)
-            (nested / "tests" / "test_nested.py").write_text("def test_nested(): pass\n", encoding="utf-8")
+            (nested / "tests" / "test_nested.py").write_text(
+                "def test_nested(): pass\n",
+                encoding="utf-8",
+            )
             calls = []
 
             def fake_run(command, cwd):
                 calls.append((list(command), cwd))
                 return 0, ""
 
-            with patch.object(project_detection, "bootstrap_project", return_value=0), \\
-                 patch.object(project_detection.shutil, "which", side_effect=lambda name: name in {"uv", "pytest"}), \\
+            with patch.object(project_detection, "bootstrap_project", return_value=0), \
+                 patch.object(project_detection.shutil, "which", side_effect=lambda name: name in {"uv", "pytest"}), \
                  patch.object(project_detection, "_run", side_effect=fake_run):
                 code = project_detection.run_native_audit(
                     {"root": str(root), "backend": "vyper", "native": {"pytest": True}}
                 )
 
             self.assertEqual(code, 0)
-            self.assertEqual(calls[0], (["uv", "run", "pytest", "-q", "--ignore", "tests/scrvusd/contracts/scrvusd/tests"], root))
             self.assertEqual(
-                calls[1],
-                (["uv", "run", "--project", str(root), "pytest", "-q"], nested),
+                calls,
+                [
+                    (
+                        ["uv", "run", "pytest", "-q", "--ignore", "tests/scrvusd/contracts/scrvusd"],
+                        root,
+                    )
+                ],
             )
 
     def test_native_vyper_tests_use_project_python_runner(self):
