@@ -60,6 +60,10 @@ jobs:
                   count += value;
                   emit Ping(value);
               }
+              function deposit(uint256 amount) external payable {
+                  require(amount == msg.value, "attach eth");
+                  count += amount;
+              }
           }
           EOF
           cat > test/Fixture.t.sol <<'EOF'
@@ -140,6 +144,8 @@ jobs:
           lk target "$TARGET"
           lk walkthrough --non-interactive --steps 1
           grep -q "LIVE EXECUTION" .audit/walkthrough/model.json || true
+          test -d .audit/walkthrough/transactions
+          test -n "$(find .audit/walkthrough/transactions -name '*.html' -print -quit)"
           test -f script/LowkeyWalkthrough_Fixture.s.sol
           lk status
           lk context
