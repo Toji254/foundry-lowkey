@@ -5457,7 +5457,9 @@ def run_audit_mode(config, args=None, interactive=None):
     """Run the connected audit session with optional autonomous local bootstrap."""
     args = list(args or [])
     auto_mode = any(str(item).lower() == "auto" for item in args)
-    checks = "--checks" in args
+    normalized_args = ["--checks" if str(item).lower() in {"check", "checks", "--check"} else item for item in args]
+    checks = "--checks" in normalized_args
+    args = normalized_args
     walkthrough_mode = "--walkthrough" in args
     force_noninteractive = "--non-interactive" in args
     force_interactive = "--interactive" in args
@@ -5733,7 +5735,7 @@ def _sync_audit_context(config, root=None):
 
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
-        print("Usage: lk audit [auto] [--checks] [--interactive|--non-interactive]")
+        print("Usage: lk audit [auto] [--checks|check|checks] [--interactive|--non-interactive]")
         print("Run the connected audit session. Plain 'lk audit' detects and uses an existing Anvil but never starts one.")
         print("'lk audit auto' may start a Lowkey-managed project Anvil and bootstrap a safe local target.")
         print("Use --checks for Slither and optional lint/geiger checks; non-interactive environments skip the menu.")
