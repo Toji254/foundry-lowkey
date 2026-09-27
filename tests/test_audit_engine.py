@@ -108,6 +108,32 @@ class AuditEngineTests(unittest.TestCase):
             "address(uint160(0x00a51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0))",
         )
 
+    def test_source_triage_excludes_generated_test_and_script_files(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src").mkdir()
+            (root / "test").mkdir()
+            (root / "script").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault { function f() external { block.timestamp; } }",
+                encoding="utf-8",
+            )
+            (root / "test" / "Poc.sol").write_text(
+                "contract Poc { function f() external { block.timestamp; } }",
+                encoding="utf-8",
+            )
+            (root / "script" / "Replay.sol").write_text(
+                "contract Replay { function f() external { block.timestamp; } }",
+                encoding="utf-8",
+            )
+            with patch.object(audit_engine, "record_evidence") as record:
+                self.assertEqual(audit_engine.run_source_triage(str(root)), 0)
+                payload = record.call_args.args[1]
+            self.assertEqual(payload["files_scanned"], 1)
+            self.assertEqual(payload["markers"][0]["file"], "src/Vault.sol")
+
     def test_source_triage_ignores_commented_markers(self):
         from tempfile import TemporaryDirectory
 
