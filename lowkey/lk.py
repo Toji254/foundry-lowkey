@@ -3884,8 +3884,18 @@ def encode_target_call(config, function, values):
                 for index,item in enumerate(inputs)
             )
             suffix=f" Expected: {expected}." if expected else ""
+            signature_text = format_signature(matches[0])
+            hint = ""
+            if inputs:
+                placeholders = " ".join(
+                    f"<{item.get('name') or 'arg'+str(index+1)}>"
+                    for index,item in enumerate(inputs)
+                )
+                hint = f" Use: lk changes '{signature_text}' {placeholders}."
             raise ValueError(
-                f"{format_signature(matches[0])} expects {len(inputs)} argument(s), got {len(values)}.{suffix}"
+                f"{signature_text} expects {len(inputs)} argument(s), got {len(values)}.{suffix}"
+                f" The quoted function signature contains TYPES; pass real VALUES after the closing quote."
+                f"{hint}"
             )
 
     code,encoded,error=cast_output(["cast","calldata",signature,*values])
@@ -6032,10 +6042,60 @@ def run_investigate(config, args):
         safe_function = shlex.quote(str(function))
         print(f"  lk fn {safe_function}")
         print(f"  lk ask {safe_function}")
-        print(f"  lk changes {safe_function}")
-        print("  lk trace")
-        print(f"  lk generate test {safe_function}")
-        print("    (add concrete arguments or --calldata when you are ready to reproduce it)")
+
+        abi = load_abi(config.get("target"), config)
+        matches = matching_functions(abi, function) if abi else []
+        item = matches[0] if len(matches) == 1 else None
+
+        print("\n  HOW FUNCTION ARGUMENTS WORK")
+        print("    Function signature = function name + parameter TYPES.")
+        print("    The quoted signature tells Lowkey WHAT the function accepts.")
+        print("    Actual parameter VALUES go AFTER the closing quote.")
+        if item:
+            inputs = item.get("inputs", [])
+            if inputs:
+                print("    Parameters for this function:")
+                for index, param in enumerate(inputs, 1):
+                    name = param.get("name") or f"arg{index}"
+                    print(f"      {index}. {name} : {canonical_type(param)}")
+                print("    Example:")
+                print(f"      lk changes '{format_signature(item)}' " + " ".join(
+                    f"<{param.get('name') or 'arg'+str(index)}>"
+                    for index, param in enumerate(inputs, 1)
+                ))
+            else:
+                print("    This function takes no arguments.")
+                print(f"    Example: lk changes '{format_signature(item)}'")
+        else:
+            print("    Use lk ask '<function>' to see the parameter names and TYPES.")
+
+        print("\n  EXECUTE / INSPECT STATE CHANGES")
+        print(f"    lk changes '{function}' <value1> <value2> ...")
+        print("    Do NOT put real argument values inside the quoted signature.")
+        print("    Put the actual VALUES after the closing quote.")
+        if item and item.get("inputs"):
+            print("    For this function:")
+            print(f"      lk changes '{format_signature(item)}' " + " ".join(
+                f"<{param.get('name') or 'arg'+str(index)}>"
+                for index, param in enumerate(item.get("inputs", []), 1)
+            ))
+        else:
+            print(f"      lk changes {safe_function}")
+
+        print("\n  GENERATE A REUSABLE TEST / POC")
+        print(f"    lk generate test '{function}' <value1> <value2> ...")
+        print("    Real VALUES go after the closing quote.")
+        if item and item.get("inputs"):
+            print("    For this function:")
+            print(f"      lk generate test '{format_signature(item)}' " + " ".join(
+                f"<{param.get('name') or 'arg'+str(index)}>"
+                for index, param in enumerate(item.get("inputs", []), 1)
+            ))
+        print("    Or provide raw calldata:")
+        print(f"      lk generate test '{function}' --calldata <hex>")
+
+        print("\n  OTHER")
+        print("    lk trace")
     print("  lk findings")
     print("  lk context")
     return 0
@@ -6654,8 +6714,15 @@ STORAGE / STATE FORENSICS
   lk proof <slot> [block]          Read a storage proof.
   lk snapshot [slot ...]           Save selected storage slots.
   lk diff                          Compare the latest storage snapshot.
-  lk changes <function> [args]     Show storage changes from a call.
-  lk state-diff <function> [args]  Alias for storage-change reproduction.
+  lk changes '<name(parameter TYPES...)>' <VALUES...>
+                                   Show storage changes from a call.
+                                   FUNCTION SIGNATURE = function name + parameter TYPES.
+                                   The quoted part contains TYPES, not real values.
+                                   Put actual argument VALUES after the closing quote.
+                                   Example:
+                                     lk changes 'createbounty(address,uint256)' <addr> <amount>
+  lk state-diff '<name(parameter TYPES...)>' <VALUES...>
+                                   Alias for storage-change reproduction.
   lk storage / slots               Use raw Cast storage tools through lk raw when needed.
 
 TRANSACTION FORENSICS
@@ -6674,7 +6741,13 @@ TRANSACTION FORENSICS
 REPRODUCE / ATTACK / TEST
   lk probe <function> [args]       Try a call without assertions. Example: lk probe release
   lk test-gen                      Turn the latest send into a Forge test.
-  lk generate test <function>      Generate a reusable Forge test.
+  lk generate test '<name(parameter TYPES...)>' <VALUES...>
+                                   Generate a reusable Forge test.
+                                   FUNCTION SIGNATURE = function name + parameter TYPES.
+                                   The quoted part contains TYPES, not real values.
+                                   Put actual argument VALUES after the closing quote.
+                                   Example:
+                                     lk generate test 'createbounty(address,uint256)' <addr> <amount>
   lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
   lk generate deployment <Contract> Generate a deployment script.
   lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
