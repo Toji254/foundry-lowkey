@@ -45,6 +45,16 @@ class LowkeyGeneratorTests(unittest.TestCase):
             rendered,
         )
 
+    def test_poc_renderer_marks_raw_call_intentional(self):
+        rendered = generator._template_poc(
+            "BountyArena",
+            "0x1111111111111111111111111111111111111111",
+            "ping",
+            "0",
+            "deadbeef",
+        )
+        self.assertIn("forge-lint: disable-next-line low-level-calls", rendered)
+
     def test_poc_renderer_avoids_invalid_checksum_address_literals(self):
         target = "0xa51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0"
         rendered = generator._template_poc("BountyArena", target, "release", "0", "deadbeef")
