@@ -146,9 +146,35 @@ def _read_source(root: Path, model: core.ContractModel) -> str:
         return ""
 
 
-def _function_blocks(source: str) -> list[tuple[str, int, str, str]]:
-    """Return Solidity function name, line, declaration/header, and balanced body."""
+def _function_blocks(source: str, language: str = "solidity") -> list[tuple[str, int, str, str]]:
+    """Return function name, line, declaration/header, and body for Solidity or Vyper."""
     blocks: list[tuple[str, int, str, str]] = []
+    if language == "vyper":
+        lines = source.splitlines(True)
+        current: tuple[str, int, int, str] | None = None
+        body_lines: list[str] = []
+        for index, line in enumerate(lines):
+            match = re.match(r"^([ \t]*)def\s+(\w+)\s*\([^)]*\)\s*:\s*(?:#.*)?$", line.rstrip("\n"))
+            if match:
+                if current:
+                    name, start, indent, header = current
+                    blocks.append((name, start, header, "".join(body_lines)))
+                current = (match.group(2), index + 1, len(match.group(1)), line.rstrip("\n"))
+                body_lines = []
+                continue
+            if current:
+                if line.strip() and len(line) - len(line.lstrip(" \t")) <= current[2]:
+                    name, start, indent, header = current
+                    blocks.append((name, start, header, "".join(body_lines)))
+                    current = None
+                    body_lines = []
+                else:
+                    body_lines.append(line)
+        if current:
+            name, start, indent, header = current
+            blocks.append((name, start, header, "".join(body_lines)))
+        return blocks
+
     for match in re.finditer(r"\bfunction\s+(\w+)\s*\([^)]*\)[^{;]*\{", source, re.S):
         opening = match.end() - 1
         body = core._balanced_block(source, opening)
@@ -233,7 +259,8 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             ["Immunefi Common Vulnerabilities"],
         ))
 
-    for name, line, header, body in _function_blocks(stripped):
+    language = "vyper" if str(model.source).lower().endswith((".vy", ".vyi")) else "solidity"
+    for name, line, header, body in _function_blocks(stripped, language):
         if not _mutating(model, name):
             continue
         lower = name.lower()
@@ -261,7 +288,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
 
         # Reentrancy / CEI candidate.
         calls = list(re.finditer(
-            r"(?:\.call\s*(?:\{|\()|\.transfer\s*\(|\.send\s*\(|\.safeTransfer\s*\(|\.safeTransferFrom\s*\(|\.functionCall\s*\()",
+            r"(?:\.call\s*(?:\{|\()|\.transfer\s*\(|\.send\s*\(|\.safeTransfer\s*\(|\.safeTransferFrom\s*\(|\.functionCall\s*\(|\braw_call\s*\(|\bsend\s*\()",
             body,
         ))
         if calls:
