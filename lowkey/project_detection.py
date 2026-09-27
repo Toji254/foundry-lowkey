@@ -176,7 +176,7 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "scarb": bool(shutil.which("scarb")),
         "snforge": bool(shutil.which("snforge")),
         "vyper": bool(shutil.which("vyper")),
-        "pytest": bool(shutil.which("pytest")),
+        "pytest": bool(shutil.which("pytest")),\n        "uv": bool(shutil.which("uv")),
         "ape": bool(shutil.which("ape")),
         "brownie": bool(shutil.which("brownie")),
         "hardhat": (root / "node_modules" / ".bin" / "hardhat").is_file(),
@@ -227,6 +227,64 @@ def _has_test_files(root: Path) -> bool:
         if path.name.startswith("test_") or path.name.endswith("_test.py") or path.suffix in {".t.sol", ".t.cairo"}:
             return True
     return False
+
+def _python_test_command(root: Path) -> list[str] | None:
+    """Select the project's Python test runner instead of a global pytest."""
+    if (root / "pyproject.toml").is_file():
+        uv = shutil.which("uv")
+        if uv:
+            return [uv, "run", "pytest", "-q"]
+
+    for candidate in (
+        root / ".venv" / "bin" / "python",
+        root / "venv" / "bin" / "python",
+        root / ".venv" / "Scripts" / "python.exe",
+        root / "venv" / "Scripts" / "python.exe",
+    ):
+        if candidate.is_file():
+            return [str(candidate), "-m", "pytest", "-q"]
+
+    pytest = shutil.which("pytest")
+    if pytest:
+        return [pytest, "-q"]
+    return None
+
+
+def _bootstrap_submodules(root: Path) -> int:
+    """Initialize missing Git submodules without resetting existing checkouts."""
+    gitmodules = root / ".gitmodules"
+    git = shutil.which("git")
+    if not gitmodules.is_file() or not git:
+        return 0
+
+    status_code, status = _run([git, "submodule", "status", "--recursive"], root)
+    if status_code != 0:
+        _report_step(
+            "git submodules",
+            [git, "submodule", "status", "--recursive"],
+            status_code,
+            status,
+        )
+        return status_code
+
+    lines = [line for line in status.splitlines() if line.strip()]
+    uninitialized = [line for line in lines if line.lstrip().startswith("-")]
+    mismatched = [line for line in lines if line.lstrip().startswith("+")]
+
+    if mismatched:
+        print(
+            "DEFER  git submodules — one or more checkouts differ from the "
+            "recorded commit; Lowkey will not reset local work."
+        )
+
+    if not uninitialized:
+        return 0
+
+    command = [git, "submodule", "update", "--init", "--recursive", "--depth", "1"]
+    code, output = _run(command, root)
+    _report_step("git submodules", command, code, output)
+    return code
+
 
 def _run(command: Sequence[str], root: Path) -> tuple[int, str]:
     try:
