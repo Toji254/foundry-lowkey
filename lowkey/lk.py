@@ -4173,34 +4173,24 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or ("foundry" if (Path(root) / "foundry.toml").is_file() else "generic"))
 
-    if kind in {"foundry", "mixed-foundry-vyper"}:
-        create_args = ["create", fqn]
-        if values:
-            create_args.extend(["--constructor-args", *values])
-        create_args.extend(["--rpc-url", rpc, "--private-key", key, "--broadcast"])
-        result = run_foundry(create_args, capture=True)
-        output = result.text
-        if result.code != 0:
-            tail = "\n".join(output.splitlines()[-20:]) if output else "forge create failed"
-            return fail(f"Error: generic lab deployment failed.\n{tail}", result.code)
-        target = parse_deployed_address(output)
-        if not target:
-            return fail("Error: deployment succeeded, but Lowkey could not read the deployed address.")
-    else:
-        # Non-Foundry artifact deployment uses cast directly. The same command
-        # path works for Hardhat/Brownie/Vyper artifacts on a local EVM node.
-        target, reason = _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs)
-        if not target:
-            return fail(f"Error: generic local deployment failed. {reason or ''}".strip(), 1)
+    # Use one artifact deployment path across Foundry/Hardhat/Brownie/Vyper-on-EVM.
+    # It supports constructor prompts instead of assuming a zero-argument contract.
+    target, reason = _deploy_artifact_locally(
+        root, rpc, accounts, artifact, constructor_inputs
+    )
+    if not target:
+        return fail(
+            f"Error: generic local deployment failed. {reason or ''}".strip(),
+            1,
+        )
 
     has_initializer = artifact_has_initializer(artifact)
     if has_initializer:
         print(f"Target  : {contract} -> {target}")
         print(f"ABI     : {path}")
-        print("Status  : NOT A LIVE TARGET")
-        print("Reason  : this artifact exposes initialize(); generic deployment created the implementation only.")
-        print("Next    : use the project-aware fixture/proxy bootstrap instead.")
-        return 1
+        print("Status  : DEPLOYED IMPLEMENTATION")
+        print("Note    : this artifact exposes initialize(); a proxy/initializer may be required.")
+        print("         Lowkey used the project's own deployment script first when one was available.")
 
     current_actor = config.get("actor")
     current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
