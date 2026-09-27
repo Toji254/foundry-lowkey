@@ -2617,62 +2617,71 @@ def artifact_is_deployable(artifact):
     return bool(obj and obj not in {"0x", "0X"})
 
 def source_contract_fallback(root, contract_name):
-    """Find a first-party source for a contract when Foundry artifact metadata is sparse."""
+    """Find first-party source for an artifact across supported EVM project layouts."""
     root_path = Path(root).expanduser().resolve()
-    src_prefix = "src"
-    try:
-        foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
-        match = re.search(r"(?m)^\s*src\s*=\s*[\"']([^\"']+)[\"']", foundry)
-        if match:
-            src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
-    except OSError:
-        pass
-    src_root = root_path / src_prefix
-    if not src_root.is_dir():
-        return None
-    pattern = f"{contract_name}.sol"
-    for candidate in sorted(src_root.rglob(pattern)):
+    candidates = []
+    if project_tools is not None:
+        try:
+            candidates.extend(project_tools.project_source_files(root_path, {"sol", "vy"}))
+        except Exception:
+            pass
+    if not candidates:
+        ignored = {
+            ".git", ".audit", ".venv", ".tox", "__pycache__", "node_modules",
+            "out", "artifacts", "build", "cache", "lib", "dist",
+        }
+        for path in root_path.rglob("*"):
+            if path.is_file() and path.suffix.lower() in {".sol", ".vy"}:
+                if not any(part in ignored for part in path.parts):
+                    candidates.append(path)
+
+    for candidate in sorted(set(candidates)):
+        if candidate.stem.lower() != str(contract_name).lower():
+            continue
         try:
             text = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if re.search(r"\b(contract|library|interface)\s+" + re.escape(contract_name) + r"\b", text):
+        if candidate.suffix.lower() == ".vy":
             try:
                 return candidate.relative_to(root_path).as_posix()
             except ValueError:
-                return None
+                continue
+        if re.search(
+            r"\b(contract|library|interface|abstract\s+contract)\s+"
+            + re.escape(str(contract_name)) + r"\b",
+            text,
+        ):
+            try:
+                return candidate.relative_to(root_path).as_posix()
+            except ValueError:
+                continue
     return None
 
 def artifact_is_project_application(root, path, artifact):
-    """Return True only for first-party deployable application contracts."""
+    """Return True only for deployable, first-party application artifacts."""
     if not artifact_is_deployable(artifact):
         return False
 
     root_path = Path(root).expanduser().resolve()
-    source = artifact_source_name(artifact, path, root)
-    if not source:
-        source = source_contract_fallback(root, artifact_contract_name(path, artifact))
+    source = artifact_source_name(artifact, path, root) or source_contract_fallback(
+        root, artifact_contract_name(path, artifact)
+    )
     if not source:
         return False
 
     normalized = str(source).replace("\\", "/").lstrip("./")
-    src_prefix = "src"
-    try:
-        foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
-        match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', foundry)
-        if match:
-            src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
-    except OSError:
-        pass
-
-    if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
+    source_path = root_path / normalized
+    if not source_path.is_file():
         return False
 
-    source_path = root_path / normalized
-    # A deployable artifact must resolve to an actual first-party source file.
-    # This is intentionally strict: a fabricated fallback such as
-    # src/Address.sol must never make a dependency look application-owned.
-    if not source_path.is_file():
+    # Keep application ownership project-local without requiring any particular
+    # directory name. Common dependency/source locations are excluded below.
+    excluded_prefixes = {
+        "node_modules", "lib", "vendor", ".git", ".audit", "build-info",
+    }
+    parts = Path(normalized).parts
+    if any(part in excluded_prefixes for part in parts):
         return False
 
     try:
@@ -2681,15 +2690,24 @@ def artifact_is_project_application(root, path, artifact):
         return False
 
     contract_name = artifact_contract_name(path, artifact)
+    if source_path.suffix.lower() == ".vy":
+        # Vyper interfaces conventionally use .vyi; only executable .vy sources
+        # can back a deployable artifact.
+        return True
+
     if re.search(r"\blibrary\s+" + re.escape(contract_name) + r"\b", source_text):
         return False
     if re.search(r"\binterface\s+" + re.escape(contract_name) + r"\b", source_text):
         return False
-    return True
+    if re.search(r"\babstract\s+contract\s+" + re.escape(contract_name) + r"\b", source_text):
+        return False
+    return bool(
+        re.search(r"\bcontract\s+" + re.escape(contract_name) + r"\b", source_text)
+    )
 
 
 def discover_audit_target_contract(root):
-    """Choose a likely protocol-root application contract from audit + source topology."""
+    """Choose a likely first-party application contract without assuming Foundry layout."""
     artifacts = {}
     scores = {}
     sources = {}
@@ -2698,76 +2716,56 @@ def discover_audit_target_contract(root):
         if "build-info" in Path(path).parts:
             continue
         artifact = read_artifact(path)
-        source = artifact_source_name(artifact, path)
-        if not source:
-            # Static target discovery may operate on sparse fixtures that omit
-            # sourceName. This fallback is for ranking only; generic deployment
-            # still requires a real source-backed application artifact.
-            source = f"src/{artifact_contract_name(path, artifact)}.sol"
-        normalized = str(source).replace("\\", "/").lstrip("./")
-        src_prefix = "src"
-        try:
-            foundry = (Path(root) / "foundry.toml").read_text(encoding="utf-8", errors="replace")
-            match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', foundry)
-            if match:
-                src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
-        except OSError:
-            pass
-        if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
+        if not artifact or not artifact_is_deployable(artifact):
             continue
+        if not artifact_is_project_application(root, path, artifact):
+            continue
+
+        source = artifact_source_name(artifact, path, root) or source_contract_fallback(
+            root, artifact_contract_name(path, artifact)
+        )
         name = artifact_contract_name(path, artifact)
         key = str(name).lower()
-        artifacts[key] = str(name)
-        scores.setdefault(key, 0)
-        source = artifact_source_name(artifact, path)
+        artifacts[key] = name
         sources[key] = source or str(path)
+        scores.setdefault(key, 0)
 
         lowered = key
-        if lowered.endswith(("factory", "router", "manager", "coordinator", "controller")):
-            # Whole-protocol walkthroughs need a system root rather than the
-            # deepest leaf with the most static-analysis findings.
+        if lowered.endswith(("factory", "router", "manager", "coordinator", "controller", "registry", "gateway")):
             scores[key] += 500
         if artifact_has_initializer(artifact):
             scores[key] += 20
 
-    if not artifacts:
-        return None
-
-    root = Path(root).expanduser().resolve()
-
-    # Audit evidence is still the strongest signal for the contract under review.
-    for signal in audit_context.signals(root, "open"):
-        if not isinstance(signal, dict):
-            continue
-        path = str(signal.get("file") or "")
-        parts = Path(path).parts
-        if "src" not in parts or not path.lower().endswith(".sol"):
-            continue
-        name = Path(path).stem
-        lowered = path.lower()
-        if "/interfaces/" in lowered or name.lower().startswith("i"):
-            continue
-        key = str(name).lower()
-        if key not in scores:
-            continue
-        impact = str(signal.get("impact") or "").lower()
-        weight = {"high": 100, "medium": 50, "low": 10, "informational": 2}.get(impact, 5)
-        scores[key] += weight
-
-    # A contract that explicitly references another first-party application contract
-    # is usually a protocol root (factory/router -> pool/token/etc.).
-    contract_names = {name for name in artifacts.values()}
-    for key, source in sources.items():
+        # Prefer contracts whose source explicitly references other first-party
+        # application contracts; this is a conservative root heuristic.
         try:
-            source_text = (Path(root) / source).read_text(encoding="utf-8", errors="replace")
+            source_text = (Path(root) / sources[key]).read_text(
+                encoding="utf-8", errors="replace"
+            )
         except OSError:
             source_text = ""
-        for other in contract_names:
+        for other in artifacts.values():
             if other.lower() == key:
                 continue
             if re.search(r"\b" + re.escape(other) + r"\b", source_text):
                 scores[key] += 30
                 break
+
+    if not artifacts:
+        return None
+
+    # Static evidence can refine a candidate when the evidence path maps to a
+    # known application source, but evidence never changes project ownership.
+    for signal in audit_context.signals(Path(root).expanduser().resolve(), "open"):
+        if not isinstance(signal, dict):
+            continue
+        signal_file = str(signal.get("file") or "").replace("\\", "/")
+        stem = Path(signal_file).stem.lower()
+        if stem in scores:
+            impact = str(signal.get("impact") or "").lower()
+            scores[stem] += {
+                "high": 100, "medium": 50, "low": 10, "informational": 2,
+            }.get(impact, 5)
 
     ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
     return artifacts[ranked[0][0]] if ranked else None
