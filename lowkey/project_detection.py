@@ -450,10 +450,12 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     This intentionally reports build/test evidence, not vulnerability verdicts.
     """
     root = Path(info["root"])
-    bootstrap_code = bootstrap_project(info, args)
-    if bootstrap_code != 0:
-        return bootstrap_code
+    if not info.get("_bootstrap_done"):
+        bootstrap_code = bootstrap_project(info, args)
+        if bootstrap_code != 0:
+            return bootstrap_code
     info = detect_project(root)
+    info["_bootstrap_done"] = True
     backend = info.get("backend", "generic")
     native = info.get("native", {})
     failures = 0
@@ -484,7 +486,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             step("vyper tests", ["ape", "test"])
         elif native.get("brownie") and _has(root, "brownie-config.yaml", "brownie-config.yml"):
             step("vyper tests", ["brownie", "test"])
-        elif native.get("pytest") and (_has_test_files(root) or _nested_python_projects(root)):
+        elif (native.get("pytest") or _nested_python_projects(root)) and (_has_test_files(root) or _nested_python_projects(root)):
             nested_projects = _nested_python_projects(root)
             ignored_test_roots = [project / "tests" for project in nested_projects if (project / "tests").is_dir()]
             if _has_test_files(root, ignored_test_roots):
