@@ -483,18 +483,47 @@ def redact_secrets(text):
 def is_probable_private_key(value):
     return bool(re.fullmatch(r"(0x)?[0-9a-fA-F]{64}",str(value or "")))
 
-def target_aliases(config):
+def target_aliases(config, root=None):
+    """Return targets owned by the current project, never another project's targets."""
     merged={}
-    for name,addr in config.get("aliases",{}).items():
-        if is_address(addr): merged[str(name)]=addr
-    for name,addr in config.get("targets",{}).items():
-        if is_address(addr): merged[str(name)]=addr
+    project_root = Path(audit_context.foundry_project_root(root)).resolve()
+    roots = config.get("project_roots", {})
+    if not isinstance(roots, dict):
+        roots = {}
+
+    owners_by_address = {}
+    for address, owner in roots.items():
+        if not is_address(address) or not owner:
+            continue
+        try:
+            owner_root = Path(os.path.expanduser(str(owner))).resolve()
+        except OSError:
+            continue
+        owners_by_address[str(address).lower()] = owner_root
+
+    names = list(config.get("aliases", {}).items()) + list(config.get("targets", {}).items())
+    for name, addr in names:
+        if not is_address(addr):
+            continue
+        owner_root = owners_by_address.get(str(addr).lower())
+        if owner_root is None or owner_root != project_root:
+            continue
+        merged.setdefault(str(name), addr)
     return merged
 
-def resolve_target_ref(config,ref):
+def remember_project_target(config, root, name, address):
+    """Persist a target alias together with the project that owns it."""
+    if not name or not is_address(address):
+        return
+    root = str(Path(audit_context.foundry_project_root(root)).resolve())
+    config.setdefault("aliases", {})[str(name)] = address
+    config.setdefault("targets", {})[str(name)] = address
+    config.setdefault("project_roots", {})[address] = root
+
+def resolve_target_ref(config,ref,root=None):
     if ref is None: return config.get("target")
     if is_address(ref): return ref
-    aliases=target_aliases(config)
+    aliases=target_aliases(config, root)
     if str(ref) in aliases: return aliases[str(ref)]
     if str(ref).isdigit():
         names=list(aliases); index=int(ref)-1
@@ -2283,11 +2312,117 @@ def run_checklist(config,action=None,item=None):
                 lines[i]=line.replace("[ ]","[x]",1); Path(path).write_text("".join(lines),encoding="utf-8"); print(f"Marked complete: {line.strip()[6:]}"); return
         print(f"Checklist item not found: {item}"); return
     print("".join(lines))
-def run_targets(config):
-    aliases=target_aliases(config); current=config.get("target")
-    if not aliases: print("No saved targets. Use lk target <name> <address>."); return
-    for i,(name,address) in enumerate(aliases.items(),1):
-        print(f"{'*' if address==current else ' '} {i:>2}. {name:<20} {address}")
+def _project_target_entries(config, root=None):
+    """Build a target list from the current project only."""
+    project_root = Path(audit_context.foundry_project_root(root)).resolve()
+    entries = []
+
+    context_target = project_context_target(project_root)
+    if context_target:
+        entries.append({
+            "name": context_target.get("contract") or "target",
+            "address": context_target.get("address"),
+            "artifact": context_target.get("artifact"),
+            "contract": context_target.get("contract"),
+            "source": context_target.get("source") or "project",
+        })
+
+    for name, address in target_aliases(config, project_root).items():
+        if any(str(item.get("address")).lower() == str(address).lower() for item in entries):
+            continue
+        artifact = config.get("abi_paths", {}).get(address)
+        entries.append({
+            "name": name,
+            "address": address,
+            "artifact": artifact,
+            "contract": name,
+            "source": "project-config",
+        })
+
+    for record in discover_deployments(project_root):
+        address = record.get("address")
+        if not is_address(address):
+            continue
+        if any(str(item.get("address")).lower() == str(address).lower() for item in entries):
+            continue
+        artifact = None
+        for path in local_artifact_paths(project_root):
+            artifact_data = read_artifact(path) or {}
+            if artifact_contract_name(path, artifact_data).lower() == str(record.get("contract", "")).lower():
+                artifact = path
+                break
+        entries.append({
+            "name": record.get("contract") or "Unknown",
+            "address": address,
+            "artifact": artifact,
+            "contract": record.get("contract"),
+            "source": "broadcast",
+        })
+    return entries
+
+
+def _select_project_target(config, entry, root):
+    address = entry.get("address")
+    if not is_address(address):
+        return fail("Error: selected target has an invalid address.")
+
+    contract = entry.get("contract") or entry.get("name") or "target"
+    artifact = entry.get("artifact")
+    if not artifact:
+        artifact = auto_abi_path(address, config)
+
+    config["target"] = address
+    config["target_contract"] = contract
+    if artifact:
+        config.setdefault("abi_paths", {})[address] = artifact
+    remember_project_target(config, root, entry.get("name") or contract, address)
+    save_config(config)
+    audit_context.set_target(
+        root,
+        address=address,
+        contract=contract,
+        artifact=artifact,
+        source=entry.get("source") or "project",
+    )
+    print(f"Target selected: {entry.get('name') or contract} -> {address}")
+    return 0
+
+
+def run_targets(config, interactive=False):
+    """Show/select targets belonging to the current project only."""
+    root = audit_context.foundry_project_root()
+    current = active_project_target(config, root)
+    entries = _project_target_entries(config, root)
+
+    if not entries:
+        print(f"No targets found for project: {root}")
+        print("Deploy a local target or use 'lk target <name> <address>'.")
+        return 0
+
+    current = current or project_context_target(root)
+    current_address = current.get("address") if isinstance(current, dict) else current
+
+    print(f"PROJECT TARGETS")
+    print(f"===============
+{root}")
+    for index, entry in enumerate(entries, 1):
+        marker = "*" if str(entry.get("address")).lower() == str(current_address or "").lower() else " "
+        print(f" {marker} {index:>2}. {entry.get('name') or entry.get('contract') or 'target':<24} {entry.get('address')}")
+
+    if not interactive:
+        return 0
+
+    try:
+        choice = input(f"Select target [1-{len(entries)}] (Enter to cancel): ").strip()
+    except EOFError:
+        print()
+        return 0
+    if not choice:
+        return 0
+    if not choice.isdigit() or not (1 <= int(choice) <= len(entries)):
+        print("Invalid target selection.")
+        return 0
+    return _select_project_target(config, entries[int(choice) - 1], root)
 
 def discover_deployments(root="."):
     records=[]
@@ -2341,8 +2476,7 @@ def run_auto_target(config,name=None):
         record=records[0]
 
     alias=name or record["contract"]
-    config["aliases"][alias]=record["address"]
-    config["targets"][alias]=record["address"]
+    remember_project_target(config, root, alias, record["address"])
     config["target"]=record["address"]
 
     artifact_path=None
@@ -2893,8 +3027,7 @@ def set_lab_target(config, root, target, contract, artifact):
     config["target_contract"] = contract
     if artifact:
         config.setdefault("abi_paths", {})[target] = artifact
-    config.setdefault("aliases", {})[contract] = target
-    config.setdefault("targets", {})[contract] = target
+    remember_project_target(config, root, contract, target)
     save_config(config)
     audit_context.set_target(
         root,
@@ -5997,7 +6130,7 @@ def run_audit_mode(config, args=None, interactive=None):
             elif choice == "4":
                 run_checklist(config)
             elif choice == "5":
-                run_targets(config)
+                run_targets(config, interactive=True)
             elif choice == "6":
                 run_deployments(config)
             elif choice == "7":
@@ -6985,7 +7118,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         elif args[0]=="auto":
             return run_auto_target(config,args[1] if len(args)>1 else None)
         elif len(args)==1:
-            resolved=resolve_target_ref(config,args[0])
+            resolved=resolve_target_ref(config,args[0],root)
             if resolved:
                 config["target"]=resolved
             elif is_address(args[0]):
@@ -7000,8 +7133,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 source="manual",
             )
         elif len(args)==2 and is_address(args[1]):
-            config["aliases"][args[0]]=args[1]
-            config["targets"][args[0]]=args[1]
+            remember_project_target(config, root, args[0], args[1])
             config["target"]=args[1]
             config["target_contract"]=args[0]
             audit_context.set_target(
@@ -7016,7 +7148,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"targets","target-list"}: run_targets(config)
     elif cmd=="use":
         if not args: run_targets(config); return
-        resolved=resolve_target_ref(config,args[0])
+        resolved=resolve_target_ref(config,args[0],audit_context.foundry_project_root())
         if not resolved: print(f"Unknown target: {args[0]}"); return
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
