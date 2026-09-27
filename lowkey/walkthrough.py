@@ -1502,11 +1502,67 @@ def _arg_for(
     return 0
 
 
-def _value_for(fn: dict[str, Any]) -> int:
+def _value_for(
+    fn: dict[str, Any],
+    model: ContractModel | None = None,
+    root: Path | None = None,
+    args: list[Any] | None = None,
+) -> int:
+    """Infer msg.value from ABI plus source constraints, with a conservative fallback."""
     if fn.get("stateMutability") != "payable":
         return 0
+
+    supplied = list(args or [])
     name = str(fn.get("name") or "").lower()
-    return 10**15 if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")) else 0
+    source_body = ""
+
+    if root and model:
+        try:
+            source = (root / model.source).read_text(encoding="utf-8", errors="replace")
+            function_name = str(fn.get("name") or "")
+            match = re.search(
+                r"\bfunction\s+" + re.escape(function_name) + r"\s*\([^)]*\)[^{;]*\{",
+                source,
+                re.S,
+            )
+            if match:
+                source_body = _balanced_block(source, match.end() - 1)
+        except OSError:
+            source_body = ""
+
+    # Strongest evidence: the source explicitly binds msg.value to an ABI argument.
+    # This handles generic names such as createBounty(amount), fund(bytes32, value),
+    # contribute(uint256 topUp), etc. without relying on verb-specific naming.
+    inputs = fn.get("inputs") or []
+    for index, param in enumerate(inputs):
+        pname = str(param.get("name") or "").strip()
+        value = supplied[index] if index < len(supplied) else None
+        if not pname or not isinstance(value, int) or value < 0:
+            continue
+
+        exact_patterns = (
+            r"\b" + re.escape(pname) + r"\s*==\s*msg\.value\b",
+            r"\bmsg\.value\s*==\s*" + re.escape(pname) + r"\b",
+        )
+        bound_patterns = (
+            r"\b" + re.escape(pname) + r"\s*>=\s*msg\.value\b",
+            r"\bmsg\.value\s*<=\s*" + re.escape(pname) + r"\b",
+        )
+        if source_body and any(re.search(pattern, source_body, re.S) for pattern in exact_patterns):
+            return int(value)
+        if source_body and any(re.search(pattern, source_body, re.S) for pattern in bound_patterns):
+            return int(value)
+
+    # Source-proven positive payment: use the smallest nonzero amount unless an ABI
+    # argument already gives the exact/bounded amount above.
+    if source_body and re.search(r"\bmsg\.value\s*(?:>|>=)\s*0\b", source_body):
+        return 1
+
+    # Preserve the old semantic fallback for recognizable funding verbs.
+    if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")):
+        return 10**15
+
+    return 0
 
 
 def _actor_for_function(name: str, actors: list[Actor], observed: dict[str, Any]) -> Actor:
@@ -1604,7 +1660,7 @@ def plan_workflow(
             address=target,
             function=sig,
             args=args,
-            value_wei=_value_for(item),
+            value_wei=_value_for(item, model=model, root=root, args=args),
             reason=f"source-guided { _phase_score(name)[0] and 'workflow' or 'bootstrap'} phase",
         ))
         used.add(name)
@@ -1626,7 +1682,7 @@ def plan_workflow(
                 address=target,
                 function=sig,
                 args=[_arg_for(p, actors, target, now) for p in item.get("inputs", [])],
-                value_wei=_value_for(item),
+                value_wei=_value_for(item, model=model, root=root, args=args),
                 reason="source-guided secondary phase",
             ))
             break
@@ -4499,7 +4555,7 @@ def _generic_walkthrough_warmup(
                 )
                 for param in abi_item.get("inputs") or []
             ]
-            candidate.value_wei = _value_for(abi_item)
+            candidate.value_wei = _value_for(abi_item, model=active_model, root=root, args=candidate.args)
 
         valid, reason = _validate_step_arguments(candidate, active_model)
         if not valid:
@@ -6830,7 +6886,12 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     )
                     for p in abi_item.get("inputs", [])
                 ]
-                step.value_wei = _value_for(abi_item)
+                step.value_wei = _value_for(
+                    abi_item,
+                    model=current_model,
+                    root=root,
+                    args=step.args,
+                )
 
         key=(step.contract,step.address.lower(),step.function)
         if key in completed: continue
