@@ -595,10 +595,17 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
     target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
     has_target = bool(target_data.get("address"))
     mandatory_pass = bool(mandatory) and all(x == "completed" for x in mandatory)
-    if pipeline_code not in (None, 0) or not mandatory_pass or not has_target:
+    static_failures = any(
+        isinstance(tools.get(key), dict)
+        and str(tools.get(key, {}).get("status") or "").lower() in {"failed", "fail"}
+        for key in ("slither", "forge-lint", "forge-geiger")
+    )
+    if pipeline_code not in (None, 0) or not mandatory_pass:
+        overall = "PIPELINE FAILED"
+    elif not has_target or open_signals or static_failures:
         overall = "REVIEW NEEDED"
     else:
-        overall = "PASS"
+        overall = "BASELINE PASS"
 
     print("\n=== LOWKEY AUDIT DASHBOARD ===")
     print("=" * 88)
@@ -630,11 +637,16 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
     )
     print("Static checks: " + ("recorded" if static_recorded else "not run in this baseline; use 'lk audit --checks' or 'lk audit run'") + ".")
     print("Heuristic/static results are investigation leads, not vulnerability verdicts.")
+    if open_signals:
+        print(f"Review state: {open_signals} open signal(s) require human investigation.")
+    if static_failures:
+        print("Review state: one or more optional static checks failed; inspect tool evidence.")
     if not has_target:
         print("Live audit state: INCOMPLETE")
         print("  A passing build/tests/coverage only proves the static baseline ran.")
         print("  Run 'lk lab' to create a disposable local target, then rerun 'lk audit'.")
-    return 0 if overall in {"PASS", "BASELINE PASS"} else 1
+    # Findings/review state do not make the process itself fail; pipeline errors do.
+    return 1 if overall == "PIPELINE FAILED" else 0
 
 
 def run_audit(args: Sequence[str]) -> int:
