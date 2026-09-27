@@ -62,6 +62,24 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("No live project target", rendered)
         self.assertIn("lk audit --checks", rendered)
 
+    def test_dashboard_marks_open_signals_for_review_without_failing_pipeline(self):
+        context = {
+            "target": {"address": "0x" + "1" * 40, "contract": "Fixture"},
+            "actor": "Alice",
+            "signals": [{"status": "open"}],
+            "tools": {
+                "forge-build": {"status": "completed"},
+                "forge-tests": {"status": "completed"},
+                "forge-coverage": {"status": "completed"},
+            },
+        }
+        output = io.StringIO()
+        with patch.object(forge_tools.audit_context, "load", return_value=context):
+            with patch("sys.stdout", output):
+                result = forge_tools.render_audit_dashboard(pathlib.Path("/project"), 0)
+        self.assertEqual(result, 0)
+        self.assertIn("REVIEW NEEDED", output.getvalue())
+
     def test_dashboard_marks_missing_target_as_review_needed(self):
         context = {
             "target": {"address": None, "contract": None},
