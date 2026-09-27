@@ -151,7 +151,7 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(forge_tools.run_audit([]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
                          [["build", "--skip", "test", "--skip", "script"],
-                          ["test", "-vvv", "--no-match-path", "test/Lowkey_*", "--no-match-path", "test/Poc_*"]])
+                          ["test", "-vvv", "--no-match-path", "test/Lowkey_*"]])
         self.assertEqual(
             coverage.call_args.args[0],
             ["coverage"],
