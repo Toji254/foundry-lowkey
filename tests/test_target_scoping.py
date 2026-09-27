@@ -62,7 +62,7 @@ class TargetScopingTests(unittest.TestCase):
 
             self.assertEqual(
                 lk.resolve_target_ref(config, "1", current_root),
-                None if False else "0x1111111111111111111111111111111111111111",
+                "0x1111111111111111111111111111111111111111",
             )
 
     def test_interactive_targets_selects_current_project_entry(self):
