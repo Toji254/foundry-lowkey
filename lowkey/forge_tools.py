@@ -77,10 +77,12 @@ def run_vyper_build(quiet: bool = False) -> int:
 
     for source in sources:
         outputs = {}
+        source_failed = False
         for fmt in ("abi", "bytecode", "bytecode_runtime", "layout"):
             code, stdout, stderr = _vyper_output(root, source, fmt)
             if code != 0:
                 failures += 1
+                source_failed = True
                 if not quiet:
                     print(
                         f"Vyper build failed: {source.relative_to(root)} ({fmt})",
@@ -90,12 +92,7 @@ def run_vyper_build(quiet: bool = False) -> int:
                 break
             outputs[fmt] = stdout
 
-        if failures and (source.exists()):
-            # One source failing is enough to fail the build, but continue only
-            # when there are remaining sources so the user gets all diagnostics.
-            continue
-
-        if not outputs:
+        if source_failed or not outputs:
             continue
 
         try:
