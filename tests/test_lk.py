@@ -3057,11 +3057,8 @@ contract BountyArena {
                 "moderator": "0x" + "7" * 40,
             }
         }
-        stories = lk.walkthrough._confidence_pool_stateful_stories(
-            config,
-            actors,
-            "0x" + "8" * 40,
-        )
+        benchmark = importlib.import_module("lowkey.walkthrough_benchmarks").ConfidencePoolBenchmarkAdapter()
+        stories = benchmark.build_stories(config, actors, {"pool": "0x" + "8" * 40})
         self.assertEqual([item.story_id for item in stories], ["CP-01", "CP-02", "CP-03", "CP-04"])
         self.assertTrue(any("sweepUnclaimedBonus" in str(action) for action in stories[0].actions))
         self.assertTrue(any(
