@@ -445,7 +445,8 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIsNone(reason)
         self.assertEqual(calls[0][0:2], ["cast", "send"])
         self.assertIn("--create", calls[0])
-        self.assertLess(calls[0].index("--rpc-url"), calls[0].index("0x60006000556000"))
+        self.assertLess(calls[0].index("--rpc-url"), calls[0].index("--create"))
+        self.assertLess(calls[0].index("--create"), calls[0].index("0x60006000556000"))
 
     def test_walkthrough_vyper_replay_is_not_solidity_script(self):
         model = lk.walkthrough.ContractModel(
