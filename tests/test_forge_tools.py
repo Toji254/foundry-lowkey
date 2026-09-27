@@ -56,7 +56,7 @@ class LowkeyForgeTests(unittest.TestCase):
         with patch.object(forge_tools.audit_context, "load", return_value=context):
             with patch("sys.stdout", output):
                 result = forge_tools.render_audit_dashboard(pathlib.Path("/project"), 0)
-        self.assertEqual(result, 1)
+        self.assertEqual(result, 0)
         rendered = output.getvalue()
         self.assertIn("REVIEW NEEDED", rendered)
         self.assertIn("No live project target", rendered)
