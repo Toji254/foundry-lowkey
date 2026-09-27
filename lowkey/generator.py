@@ -659,6 +659,14 @@ def _cleanup_generated_deployments(root: Path, *idents: str) -> list[Path]:
     return removed
 
 
+def _solidity_address_literal(value: str | None) -> str:
+    """Render an address without relying on a Solidity address-literal checksum."""
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(value or "")):
+        return "address(0)"
+    raw = str(value)[2:]
+    return f"address(uint160(0x00{raw}))"
+
+
 def _template_poc(contract: str, target: str, function: str, value: str, calldata: str) -> str:
     ident = _id(contract, "Target")
     return f'''// SPDX-License-Identifier: MIT
@@ -670,7 +678,7 @@ import {{Vm}} from "forge-std/Vm.sol";
 /// @title Lowkey-generated proof of concept
 /// @notice Replays one concrete call and exposes the measurements needed for a security property.
 contract LowkeyPoC_{ident} is Script {{
-    address internal constant TARGET = {target};
+    address internal constant TARGET = {_solidity_address_literal(target)};
 
     function run() external {{
         // SAFETY: start with Anvil or a local fork. A broadcasted script changes real chain state.
