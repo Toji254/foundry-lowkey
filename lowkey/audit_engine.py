@@ -661,6 +661,10 @@ def run_source_triage(root: str = ".") -> int:
     files = [
         path for path in files
         if not _is_under_any(path, dependency_roots)
+        and not any(
+            part.lower() in {"test", "tests", "script", "scripts", "mocks"}
+            for part in path.relative_to(root_path).parts
+        )
     ]
 
     solidity_patterns = [
