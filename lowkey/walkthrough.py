@@ -1935,7 +1935,7 @@ def _write_transaction_evidence(
 
     status_raw = receipt.get("status")
     has_receipt = bool(receipt)
-    success = status_raw in ("0x1", 1)
+    success = status_raw in ("0x1", 1, None) if has_receipt else False
     if not has_receipt:
         status_text = "BROADCAST / RECEIPT NOT AVAILABLE"
     else:
@@ -1972,7 +1972,7 @@ def _write_transaction_evidence(
     for event in step.events[:20]:
         if isinstance(event, dict):
             name = event.get("event") or "raw log"
-            event_rows.append(f"<li><b>{escape(str(name))}</b> <code>{escape(json.dumps(event, sort_keys=True))}</code></li>")
+            event_rows.append(f"<li><b>{escape(str(name))}</b> <code>{escape(json.dumps(event, sort_keys=True, default=str))}</code></li>")
         else:
             event_rows.append(f"<li>{escape(str(event))}</li>")
     events_html = "".join(event_rows) or "<li>No decoded events recorded by Lowkey.</li>"
