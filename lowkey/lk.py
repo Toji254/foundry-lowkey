@@ -4227,16 +4227,6 @@ def run_lab(config,args):
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
 
-    # A clean checkout should be enough. Build before reading artifacts so the
-    # lab does not depend on a manual "lk build" step.
-    if kind in {"foundry", "mixed-foundry-vyper"}:
-        build_code = _run_project_build(config, root)
-        if build_code != 0:
-            return fail(
-                "Error: project build failed; Lowkey will not deploy stale or partial artifacts.",
-                build_code,
-            )
-
     # Vyper projects do not have Forge artifacts. Build the project's own Vyper
     # sources before target discovery so lk lab never falls back to stale/test-only
     # artifacts from another phase.
@@ -4254,6 +4244,16 @@ def run_lab(config,args):
                 "Warning: Vyper build reported failures; Lowkey will use only successfully "
                 "compiled first-party artifacts.",
                 file=sys.stderr,
+            )
+
+    # A clean checkout should be enough. Build before reading artifacts so the
+    # lab does not depend on a manual "lk build" step.
+    if kind in {"foundry", "mixed-foundry-vyper"}:
+        build_code = _run_project_build(config, root)
+        if build_code != 0:
+            return fail(
+                "Error: project build failed; Lowkey will not deploy stale or partial artifacts.",
+                build_code,
             )
 
     if args and args[0].lower() == "stop":
