@@ -532,8 +532,9 @@ def _body(mode: str) -> str:
         vm.skip(true); // REMOVE after filling the proven exploit path.
         vm.deal(address(this), 10 ether);
         bytes memory payload = hex"";
+        // forge-lint: disable-next-line low-level-calls
         (bool ok, bytes memory data) = TARGET.call{value: 1 ether}(payload);
-        // TODO: prove caller-controlled recipient/callee and assert asset/state impact.
+        // NEXT STEP: prove caller-controlled recipient/callee and assert asset/state impact.
         assertTrue(ok, string(data));
     }
 ''',
@@ -543,6 +544,7 @@ def _body(mode: str) -> str:
         address attacker = makeAddr("attacker");
         vm.startPrank(attacker);
         bytes memory payload = hex"";
+        // forge-lint: disable-next-line low-level-calls
         (bool ok, bytes memory data) = TARGET.call(payload);
         vm.stopPrank();
         // TODO: assert the unauthorized state change or privileged effect.
@@ -554,7 +556,7 @@ def _body(mode: str) -> str:
         vm.skip(true); // REMOVE after filling the proven exploit path.
         bytes memory payload = hex"";
         (bool ok, ) = TARGET.call(payload);
-        // TODO: force the underlying external call to fail and assert bad post-state.
+        // NEXT STEP: force the underlying external call to fail and assert bad post-state.
         emit EvidenceBool("outerCallSucceeded", ok);
     }
 ''',
@@ -564,8 +566,9 @@ def _body(mode: str) -> str:
         vm.warp(block.timestamp + 1 days);
         vm.roll(block.number + 1);
         bytes memory payload = hex"";
+        // forge-lint: disable-next-line low-level-calls
         (bool ok, bytes memory data) = TARGET.call(payload);
-        // TODO: assert the outcome changed because attacker-controllable block fields changed.
+        // NEXT STEP: assert the outcome changed because attacker-controllable block fields changed.
         assertTrue(ok, string(data));
     }
 ''',
@@ -574,7 +577,7 @@ def _body(mode: str) -> str:
         vm.skip(true); // REMOVE after filling the proven exploit path.
         bytes memory a = hex"";
         bytes memory b = hex"";
-        // TODO: replace with two distinct logical inputs that hash identically.
+        // NEXT STEP: replace with two distinct logical inputs that hash identically.
         assertEq(keccak256(a), keccak256(b));
     }
 ''',
@@ -583,9 +586,10 @@ def _body(mode: str) -> str:
     function test_poc_candidate() external {
         vm.skip(true); // REMOVE after filling the proven exploit path.
         bytes memory payload = hex"";
+        // forge-lint: disable-next-line low-level-calls
         (bool ok, bytes memory data) = TARGET.call(payload);
         assertTrue(ok, string(data));
-        // TODO: assert the violated invariant, unauthorized effect, or asset delta.
+        // NEXT STEP: assert the violated invariant, unauthorized effect, or asset delta.
     }
 ''')
 
