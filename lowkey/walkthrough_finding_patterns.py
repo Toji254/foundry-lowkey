@@ -708,6 +708,7 @@ def _render_observation(obs: PatternObservation) -> list[str]:
         f"     EVIDENCE {obs.evidence[0]}" if obs.evidence else "     EVIDENCE source pattern matched",
         f"     LOGIC    {obs.logic}",
         f"     NEXT     {obs.next_step}",
+        f"     SEEN IN  {', '.join(obs.provenance[:3])}" if obs.provenance else "     SEEN IN  public adjudicated security reports",
         f"     SOURCE   {where}",
     ]
     return lines
