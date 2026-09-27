@@ -532,6 +532,7 @@ def artifact_json_files(root="."):
         root_path / "artifacts",
         root_path / "build",
         root_path / ".audit" / "walkthrough" / "vyper",
+        root_path / ".audit" / "build" / "vyper",
     ]
     ignored = {
         ".git", ".venv", ".tox", "__pycache__", "node_modules",
