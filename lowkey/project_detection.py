@@ -124,10 +124,6 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         stacks.append("solana-anchor")
     if move:
         stacks.append("move")
-    if ape:
-        stacks.append("ape")
-    if brownie:
-        stacks.append("brownie")
 
     supporting: list[str] = []
     if (root / "package.json").is_file():
@@ -331,17 +327,17 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         return failures
 
     if backend == "multi":
-        print("MIXED STACK: no single security backend selected.")
+        print("MIXED STACK: running each detected native backend independently.")
         for stack in info.get("stacks", []):
             if stack == "foundry":
                 print("  Foundry: handled by the existing Forge audit layer.")
-            elif stack == "cairo-starknet":
-                print("  Cairo/Starknet: use native Scarb checks.")
-            elif stack == "vyper":
-                print("  Vyper: use native Vyper/Ape/Brownie/Pytest checks.")
-            else:
-                print(f"  {stack}: native checks are not yet specialized.")
-        return 0
+                continue
+            child = dict(info)
+            child["backend"] = stack
+            child_code = run_native_audit(child, args)
+            if child_code != 0:
+                failures = failures or child_code
+        return failures
 
     print("STATIC-ONLY: no specialized project audit backend is installed.")
     print("Source inventory and manual review remain available.")
