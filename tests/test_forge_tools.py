@@ -41,6 +41,27 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("scaffold generated (placeholder)", rendered)
         self.assertIn("SLITHER-ABC", rendered)
 
+    def test_dashboard_marks_baseline_and_missing_target(self):
+        context = {
+            "target": {"address": None, "contract": None},
+            "actor": "lab-deployer",
+            "signals": [],
+            "tools": {
+                "forge-build": {"status": "completed"},
+                "forge-tests": {"status": "completed"},
+                "forge-coverage": {"status": "completed"},
+            },
+        }
+        output = io.StringIO()
+        with patch.object(forge_tools.audit_context, "load", return_value=context):
+            with patch("sys.stdout", output):
+                result = forge_tools.render_audit_dashboard(pathlib.Path("/project"), 0)
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("BASELINE PASS", rendered)
+        self.assertIn("No live project target", rendered)
+        self.assertIn("lk audit --checks", rendered)
+
     def test_audit_bootstraps_poc_before_dashboard(self):
         import types
         fake_generator = types.ModuleType("generator")
