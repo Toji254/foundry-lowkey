@@ -5473,9 +5473,14 @@ def _render_adversarial_summary(
         "",
     ]
 
+    confirmed_stories = [story for story in (stories or []) if story.signal == "CONFIRMED"]
     review_items = [item for item in results if _human_probe_status(item)[0] == "⚠️ CHECK THIS"]
     unknown_items = [item for item in results if _human_probe_status(item)[0] == "❓ UNKNOWN"]
-    if review_items:
+    if confirmed_stories:
+        lines.append("  START HERE")
+        for story in confirmed_stories[:3]:
+            lines.append(f"    🚨 {story.story_id} {story.title} — replay this story")
+    elif review_items:
         lines.append("  START HERE")
         for item in review_items[:5]:
             fn = str(item.function or "").split("(", 1)[0]
@@ -5892,8 +5897,8 @@ def _run_adversarial_test(
     evidence.write_text(
         json.dumps(
             {
-                "version": 1,
-                "mode": "randomized-isolated",
+                "version": 2,
+                "mode": "mixed-stateful-randomized",
                 "seed": actual_seed,
                 "target": target,
                 "contract": model.name,
@@ -6293,9 +6298,19 @@ def _deploy_local_artifact(
         command += ["--constructor-args", *[_cli_arg(item) for item in values]]
     command += ["--rpc-url", rpc, "--private-key", private_key, "--broadcast"]
     code, out, err = _cmd(command, cwd=root, timeout=90)
+    output = out or err or ""
     if code != 0:
         return None
-    return _parse_local_deployed_address(out or err)
+    address = _parse_local_deployed_address(output)
+    if address and _runtime_code(rpc, address) not in {"", "0x"}:
+        return address
+    tx_hash = _extract_tx_hash(output)
+    if tx_hash:
+        receipt = _receipt(rpc, tx_hash)
+        recovered = receipt.get("contractAddress") if isinstance(receipt, dict) else None
+        if is_address(recovered) and _runtime_code(rpc, recovered) not in {"", "0x"}:
+            return str(recovered)
+    return address
 
 
 def _send_lab_control(
@@ -6868,14 +6883,14 @@ def _synthesize_local_protocol_fixture(
     )
     if mint_fn:
         mint_signature = _signature(mint_fn)
-        for actor, amount in ((alice, 2 * 10**18), (bob, 2 * 10**18)):
+        for actor in actors[:4]:
             _send_lab_control(
                 host,
                 config,
                 alice,
                 system["stake_token"],
                 mint_signature,
-                [actor.address, amount],
+                [actor.address, 1_000 * 10**18],
             )
 
     # Wire the disposable registry/Agreement fixtures before the root creates a child.
@@ -6903,17 +6918,12 @@ def _synthesize_local_protocol_fixture(
         None,
     )
     if agreement_scope_fn:
-        if not _send_lab_control(
-            host, config, alice, system["agreement"],
-            _signature(agreement_scope_fn), [alice.address, True],
-        ):
-            return False, "failed to add Alice to the Agreement scope"
-        if bob.address.lower() != alice.address.lower():
+        for actor in actors[:4]:
             if not _send_lab_control(
                 host, config, alice, system["agreement"],
-                _signature(agreement_scope_fn), [bob.address, True],
+                _signature(agreement_scope_fn), [actor.address, True],
             ):
-                return False, "failed to add Bob to the Agreement scope"
+                return False, f"failed to add {actor.name} to the Agreement scope"
 
     factory_impl = deploy_model(root_model)
     if not is_address(factory_impl):
