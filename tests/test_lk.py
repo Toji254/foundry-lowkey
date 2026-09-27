@@ -3100,6 +3100,31 @@ contract BountyArena {
             self.assertIn("INIT-001", ids)
             self.assertIn("RNG-001", ids)
 
+    def test_real_world_pattern_scanner_covers_zero_address_and_expiry_boundaries(self):
+        patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = '''
+            pragma solidity ^0.8.20;
+            contract BoundaryFixture {
+                address public router;
+                function setRouter(address router_) external { router = router_; }
+                function execute(uint256 deadline) external { require(deadline >= block.timestamp); }
+            }
+            '''
+            (root / "src" / "BoundaryFixture.sol").write_text(source, encoding="utf-8")
+            model = lk.walkthrough.ContractModel(
+                name="BoundaryFixture", source="src/BoundaryFixture.sol", artifact="out/BoundaryFixture.json",
+                abi=[
+                    {"type": "function", "name": "setRouter", "stateMutability": "nonpayable", "inputs": [{"name": "router_", "type": "address"}]},
+                    {"type": "function", "name": "execute", "stateMutability": "nonpayable", "inputs": [{"name": "deadline", "type": "uint256"}]},
+                ],
+            )
+            ids = {item.pattern_id for item in patterns.scan_model(root, model)}
+            self.assertIn("ZEROADDR-001", ids)
+            self.assertIn("TIME-001", ids)
+
     def test_real_world_pattern_scanner_supports_vyper_functions(self):
         patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
         with tempfile.TemporaryDirectory() as tmp:
