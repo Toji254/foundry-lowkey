@@ -25,7 +25,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py audit_engine.py system_model.py project_tools.py; do
+for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py audit_engine.py system_model.py project_tools.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
@@ -57,6 +57,7 @@ cp "$STAGE_DIR/system_model.py" "$TARGET_LOWKEY_DIR/system_model.py"
 cp "$STAGE_DIR/project_tools.py" "$TARGET_LOWKEY_DIR/project_tools.py"
 cp "$STAGE_DIR/walkthrough.py" "$TARGET_LOWKEY_DIR/walkthrough.py"
 cp "$STAGE_DIR/walkthrough_benchmarks.py" "$TARGET_LOWKEY_DIR/walkthrough_benchmarks.py"
+cp "$STAGE_DIR/walkthrough_finding_patterns.py" "$TARGET_LOWKEY_DIR/walkthrough_finding_patterns.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
 
@@ -108,6 +109,7 @@ installed = {
     str(lowkey_dir / "project_tools.py"): sha256(lowkey_dir / "project_tools.py"),
     str(lowkey_dir / "walkthrough.py"): sha256(lowkey_dir / "walkthrough.py"),
     str(lowkey_dir / "walkthrough_benchmarks.py"): sha256(lowkey_dir / "walkthrough_benchmarks.py"),
+    str(lowkey_dir / "walkthrough_finding_patterns.py"): sha256(lowkey_dir / "walkthrough_finding_patterns.py"),
     str(bin_dir / "lk"): sha256(bin_dir / "lk"),
 }
 
@@ -142,6 +144,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/project_tools.py
   - $TARGET_LOWKEY_DIR/walkthrough.py
   - $TARGET_LOWKEY_DIR/walkthrough_benchmarks.py
+  - $TARGET_LOWKEY_DIR/walkthrough_finding_patterns.py
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
 
