@@ -632,16 +632,10 @@ def _function_semantics(model: ContractModel, source_text: str) -> dict[str, dic
 
 
 def _source_edges_for_name(model: ContractModel, function_name: str) -> list[dict[str, Any]]:
-    # This list feeds the "source dependency" explanation. Only real
-    # cross-contract edges belong here; internal calls, built-ins such as
-    # require/keccak256, struct constructors, and type names are not dependencies.
     return [
         edge for edge in model.calls
-        if (
-            str(edge.get("from") or "") == function_name
-            and edge.get("kind") == "cross-contract"
-            and str(edge.get("to_contract") or "").lower() != str(model.name).lower()
-        )
+        if str(edge.get("from") or "") == function_name
+        and _is_real_external_edge(edge, model)
     ]
 
 def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractModel]:
@@ -2545,9 +2539,32 @@ def _function_inputs(model: ContractModel, signature: str) -> list[dict[str, Any
     return []
 
 
+def _is_real_external_edge(edge: dict[str, Any], model: ContractModel | None = None) -> bool:
+    if not isinstance(edge, dict) or edge.get("kind") != "cross-contract":
+        return False
+    target = str(edge.get("to_contract") or edge.get("interface") or "").strip()
+    function = str(edge.get("to_function") or "").strip()
+    via = str(edge.get("via") or "").strip()
+    if not target or not function:
+        return False
+    if model and target.lower() == model.name.lower():
+        return False
+    if via.lower() in {"abi", "this", "super"}:
+        return False
+    if function.lower() in {
+        "require", "assert", "revert", "keccak256", "sha256", "encode",
+        "encodepacked", "decode", "address", "bytes", "uint", "int",
+    }:
+        return False
+    return True
+
+
 def _source_edges_for_step(model: ContractModel, step: Step) -> list[dict[str, Any]]:
     name = str(step.function or "").split("(", 1)[0]
-    return [edge for edge in model.calls if str(edge.get("from") or "") == name]
+    return [
+        edge for edge in model.calls
+        if str(edge.get("from") or "") == name and _is_real_external_edge(edge, model)
+    ]
 
 
 def _pretty_identifier(value: str | None) -> str:
@@ -3279,9 +3296,8 @@ def _diagnose_failed_call(
     models: list[ContractModel],
     actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
-    arg_actors = [Actor(step.actor or "Caller", actor_address, 0)] if actor_address else []
     arg_origin, arg_lines = _diagnose_argument_contracts(
-        rpc, step, model, models, arg_actors
+        rpc, step, model, models, caller_address=actor_address
     )
     origin = arg_origin
     diagnostics = list(arg_lines)
@@ -3294,12 +3310,7 @@ def _diagnose_failed_call(
     diagnostics.extend(zero_lines)
     source_lines = _source_guard_lines(model, step)
     diagnostics.extend(source_lines[:8])
-    diagnostics = _failure_flow_summary(root, model, step, origin) + diagnostics
-    arg_origin, arg_diagnostics = _diagnose_argument_contracts(
-        rpc, step, model, models, caller_address=actor_address
-    )
-    origin = origin or arg_origin
-    diagnostics.extend(arg_diagnostics)
+    diagnostics = _failure_flow_summary(root, model, step, origin)
 
     try:
         code, calldata, err = _cmd(["cast", "calldata", step.function, *[_cli_arg(x) for x in step.args]], timeout=6)
@@ -4981,7 +4992,7 @@ def _synthesize_generic_protocol_fixture(
         visited_models.add(source_key)
 
         for edge in source_model.calls:
-            if edge.get("kind") != "cross-contract":
+            if not _is_real_external_edge(edge, source_model):
                 continue
             interface_name = str(edge.get("to_contract") or edge.get("interface") or "")
             if not interface_name:
