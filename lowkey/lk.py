@@ -2352,8 +2352,17 @@ def _project_target_entries(config, root=None):
     deployment_by_address = {}
     for record in deployment_records:
         address = record.get("address")
-        if is_address(address):
-            deployment_by_address[str(address).lower()] = record
+        if not is_address(address):
+            continue
+        key = str(address).lower()
+        existing = deployment_by_address.get(key)
+        if existing is None:
+            deployment_by_address[key] = record
+            continue
+        existing_ts = existing.get("run_timestamp") or 0
+        current_ts = record.get("run_timestamp") or 0
+        if current_ts >= existing_ts:
+            deployment_by_address[key] = record
 
     def resolve_artifact(contract, address=None):
         if address:
@@ -2391,19 +2400,46 @@ def _project_target_entries(config, root=None):
                 return str(fallback)
         return str(source_contract_fallback(project_root, contract) or "") or None
 
+    def deployment_metadata(address):
+        record = deployment_by_address.get(str(address).lower()) if is_address(address) else None
+        if not record:
+            return {}
+        deployment_file = record.get("file")
+        run_timestamp = record.get("run_timestamp")
+        if run_timestamp and deployment_file:
+            # Prefer the timestamped file for display when Foundry also has
+            # run-latest.json for the same run.
+            candidate = Path(deployment_file).parent / f"run-{int(run_timestamp) * 1000}.json"
+            if candidate.is_file():
+                deployment_file = str(candidate)
+        return {
+            "deployment_file": deployment_file,
+            "deployment_hash": record.get("hash"),
+            "deployment_run_timestamp": run_timestamp,
+            "deployment_run_key": (
+                f"{Path(record['file']).parent.resolve()}::{run_timestamp}"
+                if run_timestamp is not None
+                else str(Path(record["file"]).resolve())
+            ),
+        }
+
     def enrich(entry):
         address = entry.get("address")
+        metadata = deployment_metadata(address)
         contract = entry.get("contract") or entry.get("name")
-        record = deployment_by_address.get(str(address).lower()) if is_address(address) else None
 
         if not entry.get("artifact"):
             entry["artifact"] = resolve_artifact(contract, address)
         if not entry.get("source_file"):
             entry["source_file"] = source_from_artifact(entry.get("artifact"), contract)
-        if not entry.get("deployment_file") and record:
-            entry["deployment_file"] = record.get("file")
-        if record and not entry.get("deployment_hash"):
-            entry["deployment_hash"] = record.get("hash")
+        if not entry.get("deployment_file"):
+            entry["deployment_file"] = metadata.get("deployment_file")
+        if entry.get("deployment_hash") is None:
+            entry["deployment_hash"] = metadata.get("deployment_hash")
+        if entry.get("deployment_run_timestamp") is None:
+            entry["deployment_run_timestamp"] = metadata.get("deployment_run_timestamp")
+        if entry.get("deployment_run_key") is None:
+            entry["deployment_run_key"] = metadata.get("deployment_run_key")
         return entry
 
     context_target = project_context_target(project_root)
@@ -2416,6 +2452,8 @@ def _project_target_entries(config, root=None):
             "source_file": context_target.get("source_file"),
             "deployment_file": context_target.get("deployment_file"),
             "deployment_hash": context_target.get("deployment_hash"),
+            "deployment_run_timestamp": context_target.get("deployment_run_timestamp"),
+            "deployment_run_key": context_target.get("deployment_run_key"),
             "contract": context_target.get("contract"),
             "source": context_target.get("source") or "project-context",
         }))
@@ -2431,6 +2469,8 @@ def _project_target_entries(config, root=None):
             "source_file": None,
             "deployment_file": None,
             "deployment_hash": None,
+            "deployment_run_timestamp": None,
+            "deployment_run_key": None,
             "contract": name,
             "source": "project-config",
         }))
@@ -2449,6 +2489,8 @@ def _project_target_entries(config, root=None):
             "source_file": None,
             "deployment_file": record.get("file"),
             "deployment_hash": record.get("hash"),
+            "deployment_run_timestamp": record.get("run_timestamp"),
+            "deployment_run_key": None,
             "contract": contract,
             "source": "broadcast",
         }))
@@ -2529,7 +2571,7 @@ def _select_project_target(config, entry, root):
 
 
 def run_targets(config, interactive=False, include_support=False):
-    """Show/select deployed protocol contracts for the current project."""
+    """Show/select deployed protocol contracts grouped by deployment run."""
     root = audit_context.foundry_project_root()
     entries = _project_target_entries(config, root)
 
@@ -2545,19 +2587,64 @@ def run_targets(config, interactive=False, include_support=False):
     current = active_project_target(config, root) or project_context_target(root)
     current_address = current.get("address") if isinstance(current, dict) else current
 
+    def run_label(timestamp):
+        if timestamp is None:
+            return "REMEMBERED / PROJECT TARGETS"
+        try:
+            rendered = datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
+            return f"DEPLOYMENT RUN  {rendered}"
+        except (TypeError, ValueError, OSError, OverflowError):
+            return f"DEPLOYMENT RUN  {timestamp}"
+
+    groups = {}
+    group_order = []
+    for entry in visible_entries:
+        key = entry.get("deployment_run_key") or f"entry::{entry.get('address')}"
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(entry)
+
+    def group_sort_key(key):
+        group = groups[key]
+        timestamp = group[0].get("deployment_run_timestamp")
+        if timestamp is None:
+            return (-1, key)
+        try:
+            return (int(timestamp), key)
+        except (TypeError, ValueError):
+            return (0, key)
+
+    group_order.sort(key=group_sort_key, reverse=True)
+
+    latest_run_key = next(
+        (key for key in group_order if groups[key][0].get("deployment_run_timestamp") is not None),
+        None,
+    )
+
     print("AUDIT TARGETS")
     print("=============")
     print(root)
-    for index, entry in enumerate(visible_entries, 1):
-        marker = "*" if str(entry.get("address")).lower() == str(current_address or "").lower() else " "
-        print(
-            f" {marker} {index:>2}. "
-            f"{entry.get('name') or entry.get('contract') or 'target':<28} "
-            f"{entry.get('address')}"
-        )
-        source_file = entry.get("source_file")
-        deployment_file = entry.get("deployment_file")
-        if source_file or deployment_file:
+    for key in group_order:
+        group = groups[key]
+        timestamp = group[0].get("deployment_run_timestamp")
+        label = run_label(timestamp)
+        if key == latest_run_key:
+            label += "  [LATEST]"
+        print()
+        print(label)
+        print("-" * len(label))
+        for index, entry in enumerate(visible_entries, 1):
+            if entry not in group:
+                continue
+            marker = "*" if str(entry.get("address")).lower() == str(current_address or "").lower() else " "
+            print(
+                f" {marker} {index:>2}. "
+                f"{entry.get('name') or entry.get('contract') or 'target':<28} "
+                f"{entry.get('address')}"
+            )
+            source_file = entry.get("source_file")
+            deployment_file = entry.get("deployment_file")
             if source_file:
                 print(f"        Source       : {source_file}")
             artifact = entry.get("artifact")
@@ -2600,17 +2687,61 @@ def discover_deployments(root="."):
     records=[]
     for path in artifact_json_files(root):
         if not path.startswith(os.path.join(root,"broadcast")): continue
-        try: payload=json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError,json.JSONDecodeError): continue
+        try:
+            payload=json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError,json.JSONDecodeError):
+            continue
         txs=payload.get("transactions",[]) if isinstance(payload,dict) else []
         if not isinstance(txs,list): continue
         mtime=os.path.getmtime(path)
+        run_timestamp=payload.get("timestamp") if isinstance(payload,dict) else None
+        try:
+            run_timestamp=int(run_timestamp)
+        except (TypeError,ValueError):
+            run_timestamp=None
         for tx in txs:
             if not isinstance(tx,dict): continue
-            tx_type=str(tx.get("transactionType","")).upper(); address=tx.get("contractAddress") or tx.get("address")
+            tx_type=str(tx.get("transactionType","")).upper()
+            address=tx.get("contractAddress") or tx.get("address")
             if tx_type.startswith("CREATE") and is_address(address):
-                records.append({"contract":tx.get("contractName") or "Unknown","address":address,"file":path,"time":mtime,"hash":tx.get("hash")})
-    return sorted(records,key=lambda x:x["time"],reverse=True)
+                records.append({
+                    "contract":tx.get("contractName") or "Unknown",
+                    "address":address,
+                    "file":path,
+                    "time":mtime,
+                    "hash":tx.get("hash"),
+                    "run_timestamp":run_timestamp,
+                })
+
+    # Foundry keeps run-latest.json alongside the timestamped broadcast for
+    # the same run. Treat them as one deployment run, not two deployments.
+    deduped={}
+    for record in records:
+        file_path=Path(record["file"])
+        run_identity=(
+            str(file_path.parent.relative_to(Path(root).resolve()).as_posix())
+            if file_path.is_relative_to(Path(root).resolve())
+            else str(file_path.parent),
+            record.get("run_timestamp"),
+            str(record.get("contract") or "").lower(),
+            str(record.get("address") or "").lower(),
+        )
+        existing=deduped.get(run_identity)
+        if existing is None:
+            deduped[run_identity]=record
+            continue
+        existing_name=Path(existing["file"]).name
+        current_name=file_path.name
+        # Prefer the durable timestamped file over run-latest.json when both
+        # describe the same deployment transaction.
+        if existing_name == "run-latest.json" and current_name != "run-latest.json":
+            deduped[run_identity]=record
+
+    return sorted(
+        deduped.values(),
+        key=lambda x:(x.get("run_timestamp") or 0, x["time"]),
+        reverse=True,
+    )
 
 def run_deployments(config):
     records=discover_deployments(".")
