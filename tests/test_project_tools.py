@@ -230,6 +230,27 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertEqual(len(project["submodules"]), 1)
             self.assertTrue(project["submodules"][0]["initialized"])
 
+    def test_dependency_graph_uses_foundry_remappings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", "[profile.default]\nsrc = 'src'\n")
+            self.write(root, "remappings.txt", "@openzeppelin/=lib/openzeppelin-contracts/contracts/\n")
+            self.write(
+                root,
+                "src/Vault.sol",
+                'pragma solidity ^0.8.20; import "@openzeppelin/access/Ownable.sol"; contract Vault is Ownable {}',
+            )
+            self.write(
+                root,
+                "lib/openzeppelin-contracts/contracts/access/Ownable.sol",
+                "pragma solidity ^0.8.20; abstract contract Ownable {}",
+            )
+            graph = project_tools.build_dependency_graph(root)
+            edge = next(edge for edge in graph["edges"] if edge["kind"] == "import")
+            self.assertTrue(edge["resolved"])
+            self.assertTrue(edge["external"])
+            self.assertEqual(edge["to"], "lib/openzeppelin-contracts/contracts/access/Ownable.sol")
+
     def test_graph_render_is_human_and_excludes_generated_support_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
