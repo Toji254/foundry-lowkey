@@ -699,6 +699,35 @@ def _source_edges_for_name(model: ContractModel, function_name: str) -> list[dic
         and _is_real_external_edge(edge, model)
     ]
 
+def _vyper_compiler_command(root: Path) -> list[str] | None:
+    """Resolve a Vyper compiler from PATH, project venv, active venv, or Python package."""
+    candidates = [
+        shutil.which("vyper"),
+        str(root / ".venv" / "bin" / "vyper") if (root / ".venv" / "bin" / "vyper").is_file() else None,
+        str(root / "venv" / "bin" / "vyper") if (root / "venv" / "bin" / "vyper").is_file() else None,
+        str(Path(os.environ.get("VIRTUAL_ENV", "")) / "bin" / "vyper")
+        if os.environ.get("VIRTUAL_ENV") and (Path(os.environ["VIRTUAL_ENV"]) / "bin" / "vyper").is_file()
+        else None,
+    ]
+    for candidate in candidates:
+        if candidate:
+            return [candidate]
+
+    # A Python-installed Vyper can exist without its console-script directory
+    # being on PATH. Prefer its supported CLI module rather than silently failing.
+    try:
+        import importlib.util
+        if importlib.util.find_spec("vyper.cli.vyper_compile") is not None:
+            return [
+                sys.executable,
+                "-c",
+                "from vyper.cli.vyper_compile import main; main()",
+            ]
+    except (ImportError, ValueError):
+        pass
+    return None
+
+
 def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractModel]:
     """Build project application models from common Solidity/Vyper artifact layouts.
 
@@ -875,7 +904,8 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
     # Native Vyper compilation path. Vyper itself exposes ABI, bytecode and
     # storage layout through the CLI; Lowkey keeps the normalized artifact under
     # .audit so no project files are modified.
-    if shutil.which("vyper"):
+    vyper_cmd = _vyper_compiler_command(root)
+    if vyper_cmd:
         vy_files: list[Path] = []
         for base in source_roots + [root / "vyper"]:
             if not base.is_dir():
@@ -891,19 +921,19 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
                 continue
 
             abi_code, abi_out, abi_err = _cmd(
-                ["vyper", "-f", "abi", str(source_path.relative_to(root))],
+                [*vyper_cmd, "-f", "abi", str(source_path.relative_to(root))],
                 cwd=root, timeout=60,
             )
             byte_code, byte_out, byte_err = _cmd(
-                ["vyper", "-f", "bytecode", str(source_path.relative_to(root))],
+                [*vyper_cmd, "-f", "bytecode", str(source_path.relative_to(root))],
                 cwd=root, timeout=60,
             )
             runtime_code, runtime_out, runtime_err = _cmd(
-                ["vyper", "-f", "bytecode_runtime", str(source_path.relative_to(root))],
+                [*vyper_cmd, "-f", "bytecode_runtime", str(source_path.relative_to(root))],
                 cwd=root, timeout=60,
             )
             layout_code, layout_out, layout_err = _cmd(
-                ["vyper", "-f", "layout", str(source_path.relative_to(root))],
+                [*vyper_cmd, "-f", "layout", str(source_path.relative_to(root))],
                 cwd=root, timeout=60,
             )
             if abi_code != 0 or byte_code != 0 or runtime_code != 0:
