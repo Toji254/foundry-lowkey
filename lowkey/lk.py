@@ -2987,10 +2987,14 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         os.environ[name] = value
 
     try:
+        safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
+        script_contract = f"LowkeyAutoFixtureScript_{safe_name}"
         result = run_foundry(
             [
                 "script",
                 relative,
+                "--tc",
+                script_contract,
                 "--rpc-url",
                 rpc,
                 "--broadcast",
