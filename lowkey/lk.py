@@ -3539,13 +3539,98 @@ def ensure_project_anvil(config, root):
         pass
     return None
 
+def _format_build_failure(output):
+    text = str(output or "").strip()
+    if not text:
+        return "Build failed with no compiler output."
+    # Keep the actionable compiler diagnostics intact while avoiding duplicate blank lines.
+    return text
+
+
+def _foundry_native_bootstrap_commands(root):
+    """
+    Return repository-owned dependency bootstrap commands that are safe to infer.
+
+    Lowkey does not invent dependency URLs. It only uses explicit project conventions:
+    a Makefile install target and/or Git submodules already declared by the repository.
+    """
+    root_path = Path(root)
+    commands = []
+
+    makefile = root_path / "Makefile"
+    if makefile.is_file():
+        try:
+            make_text = makefile.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            make_text = ""
+        if re.search(r"(?m)^\s*install\s*:", make_text):
+            commands.append(["make", "install"])
+
+    gitmodules = root_path / ".gitmodules"
+    if gitmodules.is_file():
+        commands.append(["git", "submodule", "update", "--init", "--recursive"])
+
+    return commands
+
+
 def _run_project_build(config, root):
-    """Use the detected project's native compiler without forcing Foundry."""
+    """Build with the detected project's native toolchain, bootstrapping explicit local dependencies when needed."""
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
+
     if kind in {"foundry", "mixed-foundry-vyper"}:
         result = run_foundry(["build"], capture=True)
+        if result.code == 0:
+            return 0
+
+        first_output = _format_build_failure(getattr(result, "text", None) or getattr(result, "output", None) or result)
+        dependency_failure = bool(re.search(
+            r"(source\s+.+not\s+found|file\s+.+not\s+found|could\s+not\s+resolve|import\s+.+not\s+found|"
+            r"no\s+such\s+file|library\s+.+not\s+found)",
+            first_output,
+            re.I,
+        ))
+
+        if dependency_failure:
+            for command in _foundry_native_bootstrap_commands(root):
+                try:
+                    print(f"INFO  build bootstrap: {' '.join(command)}")
+                    bootstrap = subprocess.run(
+                        command,
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                    )
+                except OSError as exc:
+                    print(f"Warning: build bootstrap failed to start: {exc}", file=sys.stderr)
+                    continue
+
+                bootstrap_output = (bootstrap.stdout or "") + (bootstrap.stderr or "")
+                if bootstrap.returncode != 0:
+                    print(
+                        f"Warning: build bootstrap {' '.join(command)} failed:\n"
+                        f"{_format_build_failure(bootstrap_output)}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"PASS  build bootstrap: {' '.join(command)}")
+
+                retry = run_foundry(["build"], capture=True)
+                if retry.code == 0:
+                    return 0
+                retry_output = _format_build_failure(
+                    getattr(retry, "text", None) or getattr(retry, "output", None) or retry
+                )
+                # A successful bootstrap followed by the same dependency failure means there
+                # is nothing else Lowkey can safely infer. Surface the final compiler diagnostics.
+                first_output = retry_output
+
+        print(
+            "Build diagnostics:\n" + first_output,
+            file=sys.stderr,
+        )
         return result.code
+
     commands = {
         "hardhat": ["npx", "hardhat", "compile"],
         "brownie": ["brownie", "compile"],
@@ -3561,9 +3646,11 @@ def _run_project_build(config, root):
         print(f"Build failed: {exc}", file=sys.stderr)
         return 1
     if result.returncode:
-        print((result.stdout or "") + (result.stderr or ""), file=sys.stderr)
+        print(
+            "Build diagnostics:\n" + _format_build_failure((result.stdout or "") + (result.stderr or "")),
+            file=sys.stderr,
+        )
     return result.returncode
-
 
 def run_clone(config, args):
     """Clone with the cache-aware engine, then perform full Lowkey onboarding."""
