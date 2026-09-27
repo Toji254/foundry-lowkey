@@ -3847,7 +3847,7 @@ def _lab_script_environment(script, rpc, key, accounts):
 
     names = set(
         re.findall(
-            r"vm\\.env(?:Bool|Uint|Address|String|Or)\\s*\\(\\s*\\\"([A-Za-z_][A-Za-z0-9_]*)\\\"",
+            r"vm\.env(?:Bool|Uint|Address|String|Or)\s*\(\s*\"([A-Za-z_][A-Za-z0-9_]*)\"",
             source,
         )
     )
@@ -3986,8 +3986,16 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     # Do not trust stale broadcast records from another chain/run. The selected
     # target must have bytecode on the exact Anvil RPC used for this lab.
-    if not is_address(target) or run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True).code != 0:
-        return fail("Error: Lowkey found a deployment record but could not verify bytecode on the local Anvil.")
+    code_result = run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True)
+    runtime_code = str(code_result.text or "").strip()
+    if (
+        not is_address(target)
+        or code_result.code != 0
+        or runtime_code in {"", "0x", "0X"}
+    ):
+        return fail(
+            "Error: Lowkey found a deployment record but could not verify live bytecode on the local Anvil."
+        )
 
     system = parse_lab_system(output)
     if selected_record:
