@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -74,6 +75,25 @@ def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ""
+
+def _python_module_available(name: str) -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _local_executable(root: Path, name: str) -> bool:
+    candidates = [
+        root / ".venv" / "bin" / name,
+        root / "venv" / "bin" / name,
+    ]
+    virtual_env = os.environ.get("VIRTUAL_ENV")
+    if virtual_env:
+        candidates.append(Path(virtual_env) / "bin" / name)
+    return any(path.is_file() and os.access(path, os.X_OK) for path in candidates)
+
 
 def _has(root: Path, *names: str) -> bool:
     return any((root / name).is_file() for name in names)
@@ -175,8 +195,9 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "forge": bool(shutil.which("forge")),
         "scarb": bool(shutil.which("scarb")),
         "snforge": bool(shutil.which("snforge")),
-        "vyper": bool(shutil.which("vyper")),
-        "pytest": bool(shutil.which("pytest")),
+        "vyper": bool(shutil.which("vyper") or _local_executable(root, "vyper") or _python_module_available("vyper")),
+        "pytest": bool(shutil.which("pytest") or _local_executable(root, "pytest") or _python_module_available("pytest")),
+        "boa": _python_module_available("boa"),
         "ape": bool(shutil.which("ape")),
         "brownie": bool(shutil.which("brownie")),
         "hardhat": (root / "node_modules" / ".bin" / "hardhat").is_file(),
