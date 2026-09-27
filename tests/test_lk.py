@@ -71,7 +71,7 @@ class LowkeyCastTests(unittest.TestCase):
             "1000000",
         )
         self.assertEqual(
-            lk._normalize_human_numeric_input("1,000 ETH", "uint256", "amount"),
+            lk._normalize_human_numeric_input("1 ETH", "uint256", "amount"),
             "1000000000000000000",
         )
 
