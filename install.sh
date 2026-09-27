@@ -24,7 +24,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py clone_tools.py walkthrough.py audit_engine.py system_model.py project_tools.py; do
+for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py audit_engine.py system_model.py project_tools.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
