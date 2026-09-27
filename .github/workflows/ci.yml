@@ -114,8 +114,11 @@ jobs:
           lk scan src
           lk scan src/Fixture.sol
           lk project
+          lk graph
           lk system
           test -f .audit/evidence/system_bootstrap.json
+          lk lab Fixture
+          lk status
           lk forge build
           lk walkthrough --static --steps 4
           test -f .audit/walkthrough/model.json
@@ -146,6 +149,11 @@ jobs:
           grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-checks.txt
           lk audit--checks | tee /tmp/lowkey-audit-compact-checks.txt
           grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
+          lk audit check | tee /tmp/lowkey-audit-check-alias.txt
+          grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-check-alias.txt
+          lk audit run --poc | tee /tmp/lowkey-audit-run.txt
+          grep -q "LOWKEY PROJECT DETECTION" /tmp/lowkey-audit-run.txt
+          test -f .audit/poc/LowkeyPoc_Fixture.json
           lk findings
           lk functions
           lk fn ping
