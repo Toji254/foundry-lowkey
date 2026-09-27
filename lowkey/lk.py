@@ -2345,72 +2345,108 @@ def run_checklist(config,action=None,item=None):
         print(f"Checklist item not found: {item}"); return
     print("".join(lines))
 def _project_target_entries(config, root=None):
-    """Build a target list from the current project only."""
+    """Build a target list from the current project only, enriched with provenance."""
     project_root = Path(audit_context.foundry_project_root(root)).resolve()
     entries = []
+    deployment_records = discover_deployments(project_root)
+    deployment_by_address = {}
+    for record in deployment_records:
+        address = record.get("address")
+        if is_address(address):
+            deployment_by_address[str(address).lower()] = record
 
-    def artifact_source_name(artifact):
-        if not artifact:
-            return None
-        try:
-            data = read_artifact(artifact) or {}
-        except Exception:
-            data = {}
-        source_name = data.get("sourceName")
-        return str(source_name) if source_name else None
+    def resolve_artifact(contract, address=None):
+        if address:
+            configured = config.get("abi_paths", {}).get(address)
+            if configured and os.path.exists(configured):
+                return configured
+
+        contract_name = str(contract or "").strip().lower()
+        if contract_name:
+            for path in local_artifact_paths(project_root):
+                artifact_data = read_artifact(path) or {}
+                if artifact_contract_name(path, artifact_data).lower() == contract_name:
+                    return path
+
+        if address:
+            lookup_config = dict(config)
+            lookup_config["target_contract"] = contract
+            return auto_abi_path(address, lookup_config)
+        return None
+
+    def source_from_artifact(artifact, contract):
+        if artifact:
+            artifact_data = read_artifact(artifact) or {}
+            source_name = artifact_data.get("sourceName")
+            if source_name:
+                return str(source_name)
+            fallback = source_contract_fallback(project_root, artifact_contract_name(artifact, artifact_data))
+            if fallback:
+                return str(fallback)
+        return str(source_contract_fallback(project_root, contract) or "") or None
+
+    def enrich(entry):
+        address = entry.get("address")
+        contract = entry.get("contract") or entry.get("name")
+        record = deployment_by_address.get(str(address).lower()) if is_address(address) else None
+
+        if not entry.get("artifact"):
+            entry["artifact"] = resolve_artifact(contract, address)
+        if not entry.get("source_file"):
+            entry["source_file"] = source_from_artifact(entry.get("artifact"), contract)
+        if not entry.get("deployment_file") and record:
+            entry["deployment_file"] = record.get("file")
+        if record and not entry.get("deployment_hash"):
+            entry["deployment_hash"] = record.get("hash")
+        return entry
 
     context_target = project_context_target(project_root)
     if context_target:
         artifact = context_target.get("artifact")
-        entries.append({
+        entries.append(enrich({
             "name": context_target.get("contract") or "target",
             "address": context_target.get("address"),
             "artifact": artifact,
-            "source_file": context_target.get("source_file") or artifact_source_name(artifact),
+            "source_file": context_target.get("source_file"),
             "deployment_file": context_target.get("deployment_file"),
+            "deployment_hash": context_target.get("deployment_hash"),
             "contract": context_target.get("contract"),
             "source": context_target.get("source") or "project",
-        })
+        }))
 
     for name, address in target_aliases(config, project_root).items():
         if any(str(item.get("address")).lower() == str(address).lower() for item in entries):
             continue
         artifact = config.get("abi_paths", {}).get(address)
-        entries.append({
+        entries.append(enrich({
             "name": name,
             "address": address,
             "artifact": artifact,
-            "source_file": artifact_source_name(artifact),
+            "source_file": None,
             "deployment_file": None,
+            "deployment_hash": None,
             "contract": name,
             "source": "project-config",
-        })
+        }))
 
-    for record in discover_deployments(project_root):
+    for record in deployment_records:
         address = record.get("address")
         if not is_address(address):
             continue
         if any(str(item.get("address")).lower() == str(address).lower() for item in entries):
             continue
-        artifact = None
-        source_file = None
-        for path in local_artifact_paths(project_root):
-            artifact_data = read_artifact(path) or {}
-            if artifact_contract_name(path, artifact_data).lower() == str(record.get("contract", "")).lower():
-                artifact = path
-                source_file = artifact_data.get("sourceName")
-                break
-        entries.append({
-            "name": record.get("contract") or "Unknown",
+        contract = record.get("contract") or "Unknown"
+        entries.append(enrich({
+            "name": contract,
             "address": address,
-            "artifact": artifact,
-            "source_file": str(source_file) if source_file else None,
+            "artifact": None,
+            "source_file": None,
             "deployment_file": record.get("file"),
-            "contract": record.get("contract"),
+            "deployment_hash": record.get("hash"),
+            "contract": contract,
             "source": "broadcast",
-        })
+        }))
     return entries
-
 
 def _target_entry_is_protocol(root, entry):
     """Return True for contracts that belong to the protocol, not its test/fixture support."""
@@ -2469,6 +2505,12 @@ def _select_project_target(config, entry, root):
     print(f"Target selected: {entry.get('name') or contract} -> {address}")
     if entry.get("source_file"):
         print(f"  Source       : {entry.get('source_file')}")
+    if entry.get("artifact"):
+        try:
+            artifact_display = str(Path(entry.get("artifact")).resolve().relative_to(Path(root).resolve()))
+        except (OSError, ValueError):
+            artifact_display = str(entry.get("artifact"))
+        print(f"  Artifact     : {artifact_display}")
     if entry.get("deployment_file"):
         try:
             deployment_display = str(Path(entry.get("deployment_file")).resolve().relative_to(Path(root).resolve()))
@@ -2510,6 +2552,13 @@ def run_targets(config, interactive=False, include_support=False):
         if source_file or deployment_file:
             if source_file:
                 print(f"        Source       : {source_file}")
+            artifact = entry.get("artifact")
+            if artifact:
+                try:
+                    artifact_display = str(Path(artifact).resolve().relative_to(Path(root).resolve()))
+                except (OSError, ValueError):
+                    artifact_display = str(artifact)
+                print(f"        Artifact     : {artifact_display}")
             if deployment_file:
                 try:
                     deployment_display = str(Path(deployment_file).resolve().relative_to(Path(root).resolve()))
