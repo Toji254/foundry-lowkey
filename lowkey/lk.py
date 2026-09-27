@@ -2906,27 +2906,22 @@ def discover_local_lab_fixture(root=".", requested=None):
 
 
 def _fixture_state_files(root, safe_name):
-    # Foundry projects may restrict vm.writeFile via fs_permissions. Keep
-    # promotion artifacts under Forge's permitted snapshot directory.
+    # Foundry projects may restrict vm.writeFile via fs_permissions. Keep the
+    # promoted fixture snapshot under Forge's permitted snapshot directory.
     state_dir = Path(root).resolve() / ".forge-snapshots" / "lowkey"
     state_dir.mkdir(parents=True, exist_ok=True)
-    return (
-        state_dir / f"fixture_state_{safe_name}.state",
-        state_dir / f"fixture_code_{safe_name}.txt",
-    )
+    return state_dir / f"fixture_state_{safe_name}.json"
 
 
-def _generate_test_fixture_lab_script(root, candidate, state_path, code_path):
-    """Generate a simulation-only runner whose state can be materialized into local Anvil."""
+def _generate_test_fixture_lab_script(root, candidate, state_path):
+    """Generate a simulation-only runner that dumps the complete VM state."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
     relative = str(candidate["relative"]).replace("\\", "/")
     contract = str(candidate["contract"])
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
 
-    # Forge file cheatcodes resolve paths from the project root. Python keeps
-    # the absolute paths separately for post-run materialization.
+    # vm.dumpState() writes relative to the Forge project root.
     state_literal = os.path.relpath(state_path, root_path).replace("\\", "/")
-    code_literal = os.path.relpath(code_path, root_path).replace("\\", "/")
     script_dir = root_path / "script"
     script_dir.mkdir(parents=True, exist_ok=True)
     script_path = script_dir / f"LowkeyAutoFixture_{safe_name}.s.sol"
@@ -2936,12 +2931,11 @@ pragma solidity ^0.8.20;
 
 import {{Script}} from "forge-std/Script.sol";
 import {{console2}} from "forge-std/console2.sol";
-import {{Vm}} from "forge-std/Vm.sol";
 import {{ {contract} }} from "{relative}";
 
 /// @dev Executes the discovered test fixture entirely inside Forge's local
-/// simulation VM. Lowkey materializes the resulting state delta into Anvil
-/// after the simulation finishes, so fixture cheatcodes remain valid.
+/// simulation VM. Lowkey dumps the resulting full VM state and materializes
+/// that state into local Anvil after simulation finishes.
 contract LowkeyFixtureRunner_{safe_name} is {contract} {{
     function runFixture() external {{
         setUp();
@@ -2950,83 +2944,85 @@ contract LowkeyFixtureRunner_{safe_name} is {contract} {{
 
 contract LowkeyAutoFixtureScript_{safe_name} is Script {{
     function run() external {{
-        vm.startStateDiffRecording();
-
         // Lab bootstrap is environment construction, not gas benchmarking.
-        // QuantAMM's inherited Balancer fixture performs a very large amount of
-        // setup in one Forge execution, so suspend gas metering for the replay
-        // and promotion extraction.
         vm.pauseGasMetering();
 
         LowkeyFixtureRunner_{safe_name} runner = new LowkeyFixtureRunner_{safe_name}();
         runner.runFixture();
 
-        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
-
-        vm.writeFile("{state_literal}", "");
-        vm.writeFile("{code_literal}", "");
-
-        for (uint256 i = 0; i < accesses.length; ++i) {{
-            Vm.AccountAccess memory access = accesses[i];
-
-            if (access.reverted) {{
-                continue;
-            }}
-
-            if (access.deployedCode.length > 0) {{
-                vm.writeLine(
-                    "{code_literal}",
-                    string.concat(
-                        "CODE|",
-                        vm.toString(access.account),
-                        "|",
-                        vm.toString(access.deployedCode)
-                    )
-                );
-            }}
-
-            if (access.newBalance != access.oldBalance) {{
-                vm.writeLine(
-                    "{state_literal}",
-                    string.concat(
-                        "BALANCE|",
-                        vm.toString(access.account),
-                        "|",
-                        vm.toString(access.newBalance)
-                    )
-                );
-            }}
-
-
-
-            for (uint256 j = 0; j < access.storageAccesses.length; ++j) {{
-                Vm.StorageAccess memory storageAccess = access.storageAccesses[j];
-
-                if (storageAccess.isWrite && !storageAccess.reverted) {{
-                    vm.writeLine(
-                        "{state_literal}",
-                        string.concat(
-                            "STORAGE|",
-                            vm.toString(storageAccess.account),
-                            "|",
-                            vm.toString(storageAccess.slot),
-                            "|",
-                            vm.toString(storageAccess.newValue)
-                        )
-                    );
-                }}
-            }}
-        }}
-
+        vm.dumpState("{state_literal}");
         vm.resumeGasMetering();
 
-        console2.log("LOWKEY_FIXTURE", "state-diff-promotion");
+        console2.log("LOWKEY_FIXTURE", "full-state-promotion");
         console2.log("LOWKEY_RUNNER", address(runner));
     }}
 }}
 '''
     script_path.write_text(code, encoding="utf-8")
     return script_path
+
+
+def _materialize_fixture_state(root, rpc, state_path, target_contract):
+    try:
+        raw = Path(state_path).read_text(encoding="utf-8")
+        snapshot = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"could not read fixture state snapshot: {exc}"
+
+    # vm.dumpState() on forge-std 1.8.1 returns an address-keyed object.
+    # Accept Anvil-style snapshots too, so the materializer stays tolerant of
+    # future/alternate state dump shapes.
+    accounts = snapshot.get("accounts") if isinstance(snapshot, dict) and isinstance(snapshot.get("accounts"), dict) else snapshot
+    if not isinstance(accounts, dict):
+        return None, "fixture state snapshot does not contain an address-keyed account map"
+
+    code_map = {}
+    operations = 0
+
+    for address, account in accounts.items():
+        if not is_address(address) or not isinstance(account, dict):
+            continue
+
+        code = str(account.get("code") or "0x")
+        if code and code.startswith("0x") and len(code) > 2:
+            result = rpc_json(rpc, "anvil_setCode", [address, code])
+            if result is None:
+                return None, f"anvil_setCode failed for {address}"
+            code_map[address.lower()] = code
+            operations += 1
+
+        balance = account.get("balance")
+        if balance is not None:
+            result = rpc_json(rpc, "anvil_setBalance", [address, _fixture_hex_quantity(balance)])
+            if result is None:
+                return None, f"anvil_setBalance failed for {address}"
+            operations += 1
+
+        nonce = account.get("nonce")
+        if nonce is not None:
+            result = rpc_json(rpc, "anvil_setNonce", [address, _fixture_hex_quantity(nonce)])
+            if result is None:
+                return None, f"anvil_setNonce failed for {address}"
+            operations += 1
+
+        storage = account.get("storage") or {}
+        if isinstance(storage, dict):
+            for slot, value in storage.items():
+                if not str(slot).startswith("0x") or not str(value).startswith("0x"):
+                    continue
+                result = rpc_json(rpc, "anvil_setStorageAt", [address, slot, value])
+                if result is None:
+                    return None, f"anvil_setStorageAt failed for {address} slot {slot}"
+                operations += 1
+
+    target = _find_fixture_target(root, code_map, target_contract, rpc)
+    if not target:
+        return None, (
+            f"fixture state was materialized ({operations} RPC updates), "
+            f"but Lowkey could not identify target {target_contract or 'contract'}"
+        )
+
+    return target, None
 
 
 def _fixture_quantity(value):
@@ -3149,8 +3145,8 @@ def _materialize_fixture_state(root, rpc, state_path, code_path, target_contract
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
     """Replay a Foundry test fixture in simulation and materialize its state into local Anvil."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
-    state_path, code_path = _fixture_state_files(root, safe_name)
-    script = _generate_test_fixture_lab_script(root, fixture, state_path, code_path)
+    state_path = _fixture_state_files(root, safe_name)
+    script = _generate_test_fixture_lab_script(root, fixture, state_path)
     relative = os.path.relpath(script, root)
 
     print("LOWKEY LOCAL AUDIT LAB")
@@ -3204,7 +3200,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
 
     target_name = str(requested or fixture.get("target_contract") or "")
     target, materialize_error = _materialize_fixture_state(
-        root, rpc, state_path, code_path, target_name
+        root, rpc, state_path, target_name
     )
     if not target:
         return fail(
@@ -3236,7 +3232,6 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
         "state_file": str(state_path),
-        "code_file": str(code_path),
     }
     set_lab_target(config, root, target, contract_name, artifact)
 
