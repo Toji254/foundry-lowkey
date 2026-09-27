@@ -184,6 +184,47 @@ class TargetScopingTests(unittest.TestCase):
             self.assertNotIn("MockERC20", rendered)
             self.assertIn("Lab/test support hidden: 1", rendered)
 
+    def test_target_command_selects_numbered_protocol_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            first = "0x" + "1" * 40
+            second = "0x" + "2" * 40
+            config = {
+                "target": first,
+                "target_contract": "ConfidencePool",
+                "aliases": {},
+                "targets": {},
+                "project_roots": {},
+                "abi_paths": {},
+            }
+            entries = [
+                {
+                    "name": "ConfidencePool",
+                    "contract": "ConfidencePool",
+                    "address": first,
+                    "artifact": None,
+                    "source": "broadcast",
+                },
+                {
+                    "name": "ConfidencePoolFactory",
+                    "contract": "ConfidencePoolFactory",
+                    "address": second,
+                    "artifact": None,
+                    "source": "broadcast",
+                },
+            ]
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "_project_target_entries", return_value=entries), \
+                 patch.object(lk, "_target_entry_is_protocol", return_value=True), \
+                 patch.object(lk, "save_config"), \
+                 patch.object(lk.audit_context, "set_target"):
+                code = lk.dispatch_command("target", ["2"], config)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(config["target"], second)
+            self.assertEqual(config["target_contract"], "ConfidencePoolFactory")
+
     def test_interactive_targets_selects_current_project_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             current_root = pathlib.Path(tmp) / "curve"
