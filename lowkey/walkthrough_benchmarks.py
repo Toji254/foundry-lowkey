@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from . import walkthrough as core
+try:
+    from . import walkthrough as core
+except ImportError:
+    import walkthrough as core
 
 # The adapter may use core execution primitives, but never imports protocol logic back into core.
 is_address = core.is_address
