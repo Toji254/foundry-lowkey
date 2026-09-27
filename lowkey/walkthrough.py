@@ -6650,6 +6650,23 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         code,out,err=_forge_build_with_info(root)
         if code!=0:
             print(out+err,file=sys.stderr); return code or 1
+    elif solidity_sources:
+        # Prefer the project's native build system when artifacts are absent.
+        hardhat = any((root / name).is_file() for name in (
+            "hardhat.config.js", "hardhat.config.cjs",
+            "hardhat.config.mjs", "hardhat.config.ts",
+        ))
+        brownie = (root / "brownie-config.yaml").is_file()
+        if hardhat and not any(path for path in root.rglob("*.json") if "artifact" in str(path).lower() and "build-info" not in str(path)):
+            code,out,err=_cmd(["npx","hardhat","compile"],cwd=root,timeout=180)
+            if code!=0:
+                print(out+err,file=sys.stderr)
+                return code or 1
+        elif brownie and not (root / "build" / "contracts").is_dir():
+            code,out,err=_cmd(["brownie","compile"],cwd=root,timeout=180)
+            if code!=0:
+                print(out+err,file=sys.stderr)
+                return code or 1
     models=_artifact_models(root)
     support_models=_artifact_models(root, include_aux=True)
     if not models:
