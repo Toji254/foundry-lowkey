@@ -133,6 +133,31 @@ class ProjectDetectionTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(calls[-1], (["uv", "sync", "--all-extras", "--dev"], submodule))
 
+    def test_bootstrap_does_not_sync_manifestless_submodule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            submodule = root / "contracts" / "xdao"
+            (submodule / "tests").mkdir(parents=True)
+            (submodule / "tests" / "test_dummy.py").write_text("def test_dummy(): pass\n", encoding="utf-8")
+            (root / ".gitmodules").write_text(
+                '[submodule "xdao"]\n\tpath = contracts/xdao\n\turl = https://example.com/xdao.git\n',
+                encoding="utf-8",
+            )
+            calls = []
+
+            def fake_run(command, cwd):
+                calls.append((list(command), cwd))
+                return 0, "ok"
+
+            with patch.object(project_detection.shutil, "which", side_effect=lambda name: name in {"git", "uv"}), \\
+                 patch.object(project_detection, "_run", side_effect=fake_run):
+                code = project_detection.bootstrap_project(project_detection.detect_project(root))
+
+            self.assertEqual(code, 0)
+            self.assertEqual(calls, [
+                (["git", "submodule", "update", "--init", "--recursive", "--depth", "1"], root),
+            ])
+
     def test_bootstrap_uses_lockfile_aware_node_install(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
