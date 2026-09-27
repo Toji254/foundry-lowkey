@@ -2159,7 +2159,19 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
             continue
         required.append(data.get("exit_code"))
 
-    final_code = 0 if required and all(code == 0 for code in required) else (
-        required[0] if required else 0
-    )
+    # Build/test/coverage are mandatory. Evidence tools are failures when they
+    # actually error; a skipped optional analyzer (127) is incomplete evidence.
+    execution_failures = [
+        int(item.get("code"))
+        for item in results
+        if isinstance(item, dict)
+        and isinstance(item.get("code"), int)
+        and int(item.get("code")) not in {0, 127}
+    ]
+    if required and not all(code == 0 for code in required):
+        final_code = next((code for code in required if code != 0), 1)
+    elif execution_failures:
+        final_code = execution_failures[0]
+    else:
+        final_code = 0
     return _finalize_pipeline(root, results, final_code, generate)
