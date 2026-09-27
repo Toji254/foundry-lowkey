@@ -1928,8 +1928,12 @@ def _write_transaction_evidence(
         return str(value)
 
     status_raw = receipt.get("status")
-    success = status_raw in (None, "0x1", 1)
-    status_text = "CONFIRMED / SUCCESS" if success else "MINED / REVERTED"
+    has_receipt = bool(receipt)
+    success = status_raw in ("0x1", 1)
+    if not has_receipt:
+        status_text = "BROADCAST / RECEIPT NOT AVAILABLE"
+    else:
+        status_text = "CONFIRMED / SUCCESS" if success else "MINED / REVERTED"
     block_raw = receipt.get("blockNumber") or tx.get("blockNumber")
     block_number = "-"
     if isinstance(block_raw, str) and block_raw.startswith("0x"):
