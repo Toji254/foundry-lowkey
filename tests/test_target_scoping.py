@@ -42,6 +42,26 @@ class TargetScopingTests(unittest.TestCase):
                 {"curve": "0x1111111111111111111111111111111111111111"},
             )
 
+    def test_project_target_list_hides_test_mock_alias_even_when_owned_by_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            address = "0x1111111111111111111111111111111111111111"
+            mock_path = root / "tests" / "shared" / "contracts" / "BlockHashOracleMock.vy"
+            mock_path.parent.mkdir(parents=True)
+            mock_path.write_text("# mock\n", encoding="utf-8")
+
+            config = {
+                "aliases": {"BlockHashOracleMock": address},
+                "targets": {},
+                "project_roots": {address: str(root)},
+                "abi_paths": {address: str(mock_path)},
+            }
+
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                aliases = lk.target_aliases(config, root)
+
+            self.assertEqual(aliases, {})
+
     def test_numeric_target_resolution_is_project_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:
             current_root = pathlib.Path(tmp) / "curve"
