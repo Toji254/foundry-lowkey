@@ -2404,7 +2404,8 @@ def run_targets(config, interactive=False):
     current_address = current.get("address") if isinstance(current, dict) else current
 
     print(f"PROJECT TARGETS")
-    print("===============")\n    print(root)
+    print("===============")
+    print(root)
     for index, entry in enumerate(entries, 1):
         marker = "*" if str(entry.get("address")).lower() == str(current_address or "").lower() else " "
         print(f" {marker} {index:>2}. {entry.get('name') or entry.get('contract') or 'target':<24} {entry.get('address')}")
