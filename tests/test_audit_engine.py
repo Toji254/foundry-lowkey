@@ -158,6 +158,19 @@ class AuditEngineTests(unittest.TestCase):
             self.assertIn("TIMESTAMP", labels)
             self.assertNotIn("DELEGATECALL", labels)
 
+    def test_project_config_does_not_inherit_global_target_when_context_has_none(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            (root / ".audit").mkdir()
+            (root / ".audit" / "context.json").write_text(
+                json.dumps({"target": {"address": None, "contract": None}}),
+                encoding="utf-8",
+            )
+            with patch.object(audit_engine, "_config", return_value={"target": "0x" + "1" * 40}):
+                config = audit_engine._project_config(root)
+        self.assertIsNone(config.get("target"))
+
     def test_run_source_triage_handles_relative_root(self):
         from tempfile import TemporaryDirectory
 
