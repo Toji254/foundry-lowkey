@@ -974,11 +974,19 @@ def run(
             assess_zero_address_story(story, story_steps)
         else:
             assess_deadline_story(story, story_steps)
-        for obs in observations:
-            if obs.pattern_id == "REPLAY-001" and obs.contract == story_steps[0].contract and obs.function == story_steps[0].function:
-                obs.status = story.signal if story.signal in {"CONFIRMED", "REVIEW"} else obs.status
-                if story.evidence:
-                    obs.evidence = story.evidence[:]
+        family_id = (
+            "REPLAY-001" if story.story_id.startswith("RP-")
+            else "INIT-001" if story.story_id.startswith("IN-")
+            else "ZEROADDR-001" if story.story_id.startswith("ZA-")
+            else "TIME-001"
+        )
+        if story_steps:
+            for obs in observations:
+                if obs.pattern_id == family_id and obs.contract == story_steps[0].contract and obs.function == story_steps[0].function:
+                    if story.signal in {"CONFIRMED", "REVIEW"}:
+                        obs.status = story.signal
+                    if story.evidence:
+                        obs.evidence = story.evidence[:]
         if not core._rpc_revert(rpc, snapshot):
             story.signal = "BLOCKED"
             story.evidence = ["Anvil could not restore the pattern snapshot."]
