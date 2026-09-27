@@ -360,7 +360,7 @@ after
         )
         self.assertEqual(
             coverage.call_args.args[0],
-            ["coverage", "--via-ir", "--no-match-path", "**/Lowkey_*"],
+            ["coverage", "--via-ir"],
         )
 
     @patch("forge_tools.run_forge", return_value=0)
@@ -375,7 +375,7 @@ after
         )
         self.assertEqual(
             coverage.call_args.args[0],
-            ["coverage", "--verbosity", "4", "--no-match-path", "**/Lowkey_*"],
+            ["coverage", "--verbosity", "4"],
         )
 
 if __name__ == "__main__":
