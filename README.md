@@ -545,6 +545,7 @@ It currently looks for patterns such as:
 
 - replayable claims/withdrawals with user-state consumption
 - external interaction before a security-sensitive state update
+- read-only reentrancy around callback/quote paths
 - sensitive state changes with no obvious authorization boundary
 - stale oracle/round validation
 - zero-share and rounding-loss candidates
@@ -556,6 +557,8 @@ It currently looks for patterns such as:
 - predictable randomness
 - initializer reuse
 - arbitrary external call targets
+- hardcoded economic fee/rate/price parameters
+- zero-address configuration boundaries
 - expired deadline/expiry boundaries
 
 Source matches are **CANDIDATE** signals. A live probe can move a pattern to **CONFIRMED** only when the local chain reproduces concrete impact evidence. Successful calls without proven impact remain **REVIEW** rather than being called vulnerabilities.
