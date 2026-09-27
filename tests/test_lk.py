@@ -3043,6 +3043,24 @@ contract BountyArena {
         self.assertIsNotNone(selected)
         self.assertEqual(selected.adapter_id, "confidence-pool")
 
+    def test_benchmark_adapter_can_be_registered_without_core_changes(self):
+        adapter_module = importlib.import_module("lowkey.walkthrough_benchmarks")
+
+        class DemoAdapter:
+            adapter_id = "demo"
+            display_name = "Demo"
+            def matches(self, model, models, config):
+                return model.name == "DemoContract"
+
+        adapter_module.register_benchmark_adapter(DemoAdapter)
+        model = lk.walkthrough.ContractModel(
+            name="DemoContract", source="src/Demo.sol", artifact="out/Demo.json"
+        )
+        selected = adapter_module.get_benchmark_adapter(model, [model], {})
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.adapter_id, "demo")
+        adapter_module._REGISTERED_BENCHMARK_ADAPTERS.remove(DemoAdapter)
+
     def test_confidence_pool_stateful_benchmarks_cover_known_attack_stories(self):
         actors = [
             lk.walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
