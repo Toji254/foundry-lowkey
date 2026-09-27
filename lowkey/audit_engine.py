@@ -773,7 +773,7 @@ def test_poc_candidate():
     brief = {
         "generated_at": now_stamp(),
         "project_type": "vyper",
-        "target": _config().get("target"),
+        "target": _project_config(root).get("target"),
         "candidate": {
             "check": check,
             "impact": impact,
@@ -1054,7 +1054,7 @@ def _refresh_system_model(root: str, reason: str) -> None:
         system_model.refresh_manifest(
             root,
             rpc=_config().get("rpc"),
-            config=_config(),
+            config=_project_config(root),
             reason=reason,
         )
     except Exception:
@@ -1894,7 +1894,7 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
 
     git_code, git_sha, git_err = run_command(["git", "rev-parse", "HEAD"], root)
     branch_code, branch, branch_err = run_command(["git", "branch", "--show-current"], root)
-    config = _config()
+    config = _project_config(root)
 
     record_evidence(
         "context",
