@@ -2349,12 +2349,25 @@ def _project_target_entries(config, root=None):
     project_root = Path(audit_context.foundry_project_root(root)).resolve()
     entries = []
 
+    def artifact_source_name(artifact):
+        if not artifact:
+            return None
+        try:
+            data = read_artifact(artifact) or {}
+        except Exception:
+            data = {}
+        source_name = data.get("sourceName")
+        return str(source_name) if source_name else None
+
     context_target = project_context_target(project_root)
     if context_target:
+        artifact = context_target.get("artifact")
         entries.append({
             "name": context_target.get("contract") or "target",
             "address": context_target.get("address"),
-            "artifact": context_target.get("artifact"),
+            "artifact": artifact,
+            "source_file": context_target.get("source_file") or artifact_source_name(artifact),
+            "deployment_file": context_target.get("deployment_file"),
             "contract": context_target.get("contract"),
             "source": context_target.get("source") or "project",
         })
@@ -2367,6 +2380,8 @@ def _project_target_entries(config, root=None):
             "name": name,
             "address": address,
             "artifact": artifact,
+            "source_file": artifact_source_name(artifact),
+            "deployment_file": None,
             "contract": name,
             "source": "project-config",
         })
@@ -2378,15 +2393,19 @@ def _project_target_entries(config, root=None):
         if any(str(item.get("address")).lower() == str(address).lower() for item in entries):
             continue
         artifact = None
+        source_file = None
         for path in local_artifact_paths(project_root):
             artifact_data = read_artifact(path) or {}
             if artifact_contract_name(path, artifact_data).lower() == str(record.get("contract", "")).lower():
                 artifact = path
+                source_file = artifact_data.get("sourceName")
                 break
         entries.append({
             "name": record.get("contract") or "Unknown",
             "address": address,
             "artifact": artifact,
+            "source_file": str(source_file) if source_file else None,
+            "deployment_file": record.get("file"),
             "contract": record.get("contract"),
             "source": "broadcast",
         })
@@ -2478,6 +2497,17 @@ def run_targets(config, interactive=False, include_support=False):
             f"{entry.get('name') or entry.get('contract') or 'target':<28} "
             f"{entry.get('address')}"
         )
+        source_file = entry.get("source_file")
+        deployment_file = entry.get("deployment_file")
+        if source_file or deployment_file:
+            if source_file:
+                print(f"        Source       : {source_file}")
+            if deployment_file:
+                try:
+                    deployment_display = str(Path(deployment_file).resolve().relative_to(Path(root).resolve()))
+                except (OSError, ValueError):
+                    deployment_display = str(deployment_file)
+                print(f"        Deployment   : {deployment_display}")
 
     if support_entries and not include_support:
         print()
