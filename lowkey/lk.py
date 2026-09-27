@@ -3579,63 +3579,79 @@ def _foundry_native_bootstrap_commands(root):
     return commands
 
 
+
 def _run_project_build(config, root):
-    """Build with the detected project's native toolchain, bootstrapping explicit local dependencies when needed."""
+    """Build with the project's declared native toolchain before lab/deployment work."""
+    root_path = Path(root)
+
+    package_path = root_path / "package.json"
+    hardhat_config = next(
+        (
+            root_path / name
+            for name in (
+                "hardhat.config.js",
+                "hardhat.config.ts",
+                "hardhat.config.cjs",
+                "hardhat.config.mjs",
+            )
+            if (root_path / name).is_file()
+        ),
+        None,
+    )
+
+    # Hardhat-first projects sometimes also contain a Foundry config. Prefer the
+    # project's declared package-manager build script instead of silently running
+    # forge build and hiding its output.
+    if package_path.is_file() and hardhat_config is not None:
+        try:
+            package = json.loads(package_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            return fail(f"Error: could not read package.json for project build: {error}")
+
+        scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+        if isinstance(scripts, dict) and scripts.get("build"):
+            yarn = tool_path("yarn")
+            if not yarn:
+                return fail(
+                    "Error: this project declares a Yarn build script, but 'yarn' was not found on PATH."
+                )
+
+            print()
+            print("LOWKEY BUILD")
+            print("============")
+            print("Build system : yarn build")
+            print(f"Project      : {root}")
+            print("Status       : running...")
+
+            try:
+                completed = subprocess.run(
+                    [yarn, "build"],
+                    cwd=str(root_path),
+                    text=True,
+                )
+            except OSError as error:
+                return fail(f"Error executing yarn build: {error}", 1)
+
+            if completed.returncode != 0:
+                return fail("Error: yarn build failed.", completed.returncode)
+
+            print("Status       : complete")
+            return 0
+
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
 
     if kind in {"foundry", "mixed-foundry-vyper"}:
-        result = run_foundry(["build"], capture=True)
-        if result.code == 0:
-            return 0
-
-        first_output = _format_build_failure(getattr(result, "text", None) or getattr(result, "output", None) or result)
-        dependency_failure = bool(re.search(
-            r"(source\s+.+not\s+found|file\s+.+not\s+found|could\s+not\s+resolve|import\s+.+not\s+found|"
-            r"no\s+such\s+file|library\s+.+not\s+found)",
-            first_output,
-            re.I,
-        ))
-
-        if dependency_failure:
-            for command in _foundry_native_bootstrap_commands(root):
-                try:
-                    print(f"INFO  build bootstrap: {' '.join(command)}")
-                    bootstrap = subprocess.run(
-                        command,
-                        cwd=str(root),
-                        capture_output=True,
-                        text=True,
-                    )
-                except OSError as exc:
-                    print(f"Warning: build bootstrap failed to start: {exc}", file=sys.stderr)
-                    continue
-
-                bootstrap_output = (bootstrap.stdout or "") + (bootstrap.stderr or "")
-                if bootstrap.returncode != 0:
-                    print(
-                        f"Warning: build bootstrap {' '.join(command)} failed:\n"
-                        f"{_format_build_failure(bootstrap_output)}",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(f"PASS  build bootstrap: {' '.join(command)}")
-
-                retry = run_foundry(["build"], capture=True)
-                if retry.code == 0:
-                    return 0
-                retry_output = _format_build_failure(
-                    getattr(retry, "text", None) or getattr(retry, "output", None) or retry
-                )
-                # A successful bootstrap followed by the same dependency failure means there
-                # is nothing else Lowkey can safely infer. Surface the final compiler diagnostics.
-                first_output = retry_output
-
-        print(
-            "Build diagnostics:\n" + first_output,
-            file=sys.stderr,
-        )
-        return result.code
+        print()
+        print("LOWKEY BUILD")
+        print("============")
+        print("Build system : forge build")
+        print(f"Project      : {root}")
+        print("Status       : running...")
+        code = run_foundry(["build"], capture=False)
+        if code == 0:
+            print("Status       : complete")
+        return code
 
     commands = {
         "hardhat": ["npx", "hardhat", "compile"],
@@ -3646,16 +3662,21 @@ def _run_project_build(config, root):
     command = commands.get(kind)
     if not command:
         return 0
+
+    print()
+    print("LOWKEY BUILD")
+    print("============")
+    print(f"Build system : {' '.join(command)}")
+    print(f"Project      : {root}")
+    print("Status       : running...")
+
     try:
-        result = subprocess.run(command, cwd=str(root), capture_output=True, text=True)
+        result = subprocess.run(command, cwd=str(root_path), text=True)
     except OSError as exc:
-        print(f"Build failed: {exc}", file=sys.stderr)
-        return 1
-    if result.returncode:
-        print(
-            "Build diagnostics:\n" + _format_build_failure((result.stdout or "") + (result.stderr or "")),
-            file=sys.stderr,
-        )
+        return fail(f"Build failed: {exc}", 1)
+
+    if result.returncode == 0:
+        print("Status       : complete")
     return result.returncode
 
 def run_clone(config, args):
@@ -4177,6 +4198,223 @@ def _normalize_human_numeric_input(value, ptype, label=''):
         return normalize_numeric_argument(text, ptype)
     return value
 
+
+def _lab_address_choices(config, accounts):
+    choices = []
+
+    for index, address in enumerate(accounts or []):
+        if is_address(address):
+            choices.append((f"anvil:{index}", str(address)))
+
+    for name, entry in (config.get("wallets", {}) or {}).items():
+        if isinstance(entry, dict) and is_address(entry.get("address")):
+            choices.append((str(name), str(entry["address"])))
+
+    for name, address in (config.get("targets", {}) or {}).items():
+        if is_address(address):
+            choices.append((str(name), str(address)))
+
+    seen = set()
+    result = []
+    for name, address in choices:
+        key = address.lower()
+        if key not in seen:
+            seen.add(key)
+            result.append((name, address))
+    return result
+
+
+def _lab_constructor_default(contract, label, ptype):
+    name = str(label or "").strip().lower()
+
+    if ptype == "bool":
+        return "false"
+
+    if ptype == "string":
+        if name in {"name", "poolname"}:
+            return f"{contract} Lab"
+        if name in {"symbol", "poolsymbol"}:
+            return "LKL"
+        if name in {"version", "poolversion"}:
+            return "v1"
+
+    if ptype.startswith(("uint", "int")):
+        if any(x in name for x in ("numtoken", "tokencount", "count")):
+            return "2"
+
+    if ptype.endswith("[]"):
+        return "[]"
+
+    return None
+
+
+def _lab_constructor_meaning(label, ptype):
+    name = str(label or "").lower()
+
+    if ptype == "address":
+        if "vault" in name:
+            return "Address of the Vault contract the pool will use."
+        if "runner" in name:
+            return "Address of the UpdateWeightRunner contract."
+        return "Contract or account address."
+
+    if ptype == "bool":
+        return "Boolean flag: true or false."
+
+    if ptype == "string":
+        return "Text value."
+
+    if ptype.startswith("uint"):
+        return "Unsigned integer. Lowkey accepts plain decimal values and supported numeric units."
+
+    if ptype.startswith("int"):
+        return "Signed integer. Lowkey accepts plain decimal values and supported numeric units."
+
+    if ptype == "string[][]":
+        return "Nested text array. For QuantAMM poolDetails, each row is metadata: category, name, value, extra."
+
+    if ptype.endswith("[]"):
+        return f"Array of {ptype[:-2]} values."
+
+    if ptype.startswith("("):
+        return "Structured tuple. Lowkey expands the tuple into its individual fields."
+
+    return f"ABI value of type {ptype}."
+
+
+def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False, default=None):
+    print(f"  Field     : {label}")
+    print(f"  Type      : {ptype}")
+    print(f"  Meaning   : {_lab_constructor_meaning(label, ptype)}")
+
+    if ptype.startswith(("uint", "int")):
+        _print_numeric_unit_reference(label, ptype)
+
+    if ptype == "address":
+        choices = _lab_address_choices(config, accounts)
+        if choices:
+            print("  Known local addresses:")
+            for index, (name, address) in enumerate(choices[:12]):
+                print(f"    [{index}] {name:<18} {address}")
+            print("  Tip       : enter the number, name, or full address.")
+
+    if default is not None:
+        print(f"  Suggested : {default}")
+
+    prompt = f"  Value{' [Enter = ' + default + ']' if default is not None else ''}: "
+    value = input(prompt).strip()
+
+    if not value:
+        if default is None:
+            raise ValueError(f"'{label}' needs a value.")
+        value = default
+
+    if ptype == "address":
+        choices = _lab_address_choices(config, accounts)
+        if value.isdigit() and int(value) < len(choices):
+            value = choices[int(value)][1]
+        else:
+            lower = value.lower()
+            for name, address in choices:
+                if name.lower() == lower:
+                    value = address
+                    break
+
+    if ptype.startswith(("uint", "int")):
+        value = _normalize_human_numeric_input(value, ptype, label)
+
+    if nested and ptype == "string":
+        return json.dumps(value, ensure_ascii=False)
+
+    return value
+
+
+def _lab_prompt_value(config, accounts, contract, param, path="root", nested=False):
+    raw_type = str(param.get("type") or "")
+    label = str(param.get("name") or path)
+
+    if raw_type.endswith("[]"):
+        element = dict(param)
+        element["type"] = raw_type[:-2]
+
+        print()
+        print(f"{path}  {label}")
+        print(f"  Type      : {canonical_type(param)}")
+        print(f"  Meaning   : {_lab_constructor_meaning(label, canonical_type(param))}")
+
+        if canonical_type(param) == "string[][]" and label.lower() in {
+            "pooldetails", "pool_details", "details"
+        }:
+            print("  Structure : each row = [category, name, value, extra]")
+            print("  Default   : []")
+            print("  Enter 0   : no metadata rows")
+
+        raw_count = input("  Number of items [0]: ").strip()
+        count = 0 if not raw_count else int(raw_count)
+        if count < 0:
+            raise ValueError(f"{label}: item count cannot be negative")
+
+        values = []
+        for i in range(count):
+            child_path = f"{path}[{i}]"
+
+            if canonical_type(param) == "string[][]" and label.lower() in {
+                "pooldetails", "pool_details", "details"
+            }:
+                print()
+                print(f"  Metadata row {i + 1}")
+                print("  ----------------")
+                fields = []
+                for field_name in ("category", "name", "value", "extra"):
+                    child = {"type": "string", "name": field_name}
+                    fields.append(
+                        _lab_prompt_value(
+                            config, accounts, contract, child,
+                            path=f"row[{i}].{field_name}", nested=True
+                        )
+                    )
+                values.append("[" + ",".join(fields) + "]")
+            else:
+                values.append(
+                    _lab_prompt_value(
+                        config, accounts, contract, element,
+                        path=child_path, nested=True
+                    )
+                )
+
+        return "[" + ",".join(values) + "]"
+
+    if raw_type.startswith("tuple"):
+        components = param.get("components") or []
+        if not isinstance(components, list):
+            raise ValueError(f"{label}: tuple components are missing from the ABI.")
+
+        print()
+        print(f"{path}  {label}")
+        print(f"  Type      : {canonical_type(param)}")
+        print("  Meaning   : Lowkey expanded this struct so you don't have to write ABI tuple syntax.")
+
+        values = []
+        for index, component in enumerate(components, 1):
+            child_label = component.get("name") or f"field{index}"
+            values.append(
+                _lab_prompt_value(
+                    config, accounts, contract, component,
+                    path=f"{path}.{child_label}", nested=True
+                )
+            )
+
+        return "(" + ",".join(values) + ")"
+
+    ptype = canonical_type(param)
+    default = _lab_constructor_default(contract, label, ptype)
+    print()
+    return _lab_scalar_value(
+        config, accounts, contract, label, ptype,
+        nested=nested, default=default
+    )
+
+
 def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
     """Deploy an ABI-bearing artifact directly with cast on local EVM nodes."""
     if not artifact_is_deployable(artifact):
@@ -4188,21 +4426,38 @@ def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
     if not re.fullmatch(r"0x[0-9a-fA-F]+", creation):
         return None, "artifact bytecode is not valid hex"
 
+    config = {}
+    try:
+        config = load_config()
+    except Exception:
+        pass
+
+    contract = artifact.get("contractName") or artifact.get("sourceName") or "target"
+
+    print()
+    print("CONSTRUCTOR WIZARD")
+    print("==================")
+    print("Lowkey will expand structs/arrays and suggest local-friendly defaults.")
+    print("Press Enter on an optional array to keep it empty.")
+    print("")
+
     values = []
     for index, param in enumerate(constructor_inputs or [], 1):
-        label = param.get("name") or f"arg{index}"
-        ptype = canonical_type(param)
-        if ptype.startswith(('uint', 'int')):
-            _print_numeric_unit_reference(label, ptype)
         try:
-            value = input(f"Constructor {label} ({ptype}): ").strip()
-        except EOFError:
+            values.append(
+                _lab_prompt_value(
+                    config,
+                    accounts,
+                    str(contract),
+                    param,
+                    path=f"params[{index}]",
+                    nested=False,
+                )
+            )
+        except (EOFError, KeyboardInterrupt):
             return None, "local lab cancelled"
-        if value and ptype.startswith(('uint', 'int')):
-            value = _normalize_human_numeric_input(value, ptype, label)
-        if not value:
-            return None, f"constructor argument {label} is required"
-        values.append(value)
+        except (TypeError, ValueError) as error:
+            return None, f"constructor input error: {error}"
 
     command = [
         "cast", "send",
@@ -4210,8 +4465,11 @@ def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
         "--unlocked", "--from", accounts[0],
         "--create", creation,
     ]
+
     if constructor_inputs:
-        signature = "constructor(" + ",".join(canonical_type(item) for item in constructor_inputs) + ")"
+        signature = "constructor(" + ",".join(
+            canonical_type(item) for item in constructor_inputs
+        ) + ")"
         command.append(signature)
         command.extend(values)
 
@@ -4221,22 +4479,34 @@ def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
         capture_output=True,
         text=True,
     )
+
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "cast deployment failed").strip()
         return None, detail[-1200:]
 
-    tx_match = re.findall(r"0x[0-9a-fA-F]{64}", result.stdout or "")
-    if not tx_match:
-        return None, "deployment returned no transaction hash"
-    tx_hash = tx_match[-1]
+    output = "\n".join(
+        part.strip()
+        for part in ((result.stdout or ""), (result.stderr or ""))
+        if part.strip()
+    )
 
-    receipt = run_cast(["receipt", tx_hash, "contractAddress", "--rpc-url", rpc], config={}, capture=True)
-    raw = str(receipt.text if isinstance(receipt, CommandResult) else receipt or "")
-    address_match = re.findall(r"0x[0-9a-fA-F]{40}", raw)
-    if not address_match:
-        return None, "deployment succeeded but no contract address was returned"
-    return address_match[-1], None
+    patterns = [
+        r"(?i)\bcontractAddress:\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bcontract address:\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bdeployed to:\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bcontract address\s*=\s*(0x[0-9a-fA-F]{40})",
+    ]
 
+    for pattern in patterns:
+        match = re.search(pattern, output)
+        if match:
+            return match.group(1), None
+
+    addresses = re.findall(r"\b0x[0-9a-fA-F]{40}\b", output)
+    if addresses:
+        return addresses[-1], None
+
+    return None, "deployment succeeded but no contract address was found in cast output"
 
 def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     candidate = discover_generic_lab_contract(root, requested)
