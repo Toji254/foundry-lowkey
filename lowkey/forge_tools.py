@@ -13,6 +13,10 @@ MODULE_DIR = Path(__file__).resolve().parent
 if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 import audit_context
+try:
+    import project_tools
+except ImportError:
+    project_tools = None
 
 NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
@@ -136,6 +140,38 @@ def run_vyper_build(quiet: bool = False) -> int:
         print(f"Vyper build: {built} contract(s) compiled.")
         print(f"Artifacts: {output_dir}")
     return 1 if failures else 0
+
+def _project_kind(root: Path) -> str:
+    if project_tools is not None:
+        try:
+            return str(project_tools.detect_project(root).get("kind") or "generic")
+        except Exception:
+            pass
+    if (root / "foundry.toml").is_file():
+        return "foundry"
+    if any(root.glob("hardhat.config.*")):
+        return "hardhat"
+    if (root / "brownie-config.yaml").is_file():
+        return "brownie"
+    if _project_vyper_sources(root):
+        return "vyper"
+    return "generic"
+
+
+def _run_native_project(command: list[str], root: Path, label: str) -> int:
+    try:
+        result = subprocess.run(command, cwd=root)
+    except OSError as exc:
+        return die(f"could not execute {label}: {exc}", 1)
+    audit_context.record_tool(
+        label,
+        root,
+        status="completed" if result.returncode == 0 else "failed",
+        summary=" ".join(command),
+        data={"command": command, "exit_code": result.returncode},
+    )
+    return result.returncode
+
 
 def run_forge(args: Sequence[str], quiet: bool = False) -> int:
     """Run Forge, optionally hiding successful command output for compound audits."""
@@ -919,9 +955,50 @@ def main(argv: Iterable[str] | None = None) -> int:
         print_help()
         return 0
     command, rest = args[0], args[1:]
-    if command == "build" and not (Path(audit_context.foundry_project_root()) / "foundry.toml").is_file():
-        if _project_vyper_sources(_project_root()):
+    root = _project_root()
+    kind = _project_kind(root)
+
+    if command == "build" and kind != "foundry":
+        if kind == "vyper":
             return run_vyper_build()
+        if kind == "hardhat":
+            return _run_native_project(["npx", "hardhat", "compile"], root, "hardhat-build")
+        if kind == "brownie":
+            return _run_native_project(["brownie", "compile"], root, "brownie-build")
+        print("LowkeyForge: no supported project build system detected; using existing artifacts.")
+        return 0
+
+    if command == "test" and kind != "foundry":
+        if kind == "hardhat":
+            return _run_native_project(["npx", "hardhat", "test"], root, "hardhat-test")
+        if kind == "brownie":
+            return _run_native_project(["brownie", "test"], root, "brownie-test")
+        if kind == "vyper":
+            pytest = shutil.which("pytest")
+            tests_dir = any(
+                path.is_file()
+                for path in (
+                    list((root / "tests").glob("test_*.py")) if (root / "tests").is_dir() else []
+                )
+            )
+            if pytest and tests_dir:
+                return _run_native_project([pytest], root, "pytest")
+        return die(
+            f"no native test runner is configured for project type '{kind}'; "
+            "Lowkey will not invent a test harness"
+        )
+
+    if command in {
+        "coverage", "script", "snapshot", "lint", "geiger", "inspect",
+        "flatten", "verify-contract", "verify-check", "verify-bytecode",
+        "tree", "install", "remove", "update", "cache", "config",
+        "remappings", "bind", "bind-json", "doc", "eip712", "soldeer",
+    } and kind != "foundry":
+        return die(
+            f"Forge command '{command}' is not the native toolchain for this project "
+            f"(detected '{kind}'). Use the project's native tool or 'lk walkthrough'."
+        )
+
     if command == "audit":
         return run_audit(rest)
     if command in {"test-audit", "audit-test"}:
