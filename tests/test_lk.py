@@ -413,6 +413,40 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(models[0].name, "Vault")
         self.assertEqual(models[0].source, "contracts/Vault.sol")
 
+    def test_walkthrough_generic_deploy_uses_cast_create_option_order(self):
+        model = lk.walkthrough.ContractModel(
+            name="Counter",
+            source="contracts/Counter.vy",
+            artifact=".audit/walkthrough/vyper/Counter.json",
+            abi=[],
+            kind="vyper",
+        )
+        actor = lk.walkthrough.Actor("Alice", "0x" + "1" * 40, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifact = root / model.artifact
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(json.dumps({
+                "bytecode": {"object": "0x60006000556000"},
+                "abi": [],
+            }), encoding="utf-8")
+            calls = []
+            def fake_cmd(args, cwd=None, timeout=30):
+                calls.append(args)
+                return 0, "Transaction hash: " + "0x" + "2" * 64, ""
+            with patch.object(lk.walkthrough, "_cmd", side_effect=fake_cmd),                  patch.object(lk.walkthrough, "_actor_rpc_setup"),                  patch.object(
+                     lk.walkthrough, "_receipt",
+                     return_value={"contractAddress": "0x" + "3" * 40},
+                 ):
+                address, reason = lk.walkthrough._deploy_generic_local_target(
+                    root, "http://127.0.0.1:8545", model, [actor]
+                )
+        self.assertEqual(address, "0x" + "3" * 40)
+        self.assertIsNone(reason)
+        self.assertEqual(calls[0][0:2], ["cast", "send"])
+        self.assertIn("--create", calls[0])
+        self.assertLess(calls[0].index("--rpc-url"), calls[0].index("0x60006000556000"))
+
     def test_walkthrough_vyper_replay_is_not_solidity_script(self):
         model = lk.walkthrough.ContractModel(
             name="Counter",
