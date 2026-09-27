@@ -7147,10 +7147,19 @@ def dispatch_command(cmd,args,config,from_batch=False):
         save_config(config)
     elif cmd in {"targets","target-list"}: run_targets(config)
     elif cmd=="use":
-        if not args: run_targets(config); return
-        resolved=resolve_target_ref(config,args[0],audit_context.foundry_project_root())
-        if not resolved: print(f"Unknown target: {args[0]}"); return
-        config["target"]=resolved; save_config(config)
+        root=audit_context.foundry_project_root()
+        if not args:
+            run_targets(config)
+            return
+        resolved=resolve_target_ref(config,args[0],root)
+        if not resolved:
+            print(f"Unknown target for project: {args[0]}")
+            return
+        entries=_project_target_entries(config,root)
+        entry=next((item for item in entries if str(item.get("address")).lower()==str(resolved).lower()),None)
+        if entry:
+            return _select_project_target(config,entry,root)
+        return fail("Error: target belongs to a different project context.")
     elif cmd=="deployments": run_deployments(config)
     elif cmd in {"project","graph"}: return run_project_map(config,args)
     elif cmd=="system": return run_system_model(config,args)
