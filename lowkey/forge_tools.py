@@ -694,56 +694,86 @@ def _dashboard_status(state: dict | None) -> tuple[str, str]:
 
 
 def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
-    """Render the compact evidence dashboard at the end of every connected audit."""
+    """Render an evidence dashboard using the project's detected toolchain."""
     context = audit_context.load(root)
     tools = context.get("tools", {}) if isinstance(context.get("tools"), dict) else {}
-    rows = []
 
-    for key, label in (
-        ("forge-build", "Forge build"),
-        ("slither", "Slither"),
-        ("forge-lint", "Forge lint"),
-        ("forge-geiger", "Forge geiger"),
-        ("forge-tests", "Forge tests"),
-        ("forge-coverage", "Coverage"),
-        ("generator", "PoC scaffold"),
-    ):
+    kind = "foundry"
+    languages = []
+    if project_tools is not None:
+        try:
+            profile = project_tools.detect_project(root)
+            kind = str(profile.get("kind") or "generic")
+            languages = list(profile.get("languages") or [])
+        except Exception:
+            pass
+    foundry_kind = kind in {"foundry", "mixed-foundry-vyper"}
+
+    rows = []
+    if foundry_kind:
+        row_specs = [
+            ("forge-build", "Forge build"),
+            ("slither", "Slither"),
+            ("forge-lint", "Forge lint"),
+            ("forge-geiger", "Forge geiger"),
+            ("forge-tests", "Forge tests"),
+            ("forge-coverage", "Coverage"),
+            ("generator", "PoC scaffold"),
+        ]
+        mandatory_keys = ("forge-build", "forge-tests", "forge-coverage")
+    else:
+        row_specs = [
+            ("project-build", "Project build"),
+            ("slither", "Slither"),
+            ("project-tests", "Project tests"),
+            ("project-coverage", "Coverage"),
+            ("generator", "PoC scaffold"),
+        ]
+        mandatory_keys = ("project-build", "project-tests", "project-coverage")
+
+    for key, label in row_specs:
         state = tools.get(key)
         status, detail = _dashboard_status(state)
         if key == "slither" and isinstance(state, dict):
             count = state.get("finding_count")
             if count is not None:
                 detail = f"{count} finding(s)"
-        elif key == "generator" and isinstance(state, dict):
-            output = state.get("output")
-            candidate = state.get("candidate_signal")
-            placeholder = state.get("placeholder")
-            if status == "PASS":
-                detail = "scaffold generated"
-                if placeholder:
-                    detail += " (placeholder)"
-                if candidate:
-                    detail += f" | {candidate}"
+        elif key == "generator" and isinstance(state, dict) and status == "PASS":
+            detail = "scaffold generated"
+            if state.get("placeholder"):
+                detail += " (placeholder)"
+            if state.get("candidate_signal"):
+                detail += f" | {state['candidate_signal']}"
         rows.append((label, status, detail))
 
     signals = context.get("signals", [])
-    open_signals = sum(1 for item in signals if isinstance(item, dict) and item.get("status") == "open")
+    open_signals = sum(
+        1 for item in signals
+        if isinstance(item, dict) and item.get("status") == "open"
+    )
     focused = context.get("focus") if isinstance(context.get("focus"), dict) else None
 
-    mandatory = [
-        tools.get("forge-build", {}).get("status") if isinstance(tools.get("forge-build"), dict) else None,
-        tools.get("forge-tests", {}).get("status") if isinstance(tools.get("forge-tests"), dict) else None,
-        tools.get("forge-coverage", {}).get("status") if isinstance(tools.get("forge-coverage"), dict) else None,
-    ]
-    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
-    has_target = bool(target_data.get("address"))
-    mandatory_pass = bool(mandatory) and all(x == "completed" for x in mandatory)
+    mandatory_states = []
+    for key in mandatory_keys:
+        state = tools.get(key)
+        mandatory_states.append(
+            str(state.get("status") or "").lower()
+            if isinstance(state, dict) else ""
+        )
+
+    mandatory_pass = all(state in {"completed", "skipped", "pass", "passed"} for state in mandatory_states)
+    pipeline_failed = pipeline_code not in (None, 0) or any(
+        state in {"failed", "fail"} for state in mandatory_states
+    )
     static_failures = any(
         isinstance(tools.get(key), dict)
         and str(tools.get(key, {}).get("status") or "").lower() in {"failed", "fail"}
         for key in ("slither", "forge-lint", "forge-geiger")
     )
-    if pipeline_code not in (None, 0) or not mandatory_pass:
+
+    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
+    has_target = bool(target_data.get("address"))
+    if pipeline_failed:
         overall = "PIPELINE FAILED"
     elif not has_target or open_signals or static_failures:
         overall = "REVIEW NEEDED"
@@ -752,10 +782,10 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
 
     print("\n=== LOWKEY AUDIT DASHBOARD ===")
     print("=" * 88)
-    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
     target_label = target_data.get("contract") or target_data.get("address") or "not configured"
+    print(f"Project kind: {kind}")
     print(f"Target : {target_label}")
-    if not target_data.get("address"):
+    if not has_target:
         print("         No live project target is connected; run 'lk lab' or 'lk audit auto' for local reproduction.")
     print(f"Actor  : {context.get('actor') or 'none'}")
     print(f"Signals: {open_signals} open")
@@ -774,243 +804,16 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         print(f"| {label:<16} | {status:<10} | {detail:<46} |")
     print("+------------------+------------+------------------------------------------------+")
     print("Evidence: .audit/context.json + .audit/events.jsonl")
-    static_recorded = any(
-        isinstance(tools.get(key), dict)
-        for key in ("slither", "forge-lint", "forge-geiger")
-    )
-    print("Static checks: " + ("recorded" if static_recorded else "not run in this baseline; use 'lk audit --checks' or 'lk audit run'") + ".")
     print("Heuristic/static results are investigation leads, not vulnerability verdicts.")
     if open_signals:
         print(f"Review state: {open_signals} open signal(s) require human investigation.")
     if static_failures:
-        print("Review state: one or more optional static checks failed; inspect tool evidence.")
+        print("Review state: one or more static checks failed; inspect tool evidence.")
     if not has_target:
         print("Live audit state: INCOMPLETE")
-        print("  A passing build/tests/coverage only proves the static baseline ran.")
-        print("  Run 'lk lab' to create a disposable local target, then rerun 'lk audit'.")
-    # Findings/review state do not make the process itself fail; pipeline errors do.
-    return 1 if overall == "PIPELINE FAILED" else 0
+        print("  Passing project checks only proves the available static/native baseline ran.")
+        print("  Run 'lk lab' or 'lk walkthrough --auto' for a disposable local target.")
+    return 1 if pipeline_failed else 0
 
 
-def run_audit(args: Sequence[str]) -> int:
-    """Run the complete audit pipeline with concise output by default."""
-    root = Path.cwd().resolve()
-    checks = "--checks" in args
-    verbose = "--verbose" in args
-    quiet = not verbose
-    forwarded = [a for a in args if a not in {"--checks", "--verbose", "--quiet"}]
-    test_cmd = ["test", *forwarded]
-    if not has_verbosity(forwarded):
-        test_cmd.insert(1, "-vvv")
-    if not _has_path_filter(forwarded):
-        test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
-    coverage_cmd = ["coverage", *forwarded]
-    coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded, quiet=quiet))
-    steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
-    if checks:
-        steps.append(("slither", None))
-        for optional in ("lint", "geiger"):
-            if command_available(optional):
-                steps.append((optional, None))
-    steps.extend([("tests", test_cmd), ("coverage", coverage_cmd)])
-    print("LOWKEY CONNECTED AUDIT")
-    print("======================")
-    print(f"Project : {root}")
-    print(f"Mode    : {'verbose' if verbose else 'quiet'}")
-    print("Pipeline: build" + (" -> Slither -> lint/geiger" if checks else "") + " -> tests -> coverage")
-    print()
-    if not _project_owned_tests(root):
-        print("Tests   : no project-owned Forge tests (Lowkey experiments excluded)")
-    for label, command in steps:
-        if label == "slither":
-            code = run_slither_preflight(root, quiet=quiet)
-        elif label in {"lint", "geiger"}:
-            code = run_forge_diagnostics([label], label, quiet=quiet)
-        elif label == "coverage":
-            code = run_coverage_audit(command, root, quiet=quiet)
-        else:
-            code = run_forge(command, quiet=quiet)
-        context = audit_context.load(root)
-        detail = ""
-        if label == "slither":
-            state = context.get("tools", {}).get("slither", {})
-            if isinstance(state, dict) and state.get("finding_count") is not None:
-                detail = f" — {state['finding_count']} finding(s)"
-        print(f"{'PASS' if code == 0 else 'FAIL':<5} {label:<9}{detail}")
-        stable_key = {
-            "build": "forge-build",
-            "tests": "forge-tests",
-            "coverage": "forge-coverage",
-            "lint": "forge-lint",
-            "geiger": "forge-geiger",
-        }.get(label)
-        if stable_key:
-            audit_context.record_tool(
-                stable_key,
-                root,
-                status="completed" if code == 0 else "failed",
-                summary=f"{label} audit step",
-                data={"exit_code": code},
-            )
-        if code != 0:
-            print(f"\nLowkeyForge: audit stopped at {label}.", file=sys.stderr)
-            render_audit_dashboard(root, pipeline_code=code)
-            return code
-    # Generate the initial PoC scaffold before rendering the dashboard so
-    # the displayed state matches what was actually written to the project.
-    try:
-        from generator import run_generate
-        poc_code = run_generate({}, ["poc"])
-        if poc_code != 0:
-            print("LowkeyForge: initial PoC scaffold was not generated.", file=sys.stderr)
-    except Exception as exc:
-        print(f"LowkeyForge: initial PoC scaffold skipped: {exc}", file=sys.stderr)
 
-    render_audit_dashboard(root, pipeline_code=0)
-    print("\nAUDIT SUMMARY")
-    print("=============")
-    context = audit_context.load(root)
-    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
-    has_target = bool(target_data.get("address"))
-    tool_states = context.get("tools", {}) if isinstance(context.get("tools"), dict) else {}
-    open_signals = sum(
-        1 for item in (context.get("signals") or [])
-        if isinstance(item, dict) and item.get("status") == "open"
-    )
-    pipeline_ok = all(
-        isinstance(tool_states.get(key), dict) and tool_states.get(key, {}).get("status") == "completed"
-        for key in ("forge-build", "forge-tests", "forge-coverage")
-    )
-    if not pipeline_ok:
-        result_label = "PIPELINE FAILED"
-    elif not has_target:
-        result_label = "STATIC BASELINE — NO LIVE TARGET"
-    elif open_signals:
-        result_label = "REVIEW NEEDED"
-    else:
-        result_label = "BASELINE PASS"
-    print(f"Result  : {result_label}")
-    if not has_target:
-        print("Live    : NOT CONNECTED")
-        print("Fix     : run 'lk lab' for a disposable local target, then rerun 'lk audit'.")
-    elif open_signals:
-        print(f"Review  : {open_signals} open signal(s) still require investigation.")
-    print("Artifacts: .audit/context.json + tool evidence")
-    print("Next    : lk findings  |  lk context")
-    if checks:
-        print("Static  : lk findings -> lk focus <ID> -> lk changes ...")
-    return 0
-def run_test_audit(args: Sequence[str]) -> int:
-    forwarded = list(args)
-    if not has_verbosity(forwarded):
-        forwarded.insert(0, "-vvvv")
-    return run_forge(["test", *forwarded])
-
-def run_inspect_audit(args: Sequence[str]) -> int:
-    if not args:
-        return die("usage: lk forge inspect-audit <ContractName> [forge options]")
-    contract, extra = args[0], list(args[1:])
-    code = run_forge(["build", *extra])
-    if code != 0:
-        return code
-    failures = 0
-    for title, field in [
-        ("ABI", "abi"), ("METHODS", "methods"), ("ERRORS", "errors"),
-        ("EVENTS", "events"), ("STORAGE", "storage-layout")
-    ]:
-        print(f"\n=== {title} ===")
-        code = run_forge(["inspect", contract, field, *extra])
-        if code != 0:
-            print(f"LowkeyForge: inspect field '{field}' failed; continuing.", file=sys.stderr)
-            if failures == 0:
-                failures = code
-    return failures
-
-def print_help() -> None:
-    print("""LowkeyForge - audit-focused interface over native Forge
-
-Usage:
-  lk forge <forge-command> [args...]
-  lk forge audit [--checks] [--verbose]
-  lk forge test-audit [forge test args...]
-  lk forge inspect-audit <ContractName> [forge options]
-
-Examples:
-  lk forge test -vvvv
-  lk forge test-audit --match-test testWithdraw
-  lk forge inspect-audit BountyArena
-  lk forge audit
-  lk forge audit --checks
-  lk forge audit --checks --verbose
-
-Audit is quiet by default; use --verbose for native Forge/Slither output.
-
-Native commands are passed through to Forge unchanged.
-Audit helpers are workflow shortcuts, not vulnerability scanners.
-""")
-
-def main(argv: Iterable[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if not args or args[0] in {"-h", "--help", "help"}:
-        print_help()
-        return 0
-    command, rest = args[0], args[1:]
-    root = _project_root()
-    kind = _project_kind(root)
-    foundry_kind = kind in {"foundry", "mixed-foundry-vyper"}
-
-    if command == "build" and not foundry_kind:
-        if kind == "vyper":
-            return run_vyper_build()
-        if kind == "hardhat":
-            return _run_native_project(["npx", "hardhat", "compile"], root, "hardhat-build")
-        if kind == "brownie":
-            return _run_native_project(["brownie", "compile"], root, "brownie-build")
-        print("LowkeyForge: no supported project build system detected; using existing artifacts.")
-        return 0
-
-    if command == "test" and not foundry_kind:
-        if kind == "hardhat":
-            return _run_native_project(["npx", "hardhat", "test"], root, "hardhat-test")
-        if kind == "brownie":
-            return _run_native_project(["brownie", "test"], root, "brownie-test")
-        if kind == "vyper":
-            pytest = shutil.which("pytest")
-            tests_dir = any(
-                path.is_file()
-                for path in (
-                    list((root / "tests").glob("test_*.py")) if (root / "tests").is_dir() else []
-                )
-            )
-            if pytest and tests_dir:
-                return _run_native_project([pytest], root, "pytest")
-        return die(
-            f"no native test runner is configured for project type '{kind}'; "
-            "Lowkey will not invent a test harness"
-        )
-
-    if command in {
-        "coverage", "script", "snapshot", "lint", "geiger", "inspect",
-        "flatten", "verify-contract", "verify-check", "verify-bytecode",
-        "tree", "install", "remove", "update", "cache", "config",
-        "remappings", "bind", "bind-json", "doc", "eip712", "soldeer",
-    } and not foundry_kind:
-        return die(
-            f"Forge command '{command}' is not the native toolchain for this project "
-            f"(detected '{kind}'). Use the project's native tool or 'lk walkthrough'."
-        )
-
-    if command == "audit":
-        return run_audit(rest)
-    if command in {"test-audit", "audit-test"}:
-        return run_test_audit(rest)
-    if command in {"inspect-audit", "recon"}:
-        return run_inspect_audit(rest)
-    if command in NATIVE_COMMANDS:
-        if not command_available(command):
-            return die(f"Forge command '{command}' is not supported by the installed Forge.")
-        return run_forge(args)
-    return die(f"unknown Forge command '{command}'. Use 'lk forge --help'.")
-
-if __name__ == "__main__":
-    raise SystemExit(main())
