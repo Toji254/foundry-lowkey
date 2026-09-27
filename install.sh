@@ -24,7 +24,7 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py clone_tools.py; do
+for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
@@ -35,6 +35,7 @@ python3 -m py_compile \
   "$STAGE_DIR/generator.py" \
   "$STAGE_DIR/slither_tools.py" \
   "$STAGE_DIR/audit_context.py" \
+  "$STAGE_DIR/project_detection.py" \
   "$STAGE_DIR/clone_tools.py"
 bash -n "$STAGE_DIR/bin-lk"
 
@@ -45,6 +46,7 @@ cp "$STAGE_DIR/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
 cp "$STAGE_DIR/generator.py" "$TARGET_LOWKEY_DIR/generator.py"
 cp "$STAGE_DIR/slither_tools.py" "$TARGET_LOWKEY_DIR/slither_tools.py"
 cp "$STAGE_DIR/audit_context.py" "$TARGET_LOWKEY_DIR/audit_context.py"
+cp "$STAGE_DIR/project_detection.py" "$TARGET_LOWKEY_DIR/project_detection.py"
 cp "$STAGE_DIR/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
@@ -83,6 +85,7 @@ installed = {
     str(lowkey_dir / "generator.py"): sha256(lowkey_dir / "generator.py"),
     str(lowkey_dir / "slither_tools.py"): sha256(lowkey_dir / "slither_tools.py"),
     str(lowkey_dir / "audit_context.py"): sha256(lowkey_dir / "audit_context.py"),
+    str(lowkey_dir / "project_detection.py"): sha256(lowkey_dir / "project_detection.py"),
     str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),
     str(bin_dir / "lk"): sha256(bin_dir / "lk"),
 }
@@ -111,6 +114,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/generator.py
   - $TARGET_LOWKEY_DIR/slither_tools.py
   - $TARGET_LOWKEY_DIR/audit_context.py
+  - $TARGET_LOWKEY_DIR/project_detection.py
   - $TARGET_LOWKEY_DIR/clone_tools.py
   - $TARGET_BIN_DIR/lk
   - $TARGET_LOWKEY_DIR/install-manifest.json
