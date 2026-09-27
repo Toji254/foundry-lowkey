@@ -585,6 +585,68 @@ def _body(mode: str) -> str:
 ''')
 
 
+def _strip_source_comments(text: str, language: str) -> str:
+    """Remove comments while preserving strings and line structure for triage."""
+    line_token = "#" if language == "vyper" else "//"
+    block_open, block_close = ("/*", "*/") if language == "solidity" else (None, None)
+    chars = list(text)
+    state = "code"
+    quote = ""
+    escape = False
+    i = 0
+    while i < len(chars):
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < len(chars) else ""
+        if state == "code":
+            if block_open and ch == "/" and nxt == "*":
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                state = "block"
+                continue
+            if line_token == "#" and ch == "#":
+                chars[i] = " "
+                i += 1
+                state = "line"
+                continue
+            if line_token == "//" and ch == "/" and nxt == "/":
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                state = "line"
+                continue
+            if ch in {"'", '"'}:
+                quote = ch
+                escape = False
+                state = "string"
+            i += 1
+            continue
+        if state == "line":
+            if ch == "\n":
+                state = "code"
+            elif ch != "\n":
+                chars[i] = " "
+            i += 1
+            continue
+        if state == "block":
+            if block_close and ch == "*" and nxt == "/":
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                state = "code"
+                continue
+            if ch != "\n":
+                chars[i] = " "
+            i += 1
+            continue
+        if escape:
+            escape = False
+        elif ch == "\\":
+            escape = True
+        elif ch == quote:
+            quote = ""
+            state = "code"
+        i += 1
+    return "".join(chars)
+
+
 def run_source_triage(root: str = ".") -> int:
     """Run language-aware source heuristics without assuming a src/ tree."""
     root_path = Path(root).resolve()
@@ -633,7 +695,8 @@ def run_source_triage(root: str = ".") -> int:
         text = read_text(path)
         if not text:
             continue
-        for number, line in enumerate(text.splitlines(), 1):
+        scan_text = _strip_source_comments(text, language)
+        for number, line in enumerate(scan_text.splitlines(), 1):
             for label, pattern in patterns:
                 if pattern.search(line):
                     markers.append({
