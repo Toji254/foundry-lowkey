@@ -6381,7 +6381,7 @@ def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> st
         f"  why    : {step.reason}  {WARNING} INFERRED",
     ]
     if step.tx_hash:
-        lines.append(f"  tx     : {_transaction_link(root, step.tx_hash)}")
+        lines.append(f"  tx     : {_transaction_link(Path.cwd(), step.tx_hash)}")
     if step.gas_used is not None:
         lines.append(f"  gas    : {step.gas_used}")
     if step.error:
