@@ -6070,9 +6070,10 @@ def _deploy_generic_local_target(
     # Reuse cast's local transaction path so gas estimation, unlocked-account
     # handling and error decoding match the rest of Lowkey's live execution.
     code, out, err = _cmd([
-        "cast", "send", "--create", creation_code,
+        "cast", "send", "--create",
         "--rpc-url", rpc,
         "--unlocked", "--from", actor.address,
+        creation_code,
     ], cwd=root, timeout=60)
     if code != 0:
         detail = (err or out or "cast deployment failed").strip()
