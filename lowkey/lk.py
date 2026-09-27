@@ -2943,6 +2943,26 @@ contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
     return test_path
 
 
+def _fixture_accounts_map(snapshot):
+    """Normalize Foundry dumpState and Anvil load-state JSON into one account map."""
+    if not isinstance(snapshot, dict):
+        return None, "fixture state snapshot must be a JSON object"
+
+    # Foundry vm.dumpState() writes the genesis alloc map directly at the root:
+    # { "0xabc...": { "nonce": ..., "balance": ..., "code": ..., "storage": ... } }.
+    for key in ("alloc", "allocs", "accounts"):
+        candidate = snapshot.get(key)
+        if isinstance(candidate, dict):
+            return candidate, key
+
+    # Keep compatibility with the older/current direct alloc-map format.
+    address_keys = [key for key in snapshot if is_address(key)]
+    if address_keys:
+        return snapshot, "root"
+
+    return None, "fixture state snapshot does not contain an address-keyed alloc/account map"
+
+
 def _materialize_fixture_state(root, rpc, state_path, target_contract):
     try:
         raw = Path(state_path).read_text(encoding="utf-8")
@@ -2950,21 +2970,19 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
     except (OSError, json.JSONDecodeError) as exc:
         return None, f"could not read fixture state snapshot: {exc}"
 
-    accounts = (
-        snapshot.get("accounts")
-        if isinstance(snapshot, dict) and isinstance(snapshot.get("accounts"), dict)
-        else snapshot
-    )
-    if not isinstance(accounts, dict):
-        return None, "fixture state snapshot does not contain an address-keyed account map"
+    accounts, snapshot_kind = _fixture_accounts_map(snapshot)
+    if accounts is None:
+        return None, snapshot_kind
 
     code_map = {}
     operations = 0
+    parsed_accounts = 0
 
     for address, account in accounts.items():
         if not is_address(address) or not isinstance(account, dict):
             continue
 
+        parsed_accounts += 1
         code = str(account.get("code") or "0x")
         if code.startswith("0x") and len(code) > 2:
             result = rpc_json(rpc, "anvil_setCode", [address, code])
@@ -3006,7 +3024,8 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
     target = _find_fixture_target(root, code_map, target_contract, rpc)
     if not target:
         return None, (
-            f"fixture state was materialized ({operations} RPC updates), "
+            f"fixture state was materialized ({operations} RPC updates; "
+            f"{parsed_accounts} accounts from {snapshot_kind} format), "
             f"but Lowkey could not identify target {target_contract or 'contract'}"
         )
 
@@ -3050,10 +3069,59 @@ def _fixture_target_artifact(root, target_contract):
     return None, None
 
 
-def _find_fixture_target(root, code_map, target_contract, rpc):
-    _, artifact = _fixture_target_artifact(root, target_contract)
+def _artifact_runtime_normalizer(artifact):
+    """Return a bytecode normalizer that masks Solidity immutable references."""
     expected_runtime = _artifact_runtime_bytecode(artifact)
     if not expected_runtime:
+        return None
+
+    normalized = expected_runtime.removeprefix("0x").lower()
+    immutable_refs = {}
+    deployed = artifact.get("deployedBytecode") if isinstance(artifact, dict) else None
+    if isinstance(deployed, dict):
+        immutable_refs = deployed.get("immutableReferences") or {}
+
+    spans = []
+    if isinstance(immutable_refs, dict):
+        for references in immutable_refs.values():
+            if not isinstance(references, list):
+                continue
+            for reference in references:
+                if not isinstance(reference, dict):
+                    continue
+                try:
+                    start = int(reference.get("start"))
+                    length = int(reference.get("length"))
+                except (TypeError, ValueError):
+                    continue
+                if start >= 0 and length > 0:
+                    spans.append((start, start + length))
+
+    def normalize(bytecode):
+        value = str(bytecode or "").strip().removeprefix("0x").lower()
+        if len(value) != len(normalized):
+            return None
+        chars = list(value)
+        for start, end in spans:
+            left = start * 2
+            right = min(end * 2, len(chars))
+            for index in range(left, right):
+                chars[index] = "0"
+        expected = list(normalized)
+        for start, end in spans:
+            left = start * 2
+            right = min(end * 2, len(expected))
+            for index in range(left, right):
+                expected[index] = "0"
+        return "".join(chars) == "".join(expected)
+
+    return normalize
+
+
+def _find_fixture_target(root, code_map, target_contract, rpc):
+    _, artifact = _fixture_target_artifact(root, target_contract)
+    normalizer = _artifact_runtime_normalizer(artifact)
+    if normalizer is None:
         return None
 
     matches = []
@@ -3064,7 +3132,7 @@ def _find_fixture_target(root, code_map, target_contract, rpc):
             capture=True,
         )
         runtime = str(code_result.text or "").strip().lower()
-        if code_result.code == 0 and runtime == expected_runtime:
+        if code_result.code == 0 and normalizer(runtime):
             matches.append(address)
 
     if len(matches) == 1:
