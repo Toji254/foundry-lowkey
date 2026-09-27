@@ -125,6 +125,64 @@ class TargetScopingTests(unittest.TestCase):
             }
             self.assertFalse(lk.artifact_is_project_application(root, source_path, artifact))
 
+    def test_target_list_separates_protocol_from_lab_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            app_artifact = root / "out" / "ConfidencePool.sol" / "ConfidencePool.json"
+            mock_artifact = root / "out" / "MockERC20.sol" / "MockERC20.json"
+            app_artifact.parent.mkdir(parents=True)
+            mock_artifact.parent.mkdir(parents=True)
+
+            app_artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePool",
+                    "sourceName": "src/ConfidencePool.sol",
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+            mock_artifact.write_text(
+                json.dumps({
+                    "contractName": "MockERC20",
+                    "sourceName": "test/mocks/MockERC20.sol",
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            root_context = {
+                "target": {
+                    "address": "0x" + "1" * 40,
+                    "contract": "ConfidencePool",
+                    "artifact": str(app_artifact),
+                    "source": "project-lab",
+                }
+            }
+
+            with patch.object(lk, "project_context_target", return_value=root_context["target"]),                  patch.object(lk, "target_aliases", return_value={
+                     "MockERC20": "0x" + "2" * 40,
+                 }),                  patch.object(lk, "discover_deployments", return_value=[]),                  patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                config = {
+                    "target": "0x" + "1" * 40,
+                    "aliases": {},
+                    "targets": {},
+                    "project_roots": {},
+                    "abi_paths": {
+                        "0x" + "1" * 40: str(app_artifact),
+                        "0x" + "2" * 40: str(mock_artifact),
+                    },
+                }
+
+                stream = io.StringIO()
+                with patch("sys.stdout", stream):
+                    self.assertEqual(lk.run_targets(config), 0)
+
+            rendered = stream.getvalue()
+            self.assertIn("AUDIT TARGETS", rendered)
+            self.assertIn("ConfidencePool", rendered)
+            self.assertNotIn("MockERC20", rendered)
+            self.assertIn("Lab/test support hidden: 1", rendered)
+
     def test_interactive_targets_selects_current_project_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             current_root = pathlib.Path(tmp) / "curve"
