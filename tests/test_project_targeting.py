@@ -5,6 +5,7 @@ import pathlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
