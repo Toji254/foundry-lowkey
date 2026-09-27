@@ -2805,152 +2805,258 @@ def run_auto_target(config,name=None):
     return 0
 
 
-def _confidence_pool_lab_supported(root):
-    """Return True when this project has the concrete fixture pieces for a safe local system lab."""
-    root = audit_context.foundry_project_root(root) or root
-    required = [
-        Path(root) / "src/ConfidencePool.sol",
-        Path(root) / "src/ConfidencePoolFactory.sol",
-        Path(root) / "src/mocks/MockConfidencePoolModerator.sol",
-        Path(root) / "test/mocks/MockERC20.sol",
-        Path(root) / "test/mocks/MockAttackRegistry.sol",
-        Path(root) / "test/mocks/MockSafeHarborRegistry.sol",
-        Path(root) / "test/mocks/MockAgreement.sol",
-    ]
-    return all(path.is_file() for path in required)
+def _local_test_fixture_candidates(root, requested=None):
+    """Discover test contracts that can be promoted into disposable local lab harnesses."""
+    root = Path(audit_context.foundry_project_root(root) or root).resolve()
+    wanted = str(requested or "").strip().lower()
+    roots = [root / "test", root / "tests"]
+    candidates = []
+
+    for search_root in roots:
+        if not search_root.is_dir():
+            continue
+
+        for path in sorted(search_root.rglob("*.sol")):
+            relative = path.relative_to(root).as_posix()
+            parts = {part.lower() for part in path.relative_to(search_root).parts[:-1]}
+            if parts & {"mocks", "mock", "fixtures", "fixture"}:
+                continue
+            try:
+                source = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            if not re.search(
+                r"(?m)\bfunction\s+setUp\s*\(\s*\)\s+(?:public|external|internal)\b",
+                source,
+            ):
+                continue
+
+            create_match = re.search(
+                r"(?m)\bfunction\s+(_?createPool)\s*\(\s*\)\s+(?:internal|public|external)\b([^{]*)\{",
+                source,
+            )
+            if not create_match:
+                continue
+
+            declaration = create_match.group(0)
+            returns_match = re.search(r"\breturns\s*\(([^)]*)\)", declaration, re.S)
+            returns_text = returns_match.group(1) if returns_match else ""
+            if not re.search(r"\baddress\b", returns_text):
+                continue
+
+            contracts = re.findall(
+                r"(?m)^\s*contract\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                source,
+            )
+            if not contracts:
+                continue
+
+            base_score = 0
+            basename = path.name.lower()
+            compact = re.sub(r"[^a-z0-9]", "", basename)
+            if basename.endswith(".t.sol"):
+                base_score += 40
+            if "test" in compact:
+                base_score += 10
+            if "base" in compact:
+                base_score += 15
+            if "regression" in compact:
+                base_score += 10
+            base_score += 20
+
+            for contract in contracts:
+                score = base_score
+                if wanted:
+                    wanted_compact = re.sub(r"[^a-z0-9]", "", wanted)
+                    if wanted_compact and wanted_compact in re.sub(r"[^a-z0-9]", "", source.lower()):
+                        score += 300
+                    if contract.lower() == wanted:
+                        score += 500
+                if "test" in contract.lower():
+                    score += 20
+                candidates.append({
+                    "score": score,
+                    "relative": relative,
+                    "path": str(path),
+                    "contract": contract,
+                    "create_function": create_match.group(1),
+                    "tuple_return": bool(re.search(r"\bbytes\b", returns_text)),
+                })
+
+    return sorted(
+        candidates,
+        key=lambda item: (
+            -int(item.get("score") or 0),
+            str(item.get("relative") or ""),
+            str(item.get("contract") or ""),
+        ),
+    )
 
 
-def ensure_confidence_pool_lab_script(root):
-    """Generate a disposable, project-native ConfidencePool system harness once."""
-    root = audit_context.foundry_project_root(root) or root
-    if not _confidence_pool_lab_supported(root):
-        return None
+def discover_local_lab_fixture(root=".", requested=None):
+    """Return the strongest project-native test fixture Lowkey can safely promote."""
+    candidates = _local_test_fixture_candidates(root, requested)
+    return candidates[0] if candidates else None
 
-    path = Path(root) / "script" / "LowkeyAutoConfidencePoolLab.s.sol"
-    marker = "LOWKEY_AUTO_LAB_VERSION = 2"
-    if path.is_file():
-        try:
-            existing = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            existing = ""
-        if marker in existing:
-            return str(path)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    source = r'''// SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+def _generate_test_fixture_lab_script(root, candidate):
+    """Generate a disposable wrapper around a discovered test fixture."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
+    relative = str(candidate["relative"]).replace("\\", "/")
+    contract = str(candidate["contract"])
+    create_function = str(candidate.get("create_function") or "createPool")
+    tuple_return = bool(candidate.get("tuple_return"))
 
-// LOWKEY_AUTO_LAB_VERSION = 2
+    safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
+    script_dir = root_path / "script"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    script_path = script_dir / f"LowkeyAutoFixture_{safe_name}.s.sol"
 
-import {Script} from "forge-std/Script.sol";
-import {console2} from "forge-std/console2.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+    code = f'''// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
 
-import {ConfidencePool} from "src/ConfidencePool.sol";
-import {ConfidencePoolFactory} from "src/ConfidencePoolFactory.sol";
-import {MockConfidencePoolModerator} from "src/mocks/MockConfidencePoolModerator.sol";
+import {{Script}} from "forge-std/Script.sol";
+import {{console2}} from "forge-std/console2.sol";
+import {{ {contract} }} from "{relative}";
 
-import {MockERC20} from "test/mocks/MockERC20.sol";
-import {MockAttackRegistry} from "test/mocks/MockAttackRegistry.sol";
-import {MockSafeHarborRegistry} from "test/mocks/MockSafeHarborRegistry.sol";
-import {MockAgreement} from "test/mocks/MockAgreement.sol";
-import {IAttackRegistry} from "@battlechain/interface/IAttackRegistry.sol";
+/// @notice Disposable local-only adapter promoted from an existing project test fixture.
+contract LowkeyAutoFixture_{safe_name} is {contract} {{
+    function run() external {{
+        vm.startBroadcast();
 
-/// @notice Disposable local system environment for Lowkey protocol walkthroughs.
-/// @dev Never use this harness for a real deployment.
-contract LowkeyAutoConfidencePoolLab is Script {
-    function run() external {
-        uint256 aliceKey = vm.envUint("LOWKEY_LAB_KEY");
-        uint256 bobKey = vm.envUint("LOWKEY_BOB_KEY");
-        address alice = vm.addr(aliceKey);
-        address bob = vm.addr(bobKey);
+        setUp();
+        address target;
+'''
+    if tuple_return:
+        code += f'''        (target, ) = {create_function}();
+'''
+    else:
+        code += f'''        target = {create_function}();
+'''
+    code += '''        vm.stopBroadcast();
 
-        vm.startBroadcast(aliceKey);
-
-        MockERC20 token = new MockERC20();
-        MockAttackRegistry attackRegistry = new MockAttackRegistry();
-        MockSafeHarborRegistry registry = new MockSafeHarborRegistry();
-
-        MockAgreement agreement = new MockAgreement(alice);
-        agreement.setContractInScope(alice, true);
-        agreement.setContractInScope(bob, true);
-
-        registry.setAttackRegistry(address(attackRegistry));
-        registry.setAgreementValid(address(agreement), true);
-        attackRegistry.setAgreementState(IAttackRegistry.ContractState.NEW_DEPLOYMENT);
-
-        MockConfidencePoolModerator moderator = new MockConfidencePoolModerator();
-
-        ConfidencePool poolImplementation = new ConfidencePool();
-        ConfidencePoolFactory factoryImplementation = new ConfidencePoolFactory();
-
-        bytes memory initData = abi.encodeCall(
-            ConfidencePoolFactory.initialize,
-            (address(registry), address(poolImplementation), address(moderator))
-        );
-        ConfidencePoolFactory factory = ConfidencePoolFactory(
-            address(new ERC1967Proxy(address(factoryImplementation), initData))
-        );
-
-        factory.setStakeTokenAllowed(address(token), true);
-
-        token.mint(alice, 100 ether);
-        token.mint(bob, 100 ether);
-
-        // Intentionally stop before createPool(). The walkthrough must observe the
-        // factory -> clone -> initialized-pool transition as a real user interaction,
-        // rather than hiding it inside environment bootstrap.
-        vm.stopBroadcast();
-
-        console2.log("LOWKEY_TARGET", address(factory));
-        console2.log("LOWKEY_FACTORY", address(factory));
-        console2.log("LOWKEY_POOL_IMPLEMENTATION", address(poolImplementation));
-        console2.log("LOWKEY_STAKE_TOKEN", address(token));
-        console2.log("LOWKEY_ATTACK_REGISTRY", address(attackRegistry));
-        console2.log("LOWKEY_SAFE_HARBOR_REGISTRY", address(registry));
-        console2.log("LOWKEY_AGREEMENT", address(agreement));
-        console2.log("LOWKEY_MODERATOR", address(moderator));
-        console2.log("LOWKEY_ALICE", alice);
-        console2.log("LOWKEY_BOB", bob);
+        console2.log("LOWKEY_TARGET", target);
+        console2.log("LOWKEY_FIXTURE", "test-promotion");
     }
 }
 '''
-    path.write_text(source, encoding="utf-8")
-    return str(path)
+    script_path.write_text(code, encoding="utf-8")
+    return script_path
+
+
+def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
+    """Run a discovered test fixture as a disposable real local deployment."""
+    script = _generate_test_fixture_lab_script(root, fixture)
+    relative = os.path.relpath(script, root)
+
+    print("LOWKEY LOCAL AUDIT LAB")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Fixture : {fixture['relative']}::{fixture['contract']}")
+    print(f"Script  : {relative}")
+    print(f"RPC     : {rpc_display(rpc)}")
+    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print("Mode    : promoted project test fixture")
+    print("Action  : replaying the project's own setup + pool creation on local Anvil...")
+
+    reserved = {
+        "LOWKEY_LAB_KEY": str(int(str(key), 16)),
+        "LOWKEY_BOB_KEY": str(int(str(derive_default_anvil_key(1) or key), 16)),
+    }
+    previous = {}
+    for name, value in reserved.items():
+        previous[name] = os.environ.get(name)
+        os.environ[name] = value
+
+    try:
+        result = run_foundry(
+            [
+                "script",
+                relative,
+                "--rpc-url",
+                rpc,
+                "--broadcast",
+                "--private-key",
+                key,
+            ],
+            capture=True,
+        )
+    finally:
+        for name, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old_value
+
+    output = result.text
+    if result.code != 0:
+        tail = "\n".join(output.splitlines()[-40:]) if output else "forge script failed"
+        return fail(
+            "Error: Lowkey's promoted project fixture failed.\n" + tail,
+            result.code,
+        )
+
+    target = parse_lab_marker(output)
+    if not target:
+        return fail("Error: promoted project fixture ran, but did not report LOWKEY_TARGET.")
+
+    code_result = run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True)
+    runtime_code = str(code_result.text or "").strip()
+    if (
+        not is_address(target)
+        or code_result.code != 0
+        or runtime_code in {"", "0x", "0X"}
+    ):
+        return fail(
+            "Error: promoted project fixture reported a target, but Lowkey could not verify live bytecode on local Anvil."
+        )
+
+    fixture_target_name = str(requested or fixture.get("target_contract") or "")
+    artifact = None
+    if fixture_target_name:
+        for candidate_path in local_artifact_paths(root):
+            candidate_artifact = read_artifact(candidate_path) or {}
+            if (
+                artifact_contract_name(candidate_path, candidate_artifact).lower()
+                == fixture_target_name.lower()
+            ):
+                artifact = candidate_path
+                break
+
+    contract_name = fixture_target_name or str(fixture.get("contract") or "auto-detected")
+
+    config["actor"] = "lab-deployer"
+    config.setdefault("wallets", {})["lab-deployer"] = {
+        "source": "anvil-default",
+        "anvil_index": 0,
+        "address": accounts[0],
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    config["lab_harness"] = {
+        "type": "test-fixture",
+        "fixture": fixture.get("relative"),
+        "contract": fixture.get("contract"),
+    }
+    set_lab_target(config, root, target, contract_name, artifact)
+
+    print(f"Target  : {contract_name} -> {target}")
+    print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
+    print(f"Harness : {fixture['relative']}::{fixture['contract']}")
+    print("Ready   : lk read ... | lk changes ... | lk trace")
+    return 0
 
 
 def parse_lab_system(output):
-    """Parse Lowkey system markers emitted by a project lab adapter."""
-    labels = {
-        "factory": "LOWKEY_FACTORY",
-        "pool_implementation": "LOWKEY_POOL_IMPLEMENTATION",
-        "stake_token": "LOWKEY_STAKE_TOKEN",
-        "attack_registry": "LOWKEY_ATTACK_REGISTRY",
-        "safe_harbor_registry": "LOWKEY_SAFE_HARBOR_REGISTRY",
-        "agreement": "LOWKEY_AGREEMENT",
-        "moderator": "LOWKEY_MODERATOR",
-        "alice": "LOWKEY_ALICE",
-        "bob": "LOWKEY_BOB",
-    }
+    """Parse generic LOWKEY_<NAME> address markers emitted by lab harnesses."""
     system = {}
     text = str(output or "")
-    # Preserve the known protocol vocabulary for richer built-in recipes.
-    for key, marker in labels.items():
-        match = re.search(
-            rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
-            text,
-        )
-        if match:
-            system[key] = match.group(1)
-
-    # Also accept arbitrary LOWKEY_<NAME> address markers from project adapters.
-    # This keeps the system model extensible beyond ConfidencePool.
     for match in re.finditer(
         r"(?m)^\s*LOWKEY_([A-Z][A-Z0-9_]*)\s*:?\s*(0x[0-9a-fA-F]{40})\s*$",
         text,
     ):
         key = re.sub(r"[^a-z0-9]+", "_", match.group(1).lower()).strip("_")
-        system.setdefault(key, match.group(2))
+        system[key] = match.group(2)
     return system
 
 
@@ -3027,9 +3133,6 @@ def discover_local_lab_script(root=".", requested=None):
     if discovered:
         return discovered[0]
 
-    generated = ensure_confidence_pool_lab_script(root)
-    if generated:
-        return generated
     return None
 
 def parse_lab_marker(output, marker="LOWKEY_TARGET"):
@@ -3821,183 +3924,6 @@ def run_clone(config, args):
         os.chdir(previous_cwd)
 
 
-def _generate_factory_upgradeable_lab(root, target_contract, artifact, accounts):
-    """Generate a local-only proxy fixture for an upgradeable factory + pool mock pattern."""
-    if not artifact_has_initializer(artifact):
-        return None
-
-    contract_lower = str(target_contract).lower()
-    if not contract_lower.endswith("factory"):
-        return None
-
-    source = artifact_source_name(artifact, "")
-    if not source:
-        return None
-
-    abi = artifact.get("abi", [])
-    initialize = next(
-        (
-            item for item in abi
-            if isinstance(item, dict)
-            and item.get("type") == "function"
-            and str(item.get("name") or "").lower() == "initialize"
-        ),
-        None,
-    )
-    if not initialize:
-        return None
-
-    names = [str(item.get("name") or "").lower().replace("_", "") for item in initialize.get("inputs", [])]
-    required = {"safeharborregistry", "poolimplementation", "defaultoutcomemoderator"}
-    if not required.issubset(set(names)):
-        return None
-
-    mock_paths = {}
-    for filename in ("MockERC20.sol", "MockAgreement.sol", "MockSafeHarborRegistry.sol"):
-        matches = list(Path(root).glob(f"test/mocks/{filename}"))
-        if matches:
-            mock_paths[filename] = f"test/mocks/{filename}"
-    if len(mock_paths) != 3:
-        return None
-
-    # Select the first application contract whose name contains "pool" and exposes initialize.
-    pool_artifact = None
-    pool_name = None
-    for path in local_artifact_paths(root):
-        data = read_artifact(path)
-        if not artifact_is_project_application(root, path, data):
-            continue
-        name = artifact_contract_name(path, data)
-        if "pool" in name.lower() and artifact_has_initializer(data):
-            pool_artifact, pool_name = data, name
-            break
-    if not pool_artifact:
-        return None
-
-    source_path = str(source).replace("\\", "/")
-    target_import = f'import {{ {target_contract} }} from "{source_path}";'
-    pool_source = artifact_source_name(pool_artifact, "")
-    if not pool_source:
-        return None
-
-    safe_source = source_path.rsplit("/", 1)[-1]
-    # Keep the generated adapter in Foundry's normal script tree so
-    # forge script resolves it consistently across profiles.
-    contract_file = root / "script"
-    contract_file.mkdir(parents=True, exist_ok=True)
-    script = contract_file / f"LowkeyAutoLab_{re.sub(r'[^A-Za-z0-9_]', '_', target_contract)}.s.sol"
-
-    alice = accounts[0]
-    bob = accounts[1] if len(accounts) > 1 else accounts[0]
-    code = f'''// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
-
-import {{Script}} from "forge-std/Script.sol";
-import {{console2}} from "forge-std/console2.sol";
-{target_import}
-import {{ {pool_name} }} from "{pool_source}";
-import {{MockERC20}} from "test/mocks/MockERC20.sol";
-import {{MockAgreement}} from "test/mocks/MockAgreement.sol";
-import {{MockSafeHarborRegistry}} from "test/mocks/MockSafeHarborRegistry.sol";
-import {{ERC1967Proxy}} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-
-contract LowkeyAutoLab_{re.sub(r"[^A-Za-z0-9_]", "_", target_contract)} is Script {{
-    function run() external {{
-        address alice = {alice};
-        address bob = {bob};
-        address scopeAccount = address(0xC0FFEE);
-
-        vm.startBroadcast();
-
-        MockERC20 token = new MockERC20();
-        MockSafeHarborRegistry registry = new MockSafeHarborRegistry();
-        {pool_name} poolImplementation = new {pool_name}();
-        MockAgreement agreement = new MockAgreement(alice);
-
-        agreement.setContractInScope(scopeAccount, true);
-        registry.setAgreementValid(address(agreement), true);
-        token.mint(alice, 1000000 ether);
-        token.mint(bob, 1000000 ether);
-
-        {target_contract} impl = new {target_contract}();
-        bytes memory initData = abi.encodeCall(
-            {target_contract}.initialize,
-            (address(registry), address(poolImplementation), bob)
-        );
-        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
-        {target_contract} factory = {target_contract}(address(proxy));
-        factory.setStakeTokenAllowed(address(token), true);
-
-        vm.stopBroadcast();
-
-        console2.log("LOWKEY_TARGET", address(factory));
-        console2.log("LOWKEY_OBSERVED staketoken", address(token));
-        console2.log("LOWKEY_OBSERVED safeharborregistry", address(registry));
-        console2.log("LOWKEY_OBSERVED poolimplementation", address(poolImplementation));
-        console2.log("LOWKEY_OBSERVED agreement", address(agreement));
-        console2.log("LOWKEY_OBSERVED recoveryaddress", bob);
-        console2.log("LOWKEY_OBSERVED scope", scopeAccount);
-        console2.log("LOWKEY_OBSERVED defaultoutcomemoderator", bob);
-    }}
-}}
-'''
-    script.write_text(code, encoding="utf-8")
-    return script
-
-def run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested=None):
-    if requested:
-        # Explicit contract requests may still use the normal generic path.
-        return None
-    candidates = discover_generic_lab_contract(root)
-    if not candidates:
-        return None
-    _score, contract, path, artifact, _constructor_inputs, _fqn = candidates
-    script = _generate_factory_upgradeable_lab(root, contract, artifact, accounts)
-    if not script:
-        return None
-
-    relative = os.path.relpath(script, root)
-    print("LOWKEY LOCAL AUDIT LAB")
-    print("======================")
-    print(f"Project : {root}")
-    print(f"Script  : {relative}")
-    print(f"Target  : {contract} (proxy fixture)")
-    print(f"RPC     : {rpc_display(rpc)}")
-    print(f"Actor   : Anvil #0 ({accounts[0]})")
-    print("Mode    : automatic upgradeable protocol fixture")
-    print("Action  : deploying implementation + dependencies + ERC1967 proxy...")
-
-    # The generated adapter contains one script contract, so let Forge discover
-    # it from the file. Explicit file:Contract targeting can produce the misleading
-    # "Could not find target contract" error in otherwise-valid scripts.
-    result = run_foundry(
-        ["script", relative, "--rpc-url", rpc, "--broadcast", "--private-key", key],
-        capture=True,
-    )
-    output = result.text
-    if result.code != 0:
-        tail = "\n".join(output.splitlines()[-30:]) if output else "forge script failed"
-        return fail(f"Error: automatic protocol fixture failed.\n{tail}", result.code)
-
-    target = parse_lab_marker(output)
-    if not target:
-        return fail("Error: automatic protocol fixture did not report LOWKEY_TARGET.")
-
-    observed = parse_lab_observations(output)
-    config["_walkthrough_observed"] = observed
-    config["actor"] = "lab-deployer"
-    config.setdefault("wallets", {})["lab-deployer"] = {
-        "source": "anvil-default", "anvil_index": 0, "address": accounts[0],
-    }
-    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
-    artifact_path = path
-    set_lab_target(config, root, target, contract, artifact_path)
-    print(f"Target  : {contract} proxy -> {target}")
-    print(f"ABI     : {artifact_path}")
-    print(f"Fixture : {relative}")
-    print(f"Observed bootstrap values: {len(observed)}")
-    return 0
-
 def parse_lab_observations(output):
     observed = {}
     for match in re.finditer(
@@ -4006,6 +3932,7 @@ def parse_lab_observations(output):
     ):
         observed[match.group(1).lower()] = match.group(2)
     return observed
+
 
 def _lab_script_environment(script, rpc, key, accounts):
     """Derive safe local defaults for common deployment-script environment variables."""
@@ -4224,21 +4151,32 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
+def _numeric_field_is_value_like(label):
+    lowered = str(label or "").lower().replace("_", "")
+    return any(
+        word in lowered
+        for word in (
+            "amount", "value", "deposit", "withdraw", "payment",
+            "fee", "collateral", "reward", "balance", "price", "cost",
+            "limit", "threshold", "rate", "liquidity", "supply",
+        )
+    )
+
+
 def _print_numeric_unit_reference(label, ptype):
-    if not str(ptype).startswith(('uint', 'int')):
+    if not str(ptype).startswith(("uint", "int")):
         return
-    print()
-    print('NUMERIC UNIT REFERENCE')
-    print('----------------------')
-    print('  1 ETH      = 1,000,000,000,000,000,000 wei')
-    print('  1 gwei     = 1,000,000,000 wei')
-    print('  1 wei      = 0.000000000000000001 ETH')
-    print('  0.001 ETH  = 1,000,000,000,000,000 wei')
-    lowered = str(label or '').lower().replace('_', '')
-    if any(word in lowered for word in ('amount', 'value', 'deposit', 'withdraw', 'payment', 'fee', 'collateral', 'reward')):
-        print('  ETH-denominated input detected. Examples: 0.5 ETH, 10 gwei, 1 wei')
+    if _numeric_field_is_value_like(label):
+        print()
+        print("NUMERIC UNIT REFERENCE")
+        print("----------------------")
+        print("  1 ETH      = 1,000,000,000,000,000,000 wei")
+        print("  1 gwei     = 1,000,000,000 wei")
+        print("  1 wei      = 0.000000000000000001 ETH")
+        print("  0.001 ETH  = 1,000,000,000,000,000 wei")
+        print("  ETH-denominated input detected. Examples: 0.5 ETH, 10 gwei, 1 wei")
     else:
-        print('  Raw numeric input. Do not assume this number is an ETH amount.')
+        print("  Raw integer field. No ETH unit conversion is suggested for this field.")
     print()
 
 
@@ -4259,6 +4197,10 @@ def _normalize_human_numeric_input(value, ptype, label=''):
         re.I,
     )
     if unit_match:
+        if not _numeric_field_is_value_like(label):
+            raise ValueError(
+                f"'{label}' is a raw integer field; enter the integer directly without ETH/gwei/wei units."
+            )
         return normalize_numeric_argument(grouped, ptype)
 
     if re.fullmatch(r'(?:0x[0-9a-fA-F]+|[-+]?[0-9]+(?:\.[0-9]+)?)', grouped):
@@ -4326,7 +4268,7 @@ def _lab_constructor_meaning(label, ptype, param=None):
         if "payable" in internal_type:
             return "Ethereum address allowed to receive ETH."
         if internal_type.startswith("contract "):
-            return "Address of the contract declared by this parameter."
+            return "Contract address. This field requires deployed bytecode, not an Anvil EOA."
         return "Ethereum address. Lowkey shows known local actor addresses."
 
     if normalized == "bool":
@@ -4367,6 +4309,17 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
 
     if ptype == "address":
         choices = _lab_address_choices(config, accounts)
+        requires_contract = str((param or {}).get("internalType") or "").startswith("contract ")
+        if requires_contract:
+            choices = [
+                (name, address)
+                for name, address in choices
+                if not any(
+                    str(address).lower() == str(account).lower()
+                    for account in accounts or []
+                )
+            ]
+            print("  Requirement: a live deployed contract is required for this parameter.")
         if choices:
             print("  Known local addresses:")
             for index, (name, address) in enumerate(choices[:12]):
@@ -4386,6 +4339,7 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
 
     if ptype == "address":
         choices = _lab_address_choices(config, accounts)
+        requires_contract = str((param or {}).get("internalType") or "").startswith("contract ")
         if value.isdigit() and int(value) < len(choices):
             value = choices[int(value)][1]
         else:
@@ -4394,6 +4348,22 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
                 if name.lower() == lower:
                     value = address
                     break
+
+        if requires_contract and any(
+            str(value).lower() == str(account).lower() for account in accounts or []
+        ):
+            raise ValueError(
+                f"'{label}' requires a deployed contract address; Anvil accounts are EOAs."
+            )
+
+        rpc = config.get("_lab_rpc")
+        if requires_contract and rpc and is_address(value):
+            code_check = run_cast(["code", value, "--rpc-url", rpc], config={}, capture=True)
+            runtime_code = str(code_check.text or "").strip()
+            if code_check.code != 0 or runtime_code in {"", "0x", "0X"}:
+                raise ValueError(
+                    f"'{label}' points to {value}, but no deployed bytecode exists at that address on the local Anvil."
+                )
 
     if ptype.startswith(("uint", "int")):
         value = _normalize_human_numeric_input(value, ptype, label)
@@ -4691,13 +4661,8 @@ def run_lab(config,args):
 
     requested = str(args[0]).strip() if args else None
     script = discover_local_lab_script(root, requested)
+    fixture = discover_local_lab_fixture(root, requested)
 
-    # Known upgradeable ConfidencePool systems require a real local harness:
-    # implementation-only deployment leaves initialize() unset and produces a
-    # misleading walkthrough full of precondition failures.
-    auto_selected = requested or discover_audit_target_contract(root)
-
-    # Prefer the complete local ConfidencePool fixture to implementation-only deployment.
     if not requested or str(requested).lower() in {"confidencepool", "confidencepoolfactory", "confidencepooltest"}:
         try:
             generated = ensure_confidence_pool_lab_script(root)
@@ -4743,16 +4708,34 @@ def run_lab(config,args):
     if not key:
         return fail("Error: could not derive the default Anvil account #0 key.")
 
-    if script and (not requested or requested.lower() not in {"generic", "forge", "artifact"}):
-        return run_project_lab_script(config, root, script, rpc, accounts, key, requested)
+    config["_lab_rpc"] = rpc
 
-    # Auto-build a disposable proxy + fixture for common upgradeable factory protocols.
-    if not requested:
-        fixture_code = run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested)
-        if fixture_code is not None:
+    if script and (not requested or requested.lower() not in {"generic", "forge", "artifact"}):
+        script_code = run_project_lab_script(config, root, script, rpc, accounts, key, requested)
+        if script_code == 0:
+            return 0
+        if fixture:
+            print(
+                "INFO  native deployment script did not produce a usable lab; "
+                "Lowkey will try the discovered project test fixture."
+            )
+            fixture_code = run_test_fixture_lab(
+                config, root, fixture, rpc, accounts, key, requested
+            )
+            if fixture_code == 0:
+                return 0
+        return script_code
+
+    if fixture:
+        fixture_code = run_test_fixture_lab(
+            config, root, fixture, rpc, accounts, key, requested
+        )
+        if fixture_code == 0:
+            return 0
+        if requested:
             return fixture_code
 
-    # No adapter? Prefer the audit evidence; it usually points at the application's
+    # No harness? Prefer the audit evidence; it usually points at the application's
     # most security-relevant implementation contract.
     if not requested:
         requested = discover_audit_target_contract(root)
