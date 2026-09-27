@@ -35,6 +35,7 @@ python3 -m py_compile \
   "$STAGE_DIR/generator.py" \
   "$STAGE_DIR/slither_tools.py" \
   "$STAGE_DIR/audit_context.py" \
+  "$STAGE_DIR/project_detection.py" \
   "$STAGE_DIR/clone_tools.py" \
   "$STAGE_DIR/audit_engine.py" \
   "$STAGE_DIR/system_model.py" \
@@ -48,6 +49,7 @@ cp "$STAGE_DIR/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
 cp "$STAGE_DIR/generator.py" "$TARGET_LOWKEY_DIR/generator.py"
 cp "$STAGE_DIR/slither_tools.py" "$TARGET_LOWKEY_DIR/slither_tools.py"
 cp "$STAGE_DIR/audit_context.py" "$TARGET_LOWKEY_DIR/audit_context.py"
+cp "$STAGE_DIR/project_detection.py" "$TARGET_LOWKEY_DIR/project_detection.py"
 cp "$STAGE_DIR/clone_tools.py" "$TARGET_LOWKEY_DIR/clone_tools.py"
 cp "$STAGE_DIR/audit_engine.py" "$TARGET_LOWKEY_DIR/audit_engine.py"
 cp "$STAGE_DIR/system_model.py" "$TARGET_LOWKEY_DIR/system_model.py"
@@ -90,6 +92,7 @@ installed = {
     str(lowkey_dir / "generator.py"): sha256(lowkey_dir / "generator.py"),
     str(lowkey_dir / "slither_tools.py"): sha256(lowkey_dir / "slither_tools.py"),
     str(lowkey_dir / "audit_context.py"): sha256(lowkey_dir / "audit_context.py"),
+    str(lowkey_dir / "project_detection.py"): sha256(lowkey_dir / "project_detection.py"),
     str(lowkey_dir / "clone_tools.py"): sha256(lowkey_dir / "clone_tools.py"),
     str(lowkey_dir / "audit_engine.py"): sha256(lowkey_dir / "audit_engine.py"),
     str(lowkey_dir / "system_model.py"): sha256(lowkey_dir / "system_model.py"),
@@ -122,6 +125,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/generator.py
   - $TARGET_LOWKEY_DIR/slither_tools.py
   - $TARGET_LOWKEY_DIR/audit_context.py
+  - $TARGET_LOWKEY_DIR/project_detection.py
   - $TARGET_LOWKEY_DIR/clone_tools.py
   - $TARGET_LOWKEY_DIR/audit_engine.py
   - $TARGET_LOWKEY_DIR/system_model.py
