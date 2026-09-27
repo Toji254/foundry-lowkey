@@ -158,6 +158,12 @@ class AuditEngineTests(unittest.TestCase):
             self.assertIn("TIMESTAMP", labels)
             self.assertNotIn("DELEGATECALL", labels)
 
+    def test_generic_poc_template_uses_named_import_and_lint_safe_call(self):
+        rendered = audit_engine._body("generic")
+        self.assertIn("NEXT STEP:", rendered)
+        self.assertNotIn("TODO:", rendered)
+        self.assertIn("forge-lint: disable-next-line low-level-calls", rendered)
+
     def test_project_config_does_not_inherit_global_target_when_context_has_none(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as raw:
