@@ -508,6 +508,21 @@ def target_aliases(config, root=None):
         owner_root = owners_by_address.get(str(addr).lower())
         if owner_root is None or owner_root != project_root:
             continue
+
+        artifact = config.get("abi_paths", {}).get(addr)
+        if artifact:
+            try:
+                artifact_path = Path(os.path.expanduser(str(artifact))).resolve()
+            except OSError:
+                continue
+            artifact_data = read_artifact(str(artifact_path)) if artifact_path.is_file() else None
+            if artifact_data and not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
+                continue
+
+        lowered_name = str(name).lower()
+        if lowered_name.endswith(("mock", "fixture", "test")) or "mock" in lowered_name:
+            continue
+
         merged.setdefault(str(name), addr)
     return merged
 
@@ -2812,7 +2827,18 @@ def source_contract_fallback(root, contract_name):
                 if not any(part in ignored for part in path.parts):
                     candidates.append(path)
 
+    excluded_parts = {
+        ".git", ".audit", ".venv", ".tox", "__pycache__", "node_modules",
+        "out", "artifacts", "build", "cache", "lib", "dist", "tests", "test",
+        "fixtures", "mocks", "mock",
+    }
     for candidate in sorted(set(candidates)):
+        try:
+            relative_parts = candidate.resolve().relative_to(root_path).parts
+        except (OSError, ValueError):
+            continue
+        if any(str(part).lower() in excluded_parts for part in relative_parts[:-1]):
+            continue
         if candidate.stem.lower() != str(contract_name).lower():
             continue
         try:
@@ -2856,6 +2882,7 @@ def artifact_is_project_application(root, path, artifact):
     # directory name. Common dependency/source locations are excluded below.
     excluded_prefixes = {
         "node_modules", "lib", "vendor", ".git", ".audit", "build-info",
+        "tests", "test", "fixtures", "mocks", "mock",
     }
     parts = Path(normalized).parts
     if any(part in excluded_prefixes for part in parts):
