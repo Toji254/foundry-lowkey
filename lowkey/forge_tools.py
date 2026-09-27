@@ -729,10 +729,29 @@ def run_audit(args: Sequence[str]) -> int:
     context = audit_context.load(root)
     target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
     has_target = bool(target_data.get("address"))
-    print(f"Result  : {'BASELINE PASS' if has_target else 'STATIC BASELINE — NO LIVE TARGET'}")
+    tool_states = context.get("tools", {}) if isinstance(context.get("tools"), dict) else {}
+    open_signals = sum(
+        1 for item in (context.get("signals") or [])
+        if isinstance(item, dict) and item.get("status") == "open"
+    )
+    pipeline_ok = all(
+        isinstance(tool_states.get(key), dict) and tool_states.get(key, {}).get("status") == "completed"
+        for key in ("forge-build", "forge-tests", "forge-coverage")
+    )
+    if not pipeline_ok:
+        result_label = "PIPELINE FAILED"
+    elif not has_target:
+        result_label = "STATIC BASELINE — NO LIVE TARGET"
+    elif open_signals:
+        result_label = "REVIEW NEEDED"
+    else:
+        result_label = "BASELINE PASS"
+    print(f"Result  : {result_label}")
     if not has_target:
         print("Live    : NOT CONNECTED")
         print("Fix     : run 'lk lab' for a disposable local target, then rerun 'lk audit'.")
+    elif open_signals:
+        print(f"Review  : {open_signals} open signal(s) still require investigation.")
     print("Artifacts: .audit/context.json + tool evidence")
     print("Next    : lk findings  |  lk context")
     if checks:
