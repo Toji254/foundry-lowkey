@@ -144,6 +144,12 @@ PATTERN_CATALOG: tuple[dict[str, Any], ...] = (
     },
 )
 
+_PATTERN_BY_ID = {str(item["id"]): item for item in PATTERN_CATALOG}
+
+
+def _pattern(pattern_id: str) -> dict[str, Any]:
+    return _PATTERN_BY_ID[pattern_id]
+
 
 def _read_source(root: Path, model: core.ContractModel) -> str:
     path = root / str(model.source)
@@ -273,13 +279,13 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         lower = name.lower()
 
         # Replay/claim path candidate.
-        if _sensitive_name(name, PATTERN_CATALOG[0]["keywords"]):
+        if _sensitive_name(name, _pattern("REPLAY-001")["keywords"]):
             has_user_key = bool(re.search(r"\[[^\]]*(msg\.sender|_msgSender|caller|owner|user)", body))
             has_state_write = bool(re.search(r"\b(claimed|claimedAmount|withdrawn|used|spent|redeemed|nonce|balance|balances|entitled|remaining)\w*\s*\[?[^;=]*\]?\s*(?:[-+]?=|\+\+|--)", body))
             if has_user_key or has_state_write:
                 results.append(_result(
                     "REPLAY-001",
-                    PATTERN_CATALOG[0]["title"],
+                    _pattern("REPLAY-001")["title"],
                     model,
                     name,
                     source,
@@ -288,9 +294,9 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                         "This function looks like an economic claim/withdraw/redeem path.",
                         "The body also writes user/entitlement state; this is the state that must be consumed exactly once.",
                     ],
-                    PATTERN_CATALOG[0]["logic"],
+                    _pattern("REPLAY-001")["logic"],
                     "Run the same concrete call twice from the same actor and compare the second call's value/state delta.",
-                    PATTERN_CATALOG[0]["provenance"],
+                    _pattern("REPLAY-001")["provenance"],
                 ))
 
         # Reentrancy / CEI candidate.
@@ -309,19 +315,19 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             if later_write and not has_guard:
                 results.append(_result(
                     "REENTRANCY-001",
-                    PATTERN_CATALOG[1]["title"],
+                    _pattern("REENTRANCY-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     ["An external interaction appears before a later state write.", "No obvious nonReentrant guard was found in the local source context."],
-                    PATTERN_CATALOG[1]["logic"],
+                    _pattern("REENTRANCY-001")["logic"],
                     "Trace the callee and try to reproduce a callback before the authorization/balance state is consumed.",
-                    PATTERN_CATALOG[1]["provenance"],
+                    _pattern("REENTRANCY-001")["provenance"],
                 ))
 
         # Sensitive state changes without a visible auth check.
-        if _sensitive_name(name, PATTERN_CATALOG[2]["keywords"]):
+        if _sensitive_name(name, _pattern("AUTH-001")["keywords"]):
             auth_evidence = re.search(
                 r"\bonly[A-Za-z0-9_]*\b|\b(?:require|assert)\s*\([^)]*(?:msg\.sender|_msgSender|hasRole|owner\s*\(\)|authority)",
                 header + " " + body,
@@ -330,15 +336,15 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             if not auth_evidence:
                 results.append(_result(
                     "AUTH-001",
-                    PATTERN_CATALOG[2]["title"],
+                    _pattern("AUTH-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     ["No obvious caller/role/owner check was found in the function body or its nearby modifiers."],
-                    PATTERN_CATALOG[2]["logic"],
+                    _pattern("AUTH-001")["logic"],
                     "Verify whether the function is intentionally public. If not, reproduce the call from an unprivileged actor.",
-                    PATTERN_CATALOG[2]["provenance"],
+                    _pattern("AUTH-001")["provenance"],
                 ))
 
         # Oracle freshness.
@@ -350,32 +356,32 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             if not has_freshness:
                 results.append(_result(
                     "ORACLE-001",
-                    PATTERN_CATALOG[3]["title"],
+                    _pattern("ORACLE-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     ["latestRoundData/getRoundData is read, but no obvious freshness/round comparison appears in this function."],
-                    PATTERN_CATALOG[3]["logic"],
+                    _pattern("ORACLE-001")["logic"],
                     "Check what happens when the oracle returns an old round or stale updatedAt.",
-                    PATTERN_CATALOG[3]["provenance"],
+                    _pattern("ORACLE-001")["provenance"],
                 ))
 
         # Zero-share / rounding candidate.
-        if _sensitive_name(name, PATTERN_CATALOG[4]["keywords"]) and re.search(r"\/|mulDiv|divWad|mulWad|convertToShares|shares", body, re.I):
+        if _sensitive_name(name, _pattern("ROUND-001")["keywords"]) and re.search(r"\/|mulDiv|divWad|mulWad|convertToShares|shares", body, re.I):
             has_zero_guard = bool(re.search(r"(shares|minted|received)[^\n;]{0,100}(?:>|!=)\s*0|(?:>\s*0|!=\s*0)[^\n;]{0,100}(shares|minted|received)", body, re.I))
             if not has_zero_guard:
                 results.append(_result(
                     "ROUND-001",
-                    PATTERN_CATALOG[4]["title"],
+                    _pattern("ROUND-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     ["The path performs share/amount conversion or division without an obvious zero-output guard."],
-                    PATTERN_CATALOG[4]["logic"],
+                    _pattern("ROUND-001")["logic"],
                     "Try the smallest positive deposit or a boundary ratio and verify minted shares against the deposited assets.",
-                    PATTERN_CATALOG[4]["provenance"],
+                    _pattern("ROUND-001")["provenance"],
                 ))
 
         # Signature binding.
@@ -390,15 +396,15 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     missing.append("domain/contract/chain binding")
                 results.append(_result(
                     "SIG-001",
-                    PATTERN_CATALOG[5]["title"],
+                    _pattern("SIG-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     [f"Signature handling is present but no obvious {' and '.join(missing)} was found."],
-                    PATTERN_CATALOG[5]["logic"],
+                    _pattern("SIG-001")["logic"],
                     "Replay the exact signed payload, then vary chain/contract/deadline context if the protocol supports it.",
-                    PATTERN_CATALOG[5]["provenance"],
+                    _pattern("SIG-001")["provenance"],
                 ))
 
         # Unbounded storage loop.
@@ -408,15 +414,15 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             if collection in state_arrays:
                 results.append(_result(
                     "DOS-001",
-                    PATTERN_CATALOG[6]["title"],
+                    _pattern("DOS-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     [f"Loop iterates over storage array '{collection}' with no local bound visible in the loop header."],
-                    PATTERN_CATALOG[6]["logic"],
+                    _pattern("DOS-001")["logic"],
                     "Check whether an untrusted actor can increase the array and whether the loop sits on a critical withdrawal/settlement path.",
-                    PATTERN_CATALOG[6]["provenance"],
+                    _pattern("DOS-001")["provenance"],
                 ))
                 break
 
@@ -425,15 +431,15 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         if transfer_calls and not re.search(r"(?:require|if|assert)\s*\([^)]*(?:transfer|transferFrom)\s*\(", body) and not re.search(r"\bSafeERC20\b|\.safeTransfer(?:From)?\s*\(", body):
             results.append(_result(
                 "TOKEN-001",
-                PATTERN_CATALOG[7]["title"],
+                _pattern("TOKEN-001")["title"],
                 model,
                 name,
                 source,
                 line,
                 ["Raw ERC20 transfer/transferFrom usage was found without an obvious checked return or SafeERC20 wrapper."],
-                PATTERN_CATALOG[7]["logic"],
+                _pattern("TOKEN-001")["logic"],
                 "Inspect the exact token interface and verify what happens when transfer returns false instead of reverting.",
-                PATTERN_CATALOG[7]["provenance"],
+                _pattern("TOKEN-001")["provenance"],
             ))
 
         # Obvious paired-variable mismatch candidate.
@@ -455,15 +461,15 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             if suspicious:
                 results.append(_result(
                     "ACCOUNTING-001",
-                    PATTERN_CATALOG[8]["title"],
+                    _pattern("ACCOUNTING-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     [f"Validation condition references paired fields '{left}' and '{right}'; compare each check against the correct operand."],
-                    PATTERN_CATALOG[8]["logic"],
+                    _pattern("ACCOUNTING-001")["logic"],
                     "Inspect both sides of the paired validation and trace the value actually used later for accounting/pricing.",
-                    PATTERN_CATALOG[8]["provenance"],
+                    _pattern("ACCOUNTING-001")["provenance"],
                 ))
                 break
 
@@ -471,66 +477,66 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         if "transferFrom" in body and re.search(r"\b(?:balance|balances|amount|deposit|stake)\w*\s*(?:\+=|=)\s*\w*amount\w*\b", body, re.I) and "balanceOf" not in body:
             results.append(_result(
                 "FOT-001",
-                PATTERN_CATALOG[9]["title"],
+                _pattern("FOT-001")["title"],
                 model,
                 name,
                 source,
                 line,
                 ["transferFrom is followed by accounting that appears to credit the requested amount without measuring actual balance received."],
-                PATTERN_CATALOG[9]["logic"],
+                _pattern("FOT-001")["logic"],
                 "Test with a fee-on-transfer token or compare the contract's balance before/after transferFrom.",
-                PATTERN_CATALOG[9]["provenance"],
+                _pattern("FOT-001")["provenance"],
             ))
 
         # Predictable randomness.
-        if _sensitive_name(name, PATTERN_CATALOG[10]["keywords"]) and re.search(r"\b(block\.timestamp|block\.number|blockhash\s*\(|block\.prevrandao|block\.difficulty)\b", body):
+        if _sensitive_name(name, _pattern("RNG-001")["keywords"]) and re.search(r"\b(block\.timestamp|block\.number|blockhash\s*\(|block\.prevrandao|block\.difficulty)\b", body):
             results.append(_result(
                 "RNG-001",
-                PATTERN_CATALOG[10]["title"],
+                _pattern("RNG-001")["title"],
                 model,
                 name,
                 source,
                 line,
                 ["A chain-visible block value is used in a function whose name suggests a random outcome."],
-                PATTERN_CATALOG[10]["logic"],
+                _pattern("RNG-001")["logic"],
                 "Ask whether a validator/builder or another participant can predict or influence the outcome enough to profit.",
-                PATTERN_CATALOG[10]["provenance"],
+                _pattern("RNG-001")["provenance"],
             ))
 
         # Initializer signal.
         if lower.startswith(("initialize", "reinitialize", "initializer")):
             results.append(_result(
                 "INIT-001",
-                PATTERN_CATALOG[11]["title"],
+                _pattern("INIT-001")["title"],
                 model,
                 name,
                 source,
                 line,
                 ["Initializer-like function exists on a state-changing contract."],
-                PATTERN_CATALOG[11]["logic"],
+                _pattern("INIT-001")["logic"],
                 "Call the initializer from an unprivileged actor against the live configured instance inside a snapshot.",
-                PATTERN_CATALOG[11]["provenance"],
+                _pattern("INIT-001")["provenance"],
             ))
 
         # Arbitrary call / delegatecall signal.
         if re.search(r"\.(?:call|delegatecall|staticcall)\s*\(", body):
             external_target = bool(re.search(r"\b(address|target|to|recipient|implementation)\b", body, re.I))
-            if external_target and _sensitive_name(name, PATTERN_CATALOG[12]["keywords"]):
+            if external_target and _sensitive_name(name, _pattern("CALL-001")["keywords"]):
                 results.append(_result(
                     "CALL-001",
-                    PATTERN_CATALOG[12]["title"],
+                    _pattern("CALL-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     ["The function combines a generic call primitive with a caller-supplied or address-like target."],
-                    PATTERN_CATALOG[12]["logic"],
+                    _pattern("CALL-001")["logic"],
                     "Trace the callee and verify the authorization boundary around target + calldata.",
-                    PATTERN_CATALOG[12]["provenance"],
+                    _pattern("CALL-001")["provenance"],
                 ))
 
         # Zero-address configuration check.
-        if _sensitive_name(name, PATTERN_CATALOG[13]["keywords"]) and re.search(r"\baddress\s*\(\s*0\s*\)", body, re.I) is None:
+        if _sensitive_name(name, _pattern("ZEROADDR-001")["keywords"]) and re.search(r"\baddress\s*\(\s*0\s*\)", body, re.I) is None:
             address_params = [
                 p for p in list((_abi_function(model, name) or {}).get("inputs") or [])
                 if core._canonical_type(p) == "address"
@@ -538,30 +544,30 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             if address_params and re.search(r"\b(?:=|\+=|\-=)\s*[^;\n]*\b(?:token|owner|admin|router|oracle|recipient|receiver|treasury|registry|authority)\b", body, re.I):
                 results.append(_result(
                     "ZEROADDR-001",
-                    PATTERN_CATALOG[13]["title"],
+                    _pattern("ZEROADDR-001")["title"],
                     model,
                     name,
                     source,
                     line,
                     ["An address parameter reaches a configuration/state-write path, but the function contains no obvious zero-address guard."],
-                    PATTERN_CATALOG[13]["logic"],
+                    _pattern("ZEROADDR-001")["logic"],
                     "Probe address(0) and verify whether the dependency becomes unusable or whether zero is an intentional sentinel.",
-                    PATTERN_CATALOG[13]["provenance"],
+                    _pattern("ZEROADDR-001")["provenance"],
                 ))
 
         # Deadline / expiry boundary.
         if re.search(r"\b(?:deadline|expiry|expiration|validUntil)\b", body, re.I):
             results.append(_result(
                 "TIME-001",
-                PATTERN_CATALOG[13]["title"],
+                _pattern("TIME-001")["title"],
                 model,
                 name,
                 source,
                 line,
                 ["A time-bounded parameter or state variable is used in this function."],
-                PATTERN_CATALOG[13]["logic"],
+                _pattern("ZEROADDR-001")["logic"],
                 "Replay with a deadline/expiry just before the current block timestamp and verify the exact revert boundary.",
-                PATTERN_CATALOG[13]["provenance"],
+                _pattern("ZEROADDR-001")["provenance"],
             ))
 
     return results
@@ -596,7 +602,7 @@ def _build_replay_stories(
     for label, address, model in targets:
         for fn in core._adversarial_functions(model):
             name = str(fn.get("name") or "")
-            if not _sensitive_name(name, PATTERN_CATALOG[0]["keywords"]):
+            if not _sensitive_name(name, _pattern("REPLAY-001")["keywords"]):
                 continue
             if not actors:
                 continue
@@ -850,7 +856,7 @@ def _build_zero_address_stories(
     for _label, address, model in targets:
         for fn in core._adversarial_functions(model):
             name = str(fn.get("name") or "")
-            if not _sensitive_name(name, PATTERN_CATALOG[13]["keywords"]):
+            if not _sensitive_name(name, _pattern("ZEROADDR-001")["keywords"]):
                 continue
             params = list(fn.get("inputs") or [])
             address_index = next(
