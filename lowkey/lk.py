@@ -3838,6 +3838,58 @@ def parse_lab_observations(output):
         observed[match.group(1).lower()] = match.group(2)
     return observed
 
+def _lab_script_environment(script, rpc, key, accounts):
+    """Derive safe local defaults for common deployment-script environment variables."""
+    try:
+        source = Path(script).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        source = ""
+
+    names = set(
+        re.findall(
+            r"vm\\.env(?:Bool|Uint|Address|String|Or)\\s*\\(\\s*\\\"([A-Za-z_][A-Za-z0-9_]*)\\\"",
+            source,
+        )
+    )
+    account0 = accounts[0] if accounts else None
+
+    assignments = {}
+    for name in names:
+        upper = name.upper()
+        if upper in {
+            "PRIVATE_KEY",
+            "DEPLOYER_PRIVATE_KEY",
+            "ADMIN_PRIVATE_KEY",
+            "OWNER_PRIVATE_KEY",
+            "SENDER_PRIVATE_KEY",
+            "BROADCAST_PRIVATE_KEY",
+        }:
+            assignments[name] = str(int(str(key), 16))
+        elif upper in {"IS_TESTNET", "TESTNET", "LOCAL_LAB", "ANVIL"}:
+            assignments[name] = "true"
+        elif upper in {
+            "RPC_URL",
+            "ETH_RPC_URL",
+            "ANVIL_RPC_URL",
+            "LOCAL_RPC_URL",
+            "DEPLOYMENT_RPC_URL",
+        }:
+            assignments[name] = str(rpc)
+        elif upper in {
+            "DEPLOYER",
+            "DEPLOYER_ADDRESS",
+            "OWNER",
+            "OWNER_ADDRESS",
+            "ADMIN",
+            "ADMIN_ADDRESS",
+            "SENDER",
+            "SENDER_ADDRESS",
+        } and account0:
+            assignments[name] = str(account0)
+
+    return assignments, sorted(name for name in names if name not in assignments)
+
+
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
     print("LOWKEY LOCAL AUDIT LAB")
@@ -3846,17 +3898,28 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print(f"Script  : {relative}")
     print(f"RPC     : {rpc_display(rpc)}")
     print(f"Actor   : Anvil #0 ({accounts[0]})")
-    print("Mode    : project lab adapter")
-    print("Action  : deploying disposable local test environment...")
+    print("Mode    : project-native deployment script")
+    print("Action  : executing the project's own deployment entry point...")
 
-    previous_lab_key = os.environ.get("LOWKEY_LAB_KEY")
-    previous_bob_key = os.environ.get("LOWKEY_BOB_KEY")
-    bob_key = derive_default_anvil_key(1) or key
-    os.environ["LOWKEY_LAB_KEY"] = str(int(str(key), 16))
-    os.environ["LOWKEY_BOB_KEY"] = str(int(str(bob_key), 16))
+    script_env, unresolved_env = _lab_script_environment(script, rpc, key, accounts)
+    if script_env:
+        print(f"Config  : supplied safe local defaults for {len(script_env)} deployment variable(s)")
+    if unresolved_env:
+        print(
+            "Config  : project also references environment variable(s) that Lowkey "
+            "cannot safely invent: " + ", ".join(unresolved_env)
+        )
+
+    reserved = {
+        "LOWKEY_LAB_KEY": str(int(str(key), 16)),
+        "LOWKEY_BOB_KEY": str(int(str(derive_default_anvil_key(1) or key), 16)),
+    }
+    previous = {}
+    for name, value in {**reserved, **script_env}.items():
+        previous[name] = os.environ.get(name)
+        os.environ[name] = value
+
     try:
-        # The adapter has a single Script contract. Let Forge select it from
-        # the file instead of forcing file:Contract resolution.
         result = run_foundry(
             [
                 "script",
@@ -3870,18 +3933,25 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             capture=True,
         )
     finally:
-        if previous_lab_key is None:
-            os.environ.pop("LOWKEY_LAB_KEY", None)
-        else:
-            os.environ["LOWKEY_LAB_KEY"] = previous_lab_key
-        if previous_bob_key is None:
-            os.environ.pop("LOWKEY_BOB_KEY", None)
-        else:
-            os.environ["LOWKEY_BOB_KEY"] = previous_bob_key
+        for name, old_value in previous.items():
+            if old_value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = old_value
+
     output = result.text
     if result.code != 0:
-        tail = "\n".join(output.splitlines()[-20:]) if output else "forge script failed"
-        return fail(f"Error: local lab deployment failed.\n{tail}", result.code)
+        tail = "\n".join(output.splitlines()[-30:]) if output else "forge script failed"
+        return fail(
+            "Error: local project deployment script failed.\n"
+            + tail
+            + (
+                "\nLowkey could not safely infer: " + ", ".join(unresolved_env)
+                if unresolved_env
+                else ""
+            ),
+            result.code,
+        )
 
     target = parse_lab_marker(output)
     selected_record = None
@@ -3903,17 +3973,21 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     if not target:
         matches = re.findall(
-            r"(?i)\b(?:Contract Address|Deployed to)\s*:?\s*(0x[0-9a-fA-F]{40})",
+            r"(?i)\\b(?:Contract Address|Deployed to)\\s*:?\\s*(0x[0-9a-fA-F]{40})",
             output or "",
         )
         target = matches[-1] if matches else None
 
     if not target:
         return fail(
-            "Error: local lab script ran, but Lowkey could not identify a deployed application target. "
-            "The project may require multiple deployment/configuration steps; "
-            "use 'lk lab <Contract>' to target a specific built contract."
+            "Error: local project deployment ran, but Lowkey could not identify a deployed application target. "
+            "The script may require additional project-specific configuration."
         )
+
+    # Do not trust stale broadcast records from another chain/run. The selected
+    # target must have bytecode on the exact Anvil RPC used for this lab.
+    if not is_address(target) or run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True).code != 0:
+        return fail("Error: Lowkey found a deployment record but could not verify bytecode on the local Anvil.")
 
     system = parse_lab_system(output)
     if selected_record:
@@ -3922,25 +3996,24 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             system.setdefault("deployed_contract_name", selected_record["contract"])
     effective_target = target
     if system:
-        # A system adapter may expose multiple live contracts. When it provides a
-        # factory, make that the walkthrough entry point so the child lifecycle is
-        # observed in realtime instead of being hidden during bootstrap.
         if is_address(system.get("factory")):
             effective_target = system["factory"]
         elif is_address(system.get("pool")):
             effective_target = system["pool"]
         else:
-            system["pool"] = target
+            system.setdefault("target", target)
+
         config["lab_system"] = system
-        config["_walkthrough_recipe"] = "confidence-pool"
         names = {
-            "factory": "ConfidencePoolFactory",
-            "pool_implementation": "ConfidencePool",
+            "factory": "Factory",
+            "pool": "Pool",
+            "pool_implementation": "PoolImplementation",
             "stake_token": "StakeToken",
-            "attack_registry": "MockAttackRegistry",
-            "safe_harbor_registry": "MockSafeHarborRegistry",
-            "agreement": "MockAgreement",
-            "moderator": "MockConfidencePoolModerator",
+            "attack_registry": "AttackRegistry",
+            "safe_harbor_registry": "SafeHarborRegistry",
+            "agreement": "Agreement",
+            "moderator": "Moderator",
+            "deployed_contract": "DeployedContract",
         }
         for alias, address in system.items():
             if alias in {"alice", "bob"}:
@@ -3949,8 +4022,6 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             config.setdefault("aliases", {})[label] = address
             config.setdefault("targets", {})[label] = address
 
-    # Let the live target drive ABI discovery. This is important for proxies:
-    # the deployed address may be a proxy while the useful ABI lives on its implementation.
     config["target_contract"] = None
     artifact = auto_abi_path(effective_target, config)
     contract = config.get("target_contract") or "auto-detected"
@@ -3973,7 +4044,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     print(f"Target  : {contract} -> {effective_target}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
-    print("Ready   : lk changes <function> ... | lk trace")
+    print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
 def _print_numeric_unit_reference(label, ptype):
