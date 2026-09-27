@@ -2697,6 +2697,8 @@ def _render_interaction_graph_full(
         f"  │       ↳ {_human_action_summary(step, actors)}",
         f"  │       ↳ CALL: {actor} ──▶ {contract}",
     ]
+    if step.tx_hash:
+        lines.append(f"  │       ↳ TX: {_transaction_link(root, step.tx_hash)}  [open confirmation]")
 
     input_lines = _human_argument_rows(model, step, actors, runtime)
     if input_lines:
