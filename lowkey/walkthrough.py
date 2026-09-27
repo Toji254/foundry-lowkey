@@ -748,8 +748,11 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
             continue
         source = source_path.relative_to(root).as_posix()
         first = source.split("/", 1)[0]
-        allowed = {str(foundry_src).strip("/"), "src", "contracts", "interfaces"}
-        if first not in allowed and not include_aux:
+        support_roots = {
+            "test", "tests", "script", "scripts", "node_modules", "lib",
+            "build-info", ".audit", ".git", ".venv",
+        }
+        if first in support_roots and not include_aux:
             continue
         try:
             source_text = source_path.read_text(encoding="utf-8", errors="replace")
