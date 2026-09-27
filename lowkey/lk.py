@@ -2467,6 +2467,14 @@ def _select_project_target(config, entry, root):
         source=entry.get("source") or "project",
     )
     print(f"Target selected: {entry.get('name') or contract} -> {address}")
+    if entry.get("source_file"):
+        print(f"  Source       : {entry.get('source_file')}")
+    if entry.get("deployment_file"):
+        try:
+            deployment_display = str(Path(entry.get("deployment_file")).resolve().relative_to(Path(root).resolve()))
+        except (OSError, ValueError):
+            deployment_display = str(entry.get("deployment_file"))
+        print(f"  Deployment   : {deployment_display}")
     return 0
 
 
