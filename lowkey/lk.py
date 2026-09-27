@@ -3441,7 +3441,6 @@ def run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested=None
         return None
 
     relative = os.path.relpath(script, root)
-    script_contract = script.stem
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
     print(f"Project : {root}")
@@ -3452,8 +3451,11 @@ def run_factory_upgradeable_lab(config, root, rpc, accounts, key, requested=None
     print("Mode    : automatic upgradeable protocol fixture")
     print("Action  : deploying implementation + dependencies + ERC1967 proxy...")
 
+    # The generated adapter contains one script contract, so let Forge discover
+    # it from the file. Explicit file:Contract targeting can produce the misleading
+    # "Could not find target contract" error in otherwise-valid scripts.
     result = run_foundry(
-        ["script", f"{relative}:{script_contract}", "--rpc-url", rpc, "--broadcast", "--private-key", key],
+        ["script", relative, "--rpc-url", rpc, "--broadcast", "--private-key", key],
         capture=True,
     )
     output = result.text
@@ -3500,17 +3502,18 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print("Mode    : project lab adapter")
     print("Action  : deploying disposable local test environment...")
 
-    script_contract = Path(script).stem
     previous_lab_key = os.environ.get("LOWKEY_LAB_KEY")
     previous_bob_key = os.environ.get("LOWKEY_BOB_KEY")
     bob_key = derive_default_anvil_key(1) or key
     os.environ["LOWKEY_LAB_KEY"] = str(int(str(key), 16))
     os.environ["LOWKEY_BOB_KEY"] = str(int(str(bob_key), 16))
     try:
+        # The adapter has a single Script contract. Let Forge select it from
+        # the file instead of forcing file:Contract resolution.
         result = run_foundry(
             [
                 "script",
-                f"{relative}:{script_contract}",
+                relative,
                 "--rpc-url",
                 rpc,
                 "--broadcast",
