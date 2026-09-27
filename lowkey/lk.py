@@ -2906,7 +2906,9 @@ def discover_local_lab_fixture(root=".", requested=None):
 
 
 def _fixture_state_files(root, safe_name):
-    state_dir = Path(root).resolve() / ".audit" / "lowkey"
+    # Foundry projects may restrict vm.writeFile via fs_permissions. Keep
+    # promotion artifacts under Forge's permitted snapshot directory.
+    state_dir = Path(root).resolve() / ".forge-snapshots" / "lowkey"
     state_dir.mkdir(parents=True, exist_ok=True)
     return (
         state_dir / f"fixture_state_{safe_name}.state",
@@ -2921,8 +2923,10 @@ def _generate_test_fixture_lab_script(root, candidate, state_path, code_path):
     contract = str(candidate["contract"])
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
 
-    state_literal = str(state_path).replace("\\", "/")
-    code_literal = str(code_path).replace("\\", "/")
+    # Forge file cheatcodes resolve paths from the project root. Python keeps
+    # the absolute paths separately for post-run materialization.
+    state_literal = os.path.relpath(state_path, root_path).replace("\\", "/")
+    code_literal = os.path.relpath(code_path, root_path).replace("\\", "/")
     script_dir = root_path / "script"
     script_dir.mkdir(parents=True, exist_ok=True)
     script_path = script_dir / f"LowkeyAutoFixture_{safe_name}.s.sol"
@@ -3171,7 +3175,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
                 "--rpc-url",
                 rpc,
                 "--gas-limit",
-                "1000000000",
+                "10000000000",
             ],
             capture=True,
         )
@@ -4908,8 +4912,10 @@ def run_lab(config,args):
         )
         if fixture_code == 0:
             return 0
-        if requested:
-            return fixture_code
+        # A discovered native fixture is already the project's application
+        # environment. Do not silently fall back to the ABI constructor wizard
+        # after it fails; that creates invalid dependency prompts.
+        return fixture_code
 
     # No harness? Prefer the audit evidence; it usually points at the application's
     # most security-relevant implementation contract.
