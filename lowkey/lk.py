@@ -5166,18 +5166,45 @@ def run_layout(args):
 
 def source_sol_files(root):
     if os.path.isfile(root):
-        return [root] if root.endswith(".sol") else []
+        return [root] if str(root).endswith(".sol") else []
     if not os.path.isdir(root):
         return []
+    if project_tools is not None:
+        try:
+            return [str(path) for path in project_tools.project_source_files(root, {"sol"})]
+        except Exception:
+            pass
     paths=[]
     for path,dirs,files in os.walk(root):
-        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib"}]
+        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib","node_modules","artifacts","build",".audit"}]
         for filename in files:
             if filename.endswith(".sol"): paths.append(os.path.join(path,filename))
     return sorted(paths)
 
-def _strip_scan_comments(text: str) -> str:
-    """Comment-aware filtering for legacy 'lk scan' custom paths."""
+def source_vyper_files(root):
+    if os.path.isfile(root):
+        return [root] if str(root).endswith(".vy") else []
+    if not os.path.isdir(root):
+        return []
+    if project_tools is not None:
+        try:
+            return [str(path) for path in project_tools.project_source_files(root, {"vy", "vyi"})]
+        except Exception:
+            pass
+    paths=[]
+    for path,dirs,files in os.walk(root):
+        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib","node_modules","artifacts","build",".audit"}]
+        for filename in files:
+            if filename.endswith((".vy",".vyi")): paths.append(os.path.join(path,filename))
+    return sorted(paths)
+
+def source_evm_files(root):
+    return sorted(set(source_sol_files(root) + source_vyper_files(root)))
+
+def _strip_scan_comments(text: str, language="solidity") -> str:
+    return _source_comment_strip(text, language)
+
+def _source_comment_strip(text: str, language="solidity") -> str:
     chars = list(text)
     state = "code"
     quote = ""
@@ -5187,15 +5214,20 @@ def _strip_scan_comments(text: str) -> str:
         ch = chars[i]
         nxt = chars[i + 1] if i + 1 < len(chars) else ""
         if state == "code":
-            if ch == "/" and nxt == "*":
-                chars[i] = chars[i + 1] = " "
-                i += 2
-                state = "block"
+            if language == "vyper" and ch == "#":
+                chars[i] = " "
+                i += 1
+                state = "line"
                 continue
-            if ch == "/" and nxt == "/":
+            if language != "vyper" and ch == "/" and nxt == "/":
                 chars[i] = chars[i + 1] = " "
                 i += 2
                 state = "line"
+                continue
+            if language != "vyper" and ch == "/" and nxt == "*":
+                chars[i] = chars[i + 1] = " "
+                i += 2
+                state = "block"
                 continue
             if ch in {"'", '"'}:
                 quote = ch
@@ -5211,7 +5243,7 @@ def _strip_scan_comments(text: str) -> str:
             i += 1
             continue
         if state == "block":
-            if ch == "*" and nxt == "/":
+            if language != "vyper" and ch == "*" and nxt == "/":
                 chars[i] = chars[i + 1] = " "
                 i += 2
                 state = "code"
@@ -5225,20 +5257,21 @@ def _strip_scan_comments(text: str) -> str:
         elif ch == "\\":
             escape = True
         elif ch == quote:
-            quote = ""
             state = "code"
+            quote = ""
         i += 1
     return "".join(chars)
 
-
 def run_scan(args):
-    root = args[0] if args else "src"
+    root = args[0] if args else "."
     if not os.path.exists(root):
         return fail(f"Path not found: {root}")
-    if not os.path.isdir(root) and not root.endswith(".sol"):
-        return fail(f"Path is not a Solidity file or directory: {root}")
+    if os.path.isfile(root) and not root.endswith((".sol", ".vy", ".vyi")):
+        return fail(f"Path is not a Solidity/Vyper source file: {root}")
 
-    if not args and audit_run_source_triage is not None:
+    all_sources = source_evm_files(root)
+    has_vyper = bool(source_vyper_files(root))
+    if not args and audit_run_source_triage is not None and not has_vyper:
         audit_root = audit_context.foundry_project_root()
         try:
             return audit_run_source_triage(str(audit_root))
@@ -5259,36 +5292,39 @@ def run_scan(args):
         ("PREVRANDAO", re.compile(r"\bblock\.prevrandao\b")),
         ("ECRECOVER", re.compile(r"\becrecover\s*\(")),
         ("CREATE2", re.compile(r"\bcreate2\b")),
+        ("VYPER_RAW_CALL", re.compile(r"\braw_call\s*\(")),
+        ("VYPER_EXTCALL", re.compile(r"\bextcall\b")),
+        ("VYPER_SEND_VALUE", re.compile(r"\b(?:send|raw_call)\s*\(")),
+        ("VYPER_MSG_SENDER", re.compile(r"\bmsg\.sender\b")),
+        ("VYPER_TX_ORIGIN", re.compile(r"\btx\.origin\b")),
+        ("VYPER_TIMESTAMP", re.compile(r"\bblock\.timestamp\b")),
+        ("VYPER_CREATE", re.compile(r"\bcreate_minimal_proxy_to\b|\bcreate_copy_of\b")),
     ]
-    markers = []
-    for path in source_sol_files(root):
+    markers=[]
+    for path in all_sources:
+        language="vyper" if path.endswith((".vy",".vyi")) else "solidity"
         try:
-            lines = _strip_scan_comments(Path(path).read_text(encoding="utf-8"))
+            lines=_source_comment_strip(Path(path).read_text(encoding="utf-8"),language)
         except OSError:
             continue
-        for lineno, line in enumerate(lines.splitlines(), 1):
-            for label, pattern in patterns:
+        for lineno,line in enumerate(lines.splitlines(),1):
+            for label,pattern in patterns:
                 if pattern.search(line):
-                    item = {
-                        "file": os.path.relpath(path, os.path.dirname(root) if os.path.isfile(root) else "."),
-                        "line": lineno,
-                        "label": label,
-                        "text": line.strip(),
-                    }
+                    # Do not label Solidity-only patterns on Vyper sources.
+                    if language=="vyper" and label.startswith(("UNCHECKED","ASSEMBLY","ENCODE_PACKED","PREVRANDAO","ECRECOVER","CREATE2")):
+                        continue
+                    item={"file":os.path.relpath(path,os.path.dirname(root) if os.path.isfile(root) else "."),"line":lineno,"label":label,"text":line.strip(),"language":language}
                     markers.append(item)
                     print(f"{path}:{lineno}: [{label}] {line.strip()}")
     print(f"\nReview markers: {len(markers)}")
     print("These are source-level review markers, not vulnerability verdicts.")
-    audit_root = audit_context.foundry_project_root()
+    audit_root=audit_context.foundry_project_root()
     audit_context.record_tool(
-        "source-triage",
-        audit_root,
-        status="completed",
+        "source-triage",audit_root,status="completed",
         summary=f"{len(markers)} source review marker(s)",
-        data={"count": len(markers), "markers": markers},
+        data={"count":len(markers),"markers":markers},
     )
     return 0
-
 
 def _full_evidence_pass(config):
     """Run the integrated evidence engine instead of the legacy Forge audit."""
@@ -5304,12 +5340,14 @@ def run_deps(args):
     root=args[0] if args else "."
     if not os.path.exists(root):
         return fail(f"Path not found: {root}")
-    if os.path.isfile(root) and not root.endswith(".sol"):
-        return fail(f"Path is not a Solidity file: {root}")
-    files=source_sol_files(root)
+    if os.path.isfile(root) and not root.endswith((".sol",".vy",".vyi")):
+        return fail(f"Path is not a Solidity/Vyper source file: {root}")
+
+    files=source_evm_files(root)
     if not files:
-        print(f"No Solidity files found under {root}.")
-        return
+        print(f"No Solidity/Vyper files found under {root}.")
+        return 0
+
     display_root=os.path.dirname(root) if os.path.isfile(root) else root
     matches=0
     print("Dependency / inheritance map:")
@@ -5319,6 +5357,12 @@ def run_deps(args):
         except OSError:
             continue
         rel=os.path.relpath(path,display_root)
+        if path.endswith((".vy",".vyi")):
+            for imported in re.findall(r"(?m)^\s*(?:from\s+([^\s]+)\s+import|import\s+([^\s#]+))",text_content):
+                dep=imported[0] or imported[1]
+                matches+=1
+                print(f"  {rel} -> imports {dep}")
+            continue
         for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
             matches+=1
             print(f"  {rel} -> imports {imported}")
@@ -5328,6 +5372,7 @@ def run_deps(args):
                 print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
     if matches==0:
         print("No imports or inheritance relationships detected.")
+    return 0
 
 def run_seams(config):
     target=config.get("target")
