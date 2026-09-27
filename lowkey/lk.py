@@ -2248,7 +2248,6 @@ contract Exploit_Reproduction is Test {{
     function test_reproduce() public {{
         uint256 value = {value_expression};
         vm.deal(address(this), value);
-        // forge-lint: disable-next-line low-level-calls
         (bool success, bytes memory data) = TARGET.call{{value: value}}(hex"{calldata}");
         assertTrue(success, string(data));
     }}
