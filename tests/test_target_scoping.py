@@ -181,6 +181,7 @@ class TargetScopingTests(unittest.TestCase):
             rendered = stream.getvalue()
             self.assertIn("AUDIT TARGETS", rendered)
             self.assertIn("ConfidencePool", rendered)
+            self.assertIn("Source       : src/ConfidencePool.sol", rendered)
             self.assertNotIn("MockERC20", rendered)
             self.assertIn("Lab/test support hidden: 1", rendered)
 
