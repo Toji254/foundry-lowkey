@@ -3000,6 +3000,54 @@ contract BountyArena {
         self.assertNotEqual(result, 0)
 
 
+    def test_walkthrough_expected_admin_is_not_marked_as_review_candidate(self):
+        step = lk.walkthrough.Step(
+            1,
+            "Alice",
+            "ConfidencePoolFactory",
+            "0x" + "1" * 40,
+            "setDefaultOutcomeModerator(address)",
+            ["0x" + "2" * 40],
+            status="success",
+            diagnostics=["Alice owner == caller", "ownership check passed"],
+        )
+        status, why, next_step = lk.walkthrough._human_probe_status(step)
+        self.assertEqual(status, "🟦 EXPECTED ADMIN")
+        self.assertIn("owner/admin", why)
+        self.assertIn("untrusted actor", next_step)
+
+    def test_confidence_pool_stateful_benchmarks_cover_known_attack_stories(self):
+        actors = [
+            lk.walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            lk.walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+            lk.walkthrough.Actor("Attacker", "0x" + "3" * 40, 2),
+            lk.walkthrough.Actor("Treasury", "0x" + "4" * 40, 3),
+        ]
+        config = {
+            "lab_system": {
+                "stake_token": "0x" + "5" * 40,
+                "attack_registry": "0x" + "6" * 40,
+                "moderator": "0x" + "7" * 40,
+            }
+        }
+        stories = lk.walkthrough._confidence_pool_stateful_stories(
+            config,
+            actors,
+            "0x" + "8" * 40,
+        )
+        self.assertEqual([item.story_id for item in stories], ["CP-01", "CP-02", "CP-03", "CP-04"])
+        self.assertTrue(any("sweepUnclaimedBonus" in str(action) for action in stories[0].actions))
+        self.assertTrue(any(
+            "contributeBonus" in str(action) and action.get("kind") == "call"
+            for action in stories[1].actions
+        ))
+        self.assertTrue(any(
+            "setPoolScope" in str(action)
+            for action in stories[2].actions
+        ))
+
+
+
 if __name__ == "__main__":
     unittest.main()
 
