@@ -6066,19 +6066,20 @@ def _deploy_generic_local_target(
         return None, f"no deployable bytecode was found for {model.name}"
     actor = actors[0]
     _actor_rpc_setup(rpc, actor.address)
-    estimate = _rpc_call(rpc, "eth_estimateGas", [{
-        "from": actor.address,
-        "data": creation_code,
-    }])
-    tx = {
-        "from": actor.address,
-        "data": creation_code,
-    }
-    if isinstance(estimate, str) and estimate.startswith("0x"):
-        tx["gas"] = estimate
-    tx_hash = _rpc_call(rpc, "eth_sendTransaction", [tx])
+
+    # Reuse cast's local transaction path so gas estimation, unlocked-account
+    # handling and error decoding match the rest of Lowkey's live execution.
+    code, out, err = _cmd([
+        "cast", "send", "--create", creation_code,
+        "--rpc-url", rpc,
+        "--unlocked", "--from", actor.address,
+    ], cwd=root, timeout=60)
+    if code != 0:
+        detail = (err or out or "cast deployment failed").strip()
+        return None, f"generic deployment failed: {detail[-1000:]}"
+    tx_hash = _extract_tx_hash(out)
     if not isinstance(tx_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash):
-        return None, "local node rejected generic deployment"
+        return None, "generic deployment returned no transaction hash"
     receipt = _receipt(rpc, tx_hash)
     address = receipt.get("contractAddress") if isinstance(receipt, dict) else None
     if not is_address(address):
