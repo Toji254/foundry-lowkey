@@ -595,7 +595,7 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
     )
     print("Static checks: " + ("recorded" if static_recorded else "not run in this baseline; use 'lk audit --checks' or 'lk audit run'") + ".")
     print("Heuristic/static results are investigation leads, not vulnerability verdicts.")
-    return 0 if overall == "PASS" else 1
+    return 0 if overall in {"PASS", "BASELINE PASS"} else 1
 
 
 def run_audit(args: Sequence[str]) -> int:
