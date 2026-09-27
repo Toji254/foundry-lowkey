@@ -320,6 +320,99 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertNotIn("factory.createPool(", content)
             self.assertIn("LOWKEY_TARGET", content)
 
+    def test_walkthrough_failure_diagnosis_is_crash_safe(self):
+        import pathlib
+        model = lk.walkthrough.ContractModel(
+            name="Fixture",
+            source="src/Fixture.sol",
+            artifact="out/Fixture.sol/Fixture.json",
+            abi=[],
+        )
+        step = lk.walkthrough.Step(
+            1, "Alice", "Fixture", "0x" + "1" * 40,
+            "ping()", [],
+        )
+        with patch.object(
+            lk.walkthrough,
+            "_diagnose_argument_contracts",
+            side_effect=TypeError("unexpected keyword argument"),
+        ), patch.object(
+            lk.walkthrough,
+            "_probe_source_guards",
+            return_value=(None, ["source guard: none"]),
+        ), patch.object(
+            lk.walkthrough,
+            "_read_zero_address_diagnostics",
+            return_value=(None, []),
+        ), patch.object(
+            lk.walkthrough,
+            "_source_guard_lines",
+            return_value=["source guard: none"],
+        ), patch.object(
+            lk.walkthrough,
+            "_cmd",
+            return_value=(1, "", "cannot encode"),
+        ):
+            origin, diagnostics = lk.walkthrough._diagnose_failed_call(
+                pathlib.Path("/tmp"),
+                "http://127.0.0.1:8545",
+                step,
+                model,
+                [model],
+                "0x" + "2" * 40,
+            )
+        self.assertIsNone(origin)
+        self.assertTrue(any("dependency diagnosis unavailable" in item for item in diagnostics))
+        self.assertTrue(any("could not encode" in item for item in diagnostics))
+
+    def test_walkthrough_vyper_layout_normalization(self):
+        layout = {
+            "storage_layout": {
+                "owner": {"type": "address", "slot": 0},
+                "count": {"type": "uint256", "slot": 1},
+            }
+        }
+        normalized = lk.walkthrough._normalize_vyper_layout(layout)
+        self.assertEqual(
+            normalized["storage"],
+            [
+                {"label": "owner", "slot": "0", "type": "address", "offset": 0},
+                {"label": "count", "slot": "1", "type": "uint256", "offset": 0},
+            ],
+        )
+
+    def test_walkthrough_accepts_hardhat_style_artifact_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "contracts").mkdir()
+            (root / "artifacts" / "contracts" / "Vault.sol").mkdir(parents=True)
+            (root / "contracts" / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault { uint256 public value; function ping(uint256 x) external { value=x; } }",
+                encoding="utf-8",
+            )
+            artifact = {
+                "_format": "hh-sol-artifact-1",
+                "contractName": "Vault",
+                "sourceName": "contracts/Vault.sol",
+                "abi": [
+                    {
+                        "type": "function",
+                        "name": "ping",
+                        "inputs": [{"name": "x", "type": "uint256"}],
+                        "outputs": [],
+                        "stateMutability": "nonpayable",
+                    }
+                ],
+                "bytecode": "0x6000",
+                "deployedBytecode": "0x6000",
+            }
+            path = root / "artifacts" / "contracts" / "Vault.sol" / "Vault.json"
+            path.write_text(json.dumps(artifact), encoding="utf-8")
+            models = lk.walkthrough._artifact_models(root)
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0].name, "Vault")
+        self.assertEqual(models[0].source, "contracts/Vault.sol")
+
     def test_walkthrough_empty_revert_explains_contract_argument(self):
         model = lk.walkthrough.ContractModel(
             name="Factory",
