@@ -37,6 +37,14 @@ class LowkeyGeneratorTests(unittest.TestCase):
         self.assertEqual(generator._value("2gwei"), "2 gwei")
         self.assertEqual(generator._value("1.5ether"), "1500000000000000000")
 
+    def test_poc_renderer_avoids_invalid_checksum_address_literals(self):
+        target = "0xa51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0"
+        rendered = generator._template_poc("BountyArena", target, "release", "0", "deadbeef")
+        self.assertIn(
+            "address internal constant TARGET = address(uint160(0x00a51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0));",
+            rendered,
+        )
+
     def test_deployment_renderer_teaches_and_uses_constructor_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
