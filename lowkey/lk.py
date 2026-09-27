@@ -2944,21 +2944,90 @@ contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
 
 
 def _fixture_accounts_map(snapshot):
-    """Normalize Foundry dumpState and Anvil load-state JSON into one account map."""
-    if not isinstance(snapshot, dict):
-        return None, "fixture state snapshot must be a JSON object"
+    """Find the account map in Foundry/anvil-compatible state JSON without assuming one wrapper shape."""
+    if not isinstance(snapshot, (dict, list)):
+        return None, "fixture state snapshot must be a JSON object or array"
 
-    # Foundry vm.dumpState() writes the genesis alloc map directly at the root:
-    # { "0xabc...": { "nonce": ..., "balance": ..., "code": ..., "storage": ... } }.
-    for key in ("alloc", "allocs", "accounts"):
-        candidate = snapshot.get(key)
-        if isinstance(candidate, dict):
-            return candidate, key
+    def direct_address_map(value):
+        if not isinstance(value, dict):
+            return None
+        entries = {
+            key: account
+            for key, account in value.items()
+            if is_address(key) and isinstance(account, dict)
+        }
+        return entries if entries else None
 
-    # Keep compatibility with the older/current direct alloc-map format.
-    address_keys = [key for key in snapshot if is_address(key)]
-    if address_keys:
-        return snapshot, "root"
+    def account_list(value):
+        if not isinstance(value, list):
+            return None
+        result = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            address = (
+                item.get("address")
+                or item.get("addr")
+                or item.get("account")
+            )
+            if not is_address(address):
+                continue
+            account = dict(item)
+            account.pop("address", None)
+            account.pop("addr", None)
+            account.pop("account", None)
+            result[str(address)] = account
+        return result or None
+
+    direct = direct_address_map(snapshot)
+    if direct:
+        return direct, "root"
+
+    # Known wrappers first. Anvil uses "accounts"; genesis-style data commonly
+    # uses "alloc"/"allocs".
+    if isinstance(snapshot, dict):
+        for key in ("alloc", "allocs", "accounts", "state", "genesis"):
+            candidate = snapshot.get(key)
+            direct = direct_address_map(candidate)
+            if direct:
+                return direct, key
+            listed = account_list(candidate)
+            if listed:
+                return listed, f"{key}[list]"
+
+    # Last-resort recursive discovery. This keeps the lab resilient to wrappers
+    # added by Foundry/Anvil versions or project tooling without inventing data.
+    seen = set()
+
+    def walk(value, path):
+        marker = id(value)
+        if marker in seen:
+            return None
+        seen.add(marker)
+
+        direct = direct_address_map(value)
+        if direct:
+            return direct, path
+
+        listed = account_list(value)
+        if listed:
+            return listed, f"{path}[list]"
+
+        if isinstance(value, dict):
+            for key, child in value.items():
+                found = walk(child, f"{path}.{key}" if path else str(key))
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                found = walk(child, f"{path}[{index}]")
+                if found:
+                    return found
+        return None
+
+    found = walk(snapshot, "$")
+    if found:
+        return found
 
     return None, "fixture state snapshot does not contain an address-keyed alloc/account map"
 
