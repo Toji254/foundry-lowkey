@@ -2016,7 +2016,7 @@ def run_doctor():
         ("cast decode-event", "cast", "decode-event"),
         ("cast receipt", "cast", "receipt"),
         ("cast sig-event", "cast", "sig-event"),
-        ("forge inspect", "forge", "inspect"),
+        *([("forge inspect", "forge", "inspect")] if foundry_project else []),
         ("cast pretty-calldata", "cast", "pretty-calldata"),
         ("cast tx-pool", "cast", "tx-pool"),
         ("cast disassemble", "cast", "disassemble"),
@@ -2063,7 +2063,8 @@ def run_doctor():
         print("PROJECT DIAGNOSTICS")
         print("-" * 72)
         print(f"Project : {root}")
-        if forge and shutil.which("forge"):
+
+        if foundry_project and forge and shutil.which("forge"):
             try:
                 result = subprocess.run(
                     [forge, "build", "--skip", "test", "--skip", "script"],
@@ -2077,13 +2078,18 @@ def run_doctor():
                     print("FAIL  project build: Forge could not compile the application sources.")
                     combined = (result.stdout or "") + "\n" + (result.stderr or "")
                     lines = [line.strip() for line in combined.splitlines() if line.strip()]
-                    useful = [line for line in lines if "Error" in line or "not found" in line or "Source" in line]
+                    useful = [
+                        line for line in lines
+                        if "Error" in line or "not found" in line or "Source" in line
+                    ]
                     for line in (useful[-3:] if useful else lines[-3:]):
                         print(f"      {line}")
-                    if "not found" in combined.lower() or "source" in combined.lower() and "not found" in combined.lower():
+                    if "not found" in combined.lower() or (
+                        "source" in combined.lower() and "not found" in combined.lower()
+                    ):
                         fix = "Run 'forge install' if a dependency is missing, then check remappings with 'forge remappings'."
                     elif "checksum" in combined.lower():
-                        fix = "Regenerate the affected Lowkey artifact/PoC with the current integration branch, then rerun 'lk build'."
+                        fix = "Regenerate the affected Lowkey artifact/PoC with the current branch, then rerun 'lk build'."
                     else:
                         fix = "Fix the reported Solidity/Foundry error above, then rerun 'lk build' and 'lk doctor'."
                     _doctor_advice(
@@ -2094,8 +2100,52 @@ def run_doctor():
                     failures += 1
             except OSError as exc:
                 print("FAIL  project build: could not invoke Forge")
-                _doctor_advice("project build", why=str(exc), fix="Repair Foundry, then rerun 'lk doctor'.")
+                _doctor_advice(
+                    "project build",
+                    why=str(exc),
+                    fix="Repair Foundry, then rerun 'lk doctor'.",
+                )
                 failures += 1
+
+        elif vyper_project and shutil.which("vyper"):
+            sample = next(
+                (path for path in source_files if path.suffix.lower() == ".vy"),
+                None,
+            )
+            if sample:
+                try:
+                    result = subprocess.run(
+                        ["vyper", "-f", "abi", str(sample)],
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode == 0:
+                        print("PASS  project build: Vyper compiler can compile a source contract.")
+                    else:
+                        print("FAIL  project build: Vyper compiler rejected a source contract.")
+                        detail = (result.stderr or result.stdout or "Vyper compilation failed").strip().splitlines()
+                        _doctor_advice(
+                            "project build",
+                            why=detail[-1] if detail else "Vyper compilation failed.",
+                            fix="Fix the reported Vyper error, then rerun 'lk doctor'.",
+                        )
+                        failures += 1
+                except OSError as exc:
+                    print("FAIL  project build: could not invoke Vyper")
+                    _doctor_advice(
+                        "project build",
+                        why=str(exc),
+                        fix="Repair the Vyper installation and rerun 'lk doctor'.",
+                    )
+                    failures += 1
+
+        elif source_files:
+            print("NOTE  project build: no native project build system was selected by Lowkey.")
+            print("      Lowkey will use available ABI/artifact tooling for this project.")
+        else:
+            print("NOTE  project build: no Solidity/Vyper source files detected.")
+
     return 1 if failures else 0
 
 def run_test_gen(config):
