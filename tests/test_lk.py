@@ -2702,6 +2702,109 @@ contract Child is IChild {
             )
             self.assertIn("ping", rendered)
 
+
+    def test_walkthrough_infers_msg_value_from_source_not_function_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = root / "src" / "BountyArena.sol"
+            source.write_text(
+                """pragma solidity ^0.8.20;
+contract BountyArena {
+    function createBounty(address addr, uint256 amount) external payable {
+        require(amount >= 0, "topup");
+        require(amount == msg.value, "attach eth");
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            model = lk.walkthrough.ContractModel(
+                name="BountyArena",
+                source="src/BountyArena.sol",
+                artifact="out/BountyArena.sol/BountyArena.json",
+            )
+            fn = {
+                "type": "function",
+                "name": "createBounty",
+                "stateMutability": "payable",
+                "inputs": [
+                    {"name": "addr", "type": "address"},
+                    {"name": "amount", "type": "uint256"},
+                ],
+            }
+            amount = 10**18
+            self.assertEqual(
+                lk.walkthrough._value_for(
+                    fn,
+                    model=model,
+                    root=root,
+                    args=["0x" + "1" * 40, amount],
+                ),
+                amount,
+            )
+
+    def test_walkthrough_payable_without_payment_guard_remains_conservative(self):
+        fn = {
+            "type": "function",
+            "name": "createThing",
+            "stateMutability": "payable",
+            "inputs": [{"name": "amount", "type": "uint256"}],
+        }
+        self.assertEqual(
+            lk.walkthrough._value_for(fn, args=[10**18]),
+            0,
+        )
+
+    def test_walkthrough_failed_call_diagnostic_signature_accepts_caller_address(self):
+        model = lk.walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            abi=[{
+                "type": "function",
+                "name": "create",
+                "inputs": [],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+        )
+        step = lk.walkthrough.Step(
+            1, "Alice", "Factory", "0x" + "1" * 40,
+            "create()", [],
+        )
+        with patch.object(
+            lk.walkthrough,
+            "_diagnose_argument_contracts",
+            return_value=(None, []),
+        ), patch.object(
+            lk.walkthrough,
+            "_probe_source_guards",
+            return_value=(None, []),
+        ), patch.object(
+            lk.walkthrough,
+            "_read_zero_address_diagnostics",
+            return_value=(None, []),
+        ), patch.object(
+            lk.walkthrough,
+            "_source_guard_lines",
+            return_value=[],
+        ), patch.object(
+            lk.walkthrough,
+            "_cmd",
+            return_value=(1, "", "encode failed"),
+        ):
+            origin, diagnostics = lk.walkthrough._diagnose_failed_call(
+                pathlib.Path("."),
+                "http://127.0.0.1:8545",
+                step,
+                model,
+                [model],
+                "0x" + "2" * 40,
+            )
+        self.assertIsNone(origin)
+        self.assertTrue(any("could not encode" in item for item in diagnostics))
+
 if __name__ == "__main__":
     unittest.main()
 
