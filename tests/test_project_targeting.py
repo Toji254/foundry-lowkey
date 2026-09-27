@@ -106,6 +106,33 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertIn("Built-project function matches", rendered)
             self.assertIn("ConfidencePoolFactory::createPool(address,address)", rendered)
 
+    def test_discover_audit_target_ignores_foundry_build_info_hashes(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src").mkdir()
+            (root / "out" / "build-info").mkdir(parents=True)
+            (root / "src" / "BountyArena.sol").write_text(
+                "pragma solidity ^0.8.20; contract BountyArena {}",
+                encoding="utf-8",
+            )
+            (root / "out" / "BountyArena.sol" / "BountyArena.json").parent.mkdir(parents=True)
+            (root / "out" / "BountyArena.sol" / "BountyArena.json").write_text(
+                json.dumps({
+                    "contractName": "BountyArena",
+                    "sourceName": "src/BountyArena.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+            (root / "out" / "build-info" / "1b34406de22adaac.json").write_text(
+                json.dumps({"id": "1b34406de22adaac", "input": {}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(lk.discover_audit_target_contract(str(root)), "BountyArena")
+
     def test_discover_audit_target_contract_prefers_higher_impact_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
