@@ -61,11 +61,20 @@ def source_link(
 
 
 def foundry_project_root(start: Path | None = None) -> Path:
+    """Resolve the active EVM project root across common project layouts."""
     path = (start or Path.cwd()).expanduser().resolve()
     if path.is_file():
         path = path.parent
+
+    markers = (
+        "foundry.toml", "hardhat.config.js", "hardhat.config.cjs",
+        "hardhat.config.mjs", "hardhat.config.ts",
+        "brownie-config.yaml", "pyproject.toml", "package.json",
+    )
     for parent in (path, *path.parents):
-        if (parent / "foundry.toml").is_file():
+        if any((parent / marker).is_file() for marker in markers):
+            return parent
+        if any((parent / dirname).is_dir() for dirname in ("src", "contracts", "vyper")):
             return parent
     return path
 
