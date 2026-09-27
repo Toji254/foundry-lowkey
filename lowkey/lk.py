@@ -2358,8 +2358,12 @@ def _project_target_entries(config, root=None):
     def resolve_artifact(contract, address=None):
         if address:
             configured = config.get("abi_paths", {}).get(address)
-            if configured and os.path.exists(configured):
-                return configured
+            if configured:
+                configured_path = Path(os.path.expanduser(str(configured)))
+                if not configured_path.is_absolute():
+                    configured_path = project_root / configured_path
+                if configured_path.is_file():
+                    return str(configured_path.resolve())
 
         contract_name = str(contract or "").strip().lower()
         if contract_name:
@@ -2377,10 +2381,12 @@ def _project_target_entries(config, root=None):
     def source_from_artifact(artifact, contract):
         if artifact:
             artifact_data = read_artifact(artifact) or {}
-            source_name = artifact_data.get("sourceName")
+            source_name = artifact_source_name(artifact_data, artifact, project_root)
             if source_name:
                 return str(source_name)
-            fallback = source_contract_fallback(project_root, artifact_contract_name(artifact, artifact_data))
+            fallback = source_contract_fallback(
+                project_root, artifact_contract_name(artifact, artifact_data)
+            )
             if fallback:
                 return str(fallback)
         return str(source_contract_fallback(project_root, contract) or "") or None
@@ -2411,7 +2417,7 @@ def _project_target_entries(config, root=None):
             "deployment_file": context_target.get("deployment_file"),
             "deployment_hash": context_target.get("deployment_hash"),
             "contract": context_target.get("contract"),
-            "source": context_target.get("source") or "project",
+            "source": context_target.get("source") or "project-context",
         }))
 
     for name, address in target_aliases(config, project_root).items():
@@ -2517,6 +2523,8 @@ def _select_project_target(config, entry, root):
         except (OSError, ValueError):
             deployment_display = str(entry.get("deployment_file"))
         print(f"  Deployment   : {deployment_display}")
+    elif entry.get("source") in {"project-context", "project-config", "manual"}:
+        print(f"  Origin       : {entry.get('source')}")
     return 0
 
 
@@ -2565,6 +2573,8 @@ def run_targets(config, interactive=False, include_support=False):
                 except (OSError, ValueError):
                     deployment_display = str(deployment_file)
                 print(f"        Deployment   : {deployment_display}")
+            elif entry.get("source") in {"project-context", "project-config", "manual"}:
+                print(f"        Origin       : {entry.get('source')}")
 
     if support_entries and not include_support:
         print()
