@@ -8,6 +8,7 @@ attack stories and the evidence rules used to assess those stories.
 from __future__ import annotations
 
 from typing import Any, Protocol
+import time
 
 try:
     from . import walkthrough as core
@@ -19,7 +20,6 @@ is_address = core.is_address
 _cli_arg = core._cli_arg
 _cmd = core._cmd
 _runtime_code = core._runtime_code
-_confidence_pool_factory_recipe = core._confidence_pool_factory_recipe
 _block_timestamp = core._block_timestamp
 _send = core._send
 _short_error = core._short_error
@@ -110,13 +110,13 @@ class ConfidencePoolBenchmarkAdapter:
     def warmup_steps(self, config, actors, model, now):
         if str(model.name).lower() != "confidencepoolfactory":
             return []
-        return core._confidence_pool_factory_recipe(config, actors, now)[:2]
+        return _confidence_pool_factory_recipe(config, actors, now)[:2]
 
     def workflow_steps(self, config, actors, model, target, now):
         if str(model.name).lower() == "confidencepoolfactory":
-            return core._confidence_pool_factory_recipe(config, actors, now)
+            return _confidence_pool_factory_recipe(config, actors, now)
         if str(model.name).lower() == "confidencepool":
-            return core._confidence_pool_recipe(config, actors, pool_override=target, now=now)
+            return _confidence_pool_recipe(config, actors, pool_override=target, now=now)
         return []
 
     def manages_child_prerequisites(self, model):
@@ -449,3 +449,87 @@ def get_benchmark_adapter(
         if adapter.matches(model, models, config):
             return adapter
     return None
+
+
+def _confidence_pool_factory_recipe(
+    config: dict[str, Any],
+    actors: list[core.Actor],
+    now: int,
+) -> list[Step]:
+    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+    factory = system.get("factory") or config.get("target")
+    token = system.get("stake_token")
+    agreement = system.get("agreement")
+    if not factory or not token or not agreement:
+        return []
+
+    alice = actors[0] if actors else core.Actor("Alice", factory, 0)
+    bob = actors[1] if len(actors) > 1 else alice
+    expiry = now + 31 * 24 * 60 * 60
+    scope = [alice.address, bob.address]
+
+    return [
+        core.Step(
+            0, alice.name, "ConfidencePoolFactory", factory,
+            "setStakeTokenAllowed(address,bool)", [token, True],
+            reason="factory owner enables the stake token",
+            inferred=False,
+        ),
+        core.Step(
+            0, alice.name, "ConfidencePoolFactory", factory,
+            "createPool(address,address,uint256,uint256,address,address[])",
+            [agreement, token, expiry, 10**18, bob.address, scope],
+            reason="factory validates dependencies, clones the pool, and initializes it",
+            inferred=False,
+        ),
+    ]
+
+
+
+def _confidence_pool_recipe(
+    config: dict[str, Any],
+    actors: list[core.Actor],
+    pool_override: str | None = None,
+    now: int | None = None,
+) -> list[Step]:
+    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
+    pool = pool_override or system.get("pool") or config.get("target")
+    token = system.get("stake_token")
+    attack_registry = system.get("attack_registry")
+    moderator = system.get("moderator")
+    if not pool or not token or not attack_registry or not moderator:
+        return []
+
+    timestamp = int(now if now is not None else time.time())
+    alice = actors[0] if actors else core.Actor("Alice", pool, 0)
+    bob = actors[1] if len(actors) > 1 else alice
+    amount = 10**18
+    max_uint = 2**256 - 1
+
+    return [
+        core.Step(0, alice.name, "StakeToken", token, "approve(address,uint256)", [pool, max_uint],
+             reason="Alice gives the pool permission to pull her stake tokens", inferred=False),
+        core.Step(0, bob.name, "StakeToken", token, "approve(address,uint256)", [pool, max_uint],
+             reason="Bob gives the pool permission to pull his stake tokens", inferred=False),
+        core.Step(0, alice.name, "ConfidencePool", pool, "contributeBonus(uint256)", [amount],
+             reason="Alice seeds the pool's bonus reserve", inferred=False),
+        core.Step(0, alice.name, "ConfidencePool", pool, "stake(uint256)", [amount],
+             reason="Alice deposits her stake", inferred=False),
+        core.Step(0, bob.name, "ConfidencePool", pool, "stake(uint256)", [amount],
+             reason="Bob deposits his stake", inferred=False),
+        core.Step(0, alice.name, "MockAttackRegistry", attack_registry, "setAgreementState(uint8)", [3],
+             reason="LAB CONTROL: agreement enters UNDER_ATTACK", inferred=False),
+        core.Step(0, alice.name, "ConfidencePool", pool, "pokeRiskWindow()",
+             [], reason="pool observes the external registry and seals the risk window", inferred=False),
+        core.Step(0, alice.name, "MockAttackRegistry", attack_registry, "setAgreementState(uint8)", [5],
+             reason="LAB CONTROL: agreement reaches PRODUCTION", inferred=False),
+        core.Step(0, alice.name, "MockConfidencePoolModerator", moderator, "flagSurvived(address)", [pool],
+             reason="moderator records the survived outcome", inferred=False),
+        core.Step(0, alice.name, "ConfidencePool", pool, "claimSurvived()",
+             [], reason="Alice claims principal plus her bonus share", inferred=False),
+        core.Step(0, bob.name, "ConfidencePool", pool, "claimSurvived()",
+             [], reason="Bob claims principal plus his bonus share", inferred=False),
+    ]
+
+
+
