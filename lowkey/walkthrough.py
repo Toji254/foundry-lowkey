@@ -5197,7 +5197,36 @@ def _synthesize_local_protocol_fixture(
 
     child = _infer_child_model(root_model, models)
     if not child:
-        return False, f"no concrete child contract was inferred from {root_model.name}"
+        # A single-contract application is a valid protocol target. Do not force
+        # every project through a factory -> child synthesis model.
+        entry = _artifact_entry_by_name(root, root_model.name)
+        if not entry:
+            return False, f"no compiled artifact found for {root_model.name}"
+        actor = actors[0] if actors else Actor("Alice", "0x" + "00" * 20, 0)
+        private_key = host.derive_default_anvil_key(0) if hasattr(host, "derive_default_anvil_key") else None
+        if not private_key:
+            return False, "could not derive the default Anvil deployer key"
+        ctor_args = _generic_constructor_args(root_model, root, actor)
+        if ctor_args is None:
+            return False, f"{root_model.name} has constructor arguments that cannot be inferred safely"
+        target = _deploy_local_artifact(root, rpc, private_key, entry, ctor_args)
+        if not is_address(target):
+            return False, f"failed to deploy {root_model.name} for the local walkthrough"
+        config["target"] = target
+        config["target_contract"] = root_model.name
+        config.setdefault("abi_paths", {})[target] = str(entry[0])
+        config["lab_system"] = {
+            "root": target,
+            "target": target,
+            "root_model": root_model.name,
+            "target_model": root_model.name,
+            "mode": "single-contract",
+        }
+        if hasattr(host, "save_config"):
+            host.save_config(config)
+        if hasattr(host, "_sync_audit_context"):
+            host._sync_audit_context(config, root)
+        return True, f"synthesized single-contract lab for {root_model.name}"
 
     if not _looks_like_confidence_pool_system(root_model, child):
         return _synthesize_generic_protocol_fixture(
