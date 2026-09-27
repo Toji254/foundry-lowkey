@@ -30,6 +30,116 @@ def die(message: str, code: int = 2) -> int:
 def forge_path() -> str | None:
     return shutil.which("forge")
 
+def _project_root() -> Path:
+    return Path(audit_context.foundry_project_root() or Path.cwd()).resolve()
+
+
+def _project_vyper_sources(root: Path) -> list[Path]:
+    ignored = {
+        ".git", ".audit", ".venv", ".tox", ".nox", "__pycache__",
+        ".pytest_cache", "node_modules", "cache", "out", "artifacts",
+        "build", "dist", "lib",
+    }
+    return sorted(
+        path for path in root.rglob("*.vy")
+        if path.is_file() and not any(part in ignored for part in path.parts)
+    )
+
+
+def _vyper_output(root: Path, source: Path, fmt: str) -> tuple[int, str, str]:
+    binary = shutil.which("vyper")
+    if not binary:
+        return 127, "", "vyper was not found on PATH"
+    returncode = subprocess.run(
+        [binary, "-f", fmt, str(source)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    return returncode.returncode, returncode.stdout.strip(), returncode.stderr.strip()
+
+
+def run_vyper_build(quiet: bool = False) -> int:
+    """Compile Vyper sources into Lowkey-owned normalized ABI artifacts."""
+    root = _project_root()
+    sources = _project_vyper_sources(root)
+    if not sources:
+        return die("no Vyper sources found in the current project.")
+
+    binary = shutil.which("vyper")
+    if not binary:
+        return die("vyper was not found on PATH. Install the project compiler first.", 1)
+
+    output_dir = root / ".audit" / "build" / "vyper"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    failures = 0
+    built = 0
+
+    for source in sources:
+        outputs = {}
+        for fmt in ("abi", "bytecode", "bytecode_runtime", "layout"):
+            code, stdout, stderr = _vyper_output(root, source, fmt)
+            if code != 0:
+                failures += 1
+                if not quiet:
+                    print(
+                        f"Vyper build failed: {source.relative_to(root)} ({fmt})",
+                        file=sys.stderr,
+                    )
+                    print(stderr or stdout or "compiler returned non-zero status", file=sys.stderr)
+                break
+            outputs[fmt] = stdout
+
+        if failures and (source.exists()):
+            # One source failing is enough to fail the build, but continue only
+            # when there are remaining sources so the user gets all diagnostics.
+            continue
+
+        if not outputs:
+            continue
+
+        try:
+            abi = json.loads(outputs["abi"])
+        except json.JSONDecodeError:
+            failures += 1
+            print(f"Vyper returned invalid ABI JSON: {source}", file=sys.stderr)
+            continue
+
+        bytecode = outputs["bytecode"].strip()
+        runtime_bytecode = outputs["bytecode_runtime"].strip()
+        try:
+            layout = json.loads(outputs["layout"])
+        except json.JSONDecodeError:
+            layout = {}
+
+        artifact = {
+            "contractName": source.stem,
+            "sourceName": source.relative_to(root).as_posix(),
+            "abi": abi,
+            "bytecode": {"object": bytecode},
+            "deployedBytecode": {"object": runtime_bytecode},
+            "storageLayout": layout,
+            "language": "Vyper",
+            "compiler": {"name": "vyper", "version": subprocess.run(
+                [binary, "--version"], cwd=root, capture_output=True, text=True
+            ).stdout.strip()},
+        }
+        destination = output_dir / f"{source.stem}.json"
+        destination.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+        built += 1
+
+    audit_context.record_tool(
+        "vyper-build",
+        root,
+        status="completed" if failures == 0 else "failed",
+        summary=f"compiled {built} Vyper contract(s)",
+        data={"contracts": built, "failures": failures},
+    )
+    if not quiet:
+        print(f"Vyper build: {built} contract(s) compiled.")
+        print(f"Artifacts: {output_dir}")
+    return 1 if failures else 0
+
 def run_forge(args: Sequence[str], quiet: bool = False) -> int:
     """Run Forge, optionally hiding successful command output for compound audits."""
     binary = forge_path()
@@ -812,6 +922,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         print_help()
         return 0
     command, rest = args[0], args[1:]
+    if command == "build" and not (Path(audit_context.foundry_project_root()) / "foundry.toml").is_file():
+        if _project_vyper_sources(_project_root()):
+            return run_vyper_build()
     if command == "audit":
         return run_audit(rest)
     if command in {"test-audit", "audit-test"}:
