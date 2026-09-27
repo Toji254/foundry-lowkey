@@ -3605,9 +3605,14 @@ def _print_numeric_unit_reference(label, ptype):
     print()
 
 
-def _normalize_human_numeric_input(value, ptype):
+def _normalize_human_numeric_input(value, ptype, label=''):
     text = str(value or '').strip().replace(' ETH', ' ether').replace(' eth', ' ether')
-    if re.fullmatch(r'\d+(?:\.\d+)?\s*(?:ether|gwei|wei)', text, re.I):
+    lowered = str(label or '').lower().replace('_', '')
+    is_eth_amount = any(word in lowered for word in (
+        'amount', 'value', 'deposit', 'withdraw', 'payment', 'fee',
+        'collateral', 'refund', 'reward', 'stake', 'unstake', 'proceeds',
+    )) and not any(word in lowered for word in ('price', 'rate', 'ratio', 'scale'))
+    if is_eth_amount and re.fullmatch(r'\d+(?:\.\d+)?\s*(?:ether|gwei|wei)', text, re.I):
         return normalize_numeric_argument(text, ptype)
     return value
 
@@ -3633,7 +3638,7 @@ def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
         except EOFError:
             return None, "local lab cancelled"
         if value and ptype.startswith(('uint', 'int')):
-            value = _normalize_human_numeric_input(value, ptype)
+            value = _normalize_human_numeric_input(value, ptype, label)
         if not value:
             return None, f"constructor argument {label} is required"
         values.append(value)
@@ -6633,7 +6638,7 @@ def run_wizard(config,args):
         try: value=input(f"{label} ({ptype}): ").strip()
         except EOFError: print("Wizard cancelled."); return 0
         if value and ptype.startswith(('uint', 'int')):
-            value=_normalize_human_numeric_input(value, ptype)
+            value=_normalize_human_numeric_input(value, ptype, label)
         if not value:
             return fail("Argument values are required.")
         values.append(value)
