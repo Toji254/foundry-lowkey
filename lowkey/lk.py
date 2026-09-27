@@ -3739,7 +3739,7 @@ def run_lab(config,args):
     # Vyper projects do not have Forge artifacts. Build the project's own Vyper
     # sources before target discovery so lk lab never falls back to stale/test-only
     # artifacts from another phase.
-    if kind == "vyper":
+    if kind in {"vyper", "vyper-uv"}:
         try:
             from forge_tools import run_vyper_build
         except ImportError as exc:
