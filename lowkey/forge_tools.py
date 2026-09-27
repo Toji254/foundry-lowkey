@@ -316,6 +316,18 @@ def _coverage_gap(metric: tuple[str, int, int] | None) -> str:
     return str(max(total - covered, 0))
 
 
+def _coverage_project_paths(root: Path) -> list[str]:
+    """Return configured first-party source prefixes for human coverage reporting."""
+    try:
+        config = _resolved_forge_config(root)
+        src = str(config.get("src") or "").strip().strip("/\\")
+        if src:
+            return [src]
+    except Exception:
+        pass
+    return ["src", "contracts"]
+
+
 def _coverage_cell(metric: tuple[str, int, int] | None) -> str:
     if metric is None:
         return "—"
@@ -330,9 +342,20 @@ def _coverage_uncovered(metric: tuple[str, int, int] | None) -> str:
     return str(max(total - covered, 0))
 
 
-def _format_coverage_report(output: str) -> str:
-    """Render Foundry coverage as a readable table without hiding coverage data."""
+def _format_coverage_report(output: str, root: Path | None = None) -> str:
+    """Render application coverage without counting Lowkey helper scripts."""
     rows = _parse_coverage_table(output)
+    if root is not None:
+        prefixes = _coverage_project_paths(root)
+        filtered_rows = [
+            row for row in rows
+            if any(
+                str(row.get("file") or "").replace("\\", "/").lstrip("./").startswith(prefix + "/")
+                for prefix in prefixes
+            )
+        ]
+        if filtered_rows:
+            rows = filtered_rows
     if not rows:
         return ""
 
@@ -468,7 +491,7 @@ def run_coverage_audit(command: Sequence[str], root: Path, quiet: bool = False) 
         combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
         visible_stdout = _strip_coverage_table(result.stdout) if result.stdout else ""
         visible_stderr = _strip_coverage_table(result.stderr) if result.stderr else ""
-        coverage_report = _format_coverage_report(combined)
+        coverage_report = _format_coverage_report(combined, root)
         if not quiet:
             if visible_stdout:
                 print(visible_stdout, end="" if visible_stdout.endswith("\n") else "\n")
@@ -609,11 +632,11 @@ def run_audit(args: Sequence[str]) -> int:
     if not has_verbosity(forwarded):
         test_cmd.insert(1, "-vvv")
     if not _has_path_filter(forwarded):
-        test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
+        test_cmd.extend(["--no-match-path", "test/Lowkey_*", "--no-match-path", "test/Poc_*"])
     coverage_cmd = ["coverage", *forwarded]
     coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded, quiet=quiet))
     if not _has_path_filter(forwarded) and _supports_option("coverage", "--no-match-path"):
-        coverage_cmd.extend(["--no-match-path", "**/Lowkey_*"])
+        
     steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
     if checks:
         steps.append(("slither", None))
