@@ -2511,6 +2511,8 @@ def discover_audit_target_contract(root):
     sources = {}
 
     for path in local_artifact_paths(root):
+        if "build-info" in Path(path).parts:
+            continue
         artifact = read_artifact(path)
         source = artifact_source_name(artifact, path)
         if not source:
@@ -2528,8 +2530,6 @@ def discover_audit_target_contract(root):
         except OSError:
             pass
         if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
-            continue
-        if not artifact_is_project_application(root, path, artifact):
             continue
         name = artifact_contract_name(path, artifact)
         key = str(name).lower()
