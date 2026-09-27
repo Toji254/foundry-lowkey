@@ -957,8 +957,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     command, rest = args[0], args[1:]
     root = _project_root()
     kind = _project_kind(root)
+    foundry_kind = kind in {"foundry", "mixed-foundry-vyper"}
 
-    if command == "build" and kind != "foundry":
+    if command == "build" and not foundry_kind:
         if kind == "vyper":
             return run_vyper_build()
         if kind == "hardhat":
@@ -968,7 +969,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         print("LowkeyForge: no supported project build system detected; using existing artifacts.")
         return 0
 
-    if command == "test" and kind != "foundry":
+    if command == "test" and not foundry_kind:
         if kind == "hardhat":
             return _run_native_project(["npx", "hardhat", "test"], root, "hardhat-test")
         if kind == "brownie":
@@ -993,7 +994,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "flatten", "verify-contract", "verify-check", "verify-bytecode",
         "tree", "install", "remove", "update", "cache", "config",
         "remappings", "bind", "bind-json", "doc", "eip712", "soldeer",
-    } and kind != "foundry":
+    } and not foundry_kind:
         return die(
             f"Forge command '{command}' is not the native toolchain for this project "
             f"(detected '{kind}'). Use the project's native tool or 'lk walkthrough'."
