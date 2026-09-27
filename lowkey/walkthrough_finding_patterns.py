@@ -982,7 +982,9 @@ def run(
         )
         if story_steps:
             for obs in observations:
-                if obs.pattern_id == family_id and obs.contract == story_steps[0].contract and obs.function == story_steps[0].function:
+                obs_name = str(obs.function or "").split("(", 1)[0]
+                step_name = str(story_steps[0].function or "").split("(", 1)[0]
+                if obs.pattern_id == family_id and obs.contract == story_steps[0].contract and obs_name == step_name:
                     if story.signal in {"CONFIRMED", "REVIEW"}:
                         obs.status = story.signal
                     if story.evidence:
