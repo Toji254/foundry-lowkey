@@ -3733,6 +3733,21 @@ def run_lab(config,args):
     if not root:
         return fail("Error: Lowkey could not resolve the current project root.")
 
+    project = project_tools.detect_project(root) if project_tools is not None else {}
+    kind = str(project.get("kind") or "generic")
+
+    # Vyper projects do not have Forge artifacts. Build the project's own Vyper
+    # sources before target discovery so lk lab never falls back to stale/test-only
+    # artifacts from another phase.
+    if kind == "vyper":
+        try:
+            from forge_tools import run_vyper_build
+        except ImportError as exc:
+            return fail(f"Error: Vyper build layer unavailable: {exc}")
+        build_code = run_vyper_build(quiet=True)
+        if build_code != 0:
+            return fail("Error: current Vyper project could not be built; refusing to guess a live target.", 1)
+
     if args and args[0].lower() == "stop":
         return stop_project_anvil(root)
 
