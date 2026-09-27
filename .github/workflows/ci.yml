@@ -120,7 +120,7 @@ jobs:
           lk lab Fixture
           lk status
           lk audit --non-interactive | tee /tmp/lowkey-audit-noninteractive.txt
-          grep -q "Target  : Fixture" /tmp/lowkey-audit-noninteractive.txt
+          grep -Eq "Target[[:space:]]+: Fixture" /tmp/lowkey-audit-noninteractive.txt
           lk audit check --non-interactive | tee /tmp/lowkey-audit-check-noninteractive.txt
           grep -q "Slither" /tmp/lowkey-audit-check-noninteractive.txt
           lk forge build
