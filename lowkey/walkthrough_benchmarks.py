@@ -68,6 +68,15 @@ class WalkthroughBenchmarkAdapter(Protocol):
     ) -> list[core.Step]: ...
     def manages_child_prerequisites(self, model: core.ContractModel) -> bool: ...
 
+    def observe_step(
+        self,
+        story: core.WalkthroughStory,
+        step: core.Step,
+        rpc: str,
+        target: dict[str, Any],
+        actors: list[core.Actor],
+    ) -> None: ...
+
     def assess(
         self,
         story: core.WalkthroughStory,
@@ -109,6 +118,19 @@ class ConfidencePoolBenchmarkAdapter:
 
     def manages_child_prerequisites(self, model):
         return str(model.name).lower() == "confidencepool"
+
+    def observe_step(self, story, step, rpc, target, actors):
+        pool = str(target.get("pool") or "")
+        if story.story_id == "CP-01" and step.function.startswith("sweepUnclaimedBonus") and step.status == "success":
+            bonus = _cast_read_simple(rpc, pool, "totalBonus()(uint256)")
+            finality = _cast_read_simple(rpc, pool, "claimsStarted()(bool)")
+            step.diagnostics.extend([
+                f"CHECKPOINT totalBonus={bonus}",
+                f"CHECKPOINT claimsStarted={finality}",
+            ])
+        elif story.story_id == "CP-02" and step.actor == (actors[2].name if len(actors) > 2 else "") and step.function.startswith("stake(uint256)"):
+            end = _cast_read_simple(rpc, pool, "riskWindowEnd()(uint32)")
+            step.diagnostics.append(f"CHECKPOINT riskWindowEnd={end}")
 
     def prepare(self, root, config, host, rpc, actors, model, models):
         pool, reason = _confidence_pool_live_pool(rpc, config, host, actors)
