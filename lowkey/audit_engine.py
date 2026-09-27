@@ -703,6 +703,19 @@ def test_poc_candidate():
     return 0, [test_path, json_path]
 
 
+def _solidity_address_literal(value: str | None) -> str:
+    """Render an address safely as Solidity even when it is not EIP-55 checksummed.
+
+    Solidity 0.8.x treats a 20-byte hex literal as an address literal and validates
+    its checksum. Prefixing the literal with 00 forces integer-literal semantics;
+    the explicit uint160/address conversion then preserves the intended address.
+    """
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(value or "")):
+        return "address(0)"
+    raw = str(value)[2:]
+    return f"address(uint160(0x00{raw}))"
+
+
 def generate_poc(root: str = ".", finding_index: int | None = None, name: str | None = None) -> tuple[int, list[Path]]:
     _refresh_system_model(root, "poc:start")
     evidence = read_json(evidence_dir(root) / "slither.json", {}).get("data", {})
@@ -807,7 +820,7 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
         function = None
 
     slug = _slug(name or check)
-    target_expr = target if re.fullmatch(r"0x[0-9a-fA-F]{40}", str(target or "")) else "address(0)"
+    target_expr = _solidity_address_literal(target)
     attacker = ""
     attacker_member = ""
     constructor = ""
