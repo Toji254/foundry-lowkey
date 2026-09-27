@@ -26,18 +26,18 @@ def source_link(
     display: str | None = None,
 ) -> str:
     """Return a clean source label with an optional clickable VS Code target."""
-    project_root = foundry_project_root(root)
+    project_root_path = project_root(root)
     if not file:
         return "unknown location"
 
     path = Path(str(file))
-    absolute = (project_root / path).resolve() if not path.is_absolute() else path.resolve()
+    absolute = (project_root_path / path).resolve() if not path.is_absolute() else path.resolve()
 
     if display:
         label = display
     else:
         try:
-            label = absolute.relative_to(project_root).as_posix()
+            label = absolute.relative_to(project_root_path).as_posix()
         except ValueError:
             label = path.as_posix()
 
@@ -60,7 +60,31 @@ def source_link(
 
 
 
+
+def project_root(start: Path | None = None) -> Path:
+    """Find the nearest conventional project root for audit scoping.
+
+    This is intentionally broader than Foundry detection so Cairo, Vyper,
+    Hardhat, Anchor, Move, and source-only projects keep one stable .audit
+    workspace even when Lowkey is invoked from a nested directory.
+    """
+    path = (start or Path.cwd()).expanduser().resolve()
+    if path.is_file():
+        path = path.parent
+    markers = (
+        "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
+        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
+        "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
+        "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
+        "package.json", "Cargo.toml", "go.mod",
+    )
+    for parent in (path, *path.parents):
+        if any((parent / marker).is_file() for marker in markers):
+            return parent
+    return path
+
 def foundry_project_root(start: Path | None = None) -> Path:
+    """Backward-compatible Foundry-specific root lookup."""
     """Resolve the active EVM project root across common project layouts."""
     path = (start or Path.cwd()).expanduser().resolve()
     if path.is_file():
@@ -80,7 +104,7 @@ def foundry_project_root(start: Path | None = None) -> Path:
 
 
 def audit_dir(root: Path | None = None) -> Path:
-    path = foundry_project_root(root) / AUDIT_DIR_NAME
+    path = project_root(root) / AUDIT_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 
