@@ -1953,7 +1953,6 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
             ("tests", [
                 "forge", "test", "-vvvv",
                 "--no-match-path", "test/Lowkey_*",
-                "--no-match-path", "test/Poc_*",
             ], 600),
             ("coverage", ["forge", "coverage"], 600),
         ):
