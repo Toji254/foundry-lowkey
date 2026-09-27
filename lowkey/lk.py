@@ -1787,93 +1787,199 @@ def run_self_test():
         print("Self-test failed: "+", ".join(failed)); return 1
     print(f"Self-test passed ({len(checks)} checks)."); return 0
 
+def _doctor_advice(name, *, why, fix):
+    print(f"      WHY : {why}")
+    print(f"      FIX : {fix}")
+
+
+def _doctor_tool(name, required=True):
+    path = shutil.which(name)
+    if not path:
+        label = "FAIL" if required else "NOTE"
+        print(f"{label:<5} {name}: not found on PATH")
+        _doctor_advice(
+            name,
+            why="Lowkey cannot invoke this tool from your current shell.",
+            fix="Install it or fix PATH. For Foundry tools, run 'foundryup' and restart the shell."
+            if name in {"forge", "cast", "anvil", "chisel"} else
+            "Install Python 3 and make sure 'python3' is on PATH."
+            if name == "python3" else
+            "Install Slither (for example with 'pipx install slither-analyzer') if you want static-analysis support.",
+        )
+        return not required
+    try:
+        result = subprocess.run([path, "--version"], capture_output=True, text=True)
+    except OSError as exc:
+        print(f"FAIL  {name}: could not execute {path}")
+        _doctor_advice(name, why=str(exc), fix="Check execute permissions and PATH, then retry 'lk doctor'.")
+        return False
+    output = (result.stdout or result.stderr or "").strip().splitlines()
+    version = output[0] if output else "version unavailable"
+    if result.returncode == 0:
+        print(f"PASS  {name}: {path} ({version})")
+        return True
+    print(f"FAIL  {name}: {path} ({version})")
+    detail = (result.stderr or result.stdout or "version command failed").strip().splitlines()
+    _doctor_advice(
+        name,
+        why=detail[-1] if detail else "Version check failed.",
+        fix="Reinstall/update the tool and verify it runs directly from the shell.",
+    )
+    return False
+
+
 def run_doctor():
-    failures=0
-    print("Lowkey doctor")
-    print("============")
+    failures = 0
+    print("LOWKEY DOCTOR")
+    print("=" * 72)
+
     for name in ("python3", "cast", "forge", "anvil", "chisel"):
-        path=shutil.which(name)
-        if not path:
-            print(f"FAIL  {name}: not found")
-            failures+=1
-            continue
-        try:
-            result=subprocess.run([path,"--version"],capture_output=True,text=True)
-            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
-        except OSError as error:
-            print(f"FAIL  {name}: {error}")
-            failures+=1
-            continue
-        if result.returncode==0:
-            print(f"PASS  {name}: {path} ({version})")
-        else:
-            print(f"FAIL  {name}: {path} ({version})")
-            failures+=1
-    slither=shutil.which("slither")
+        if not _doctor_tool(name, required=True):
+            failures += 1
+
+    slither = shutil.which("slither")
     if slither:
         try:
-            result=subprocess.run([slither,"--version"],capture_output=True,text=True)
-            version=(result.stdout or result.stderr).splitlines()[0] if result.returncode==0 else "version check failed"
-            if result.returncode==0:
+            result = subprocess.run([slither, "--version"], capture_output=True, text=True)
+            if result.returncode == 0:
+                version = (result.stdout or result.stderr).strip().splitlines()[0]
                 print(f"PASS  slither: {slither} ({version})")
             else:
-                print(f"WARN  slither: {slither} ({version})")
-        except OSError as error:
-            print(f"WARN  slither: {error}")
+                print(f"WARN  slither: {slither} (version check failed)")
+                _doctor_advice(
+                    "slither",
+                    why=(result.stderr or result.stdout or "version check failed").strip().splitlines()[-1],
+                    fix="Reinstall with 'pipx install -f slither-analyzer' or repair the current Python environment.",
+                )
+        except OSError as exc:
+            print(f"WARN  slither: {slither}")
+            _doctor_advice("slither", why=str(exc), fix="Repair the Slither installation or PATH.")
     else:
         print("NOTE  slither: not found (optional static analyzer)")
+        _doctor_advice(
+            "slither",
+            why="Slither is optional, so Lowkey can still run without it.",
+            fix="Install it with 'pipx install slither-analyzer' when you want static-analysis checks.",
+        )
 
-    forge=shutil.which("forge")
+    forge = shutil.which("forge")
     if forge:
         try:
-            result=subprocess.run([forge,"--help"],capture_output=True,text=True)
-            available={line.strip().split()[0] for line in result.stdout.splitlines() if line.startswith("  ") and line.strip() and not line.strip().startswith("-")}
-            advertised=set(FORGE_NATIVE_COMMANDS)
-            missing=sorted(advertised-available)
+            result = subprocess.run([forge, "--help"], capture_output=True, text=True)
+            available = {
+                line.strip().split()[0]
+                for line in result.stdout.splitlines()
+                if line.startswith("  ") and line.strip() and not line.strip().startswith("-")
+            }
+            advertised = set(FORGE_NATIVE_COMMANDS)
+            missing = sorted(advertised - available)
             if missing:
                 print(f"FAIL  forge commands missing: {', '.join(missing)}")
-                failures+=1
+                _doctor_advice(
+                    "forge commands",
+                    why="The installed Forge does not advertise all features Lowkey expects.",
+                    fix="Update Foundry with 'foundryup', restart the shell, then rerun 'lk doctor'.",
+                )
+                failures += 1
             else:
                 print(f"PASS  forge commands: {', '.join(sorted(advertised))}")
-        except OSError as error:
-            print(f"FAIL  forge command check: {error}")
-            failures+=1
+        except OSError as exc:
+            print("FAIL  forge command check")
+            _doctor_advice("forge command check", why=str(exc), fix="Repair the Foundry installation and rerun 'lk doctor'.")
+            failures += 1
+
     if forge:
         try:
-            help_result=subprocess.run([forge,"test","--help"],capture_output=True,text=True)
-            help_text=(help_result.stdout or "")+(help_result.stderr or "")
-            for label,flag in (("forge mutation","--mutate"),("forge symbolic","--symbolic"),("forge brutalize","--brutalize"),("forge rerun","--rerun")):
+            help_result = subprocess.run([forge, "test", "--help"], capture_output=True, text=True)
+            help_text = (help_result.stdout or "") + (help_result.stderr or "")
+            for label, flag in (
+                ("forge mutation", "--mutate"),
+                ("forge symbolic", "--symbolic"),
+                ("forge brutalize", "--brutalize"),
+                ("forge rerun", "--rerun"),
+            ):
                 if flag in help_text:
                     print(f"PASS  {label}: {flag}")
                 else:
                     print(f"FAIL  {label}: {flag} not advertised by this Forge")
-                    failures+=1
-        except OSError as error:
-            print(f"FAIL  forge test feature check: {error}")
-            failures+=1
+                    _doctor_advice(
+                        label,
+                        why=f"Forge 1.8.x feature check did not find {flag}.",
+                        fix="Update Foundry with 'foundryup' and rerun 'lk doctor'.",
+                    )
+                    failures += 1
+        except OSError as exc:
+            print("FAIL  forge test feature check")
+            _doctor_advice("forge test features", why=str(exc), fix="Repair Foundry and rerun 'lk doctor'.")
+            failures += 1
 
-    for command,args in (("cast decode-event",["cast","decode-event","--help"]),
-                         ("cast receipt",["cast","receipt","--help"]),
-                         ("cast sig-event",["cast","sig-event","--help"]),
-                         ("forge inspect",["forge","inspect","--help"]),
-                         ("cast pretty-calldata",["cast","pretty-calldata","--help"]),
-                         ("cast tx-pool",["cast","tx-pool","--help"]),
-                         ("cast disassemble",["cast","disassemble","--help"]),
-                         ("chisel",["chisel","--help"])):
-        if not shutil.which(args[0]):
-            print(f"FAIL  dependency command: {command} (binary not found)")
-            failures+=1
-            continue
+    for command, args in (
+        ("cast decode-event", ["cast", "decode-event", "--help"]),
+        ("cast receipt", ["cast", "receipt", "--help"]),
+        ("cast sig-event", ["cast", "sig-event", "--help"]),
+        ("forge inspect", ["forge", "inspect", "--help"]),
+        ("cast pretty-calldata", ["cast", "pretty-calldata", "--help"]),
+        ("cast tx-pool", ["cast", "tx-pool", "--help"]),
+        ("cast disassemble", ["cast", "disassemble", "--help"]),
+        ("chisel", ["chisel", "--help"]),
+    ):
+        binary = args[0]
         try:
-            result=subprocess.run(args,capture_output=True,text=True)
+            result = subprocess.run(args, capture_output=True, text=True) if shutil.which(binary) else None
         except OSError:
-            result=None
-        if result is not None and result.returncode==0:
+            result = None
+        if result is not None and result.returncode == 0:
             print(f"PASS  dependency command: {command}")
         else:
             print(f"FAIL  dependency command: {command}")
-            failures+=1
+            _doctor_advice(
+                command,
+                why="Lowkey could not execute the compatibility command.",
+                fix="Update/reinstall Foundry with 'foundryup', then rerun 'lk doctor'.",
+            )
+            failures += 1
+
+    root = audit_context.foundry_project_root() if "audit_context" in globals() else None
+    if root:
+        print()
+        print("PROJECT DIAGNOSTICS")
+        print("-" * 72)
+        print(f"Project : {root}")
+        if forge and shutil.which("forge"):
+            try:
+                result = subprocess.run(
+                    [forge, "build", "--skip", "test", "--skip", "script"],
+                    cwd=str(root),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print("PASS  project build: Forge can compile the application sources.")
+                else:
+                    print("FAIL  project build: Forge could not compile the application sources.")
+                    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+                    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+                    useful = [line for line in lines if "Error" in line or "not found" in line or "Source" in line]
+                    for line in (useful[-3:] if useful else lines[-3:]):
+                        print(f"      {line}")
+                    if "not found" in combined.lower() or "source" in combined.lower() and "not found" in combined.lower():
+                        fix = "Run 'forge install' if a dependency is missing, then check remappings with 'forge remappings'."
+                    elif "checksum" in combined.lower():
+                        fix = "Regenerate the affected Lowkey artifact/PoC with the current integration branch, then rerun 'lk build'."
+                    else:
+                        fix = "Fix the reported Solidity/Foundry error above, then rerun 'lk build' and 'lk doctor'."
+                    _doctor_advice(
+                        "project build",
+                        why="The current Foundry project does not compile with the active toolchain.",
+                        fix=fix,
+                    )
+                    failures += 1
+            except OSError as exc:
+                print("FAIL  project build: could not invoke Forge")
+                _doctor_advice("project build", why=str(exc), fix="Repair Foundry, then rerun 'lk doctor'.")
+                failures += 1
     return 1 if failures else 0
+
 def run_test_gen(config):
     if not os.path.exists(SESSION_FILE):
         return fail("Error: No session history found.")
@@ -2311,6 +2417,33 @@ def artifact_is_deployable(artifact):
         obj = str(bytecode or "")
     return bool(obj and obj not in {"0x", "0X"})
 
+def source_contract_fallback(root, contract_name):
+    """Find a first-party source for a contract when Foundry artifact metadata is sparse."""
+    root_path = Path(root).expanduser().resolve()
+    src_prefix = "src"
+    try:
+        foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+        match = re.search(r"(?m)^\s*src\s*=\s*[\"']([^\"']+)[\"']", foundry)
+        if match:
+            src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
+    except OSError:
+        pass
+    src_root = root_path / src_prefix
+    if not src_root.is_dir():
+        return None
+    pattern = f"{contract_name}.sol"
+    for candidate in sorted(src_root.rglob(pattern)):
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if re.search(r"\b(contract|library|interface)\s+" + re.escape(contract_name) + r"\b", text):
+            try:
+                return candidate.relative_to(root_path).as_posix()
+            except ValueError:
+                return None
+    return None
+
 def artifact_is_project_application(root, path, artifact):
     """Return True only for first-party deployable application contracts."""
     if not artifact_is_deployable(artifact):
@@ -2318,6 +2451,8 @@ def artifact_is_project_application(root, path, artifact):
 
     root_path = Path(root).expanduser().resolve()
     source = artifact_source_name(artifact, path, root)
+    if not source:
+        source = source_contract_fallback(root, artifact_contract_name(path, artifact))
     if not source:
         return False
 
@@ -2435,43 +2570,59 @@ def discover_audit_target_contract(root):
     return artifacts[ranked[0][0]] if ranked else None
 
 def discover_generic_lab_contract(root, query=None):
-    matches = project_artifact_function_matches(root, query) if query else []
-    preferred_contracts = []
-    for contract, _signature, path in matches:
-        if contract not in preferred_contracts:
-            preferred_contracts.append(contract)
+    preferred_name = str(query).strip() if query else discover_audit_target_contract(root)
 
+    # First pass: the strict artifact/source validation.
     candidates = []
     for path in local_artifact_paths(root):
         artifact = read_artifact(path)
-        if not artifact_is_project_application(root, path, artifact):
+        if not artifact or not artifact_is_deployable(artifact):
             continue
         contract = artifact_contract_name(path, artifact)
-        lowered_path = str(path).lower()
+        if preferred_name and contract.lower() != preferred_name.lower():
+            continue
+        source = artifact_source_name(artifact, path, root) or source_contract_fallback(root, contract)
+        if not source:
+            continue
+        lowered = str(source).lower().replace("\\", "/")
         lowered_contract = contract.lower()
-        if "/interfaces/" in lowered_path or lowered_contract.startswith("i"):
+        if "/interfaces/" in lowered or lowered_contract.startswith("i"):
             continue
-        score = 50
-        if query and lowered_contract == str(query).strip().lower():
-            score = -50
-        elif contract in preferred_contracts:
-            score = 0 + preferred_contracts.index(contract)
-        elif "/mocks/" in lowered_path or lowered_contract.startswith("mock"):
-            score = 100
-        elif "test" in lowered_path:
-            score = 90
-        constructor_inputs = artifact_constructor_inputs(artifact)
-        source = artifact_source_name(artifact, path)
-        fqn = f"{source}:{contract}" if source else None
-        if not fqn:
-            continue
-        candidates.append((score, contract, path, artifact, constructor_inputs, fqn))
+        if not artifact_is_project_application(root, path, artifact):
+            # Re-check with the source fallback: sparse metadata should not block
+            # a valid first-party Foundry artifact from becoming a local lab.
+            if not re.search(r"\b(contract|library|interface)\s+" + re.escape(contract) + r"\b",
+                             (Path(root) / source).read_text(encoding="utf-8", errors="replace")):
+                continue
+        candidates.append((
+            0 if preferred_name and contract.lower() == preferred_name.lower() else 50,
+            contract, path, artifact, artifact_constructor_inputs(artifact),
+            f"{source}:{contract}"
+        ))
+
+    # If metadata/source-name recovery still failed, use the strongest application
+    # contract name and its matching bytecode artifact.
+    if not candidates and preferred_name:
+        for path in local_artifact_paths(root):
+            artifact = read_artifact(path)
+            if not artifact or not artifact_is_deployable(artifact):
+                continue
+            contract = artifact_contract_name(path, artifact)
+            if contract.lower() != preferred_name.lower():
+                continue
+            source = source_contract_fallback(root, contract)
+            if source:
+                candidates.append((
+                    0, contract, path, artifact, artifact_constructor_inputs(artifact),
+                    f"{source}:{contract}"
+                ))
+                break
 
     if not candidates:
         return None
-
-    candidates.sort(key=lambda item: (item[0], item[1].lower(), item[2]))
+    candidates.sort(key=lambda item: (item[0], item[1].lower(), str(item[2])))
     return candidates[0]
+
 
 def set_lab_target(config, root, target, contract, artifact):
     config["target"] = target
@@ -2974,9 +3125,14 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     candidate = discover_generic_lab_contract(root, requested)
     if not candidate:
+        app = discover_audit_target_contract(root)
         return fail(
-            "Lowkey could not find a deployable built contract for the local lab. "
-            "Run 'forge build' and optionally specify a contract: lk lab <Contract>."
+            "Local lab target discovery failed. "
+            + (f"Lowkey identified '{app}' as the likely application contract, but could not match it to deployable bytecode. "
+               if app else
+               "Lowkey could not identify a first-party application contract with deployable bytecode. ")
+            + "Fix: run 'lk build', then 'lk lab <ContractName>' for the exact contract. "
+            + "If it still fails, run 'lk project' and check the dependency/target diagnostics."
         )
 
     _score, contract, path, artifact, constructor_inputs, fqn = candidate
@@ -6008,7 +6164,8 @@ PROJECT / TARGET SETUP
   lk as <actor> <command> [args]    Run one command as another actor.
 
 UNDERSTAND THE PROJECT
-  lk project [json]                Detect the project and print its source/dependency graph.
+  lk project [json]                Explain the project and dependency graph in plain English.
+                                   Use 'lk graph' as the same command; add 'json' for raw machine data.
                                    Example: lk project
   lk system [json]                 Build/show the reusable system bootstrap manifest.
                                    Example: lk system
@@ -6225,7 +6382,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if not resolved: print(f"Unknown target: {args[0]}"); return
         config["target"]=resolved; save_config(config)
     elif cmd=="deployments": run_deployments(config)
-    elif cmd=="project": return run_project_map(config,args)
+    elif cmd in {"project","graph"}: return run_project_map(config,args)
     elif cmd=="system": return run_system_model(config,args)
     elif cmd=="clone": return run_clone(config,args)
     elif cmd=="lab": return run_lab(config,args)
