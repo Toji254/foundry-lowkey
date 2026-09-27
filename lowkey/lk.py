@@ -22,6 +22,17 @@ if str(MODULE_DIR) not in sys.path:
 import audit_context
 
 try:
+    from project_detection import (
+        detect_project,
+        format_detection,
+        project_root as detected_project_root,
+        run_native_audit,
+    )
+except ImportError:
+    detect_project = format_detection = run_native_audit = None
+    detected_project_root = lambda start=".": Path(start).resolve()
+
+try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
 except ImportError:
     FORGE_NATIVE_COMMANDS = set()
@@ -4834,31 +4845,79 @@ def _sync_audit_context(config, root=None):
 
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
-        print("Usage: lk audit [auto] [--checks] [--interactive|--non-interactive]")
-        print("Run the connected audit session. Plain 'lk audit' detects and uses an existing Anvil but never starts one.")
-        print("'lk audit auto' may start a Lowkey-managed project Anvil and bootstrap a safe local target.")
-        print("Use --checks for Slither and optional lint/geiger checks; non-interactive environments skip the menu.")
+        print("Usage: lk audit [--checks] [--verbose]")
+        print("Detect the project/toolchain first, then run the matching audit backend.")
+        print("Foundry projects use Forge; Cairo/Vyper/Hardhat/Anchor/Move use native checks.")
         return 0
 
-    root = audit_context.foundry_project_root()
-    _sync_audit_context(config, root)
+    root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
+    info = detect_project(root) if detect_project else {
+        "root": str(root),
+        "kind": "unknown",
+        "backend": "generic",
+        "stacks": [],
+        "languages": {},
+    }
 
-    try:
-        from forge_tools import run_audit as run_forge_audit
-    except ImportError as exc:
-        return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
+    print()
+    print(format_detection(info) if format_detection else f"Project : {root}")
 
-    # Preserve the user's audit mode. Plain 'lk audit' is the baseline pipeline;
-    # '--checks' explicitly opts into Slither and optional lint/geiger checks.
-    forge_args = list(args)
-    return_code = run_forge_audit(forge_args)
+    # Keep project identity/evidence scoped to the detected project root.
+    project_data = {
+        "root": str(root),
+        "name": root.name,
+        "kind": info.get("kind"),
+        "backend": info.get("backend"),
+        "stacks": info.get("stacks", []),
+        "languages": info.get("languages", {}),
+    }
+    audit_context.update(root, project=project_data)
+
+    stacks = set(info.get("stacks", []))
+
+    # Only EVM stacks should initialize/sync the Anvil + ABI target context.
+    # A Cairo/Starknet audit must never be forced through the Foundry/Forge path.
+    if "foundry" in stacks:
+        _sync_audit_context(config, root)
+
+        try:
+            from forge_tools import run_audit as run_forge_audit
+        except ImportError as exc:
+            return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
+
+        forge_args = list(args)
+        return_code = run_forge_audit(forge_args)
+
+        audit_context.record_tool(
+            "audit",
+            root,
+            status="completed" if return_code == 0 else "failed",
+            summary="connected Foundry audit pipeline",
+            data={"exit_code": return_code, "backend": "foundry"},
+        )
+
+        # Mixed repositories still get native checks for their non-Foundry stack.
+        if len(stacks) > 1 and run_native_audit:
+            native_code = run_native_audit(info, args)
+            if native_code != 0:
+                return native_code
+        return return_code
+
+    # No Foundry manifest means Forge is not the default backend. This is the
+    # critical guard that prevents a nested Solidity dependency from hijacking
+    # Cairo, Vyper, Hardhat, or other projects.
+    if run_native_audit:
+        return_code = run_native_audit(info, args)
+    else:
+        print("Native project audit layer is unavailable; source review only.")
+        return_code = 0
 
     audit_context.record_tool(
         "audit",
         root,
         status="completed" if return_code == 0 else "failed",
-        summary="connected audit pipeline",
-        data={"exit_code": return_code},
+        summary=f"native {info.get('backend', 'generic')} audit pipeline",
+        data={"exit_code": return_code, "backend": info.get("backend", "generic")},
     )
     return return_code
 
