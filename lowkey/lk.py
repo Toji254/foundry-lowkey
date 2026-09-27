@@ -3557,6 +3557,16 @@ def _foundry_native_bootstrap_commands(root):
     root_path = Path(root)
     commands = []
 
+    gitmodules = root_path / ".gitmodules"
+    if gitmodules.is_file():
+        # Repositories with checked-in submodules own their dependency graph.
+        # Initialize/sync the declared submodules first and force checkout into
+        # the expected paths. Avoid "make install" here: many such Makefiles call
+        # forge install and collide with the very same .gitmodules entries.
+        commands.append(["git", "submodule", "sync", "--recursive"])
+        commands.append(["git", "submodule", "update", "--init", "--recursive", "--force"])
+        return commands
+
     makefile = root_path / "Makefile"
     if makefile.is_file():
         try:
@@ -3565,10 +3575,6 @@ def _foundry_native_bootstrap_commands(root):
             make_text = ""
         if re.search(r"(?m)^\s*install\s*:", make_text):
             commands.append(["make", "install"])
-
-    gitmodules = root_path / ".gitmodules"
-    if gitmodules.is_file():
-        commands.append(["git", "submodule", "update", "--init", "--recursive"])
 
     return commands
 
