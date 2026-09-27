@@ -2952,6 +2952,12 @@ contract LowkeyAutoFixtureScript_{safe_name} is Script {{
     function run() external {{
         vm.startStateDiffRecording();
 
+        // Lab bootstrap is environment construction, not gas benchmarking.
+        // QuantAMM's inherited Balancer fixture performs a very large amount of
+        // setup in one Forge execution, so suspend gas metering for the replay
+        // and promotion extraction.
+        vm.pauseGasMetering();
+
         LowkeyFixtureRunner_{safe_name} runner = new LowkeyFixtureRunner_{safe_name}();
         runner.runFixture();
 
@@ -3011,6 +3017,8 @@ contract LowkeyAutoFixtureScript_{safe_name} is Script {{
                 }}
             }}
         }}
+
+        vm.resumeGasMetering();
 
         console2.log("LOWKEY_FIXTURE", "state-diff-promotion");
         console2.log("LOWKEY_RUNNER", address(runner));
