@@ -524,14 +524,28 @@ def function_score(item,query):
     return 1.0 if query in candidate else SequenceMatcher(None,candidate,query).ratio()
 
 def artifact_json_files(root="."):
-    result=[]
-    for base in ["out","broadcast"]:
-        base_path=os.path.join(root,base)
-        if not os.path.isdir(base_path): continue
-        for path,_,files in os.walk(base_path):
+    root_path = Path(root).expanduser().resolve()
+    result = []
+    bases = [
+        root_path / "out",
+        root_path / "broadcast",
+        root_path / "artifacts",
+        root_path / "build",
+        root_path / ".audit" / "walkthrough" / "vyper",
+    ]
+    ignored = {
+        ".git", ".venv", ".tox", "__pycache__", "node_modules",
+        "cache", "build-info",
+    }
+    for base_path in bases:
+        if not base_path.is_dir():
+            continue
+        for path, dirs, files in os.walk(base_path):
+            dirs[:] = [d for d in dirs if d not in ignored]
             for filename in files:
-                if filename.endswith(".json"): result.append(os.path.join(path,filename))
-    return result
+                if filename.endswith(".json"):
+                    result.append(os.path.join(path, filename))
+    return sorted(set(result))
 def last_transaction(config):
     return config.get("last_tx")
 
@@ -545,18 +559,18 @@ def local_artifact_paths(root="."):
     result = []
     for path in artifact_json_files(root):
         parts = Path(path).parts
-        if "out" not in parts:
-            continue
         if "build-info" in parts or Path(path).name == "solc-input.json":
+            continue
+        if any(part in {"node_modules", ".git", "__pycache__"} for part in parts):
             continue
         artifact = read_artifact(path)
         if not isinstance(artifact, dict) or not isinstance(artifact.get("abi"), list):
             continue
-        # Build metadata is excluded above. Sparse unit-test fixtures may omit
-        # contractName/sourceName, so application validation is intentionally
-        # performed by artifact_is_project_application() and target discovery.
+        # ABI-bearing artifacts are accepted from common Solidity/Vyper project
+        # layouts. Dependency/application ranking is done only after the target
+        # or source graph is known.
         result.append(path)
-    return result
+    return sorted(set(result))
 
 def artifact_contract_name(path, artifact):
     if isinstance(artifact,dict) and artifact.get("contractName"): return str(artifact["contractName"])
@@ -569,16 +583,31 @@ def read_artifact(path):
     except (OSError,json.JSONDecodeError): return None
 
 def foundry_project_root(start="."):
+    """Resolve the active EVM project root, not only Foundry projects."""
     try:
-        path=Path(start).expanduser().resolve()
+        path = Path(start).expanduser().resolve()
     except OSError:
         return None
     if path.is_file():
-        path=path.parent
-    for parent in [path,*path.parents]:
-        if (parent/"foundry.toml").is_file():
+        path = path.parent
+
+    if project_tools is not None and hasattr(project_tools, "project_root"):
+        try:
+            return str(project_tools.project_root(path))
+        except Exception:
+            pass
+
+    markers = (
+        "foundry.toml", "hardhat.config.js", "hardhat.config.cjs",
+        "hardhat.config.mjs", "hardhat.config.ts",
+        "brownie-config.yaml", "pyproject.toml", "package.json",
+    )
+    for parent in (path, *path.parents):
+        if any((parent / marker).is_file() for marker in markers):
             return str(parent)
-    return None
+        if any((parent / dirname).is_dir() for dirname in ("src", "contracts", "vyper")):
+            return str(parent)
+    return str(path)
 
 def path_is_within(path, root):
     try:
