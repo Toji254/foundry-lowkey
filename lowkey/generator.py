@@ -605,6 +605,58 @@ def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]
     return request
 
 
+def _format_generated_solidity(root: Path, path: Path) -> bool:
+    """Format only the generated file with the project's installed Forge."""
+    binary = shutil.which("forge")
+    if not binary or path.suffix != ".sol":
+        return True
+    try:
+        result = subprocess.run(
+            [binary, "fmt", "--check", str(path.relative_to(root))],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True
+
+        # Generated templates should leave the workspace in Forge's canonical format.
+        formatted = subprocess.run(
+            [binary, "fmt", str(path.relative_to(root))],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if formatted.returncode != 0:
+            print(
+                "Lowkey generator: Forge formatter could not format "
+                + str(path.relative_to(root))
+                + ". "
+                + (formatted.stderr or formatted.stdout or "unknown formatter error").strip(),
+                file=sys.stderr,
+            )
+            return False
+
+        check = subprocess.run(
+            [binary, "fmt", "--check", str(path.relative_to(root))],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode != 0:
+            print(
+                "Lowkey generator: generated Solidity failed 'forge fmt --check'.",
+                file=sys.stderr,
+            )
+            if check.stderr or check.stdout:
+                print((check.stderr or check.stdout).strip(), file=sys.stderr)
+            return False
+        return True
+    except (OSError, ValueError) as exc:
+        print(f"Lowkey generator: formatter validation skipped: {exc}", file=sys.stderr)
+        return True
+
+
 def _write(root: Path, requested: Path | None, default: Path, content: str, force: bool) -> Path:
     path = requested or default
     path = path if path.is_absolute() else root / path
@@ -627,6 +679,7 @@ def _write(root: Path, requested: Path | None, default: Path, content: str, forc
         path = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
 
     path.write_text(content, encoding="utf-8")
+    _format_generated_solidity(root, path)
     return path
 
 
@@ -749,7 +802,7 @@ import {{Vm}} from "forge-std/Vm.sol";
 /// @title Lowkey-generated reproduction test for {contract}
 /// @notice Deterministic setup + concrete call + obvious places for security assertions.
 contract LowkeyTest_{ident} is Test {{
-    address internal constant TARGET = {target};
+    address internal constant TARGET = {_solidity_address_literal(target)};
     address internal attacker;
     address internal victim;
 
