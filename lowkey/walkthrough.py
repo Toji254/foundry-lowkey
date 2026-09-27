@@ -3580,6 +3580,7 @@ def _diagnose_argument_contracts(
     models: list[ContractModel] | Actor | None = None,
     actors: list[Actor] | None = None,
     runtime: list[RuntimeContract] | None = None,
+    caller_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
     """Explain address arguments that source code expects to be contracts."""
     if isinstance(models, Actor):
