@@ -119,6 +119,10 @@ jobs:
           test -f .audit/evidence/system_bootstrap.json
           lk lab Fixture
           lk status
+          lk audit --non-interactive | tee /tmp/lowkey-audit-noninteractive.txt
+          grep -q "Target  : Fixture" /tmp/lowkey-audit-noninteractive.txt
+          lk audit check --non-interactive | tee /tmp/lowkey-audit-check-noninteractive.txt
+          grep -q "Slither" /tmp/lowkey-audit-check-noninteractive.txt
           lk forge build
           lk walkthrough --static --steps 4
           test -f .audit/walkthrough/model.json
