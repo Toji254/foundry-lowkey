@@ -3084,64 +3084,6 @@ def _find_fixture_target(root, code_map, target_contract, rpc):
     return matches[0] if matches else None
 
 
-def _materialize_fixture_state(root, rpc, state_path, code_path, target_contract):
-    try:
-        state_lines = Path(state_path).read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        return None, f"could not read fixture state file: {exc}"
-
-    try:
-        code_lines = Path(code_path).read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        return None, f"could not read fixture code map: {exc}"
-
-    code_map = {}
-    for line in code_lines:
-        parts = line.split("|", 2)
-        if len(parts) != 3 or parts[0] != "CODE":
-            continue
-        address, code = parts[1].strip().lower(), parts[2].strip()
-        if is_address(address) and code.startswith("0x"):
-            code_map[address] = code
-
-    operations = 0
-
-    for address, code in code_map.items():
-        result = rpc_json(rpc, "anvil_setCode", [address, code])
-        if result is None:
-            return None, f"anvil_setCode failed for {address}"
-        operations += 1
-
-    for line in state_lines:
-        parts = line.split("|")
-        kind = parts[0] if parts else ""
-        if kind == "BALANCE" and len(parts) == 3:
-            address, value = parts[1].strip(), parts[2].strip()
-            if not is_address(address):
-                continue
-            result = rpc_json(rpc, "anvil_setBalance", [address, _fixture_hex_quantity(value)])
-            if result is None:
-                return None, f"anvil_setBalance failed for {address}"
-            operations += 1
-        elif kind == "STORAGE" and len(parts) == 4:
-            address, slot, value = parts[1].strip(), parts[2].strip(), parts[3].strip()
-            if not is_address(address) or not slot.startswith("0x") or not value.startswith("0x"):
-                continue
-            result = rpc_json(rpc, "anvil_setStorageAt", [address, slot, value])
-            if result is None:
-                return None, f"anvil_setStorageAt failed for {address} slot {slot}"
-            operations += 1
-
-    target = _find_fixture_target(root, code_map, target_contract, rpc)
-    if not target:
-        return None, (
-            f"fixture state was materialized ({operations} RPC updates), "
-            f"but Lowkey could not identify target {target_contract or 'contract'}"
-        )
-
-    return target, None
-
-
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
     """Replay a Foundry test fixture in simulation and materialize its state into local Anvil."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
