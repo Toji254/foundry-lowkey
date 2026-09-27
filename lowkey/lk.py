@@ -2968,6 +2968,32 @@ def ensure_project_anvil(config, root):
         pass
     return None
 
+def _run_project_build(config, root):
+    """Use the detected project's native compiler without forcing Foundry."""
+    project = project_tools.detect_project(root) if project_tools is not None else {}
+    kind = str(project.get("kind") or "generic")
+    if kind in {"foundry", "mixed-foundry-vyper"}:
+        result = run_foundry(["build"], capture=True)
+        return result.code
+    commands = {
+        "hardhat": ["npx", "hardhat", "compile"],
+        "brownie": ["brownie", "compile"],
+        "vyper": [sys.executable, "-m", "forge_tools", "build"],
+        "vyper-uv": [sys.executable, "-m", "forge_tools", "build"],
+    }
+    command = commands.get(kind)
+    if not command:
+        return 0
+    try:
+        result = subprocess.run(command, cwd=str(root), capture_output=True, text=True)
+    except OSError as exc:
+        print(f"Build failed: {exc}", file=sys.stderr)
+        return 1
+    if result.returncode:
+        print((result.stdout or "") + (result.stderr or ""), file=sys.stderr)
+    return result.returncode
+
+
 def run_clone(config, args):
     """Clone with the cache-aware engine, then perform full Lowkey onboarding."""
     try:
@@ -2995,8 +3021,12 @@ def run_clone(config, args):
     code = clone_project(args)
     if code != 0:
         return code
-    if not (destination / "foundry.toml").is_file():
-        return fail(f"Error: {destination} is not a Foundry project (foundry.toml missing).")
+    project = project_tools.detect_project(destination) if project_tools is not None else {}
+    project_kind = str(project.get("kind") or "generic")
+    if project_kind == "generic" and not project.get("languages"):
+        return fail(
+            f"Error: {destination} does not look like a supported Solidity/Vyper/EVM project."
+        )
 
     previous_cwd = Path.cwd()
     try:
@@ -3004,10 +3034,20 @@ def run_clone(config, args):
         root = str(destination)
 
         print("\n[1/3] Building project...")
-        build = run_foundry(["build"], capture=True)
-        if build.code != 0:
-            tail = "\n".join(build.text.splitlines()[-20:]) if build.text else "forge build failed"
-            return fail(f"Error: build failed.\n{tail}", build.code)
+        if project_kind in {"foundry", "mixed-foundry-vyper"}:
+            build = run_foundry(["build"], capture=True)
+            build_code = build.code
+        elif project_kind == "hardhat":
+            build_code = _run_project_build(config, root)
+        elif project_kind == "brownie":
+            build_code = _run_project_build(config, root)
+        elif project_kind in {"vyper", "vyper-uv"}:
+            build_code = _run_project_build(config, root)
+        else:
+            build_code = 0
+            print("NOTE  build: no native build system detected; Lowkey will use available artifacts.")
+        if build_code != 0:
+            return fail("Error: project build failed.", build_code)
         print("PASS  build")
 
         print("\n[2/3] Running connected audit...")
