@@ -322,9 +322,29 @@ def select_anvil_actor(config,index,name):
     assigned_index=assigned_anvil_index(config,index)
     assigned_address=assigned_anvil_address(config,address)
     if assigned_index and assigned_index!=name:
-        return fail(f"Error: Anvil account {index} is already assigned to '{assigned_index}'.")
+        previous=config.get("wallets",{}).get(assigned_index)
+        replaceable = (
+            isinstance(previous,dict)
+            and previous.get("source")=="anvil-default"
+            and int(previous.get("anvil_index",-1))==index
+            and str(assigned_index).lower() in {"lab-deployer","lowkey"}
+        )
+        if replaceable:
+            config.setdefault("wallets",{}).pop(assigned_index,None)
+        else:
+            return fail(f"Error: Anvil account {index} is already assigned to '{assigned_index}'.")
     if assigned_address and assigned_address!=name:
-        return fail(f"Error: address {address} is already assigned to '{assigned_address}'.")
+        previous=config.get("wallets",{}).get(assigned_address)
+        replaceable = (
+            isinstance(previous,dict)
+            and previous.get("source")=="anvil-default"
+            and int(previous.get("anvil_index",-1))==index
+            and str(assigned_address).lower() in {"lab-deployer","lowkey"}
+        )
+        if replaceable:
+            config.setdefault("wallets",{}).pop(assigned_address,None)
+        else:
+            return fail(f"Error: address {address} is already assigned to '{assigned_address}'.")
     existing=config.get("wallets",{}).get(name)
     if existing and not (
         isinstance(existing,dict)
@@ -3219,13 +3239,20 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
         print("Next    : use the project-aware fixture/proxy bootstrap instead.")
         return 1
 
-    config["actor"] = "lab-deployer"
-    config.setdefault("wallets", {})["lab-deployer"] = {
-        "source": "anvil-default",
-        "anvil_index": 0,
-        "address": accounts[0],
-    }
-    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    current_actor = config.get("actor")
+    current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
+    if not (
+        current_actor
+        and isinstance(current_entry, dict)
+        and current_entry.get("source") not in {"anvil-default", "anvil-impersonated"}
+    ):
+        config["actor"] = "lab-deployer"
+        config.setdefault("wallets", {})["lab-deployer"] = {
+            "source": "anvil-default",
+            "anvil_index": 0,
+            "address": accounts[0],
+        }
+        config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
     set_lab_target(config, root, target, contract, path)
 
     print(f"Target  : {contract} -> {target}")
