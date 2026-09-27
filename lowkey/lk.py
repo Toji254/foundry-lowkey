@@ -521,7 +521,8 @@ def remember_project_target(config, root, name, address):
     config.setdefault("project_roots", {})[address] = root
 
 def resolve_target_ref(config,ref,root=None):
-    if ref is None: return config.get("target")
+    if ref is None:
+        return active_project_target(config, root) if root is not None else config.get("target")
     if is_address(ref): return ref
     aliases=target_aliases(config, root)
     if str(ref) in aliases: return aliases[str(ref)]
