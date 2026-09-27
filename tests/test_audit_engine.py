@@ -1,4 +1,5 @@
 import io
+import pathlib
 import json
 import importlib.util
 import unittest
