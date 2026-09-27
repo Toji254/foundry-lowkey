@@ -317,15 +317,21 @@ def _coverage_gap(metric: tuple[str, int, int] | None) -> str:
 
 
 def _coverage_project_paths(root: Path) -> list[str]:
-    """Return configured first-party source prefixes for human coverage reporting."""
-    try:
-        config = _resolved_forge_config(root)
-        src = str(config.get("src") or "").strip().strip("/\\")
-        if src:
-            return [src]
-    except Exception:
-        pass
-    return ["src", "contracts"]
+    """Return configured first-party source prefixes without invoking Forge."""
+    prefixes: list[str] = []
+    for name in ("foundry.toml",):
+        path = root / name
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r'(?m)^\s*src\s*=\s*["\']([^"\']+)["\']', content)
+        if match:
+            value = match.group(1).strip().strip("/\\").replace("\\", "/")
+            if value:
+                prefixes.append(value)
+    return prefixes or ["src", "contracts"]
+
 
 
 def _coverage_cell(metric: tuple[str, int, int] | None) -> str:
