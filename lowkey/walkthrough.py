@@ -4002,6 +4002,259 @@ def _random_sol_value(
         ]
 
     return 0
+def _adversarial_actor_role(actor_name: str) -> str:
+    roles = {
+        "Alice": "normal protocol participant",
+        "Bob": "normal protocol participant",
+        "Attacker": "adversarial participant",
+        "Treasury": "system/funds account",
+        "Owner": "privileged owner account",
+        "Agreement Owner": "owner of the referenced agreement",
+        "Moderator": "outcome/moderator account",
+    }
+    return roles.get(str(actor_name or ""), "test actor")
+
+
+def _adversarial_category(step: Step) -> str:
+    name = str(step.function or "").split("(", 1)[0].lower()
+    if any(token in name for token in ("owner", "ownership", "renounce", "transfer")):
+        return "ACCESS CONTROL"
+    if name in {"deposit", "withdraw", "stake", "contributebonus", "createbounty"} or "value" in name:
+        return "VALUE FLOW"
+    if any(token in name for token in ("set", "initialize", "configure", "pause", "unpause", "register")):
+        return "STATE / CONFIG"
+    if any(token in name for token in ("claim", "release", "redeem", "sweep")):
+        return "SETTLEMENT"
+    return "INPUT / BEHAVIOR"
+
+
+def _adversarial_probe_why(
+    step: Step,
+    model: ContractModel,
+    actors: list[Actor],
+) -> tuple[str, str, str]:
+    """Return (why, lesson, evidence_quality) without overstating certainty."""
+    name = str(step.function or "").split("(", 1)[0]
+    lower = name.lower()
+    diagnostics = [str(item) for item in (step.diagnostics or [])]
+    source_lines = [line for line in diagnostics if line.lower().startswith("source guard:")]
+    source_text = " ".join(source_lines)
+    actor = str(step.actor or "Caller")
+
+    if step.status == "success":
+        if lower in {"renounceownership", "transferownership"}:
+            return (
+                f"{actor} passed the ownership check before the transaction was accepted.",
+                "Owner-only functions are authorization boundaries: the caller's role matters before the state change.",
+                "OBSERVED + SOURCE",
+            )
+        if lower == "createbounty" and "msg.value" in source_text:
+            amount = None
+            inputs = _function_inputs(model, step.function)
+            for index, param in enumerate(inputs):
+                if index < len(step.args) and str(param.get("name") or "").lower() in {"amount", "value"}:
+                    amount = step.args[index]
+                    break
+            if isinstance(amount, int):
+                return (
+                    f"The call satisfied the ETH/value invariant: amount={_friendly_value(amount)} and msg.value={_friendly_eth(step.value_wei)}.",
+                    "A payable function receives ETH through msg.value; a numeric function argument is separate calldata.",
+                    "OBSERVED + SOURCE",
+                )
+        return (
+            "The transaction passed the contract's current preconditions and was accepted by the chain.",
+            "A successful randomized probe is observed behavior — it is not, by itself, evidence of a vulnerability.",
+            "OBSERVED",
+        )
+
+    normalized_source = source_text.replace(" ", "").lower()
+    if "amount==msg.value" in normalized_source:
+        inputs = _function_inputs(model, step.function)
+        amount = None
+        for index, param in enumerate(inputs):
+            if index < len(step.args) and str(param.get("name") or "").lower() in {"amount", "value"}:
+                amount = step.args[index]
+                break
+        if isinstance(amount, int):
+            return (
+                f"The contract requires amount == msg.value, but amount={_friendly_value(amount)} while msg.value={_friendly_eth(step.value_wei)}.",
+                "Function arguments and transaction value are separate. Passing an amount argument does not automatically attach that ETH.",
+                "SOURCE-CORRELATED",
+            )
+        return (
+            "The source requires the function's amount argument to match msg.value, so the transaction value did not satisfy that invariant.",
+            "Function arguments and transaction value are separate.",
+            "SOURCE-CORRELATED",
+        )
+
+    owner_mismatch = next(
+        (item for item in diagnostics if "owner() =" in item and "caller is" in item),
+        None,
+    )
+    if owner_mismatch or "not the contract owner" in str(step.error_reason or "").lower():
+        return (
+            f"{actor} was not authorized for this ownership action.",
+            "Owner-protected functions are checked against the caller; changing the target argument does not bypass access control.",
+            "SOURCE-CORRELATED",
+        )
+
+    zero_address = next((item for item in diagnostics if "zero address" in item.lower()), None)
+    if zero_address:
+        return (
+            "A zero address was supplied where the source rejects address(0).",
+            "Zero-address checks are common input guards; boundary values are worth probing because they reveal broken assumptions.",
+            "SOURCE-CORRELATED",
+        )
+
+    mapping_gate = next(
+        (
+            item for item in diagnostics
+            if "mapping gate blocks" in item.lower()
+            or ("= false" in item.lower() and "mapping" in item.lower())
+        ),
+        None,
+    )
+    if mapping_gate:
+        return (
+            "A source-backed mapping/allowlist check evaluated to false, so the call was rejected.",
+            "Many protocols encode authorization or configuration in mappings; read the exact key being checked, not just the mapping name.",
+            "SOURCE-CORRELATED",
+        )
+
+    if step.failure_origin:
+        return (
+            str(step.failure_origin),
+            "Lowkey found a concrete failure boundary, but the exact runtime instruction should still be verified when call frames are unavailable.",
+            "DIAGNOSED",
+        )
+    if step.error_reason:
+        return (
+            str(step.error_reason),
+            "This is the best current explanation from the node/error data; treat it as a hypothesis until the runtime path proves it.",
+            "INFERRED",
+        )
+    return (
+        "The transaction reverted, but Lowkey does not have enough evidence to name the exact failing instruction.",
+        "A revert tells you that a precondition failed somewhere; tracing/source correlation is what turns that into a proven explanation.",
+        "UNPROVEN",
+    )
+
+
+def _render_adversarial_probe(
+    root: Path,
+    step: Step,
+    model: ContractModel,
+    actors: list[Actor],
+) -> list[str]:
+    marker = "✓" if step.status == "success" else "✕"
+    status_word = "ACCEPTED" if step.status == "success" else "REVERTED"
+    category = _adversarial_category(step)
+    role = _adversarial_actor_role(step.actor)
+    function = _function_link(
+        root,
+        model,
+        str(step.function),
+    )
+    args = ", ".join(_friendly_arg(value, actors) for value in step.args) or "∅"
+    call = f"{model.name}.{function}({args})" if args != "∅" else f"{model.name}.{function}()"
+    why, lesson, quality = _adversarial_probe_why(step, model, actors)
+
+    lines = [
+        _paint(
+            f"  {step.index:02d} {marker}  {category}",
+            GREEN if step.status == "success" else RED,
+            _ansi_enabled(False),
+        ),
+        f"     {_paint(step.actor or 'Caller', 'magenta')} → {call}",
+        f"     ROLE     {role}",
+        f"     WHAT     {_human_action_summary(step, actors)}",
+        f"     RESULT   {status_word} — " + (
+            "the chain accepted this transaction."
+            if step.status == "success"
+            else (step.error_reason or "the contract rejected this transaction.")
+        ),
+        f"     WHY      {why}",
+        f"     LESSON   {lesson}",
+        f"     EVIDENCE {quality}",
+    ]
+
+    source_lines = [
+        line for line in (step.diagnostics or [])
+        if str(line).lower().startswith("source guard:")
+    ]
+    if source_lines:
+        lines.append(f"     SOURCE   {source_lines[0]}")
+    elif step.failure_origin:
+        lines.append(f"     ORIGIN   {step.failure_origin}")
+
+    if step.tx_hash:
+        lines.append(f"     TX       {step.tx_hash[:10]}…{step.tx_hash[-8:]}")
+    return lines
+
+
+def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> list[str]:
+    lines = [
+        "",
+        _paint("HOW TO READ THIS TEST", BOLD + CYAN, _ansi_enabled(False)),
+        "  WHAT     = what Lowkey attempted",
+        "  RESULT   = what the chain actually accepted/rejected",
+        "  WHY      = best available explanation from runtime/source evidence",
+        "  LESSON   = the Solidity/security idea worth noticing",
+        "  EVIDENCE = how strongly the explanation is supported",
+        "",
+        "  🧪 ISOLATED PROBES",
+        "  Every probe starts from the same prepared baseline.",
+        "  After the probe, Lowkey restores the Anvil snapshot.",
+        "  So repeated successes are intentional; they do not carry state forward.",
+    ]
+    if baseline_notes:
+        lines += ["", "  BASELINE SETUP"]
+        lines += [f"    ✓ {note}" for note in baseline_notes]
+    lines += [
+        "",
+        f"  Running {total_cases} adversarial probe(s) across randomized actors, inputs and transaction values…",
+        "",
+    ]
+    return lines
+
+
+def _render_adversarial_summary(
+    root: Path,
+    results: list[Step],
+    evidence: Path,
+) -> list[str]:
+    accepted = sum(item.status == "success" for item in results)
+    reverted = len(results) - accepted
+    counts: dict[str, int] = {}
+    for item in results:
+        category = _adversarial_category(item)
+        counts[category] = counts.get(category, 0) + 1
+
+    lines = [
+        "",
+        _paint("TEST SUMMARY", BOLD + CYAN, _ansi_enabled(False)),
+        "  " + " • ".join([
+            f"{len(results)} probes",
+            f"{accepted} accepted",
+            f"{reverted} reverted",
+        ]),
+        "",
+        "  PROBES BY CONCEPT",
+    ]
+    for category, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])):
+        lines.append(f"    {category:<18} {count}")
+    lines += [
+        "",
+        "  REMEMBER",
+        "    • ACCEPTED means the current state allowed the action.",
+        "    • REVERTED means some precondition rejected the action.",
+        "    • Neither result alone is a vulnerability verdict.",
+        "",
+        f"  Evidence: {evidence.relative_to(root)}",
+        "  Snapshot policy: every probe restored; final project state restored too.",
+    ]
+    return lines
+
 
 
 def _adversarial_functions(model: ContractModel) -> list[dict[str, Any]]:
@@ -4272,10 +4525,7 @@ def _run_adversarial_test(
     print(f"  system : {len(targets)} live application instance(s)")
     print("  engine : randomized args/roles/extremes → SEND → trace → diagnose → restore")
     print(f"  seed   : {actual_seed}")
-    if warmup_notes:
-        print("  baseline:")
-        for note in warmup_notes:
-            print(f"    ↳ {note}")
+    print("  view   : teaching — each probe explains WHAT / RESULT / WHY / LESSON")
     print("")
 
     # Capture the post-warmup baseline. Every case is reverted to this state, and
@@ -4285,6 +4535,8 @@ def _run_adversarial_test(
         _rpc_revert(rpc, cleanup_snapshot)
         print("Error: could not snapshot the prepared adversarial baseline.", file=sys.stderr)
         return 1
+
+    print("\n".join(_render_adversarial_intro(total_cases, warmup_notes)))
 
     schedules: list[tuple[str, str, ContractModel, dict[str, Any]]] = []
     for label, address, target_model in targets:
@@ -4353,21 +4605,7 @@ def _run_adversarial_test(
 
         results.append(step)
 
-        linked = _function_link(root, active_model, str(step.function).split("(", 1)[0])
-        shown_args = ", ".join(_friendly_arg(value, actors) for value in args) or "∅"
-        marker = "✓" if step.status == "success" else "✕"
-        color = GREEN if step.status == "success" else RED
-        print(_paint(
-            f"  {index:02d} {marker} {label}: [{actor.name}] ──▶ {active_model.name}.{linked}({shown_args})",
-            color,
-            _ansi_enabled(False),
-        ))
-        if step.error_reason:
-            print(f"     ↳ {step.error_reason}")
-        if step.failure_origin:
-            print(f"     ↳ origin: {step.failure_origin}")
-        for diagnostic in step.diagnostics[:2]:
-            print(f"     ↳ {diagnostic}")
+        print("\n".join(_render_adversarial_probe(root, step, active_model, actors)))
 
         if not _rpc_revert(rpc, snapshot):
             print("     ⚠ Anvil snapshot could not be restored; aborting.", file=sys.stderr)
@@ -4403,10 +4641,8 @@ def _run_adversarial_test(
         encoding="utf-8",
     )
 
-    print("")
-    print(f"  RESULT : {accepted} accepted • {reverted} reverted • {len(results)} probes")
-    print(f"  EVIDENCE: {evidence.relative_to(root)}")
-    print("  Every probe was restored to its pre-test Anvil snapshot.")
+    for line in _render_adversarial_summary(root, results, evidence):
+        print(line)
     return 0
 
 
