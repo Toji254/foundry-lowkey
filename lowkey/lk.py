@@ -2987,17 +2987,7 @@ contract LowkeyAutoFixtureScript_{safe_name} is Script {{
                 );
             }}
 
-            if (access.newNonce != access.oldNonce) {{
-                vm.writeLine(
-                    "{state_literal}",
-                    string.concat(
-                        "NONCE|",
-                        vm.toString(access.account),
-                        "|",
-                        vm.toString(access.newNonce)
-                    )
-                );
-            }}
+
 
             for (uint256 j = 0; j < access.storageAccesses.length; ++j) {{
                 Vm.StorageAccess memory storageAccess = access.storageAccesses[j];
@@ -3124,14 +3114,6 @@ def _materialize_fixture_state(root, rpc, state_path, code_path, target_contract
             result = rpc_json(rpc, "anvil_setBalance", [address, _fixture_hex_quantity(value)])
             if result is None:
                 return None, f"anvil_setBalance failed for {address}"
-            operations += 1
-        elif kind == "NONCE" and len(parts) == 3:
-            address, value = parts[1].strip(), parts[2].strip()
-            if not is_address(address):
-                continue
-            result = rpc_json(rpc, "anvil_setNonce", [address, _fixture_hex_quantity(value)])
-            if result is None:
-                return None, f"anvil_setNonce failed for {address}"
             operations += 1
         elif kind == "STORAGE" and len(parts) == 4:
             address, slot, value = parts[1].strip(), parts[2].strip(), parts[3].strip()
