@@ -2929,6 +2929,8 @@ import {{ {contract} }} from "{relative}";
 /// This keeps address(this), storage, and fixture-local state on a normal
 /// contract instead of the ephemeral Forge script contract.
 contract LowkeyFixtureHelper_{safe_name} is {contract} {{
+    address public lastTarget;
+
     function runFixture() external returns (address target) {{
         setUp();
 '''
@@ -2938,7 +2940,8 @@ contract LowkeyFixtureHelper_{safe_name} is {contract} {{
     else:
         code += f'''        target = {create_function}();
 '''
-    code += '''    }
+    code += '''        lastTarget = target;
+    }
 }
 
 contract LowkeyAutoFixtureScript_''' + safe_name + ''' is Script {
@@ -2946,11 +2949,9 @@ contract LowkeyAutoFixtureScript_''' + safe_name + ''' is Script {
         vm.startBroadcast();
 
         LowkeyFixtureHelper_''' + safe_name + ''' helper = new LowkeyFixtureHelper_''' + safe_name + '''();
-        address target = helper.runFixture();
 
         vm.stopBroadcast();
 
-        console2.log("LOWKEY_TARGET", target);
         console2.log("LOWKEY_FIXTURE", "test-promotion");
         console2.log("LOWKEY_HELPER", address(helper));
     }
@@ -2974,8 +2975,8 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"RPC     : {rpc_display(rpc)}")
     print(f"Actor   : Anvil #0 ({accounts[0]})")
     print("Mode    : promoted project test fixture")
-    print("Action  : replaying the project's own setup + pool creation on local Anvil...")
-    print("Helper  : deployed helper preserves fixture-local address(this) semantics.")
+    print("Action  : deploying a fixture helper, then replaying the project's own setup + pool creation as a normal local transaction...")
+    print("Helper  : deployed helper preserves fixture-local address(this) semantics; fixture execution runs outside Forge broadcast mode.")
 
     reserved = {
         "LOWKEY_LAB_KEY": str(int(str(key), 16)),
@@ -3027,6 +3028,32 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         output or "",
     )
     helper = helper_match.group(1) if helper_match else None
+    if not helper:
+        return fail("Error: promoted project fixture deployed a helper, but Lowkey could not identify it.")
+
+    fixture_result = run_cast(
+        ["send", helper, "runFixture()", "--rpc-url", rpc, "--private-key", key],
+        config=config,
+        capture=True,
+    )
+    if fixture_result.code != 0:
+        tail = "\n".join((fixture_result.text or "").splitlines()[-40:])
+        return fail(
+            "Error: promoted project fixture execution failed.\n"
+            + (tail or "helper.runFixture() reverted"),
+            fixture_result.code,
+        )
+
+    target_result = run_cast(
+        ["call", helper, "lastTarget()(address)", "--rpc-url", rpc],
+        config=config,
+        capture=True,
+    )
+    target_text = str(target_result.text or "").strip()
+    target_match = re.search(r"(0x[0-9a-fA-F]{40})", target_text)
+    target = target_match.group(1) if target_match else None
+    if not target:
+        return fail("Error: promoted project fixture executed, but helper.lastTarget() did not return an address.")
 
     code_result = run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True)
     runtime_code = str(code_result.text or "").strip()
