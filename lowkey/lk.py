@@ -2906,7 +2906,7 @@ def discover_local_lab_fixture(root=".", requested=None):
 
 
 def _generate_test_fixture_lab_script(root, candidate):
-    """Generate a disposable wrapper around a discovered test fixture."""
+    """Generate a disposable wrapper that executes the fixture from a real helper contract."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
     relative = str(candidate["relative"]).replace("\\", "/")
     contract = str(candidate["contract"])
@@ -2925,13 +2925,12 @@ import {{Script}} from "forge-std/Script.sol";
 import {{console2}} from "forge-std/console2.sol";
 import {{ {contract} }} from "{relative}";
 
-/// @notice Disposable local-only adapter promoted from an existing project test fixture.
-contract LowkeyAutoFixture_{safe_name} is {contract} {{
-    function run() external {{
-        vm.startBroadcast();
-
+/// @dev Runs the discovered test fixture from a deployed helper contract.
+/// This keeps address(this), storage, and fixture-local state on a normal
+/// contract instead of the ephemeral Forge script contract.
+contract LowkeyFixtureHelper_{safe_name} is {contract} {{
+    function runFixture() external returns (address target) {{
         setUp();
-        address target;
 '''
     if tuple_return:
         code += f'''        (target, ) = {create_function}();
@@ -2939,15 +2938,27 @@ contract LowkeyAutoFixture_{safe_name} is {contract} {{
     else:
         code += f'''        target = {create_function}();
 '''
-    code += '''        vm.stopBroadcast();
+    code += '''    }
+}
+
+contract LowkeyAutoFixtureScript_''' + safe_name + ''' is Script {
+    function run() external {
+        vm.startBroadcast();
+
+        LowkeyFixtureHelper_''' + safe_name + ''' helper = new LowkeyFixtureHelper_''' + safe_name + '''();
+        address target = helper.runFixture();
+
+        vm.stopBroadcast();
 
         console2.log("LOWKEY_TARGET", target);
         console2.log("LOWKEY_FIXTURE", "test-promotion");
+        console2.log("LOWKEY_HELPER", address(helper));
     }
 }
 '''
     script_path.write_text(code, encoding="utf-8")
     return script_path
+
 
 
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
@@ -2964,6 +2975,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"Actor   : Anvil #0 ({accounts[0]})")
     print("Mode    : promoted project test fixture")
     print("Action  : replaying the project's own setup + pool creation on local Anvil...")
+    print("Helper  : deployed helper preserves fixture-local address(this) semantics.")
 
     reserved = {
         "LOWKEY_LAB_KEY": str(int(str(key), 16)),
@@ -3006,6 +3018,12 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     if not target:
         return fail("Error: promoted project fixture ran, but did not report LOWKEY_TARGET.")
 
+    helper_match = re.search(
+        r"(?m)^\s*LOWKEY_HELPER\s*: ?(0x[0-9a-fA-F]{40})\s*$",
+        output or "",
+    )
+    helper = helper_match.group(1) if helper_match else None
+
     code_result = run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True)
     runtime_code = str(code_result.text or "").strip()
     if (
@@ -3043,6 +3061,8 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
     }
+    if helper:
+        config["lab_harness"]["helper"] = helper
     set_lab_target(config, root, target, contract_name, artifact)
 
     print(f"Target  : {contract_name} -> {target}")
