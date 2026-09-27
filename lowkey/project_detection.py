@@ -323,12 +323,28 @@ def _project_python_runner(
 ) -> list[str]:
     """Prefer a project-managed Python environment over global executables.
 
-
-    root is the process working directory. dependency_root lets a nested
-    test project reuse the parent repository's uv environment while keeping
-    its own cwd for relative imports and fixture paths.
+    When the project has a namespace-style tests/ directory, launch pytest
+    through a tiny in-process shim so an unrelated site-packages ``tests``
+    package cannot shadow the repository's own tests package.
     """
     env_root = dependency_root or root
+    if command == "pytest" and (root / "tests").is_dir() and not (root / "tests" / "__init__.py").is_file():
+        shim = (
+            "import pathlib,sys,types;"
+            "p=pathlib.Path('tests').resolve();"
+            "m=types.ModuleType('tests');m.__path__=[str(p)];"
+            "sys.modules['tests']=m;"
+            "import pytest;"
+            "raise SystemExit(pytest.main(sys.argv[1:]))"
+        )
+        if (env_root / "pyproject.toml").is_file() and shutil.which("uv"):
+            return ["uv", "run", "python", "-c", shim, *args]
+        for candidate in (
+            env_root / ".venv" / "bin" / "python",
+            env_root / "venv" / "bin" / "python",
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return [str(candidate), "-c", shim, *args]
     if (env_root / "pyproject.toml").is_file() and shutil.which("uv"):
         if dependency_root is not None:
             return ["uv", "run", "--project", str(env_root), command, *args]
