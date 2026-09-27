@@ -2958,7 +2958,7 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
     if not isinstance(accounts, dict):
         return None, "fixture state snapshot does not contain an address-keyed account map"
 
-    code_map = {{}}
+    code_map = {}
     operations = 0
 
     for address, account in accounts.items():
@@ -2969,7 +2969,7 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
         if code.startswith("0x") and len(code) > 2:
             result = rpc_json(rpc, "anvil_setCode", [address, code])
             if result is None:
-                return None, f"anvil_setCode failed for {{address}}"
+                return None, f"anvil_setCode failed for {address}"
             code_map[address.lower()] = code
             operations += 1
 
@@ -2979,7 +2979,7 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
                 rpc, "anvil_setBalance", [address, _fixture_hex_quantity(balance)]
             )
             if result is None:
-                return None, f"anvil_setBalance failed for {{address}}"
+                return None, f"anvil_setBalance failed for {address}"
             operations += 1
 
         nonce = account.get("nonce")
@@ -2988,10 +2988,10 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
                 rpc, "anvil_setNonce", [address, _fixture_hex_quantity(nonce)]
             )
             if result is None:
-                return None, f"anvil_setNonce failed for {{address}}"
+                return None, f"anvil_setNonce failed for {address}"
             operations += 1
 
-        storage = account.get("storage") or {{}}
+        storage = account.get("storage") or {}
         if isinstance(storage, dict):
             for slot, value in storage.items():
                 if not str(slot).startswith("0x") or not str(value).startswith("0x"):
@@ -3000,14 +3000,14 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
                     rpc, "anvil_setStorageAt", [address, slot, value]
                 )
                 if result is None:
-                    return None, f"anvil_setStorageAt failed for {{address}} slot {{slot}}"
+                    return None, f"anvil_setStorageAt failed for {address} slot {slot}"
                 operations += 1
 
     target = _find_fixture_target(root, code_map, target_contract, rpc)
     if not target:
         return None, (
-            f"fixture state was materialized ({{operations}} RPC updates), "
-            f"but Lowkey could not identify target {{target_contract or 'contract'}}"
+            f"fixture state was materialized ({operations} RPC updates), "
+            f"but Lowkey could not identify target {target_contract or 'contract'}"
         )
 
     return target, None
