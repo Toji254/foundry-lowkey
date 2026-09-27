@@ -3710,10 +3710,14 @@ def run_event(config,args):
     code,output,error=cast_output(["cast","decode-event","--sig",signature,payload])
     if output: print(output)
     if error: print(error,file=sys.stderr)
-    # Cast can emit a decoder error through stderr even when the underlying
-    # command wrapper reports a zero exit status. An error message means the
+    # Cast can emit decoder failures through either stderr or stdout while
+    # still returning a zero status. Explicit decoder-error text means the
     # event was not successfully decoded, so Lowkey must propagate failure.
-    effective_code = code if code != 0 else (1 if error else 0)
+    emitted_error = str(error or "") + "\n" + str(output or "")
+    decoder_failed = bool(error) or bool(
+        re.search(r"(?i)(abi decoding failed|decoding failed|buffer overrun while deserializing)", emitted_error)
+    )
+    effective_code = code if code != 0 else (1 if decoder_failed else 0)
     return record_status(effective_code)
 
 def event_payload(data,topics):
