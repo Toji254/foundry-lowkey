@@ -844,6 +844,7 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         return 2
 
     root = Path.cwd()
+    context_path = audit_context.context_path(root)
     shared = audit_context.load(root)
     shared_target = shared.get("target", {}) if isinstance(shared.get("target"), dict) else {}
     # Project-local target memory always wins. A target from another project must
@@ -854,7 +855,9 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             config["target_contract"] = shared_target.get("contract")
         if shared_target.get("artifact"):
             config.setdefault("abi_paths", {})[shared_target["address"]] = shared_target["artifact"]
-    else:
+    elif context_path.exists():
+        # Once a project has an explicit context file, its target state is authoritative.
+        # Do not inherit a stale target from another project.
         config["target"] = None
         config.pop("target_contract", None)
 
