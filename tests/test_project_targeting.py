@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import pathlib
+from pathlib import Path
 import tempfile
 import unittest
 from contextlib import redirect_stdout
