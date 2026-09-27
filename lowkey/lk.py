@@ -5283,6 +5283,7 @@ LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 START
   lk audit                         Interactive audit; detects existing Anvil but never starts one
   lk audit auto                    Autonomous local audit; starts Anvil if needed and bootstraps target
+  lk project                       Detect project type, languages, toolchains, and audit backend
   lk audit --checks                Same audit session with Slither + optional lint/geiger checks
   lk audit auto --checks           Autonomous audit with Slither + optional lint/geiger checks
   lk audit--checks                 Legacy compact alias for audit --checks
@@ -5514,6 +5515,12 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
     elif cmd in {"audit--checks","audit-checks"}: return run_audit_mode(config, ["--checks", *args])
+    elif cmd in {"project", "detect-project", "detect"}:
+        info = detect_project(detected_project_root(".")) if detect_project else None
+        if not info:
+            return fail("Project detection layer is unavailable. Reinstall Lowkey.")
+        print(format_detection(info))
+        return 0
     elif cmd=="audit": return run_audit_mode(config,args)
     elif cmd=="context": return run_context(config)
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
