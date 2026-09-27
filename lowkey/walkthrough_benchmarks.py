@@ -8,6 +8,7 @@ attack stories and the evidence rules used to assess those stories.
 from __future__ import annotations
 
 from typing import Any, Protocol
+import re
 import time
 
 try:
@@ -23,6 +24,9 @@ _runtime_code = core._runtime_code
 _block_timestamp = core._block_timestamp
 _send = core._send
 _short_error = core._short_error
+WalkthroughStory = core.WalkthroughStory
+Step = core.Step
+Actor = core.Actor
 
 
 class WalkthroughBenchmarkAdapter(Protocol):
