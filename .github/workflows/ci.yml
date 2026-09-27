@@ -223,3 +223,65 @@ jobs:
           test $? -ne 0
           lk forge debug --help
           test $? -ne 0
+
+
+  vyper-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Install Vyper
+        run: python -m pip install "vyper>=0.4,<0.5"
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Lowkey
+        run: ./install.sh
+      - name: Build Vyper fixture
+        run: |
+          rm -rf /tmp/lowkey-vyper-fixture
+          mkdir -p /tmp/lowkey-vyper-fixture/contracts
+          cat > /tmp/lowkey-vyper-fixture/contracts/Counter.vy <<'EOF'
+          # pragma version ^0.4.0
+
+          count: public(uint256)
+
+          @external
+          def increment(value: uint256):
+              self.count += value
+          EOF
+      - name: Start Anvil
+        run: |
+          anvil --silent > /tmp/lowkey-vyper-anvil.log 2>&1 &
+          for i in $(seq 1 20); do
+            if cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat /tmp/lowkey-vyper-anvil.log
+          exit 1
+      - name: Exercise Vyper walkthrough
+        working-directory: /tmp/lowkey-vyper-fixture
+        run: |
+          vyper --version
+          lk --version
+          lk doctor
+          lk walkthrough --static --contract Counter --steps 2
+          test -f .audit/walkthrough/model.json
+          grep -q '"kind": "vyper"' .audit/walkthrough/model.json
+          lk walkthrough --auto --non-interactive --contract Counter --steps 1
+          test -f script/LowkeyWalkthrough_Counter.sh
+          grep -q 'cast send "$TARGET"' script/LowkeyWalkthrough_Counter.sh
+          TARGET=$(python3 - <<'PY'
+          import json
+          print(json.load(open(".audit/walkthrough/latest.json"))["steps"][0]["address"])
+          PY
+          )
+          test -n "$TARGET"
+          cast code "$TARGET" --rpc-url http://127.0.0.1:8545 | grep -Eq '^0x[0-9a-fA-F]+$'
+          cast call "$TARGET" 'count()(uint256)' --rpc-url http://127.0.0.1:8545
+          lk status
+          lk context
