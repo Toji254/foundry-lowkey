@@ -1189,6 +1189,33 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("restores the Anvil snapshot", joined)
         self.assertIn("repeated successes are intentional", joined)
 
+    def test_transaction_evidence_requires_assigned_hash_before_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            step = walkthrough.Step(
+                1, "Alice", "Fixture", "0x"+"2"*40,
+                "ping(uint256)", [7], status="success",
+                tx_hash="0x"+"a"*64,
+            )
+            receipt = {
+                "status": "0x1",
+                "blockNumber": "0x10",
+                "gasUsed": "0x5208",
+            }
+            with patch.object(walkthrough, "_rpc_call", return_value={
+                "from": "0x"+"1"*40,
+                "to": "0x"+"2"*40,
+                "value": "0x0",
+                "nonce": "0x0",
+                "gas": "0x100000",
+                "input": "0xdeadbeef",
+            }):
+                path = walkthrough._write_transaction_evidence(root, "http://127.0.0.1:8545", step, receipt)
+            self.assertIsNotNone(path)
+            self.assertTrue(path.is_file())
+            self.assertEqual(path, root / ".audit" / "walkthrough" / "transactions" / (("0x"+"a"*64) + ".html"))
+            self.assertIn("LOWKEY // TRANSACTION CONFIRMATION", path.read_text(encoding="utf-8"))
+
     def test_friendly_renderer_has_no_host_dependency(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
