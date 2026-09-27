@@ -563,11 +563,15 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         tools.get("forge-tests", {}).get("status") if isinstance(tools.get("forge-tests"), dict) else None,
         tools.get("forge-coverage", {}).get("status") if isinstance(tools.get("forge-coverage"), dict) else None,
     ]
-    overall = "PASS" if pipeline_code == 0 and all(x == "completed" for x in mandatory) else "REVIEW NEEDED"
+    overall = "BASELINE PASS" if pipeline_code == 0 and all(x == "completed" for x in mandatory) else "REVIEW NEEDED"
 
     print("\n=== LOWKEY AUDIT DASHBOARD ===")
     print("=" * 88)
-    print(f"Target : {(context.get('target') or {}).get('contract') or (context.get('target') or {}).get('address') or 'not configured'}")
+    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
+    target_label = target_data.get("contract") or target_data.get("address") or "not configured"
+    print(f"Target : {target_label}")
+    if not target_data.get("address"):
+        print("         No live project target is connected; run 'lk lab' or 'lk audit auto' for local reproduction.")
     print(f"Actor  : {context.get('actor') or 'none'}")
     print(f"Signals: {open_signals} open")
     if focused:
@@ -585,6 +589,11 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         print(f"| {label:<16} | {status:<10} | {detail:<46} |")
     print("+------------------+------------+------------------------------------------------+")
     print("Evidence: .audit/context.json + .audit/events.jsonl")
+    static_recorded = any(
+        isinstance(tools.get(key), dict)
+        for key in ("slither", "forge-lint", "forge-geiger")
+    )
+    print("Static checks: " + ("recorded" if static_recorded else "not run in this baseline; use 'lk audit --checks' or 'lk audit run'") + ".")
     print("Heuristic/static results are investigation leads, not vulnerability verdicts.")
     return 0 if overall == "PASS" else 1
 
@@ -668,7 +677,7 @@ def run_audit(args: Sequence[str]) -> int:
     render_audit_dashboard(root, pipeline_code=0)
     print("\nAUDIT SUMMARY")
     print("=============")
-    print("Result  : PASS")
+    print("Result  : BASELINE PASS")
     print("Artifacts: .audit/context.json + tool evidence")
     print("Next    : lk findings  |  lk context")
     if checks:
