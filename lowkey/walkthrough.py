@@ -138,6 +138,17 @@ class Step:
     diagnostics: list[str] = field(default_factory=list)
 
 
+@dataclass
+class WalkthroughStory:
+    """A stateful adversarial sequence evaluated as one isolated story."""
+    story_id: str
+    title: str
+    goal: str
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    signal: str = "NOT_RUN"
+    evidence: list[str] = field(default_factory=list)
+
+
 def _box(title: str, lines: Iterable[str], width: int = 72, left: str = "╭", right: str = "╮") -> str:
     inner = max(20, width - 4)
     body = []
@@ -1789,85 +1800,17 @@ def _lab_runtime(config: dict[str, Any], target: str, model: ContractModel, mode
                 node.parent = None
     return runtime
 
-def _confidence_pool_factory_recipe(
-    config: dict[str, Any],
-    actors: list[Actor],
-    now: int,
-) -> list[Step]:
-    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-    factory = system.get("factory") or config.get("target")
-    token = system.get("stake_token")
-    agreement = system.get("agreement")
-    if not factory or not token or not agreement:
-        return []
-
-    alice = actors[0] if actors else Actor("Alice", factory, 0)
-    bob = actors[1] if len(actors) > 1 else alice
-    expiry = now + 31 * 24 * 60 * 60
-    scope = [alice.address, bob.address]
-
-    return [
-        Step(
-            0, alice.name, "ConfidencePoolFactory", factory,
-            "setStakeTokenAllowed(address,bool)", [token, True],
-            reason="factory owner enables the stake token",
-            inferred=False,
-        ),
-        Step(
-            0, alice.name, "ConfidencePoolFactory", factory,
-            "createPool(address,address,uint256,uint256,address,address[])",
-            [agreement, token, expiry, 10**18, bob.address, scope],
-            reason="factory validates dependencies, clones the pool, and initializes it",
-            inferred=False,
-        ),
-    ]
-
-
-def _confidence_pool_recipe(
-    config: dict[str, Any],
-    actors: list[Actor],
-    pool_override: str | None = None,
-    now: int | None = None,
-) -> list[Step]:
-    system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
-    pool = pool_override or system.get("pool") or config.get("target")
-    token = system.get("stake_token")
-    attack_registry = system.get("attack_registry")
-    moderator = system.get("moderator")
-    if not pool or not token or not attack_registry or not moderator:
-        return []
-
-    timestamp = int(now if now is not None else time.time())
-    alice = actors[0] if actors else Actor("Alice", pool, 0)
-    bob = actors[1] if len(actors) > 1 else alice
-    amount = 10**18
-    max_uint = 2**256 - 1
-
-    return [
-        Step(0, alice.name, "StakeToken", token, "approve(address,uint256)", [pool, max_uint],
-             reason="Alice gives the pool permission to pull her stake tokens", inferred=False),
-        Step(0, bob.name, "StakeToken", token, "approve(address,uint256)", [pool, max_uint],
-             reason="Bob gives the pool permission to pull his stake tokens", inferred=False),
-        Step(0, alice.name, "ConfidencePool", pool, "contributeBonus(uint256)", [amount],
-             reason="Alice seeds the pool's bonus reserve", inferred=False),
-        Step(0, alice.name, "ConfidencePool", pool, "stake(uint256)", [amount],
-             reason="Alice deposits her stake", inferred=False),
-        Step(0, bob.name, "ConfidencePool", pool, "stake(uint256)", [amount],
-             reason="Bob deposits his stake", inferred=False),
-        Step(0, alice.name, "MockAttackRegistry", attack_registry, "setAgreementState(uint8)", [3],
-             reason="LAB CONTROL: agreement enters UNDER_ATTACK", inferred=False),
-        Step(0, alice.name, "ConfidencePool", pool, "pokeRiskWindow()",
-             [], reason="pool observes the external registry and seals the risk window", inferred=False),
-        Step(0, alice.name, "MockAttackRegistry", attack_registry, "setAgreementState(uint8)", [5],
-             reason="LAB CONTROL: agreement reaches PRODUCTION", inferred=False),
-        Step(0, alice.name, "MockConfidencePoolModerator", moderator, "flagSurvived(address)", [pool],
-             reason="moderator records the survived outcome", inferred=False),
-        Step(0, alice.name, "ConfidencePool", pool, "claimSurvived()",
-             [], reason="Alice claims principal plus her bonus share", inferred=False),
-        Step(0, bob.name, "ConfidencePool", pool, "claimSurvived()",
-             [], reason="Bob claims principal plus his bonus share", inferred=False),
-    ]
-
+def _rpc_advance_time(rpc: str, seconds: int) -> bool:
+    """Advance Anvil time for a stateful story."""
+    try:
+        delta = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return False
+    if delta == 0:
+        return True
+    result = _rpc_call(rpc, "evm_increaseTime", [delta])
+    _rpc_call(rpc, "evm_mine", [])
+    return result is not None
 
 
 def _render_shape_legend(enabled: bool) -> str:
@@ -4679,6 +4622,160 @@ def _adversarial_category(step: Step) -> str:
     return "INPUT / BEHAVIOR"
 
 
+
+def _human_language(model: ContractModel | None) -> str:
+    """Return a human-friendly language label without assuming EVM/Solidity."""
+    source = str(getattr(model, "source", "") or "").lower()
+    suffix = Path(source).suffix.lower()
+    return {
+        ".sol": "Solidity",
+        ".vy": "Vyper",
+        ".vyi": "Vyper",
+        ".move": "Move",
+        ".cairo": "Cairo",
+        ".tact": "Tact",
+        ".fc": "FunC",
+        ".func": "FunC",
+        ".clar": "Clarity",
+        ".rs": "Rust",
+    }.get(suffix, "smart-contract code")
+
+
+def _human_subject(model: ContractModel | None) -> str:
+    """Use a language-neutral noun in teaching output."""
+    language = _human_language(model)
+    if language == "Move":
+        return "module"
+    if language == "Rust":
+        return "program"
+    return "contract"
+
+
+def _human_probe_status(step: Step) -> tuple[str, str, str]:
+    """Turn noisy probe outcomes into a small set of beginner-friendly states."""
+    haystack = " ".join([
+        str(step.error or ""),
+        str(step.error_reason or ""),
+        str(step.failure_origin or ""),
+        " ".join(str(x) for x in (step.diagnostics or [])),
+    ]).lower()
+
+    if any(token in haystack for token in (
+        "no contract code",
+        "fixture",
+        "bootstrap probe",
+        "lab issue",
+        "test environment",
+    )):
+        return (
+            "🔧 LAB ISSUE",
+            "The test setup appears to be pointing at something that is not a usable contract.",
+            "Fix the lab setup before treating this result as protocol behavior.",
+        )
+
+    if step.status == "success":
+        function_name = str(step.function or "").split("(", 1)[0].lower()
+        if any(token in function_name for token in _ADMIN_TOKENS) and any(
+            "owner" in item.lower() or "ownership" in item.lower() for item in (step.diagnostics or [])
+        ):
+            return (
+                "🟦 EXPECTED ADMIN",
+                "The configured owner/admin performed this action successfully.",
+                "Do not treat this as a vulnerability by itself; ask whether an untrusted actor can reach the same state change.",
+            )
+        return (
+            "⚠️ CHECK THIS",
+            "The chain accepted the action, so a state-changing path was allowed.",
+            "A successful probe is not automatically a bug; inspect who can reach it and what state it changes.",
+        )
+
+    if any(token in haystack for token in (
+        "not the contract owner",
+        "not authorized",
+        "zero address",
+        "mapping gate blocks",
+        "returned false",
+        "source guard:",
+        "expirytoo",
+        "invalidamount",
+        "outcomealreadyset",
+        "withdrawsdisabled",
+        "stakingclosed",
+        "invalidoutcome",
+        "notattacker",
+        "claimwindowexpired",
+        "claimnot",
+    )):
+        return (
+            "✅ NORMAL",
+            "The call was rejected by a rule or precondition Lowkey can explain from the available evidence.",
+            "That is usually expected. Keep moving unless the rule itself is wrong or can be bypassed.",
+        )
+
+    return (
+        "❓ UNKNOWN",
+        "The call failed, but Lowkey cannot prove the exact reason yet.",
+        "Do not call this a bug. Open the function, inspect the checks, and trace the failing call.",
+    )
+
+
+def _human_next_step(step: Step, model: ContractModel) -> str:
+    status, _, action = _human_probe_status(step)
+    name = str(step.function or "").split("(", 1)[0]
+    location = model.function_locations.get(name)
+    where = f"{model.source}:{location}" if location else str(model.source or "source")
+    if status == "🔧 LAB ISSUE":
+        return action
+    if status in {"⚠️ CHECK THIS", "🟦 EXPECTED ADMIN"}:
+        if any(token in name.lower() for token in ("owner", "pause", "upgrade", "set", "initialize", "config")):
+            return f"Open {where} and ask: who is allowed to change this, and what breaks after the change?"
+        return f"Open {where} and inspect the state this function writes and who can reach that state."
+    if status == "❓ UNKNOWN":
+        return f"Open {where}, find the first failing check/call, then compare that rule with the intended behavior."
+    return "No immediate follow-up. Treat this as a normal guard working unless you discover a bypass."
+
+
+def _render_adversarial_probe_human(
+    root: Path,
+    step: Step,
+    model: ContractModel,
+    actors: list[Actor],
+) -> list[str]:
+    """Beginner-first probe view; keep the technical evidence directly underneath."""
+    status, why_simple, _ = _human_probe_status(step)
+    role = _adversarial_actor_role(step.actor)
+    language = _human_language(model)
+    subject = _human_subject(model)
+    function = _function_link(root, model, str(step.function))
+    args = ", ".join(_friendly_arg(value, actors) for value in step.args) or "∅"
+    call = f"{model.name}.{function}({args})" if args != "∅" else f"{model.name}.{function}()"
+    why, lesson, quality = _adversarial_probe_why(step, model, actors)
+
+    lines = [
+        "",
+        f"  {status}",
+        f"  {step.index:02d}. {step.actor or 'Caller'} tried {call}",
+        f"  ROLE     {role}",
+        f"  WHAT     {call}",
+        f"  RESULT   {'Accepted by the chain.' if step.status == 'success' else 'Rejected by the chain.'}",
+        f"  WHY      {why_simple}",
+        f"  WHY TECH {why}",
+        f"  NEXT     {_human_next_step(step, model)}",
+        f"  LESSON   {lesson}",
+        f"  EVIDENCE {quality}",
+        f"  CODE     {language} {subject} • {model.source}",
+    ]
+
+    source_lines = [line for line in (step.diagnostics or []) if str(line).lower().startswith("source guard:")]
+    if source_lines:
+        lines.append(f"  SOURCE   {source_lines[0]}")
+    elif step.failure_origin:
+        lines.append(f"  ORIGIN   {step.failure_origin}")
+
+    if step.tx_hash:
+        lines.append(f"  TX       {step.tx_hash[:10]}…{step.tx_hash[-8:]}")
+    return lines
+
 def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]) -> tuple[str, str, str]:
     """Explain randomized probes without overstating what the evidence proves."""
     name = str(step.function or "").split("(", 1)[0]
@@ -4774,7 +4871,7 @@ def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]
     )
 
 
-def _render_adversarial_probe(
+def _render_adversarial_probe_technical(
     root: Path,
     step: Step,
     model: ContractModel,
@@ -4795,7 +4892,7 @@ def _render_adversarial_probe(
             GREEN if step.status == "success" else RED,
             _ansi_enabled(False),
         ),
-        f"     {_paint(step.actor or 'Caller', 'magenta')} → {call}",
+        f"     {_paint(step.actor or 'Caller', MAGENTA, _ansi_enabled(False))} → {call}",
         f"     ROLE     {role}",
         f"     WHAT     {_human_action_summary(step, actors)}",
         f"     RESULT   {status_word} — " + (
@@ -4819,58 +4916,103 @@ def _render_adversarial_probe(
     return lines
 
 
+def _render_adversarial_probe(
+    root: Path,
+    step: Step,
+    model: ContractModel,
+    actors: list[Actor],
+    technical: bool = False,
+) -> list[str]:
+    if technical:
+        return _render_adversarial_probe_technical(root, step, model, actors)
+    return _render_adversarial_probe_human(root, step, model, actors)
+
+
 def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> list[str]:
     lines = [
         "",
-        _paint("HOW TO READ THIS TEST", BOLD + CYAN, _ansi_enabled(False)),
-        "  WHAT     = what Lowkey attempted",
-        "  RESULT   = what the chain actually accepted/rejected",
-        "  WHY      = best available explanation from runtime/source evidence",
-        "  LESSON   = the Solidity/security idea worth noticing",
-        "  EVIDENCE = how strongly the explanation is supported",
+        _paint("HOW TO READ THIS", BOLD + CYAN, _ansi_enabled(False)),
+        "  ✅ NORMAL          = the contract rejected the call for an explained reason.",
+        "  🟦 EXPECTED ADMIN  = the configured owner/admin performed the action.",
+        "  ⚠️ CHECK THIS      = the chain accepted an action worth inspecting.",
+        "  ❓ UNKNOWN         = Lowkey could not prove why it failed.",
+        "  🔧 LAB ISSUE       = the test setup looks broken; do not blame the contract yet.",
         "",
-        "  🧪 ISOLATED PROBES",
-        "  Every probe starts from the same prepared baseline.",
-        "  After the probe, Lowkey restores the Anvil snapshot.",
-        "  So repeated successes are intentional; they do not carry state forward.",
+        "  Random probes reset after each call. Stateful stories reset after the whole attack sequence.",
+        "  These are randomized transaction probes — not 24 vulnerability checks.",
+        "  Finding patterns and stateful attack stories are reported separately below.",
     ]
     if baseline_notes:
-        lines += ["", "  BASELINE SETUP"]
+        lines += ["", "  BASELINE"]
         lines += [f"    ✓ {note}" for note in baseline_notes]
-    lines += [
-        "",
-        f"  Running {total_cases} adversarial probe(s) across randomized actors, inputs and transaction values…",
-        "",
-    ]
+    lines += ["", f"  Running {total_cases} checks…", ""]
     return lines
 
 
-def _render_adversarial_summary(root: Path, results: list[Step], evidence: Path) -> list[str]:
-    accepted = sum(item.status == "success" for item in results)
-    reverted = len(results) - accepted
-    counts: dict[str, int] = {}
-    for item in results:
-        category = _adversarial_category(item)
-        counts[category] = counts.get(category, 0) + 1
+def _render_adversarial_summary(
+    root: Path,
+    results: list[Step],
+    evidence: Path,
+    stories: list[WalkthroughStory] | None = None,
+) -> list[str]:
+    normal = sum(_human_probe_status(item)[0] == "✅ NORMAL" for item in results)
+    admin = sum(_human_probe_status(item)[0] == "🟦 EXPECTED ADMIN" for item in results)
+    review = sum(_human_probe_status(item)[0] == "⚠️ CHECK THIS" for item in results)
+    unknown = sum(_human_probe_status(item)[0] == "❓ UNKNOWN" for item in results)
+    lab = sum(_human_probe_status(item)[0] == "🔧 LAB ISSUE" for item in results)
 
     lines = [
         "",
-        _paint("TEST SUMMARY", BOLD + CYAN, _ansi_enabled(False)),
-        "  " + " • ".join([f"{len(results)} probes", f"{accepted} accepted", f"{reverted} reverted"]),
+        _paint("WHAT MATTERS", BOLD + CYAN, _ansi_enabled(False)),
+        f"  {len(results)} checks finished",
+        f"  ✅ NORMAL       {normal}",
+        f"  🟦 EXPECTED ADMIN {admin}",
+        f"  ⚠️ CHECK THIS   {review}",
+        f"  ❓ UNKNOWN      {unknown}",
+        f"  🔧 LAB ISSUE    {lab}",
         "",
-        "  PROBES BY CONCEPT",
     ]
-    for category, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])):
-        lines.append(f"    {category:<18} {count}")
+
+    confirmed_stories = [story for story in (stories or []) if story.signal == "CONFIRMED"]
+    review_items = [item for item in results if _human_probe_status(item)[0] == "⚠️ CHECK THIS"]
+    unknown_items = [item for item in results if _human_probe_status(item)[0] == "❓ UNKNOWN"]
+    if confirmed_stories:
+        lines.append("  START HERE")
+        for story in confirmed_stories[:3]:
+            lines.append(f"    🚨 {story.story_id} {story.title} — replay this story")
+    elif review_items:
+        lines.append("  START HERE")
+        for item in review_items[:5]:
+            fn = str(item.function or "").split("(", 1)[0]
+            lines.append(f"    ⚠️ #{item.index} {fn} — the chain allowed this action")
+    elif unknown_items:
+        lines.append("  START HERE")
+        for item in unknown_items[:3]:
+            fn = str(item.function or "").split("(", 1)[0]
+            lines.append(f"    ❓ #{item.index} {fn} — Lowkey could not prove the failure reason")
+    else:
+        lines.extend(["  START HERE", "    Nothing suspicious stood out in this probe set."])
+
+    if stories:
+        confirmed = sum(1 for story in stories if story.signal == "CONFIRMED")
+        lines += ["", "  STATEFUL BENCHMARKS", f"    {confirmed} confirmed benchmark signal(s) across {len(stories)} stories"]
+        for story in stories:
+            icon = "🚨" if story.signal == "CONFIRMED" else "·" if story.signal == "NOT_REPRODUCED" else "🔧"
+            lines.append(f"    {icon} {story.story_id} {story.title} — {story.signal}")
+            for evidence_line in story.evidence[:2]:
+                lines.append(f"       {evidence_line}")
+
     lines += [
         "",
         "  REMEMBER",
-        "    • ACCEPTED means the current state allowed the action.",
-        "    • REVERTED means some precondition rejected the action.",
-        "    • Neither result alone is a vulnerability verdict.",
+        "    A rejection is usually a guard working.",
+        "    A successful probe is not automatically a vulnerability.",
+        "    An unknown result needs source/trace verification.",
+        f"    Evidence: {evidence.relative_to(root)}",
+        "    Every probe was restored to the same local snapshot.",
         "",
-        f"  Evidence: {evidence.relative_to(root)}",
-        "  Snapshot policy: every probe restored; final project state restored too.",
+        "  TECHNICAL VIEW",
+        "    Run the same command with --technical to see the forensic-style output.",
     ]
     return lines
 
@@ -5052,6 +5194,157 @@ def _generic_walkthrough_warmup(
     return notes
 
 
+def _execute_stateful_story_action(
+    root: Path,
+    config: dict[str, Any],
+    host: Any,
+    rpc: str,
+    actors: list[Actor],
+    action: dict[str, Any],
+    index: int,
+    models: list[ContractModel],
+) -> Step:
+    actor_name = str(action.get("actor") or (actors[0].name if actors else "Alice"))
+    actor = next(
+        (a for a in actors if a.name == actor_name),
+        actors[0] if actors else Actor(actor_name, "0x" + "00" * 20, 0),
+    )
+
+    if action.get("kind") == "time":
+        seconds = int(action.get("seconds") or 0)
+        ok = _rpc_advance_time(rpc, seconds)
+        return Step(
+            index=index,
+            actor=actor.name,
+            contract="AnvilClock",
+            address="0x" + "00" * 20,
+            function=f"advanceTime({seconds})",
+            args=[seconds],
+            reason=str(action.get("reason") or "advance local time"),
+            inferred=False,
+            status="success" if ok else "reverted",
+            error=None if ok else "Anvil time advance failed",
+        )
+
+    address = str(action.get("address") or "")
+    function = str(action.get("function") or "")
+    args = list(action.get("args") or [])
+    value = int(action.get("value") or 0)
+    contract = str(action.get("contract") or "Contract")
+    step = Step(
+        index=index,
+        actor=actor.name,
+        contract=contract,
+        address=address,
+        function=function,
+        args=args,
+        value_wei=value,
+        reason=str(action.get("reason") or "stateful benchmark"),
+        inferred=False,
+    )
+
+    actor_addresses = [a.address for a in actors if is_address(a.address)]
+    token = config.get("lab_system", {}).get("stake_token") if isinstance(config.get("lab_system"), dict) else None
+    step.balance_before = _snapshot_balances(rpc, actor_addresses)
+    step.token_balance_before = _snapshot_token_balances(rpc, token, actor_addresses)
+
+    tx, output = _send(host, config, actor, address, function, args, value)
+    step.tx_hash = tx
+    if tx:
+        receipt = _receipt(rpc, tx)
+        step.status = "success" if receipt and receipt.get("status") in (None, "0x1", 1) else "reverted"
+        step.events = _event_rows(host, config, receipt)
+        trace = _trace_tree(rpc, tx)
+        step.trace_edges = _trace_edges(rpc, tx)
+        step.execution_edges = _trace_execution_edges(root, rpc, models, trace)
+        step.calldata = _transaction_input(rpc, tx)
+        if receipt and isinstance(receipt.get("gasUsed"), str):
+            try:
+                step.gas_used = int(receipt["gasUsed"], 16)
+            except ValueError:
+                pass
+        step.error = None if step.status == "success" else (output or "transaction reverted")
+        _write_transaction_evidence(root, rpc, step, receipt)
+    else:
+        step.status = "reverted"
+        step.error = output or "transaction was rejected"
+        step.error_reason = _explain_failure(step, step.error, actor.name)
+
+    step.balance_after = _snapshot_balances(rpc, actor_addresses)
+    step.token_balance_after = _snapshot_token_balances(rpc, token, actor_addresses)
+    if step.status != "success":
+        step.error_reason = step.error_reason or _explain_failure(step, step.error, actor.name)
+    return step
+
+
+
+
+def _benchmark_adapter(model: ContractModel, models: list[ContractModel], config: dict[str, Any]) -> Any:
+    """Resolve the optional benchmark adapter without embedding protocol rules in core."""
+    try:
+        from .walkthrough_benchmarks import get_benchmark_adapter
+    except ImportError:
+        try:
+            from walkthrough_benchmarks import get_benchmark_adapter
+        except ImportError:
+            return None
+    try:
+        return get_benchmark_adapter(model, models, config)
+    except Exception:
+        return None
+
+
+def _run_stateful_benchmark(
+    root: Path,
+    config: dict[str, Any],
+    host: Any,
+    rpc: str,
+    actors: list[Actor],
+    models: list[ContractModel],
+    adapter: Any,
+    target_info: dict[str, Any],
+) -> tuple[list[WalkthroughStory], list[Step]]:
+    """Run adapter-provided stories; core remains protocol-agnostic."""
+    stories = adapter.build_stories(config, actors, target_info)
+    results: list[WalkthroughStory] = []
+    all_steps: list[Step] = []
+    for story in stories:
+        snapshot = _rpc_snapshot(rpc)
+        if snapshot is None:
+            story.signal = "BLOCKED"
+            story.evidence = ["Anvil could not snapshot the prepared benchmark baseline."]
+            results.append(story)
+            continue
+        print("")
+        print(f"  🧭 {story.story_id}  {story.title}")
+        print(f"     GOAL   {story.goal}")
+        print("     MODE   stateful benchmark • one snapshot for the whole story")
+        story_steps: list[Step] = []
+        for action in story.actions:
+            step = _execute_stateful_story_action(
+                root, config, host, rpc, actors, action,
+                len(story_steps) + 1, models,
+            )
+            story_steps.append(step)
+            all_steps.append(step)
+            adapter.observe_step(story, step, rpc, target_info, actors)
+            label = f"+{action.get('seconds', 0)}s" if action.get('kind') == 'time' else str(step.function).split('(', 1)[0]
+            mark = '✓' if step.status == 'success' else '✕'
+            print(f"     {mark} {step.index:02d}  {step.actor} → {label}")
+            if step.status != 'success':
+                step.error_reason = step.error_reason or _explain_failure(step, step.error, step.actor)
+        adapter.assess(story, story_steps, rpc, target_info, actors)
+        results.append(story)
+        if not _rpc_revert(rpc, snapshot):
+            story.signal = "BLOCKED"
+            story.evidence = ["Anvil could not restore the benchmark snapshot."]
+            break
+        icon = {"CONFIRMED": "🚨", "NOT_REPRODUCED": "·", "BLOCKED": "🔧"}.get(story.signal, "?")
+        print(f"     {icon} {story.signal}")
+        for evidence in story.evidence[:3]:
+            print(f"        {evidence}")
+    return results, all_steps
+
 def _run_adversarial_test(
     root: Path,
     config: dict[str, Any],
@@ -5064,6 +5357,7 @@ def _run_adversarial_test(
     total_cases: int,
     seed: int | None,
     system_targets: list[tuple[str, str, ContractModel]] | None = None,
+    human_view: bool = True,
 ) -> int:
     actual_seed = seed if seed is not None else int(time.time())
     rng = random.Random(actual_seed)
@@ -5076,60 +5370,53 @@ def _run_adversarial_test(
         print("Error: Anvil did not provide an evm_snapshot; aborting adversarial test.", file=sys.stderr)
         return 1
 
+    benchmark = _benchmark_adapter(model, models, config)
     warmup_notes: list[str] = []
-    if config.get("_walkthrough_recipe") != "confidence-pool":
+    if benchmark:
+        warmups = benchmark.warmup_steps(config, actors, model, _block_timestamp(rpc))
+        for warmup in warmups:
+            actor = next((a for a in actors if a.name == warmup.actor), actors[0] if actors else None)
+            if not actor:
+                continue
+            tx, output = _send(host, config, actor, warmup.address, warmup.function, warmup.args, warmup.value_wei)
+            if not tx:
+                warmup_notes.append(f"{warmup.function}: benchmark warmup failed — {_short_error(output)}")
+                break
+            warmup_notes.append(f"{warmup.function}: established")
+            receipt = _receipt(rpc, tx)
+            trace = _trace_tree(rpc, tx)
+            discovered = _discover_runtime_contracts(root, rpc, models, [], receipt, trace, 0, warmup.address)
+            if discovered:
+                lab = config.get("lab_system")
+                if isinstance(lab, dict):
+                    child_model = str(lab.get("child_model") or "").strip().lower()
+                    for node in discovered:
+                        if child_model and node.model.lower() == child_model:
+                            lab["child"] = node.address
+                    config["lab_system"] = lab
+                    if hasattr(host, "save_config"):
+                        host.save_config(config)
+    else:
         warmup_notes.extend(
             _generic_walkthrough_warmup(
                 root, config, host, target, model, models,
                 actors, rpc, limit=4,
             )
         )
-    if (
-        config.get("_walkthrough_recipe") == "confidence-pool"
-        and model.name.lower() == "confidencepoolfactory"
-    ):
-        recipe = _confidence_pool_factory_recipe(config, actors, _block_timestamp(rpc))
-        for warmup in recipe[:2]:
-            actor = next((a for a in actors if a.name == warmup.actor), actors[0] if actors else None)
-            if not actor:
-                continue
-            tx, output = _send(host, config, actor, warmup.address, warmup.function, warmup.args, warmup.value_wei)
-            if not tx:
-                warmup_notes.append(
-                    f"{warmup.function}: bootstrap probe did not succeed — { _short_error(output) }"
-                )
-                break
-            warmup_notes.append(f"{warmup.function}: established")
-            if warmup.function.startswith("createPool("):
-                receipt = _receipt(rpc, tx)
-                trace = _trace_tree(rpc, tx)
-                discovered = _discover_runtime_contracts(
-                    root,
-                    rpc,
-                    models,
-                    [],
-                    receipt,
-                    trace,
-                    0,
-                    warmup.address,
-                )
-                lab = config.get("lab_system")
-                if isinstance(lab, dict):
-                    for node in discovered:
-                        if node.model and node.model != "External":
-                            child_model = str(lab.get("child_model") or "").lower()
-                            if child_model and node.model.lower() == child_model:
-                                lab["pool"] = node.address
-                                config["lab_system"] = lab
-                                if hasattr(host, "save_config"):
-                                    host.save_config(config)
-                break
 
     if system_targets and len(system_targets) > 1:
         targets = system_targets
     else:
         targets = _system_test_targets(config, target, model, models)
     targets = [item for item in targets if _adversarial_functions(item[2])]
+    if benchmark:
+        application_targets = [
+            item for item in targets
+            if item[2].kind not in {"interface", "library", "abstract"}
+            and not any(token in item[2].name.lower() for token in ("mock", "erc20", "token"))
+        ]
+        if application_targets:
+            targets = application_targets
 
     if not targets:
         _rpc_revert(rpc, cleanup_snapshot)
@@ -5141,9 +5428,9 @@ def _run_adversarial_test(
 
     print(_paint("LOWKEY // ADVERSARIAL WALKTHROUGH TEST", BOLD + MAGENTA, _ansi_enabled(False)))
     print(f"  system : {len(targets)} live application instance(s)")
-    print("  engine : randomized args/roles/extremes → SEND → trace → diagnose → restore")
+    print("  engine : stateful attack stories + randomized probes → SEND → trace → diagnose → restore")
     print(f"  seed   : {actual_seed}")
-    print("  view   : teaching — each probe explains WHAT / RESULT / WHY / LESSON")
+    print("  view   : simple — Lowkey highlights NORMAL / CHECK THIS / UNKNOWN / LAB ISSUE")
     print("")
 
     # Capture the post-warmup baseline. Every case is reverted to this state, and
@@ -5155,6 +5442,36 @@ def _run_adversarial_test(
         return 1
 
     print("\n".join(_render_adversarial_intro(total_cases, warmup_notes)))
+
+    pattern_observations: list[Any] = []
+    pattern_stories: list[WalkthroughStory] = []
+    pattern_steps: list[Step] = []
+    try:
+        from .walkthrough_finding_patterns import run as run_finding_patterns, render_summary as render_pattern_summary
+    except ImportError:
+        try:
+            from walkthrough_finding_patterns import run as run_finding_patterns, render_summary as render_pattern_summary
+        except ImportError:
+            run_finding_patterns = None
+            render_pattern_summary = None
+    if run_finding_patterns:
+        pattern_observations, pattern_stories, pattern_steps = run_finding_patterns(
+            root, config, host, rpc, actors, models, targets, actual_seed
+        )
+        if render_pattern_summary:
+            print("\n".join(render_pattern_summary(pattern_observations)))
+
+    benchmark_results: list[WalkthroughStory] = []
+    benchmark_steps: list[Step] = []
+    if benchmark:
+        target_info, benchmark_reason = benchmark.prepare(root, config, host, rpc, actors, model, models)
+        if target_info:
+            benchmark_results, benchmark_steps = _run_stateful_benchmark(
+                root, config, host, rpc, actors, models, benchmark, target_info
+            )
+        else:
+            print("")
+            print(f"  🔧 BENCHMARK BLOCKED  {benchmark_reason or 'adapter could not prepare a live target'}")
 
     schedules: list[tuple[str, str, ContractModel, dict[str, Any]]] = []
     for label, address, target_model in targets:
@@ -5224,7 +5541,7 @@ def _run_adversarial_test(
 
         results.append(step)
 
-        print("\n".join(_render_adversarial_probe(root, step, active_model, actors)))
+        print("\n".join(_render_adversarial_probe(root, step, active_model, actors, technical=not human_view)))
 
         if not _rpc_revert(rpc, snapshot):
             print("     ⚠ Anvil snapshot could not be restored; aborting.", file=sys.stderr)
@@ -5242,16 +5559,26 @@ def _run_adversarial_test(
     evidence.write_text(
         json.dumps(
             {
-                "version": 1,
-                "mode": "randomized-isolated",
+                "version": 2,
+                "mode": "mixed-stateful-randomized",
                 "seed": actual_seed,
                 "target": target,
                 "contract": model.name,
                 "cases": [asdict(item) for item in results],
+                "stateful_story_steps": [asdict(item) for item in benchmark_steps],
+                "stateful_stories": [asdict(item) for item in benchmark_results],
+                "finding_pattern_steps": [asdict(item) for item in pattern_steps],
+                "finding_patterns": [asdict(item) for item in pattern_observations],
+                "finding_pattern_stories": [asdict(item) for item in pattern_stories],
                 "summary": {
-                    "cases": len(results),
+                    "random_cases": len(results),
                     "accepted": accepted,
                     "reverted": reverted,
+                    "stateful_stories": len(benchmark_results),
+                    "stateful_confirmed": sum(1 for story in benchmark_results if story.signal == "CONFIRMED"),
+                    "finding_patterns": len(pattern_observations),
+                    "finding_pattern_confirmed": sum(1 for item in pattern_observations if item.status == "CONFIRMED"),
+                    "finding_pattern_reviews": sum(1 for item in pattern_observations if item.status == "REVIEW"),
                 },
             },
             indent=2,
@@ -5260,7 +5587,7 @@ def _run_adversarial_test(
         encoding="utf-8",
     )
 
-    for line in _render_adversarial_summary(root, results, evidence):
+    for line in _render_adversarial_summary(root, results, evidence, benchmark_results):
         print(line)
     return 0
 
@@ -5639,9 +5966,19 @@ def _deploy_local_artifact(
         command += ["--constructor-args", *[_cli_arg(item) for item in values]]
     command += ["--rpc-url", rpc, "--private-key", private_key, "--broadcast"]
     code, out, err = _cmd(command, cwd=root, timeout=90)
+    output = out or err or ""
     if code != 0:
         return None
-    return _parse_local_deployed_address(out or err)
+    address = _parse_local_deployed_address(output)
+    if address and _runtime_code(rpc, address) not in {"", "0x"}:
+        return address
+    tx_hash = _extract_tx_hash(output)
+    if tx_hash:
+        receipt = _receipt(rpc, tx_hash)
+        recovered = receipt.get("contractAddress") if isinstance(receipt, dict) else None
+        if is_address(recovered) and _runtime_code(rpc, recovered) not in {"", "0x"}:
+            return str(recovered)
+    return address
 
 
 def _send_lab_control(
@@ -6214,14 +6551,14 @@ def _synthesize_local_protocol_fixture(
     )
     if mint_fn:
         mint_signature = _signature(mint_fn)
-        for actor, amount in ((alice, 2 * 10**18), (bob, 2 * 10**18)):
+        for actor in actors[:4]:
             _send_lab_control(
                 host,
                 config,
                 alice,
                 system["stake_token"],
                 mint_signature,
-                [actor.address, amount],
+                [actor.address, 1_000 * 10**18],
             )
 
     # Wire the disposable registry/Agreement fixtures before the root creates a child.
@@ -6249,17 +6586,12 @@ def _synthesize_local_protocol_fixture(
         None,
     )
     if agreement_scope_fn:
-        if not _send_lab_control(
-            host, config, alice, system["agreement"],
-            _signature(agreement_scope_fn), [alice.address, True],
-        ):
-            return False, "failed to add Alice to the Agreement scope"
-        if bob.address.lower() != alice.address.lower():
+        for actor in actors[:4]:
             if not _send_lab_control(
                 host, config, alice, system["agreement"],
-                _signature(agreement_scope_fn), [bob.address, True],
+                _signature(agreement_scope_fn), [actor.address, True],
             ):
-                return False, "failed to add Bob to the Agreement scope"
+                return False, f"failed to add {actor.name} to the Agreement scope"
 
     factory_impl = deploy_model(root_model)
     if not is_address(factory_impl):
@@ -7092,6 +7424,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         print("Error: 'lk walkthrough' needs a Solidity/Vyper project with source files.", file=sys.stderr)
         return 2
     test_mode=any(str(x).lower() in {"test", "random"} for x in args) or "--test" in args or "--random" in args
+    technical_test="--technical" in args
     auto="--auto" in args or "auto" in args
     # Adversarial walkthroughs are local-only and may bootstrap the disposable
     # project fixture automatically when no live target exists.
@@ -7238,6 +7571,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             root, config, host, target, model, models, actors, rpc,
             total_cases=test_cases, seed=test_seed,
             system_targets=system_targets,
+            human_view=not technical_test,
         )
 
     if static:
@@ -7283,14 +7617,15 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         runtime=runtime,
     )
     system=config.get("lab_system") if isinstance(config.get("lab_system"),dict) else {}
-    recipe=[]
-    if config.get("_walkthrough_recipe")=="confidence-pool":
-        now=_block_timestamp(rpc)
-        if model.name.lower().endswith("factory"):
-            recipe=_confidence_pool_factory_recipe(config,actors,now)
-        elif model.name.lower()=="confidencepool":
-            recipe=_confidence_pool_recipe(config,actors,now=now)
-    pending=recipe[:max_steps] if recipe else plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed,root=root)
+    benchmark_adapter = _benchmark_adapter(model, model_catalog, config)
+    adapter_recipe = benchmark_adapter.workflow_steps(
+        config, actors, model, target, _block_timestamp(rpc)
+    ) if benchmark_adapter else []
+    pending = (
+        adapter_recipe[:max_steps]
+        if adapter_recipe
+        else plan_workflow(model, actors, target, _block_timestamp(rpc), max_steps, observed, root=root)
+    )
 
     def draw(current=None, storage=None):
         if sys.stdout.isatty():
@@ -7474,8 +7809,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 # Visible local-lab prerequisite: once a real pool clone exists,
                 # approve the recorded mock stake token for that clone.
                 token_address = observed.get("staketoken")
-                use_pool_recipe = config.get("_walkthrough_recipe") == "confidence-pool"
-                if token_address and discovered and not use_pool_recipe:
+                adapter_manages_prerequisites = bool(
+                    benchmark_adapter and child and benchmark_adapter.manages_child_prerequisites(child)
+                )
+                if token_address and discovered and not adapter_manages_prerequisites:
                     child_model_name = str(config.get("lab_system", {}).get("child_model") or "").strip().lower()
                     for node in discovered:
                         if child_model_name and str(node.model).lower() != child_model_name:
@@ -7508,11 +7845,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     if not child:
                         continue
 
-                    child_steps = []
-                    if config.get("_walkthrough_recipe") == "confidence-pool" and child.name.lower() == "confidencepool":
-                        child_steps = _confidence_pool_recipe(
-                            config, actors, pool_override=node.address, now=_block_timestamp(rpc)
-                        )
+                    child_steps = benchmark_adapter.workflow_steps(
+                        config, actors, child, node.address, _block_timestamp(rpc)
+                    ) if benchmark_adapter else []
 
                     selected = child_steps or plan_workflow(
                         child, actors, node.address, _block_timestamp(rpc), max_steps, observed, root=root

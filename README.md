@@ -20,12 +20,26 @@ lk project
 lk system
 lk lab
 lk walkthrough --auto --steps 8
+lk walkthrough test --cases 24
+lk walkthrough test --cases 24 --technical
 lk audit run
 lk audit run --poc
 lk poc
 ~~~
 
-### What each layer does
+#### Beginner-first walkthrough view
+
+`lk walkthrough test` uses a simple teaching view by default. Each probe is reduced to one of four labels:
+
+- `✅ NORMAL` — Lowkey has an explained reason for the rejection.
+- `⚠️ CHECK THIS` — the chain accepted a state-changing action; inspect what changed.
+- `❓ UNKNOWN` — Lowkey cannot yet prove why the call failed.
+- `🔧 LAB ISSUE` — the local test setup appears broken, so the result should not be treated as a protocol finding.
+
+The output tells you what happened, why it matters, and what source/function to inspect next. The full forensic renderer is still available with `lk walkthrough test --technical`.
+
+The teaching layer is language-neutral: it does not assume the target is Solidity or a particular protocol. It can label Solidity, Vyper, Move, Cairo, Tact, FunC, Clarity, Rust, and unknown source files without changing the underlying audit semantics. Chain execution remains adapter-specific, so a language needs a compatible build/runtime adapter before live probes can run.
+## What each layer does
 
 - Project model: detects Foundry/Vyper/Hardhat/Brownie-style project structure and builds an import/dependency graph.
 - System model: records contracts, deployments, relationships, roles, initialization, tests, adversarial evidence, and audit targets in .audit/evidence/system_bootstrap.json.
@@ -518,6 +532,42 @@ script/
 ```
 
 By default the interactive runner pauses after each transaction so you can watch the protocol state evolve. `--yes` or `--non-interactive` removes prompts for automation/CI.
+
+## Real-world finding pattern pass
+
+```bash
+lk walkthrough test --cases 24
+```
+
+The security test now includes a separate finding-pattern pass distilled from recurring, adjudicated logic seen across CodeHawks, Immunefi, Code4rena, and public bug-fix research. The suite does not copy report titles into hardcoded protocol checks.
+
+It currently looks for patterns such as:
+
+- replayable claims/withdrawals with user-state consumption
+- external interaction before a security-sensitive state update
+- read-only reentrancy around callback/quote paths
+- sensitive state changes with no obvious authorization boundary
+- stale oracle/round validation
+- zero-share and rounding-loss candidates
+- signature replay / weak domain binding
+- unbounded storage loops on mutating paths
+- unchecked ERC20 transfer results
+- fee-on-transfer accounting assumptions
+- paired-variable validation mismatches
+- predictable randomness
+- initializer reuse
+- arbitrary external call targets
+- hardcoded economic fee/rate/price parameters
+- zero-address configuration boundaries
+- expired deadline/expiry boundaries
+
+Source matches are **CANDIDATE** signals. A live probe can move a pattern to **CONFIRMED** only when the local chain reproduces concrete impact evidence. Successful calls without proven impact remain **REVIEW** rather than being called vulnerabilities.
+
+The live pattern pass also includes isolated replay, initializer, and expired-deadline probes where the ABI and local state make them executable. Every probe is snapshot-isolated and restored afterward.
+
+Research notes and the reasoning behind each pattern are documented in `docs/walkthrough-finding-patterns.md`.
+
+The evidence is stored in `.audit/walkthrough/test.json` under `finding_patterns`, `finding_pattern_stories`, and `finding_pattern_steps`.
 
 ## Install
 
