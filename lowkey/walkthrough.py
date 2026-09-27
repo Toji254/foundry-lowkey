@@ -5450,56 +5450,39 @@ def _run_adversarial_test(
         print("Error: Anvil did not provide an evm_snapshot; aborting adversarial test.", file=sys.stderr)
         return 1
 
+    benchmark = _benchmark_adapter(model, models, config)
     warmup_notes: list[str] = []
-    if config.get("_walkthrough_recipe") != "confidence-pool":
+    if benchmark:
+        warmups = benchmark.warmup_steps(config, actors, model, _block_timestamp(rpc))
+        for warmup in warmups:
+            actor = next((a for a in actors if a.name == warmup.actor), actors[0] if actors else None)
+            if not actor:
+                continue
+            tx, output = _send(host, config, actor, warmup.address, warmup.function, warmup.args, warmup.value_wei)
+            if not tx:
+                warmup_notes.append(f"{warmup.function}: benchmark warmup failed — {_short_error(output)}")
+                break
+            warmup_notes.append(f"{warmup.function}: established")
+            receipt = _receipt(rpc, tx)
+            trace = _trace_tree(rpc, tx)
+            discovered = _discover_runtime_contracts(root, rpc, models, [], receipt, trace, 0, warmup.address)
+            if discovered:
+                lab = config.get("lab_system")
+                if isinstance(lab, dict):
+                    child_model = str(lab.get("child_model") or "").strip().lower()
+                    for node in discovered:
+                        if child_model and node.model.lower() == child_model:
+                            lab["child"] = node.address
+                    config["lab_system"] = lab
+                    if hasattr(host, "save_config"):
+                        host.save_config(config)
+    else:
         warmup_notes.extend(
             _generic_walkthrough_warmup(
                 root, config, host, target, model, models,
                 actors, rpc, limit=4,
             )
         )
-    if (
-        config.get("_walkthrough_recipe") == "confidence-pool"
-        and model.name.lower() == "confidencepoolfactory"
-    ):
-        recipe = _confidence_pool_factory_recipe(config, actors, _block_timestamp(rpc))
-        for warmup in recipe[:2]:
-            actor = next((a for a in actors if a.name == warmup.actor), actors[0] if actors else None)
-            if not actor:
-                continue
-            tx, output = _send(host, config, actor, warmup.address, warmup.function, warmup.args, warmup.value_wei)
-            if not tx:
-                warmup_notes.append(
-                    f"{warmup.function}: bootstrap probe did not succeed — { _short_error(output) }"
-                )
-                break
-            warmup_notes.append(f"{warmup.function}: established")
-            if warmup.function.startswith("createPool("):
-                receipt = _receipt(rpc, tx)
-                trace = _trace_tree(rpc, tx)
-                discovered = _discover_runtime_contracts(
-                    root,
-                    rpc,
-                    models,
-                    [],
-                    receipt,
-                    trace,
-                    0,
-                    warmup.address,
-                )
-                lab = config.get("lab_system")
-                if isinstance(lab, dict):
-                    for node in discovered:
-                        if node.model and node.model != "External":
-                            child_model = str(lab.get("child_model") or "").lower()
-                            if child_model and node.model.lower() == child_model:
-                                lab["pool"] = node.address
-                                config["lab_system"] = lab
-                                if hasattr(host, "save_config"):
-                                    host.save_config(config)
-                break
-
-    benchmark = _benchmark_adapter(model, models, config)
 
     if system_targets and len(system_targets) > 1:
         targets = system_targets
@@ -7690,14 +7673,15 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         runtime=runtime,
     )
     system=config.get("lab_system") if isinstance(config.get("lab_system"),dict) else {}
-    recipe=[]
-    if config.get("_walkthrough_recipe")=="confidence-pool":
-        now=_block_timestamp(rpc)
-        if model.name.lower().endswith("factory"):
-            recipe=_confidence_pool_factory_recipe(config,actors,now)
-        elif model.name.lower()=="confidencepool":
-            recipe=_confidence_pool_recipe(config,actors,now=now)
-    pending=recipe[:max_steps] if recipe else plan_workflow(model,actors,target,_block_timestamp(rpc),max_steps,observed,root=root)
+    benchmark_adapter = _benchmark_adapter(model, model_catalog, config)
+    adapter_recipe = benchmark_adapter.workflow_steps(
+        config, actors, model, target, _block_timestamp(rpc)
+    ) if benchmark_adapter else []
+    pending = (
+        adapter_recipe[:max_steps]
+        if adapter_recipe
+        else plan_workflow(model, actors, target, _block_timestamp(rpc), max_steps, observed, root=root)
+    )
 
     def draw(current=None, storage=None):
         if sys.stdout.isatty():
@@ -7915,11 +7899,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     if not child:
                         continue
 
-                    child_steps = []
-                    if config.get("_walkthrough_recipe") == "confidence-pool" and child.name.lower() == "confidencepool":
-                        child_steps = _confidence_pool_recipe(
-                            config, actors, pool_override=node.address, now=_block_timestamp(rpc)
-                        )
+                    child_steps = benchmark_adapter.workflow_steps(
+                        config, actors, child, node.address, _block_timestamp(rpc)
+                    ) if benchmark_adapter else []
 
                     selected = child_steps or plan_workflow(
                         child, actors, node.address, _block_timestamp(rpc), max_steps, observed, root=root
