@@ -639,6 +639,29 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertIn("create(Alice)", rendered)
             self.assertIn("\x1b]8;;", rendered)
 
+    def test_walkthrough_source_target_uses_vscode_when_editor_is_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Vault.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text("contract Vault {}", encoding="utf-8")
+            with patch.dict(os.environ, {"LOWKEY_EDITOR_LINK": "vscode"}, clear=False):
+                target = lk.walkthrough._source_target(root, "src/Vault.sol", 12)
+            self.assertTrue(target.startswith("vscode://file/"))
+            self.assertTrue(target.endswith(":12"))
+
+    def test_walkthrough_source_target_file_fallback_is_portable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Vault With Space.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text("contract Vault {}", encoding="utf-8")
+            with patch.dict(os.environ, {"LOWKEY_EDITOR_LINK": "file"}, clear=False):
+                target = lk.walkthrough._source_target(root, "src/Vault With Space.sol", 12)
+            self.assertTrue(target.startswith("file://"))
+            self.assertIn("Vault%20With%20Space.sol", target)
+            self.assertNotIn("#L12", target)
+
     def test_parse_lab_system(self):
         output = "\n".join([
             "LOWKEY_TARGET 0x" + "1" * 40,
