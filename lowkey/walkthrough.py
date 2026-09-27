@@ -669,6 +669,25 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
         path = root / str(name)
         if path.is_dir() and path not in source_roots:
             source_roots.append(path)
+    ignored_dirs = {
+        ".git", ".audit", ".venv", ".tox", ".nox", "__pycache__",
+        ".pytest_cache", "node_modules", "out", "cache", "artifacts",
+        "build", "dist", "lib",
+    }
+    discovered_source_dirs: set[Path] = set()
+    if root.is_dir():
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in {".sol", ".vy", ".vyi"}:
+                continue
+            if any(part in ignored_dirs for part in path.parts):
+                continue
+            discovered_source_dirs.add(path.parent.resolve())
+    source_roots.extend(
+        sorted(
+            (path for path in discovered_source_dirs if path not in source_roots),
+            key=lambda item: str(item),
+        )
+    )
 
     def source_language(path: Path) -> str:
         return "vyper" if path.suffix.lower() in {".vy", ".vyi"} else "solidity"
@@ -759,12 +778,12 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
         ]
         bases: list[str] = []
         for match in re.finditer(
-            r"\\b(?:abstract\\s+)?contract\\s+(\\w+)\\s+is\\s+([^{]+)\\{",
+            r"\b(?:abstract\\s+)?contract\\s+(\\w+)\\s+is\\s+([^{]+)\\{",
             source_text,
         ):
             if match.group(1) == name:
                 bases = [
-                    re.sub(r"\\s+", "", value).split("(")[0]
+                    re.sub(r"\s+", "", value).split("(")[0]
                     for value in match.group(2).split(",")
                     if value.strip()
                 ]
@@ -777,7 +796,7 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
             storage=data.get("storageLayout") or {},
             bases=bases,
             functions=functions,
-            modifiers=re.findall(r"\\bmodifier\\s+(\\w+)", source_text),
+            modifiers=re.findall(r"\bmodifier\\s+(\\w+)", source_text),
             structs=_parse_structs(source_text),
             mappings=_parse_mappings(source_text),
             arrays=_parse_arrays(source_text),
@@ -815,11 +834,15 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
                 ["vyper", "-f", "bytecode", str(source_path.relative_to(root))],
                 cwd=root, timeout=60,
             )
+            runtime_code, runtime_out, runtime_err = _cmd(
+                ["vyper", "-f", "bytecode_runtime", str(source_path.relative_to(root))],
+                cwd=root, timeout=60,
+            )
             layout_code, layout_out, layout_err = _cmd(
                 ["vyper", "-f", "layout", str(source_path.relative_to(root))],
                 cwd=root, timeout=60,
             )
-            if abi_code != 0 or byte_code != 0:
+            if abi_code != 0 or byte_code != 0 or runtime_code != 0:
                 continue
             try:
                 abi = json.loads(abi_out)
@@ -828,8 +851,15 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
             except json.JSONDecodeError:
                 continue
             bytecode = (byte_out or "").strip().splitlines()[-1] if byte_out.strip() else ""
+            runtime_bytecode = (
+                (runtime_out or "").strip().splitlines()[-1]
+                if runtime_out and runtime_out.strip()
+                else ""
+            )
             if not re.fullmatch(r"0x[0-9a-fA-F]+", bytecode):
                 continue
+            if not re.fullmatch(r"0x[0-9a-fA-F]+", runtime_bytecode):
+                runtime_bytecode = ""
             layout: dict[str, Any] = {}
             if layout_code == 0:
                 try:
@@ -845,7 +875,7 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
                 "sourceName": source,
                 "abi": abi,
                 "bytecode": {"object": bytecode},
-                "deployedBytecode": {"object": bytecode},
+                "deployedBytecode": {"object": runtime_bytecode},
                 "storageLayout": _normalize_vyper_layout(layout),
                 "language": "Vyper",
             }
@@ -866,7 +896,9 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
                 functions=functions,
                 events=events,
                 kind="vyper",
-                function_locations=_vyper_function_locations(source_text := source_path.read_text(encoding="utf-8", errors="replace")),
+                function_locations=_vyper_function_locations(
+                    source_path.read_text(encoding="utf-8", errors="replace")
+                ),
                 imports=[],
             )
             models.append(model)
@@ -909,8 +941,8 @@ def _normalize_vyper_layout(layout: dict[str, Any]) -> dict[str, Any]:
 
 def _vyper_function_locations(source_text: str) -> dict[str, int]:
     return {
-        str(match.group(1)): source_text.count("\\n", 0, match.start()) + 1
-        for match in re.finditer(r"(?m)^\\s*(?:@[^\\n]+\\n\\s*)*def\\s+([A-Za-z_]\\w*)\\s*\\(", source_text)
+        str(match.group(1)): source_text.count("\n", 0, match.start()) + 1
+        for match in re.finditer(r"(?m)^\\s*(?:@[^\n]+\\n\\s*)*def\\s+([A-Za-z_]\\w*)\\s*\\(", source_text)
     }
 
 def _build_vyper_source_calls(source_text: str) -> list[dict[str, Any]]:
@@ -926,14 +958,14 @@ def _build_vyper_source_calls(source_text: str) -> list[dict[str, Any]]:
             "via": match.group(1),
             "certainty": "INFERRED",
         })
-    for match in re.finditer(r"\\braw_call\\s*\\(([^\\n]*)", text):
+    for match in re.finditer(r"\braw_call\\s*\\(([^\n]*)", text):
         edges.append({
             "kind": "cross-contract",
             "from": "<unknown>",
             "to_contract": "External",
             "to_function": "raw_call",
             "via": "raw_call",
-            "line": text.count("\\n", 0, match.start()) + 1,
+            "line": text.count("\n", 0, match.start()) + 1,
             "certainty": "INFERRED",
         })
     return edges
@@ -944,7 +976,7 @@ def _vyper_semantics(model: ContractModel, source_text: str) -> dict[str, dict[s
     semantics: dict[str, dict[str, Any]] = {}
     for match in re.finditer(r"(?m)^\\s*def\\s+([A-Za-z_]\\w*)\\s*\\(([^)]*)\\)", text):
         name = match.group(1)
-        line = text.count("\\n", 0, match.start()) + 1
+        line = text.count("\n", 0, match.start()) + 1
         start = match.end()
         next_fn = re.search(r"(?m)^\\s*def\\s+", text[start:])
         end = start + next_fn.start() if next_fn else len(text)
@@ -4696,6 +4728,42 @@ def _run_adversarial_test(
 
 
 def _generate_replay_script(root: Path, model: ContractModel, target: str, steps: list[Step]) -> Path:
+    if model.kind == "vyper":
+        path = root / "script" / f"LowkeyWalkthrough_{re.sub(r'[^A-Za-z0-9_]', '_', model.name)}.sh"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            "",
+            "# Generated from successful Lowkey observations on local Anvil.",
+            '# Set LOWKEY_<ACTOR>_ADDRESS when replaying with an unlocked local account.',
+            f'RPC="${{ETH_RPC_URL:-http://127.0.0.1:8545}}"',
+            f'TARGET="${{LOWKEY_TARGET:-{target}}}"',
+            "",
+        ]
+        for step in steps:
+            if step.status != "success":
+                continue
+            actor_env = "LOWKEY_" + re.sub(r"[^A-Za-z0-9]", "_", step.actor.upper()) + "_ADDRESS"
+            args = " ".join(shlex.quote(_cli_arg(value)) for value in step.args)
+            line = (
+                'cast send "$TARGET" '
+                + shlex.quote(step.function)
+                + (f" {args}" if args else "")
+                + ' --rpc-url "$RPC" --unlocked --from "${' + actor_env + '}"'
+            )
+            if step.value_wei:
+                line += f" --value {int(step.value_wei)}"
+            lines.append(line)
+        if not any(step.status == "success" for step in steps):
+            lines.append('echo "No successful walkthrough steps were recorded."')
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o755)
+        except OSError:
+            pass
+        return path
+
     path = root / "script" / f"LowkeyWalkthrough_{model.name}.s.sol"
     path.parent.mkdir(parents=True, exist_ok=True)
     contract_name = f"LowkeyWalkthrough_{re.sub(r'[^A-Za-z0-9_]', '_', model.name)}"
@@ -6469,8 +6537,17 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     host=host or sys.modules.get("__main__")
     root=Path(getattr(host,"audit_context").foundry_project_root() if host and hasattr(host,"audit_context") else os.getcwd())
     foundry = (root / "foundry.toml").is_file()
-    vyper_sources = any(root.rglob("*.vy")) if root.is_dir() else False
-    solidity_sources = any(root.rglob("*.sol")) if root.is_dir() else False
+    source_files = []
+    if root.is_dir():
+        ignored = {".git", ".audit", ".venv", ".tox", ".nox", "__pycache__",
+                   ".pytest_cache", "node_modules", "out", "cache", "artifacts",
+                   "build", "dist", "lib"}
+        for candidate in root.rglob("*"):
+            if candidate.is_file() and candidate.suffix.lower() in {".sol", ".vy", ".vyi"}:
+                if not any(part in ignored for part in candidate.parts):
+                    source_files.append(candidate)
+    vyper_sources = any(path.suffix.lower() in {".vy", ".vyi"} for path in source_files)
+    solidity_sources = any(path.suffix.lower() == ".sol" for path in source_files)
     if not root or not (foundry or vyper_sources or solidity_sources):
         print("Error: 'lk walkthrough' needs a Solidity/Vyper project with source files.", file=sys.stderr)
         return 2
