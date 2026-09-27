@@ -21,7 +21,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -632,9 +632,16 @@ def _function_semantics(model: ContractModel, source_text: str) -> dict[str, dic
 
 
 def _source_edges_for_name(model: ContractModel, function_name: str) -> list[dict[str, Any]]:
+    # This list feeds the "source dependency" explanation. Only real
+    # cross-contract edges belong here; internal calls, built-ins such as
+    # require/keccak256, struct constructors, and type names are not dependencies.
     return [
         edge for edge in model.calls
-        if str(edge.get("from") or "") == function_name
+        if (
+            str(edge.get("from") or "") == function_name
+            and edge.get("kind") == "cross-contract"
+            and str(edge.get("to_contract") or "").lower() != str(model.name).lower()
+        )
     ]
 
 def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractModel]:
