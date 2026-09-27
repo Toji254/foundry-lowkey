@@ -185,6 +185,42 @@ class TargetScopingTests(unittest.TestCase):
             self.assertNotIn("MockERC20", rendered)
             self.assertIn("Lab/test support hidden: 1", rendered)
 
+    def test_broadcast_run_latest_is_grouped_with_timestamped_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            broadcast = root / "broadcast" / "LowkeyAutoConfidencePoolLab.s.sol" / "31337"
+            broadcast.mkdir(parents=True)
+            timestamp = 1790512249
+            payload = {
+                "timestamp": timestamp,
+                "transactions": [
+                    {
+                        "transactionType": "CREATE",
+                        "contractName": "ConfidencePoolFactory",
+                        "contractAddress": "0x" + "1" * 40,
+                        "hash": "0x" + "a" * 64,
+                    },
+                    {
+                        "transactionType": "CREATE",
+                        "contractName": "ConfidencePool",
+                        "contractAddress": "0x" + "2" * 40,
+                        "hash": "0x" + "b" * 64,
+                    },
+                ],
+            }
+            encoded = json.dumps(payload)
+            (broadcast / f"run-{timestamp * 1000}.json").write_text(encoded, encoding="utf-8")
+            (broadcast / "run-latest.json").write_text(encoded, encoding="utf-8")
+
+            records = lk.discover_deployments(root)
+
+            self.assertEqual(len(records), 2)
+            self.assertEqual(
+                {Path(item["file"]).name for item in records},
+                {f"run-{timestamp * 1000}.json"},
+            )
+            self.assertTrue(all(item["run_timestamp"] == timestamp for item in records))
+
     def test_target_command_selects_numbered_protocol_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
