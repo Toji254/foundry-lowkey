@@ -846,10 +846,14 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     root = Path.cwd()
     shared = audit_context.load(root)
     shared_target = shared.get("target", {}) if isinstance(shared.get("target"), dict) else {}
-    if not config.get("target") and shared_target.get("address"):
+    # Project-local target memory always wins. A target from another project must
+    # never silently become the subject of a generated PoC.
+    if shared_target.get("address") and _is_address(shared_target.get("address")):
         config["target"] = shared_target.get("address")
-    if not config.get("target_contract") and shared_target.get("contract"):
-        config["target_contract"] = shared_target.get("contract")
+        if shared_target.get("contract"):
+            config["target_contract"] = shared_target.get("contract")
+        if shared_target.get("artifact"):
+            config.setdefault("abi_paths", {})[shared_target["address"]] = shared_target["artifact"]
 
     try:
         request = _parse_request(kind, root, config, args[1:])
