@@ -17,6 +17,27 @@ spec.loader.exec_module(walkthrough)
 
 class WalkthroughTests(unittest.TestCase):
 
+    def test_local_rpc_detection_is_available_at_runtime(self):
+        self.assertTrue(walkthrough._is_local_rpc("http://127.0.0.1:8545"))
+        self.assertTrue(walkthrough._is_local_rpc("http://localhost:8545"))
+        self.assertFalse(walkthrough._is_local_rpc("https://example.com/rpc"))
+
+    def test_source_dependency_explanations_only_include_real_cross_contract_edges(self):
+        model = walkthrough.ContractModel(
+            name="BountyArena",
+            source="src/BountyArena.sol",
+            artifact="out/BountyArena.sol/BountyArena.json",
+            calls=[
+                {"kind": "internal", "from": "createbounty", "to_contract": "BountyArena", "to_function": "require"},
+                {"kind": "internal", "from": "createbounty", "to_contract": "BountyArena", "to_function": "keccak256"},
+                {"kind": "internal", "from": "createbounty", "to_contract": "BountyArena", "to_function": "Bounty"},
+                {"kind": "cross-contract", "from": "createbounty", "to_contract": "Registry", "to_function": "isAllowed", "via": "registry"},
+            ],
+        )
+        edges = walkthrough._source_edges_for_name(model, "createbounty")
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["to_contract"], "Registry")
+
     def test_source_semantics_capture_guards_and_state_writes(self):
         model = walkthrough.ContractModel(
             name="Demo",
