@@ -3134,7 +3134,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     artifact = None
     if target_name:
         for candidate_path in local_artifact_paths(root):
-            candidate_artifact = read_artifact(candidate_path) or {{}}
+            candidate_artifact = read_artifact(candidate_path) or {}
             if (
                 artifact_contract_name(candidate_path, candidate_artifact).lower()
                 == target_name.lower()
@@ -3144,23 +3144,23 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
 
     contract_name = target_name or str(fixture.get("contract") or "auto-detected")
     config["actor"] = "lab-deployer"
-    config.setdefault("wallets", {{}})["lab-deployer"] = {{
+    config.setdefault("wallets", {})["lab-deployer"] = {
         "source": "anvil-default",
         "anvil_index": 0,
         "address": accounts[0],
-    }}
-    config.setdefault("labels", {{}})[accounts[0]] = "lab-deployer"
-    config["lab_harness"] = {{
+    }
+    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    config["lab_harness"] = {
         "type": "test-fixture-full-state",
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
         "state_file": str(state_path),
-    }}
+    }
     set_lab_target(config, root, target, contract_name, artifact)
 
-    print(f"Target  : {{contract_name}} -> {{target}}")
-    print(f"ABI     : {{artifact or 'auto-discovered from build artifacts'}}")
-    print(f"Harness : {{fixture['relative']}}::{{fixture['contract']}}")
+    print(f"Target  : {contract_name} -> {target}")
+    print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
+    print(f"Harness : {fixture['relative']}::{fixture['contract']}")
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
