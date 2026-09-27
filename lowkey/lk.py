@@ -1927,29 +1927,48 @@ def run_doctor():
             _doctor_advice("forge test features", why=str(exc), fix="Repair Foundry and rerun 'lk doctor'.")
             failures += 1
 
-    for command, args in (
-        ("cast decode-event", ["cast", "decode-event", "--help"]),
-        ("cast receipt", ["cast", "receipt", "--help"]),
-        ("cast sig-event", ["cast", "sig-event", "--help"]),
-        ("forge inspect", ["forge", "inspect", "--help"]),
-        ("cast pretty-calldata", ["cast", "pretty-calldata", "--help"]),
-        ("cast tx-pool", ["cast", "tx-pool", "--help"]),
-        ("cast disassemble", ["cast", "disassemble", "--help"]),
-        ("chisel", ["chisel", "--help"]),
-    ):
-        binary = args[0]
-        try:
-            result = subprocess.run(args, capture_output=True, text=True) if shutil.which(binary) else None
-        except OSError:
-            result = None
-        if result is not None and result.returncode == 0:
-            print(f"PASS  dependency command: {command}")
-        else:
-            print(f"FAIL  dependency command: {command}")
+    capability_checks = [
+        ("cast decode-event", "cast", "decode-event"),
+        ("cast receipt", "cast", "receipt"),
+        ("cast sig-event", "cast", "sig-event"),
+        ("forge inspect", "forge", "inspect"),
+        ("cast pretty-calldata", "cast", "pretty-calldata"),
+        ("cast tx-pool", "cast", "tx-pool"),
+        ("cast disassemble", "cast", "disassemble"),
+    ]
+    for label, binary, subcommand in capability_checks:
+        executable = shutil.which(binary)
+        if not executable:
+            print(f"FAIL  dependency command: {label} (binary not found)")
             _doctor_advice(
-                command,
-                why="Lowkey could not execute the compatibility command.",
-                fix="Update/reinstall Foundry with 'foundryup', then rerun 'lk doctor'.",
+                label,
+                why=f"{binary} is missing, so {subcommand} cannot be used.",
+                fix="Install/update Foundry with 'foundryup', then restart the shell and rerun 'lk doctor'.",
+            )
+            failures += 1
+            continue
+        try:
+            result = subprocess.run([executable, "--help"], capture_output=True, text=True)
+            help_text = (result.stdout or "") + (result.stderr or "")
+        except OSError as exc:
+            print(f"FAIL  dependency command: {label}")
+            _doctor_advice(
+                label,
+                why=str(exc),
+                fix="Repair the Foundry installation and rerun 'lk doctor'.",
+            )
+            failures += 1
+            continue
+
+        advertised = bool(re.search(rf"(?m)^\s*{re.escape(subcommand)}(?:\s|$)", help_text))
+        if advertised:
+            print(f"PASS  dependency command: {label}")
+        else:
+            print(f"FAIL  dependency command: {label}")
+            _doctor_advice(
+                label,
+                why=f"{binary} is installed, but its top-level help does not advertise '{subcommand}'.",
+                fix="Update Foundry with 'foundryup'. If the command was removed/renamed by your Foundry version, use 'lk --help' to see the Lowkey alternative.",
             )
             failures += 1
 
@@ -2024,7 +2043,7 @@ def run_test_gen(config):
         if unit in value_expression and " " not in value_expression:
             value_expression=value_expression.replace(unit,f" {unit}")
     test=f'''pragma solidity ^0.8.20;
-import {Test} from "forge-std/Test.sol";
+import {{Test}} from "forge-std/Test.sol";
 
 contract Exploit_Reproduction is Test {{
     address constant TARGET = {target_literal};
