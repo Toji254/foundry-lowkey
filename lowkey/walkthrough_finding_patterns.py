@@ -352,7 +352,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         if calls:
             first_call = calls[0].start()
             readonly_call = re.search(
-                r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\\(",
+                r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(",
                 body[first_call + 1:],
             )
             if readonly_call and re.search(r"(?:^|_)(?:get|quote|price|rate|balance|total|debt|share|value|preview)", readonly_call.group(1), re.I):
@@ -580,8 +580,8 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
 
         # Hardcoded economic parameter candidate.
         if _sensitive_name(name, _pattern("ECONOMIC-001")["keywords"]):
-            literal_economic = re.search(r"\\b(?:fee|rate|price|exchangeRate|feeBps)\\w*\\s*=\\s*(?:[0-9]+(?:\\.[0-9]+)?|(?:0x|0X)[0-9a-fA-F]+)", body, re.I)
-            configurable_read = re.search(r"\\b(?:config|settings|oracle|registry|governance|storage)\\w*", body, re.I)
+            literal_economic = re.search(r"\b(?:fee|rate|price|exchangeRate|feeBps)\w*\s*=\s*(?:[0-9]+(?:\.[0-9]+)?|(?:0x|0X)[0-9a-fA-F]+)", body, re.I)
+            configurable_read = re.search(r"\b(?:config|settings|oracle|registry|governance|storage)\w*", body, re.I)
             if literal_economic and not configurable_read:
                 results.append(_result(
                     "ECONOMIC-001",
