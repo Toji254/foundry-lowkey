@@ -147,54 +147,6 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         stacks.append("move")
 
     supporting: list[str] = []
-    for submodule in _nested_python_projects(root):
-        label = f"python subproject ({submodule.relative_to(root)})"
-        if (submodule / "pyproject.toml").is_file() and shutil.which("uv"):
-            code = _bootstrap_step(
-                label,
-                ["uv", "sync", "--all-extras", "--dev"],
-                submodule,
-            )
-        elif (submodule / "poetry.lock").is_file() and shutil.which("poetry"):
-            code = _bootstrap_step(label, ["poetry", "install"], submodule)
-        elif (submodule / "Pipfile").is_file() and shutil.which("pipenv"):
-            code = _bootstrap_step(label, ["pipenv", "sync", "--dev"], submodule)
-        elif (
-            (submodule / "requirements.txt").is_file()
-            or (submodule / "requirements-dev.txt").is_file()
-        ):
-            venv = submodule / ".venv"
-            python = venv / "bin" / "python"
-            pip = venv / "bin" / "pip"
-            if not python.is_file():
-                code = _bootstrap_step(
-                    label,
-                    ["python3", "-m", "venv", str(venv)],
-                    submodule,
-                )
-                if code != 0:
-                    failures = failures or code
-                    continue
-            requirements = [
-                name
-                for name in ("requirements.txt", "requirements-dev.txt")
-                if (submodule / name).is_file()
-            ]
-            code = 0
-            for requirement in requirements:
-                code = _bootstrap_step(
-                    label,
-                    [str(pip), "install", "-r", requirement],
-                    submodule,
-                )
-                if code != 0:
-                    break
-        else:
-            print(f"DEFER  {label} — no nested dependency manifest; using parent project environment.")
-            continue
-        if code != 0:
-            failures = failures or code
-
     if (root / "package.json").is_file():
         supporting.append("node")
     if (root / "pyproject.toml").is_file() or (root / "requirements.txt").is_file():
@@ -487,6 +439,58 @@ def bootstrap_project(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                 print("DEFER  node dependencies — no supported package manager found.")
             if code != 0:
                 failures = failures or code
+
+    for submodule in _nested_python_projects(root):
+        label = f"python subproject ({submodule.relative_to(root)})"
+        if (submodule / "pyproject.toml").is_file() and shutil.which("uv"):
+            code = _bootstrap_step(
+                label,
+                ["uv", "sync", "--all-extras", "--dev"],
+                submodule,
+            )
+        elif (submodule / "poetry.lock").is_file() and shutil.which("poetry"):
+            code = _bootstrap_step(label, ["poetry", "install"], submodule)
+        elif (submodule / "Pipfile").is_file() and shutil.which("pipenv"):
+            code = _bootstrap_step(label, ["pipenv", "sync", "--dev"], submodule)
+        elif (
+            (submodule / "requirements.txt").is_file()
+            or (submodule / "requirements-dev.txt").is_file()
+        ):
+            venv = submodule / ".venv"
+            python = venv / "bin" / "python"
+            pip = venv / "bin" / "pip"
+            if not python.is_file():
+                code = _bootstrap_step(
+                    label,
+                    ["python3", "-m", "venv", str(venv)],
+                    submodule,
+                )
+                if code != 0:
+                    failures = failures or code
+                    continue
+            code = 0
+            for requirement in (
+                "requirements.txt",
+                "requirements-dev.txt",
+            ):
+                path = submodule / requirement
+                if not path.is_file():
+                    continue
+                code = _bootstrap_step(
+                    label,
+                    [str(pip), "install", "-r", requirement],
+                    submodule,
+                )
+                if code != 0:
+                    break
+        else:
+            print(
+                f"DEFER  {label} — no nested dependency manifest; "
+                "using parent project environment."
+            )
+            continue
+        if code != 0:
+            failures = failures or code
 
     if (root / "go.mod").is_file() and shutil.which("go"):
         code = _bootstrap_step("go dependencies", ["go", "mod", "download"], root)
