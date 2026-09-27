@@ -108,6 +108,30 @@ class AuditEngineTests(unittest.TestCase):
             "address(uint160(0x00a51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0))",
         )
 
+    def test_source_triage_ignores_commented_markers(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            src = root / "src"
+            src.mkdir()
+            (src / "Vault.sol").write_text(
+                "// block.timestamp should NOT count\n"
+                "/* delegatecall should NOT count */\n"
+                "contract Vault {\n"
+                "    function f() external {\n"
+                "        uint256 x = block.timestamp;\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            with patch.object(audit_engine, "record_evidence") as record:
+                self.assertEqual(audit_engine.run_source_triage(str(root)), 0)
+                payload = record.call_args.args[1]
+            labels = [item["label"] for item in payload["markers"]]
+            self.assertIn("TIMESTAMP", labels)
+            self.assertNotIn("DELEGATECALL", labels)
+
     def test_run_source_triage_handles_relative_root(self):
         from tempfile import TemporaryDirectory
 
