@@ -275,7 +275,7 @@ def _git_submodule_paths(root: Path) -> list[Path]:
     text = _read(root / ".gitmodules")
     paths: list[Path] = []
     for line in text.splitlines():
-        match = re.match(r"\\s*path\\s*=\\s*(.+?)\\s*$", line)
+        match = re.match(r"\s*path\s*=\s*(.+?)\s*$", line)
         if not match:
             continue
         path = Path(match.group(1).strip())
@@ -333,9 +333,23 @@ def _report_step(label: str, command: Sequence[str], code: int, output: str) -> 
     if output:
         print("\n".join(output.splitlines()[-12:]))
 
-def _project_python_runner(root: Path, command: str, *args: str) -> list[str]:
-    """Prefer the project's package-managed Python environment over global executables."""
-    if (root / "pyproject.toml").is_file() and shutil.which("uv"):
+def _project_python_runner(
+    root: Path,
+    command: str,
+    *args: str,
+    dependency_root: Path | None = None,
+) -> list[str]:
+    """Prefer a project-managed Python environment over global executables.
+
+
+    root is the process working directory. dependency_root lets a nested
+    test project reuse the parent repository's uv environment while keeping
+    its own cwd for relative imports and fixture paths.
+    """
+    env_root = dependency_root or root
+    if (env_root / "pyproject.toml").is_file() and shutil.which("uv"):
+        if dependency_root is not None:
+            return ["uv", "run", "--project", str(env_root), command, *args]
         return ["uv", "run", command, *args]
     if (root / "poetry.lock").is_file() and shutil.which("poetry"):
         return ["poetry", "run", command, *args]
@@ -508,7 +522,12 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                 if _has_test_files(project):
                     step(
                         f"python tests ({project.relative_to(root)})",
-                        _project_python_runner(project, "pytest", "-q"),
+                        _project_python_runner(
+                            project,
+                            "pytest",
+                            "-q",
+                            dependency_root=root,
+                        ),
                     )
         elif native.get("vyper"):
             vyper_files = [
