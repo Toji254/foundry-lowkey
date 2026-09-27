@@ -2909,7 +2909,7 @@ def _fixture_state_files(root, safe_name):
     state_dir = Path(root).resolve() / ".audit" / "lowkey"
     state_dir.mkdir(parents=True, exist_ok=True)
     return (
-        state_dir / f"fixture_state_{safe_name}.json",
+        state_dir / f"fixture_state_{safe_name}.state",
         state_dir / f"fixture_code_{safe_name}.txt",
     )
 
@@ -2951,25 +2951,70 @@ contract LowkeyAutoFixtureScript_{safe_name} is Script {{
         LowkeyFixtureRunner_{safe_name} runner = new LowkeyFixtureRunner_{safe_name}();
         runner.runFixture();
 
-        string memory stateDiff = vm.getStateDiffJson();
         Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
 
-        vm.writeFile("{state_literal}", stateDiff);
+        vm.writeFile("{state_literal}", "");
         vm.writeFile("{code_literal}", "");
 
         for (uint256 i = 0; i < accesses.length; ++i) {{
-            if (
-                accesses[i].kind == Vm.AccountAccessKind.Create &&
-                accesses[i].deployedCode.length > 0
-            ) {{
+            Vm.AccountAccess memory access = accesses[i];
+
+            if (access.reverted) {{
+                continue;
+            }}
+
+            if (access.deployedCode.length > 0) {{
                 vm.writeLine(
                     "{code_literal}",
                     string.concat(
-                        vm.toString(accesses[i].account),
+                        "CODE|",
+                        vm.toString(access.account),
                         "|",
-                        vm.toString(accesses[i].deployedCode)
+                        vm.toString(access.deployedCode)
                     )
                 );
+            }}
+
+            if (access.newBalance != access.oldBalance) {{
+                vm.writeLine(
+                    "{state_literal}",
+                    string.concat(
+                        "BALANCE|",
+                        vm.toString(access.account),
+                        "|",
+                        vm.toString(access.newBalance)
+                    )
+                );
+            }}
+
+            if (access.newNonce != access.oldNonce) {{
+                vm.writeLine(
+                    "{state_literal}",
+                    string.concat(
+                        "NONCE|",
+                        vm.toString(access.account),
+                        "|",
+                        vm.toString(access.newNonce)
+                    )
+                );
+            }}
+
+            for (uint256 j = 0; j < access.storageAccesses.length; ++j) {{
+                Vm.StorageAccess memory storageAccess = access.storageAccesses[j];
+
+                if (storageAccess.isWrite && !storageAccess.reverted) {{
+                    vm.writeLine(
+                        "{state_literal}",
+                        string.concat(
+                            "STORAGE|",
+                            vm.toString(storageAccess.account),
+                            "|",
+                            vm.toString(storageAccess.slot),
+                            "|",
+                            vm.toString(storageAccess.newValue)
+                        )
+                    );
+                }}
             }}
         }}
 
@@ -3019,51 +3064,33 @@ def _fixture_target_artifact(root, target_contract):
     return None, None
 
 
-def _find_fixture_target(root, state_data, code_map, target_contract, rpc):
-    target_name = str(target_contract or "").strip().lower()
-    metadata_matches = []
-    if target_name:
-        for address, entry in state_data.items():
-            contract_label = str((entry or {}).get("contract") or "").strip().lower()
-            if contract_label.endswith(f":{target_name}") or contract_label == target_name:
-                if address.lower() in code_map:
-                    metadata_matches.append(address)
-
-    if len(metadata_matches) == 1:
-        return metadata_matches[0]
-
+def _find_fixture_target(root, code_map, target_contract, rpc):
     _, artifact = _fixture_target_artifact(root, target_contract)
     expected_runtime = _artifact_runtime_bytecode(artifact)
+    if not expected_runtime:
+        return None
 
-    runtime_matches = []
-    if expected_runtime:
-        for address in code_map:
-            code_result = run_cast(
-                ["code", address, "--rpc-url", str(rpc)],
-                config={},
-                capture=True,
-            )
-            runtime = str(code_result.text or "").strip().lower()
-            if code_result.code == 0 and runtime == expected_runtime:
-                runtime_matches.append(address)
+    matches = []
+    for address in code_map:
+        code_result = run_cast(
+            ["code", address, "--rpc-url", str(rpc)],
+            config={},
+            capture=True,
+        )
+        runtime = str(code_result.text or "").strip().lower()
+        if code_result.code == 0 and runtime == expected_runtime:
+            matches.append(address)
 
-    if len(runtime_matches) == 1:
-        return runtime_matches[0]
-    if metadata_matches:
-        return metadata_matches[0]
-    if runtime_matches:
-        return runtime_matches[0]
-    return None
+    if len(matches) == 1:
+        return matches[0]
+    return matches[0] if matches else None
 
 
 def _materialize_fixture_state(root, rpc, state_path, code_path, target_contract):
     try:
-        state_data = json.loads(Path(state_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return None, f"could not read fixture state diff: {exc}"
-
-    if not isinstance(state_data, dict):
-        return None, "fixture state diff is not a JSON object"
+        state_lines = Path(state_path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return None, f"could not read fixture state file: {exc}"
 
     try:
         code_lines = Path(code_path).read_text(encoding="utf-8").splitlines()
@@ -3072,11 +3099,10 @@ def _materialize_fixture_state(root, rpc, state_path, code_path, target_contract
 
     code_map = {}
     for line in code_lines:
-        if "|" not in line:
+        parts = line.split("|", 2)
+        if len(parts) != 3 or parts[0] != "CODE":
             continue
-        address, code = line.split("|", 1)
-        address = address.strip().lower()
-        code = code.strip()
+        address, code = parts[1].strip().lower(), parts[2].strip()
         if is_address(address) and code.startswith("0x"):
             code_map[address] = code
 
@@ -3088,47 +3114,35 @@ def _materialize_fixture_state(root, rpc, state_path, code_path, target_contract
             return None, f"anvil_setCode failed for {address}"
         operations += 1
 
-    for address, entry in state_data.items():
-        if not is_address(address) or not isinstance(entry, dict):
-            continue
-
-        balance_diff = entry.get("balanceDiff")
-        if isinstance(balance_diff, dict) and "newValue" in balance_diff:
-            result = rpc_json(
-                rpc,
-                "anvil_setBalance",
-                [address, _fixture_hex_quantity(balance_diff["newValue"])],
-            )
+    for line in state_lines:
+        parts = line.split("|")
+        kind = parts[0] if parts else ""
+        if kind == "BALANCE" and len(parts) == 3:
+            address, value = parts[1].strip(), parts[2].strip()
+            if not is_address(address):
+                continue
+            result = rpc_json(rpc, "anvil_setBalance", [address, _fixture_hex_quantity(value)])
             if result is None:
                 return None, f"anvil_setBalance failed for {address}"
             operations += 1
-
-        nonce_diff = entry.get("nonceDiff")
-        if isinstance(nonce_diff, dict) and "newValue" in nonce_diff:
-            result = rpc_json(
-                rpc,
-                "anvil_setNonce",
-                [address, _fixture_hex_quantity(nonce_diff["newValue"])],
-            )
+        elif kind == "NONCE" and len(parts) == 3:
+            address, value = parts[1].strip(), parts[2].strip()
+            if not is_address(address):
+                continue
+            result = rpc_json(rpc, "anvil_setNonce", [address, _fixture_hex_quantity(value)])
             if result is None:
                 return None, f"anvil_setNonce failed for {address}"
             operations += 1
+        elif kind == "STORAGE" and len(parts) == 4:
+            address, slot, value = parts[1].strip(), parts[2].strip(), parts[3].strip()
+            if not is_address(address) or not slot.startswith("0x") or not value.startswith("0x"):
+                continue
+            result = rpc_json(rpc, "anvil_setStorageAt", [address, slot, value])
+            if result is None:
+                return None, f"anvil_setStorageAt failed for {address} slot {slot}"
+            operations += 1
 
-        state_diff = entry.get("stateDiff")
-        if isinstance(state_diff, dict):
-            for slot, change in state_diff.items():
-                if not isinstance(change, dict) or "newValue" not in change:
-                    continue
-                result = rpc_json(
-                    rpc,
-                    "anvil_setStorageAt",
-                    [address, slot, change["newValue"]],
-                )
-                if result is None:
-                    return None, f"anvil_setStorageAt failed for {address} slot {slot}"
-                operations += 1
-
-    target = _find_fixture_target(root, state_data, code_map, target_contract, rpc)
+    target = _find_fixture_target(root, code_map, target_contract, rpc)
     if not target:
         return None, (
             f"fixture state was materialized ({operations} RPC updates), "
