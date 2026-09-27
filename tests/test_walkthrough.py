@@ -1152,6 +1152,65 @@ class WalkthroughTests(unittest.TestCase):
             )
         self.assertIn("false", rendered)
         self.assertIn("returned false", origin)
+
+
+    def test_human_probe_renderer_marks_success_for_review(self):
+        model = walkthrough.ContractModel(
+            name="DemoPool",
+            source="contracts/Demo.vy",
+            artifact="build/contracts/Demo.json",
+            functions=["setRegistry(address)"],
+            function_locations={"setRegistry": 12},
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        step = walkthrough.Step(
+            1, "Alice", "DemoPool", "0x" + "2" * 40,
+            "setRegistry(address)", ["0x" + "3" * 40], status="success",
+        )
+        rendered = walkthrough._render_adversarial_probe(pathlib.Path("/tmp/project"), step, model, actors)
+        joined = "\n".join(rendered)
+        self.assertIn("CHECK THIS", joined)
+        self.assertIn("what changed", joined.lower())
+        self.assertIn("Vyper", joined)
+
+    def test_human_probe_renderer_is_language_neutral_for_move(self):
+        model = walkthrough.ContractModel(
+            name="Vault",
+            source="sources/vault.move",
+            artifact="artifacts/vault.abi.json",
+            functions=["withdraw"],
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        step = walkthrough.Step(
+            1, "Alice", "Vault", "0x" + "2" * 40,
+            "withdraw()", [], status="reverted",
+            error_reason="guard rejected the call",
+            diagnostics=["source guard: signer must match owner"],
+        )
+        rendered = walkthrough._render_adversarial_probe(pathlib.Path("/tmp/project"), step, model, actors)
+        joined = "\n".join(rendered)
+        self.assertIn("NORMAL", joined)
+        self.assertIn("Move module", joined)
+        self.assertNotIn("Solidity contract", joined)
+
+    def test_human_probe_renderer_marks_broken_fixture_as_lab_issue(self):
+        model = walkthrough.ContractModel(
+            name="Moderator",
+            source="src/moderator.vy",
+            artifact="build/moderator.json",
+            functions=["flag(address)"],
+        )
+        actors = [walkthrough.Actor("Bob", "0x" + "1" * 40, 0)]
+        step = walkthrough.Step(
+            1, "Bob", "Moderator", "0x" + "2" * 40,
+            "flag(address)", ["0x" + "3" * 40], status="reverted",
+            failure_origin="Moderator -> pool points to an address with no contract code",
+        )
+        rendered = walkthrough._render_adversarial_probe(pathlib.Path("/tmp/project"), step, model, actors)
+        joined = "\n".join(rendered)
+        self.assertIn("LAB ISSUE", joined)
+        self.assertIn("test setup", joined.lower())
+
     def test_adversarial_test_teaching_renderer_explains_value_invariant(self):
         model = walkthrough.ContractModel(
             name="BountyArena", source="src/BountyArena.sol", artifact="out/BountyArena.sol/BountyArena.json",
