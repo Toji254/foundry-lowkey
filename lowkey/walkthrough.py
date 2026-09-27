@@ -21,6 +21,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from html import escape
 from urllib.parse import quote, urlsplit
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -1880,6 +1881,142 @@ def _source_target(root: Path, source: str, line: int | None = None) -> str:
     return target
 
 
+def _transaction_evidence_path(root: Path, tx_hash: str) -> Path:
+    """Return the project-local HTML evidence page for one observed transaction."""
+    safe_hash = str(tx_hash).strip().lower()
+    return root / ".audit" / "walkthrough" / "transactions" / f"{safe_hash}.html"
+
+
+def _transaction_link(root: Path, tx_hash: str, label: str | None = None) -> str:
+    """Render a Ctrl+Click transaction link to local evidence or a configured explorer."""
+    tx_hash = str(tx_hash or "").strip()
+    if not tx_hash:
+        return label or "tx"
+    target = os.environ.get("LOWKEY_TX_EXPLORER_URL", "").strip()
+    if target:
+        target = target.replace("{tx}", tx_hash).replace("{hash}", tx_hash)
+    else:
+        evidence = _transaction_evidence_path(root, tx_hash)
+        target = f"file://{quote(str(evidence.resolve()), safe='/')}"
+    visible = label or _addr(tx_hash)
+    return _osc8(visible, target)
+
+
+def _write_transaction_evidence(
+    root: Path,
+    rpc: str,
+    step: Step,
+    receipt: dict[str, Any] | None = None,
+) -> Path | None:
+    """Persist a human-readable local confirmation page for a live transaction."""
+    tx_hash = str(step.tx_hash or "").strip()
+    if not tx_hash:
+        return None
+    path = _transaction_evidence_path(root, tx_hash)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    tx = _rpc_call(rpc, "eth_getTransactionByHash", [tx_hash]) if rpc else None
+    tx = tx if isinstance(tx, dict) else {}
+    receipt = receipt if isinstance(receipt, dict) else {}
+
+    def shown(value: Any, fallback: str = "-") -> str:
+        if value is None or value == "":
+            return fallback
+        return str(value)
+
+    status_raw = receipt.get("status")
+    success = status_raw in (None, "0x1", 1)
+    status_text = "CONFIRMED / SUCCESS" if success else "MINED / REVERTED"
+    block_raw = receipt.get("blockNumber") or tx.get("blockNumber")
+    block_number = "-"
+    if isinstance(block_raw, str) and block_raw.startswith("0x"):
+        try:
+            block_number = str(int(block_raw, 16))
+        except ValueError:
+            block_number = block_raw
+    elif block_raw is not None:
+        block_number = str(block_raw)
+
+    gas_used = receipt.get("gasUsed", "-")
+    if isinstance(gas_used, str) and gas_used.startswith("0x"):
+        try:
+            gas_used = str(int(gas_used, 16))
+        except ValueError:
+            pass
+
+    value = tx.get("value", "-")
+    if isinstance(value, str) and value.startswith("0x"):
+        try:
+            value = f"{int(value, 16)} wei"
+        except ValueError:
+            pass
+
+    rpc_line = escape(str(rpc or "not configured"))
+    tx_line = escape(tx_hash)
+    command_tx = escape(f"cast tx {tx_hash} --rpc-url {rpc}") if rpc else escape(f"cast tx {tx_hash}")
+    command_receipt = escape(f"cast receipt {tx_hash} --rpc-url {rpc}") if rpc else escape(f"cast receipt {tx_hash}")
+    event_rows = []
+    for event in step.events[:20]:
+        if isinstance(event, dict):
+            name = event.get("event") or "raw log"
+            event_rows.append(f"<li><b>{escape(str(name))}</b> <code>{escape(json.dumps(event, sort_keys=True))}</code></li>")
+        else:
+            event_rows.append(f"<li>{escape(str(event))}</li>")
+    events_html = "".join(event_rows) or "<li>No decoded events recorded by Lowkey.</li>"
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lowkey transaction {escape(_addr(tx_hash))}</title>
+<style>
+body{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:1050px;margin:32px auto;padding:0 20px;background:#111;color:#eee}}
+h1{{font-size:22px}} h2{{font-size:16px;margin-top:28px}} .ok{{color:#7ee787}} .bad{{color:#ff7b72}}
+.card{{border:1px solid #333;border-radius:10px;padding:16px;margin:14px 0;background:#181818}}
+.grid{{display:grid;grid-template-columns:180px 1fr;gap:8px 18px}} code{{word-break:break-all}}
+a{{color:#79c0ff}} pre{{white-space:pre-wrap;word-break:break-word}}
+</style>
+</head>
+<body>
+<h1>LOWKEY // TRANSACTION CONFIRMATION</h1>
+<div class="card"><div class="{'ok' if success else 'bad'}"><b>{escape(status_text)}</b></div>
+<div><b>Tx:</b> <code>{tx_line}</code></div>
+<div><b>Function:</b> {escape(str(step.function))}</div>
+<div><b>Actor:</b> {escape(str(step.actor))}</div>
+<div><b>Contract:</b> {escape(str(step.contract))} @ <code>{escape(str(step.address))}</code></div></div>
+
+<h2>ON-CHAIN TRANSACTION</h2>
+<div class="card"><div class="grid">
+<div>block</div><div>{escape(block_number)}</div>
+<div>from</div><div><code>{escape(shown(tx.get('from')))}</code></div>
+<div>to</div><div><code>{escape(shown(tx.get('to')))}</code></div>
+<div>value</div><div>{escape(str(value))}</div>
+<div>nonce</div><div>{escape(shown(tx.get('nonce')))}</div>
+<div>gas used</div><div>{escape(str(gas_used))}</div>
+<div>gas limit</div><div>{escape(shown(tx.get('gas')))}</div>
+<div>input</div><div><code>{escape(shown(tx.get('input')))}</code></div>
+</div></div>
+
+<h2>LOWKEY OBSERVATION</h2>
+<div class="card"><pre>{escape(json.dumps({'args': step.args, 'value_wei': step.value_wei, 'status': step.status, 'gas_used': step.gas_used, 'calldata': step.calldata}, indent=2, default=str))}</pre></div>
+
+<h2>EVENTS</h2><div class="card"><ul>{events_html}</ul></div>
+
+<h2>CONFIRM YOURSELF</h2>
+<div class="card"><div>RPC: <code>{rpc_line}</code></div><p><code>{command_tx}</code></p><p><code>{command_receipt}</code></p></div>
+</body>
+</html>
+"""
+    try:
+        path.write_text(html, encoding="utf-8")
+    except OSError:
+        return None
+    return path
+
+
 def _function_link(root: Path, model: ContractModel | None, function: str) -> str:
     if not model:
         return function
@@ -2671,6 +2808,7 @@ def _story_timeline_line(
     marker = "✓" if step.status == "success" else "✕" if step.status in {"blocked", "reverted"} else "●"
     color = GREEN if step.status == "success" else RED if step.status in {"blocked", "reverted"} else YELLOW
     summary = _human_action_summary(step, actors)
+    tx_line = f"  tx {_transaction_link(root, step.tx_hash)}" if step.tx_hash else ""
     failure = ""
     if step.status in {"blocked", "reverted"}:
         failure = f"  WHY IT FAILED: {step.error_reason or _short_error(step.error)}"
@@ -2679,7 +2817,7 @@ def _story_timeline_line(
         f"{ACTOR} {step.actor} {ARROW} "
         f"{call}"
         f"  {DIM if enabled else ''}{summary}{RESET if enabled else ''}"
-        f"{failure}"
+        f"{tx_line}{failure}"
     )
 
 
@@ -6243,7 +6381,7 @@ def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> st
         f"  why    : {step.reason}  {WARNING} INFERRED",
     ]
     if step.tx_hash:
-        lines.append(f"  tx     : {_addr(step.tx_hash)}")
+        lines.append(f"  tx     : {_transaction_link(root, step.tx_hash)}")
     if step.gas_used is not None:
         lines.append(f"  gas    : {step.gas_used}")
     if step.error:
@@ -6980,6 +7118,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 draw(step, before)
             else:
                 receipt=_receipt(rpc,tx)
+                _write_transaction_evidence(root, rpc, step, receipt)
                 trace=_trace_tree(rpc,tx)
                 step.tx_hash=tx
                 step.calldata=_transaction_input(rpc,tx)
