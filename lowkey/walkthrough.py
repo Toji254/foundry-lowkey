@@ -1682,8 +1682,14 @@ def plan_workflow(
                 contract=model.name,
                 address=target,
                 function=sig,
-                args=[_arg_for(p, actors, target, now) for p in item.get("inputs", [])],
-                value_wei=_value_for(item, model=model, root=root, args=args),
+                args=[
+                    _arg_for(p, actors, target, now, observed, model, str(item.get("name") or ""))
+                    for p in item.get("inputs", [])
+                ],
+                value_wei=_value_for(item, model=model, root=root, args=[
+                    _arg_for(p, actors, target, now, observed, model, str(item.get("name") or ""))
+                    for p in item.get("inputs", [])
+                ]),
                 reason="source-guided secondary phase",
             ))
             break
@@ -3844,7 +3850,7 @@ def _diagnose_failed_call(
 ) -> tuple[str | None, list[str]]:
     try:
         arg_origin, arg_lines = _diagnose_argument_contracts(
-            rpc, step, model, models, caller_address=actor_address
+            rpc, step, model, models
         )
     except Exception as exc:
         arg_origin, arg_lines = None, [f"dependency diagnosis unavailable: {exc}"]
