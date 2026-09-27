@@ -146,13 +146,14 @@ def _read_source(root: Path, model: core.ContractModel) -> str:
         return ""
 
 
-def _function_blocks(source: str) -> list[tuple[str, int, str]]:
-    """Return Solidity function name, line, and balanced body."""
-    blocks: list[tuple[str, int, str]] = []
+def _function_blocks(source: str) -> list[tuple[str, int, str, str]]:
+    """Return Solidity function name, line, declaration/header, and balanced body."""
+    blocks: list[tuple[str, int, str, str]] = []
     for match in re.finditer(r"\bfunction\s+(\w+)\s*\([^)]*\)[^{;]*\{", source, re.S):
         opening = match.end() - 1
         body = core._balanced_block(source, opening)
-        blocks.append((match.group(1), source.count("\n", 0, match.start()) + 1, body))
+        header = source[match.start():opening]
+        blocks.append((match.group(1), source.count("\n", 0, match.start()) + 1, header, body))
     return blocks
 
 
@@ -232,7 +233,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
             ["Immunefi Common Vulnerabilities"],
         ))
 
-    for name, line, body in _function_blocks(stripped):
+    for name, line, header, body in _function_blocks(stripped):
         if not _mutating(model, name):
             continue
         lower = name.lower()
@@ -270,7 +271,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                 body,
             ))
             later_write = next((item for item in writes if item.start() > first_call), None)
-            has_guard = bool(re.search(r"\bnonReentrant\b|\breentrancy\b", stripped[max(0, stripped.find(name) - 200):stripped.find(name) + 1000], re.I))
+            has_guard = bool(re.search(r"\bnonReentrant\b|\breentrancy\b", header + " " + body, re.I))
             if later_write and not has_guard:
                 results.append(_result(
                     "REENTRANCY-001",
@@ -289,7 +290,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         if _sensitive_name(name, PATTERN_CATALOG[2]["keywords"]):
             auth_evidence = re.search(
                 r"\bonly[A-Za-z0-9_]*\b|\b(?:require|assert)\s*\([^)]*(?:msg\.sender|_msgSender|hasRole|owner\s*\(\)|authority)",
-                body,
+                header + " " + body,
                 re.I,
             )
             if not auth_evidence:
