@@ -3056,8 +3056,8 @@ contract BountyArena {
                 address public owner;
                 uint256[] public items;
                 function claim(uint256 amount) external {
-                    balances[msg.sender] -= amount;
                     payable(msg.sender).transfer(amount);
+                    balances[msg.sender] -= amount;
                 }
                 function unsafeToken(address token, uint256 amount) external {
                     token.transfer(msg.sender, amount);
@@ -3084,7 +3084,7 @@ contract BountyArena {
                 {"type": "function", "name": name, "stateMutability": "nonpayable", "inputs": []}
                 for name in ("processAll", "verify", "initialize", "unsafeToken", "claim", "oracle")
             ]
-            abi += [{"type": "function", "name": "randomWinner", "stateMutability": "view", "inputs": []}]
+            abi += [{"type": "function", "name": "randomWinner", "stateMutability": "nonpayable", "inputs": []}]
             model = lk.walkthrough.ContractModel(
                 name="PatternFixture", source="src/PatternFixture.sol", artifact="out/PatternFixture.json",
                 abi=abi, arrays=[{"name": "items", "type": "uint256[]"}]
