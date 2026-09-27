@@ -23,6 +23,17 @@ import audit_context
 import walkthrough
 
 try:
+    from project_detection import (
+        detect_project,
+        format_detection,
+        project_root as detected_project_root,
+        run_native_audit,
+    )
+except ImportError:
+    detect_project = format_detection = run_native_audit = None
+    detected_project_root = lambda start=".": Path(start).resolve()
+
+try:
     import system_model
 except ImportError:
     system_model = None
@@ -5848,7 +5859,7 @@ def _bootstrap_audit_target(config, root, allow_deploy=False):
 
 
 def run_audit_mode(config, args=None, interactive=None):
-    """Run the connected audit session with optional autonomous local bootstrap."""
+    """Run the connected audit session with project-aware backend routing."""
     args = list(args or [])
     auto_mode = any(str(item).lower() == "auto" for item in args)
     normalized_args = ["--checks" if str(item).lower() in {"check", "checks", "--check"} else item for item in args]
@@ -5859,30 +5870,41 @@ def run_audit_mode(config, args=None, interactive=None):
     force_interactive = "--interactive" in args
     mode_args = ["--checks"] if checks else []
 
-    root = audit_context.foundry_project_root()
-    if not root:
-        return fail("Error: 'lk audit' must be run inside a Foundry project.")
+    root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
+    info = detect_project(root) if detect_project else {
+        "root": str(root),
+        "kind": "unknown",
+        "backend": "generic",
+        "stacks": [],
+        "languages": {},
+    }
+    stacks = set(info.get("stacks", []))
+    foundry_project = "foundry" in stacks
+    evm_project = bool(stacks & {"foundry", "hardhat", "vyper"})
 
     config["audit_project"] = str(root)
     save_config(config)
 
-    # Plain audit is deliberately non-owning: it discovers an existing Anvil but
-    # never starts one. Auto mode owns a project Anvil only when none is detected.
-    info = anvil_rpc_info(config)
-    started = False
-    if auto_mode and not info and not config.get("rpc"):
-        info = ensure_project_anvil(config, root)
-        started = bool(info)
+    print()
+    print(format_detection(info) if format_detection else f"Project : {root}")
 
-    if info:
-        _bind_detected_anvil(config, info)
+    info_anvil = anvil_rpc_info(config) if evm_project else None
+    started = False
+    if foundry_project and auto_mode and not info_anvil and not config.get("rpc"):
+        info_anvil = ensure_project_anvil(config, root)
+        started = bool(info_anvil)
+
+    if evm_project and info_anvil:
+        _bind_detected_anvil(config, info_anvil)
         print(f"Anvil   : {'started by Lowkey' if started else 'detected; using existing node'}")
         print(f"RPC     : {rpc_display(effective_rpc(config))}")
         print(f"Actor   : {actor_display(config)}")
-    elif auto_mode and config.get("rpc"):
+    elif evm_project and auto_mode and config.get("rpc"):
         print("Anvil   : no Anvil detected at the configured RPC; Lowkey will not override the explicit RPC.")
+    elif evm_project:
+        print("Anvil   : not detected; continuing static/native audit only.")
     else:
-        print("Anvil   : not detected; continuing static audit only.")
+        print("Runtime : native project backend; Anvil/Forge target mode disabled.")
 
     run_workspace(config, ["init"])
     run_matrix(config, ["init"])
@@ -5893,31 +5915,32 @@ def run_audit_mode(config, args=None, interactive=None):
         run_session_lifecycle(config, "resume")
 
     print("\n=== LOWKEYCAST AUDIT MODE ===")
-    print("Starting connected audit baseline...")
+    print("Starting project-aware audit baseline...")
     baseline_code = 0
+    scan_code = 0
 
-    # Source triage comes first so a fresh project can use newly discovered
-    # signals to select the most relevant live target before the connected audit.
-    try:
-        scan_code = run_scan([])
-    except Exception as exc:
-        print(f"Warning: source triage failed: {exc}", file=sys.stderr)
-        scan_code = 1
+    if foundry_project:
+        try:
+            scan_code = run_scan([])
+        except Exception as exc:
+            print(f"Warning: source triage failed: {exc}", file=sys.stderr)
+            scan_code = 1
 
-    target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
-    if target:
-        _sync_audit_context(config, root)
-    else:
-        print("Target : none configured for this project")
-        print("         Static audit can continue; use 'lk lab' (or 'lk audit auto') for a live local target.")
+        target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
+        if target:
+            _sync_audit_context(config, root)
+        else:
+            print("Target : none configured for this project")
+            print("         Static audit can continue; use 'lk lab' (or 'lk audit auto') for a live local target.")
 
     audit_code = run_audit(config, mode_args)
-    if walkthrough_mode:
+    if walkthrough_mode and evm_project:
         walkthrough_args = ["--auto"] if auto_mode else []
         walkthrough_args.append("--yes" if force_noninteractive or not sys.stdin.isatty() else "--interactive")
         walkthrough_code = walkthrough.run(config, walkthrough_args, host=sys.modules[__name__])
         if walkthrough_code != 0 and audit_code == 0:
             audit_code = walkthrough_code
+
     if audit_code != 0:
         baseline_code = audit_code
     elif scan_code != 0:
@@ -5941,46 +5964,61 @@ def run_audit_mode(config, args=None, interactive=None):
         context = audit_context.load(root)
         target = context.get("target") if isinstance(context.get("target"), dict) else {}
         target_label = target.get("contract") or target.get("address") or config.get("target") or "none"
-        print(f"\nTarget: {target_label} | RPC: {rpc_display(effective_rpc(config)) or 'none'}")
-        print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments")
-        print("7) full evidence pass   8) generate PoC   0) exit")
-        print("9) protocol walkthrough")
+        runtime_rpc = effective_rpc(config) if evm_project else config.get("rpc")
+        print(f"\nTarget: {target_label} | RPC: {rpc_display(runtime_rpc) or 'none'}")
+
+        if evm_project:
+            print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments")
+            print("7) full evidence pass   8) generate PoC   9) protocol walkthrough   0) exit")
+        else:
+            print("1) checklist   2) findings   0) exit")
+
         try:
             choice = input("lk> ").strip()
         except EOFError:
             print()
             return baseline_code
 
-        if choice == "1":
-            run_recon(config)
-        elif choice == "2":
-            run_functions(config)
-        elif choice == "3":
-            run_risk(config)
-        elif choice == "4":
-            run_checklist(config)
-        elif choice == "5":
-            run_targets(config)
-        elif choice == "6":
-            run_deployments(config)
-        elif choice == "7":
-            code = _full_evidence_pass(config)
-            if code == 0:
-                print("Full evidence pass completed.")
+        if evm_project:
+            if choice == "1":
+                run_recon(config)
+            elif choice == "2":
+                run_functions(config)
+            elif choice == "3":
+                run_risk(config)
+            elif choice == "4":
+                run_checklist(config)
+            elif choice == "5":
+                run_targets(config)
+            elif choice == "6":
+                run_deployments(config)
+            elif choice == "7":
+                code = _full_evidence_pass(config)
+                if code == 0:
+                    print("Full evidence pass completed.")
+                else:
+                    print("Full evidence pass needs review.", file=sys.stderr)
+            elif choice == "8":
+                code = _generate_connected_poc(config)
+                if code == 0:
+                    print("Connected PoC scaffold refreshed.")
+            elif choice == "9":
+                code = walkthrough.run(config, [], host=sys.modules[__name__])
+                if code != 0:
+                    print("Protocol walkthrough needs review.", file=sys.stderr)
+            elif choice == "0":
+                return baseline_code
             else:
-                print("Full evidence pass needs review.", file=sys.stderr)
-        elif choice == "8":
-            code = _generate_connected_poc(config)
-            if code == 0:
-                print("Connected PoC scaffold refreshed.")
-        elif choice == "9":
-            code = walkthrough.run(config, [], host=sys.modules[__name__])
-            if code != 0:
-                print("Protocol walkthrough needs review.", file=sys.stderr)
-        elif choice == "0":
-            return baseline_code
+                print("Unknown option. Choose 0-9.")
         else:
-            print("Unknown option. Choose 0-9.")
+            if choice == "1":
+                run_checklist(config)
+            elif choice == "2":
+                run_signals(config, [])
+            elif choice == "0":
+                return baseline_code
+            else:
+                print("Unknown option. Choose 0-2.")
 
 
 
@@ -6179,33 +6217,72 @@ def _sync_audit_context(config, root=None):
 
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
-        print("Usage: lk audit [auto] [--checks|check|checks] [--interactive|--non-interactive]")
-        print("Run the connected audit session. Plain 'lk audit' detects and uses an existing Anvil but never starts one.")
-        print("'lk audit auto' may start a Lowkey-managed project Anvil and bootstrap a safe local target.")
-        print("Use --checks for Slither and optional lint/geiger checks; non-interactive environments skip the menu.")
+        print("Usage: lk audit [--checks] [--verbose]")
+        print("Detect the project/toolchain first, then run the matching audit backend.")
+        print("Foundry projects use Forge; Cairo/Vyper/Hardhat/Anchor/Move use native checks.")
         return 0
 
-    root = audit_context.foundry_project_root()
-    _sync_audit_context(config, root)
+    root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
+    info = detect_project(root) if detect_project else {
+        "root": str(root),
+        "name": root.name,
+        "kind": "unknown",
+        "backend": "generic",
+        "stacks": [],
+        "languages": {},
+    }
 
-    try:
-        from forge_tools import run_audit as run_forge_audit
-    except ImportError as exc:
-        return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
+    print()
+    print(format_detection(info) if format_detection else f"Project : {root}")
 
-    # Preserve the user's audit mode. Plain 'lk audit' is the baseline pipeline;
-    # '--checks' explicitly opts into Slither and optional lint/geiger checks.
-    forge_args = list(args)
-    return_code = run_forge_audit(forge_args)
+    project_data = {
+        "root": str(root),
+        "name": root.name,
+        "kind": info.get("kind"),
+        "backend": info.get("backend"),
+        "stacks": info.get("stacks", []),
+        "languages": info.get("languages", {}),
+    }
+    audit_context.update(root, project=project_data)
+
+    stacks = set(info.get("stacks", []))
+    if "foundry" in stacks:
+        _sync_audit_context(config, root)
+        try:
+            from forge_tools import run_audit as run_forge_audit
+        except ImportError as exc:
+            return fail(f"Error: Lowkey Forge audit layer unavailable: {exc}")
+        forge_args = list(args)
+        return_code = run_forge_audit(forge_args)
+        audit_context.record_tool(
+            "audit",
+            root,
+            status="completed" if return_code == 0 else "failed",
+            summary="connected Foundry audit pipeline",
+            data={"exit_code": return_code, "backend": "foundry"},
+        )
+        if len(stacks) > 1 and run_native_audit:
+            native_code = run_native_audit(info, args)
+            if native_code != 0:
+                return native_code
+        return return_code
+
+    if run_native_audit:
+        return_code = run_native_audit(info, args)
+    else:
+        print("Native project audit layer is unavailable; source review only.")
+        return_code = 0
 
     audit_context.record_tool(
         "audit",
         root,
         status="completed" if return_code == 0 else "failed",
-        summary="connected audit pipeline",
-        data={"exit_code": return_code},
+        summary=f"native {info.get('backend', 'generic')} audit pipeline",
+        data={"exit_code": return_code, "backend": info.get("backend", "generic")},
     )
     return return_code
+
+
 
 def refresh_generated_poc(config):
     """Refresh the connected PoC scaffold after audit evidence or a concrete send."""
@@ -7043,6 +7120,12 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
+    elif cmd in {"project", "detect-project", "detect"}:
+        info = detect_project(detected_project_root(".")) if detect_project else None
+        if not info:
+            return fail("Project detection layer is unavailable. Reinstall Lowkey.")
+        print(format_detection(info))
+        return 0
     elif cmd in {"audit--checks","audit-checks"}: return run_audit_mode(config, ["--checks", *args])
     elif cmd=="audit":
         if args and args[0] in {"run","pipeline"}:
