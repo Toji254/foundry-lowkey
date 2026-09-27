@@ -148,19 +148,49 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
 
     supporting: list[str] = []
     for submodule in _nested_python_projects(root):
-        if shutil.which("uv"):
+        label = f"python subproject ({submodule.relative_to(root)})"
+        if (submodule / "pyproject.toml").is_file() and shutil.which("uv"):
             code = _bootstrap_step(
-                f"python subproject ({submodule.relative_to(root)})",
+                label,
                 ["uv", "sync", "--all-extras", "--dev"],
                 submodule,
             )
         elif (submodule / "poetry.lock").is_file() and shutil.which("poetry"):
-            code = _bootstrap_step(
-                f"python subproject ({submodule.relative_to(root)})",
-                ["poetry", "install"],
-                submodule,
-            )
+            code = _bootstrap_step(label, ["poetry", "install"], submodule)
+        elif (submodule / "Pipfile").is_file() and shutil.which("pipenv"):
+            code = _bootstrap_step(label, ["pipenv", "sync", "--dev"], submodule)
+        elif (
+            (submodule / "requirements.txt").is_file()
+            or (submodule / "requirements-dev.txt").is_file()
+        ):
+            venv = submodule / ".venv"
+            python = venv / "bin" / "python"
+            pip = venv / "bin" / "pip"
+            if not python.is_file():
+                code = _bootstrap_step(
+                    label,
+                    ["python3", "-m", "venv", str(venv)],
+                    submodule,
+                )
+                if code != 0:
+                    failures = failures or code
+                    continue
+            requirements = [
+                name
+                for name in ("requirements.txt", "requirements-dev.txt")
+                if (submodule / name).is_file()
+            ]
+            code = 0
+            for requirement in requirements:
+                code = _bootstrap_step(
+                    label,
+                    [str(pip), "install", "-r", requirement],
+                    submodule,
+                )
+                if code != 0:
+                    break
         else:
+            print(f"DEFER  {label} — no nested dependency manifest; using parent project environment.")
             continue
         if code != 0:
             failures = failures or code
