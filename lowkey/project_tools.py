@@ -453,12 +453,15 @@ def _vyper_imports(text: str) -> list[tuple[str, int, str, str | None]]:
 def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     if language == "solidity":
-        for match in re.finditer(r'\b(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+is\s+([^\{]+))?', text):
+        pattern = re.compile(
+            r'\b(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+is\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*))?\s*\{'
+        )
+        for match in pattern.finditer(text):
             values.append({
                 "kind": match.group(1),
                 "name": match.group(2),
                 "inherits": [
-                    item.strip().split()[0]
+                    item.strip()
                     for item in (match.group(3) or "").split(",")
                     if item.strip()
                 ],
@@ -607,58 +610,161 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
     }
 
 
+def _protocol_node(node: dict[str, Any]) -> bool:
+    """Keep the default human graph focused on application code, not generated helpers."""
+    rel = str(node.get("file") or "").replace("\\", "/").lstrip("./")
+    first = rel.split("/", 1)[0] if rel else ""
+    if first in {"test", "tests", "script", "scripts"}:
+        return False
+    return first in {"src", "contracts", "vyper", "interfaces"} or not first
+
+
+def _display_name(node: dict[str, Any]) -> str:
+    declarations = node.get("declarations") or []
+    names = [str(item.get("name")) for item in declarations if item.get("name")]
+    return ", ".join(names) or str(node.get("file") or "unknown")
+
+
 def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     project = detect_project(root)
     graph = build_dependency_graph(root)
-    print("LOWKEY PROJECT")
-    print("=" * 72)
-    print(f"Root      : {project['root']}")
-    print(f"Type      : {project['kind']}")
-    print(f"Languages : {', '.join(project['languages']) or 'none detected'}")
-    print(f"Toolchains: {', '.join(project['build_systems']) or 'none detected'}")
-    print(
-        f"Sources   : Solidity {project['sources']['solidity']} | "
-        f"Vyper {project['sources']['vyper']}"
-    )
-    print(f"Roots     : {', '.join(project['source_roots'])}")
-    compilers = project.get("solidity_compilers", [])
-    if compilers:
-        print(f"Solidity  : {', '.join(compilers)}")
-    python = project.get("python", {})
-    if python.get("version_file"):
-        print(f"Python    : {python['version_file']}")
-    submodules = project.get("submodules", [])
-    if submodules:
-        ready = sum(1 for item in submodules if item.get("initialized"))
-        print(f"Submodules: {ready}/{len(submodules)} initialized")
-    print("\nSYSTEM GRAPH")
-    print("-" * 72)
-    for node in graph["nodes"]:
-        declarations = ", ".join(
-            f"{item['kind']} {item['name']}" for item in node.get("declarations", [])
-        )
-        print(f"{node['file']:<52} [{node['language']}]")
-        if declarations:
-            print(f"  declarations: {declarations}")
-        for call in node.get("calls", []):
-            print(f"  call-site: {call['kind']} @ line {call['line']}")
-    for edge in graph["edges"]:
-        marker = "OK" if edge.get("resolved") else "UNRESOLVED"
-        print(f"  {marker:<10} {edge['from']} -> {edge['to']} ({edge['kind']})")
-    external_edges = [
+
+    protocol_nodes = [node for node in graph["nodes"] if _protocol_node(node)]
+    protocol_ids = {node["id"] for node in protocol_nodes}
+    protocol_edges = [
         edge for edge in graph["edges"]
-        if edge["kind"] == "import" and edge.get("external")
+        if edge.get("from") in protocol_ids
+        and (
+            edge.get("kind") == "import"
+            or edge.get("kind") == "inherits"
+        )
     ]
-    if external_edges:
-        print("\nExternal imports:")
-        for edge in external_edges:
-            status = "RESOLVED" if edge.get("resolved") else "UNRESOLVED"
-            print(f"  {status:<10} {edge['from']}:{edge['line']} -> {edge['to']}")
-    if graph["unresolved"]:
-        print("\nUnresolved imports:")
-        for edge in graph["unresolved"]:
-            print(f"  {edge['from']}:{edge['line']} -> {edge['to']}")
-    return {"project": project, "graph": graph}
+    support_nodes = [node for node in graph["nodes"] if node not in protocol_nodes]
+    support_paths = [str(node.get("file")) for node in support_nodes]
+
+    contracts = []
+    interfaces = []
+    for node in protocol_nodes:
+        for declaration in node.get("declarations", []):
+            if declaration.get("kind") == "contract":
+                contracts.append((declaration["name"], node["file"], declaration.get("inherits") or []))
+            elif declaration.get("kind") == "interface":
+                interfaces.append((declaration["name"], node["file"]))
+
+    imports = [edge for edge in protocol_edges if edge.get("kind") == "import"]
+    inheritance = [edge for edge in protocol_edges if edge.get("kind") == "inherits"]
+    low_level = [
+        call for node in protocol_nodes
+        for call in node.get("calls", [])
+        if call.get("kind") == "low-level-call"
+    ]
+    external_calls = [
+        call for node in protocol_nodes
+        for call in node.get("calls", [])
+        if call.get("kind") == "external-call"
+    ]
+    unresolved = [edge for edge in imports if not edge.get("resolved")]
+    resolved_external = [
+        edge for edge in imports
+        if edge.get("external") and edge.get("resolved")
+    ]
+
+    print("LOWKEY PROJECT MAP")
+    print("=" * 72)
+    print(f"Project       : {project['root']}")
+    print(f"Type          : {project['kind']}")
+    print(f"Compiler      : {', '.join(project.get('solidity_compilers') or ['not detected'])}")
+    print()
+    print("1. WHAT IS THE PROTOCOL?")
+    print("-" * 72)
+    if contracts:
+        for name, file, parents in contracts:
+            parent_text = f" (inherits {', '.join(parents)})" if parents else ""
+            print(f"  {name}{parent_text}")
+            print(f"    Source: {file}")
+    else:
+        print("  No application contracts detected in the configured source roots.")
+
+    print()
+    print("2. HOW DOES IT DEPEND ON OTHER CODE?")
+    print("-" * 72)
+    if imports:
+        for edge in imports:
+            destination = str(edge.get("to") or "unknown")
+            if edge.get("resolved") and edge.get("external"):
+                label = "external dependency"
+            elif edge.get("resolved"):
+                label = "local dependency"
+            else:
+                label = "NOT RESOLVED"
+            print(f"  {edge['from']} -> {destination} [{label}]")
+    else:
+        print("  No imports detected in application code.")
+
+    if inheritance:
+        print()
+        print("  Inheritance:")
+        for edge in inheritance:
+            status = "local" if edge.get("resolved") else "external/unknown"
+            print(f"    {edge['from']} inherits {edge['to']} [{status}]")
+
+    print()
+    print("3. WHERE ARE THE SECURITY-RELEVANT CALLS?")
+    print("-" * 72)
+    print(f"  Low-level calls (.call/.delegatecall/.staticcall): {len(low_level)}")
+    print(f"  Other call sites detected by the heuristic:        {len(external_calls)}")
+    if low_level:
+        for call in low_level[:12]:
+            print(f"    line {call['line']}: {call['text']}")
+        if len(low_level) > 12:
+            print(f"    ... and {len(low_level) - 12} more")
+
+    print()
+    print("4. DEPENDENCY HEALTH")
+    print("-" * 72)
+    print(f"  Resolved application imports : {len([e for e in imports if e.get('resolved') and not e.get('external')])}")
+    print(f"  Resolved external imports   : {len(resolved_external)}")
+    print(f"  Unresolved imports           : {len(unresolved)}")
+    if unresolved:
+        for edge in unresolved[:12]:
+            print(f"    FIX ME: {edge['from']}:{edge['line']} -> {edge['to']}")
+        if len(unresolved) > 12:
+            print(f"    ... and {len(unresolved) - 12} more")
+    else:
+        print("  All imports used by application code were resolved.")
+
+    print()
+    print("5. FILES LOWKEY IS NOT CALLING 'PROTOCOL CODE'")
+    print("-" * 72)
+    if support_paths:
+        print("  Tests/scripts/helpers are kept out of the default protocol graph:")
+        for path in support_paths[:15]:
+            print(f"    - {path}")
+        if len(support_paths) > 15:
+            print(f"    ... and {len(support_paths) - 15} more")
+    else:
+        print("  None detected.")
+
+    print()
+    print("HOW TO READ THIS")
+    print("-" * 72)
+    print("  Start with the contract(s) under section 1.")
+    print("  Follow their imports/inheritance under section 2.")
+    print("  Review low-level calls under section 3.")
+    print("  Fix anything under 'NOT RESOLVED' before trusting the map.")
+    print("  Generated PoCs/tests/scripts are evidence and tooling, not protocol logic.")
+
+    human_graph = {
+        "contracts": contracts,
+        "interfaces": interfaces,
+        "imports": imports,
+        "inheritance": inheritance,
+        "low_level_calls": low_level,
+        "heuristic_external_calls": external_calls,
+        "unresolved": unresolved,
+        "support_files": support_paths,
+    }
+    return {"project": project, "graph": graph, "human": human_graph}
 
 
 __all__ = [
