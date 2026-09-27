@@ -538,13 +538,29 @@ def remember_project_target(config, root, name, address):
 def resolve_target_ref(config,ref,root=None):
     if ref is None:
         return active_project_target(config, root) if root is not None else config.get("target")
-    if is_address(ref): return ref
-    aliases=target_aliases(config, root)
-    if str(ref) in aliases: return aliases[str(ref)]
+
+    project_root = audit_context.foundry_project_root(root) if root is not None else audit_context.foundry_project_root()
+    entries = _project_target_entries(config, project_root)
+    protocol_entries = [entry for entry in entries if _target_entry_is_protocol(project_root, entry)]
+
     if str(ref).isdigit():
-        names=list(aliases); index=int(ref)-1
-        if 0<=index<len(names): return aliases[names[index]]
-    return None
+        index = int(ref) - 1
+        if 0 <= index < len(protocol_entries):
+            return protocol_entries[index].get("address")
+        return None
+
+    if is_address(ref):
+        return ref
+
+    exact_matches = [
+        entry for entry in protocol_entries
+        if str(entry.get("name") or entry.get("contract") or "").strip().lower() == str(ref).strip().lower()
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0].get("address")
+
+    aliases = target_aliases(config, project_root)
+    return aliases.get(str(ref))
 
 def canonical_type(param):
     if not isinstance(param,dict): return ""
@@ -6261,7 +6277,7 @@ def run_audit_mode(config, args=None, interactive=None):
         print(f"\nTarget: {target_label} | RPC: {rpc_display(runtime_rpc) or 'none'}")
 
         if evm_project:
-            print("1) recon   2) functions   3) risk   4) checklist   5) targets   6) deployments")
+            print("1) recon   2) functions   3) risk   4) checklist   5) targets (select target)   6) deployments")
             print("7) full evidence pass   8) generate PoC   9) protocol walkthrough   0) exit")
         else:
             print("1) checklist   2) findings   0) exit")
@@ -7275,13 +7291,50 @@ def dispatch_command(cmd,args,config,from_batch=False):
         elif args[0]=="auto":
             return run_auto_target(config,args[1] if len(args)>1 else None)
         elif len(args)==1:
-            resolved=resolve_target_ref(config,args[0],root)
-            if resolved:
-                config["target"]=resolved
-            elif is_address(args[0]):
-                config["target"]=args[0]
+            ref = str(args[0]).strip()
+            entries = _project_target_entries(config, root)
+            protocol_entries = [entry for entry in entries if _target_entry_is_protocol(root, entry)]
+
+            selected_entry = None
+            if ref.isdigit():
+                index = int(ref) - 1
+                if 0 <= index < len(protocol_entries):
+                    selected_entry = protocol_entries[index]
+                else:
+                    return fail(f"Error: target number must be between 1 and {len(protocol_entries)}.")
+            elif is_address(ref):
+                selected_entry = next(
+                    (entry for entry in protocol_entries
+                     if str(entry.get("address")).lower() == ref.lower()),
+                    None,
+                )
+                if selected_entry is None:
+                    config["target"] = ref
             else:
-                return run_auto_target(config,args[0])
+                matches = [
+                    entry for entry in protocol_entries
+                    if str(entry.get("name") or entry.get("contract") or "").strip().lower() == ref.lower()
+                ]
+                if len(matches) == 1:
+                    selected_entry = matches[0]
+                elif len(matches) > 1:
+                    print(f"Ambiguous target name: {ref}")
+                    print("Use the number from 'lk targets' or the target address.")
+                    return 0
+                else:
+                    resolved = resolve_target_ref(config, ref, root)
+                    if resolved:
+                        selected_entry = next(
+                            (entry for entry in protocol_entries
+                             if str(entry.get("address")).lower() == str(resolved).lower()),
+                            None,
+                        )
+                    if selected_entry is None:
+                        return run_auto_target(config, ref)
+
+            if selected_entry is not None:
+                return _select_project_target(config, selected_entry, root)
+
             audit_context.set_target(
                 root,
                 address=config["target"],
