@@ -5499,6 +5499,8 @@ def _run_adversarial_test(
                                     host.save_config(config)
                 break
 
+    benchmark = _benchmark_adapter(model, models, config)
+
     if system_targets and len(system_targets) > 1:
         targets = system_targets
     else:
@@ -5540,7 +5542,6 @@ def _run_adversarial_test(
 
     benchmark_results: list[WalkthroughStory] = []
     benchmark_steps: list[Step] = []
-    benchmark = _benchmark_adapter(model, models, config)
     if benchmark:
         target_info, benchmark_reason = benchmark.prepare(root, config, host, rpc, actors, model, models)
         if target_info:
