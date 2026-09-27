@@ -1885,9 +1885,56 @@ def run_doctor():
             fix=fix,
         )
 
-    for name in ("python3", "cast", "forge", "anvil", "chisel"):
+    root = audit_context.foundry_project_root()
+    foundry_project = (root / "foundry.toml").is_file()
+    ignored = {
+        ".git", ".audit", ".venv", ".tox", ".nox", "__pycache__",
+        ".pytest_cache", "node_modules", "out", "cache", "artifacts",
+        "build", "dist", "lib",
+    }
+    source_files = []
+    if root.is_dir():
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix.lower() in {".sol", ".vy", ".vyi"}:
+                if not any(part in ignored for part in path.parts):
+                    source_files.append(path)
+    vyper_project = any(path.suffix.lower() in {".vy", ".vyi"} for path in source_files)
+
+    required_tools = ["python3", "cast", "anvil"]
+    optional_project_tools = []
+    if foundry_project:
+        required_tools.append("forge")
+    else:
+        optional_project_tools.append(
+            ("forge", "this project has no foundry.toml, so Forge is not required for Lowkey's core runtime")
+        )
+    if vyper_project:
+        required_tools.append("vyper")
+    else:
+        optional_project_tools.append(
+            ("vyper", "no Vyper sources were detected in the current project")
+        )
+
+    for name in required_tools:
         if not _doctor_tool(name, required=True):
             failures += 1
+
+    for name, why in optional_project_tools:
+        if shutil.which(name):
+            _doctor_tool(name, required=False)
+        else:
+            print(f"NOTE  {name}: not found (not required for this project)")
+            _doctor_advice(
+                name,
+                why=why,
+                fix=f"Install {name} only when you work on projects that require it.",
+            )
+
+    # Chisel is a convenience REPL, not a Lowkey prerequisite.
+    if shutil.which("chisel"):
+        _doctor_tool("chisel", required=False)
+    else:
+        print("NOTE  chisel: not found (optional Foundry REPL)")
 
     slither = shutil.which("slither")
     if slither:
