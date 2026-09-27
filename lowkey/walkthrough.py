@@ -6685,34 +6685,37 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         print("Error: unable to choose an executable application contract.",file=sys.stderr); return 2
     actors=_actors(host,config,4) if host else []
 
-    # Generic EVM fallback: when project-specific lab/target discovery cannot
-    # produce a target, deploy a safe zero-constructor artifact on local Anvil.
-    if not target and auto and actors:
-        rpc_candidate = (
-            host.effective_rpc(config)
-            if host and hasattr(host, "effective_rpc")
-            else config.get("rpc")
+    # Generic EVM fallback: when project-specific discovery has no live target,
+    # deploy a safe zero-constructor artifact on local Anvil. A stale address is
+    # not authoritative: verify runtime code before deciding to reuse it.
+    rpc_candidate = (
+        host.effective_rpc(config)
+        if host and hasattr(host, "effective_rpc")
+        else config.get("rpc")
+    )
+    target_is_live = bool(
+        target and rpc_candidate and _runtime_code(rpc_candidate, target) not in {"", "0x"}
+    )
+    if auto and actors and rpc_candidate and not target_is_live:
+        deployed_target, deploy_reason = _deploy_generic_local_target(
+            root, rpc_candidate, model, actors
         )
-        if rpc_candidate:
-            deployed_target, deploy_reason = _deploy_generic_local_target(
-                root, rpc_candidate, model, actors
-            )
-            if deployed_target:
-                target = deployed_target
-                config["target"] = target
-                config["target_contract"] = model.name
-                artifact_path = (root / model.artifact).resolve()
-                if artifact_path.is_file():
-                    config.setdefault("abi_paths", {})[target] = str(artifact_path)
-                config.setdefault("project_roots", {})[target] = str(root)
-                if hasattr(host, "save_config"):
-                    try:
-                        host.save_config(config)
-                    except Exception:
-                        pass
-                print(f"  Generic local deployment: {model.name} {_addr(target)}")
-            elif deploy_reason and (auto and not target_contract):
-                print(f"  Generic local deployment: {deploy_reason}")
+        if deployed_target:
+            target = deployed_target
+            config["target"] = target
+            config["target_contract"] = model.name
+            artifact_path = (root / model.artifact).resolve()
+            if artifact_path.is_file():
+                config.setdefault("abi_paths", {})[target] = str(artifact_path)
+            config.setdefault("project_roots", {})[target] = str(root)
+            if hasattr(host, "save_config"):
+                try:
+                    host.save_config(config)
+                except Exception:
+                    pass
+            print(f"  Generic local deployment: {model.name} {_addr(target)}")
+        elif deploy_reason:
+            print(f"  Generic local deployment skipped: {deploy_reason}")
 
     if test_mode:
         rpc=host.effective_rpc(config) if host and hasattr(host,"effective_rpc") else config.get("rpc")
