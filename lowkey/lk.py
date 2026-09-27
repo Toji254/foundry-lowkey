@@ -3587,6 +3587,30 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print("Ready   : lk changes <function> ... | lk trace")
     return 0
 
+def _print_numeric_unit_reference(label, ptype):
+    if not str(ptype).startswith(('uint', 'int')):
+        return
+    print()
+    print('NUMERIC UNIT REFERENCE')
+    print('----------------------')
+    print('  1 ETH      = 1,000,000,000,000,000,000 wei')
+    print('  1 gwei     = 1,000,000,000 wei')
+    print('  1 wei      = 0.000000000000000001 ETH')
+    print('  0.001 ETH  = 1,000,000,000,000,000 wei')
+    lowered = str(label or '').lower().replace('_', '')
+    if any(word in lowered for word in ('amount', 'value', 'deposit', 'withdraw', 'payment', 'fee', 'collateral', 'reward')):
+        print('  ETH-denominated input detected. Examples: 0.5 ETH, 10 gwei, 1 wei')
+    else:
+        print('  Raw numeric input. Do not assume this number is an ETH amount.')
+    print()
+
+
+def _normalize_human_numeric_input(value, ptype):
+    text = str(value or '').strip().replace(' ETH', ' ether').replace(' eth', ' ether')
+    if re.fullmatch(r'\d+(?:\.\d+)?\s*(?:ether|gwei|wei)', text, re.I):
+        return normalize_numeric_argument(text, ptype)
+    return value
+
 def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
     """Deploy an ABI-bearing artifact directly with cast on local EVM nodes."""
     if not artifact_is_deployable(artifact):
@@ -3602,12 +3626,16 @@ def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
     for index, param in enumerate(constructor_inputs or [], 1):
         label = param.get("name") or f"arg{index}"
         ptype = canonical_type(param)
+        if ptype.startswith(('uint', 'int')):
+            _print_numeric_unit_reference(label, ptype)
         try:
             value = input(f"Constructor {label} ({ptype}): ").strip()
         except EOFError:
             return None, "local lab cancelled"
+        if value and ptype.startswith(('uint', 'int')):
+            value = _normalize_human_numeric_input(value, ptype)
         if not value:
-            return None, f"constructor argument '{label}' is required"
+            return None, f"constructor argument {label} is required"
         values.append(value)
 
     command = [
@@ -6599,8 +6627,13 @@ def run_wizard(config,args):
     print(f"Function: {signature}")
     for index,param in enumerate(item.get("inputs",[]),1):
         label=param.get("name") or f"arg{index}"
-        try: value=input(f"{label} ({canonical_type(param)}): ").strip()
+        ptype=canonical_type(param)
+        if ptype.startswith(('uint', 'int')):
+            _print_numeric_unit_reference(label, ptype)
+        try: value=input(f"{label} ({ptype}): ").strip()
         except EOFError: print("Wizard cancelled."); return 0
+        if value and ptype.startswith(('uint', 'int')):
+            value=_normalize_human_numeric_input(value, ptype)
         if not value:
             return fail("Argument values are required.")
         values.append(value)
