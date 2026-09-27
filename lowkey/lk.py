@@ -2914,52 +2914,33 @@ def _fixture_state_files(root, safe_name):
 
 
 def _generate_test_fixture_lab_script(root, candidate, state_path):
-    """Generate a simulation-only runner that dumps the complete VM state."""
+    """Generate a test contract so Forge executes the fixture in its native test context."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
     relative = str(candidate["relative"]).replace("\\", "/")
     contract = str(candidate["contract"])
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
 
-    # vm.dumpState() writes relative to the Forge project root.
     state_literal = os.path.relpath(state_path, root_path).replace("\\", "/")
-    script_dir = root_path / "script"
-    script_dir.mkdir(parents=True, exist_ok=True)
-    script_path = script_dir / f"LowkeyAutoFixture_{safe_name}.s.sol"
+    test_dir = root_path / "test" / "foundry" / ".lowkey"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    test_path = test_dir / f"LowkeyAutoFixture_{safe_name}.t.sol"
 
     code = f'''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {{Script}} from "forge-std/Script.sol";
-import {{console2}} from "forge-std/console2.sol";
 import {{ {contract} }} from "{relative}";
 
-/// @dev Executes the discovered test fixture entirely inside Forge's local
-/// simulation VM. Lowkey dumps the resulting full VM state and materializes
-/// that state into local Anvil after simulation finishes.
-contract LowkeyFixtureRunner_{safe_name} is {contract} {{
-    function runFixture() external {{
-        setUp();
-    }}
-}}
-
-contract LowkeyAutoFixtureScript_{safe_name} is Script {{
-    function run() external {{
-        // Lab bootstrap is environment construction, not gas benchmarking.
-        vm.pauseGasMetering();
-
-        LowkeyFixtureRunner_{safe_name} runner = new LowkeyFixtureRunner_{safe_name}();
-        runner.runFixture();
-
+/// @dev Runs the discovered protocol fixture using Forge's native test runner.
+/// Forge invokes the inherited setUp() before this test, preserving the
+/// fixture's normal cheatcode, prank, and deployment semantics.
+contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
+    function testLowkeyLabStateDump() public {{
         vm.dumpState("{state_literal}");
-        vm.resumeGasMetering();
-
-        console2.log("LOWKEY_FIXTURE", "full-state-promotion");
-        console2.log("LOWKEY_RUNNER", address(runner));
     }}
 }}
 '''
-    script_path.write_text(code, encoding="utf-8")
-    return script_path
+    test_path.write_text(code, encoding="utf-8")
+    return test_path
 
 
 def _materialize_fixture_state(root, rpc, state_path, target_contract):
@@ -2969,14 +2950,15 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
     except (OSError, json.JSONDecodeError) as exc:
         return None, f"could not read fixture state snapshot: {exc}"
 
-    # vm.dumpState() on forge-std 1.8.1 returns an address-keyed object.
-    # Accept Anvil-style snapshots too, so the materializer stays tolerant of
-    # future/alternate state dump shapes.
-    accounts = snapshot.get("accounts") if isinstance(snapshot, dict) and isinstance(snapshot.get("accounts"), dict) else snapshot
+    accounts = (
+        snapshot.get("accounts")
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("accounts"), dict)
+        else snapshot
+    )
     if not isinstance(accounts, dict):
         return None, "fixture state snapshot does not contain an address-keyed account map"
 
-    code_map = {}
+    code_map = {{}}
     operations = 0
 
     for address, account in accounts.items():
@@ -2984,42 +2966,48 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
             continue
 
         code = str(account.get("code") or "0x")
-        if code and code.startswith("0x") and len(code) > 2:
+        if code.startswith("0x") and len(code) > 2:
             result = rpc_json(rpc, "anvil_setCode", [address, code])
             if result is None:
-                return None, f"anvil_setCode failed for {address}"
+                return None, f"anvil_setCode failed for {{address}}"
             code_map[address.lower()] = code
             operations += 1
 
         balance = account.get("balance")
         if balance is not None:
-            result = rpc_json(rpc, "anvil_setBalance", [address, _fixture_hex_quantity(balance)])
+            result = rpc_json(
+                rpc, "anvil_setBalance", [address, _fixture_hex_quantity(balance)]
+            )
             if result is None:
-                return None, f"anvil_setBalance failed for {address}"
+                return None, f"anvil_setBalance failed for {{address}}"
             operations += 1
 
         nonce = account.get("nonce")
         if nonce is not None:
-            result = rpc_json(rpc, "anvil_setNonce", [address, _fixture_hex_quantity(nonce)])
+            result = rpc_json(
+                rpc, "anvil_setNonce", [address, _fixture_hex_quantity(nonce)]
+            )
             if result is None:
-                return None, f"anvil_setNonce failed for {address}"
+                return None, f"anvil_setNonce failed for {{address}}"
             operations += 1
 
-        storage = account.get("storage") or {}
+        storage = account.get("storage") or {{}}
         if isinstance(storage, dict):
             for slot, value in storage.items():
                 if not str(slot).startswith("0x") or not str(value).startswith("0x"):
                     continue
-                result = rpc_json(rpc, "anvil_setStorageAt", [address, slot, value])
+                result = rpc_json(
+                    rpc, "anvil_setStorageAt", [address, slot, value]
+                )
                 if result is None:
-                    return None, f"anvil_setStorageAt failed for {address} slot {slot}"
+                    return None, f"anvil_setStorageAt failed for {{address}} slot {{slot}}"
                 operations += 1
 
     target = _find_fixture_target(root, code_map, target_contract, rpc)
     if not target:
         return None, (
-            f"fixture state was materialized ({operations} RPC updates), "
-            f"but Lowkey could not identify target {target_contract or 'contract'}"
+            f"fixture state was materialized ({{operations}} RPC updates), "
+            f"but Lowkey could not identify target {{target_contract or 'contract'}}"
         )
 
     return target, None
@@ -3085,58 +3073,51 @@ def _find_fixture_target(root, code_map, target_contract, rpc):
 
 
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
-    """Replay a Foundry test fixture in simulation and materialize its state into local Anvil."""
+    """Run a discovered Foundry fixture natively as a test, then promote its state to Anvil."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
     state_path = _fixture_state_files(root, safe_name)
-    script = _generate_test_fixture_lab_script(root, fixture, state_path)
-    relative = os.path.relpath(script, root)
+    test_path = _generate_test_fixture_lab_script(root, fixture, state_path)
+    relative_test = os.path.relpath(test_path, root)
 
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
     print(f"Project : {root}")
     print(f"Fixture : {fixture['relative']}::{fixture['contract']}")
-    print(f"Script  : {relative}")
+    print(f"Test    : {relative_test}")
     print(f"RPC     : {rpc_display(rpc)}")
     print(f"Actor   : Anvil #0 ({accounts[0]})")
     print("Mode    : promoted project test fixture")
-    print("Action  : replaying the fixture in Forge simulation, then materializing its state into local Anvil...")
-    print("Helper  : no broadcast; fixture vm.prank/startPrank semantics remain intact.")
+    print("Action  : running the fixture through Forge's native test runner, then materializing its full state into local Anvil...")
+    print("Helper  : no broadcast; Forge invokes the fixture setUp() normally.")
 
-    reserved = {
-        "LOWKEY_LAB_KEY": str(int(str(key), 16)),
-        "LOWKEY_BOB_KEY": str(int(str(derive_default_anvil_key(1) or key), 16)),
-    }
-    previous = {}
-    for name, value in reserved.items():
-        previous[name] = os.environ.get(name)
-        os.environ[name] = value
+    previous_snapshot_check = os.environ.get("FORGE_SNAPSHOT_CHECK")
+    os.environ["FORGE_SNAPSHOT_CHECK"] = "true"
 
     try:
         result = run_foundry(
             [
-                "script",
-                relative,
-                "--tc",
-                f"LowkeyAutoFixtureScript_{safe_name}",
-                "--rpc-url",
-                rpc,
-                "--gas-limit",
-                "10000000000",
+                "test",
+                "--match-path",
+                relative_test,
+                "--match-contract",
+                f"LowkeyAutoFixtureTest_{safe_name}",
+                "--match-test",
+                "testLowkeyLabStateDump",
+                "-q",
             ],
             capture=True,
         )
     finally:
-        for name, old_value in previous.items():
-            if old_value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = old_value
+        if previous_snapshot_check is None:
+            os.environ.pop("FORGE_SNAPSHOT_CHECK", None)
+        else:
+            os.environ["FORGE_SNAPSHOT_CHECK"] = previous_snapshot_check
 
     output = result.text
     if result.code != 0:
-        tail = "\n".join(output.splitlines()[-40:]) if output else "forge script failed"
+        tail = "\n".join(output.splitlines()[-50:]) if output else "forge test failed"
         return fail(
-            "Error: Lowkey fixture simulation failed.\n" + tail,
+            "Error: Lowkey fixture test failed.\n" + tail,
             result.code,
         )
 
@@ -3146,14 +3127,14 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     )
     if not target:
         return fail(
-            "Error: Lowkey fixture simulation succeeded, but Anvil state materialization failed.\n"
+            "Error: Lowkey fixture test succeeded, but Anvil state materialization failed.\n"
             + str(materialize_error or "unknown materialization error")
         )
 
     artifact = None
     if target_name:
         for candidate_path in local_artifact_paths(root):
-            candidate_artifact = read_artifact(candidate_path) or {}
+            candidate_artifact = read_artifact(candidate_path) or {{}}
             if (
                 artifact_contract_name(candidate_path, candidate_artifact).lower()
                 == target_name.lower()
@@ -3163,25 +3144,26 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
 
     contract_name = target_name or str(fixture.get("contract") or "auto-detected")
     config["actor"] = "lab-deployer"
-    config.setdefault("wallets", {})["lab-deployer"] = {
+    config.setdefault("wallets", {{}})["lab-deployer"] = {{
         "source": "anvil-default",
         "anvil_index": 0,
         "address": accounts[0],
-    }
-    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
-    config["lab_harness"] = {
+    }}
+    config.setdefault("labels", {{}})[accounts[0]] = "lab-deployer"
+    config["lab_harness"] = {{
         "type": "test-fixture-full-state",
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
         "state_file": str(state_path),
-    }
+    }}
     set_lab_target(config, root, target, contract_name, artifact)
 
-    print(f"Target  : {contract_name} -> {target}")
-    print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
-    print(f"Harness : {fixture['relative']}::{fixture['contract']}")
+    print(f"Target  : {{contract_name}} -> {{target}}")
+    print(f"ABI     : {{artifact or 'auto-discovered from build artifacts'}}")
+    print(f"Harness : {{fixture['relative']}}::{{fixture['contract']}}")
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
+
 
 def parse_lab_system(output):
     """Parse generic LOWKEY_<NAME> address markers emitted by lab harnesses."""
@@ -4857,10 +4839,10 @@ def run_lab(config,args):
         )
         if fixture_code == 0:
             return 0
-        # A discovered native fixture is already the project's application
-        # environment. Do not silently fall back to the ABI constructor wizard
-        # after it fails; that creates invalid dependency prompts.
-        return fixture_code
+        print(
+            "INFO  discovered project fixture could not be promoted; "
+            "falling back to generic artifact deployment."
+        )
 
     # No harness? Prefer the audit evidence; it usually points at the application's
     # most security-relevant implementation contract.
