@@ -769,25 +769,83 @@ def _render_observation(obs: PatternObservation) -> list[str]:
 
 def render_summary(observations: list[PatternObservation]) -> list[str]:
     if not observations:
-        return ["", "  REAL-WORLD FINDING PATTERNS", "    No recurring source patterns matched the current application models.", ""]
+        return [
+            "",
+            "  SECURITY PATTERN REVIEW",
+            "    No recurring source patterns matched the current application models.",
+            "",
+        ]
+
     counts: dict[str, int] = {}
+    groups: dict[str, list[PatternObservation]] = {}
     for item in observations:
         counts[item.status] = counts.get(item.status, 0) + 1
+        groups.setdefault(item.pattern_id, []).append(item)
+
     lines = [
         "",
-        "  REAL-WORLD FINDING PATTERNS",
-        f"    {len(observations)} pattern signal(s) across {len({item.contract for item in observations})} contracts",
-        f"    ⚠️ CANDIDATE       {counts.get('CANDIDATE', 0)}",
-        f"    🚨 CONFIRMED       {counts.get('CONFIRMED', 0)}",
-        f"    🟨 REVIEW          {counts.get('REVIEW', 0)}",
+        "  SECURITY PATTERN REVIEW",
+        f"    {len(observations)} source-pattern match(es) across {len({item.contract for item in observations})} contracts",
+        "",
+        f"    🚨 CONFIRMED       {counts.get('CONFIRMED', 0)}  live behavior reproduced",
+        f"    🟨 NEEDS REVIEW    {counts.get('REVIEW', 0)}  live behavior needs manual verification",
+        f"    ⚠️ STATIC MATCHES  {counts.get('CANDIDATE', 0)}  code shape resembles a known bug pattern",
         "",
     ]
-    for item in observations[:12]:
-        lines.extend(_render_observation(item))
-    if len(observations) > 12:
-        lines.append(f"    … {len(observations)-12} more saved to evidence")
-    lines.append("")
-    lines.append("    These are finding patterns distilled from public adjudicated reports — not automatic vulnerability verdicts.")
+
+    confirmed_or_review = [
+        item for item in observations
+        if item.status in {"CONFIRMED", "REVIEW"}
+    ]
+    if confirmed_or_review:
+        lines.append("  INVESTIGATE FIRST")
+        for item in confirmed_or_review[:8]:
+            icon = "🚨" if item.status == "CONFIRMED" else "🟨"
+            location = f"{item.contract}.{item.function}" if item.function else item.contract
+            lines.append(f"    {icon} {item.pattern_id}  {location}")
+            if item.evidence:
+                lines.append(f"       {item.evidence[0]}")
+            if item.next_step:
+                lines.append(f"       NEXT: {item.next_step}")
+        lines.append("")
+    else:
+        lines += [
+            "  LIVE VERIFICATION",
+            "    No finding pattern was confirmed by the isolated runtime probes.",
+            "    The remaining signals are source-level candidates for manual review.",
+            "",
+        ]
+
+    lines.append("  STATIC MATCHES")
+    for pattern_id, items in sorted(groups.items()):
+        catalog = _pattern(pattern_id)
+        title = str(catalog.get("title") or pattern_id)
+        candidate_items = [item for item in items if item.status == "CANDIDATE"]
+        live_items = [item for item in items if item.status != "CANDIDATE"]
+        shown = candidate_items[:6]
+        lines.append(
+            f"    {pattern_id}  {title}  —  {len(items)} match"
+            + ("" if len(items) == 1 else "es")
+        )
+        for item in shown:
+            location = f"{item.contract}.{item.function}" if item.function else item.contract
+            suffix = f"  ({item.source}:{item.line})" if item.line else f"  ({item.source})"
+            lines.append(f"       • {location}{suffix}")
+        if len(candidate_items) > len(shown):
+            lines.append(f"       • +{len(candidate_items) - len(shown)} more locations saved to evidence")
+        if live_items:
+            lines.append(f"       • {len(live_items)} location(s) upgraded by live probing")
+
+    lines += [
+        "",
+        "  HOW TO READ IT",
+        "    STATIC MATCH = a source pattern worth checking, not a vulnerability verdict.",
+        "    NEEDS REVIEW  = live behavior matched the pattern strongly enough for manual verification.",
+        "    CONFIRMED      = the local probe reproduced the pattern's concrete security condition.",
+        "    Sources are public audit/bounty research used to choose recurring patterns to test.",
+        "",
+        "    Full evidence: .audit/walkthrough/test.json",
+    ]
     return lines
 
 
