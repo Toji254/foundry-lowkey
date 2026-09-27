@@ -1869,6 +1869,22 @@ def run_doctor():
     print("LOWKEY DOCTOR")
     print("=" * 72)
 
+    runtime = runtime_sync_status()
+    label = {"ok": "PASS", "stale": "FAIL", "corrupt": "FAIL"}.get(runtime.get("status"), "NOTE")
+    print(f"{label:<5} runtime: {runtime.get('status', 'unknown').upper()}")
+    print(f"      {runtime.get('detail', '')}")
+    if runtime.get("status") in {"stale", "corrupt"}:
+        failures += 1
+        source_repo = runtime.get("source_repo")
+        fix = "Run 'bash install.sh' from the Lowkey checkout."
+        if source_repo:
+            fix = f"Run 'cd {source_repo} && bash install.sh' to republish the runtime."
+        _doctor_advice(
+            "runtime",
+            why="The installed Lowkey modules do not match the runtime recorded by the installer.",
+            fix=fix,
+        )
+
     for name in ("python3", "cast", "forge", "anvil", "chisel"):
         if not _doctor_tool(name, required=True):
             failures += 1
@@ -6738,8 +6754,27 @@ def main():
     config=load_config()
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
-    if len(sys.argv)<2: print_help(); return
-    result=dispatch_command(sys.argv[1],sys.argv[2:],config)
+    if len(sys.argv)<2:
+        print_help()
+        return
+
+    command = sys.argv[1]
+    runtime = runtime_sync_status()
+    runtime_safe_commands = {
+        "--h", "--help", "-h", "help", "--version", "-V", "version",
+        "doctor", "self-test",
+    }
+    if runtime.get("status") in {"stale", "corrupt"} and command not in runtime_safe_commands:
+        print("LOWKEY RUNTIME OUT OF SYNC", file=sys.stderr)
+        print(f"  {runtime.get('detail', 'installed runtime verification failed')}", file=sys.stderr)
+        source_repo = runtime.get("source_repo")
+        if source_repo:
+            print(f"  FIX: cd {source_repo} && bash install.sh", file=sys.stderr)
+        else:
+            print("  FIX: reinstall Lowkey with bash install.sh", file=sys.stderr)
+        return fail("Refusing to run with a mismatched Lowkey installation.", 3)
+
+    result=dispatch_command(command,sys.argv[2:],config)
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
