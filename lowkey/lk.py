@@ -5719,6 +5719,14 @@ def run_seams(config):
     print("  user input ↔ numeric/encoding assumptions")
     return 0
 
+RISK_SIGNAL_HELP = {
+    "state-write": ("Changes stored contract data.", "Ask: what state changes, who can trigger it, and what must remain true afterward."),
+    "value-flow": ("Can receive ETH with the call.", "Ask: where does the ETH go, who benefits, and can accounting become inconsistent."),
+    "privileged-looking": ("The name suggests permissions, administration, pausing, or upgrades.", "Ask: who can call it and whether that authority is correctly restricted."),
+    "asset/action": ("The name suggests moving, creating, destroying, or executing an important asset/action.", "Ask: what can be changed or moved, who controls it, and whether checks happen before the action."),
+    "address-input": ("The caller supplies an address.", "Ask: is that address trusted, validated, permissioned, or able to point somewhere dangerous."),
+}
+
 def run_risk(config):
     target=config.get("target")
     if not target:
@@ -5726,10 +5734,15 @@ def run_risk(config):
     funcs=abi_functions(load_abi(target,config))
     if not funcs:
         print("Error: No ABI functions loaded."); return
-    print("Function review-surface heuristic:")
+
+    print("LOWKEY REVIEW HINTS")
+    print("===================")
+    print("These are rule-based review hints from ABI metadata and function names.")
+    print("They are NOT vulnerability findings. Use them to decide what to inspect.")
     rows = []
     for item in funcs:
-        name=item.get("name","").lower(); signals=[]
+        name=item.get("name","").lower()
+        signals=[]
         if item.get("stateMutability") in {"nonpayable","payable"}: signals.append("state-write")
         if item.get("stateMutability")=="payable": signals.append("value-flow")
         if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
@@ -5738,7 +5751,17 @@ def run_risk(config):
         signature = format_signature(item)
         row = {"signature": signature, "signals": signals}
         rows.append(row)
-        print(f"{signature:55}  {', '.join(signals) if signals else 'no heuristic signals'}")
+
+        print()
+        print(f"Function: {signature}")
+        if not signals:
+            print("  Hint:   No obvious review hint from its ABI/name alone.")
+            continue
+        for signal in signals:
+            meaning, question = RISK_SIGNAL_HELP[signal]
+            print(f"  Hint:   {meaning}")
+            print(f"          {question}")
+
     root = audit_context.foundry_project_root()
     audit_context.record_tool(
         "risk",
