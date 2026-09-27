@@ -3580,10 +3580,14 @@ def _foundry_native_bootstrap_commands(root):
 
 
 
+
 def _run_project_build(config, root):
-    """Build with the project's declared native toolchain before lab/deployment work."""
+    """Build with the detected project's native toolchain, with visible output and dependency recovery."""
     root_path = Path(root)
 
+    # Hardhat-first projects may also ship a Foundry config. Honor their
+    # declared package-manager build script first so 'lk lab' does not invoke
+    # an inappropriate forge build.
     package_path = root_path / "package.json"
     hardhat_config = next(
         (
@@ -3599,9 +3603,6 @@ def _run_project_build(config, root):
         None,
     )
 
-    # Hardhat-first projects sometimes also contain a Foundry config. Prefer the
-    # project's declared package-manager build script instead of silently running
-    # forge build and hiding its output.
     if package_path.is_file() and hardhat_config is not None:
         try:
             package = json.loads(package_path.read_text(encoding="utf-8"))
@@ -3642,16 +3643,70 @@ def _run_project_build(config, root):
     kind = str(project.get("kind") or "generic")
 
     if kind in {"foundry", "mixed-foundry-vyper"}:
-        print()
-        print("LOWKEY BUILD")
-        print("============")
-        print("Build system : forge build")
-        print(f"Project      : {root}")
-        print("Status       : running...")
-        code = run_foundry(["build"], capture=False)
-        if code == 0:
+        result = run_foundry(["build"], capture=True)
+        if result.code == 0:
+            print()
+            print("LOWKEY BUILD")
+            print("============")
+            print("Build system : forge build")
+            print(f"Project      : {root}")
             print("Status       : complete")
-        return code
+            return 0
+
+        first_output = _format_build_failure(
+            getattr(result, "text", None) or getattr(result, "output", None) or result
+        )
+        dependency_failure = bool(re.search(
+            r"(source\s+.+not\s+found|file\s+.+not\s+found|could\s+not\s+resolve|import\s+.+not\s+found|"
+            r"no\s+such\s+file|library\s+.+not\s+found)",
+            first_output,
+            re.I,
+        ))
+
+        if dependency_failure:
+            for command in _foundry_native_bootstrap_commands(root):
+                try:
+                    print(f"INFO  build bootstrap: {' '.join(command)}")
+                    bootstrap = subprocess.run(
+                        command,
+                        cwd=str(root),
+                        capture_output=True,
+                        text=True,
+                    )
+                except OSError as exc:
+                    print(f"Warning: build bootstrap failed to start: {exc}", file=sys.stderr)
+                    continue
+
+                bootstrap_output = (bootstrap.stdout or "") + (bootstrap.stderr or "")
+                if bootstrap.returncode != 0:
+                    print(
+                        f"Warning: build bootstrap {' '.join(command)} failed:\n"
+                        f"{_format_build_failure(bootstrap_output)}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(f"PASS  build bootstrap: {' '.join(command)}")
+
+                retry = run_foundry(["build"], capture=True)
+                if retry.code == 0:
+                    print()
+                    print("LOWKEY BUILD")
+                    print("============")
+                    print("Build system : forge build")
+                    print(f"Project      : {root}")
+                    print("Status       : complete")
+                    return 0
+
+                retry_output = _format_build_failure(
+                    getattr(retry, "text", None) or getattr(retry, "output", None) or retry
+                )
+                first_output = retry_output
+
+        print(
+            "Build diagnostics:\n" + first_output,
+            file=sys.stderr,
+        )
+        return result.code
 
     commands = {
         "hardhat": ["npx", "hardhat", "compile"],
