@@ -2960,12 +2960,72 @@ LOCAL_LAB_SCRIPTS = (
     "script/DeployLocal.s.sol",
 )
 
-def discover_local_lab_script(root="."):
+def _local_lab_script_candidates(root, requested=None):
+    """Discover project-native deployment entry points across arbitrary Foundry layouts."""
+    root = Path(audit_context.foundry_project_root(root) or root).resolve()
+    script_root = root / "script"
+    if not script_root.is_dir():
+        return []
+
+    wanted = str(requested or "").strip().lower()
+    candidates = []
+    for path in sorted(script_root.rglob("*.s.sol")):
+        relative = path.relative_to(root).as_posix()
+        lowered = relative.lower()
+        basename = path.name.lower()
+
+        if basename.startswith(("lowkey", "base.")):
+            continue
+        if any(part.lower() in {"helpers", "interfaces", "libraries"} for part in path.relative_to(script_root).parts[:-1]):
+            continue
+
+        try:
+            source = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        if not re.search(r"(?m)\bfunction\s+run\s*\([^)]*\)\s+(?:external|public)", source):
+            continue
+        if not re.search(r"\b(?:startBroadcast|broadcast|deployCode|create2|new\s+[A-Za-z_])\b", source):
+            continue
+
+        score = 0
+        compact = re.sub(r"[^a-z0-9]", "", basename)
+        if "deploy" in compact:
+            score += 120
+        if "local" in compact:
+            score += 140
+        if "bootstrap" in compact or "setup" in compact:
+            score += 80
+        if "anvil" in compact:
+            score += 50
+        if wanted:
+            wanted_compact = re.sub(r"[^a-z0-9]", "", wanted)
+            if wanted_compact and wanted_compact in compact:
+                score += 500
+            if re.search(r"\b" + re.escape(str(requested)) + r"\b", source, re.I):
+                score += 700
+
+        number = re.match(r"^(\d+)", basename)
+        if number:
+            score += max(0, 60 - int(number.group(1)))
+
+        candidates.append((-score, relative, str(path)))
+
+    return [item[2] for item in sorted(candidates)]
+
+
+def discover_local_lab_script(root=".", requested=None):
     root = audit_context.foundry_project_root(root) or root
+
     for relative in LOCAL_LAB_SCRIPTS:
         path = os.path.join(root, relative)
         if os.path.isfile(path):
             return path
+
+    discovered = _local_lab_script_candidates(root, requested)
+    if discovered:
+        return discovered[0]
 
     generated = ensure_confidence_pool_lab_script(root)
     if generated:
@@ -3824,10 +3884,42 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         return fail(f"Error: local lab deployment failed.\n{tail}", result.code)
 
     target = parse_lab_marker(output)
+    selected_record = None
+
     if not target:
-        return fail("Error: local lab adapter deployed, but it did not report LOWKEY_TARGET.")
+        deployments = discover_deployments(root)
+        if requested:
+            selected_record = next(
+                (
+                    item for item in deployments
+                    if str(item.get("contract") or "").lower() == str(requested).lower()
+                ),
+                None,
+            )
+        if selected_record is None and deployments:
+            selected_record = deployments[0]
+        if selected_record is not None:
+            target = selected_record.get("address")
+
+    if not target:
+        matches = re.findall(
+            r"(?i)\b(?:Contract Address|Deployed to)\s*:?\s*(0x[0-9a-fA-F]{40})",
+            output or "",
+        )
+        target = matches[-1] if matches else None
+
+    if not target:
+        return fail(
+            "Error: local lab script ran, but Lowkey could not identify a deployed application target. "
+            "The project may require multiple deployment/configuration steps; "
+            "use 'lk lab <Contract>' to target a specific built contract."
+        )
 
     system = parse_lab_system(output)
+    if selected_record:
+        system.setdefault("deployed_contract", target)
+        if selected_record.get("contract"):
+            system.setdefault("deployed_contract_name", selected_record["contract"])
     effective_target = target
     if system:
         # A system adapter may expose multiple live contracts. When it provides a
@@ -3862,6 +3954,13 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     config["target_contract"] = None
     artifact = auto_abi_path(effective_target, config)
     contract = config.get("target_contract") or "auto-detected"
+    if selected_record and selected_record.get("contract"):
+        contract = str(selected_record["contract"])
+        for candidate_path in local_artifact_paths(root):
+            candidate_artifact = read_artifact(candidate_path) or {}
+            if artifact_contract_name(candidate_path, candidate_artifact).lower() == contract.lower():
+                artifact = candidate_path
+                break
 
     config["actor"] = "lab-deployer"
     config.setdefault("wallets", {})["lab-deployer"] = {
@@ -4059,6 +4158,16 @@ def run_lab(config,args):
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
 
+    # A clean checkout should be enough. Build before reading artifacts so the
+    # lab does not depend on a manual "lk build" step.
+    if kind in {"foundry", "mixed-foundry-vyper"}:
+        build_code = _run_project_build(config, root)
+        if build_code != 0:
+            return fail(
+                "Error: project build failed; Lowkey will not deploy stale or partial artifacts.",
+                build_code,
+            )
+
     # Vyper projects do not have Forge artifacts. Build the project's own Vyper
     # sources before target discovery so lk lab never falls back to stale/test-only
     # artifacts from another phase.
@@ -4082,7 +4191,7 @@ def run_lab(config,args):
         return stop_project_anvil(root)
 
     requested = str(args[0]).strip() if args else None
-    script = discover_local_lab_script(root)
+    script = discover_local_lab_script(root, requested)
 
     # Known upgradeable ConfidencePool systems require a real local harness:
     # implementation-only deployment leaves initialize() unset and produces a
@@ -4107,11 +4216,24 @@ def run_lab(config,args):
 
     rpc = effective_rpc(config)
     info = anvil_rpc_info(config)
-    if not info and not config.get("rpc"):
-        info = ensure_project_anvil(config, root)
-        rpc = effective_rpc(config)
+
+    # "lk lab" is always local. A stale remote/custom RPC must not prevent a
+    # disposable Anvil from being created for the current project.
     if config.get("rpc") and not info:
-        return fail("Error: the configured RPC is not an Anvil node.")
+        print(
+            f"Configured RPC {config.get('rpc')} is not an Anvil node; "
+            "lk lab will use a disposable local Anvil."
+        )
+        config["rpc"] = None
+        rpc = None
+        info = None
+
+    if not info:
+        info = ensure_project_anvil(config, root)
+        rpc = info.get("url") if isinstance(info, dict) else effective_rpc(config)
+        if rpc:
+            config["rpc"] = rpc
+
     if not rpc or not info:
         return fail("Error: no local Anvil detected and Lowkey could not start one.")
 
