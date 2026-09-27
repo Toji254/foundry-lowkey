@@ -3323,6 +3323,63 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print("Ready   : lk changes <function> ... | lk trace")
     return 0
 
+def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
+    """Deploy an ABI-bearing artifact directly with cast on local EVM nodes."""
+    if not artifact_is_deployable(artifact):
+        return None, "artifact has no deployable bytecode"
+
+    bytecode = artifact.get("bytecode")
+    creation = bytecode.get("object") if isinstance(bytecode, dict) else bytecode
+    creation = str(creation or "").strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]+", creation):
+        return None, "artifact bytecode is not valid hex"
+
+    values = []
+    for index, param in enumerate(constructor_inputs or [], 1):
+        label = param.get("name") or f"arg{index}"
+        ptype = canonical_type(param)
+        try:
+            value = input(f"Constructor {label} ({ptype}): ").strip()
+        except EOFError:
+            return None, "local lab cancelled"
+        if not value:
+            return None, f"constructor argument '{label}' is required"
+        values.append(value)
+
+    command = [
+        "cast", "send",
+        "--rpc-url", rpc,
+        "--unlocked", "--from", accounts[0],
+        "--create", creation,
+    ]
+    if constructor_inputs:
+        signature = "constructor(" + ",".join(canonical_type(item) for item in constructor_inputs) + ")"
+        command.append(signature)
+        command.extend(values)
+
+    result = subprocess.run(
+        command,
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "cast deployment failed").strip()
+        return None, detail[-1200:]
+
+    tx_match = re.findall(r"0x[0-9a-fA-F]{64}", result.stdout or "")
+    if not tx_match:
+        return None, "deployment returned no transaction hash"
+    tx_hash = tx_match[-1]
+
+    receipt = run_cast(["receipt", tx_hash, "contractAddress", "--rpc-url", rpc], config={}, capture=True)
+    raw = str(receipt.text if isinstance(receipt, CommandResult) else receipt or "")
+    address_match = re.findall(r"0x[0-9a-fA-F]{40}", raw)
+    if not address_match:
+        return None, "deployment succeeded but no contract address was returned"
+    return address_match[-1], None
+
+
 def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     candidate = discover_generic_lab_contract(root, requested)
     if not candidate:
@@ -3347,31 +3404,29 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     print("Mode    : generic artifact deployment")
 
     values = []
-    for index, param in enumerate(constructor_inputs, 1):
-        label = param.get("name") or f"arg{index}"
-        ptype = canonical_type(param)
-        try:
-            value = input(f"Constructor {label} ({ptype}): ").strip()
-        except EOFError:
-            return fail("Local lab cancelled.")
-        if not value:
-            return fail(f"Constructor argument '{label}' is required.")
-        values.append(value)
-
     print(f"Action  : deploying {contract}...")
-    create_args = ["create", fqn]
-    if values:
-        create_args.extend(["--constructor-args", *values])
-    create_args.extend(["--rpc-url", rpc, "--private-key", key, "--broadcast"])
-    result = run_foundry(create_args, capture=True)
-    output = result.text
-    if result.code != 0:
-        tail = "\n".join(output.splitlines()[-20:]) if output else "forge create failed"
-        return fail(f"Error: generic lab deployment failed.\n{tail}", result.code)
+    project = project_tools.detect_project(root) if project_tools is not None else {}
+    kind = str(project.get("kind") or ("foundry" if (Path(root) / "foundry.toml").is_file() else "generic"))
 
-    target = parse_deployed_address(output)
-    if not target:
-        return fail("Error: deployment succeeded, but Lowkey could not read the deployed address.")
+    if kind in {"foundry", "mixed-foundry-vyper"}:
+        create_args = ["create", fqn]
+        if values:
+            create_args.extend(["--constructor-args", *values])
+        create_args.extend(["--rpc-url", rpc, "--private-key", key, "--broadcast"])
+        result = run_foundry(create_args, capture=True)
+        output = result.text
+        if result.code != 0:
+            tail = "\n".join(output.splitlines()[-20:]) if output else "forge create failed"
+            return fail(f"Error: generic lab deployment failed.\n{tail}", result.code)
+        target = parse_deployed_address(output)
+        if not target:
+            return fail("Error: deployment succeeded, but Lowkey could not read the deployed address.")
+    else:
+        # Non-Foundry artifact deployment uses cast directly. The same command
+        # path works for Hardhat/Brownie/Vyper artifacts on a local EVM node.
+        target, reason = _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs)
+        if not target:
+            return fail(f"Error: generic local deployment failed. {reason or ''}".strip(), 1)
 
     has_initializer = artifact_has_initializer(artifact)
     if has_initializer:
@@ -3412,7 +3467,7 @@ def run_lab(config,args):
 
     root = audit_context.foundry_project_root()
     if not root:
-        return fail("Error: this command must be run inside a Foundry project.")
+        return fail("Error: Lowkey could not resolve the current project root.")
 
     if args and args[0].lower() == "stop":
         return stop_project_anvil(root)
