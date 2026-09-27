@@ -100,6 +100,14 @@ class AuditEngineTests(unittest.TestCase):
             self.assertEqual(brief["candidate"]["impact"], "high")
             self.assertEqual(brief["poc_file"], "test/Poc_reentrancy_eth.t.sol")
 
+    def test_generate_poc_safe_address_literal(self):
+        target = "0xa51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0"
+        rendered = audit_engine._solidity_address_literal(target)
+        self.assertEqual(
+            rendered,
+            "address(uint160(0x00a51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0))",
+        )
+
     def test_run_source_triage_handles_relative_root(self):
         from tempfile import TemporaryDirectory
 
