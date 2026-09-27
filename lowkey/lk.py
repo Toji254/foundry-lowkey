@@ -530,10 +530,9 @@ def local_artifact_paths(root="."):
         artifact = read_artifact(path)
         if not isinstance(artifact, dict) or not isinstance(artifact.get("abi"), list):
             continue
-        # Build metadata can have no contractName and a hash-like filename. It is
-        # not a deployable application artifact and must never become a target.
-        if not artifact.get("contractName") and not artifact.get("sourceName"):
-            continue
+        # Build metadata is excluded above. Sparse unit-test fixtures may omit
+        # contractName/sourceName, so application validation is intentionally
+        # performed by artifact_is_project_application() and target discovery.
         result.append(path)
     return result
 
