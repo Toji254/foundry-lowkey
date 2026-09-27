@@ -334,8 +334,99 @@ def _human_finding(finding: dict, number: int, total: int, project_root: Path) -
     print(f"\nNext audit move:\n  {guidance['next']}")
 
 
-def _summary(payload: dict, project_root: Path | None = None) -> None:
+def _source_language_counts(root: Path) -> dict[str, int]:
+    """Count first-party contract sources so the report can state its scope."""
+    excluded = {
+        ".git", ".audit", ".venv", "venv", "node_modules", "lib", "vendor",
+        "build", "out", "dist", "cache", "script", "scripts", "test", "tests",
+        "fixture", "fixtures", "mock", "mocks",
+    }
+    counts = {"Solidity": 0, "Vyper": 0}
+    for suffix, language in ((".sol", "Solidity"), (".vy", "Vyper")):
+        for path in root.rglob(f"*{suffix}"):
+            try:
+                parts = {part.lower() for part in path.relative_to(root).parts}
+            except ValueError:
+                continue
+            if parts & excluded:
+                continue
+            counts[language] += 1
+    return counts
+
+
+def _target_scope(root: Path) -> dict[str, str | int | None]:
+    """Describe the active target and whether Slither coverage is explicit."""
+    scope: dict[str, str | int | None] = {
+        "target": None,
+        "target_language": None,
+        "solidity_sources": 0,
+        "vyper_sources": 0,
+        "coverage": "project-level; target coverage not confirmed",
+    }
+    counts = _source_language_counts(root)
+    scope["solidity_sources"] = counts["Solidity"]
+    scope["vyper_sources"] = counts["Vyper"]
+
+    try:
+        context = audit_context.load(root)
+    except Exception:
+        context = {}
+    target = context.get("target", {}) if isinstance(context, dict) else {}
+    if isinstance(target, dict):
+        name = str(target.get("contract") or "").strip()
+        if name:
+            scope["target"] = name
+
+    target_name = str(scope["target"] or "")
+    if target_name:
+        matches: list[str] = []
+        excluded = {
+            ".git", ".audit", ".venv", "venv", "node_modules", "lib", "vendor",
+            "build", "out", "dist", "cache", "script", "scripts", "test", "tests",
+            "fixture", "fixtures", "mock", "mocks",
+        }
+        for suffix, language in ((".sol", "Solidity"), (".vy", "Vyper")):
+            candidate = (root / target_name).with_suffix(suffix)
+            if candidate.is_file():
+                matches.append(language)
+            for path in root.rglob(f"{target_name}{suffix}"):
+                try:
+                    parts = {part.lower() for part in path.relative_to(root).parts}
+                except ValueError:
+                    continue
+                if parts & excluded:
+                    continue
+                matches.append(language)
+        unique = list(dict.fromkeys(matches))
+        if len(unique) == 1:
+            scope["target_language"] = unique[0]
+            if unique[0] == "Solidity":
+                scope["coverage"] = "Solidity target is compatible with this Slither run"
+            else:
+                scope["coverage"] = "Vyper target coverage is not confirmed by this Slither run"
+
+    return scope
+
+
+def _print_scope(scope: dict[str, str | int | None]) -> None:
+    print("\nAnalysis scope")
+    print("-" * 56)
+    print(f"  Target                  : {scope.get('target') or 'not recorded'}")
+    print(f"  Target language         : {scope.get('target_language') or 'not identified'}")
+    print(f"  Solidity sources found  : {scope.get('solidity_sources', 0)}")
+    print(f"  Vyper sources found     : {scope.get('vyper_sources', 0)}")
+    print(f"  Slither coverage        : {scope.get('coverage')}")
+    print("  Note                    : source counts exclude tests, mocks, scripts,")
+    print("                            dependencies, and generated/build directories.")
+
+
+def _summary(
+    payload: dict,
+    project_root: Path | None = None,
+    scope: dict[str, str | int | None] | None = None,
+) -> None:
     project_root = (project_root or Path.cwd()).resolve()
+    scope = scope or _target_scope(project_root)
     results = payload.get("results")
     if not isinstance(results, dict):
         results = {}
@@ -351,12 +442,18 @@ def _summary(payload: dict, project_root: Path | None = None) -> None:
     print("\n" + "=" * 56)
     print("LOWKEY STATIC ANALYSIS REPORT — SLITHER")
     print("=" * 56)
-    print(f"Findings discovered: {len(detectors)}")
+    _print_scope(scope)
+    print(f"\nFindings reported by Slither: {len(detectors)}")
 
     if not detectors:
-        print("\nNo static-analysis findings were reported.")
-        print("That means Slither found no matching detector result in this run.")
-        print("It does not prove the contract is secure.")
+        print("\nNo Slither detector findings were reported.")
+        print("This means Slither returned no matching detector result in this run.")
+        if scope.get("target_language") == "Vyper":
+            print("IMPORTANT: The active target is Vyper, so this is NOT a clean")
+            print("security result for the target. Lowkey could not confirm that")
+            print("the Vyper target was analyzed by Slither.")
+        else:
+            print("It does not prove the contract is secure.")
 
     if detectors:
         print("\nFinding summary:")
