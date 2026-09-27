@@ -65,6 +65,34 @@ class LowkeyCastTests(unittest.TestCase):
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
 
+    def test_lab_numeric_grouping_is_normalized(self):
+        self.assertEqual(
+            lk._normalize_human_numeric_input("1,000,000", "uint256", "limit"),
+            "1000000",
+        )
+        self.assertEqual(
+            lk._normalize_human_numeric_input("1,000 ETH", "uint256", "amount"),
+            "1000000000000000000",
+        )
+
+    def test_lab_wizard_handles_fixed_and_nested_arrays_generically(self):
+        config = {"wallets": {}}
+        accounts = ["0x" + "1" * 40]
+
+        fixed = {"name": "values", "type": "uint256[2]"}
+        with patch("builtins.input", side_effect=["1,000", "2_000"]):
+            rendered = lk._lab_prompt_value(
+                config, accounts, "Example", fixed, path="params[1]"
+            )
+        self.assertEqual(rendered, "[1000,2000]")
+
+        nested = {"name": "matrix", "type": "string[][]"}
+        with patch("builtins.input", side_effect=["1", "2", "alpha", "beta"]):
+            rendered = lk._lab_prompt_value(
+                config, accounts, "Example", nested, path="params[2]"
+            )
+        self.assertEqual(rendered, '[["alpha","beta"]]')
+
     def test_tuple_canonicalization(self):
         self.assertEqual(
             lk.canonical_type({

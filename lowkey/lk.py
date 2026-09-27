@@ -4243,20 +4243,36 @@ def _print_numeric_unit_reference(label, ptype):
 
 
 def _normalize_human_numeric_input(value, ptype, label=''):
-    text = str(value or '').strip().replace(' ETH', ' ether').replace(' eth', ' ether')
-    lowered = str(label or '').lower().replace('_', '')
-    is_eth_amount = any(word in lowered for word in (
-        'amount', 'value', 'deposit', 'withdraw', 'payment', 'fee',
-        'collateral', 'refund', 'reward', 'stake', 'unstake', 'proceeds',
-    )) and not any(word in lowered for word in ('price', 'rate', 'ratio', 'scale'))
-    if is_eth_amount and re.fullmatch(r'\d+(?:\.\d+)?\s*(?:ether|gwei|wei)', text, re.I):
-        return normalize_numeric_argument(text, ptype)
+    if not (str(ptype).startswith('uint') or str(ptype).startswith('int')):
+        return value
+
+    raw = str(value or '').strip()
+    text = raw.replace(' ETH', ' ether').replace(' eth', ' ether')
+
+    # Human-friendly grouping is presentation, not part of a Solidity integer.
+    # Accept commas and underscores between digits while preserving hex values.
+    grouped = re.sub(r'(?<=\d)[,_](?=\d)', '', text)
+
+    unit_match = re.fullmatch(
+        r'([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|ether)',
+        grouped,
+        re.I,
+    )
+    if unit_match:
+        return normalize_numeric_argument(grouped, ptype)
+
+    if re.fullmatch(r'(?:0x[0-9a-fA-F]+|[-+]?[0-9]+(?:\.[0-9]+)?)', grouped):
+        return grouped
+
     return value
+
 
 
 def _lab_address_choices(config, accounts):
     choices = []
 
+    # Only expose addresses that are actually local actors or explicitly named
+    # wallet profiles. Do not leak stale targets from another project.
     for index, address in enumerate(accounts or []):
         if is_address(address):
             choices.append((f"anvil:{index}", str(address)))
@@ -4264,10 +4280,6 @@ def _lab_address_choices(config, accounts):
     for name, entry in (config.get("wallets", {}) or {}).items():
         if isinstance(entry, dict) and is_address(entry.get("address")):
             choices.append((str(name), str(entry["address"])))
-
-    for name, address in (config.get("targets", {}) or {}).items():
-        if is_address(address):
-            choices.append((str(name), str(address)))
 
     seen = set()
     result = []
@@ -4293,57 +4305,65 @@ def _lab_constructor_default(contract, label, ptype):
         if name in {"version", "poolversion"}:
             return "v1"
 
-    if ptype.startswith(("uint", "int")):
-        if any(x in name for x in ("numtoken", "tokencount", "count")):
-            return "2"
-
-    if ptype.endswith("[]"):
-        return "[]"
-
     return None
 
 
-def _lab_constructor_meaning(label, ptype):
-    name = str(label or "").lower()
+def _lab_array_parts(param):
+    raw_type = str(param.get("type") or "")
+    match = re.fullmatch(r"(.+?)\[(\d*)\]", raw_type)
+    if not match:
+        return None, None
+    base_type = match.group(1)
+    length = None if match.group(2) == "" else int(match.group(2))
+    return base_type, length
 
-    if ptype == "address":
-        if "vault" in name:
-            return "Address of the Vault contract the pool will use."
-        if "runner" in name:
-            return "Address of the UpdateWeightRunner contract."
-        return "Contract or account address."
 
-    if ptype == "bool":
+def _lab_constructor_meaning(label, ptype, param=None):
+    internal_type = str((param or {}).get("internalType") or "")
+    normalized = str(ptype or "")
+
+    if normalized == "address":
+        if "payable" in internal_type:
+            return "Ethereum address allowed to receive ETH."
+        if internal_type.startswith("contract "):
+            return "Address of the contract declared by this parameter."
+        return "Ethereum address. Lowkey shows known local actor addresses."
+
+    if normalized == "bool":
         return "Boolean flag: true or false."
 
-    if ptype == "string":
+    if normalized == "string":
         return "Text value."
 
-    if ptype.startswith("uint"):
-        return "Unsigned integer. Lowkey accepts plain decimal values and supported numeric units."
+    if normalized.startswith(("uint", "int")):
+        return "Integer value. Commas and underscores are accepted as visual separators; ETH/gwei/wei units are supported."
 
-    if ptype.startswith("int"):
-        return "Signed integer. Lowkey accepts plain decimal values and supported numeric units."
+    if normalized == "bytes":
+        return "Dynamic bytes. Enter hex, for example 0x1234."
 
-    if ptype == "string[][]":
-        return "Nested text array. For QuantAMM poolDetails, each row is metadata: category, name, value, extra."
+    if normalized.startswith("bytes"):
+        return "Fixed-size bytes value. Enter hex with the required byte length."
 
-    if ptype.endswith("[]"):
-        return f"Array of {ptype[:-2]} values."
+    if normalized.startswith("("):
+        return "Structured tuple. Lowkey expands its named fields below."
 
-    if ptype.startswith("("):
-        return "Structured tuple. Lowkey expands the tuple into its individual fields."
+    base_type, length = _lab_array_parts(param or {})
+    if base_type is not None:
+        if length is None:
+            return f"Dynamic array of {base_type} values."
+        return f"Fixed array of {base_type} values with exactly {length} item(s)."
 
-    return f"ABI value of type {ptype}."
+    return f"ABI value of type {normalized}."
 
 
-def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False, default=None):
+def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False, default=None, param=None):
     print(f"  Field     : {label}")
     print(f"  Type      : {ptype}")
-    print(f"  Meaning   : {_lab_constructor_meaning(label, ptype)}")
+    print(f"  Meaning   : {_lab_constructor_meaning(label, ptype, param)}")
 
     if ptype.startswith(("uint", "int")):
         _print_numeric_unit_reference(label, ptype)
+        print("  Input tip : commas/underscores are accepted in integers, e.g. 1,000,000.")
 
     if ptype == "address":
         choices = _lab_address_choices(config, accounts)
@@ -4388,57 +4408,43 @@ def _lab_prompt_value(config, accounts, contract, param, path="root", nested=Fal
     raw_type = str(param.get("type") or "")
     label = str(param.get("name") or path)
 
-    if raw_type.endswith("[]"):
+    # Handle dynamic and fixed arrays recursively from ABI metadata.
+    base_type, fixed_length = _lab_array_parts(param)
+    if base_type is not None:
         element = dict(param)
-        element["type"] = raw_type[:-2]
+        element["type"] = base_type
 
         print()
         print(f"{path}  {label}")
         print(f"  Type      : {canonical_type(param)}")
-        print(f"  Meaning   : {_lab_constructor_meaning(label, canonical_type(param))}")
+        print(f"  Meaning   : {_lab_constructor_meaning(label, canonical_type(param), param)}")
 
-        if canonical_type(param) == "string[][]" and label.lower() in {
-            "pooldetails", "pool_details", "details"
-        }:
-            print("  Structure : each row = [category, name, value, extra]")
-            print("  Default   : []")
-            print("  Enter 0   : no metadata rows")
+        if fixed_length is None:
+            raw_count = input("  Number of items [0]: ").strip()
+            count = 0 if not raw_count else int(raw_count)
+        else:
+            count = fixed_length
+            print(f"  Length    : fixed at {count}")
 
-        raw_count = input("  Number of items [0]: ").strip()
-        count = 0 if not raw_count else int(raw_count)
         if count < 0:
             raise ValueError(f"{label}: item count cannot be negative")
 
         values = []
-        for i in range(count):
-            child_path = f"{path}[{i}]"
-
-            if canonical_type(param) == "string[][]" and label.lower() in {
-                "pooldetails", "pool_details", "details"
-            }:
-                print()
-                print(f"  Metadata row {i + 1}")
-                print("  ----------------")
-                fields = []
-                for field_name in ("category", "name", "value", "extra"):
-                    child = {"type": "string", "name": field_name}
-                    fields.append(
-                        _lab_prompt_value(
-                            config, accounts, contract, child,
-                            path=f"row[{i}].{field_name}", nested=True
-                        )
-                    )
-                values.append("[" + ",".join(fields) + "]")
-            else:
-                values.append(
-                    _lab_prompt_value(
-                        config, accounts, contract, element,
-                        path=child_path, nested=True
-                    )
+        for index in range(count):
+            values.append(
+                _lab_prompt_value(
+                    config,
+                    accounts,
+                    contract,
+                    element,
+                    path=f"{path}[{index}]",
+                    nested=True,
                 )
+            )
 
         return "[" + ",".join(values) + "]"
 
+    # Handle structs/tuples recursively using the ABI component metadata.
     if raw_type.startswith("tuple"):
         components = param.get("components") or []
         if not isinstance(components, list):
@@ -4454,8 +4460,12 @@ def _lab_prompt_value(config, accounts, contract, param, path="root", nested=Fal
             child_label = component.get("name") or f"field{index}"
             values.append(
                 _lab_prompt_value(
-                    config, accounts, contract, component,
-                    path=f"{path}.{child_label}", nested=True
+                    config,
+                    accounts,
+                    contract,
+                    component,
+                    path=f"{path}.{child_label}",
+                    nested=True,
                 )
             )
 
@@ -4463,14 +4473,21 @@ def _lab_prompt_value(config, accounts, contract, param, path="root", nested=Fal
 
     ptype = canonical_type(param)
     default = _lab_constructor_default(contract, label, ptype)
+
     print()
     return _lab_scalar_value(
-        config, accounts, contract, label, ptype,
-        nested=nested, default=default
+        config,
+        accounts,
+        contract,
+        label,
+        ptype,
+        nested=nested,
+        default=default,
+        param=param,
     )
 
 
-def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
+def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_inputs):
     """Deploy an ABI-bearing artifact directly with cast on local EVM nodes."""
     if not artifact_is_deployable(artifact):
         return None, "artifact has no deployable bytecode"
@@ -4481,19 +4498,13 @@ def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
     if not re.fullmatch(r"0x[0-9a-fA-F]+", creation):
         return None, "artifact bytecode is not valid hex"
 
-    config = {}
-    try:
-        config = load_config()
-    except Exception:
-        pass
-
     contract = artifact.get("contractName") or artifact.get("sourceName") or "target"
 
     print()
     print("CONSTRUCTOR WIZARD")
     print("==================")
-    print("Lowkey will expand structs/arrays and suggest local-friendly defaults.")
-    print("Press Enter on an optional array to keep it empty.")
+    print("Lowkey expands structs and arrays from the ABI.")
+    print("Project-specific meanings come from dedicated lab adapters, not the generic deployer.")
     print("")
 
     values = []
@@ -4563,6 +4574,7 @@ def _deploy_artifact_locally(root, rpc, accounts, artifact, constructor_inputs):
 
     return None, "deployment succeeded but no contract address was found in cast output"
 
+
 def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     candidate = discover_generic_lab_contract(root, requested)
     if not candidate:
@@ -4594,7 +4606,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
     # Use one artifact deployment path across Foundry/Hardhat/Brownie/Vyper-on-EVM.
     # It supports constructor prompts instead of assuming a zero-argument contract.
     target, reason = _deploy_artifact_locally(
-        root, rpc, accounts, artifact, constructor_inputs
+        config, root, rpc, accounts, artifact, constructor_inputs
     )
     if not target:
         return fail(
@@ -4963,20 +4975,28 @@ def validate_calldata(value):
     return normalized
 
 def normalize_numeric_argument(value, item_type):
-    text=str(value).strip()
-    match=re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|ether)",text,re.I)
-    if not match or not (item_type.startswith("uint") or item_type.startswith("int")):
+    text = str(value).strip()
+    if not (item_type.startswith("uint") or item_type.startswith("int")):
         return value
+
+    # Accept common human formatting for integer amounts.
+    text = re.sub(r'(?<=\d)[,_](?=\d)', '', text)
+
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|ether)", text, re.I)
+    if not match:
+        return text
+
     try:
-        number=Decimal(match.group(1))
-        unit=match.group(2).lower()
-        scale={"wei":Decimal(1),"gwei":Decimal(10**9),"ether":Decimal(10**18)}[unit]
-        scaled=number*scale
+        number = Decimal(match.group(1))
+        unit = match.group(2).lower()
+        scale = {"wei": Decimal(1), "gwei": Decimal(10**9), "ether": Decimal(10**18)}[unit]
+        scaled = number * scale
         if scaled != scaled.to_integral_value():
             raise ValueError(f"non-integer value '{value}' cannot be passed to {item_type}")
         return str(int(scaled))
     except InvalidOperation as error:
         raise ValueError(f"invalid numeric value '{value}'") from error
+
 
 
 def resolve_argument_aliases(config, function_item, values):
