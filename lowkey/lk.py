@@ -2024,7 +2024,7 @@ def run_test_gen(config):
         if unit in value_expression and " " not in value_expression:
             value_expression=value_expression.replace(unit,f" {unit}")
     test=f'''pragma solidity ^0.8.20;
-import "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 
 contract Exploit_Reproduction is Test {{
     address constant TARGET = {target_literal};
@@ -2032,6 +2032,7 @@ contract Exploit_Reproduction is Test {{
     function test_reproduce() public {{
         uint256 value = {value_expression};
         vm.deal(address(this), value);
+        // forge-lint: disable-next-line low-level-calls
         (bool success, bytes memory data) = TARGET.call{{value: value}}(hex"{calldata}");
         assertTrue(success, string(data));
     }}
