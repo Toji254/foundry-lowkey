@@ -7148,11 +7148,38 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     support_models=_artifact_models(root, include_aux=True)
     if not models:
         print(
-            "Error: Lowkey could not build a contract model. "
-            "For Solidity projects, build the project or expose a supported ABI artifact. "
-            "For Vyper projects, install the matching 'vyper' compiler.",
+            "Error: Lowkey could not build a contract model.",
             file=sys.stderr,
         )
+        if vyper_sources:
+            compiler = _vyper_compiler_command(root)
+            if compiler:
+                print(
+                    "  Vyper compiler was found, but one or more Vyper sources failed compilation.",
+                    file=sys.stderr,
+                )
+                print(
+                    "  Run 'vyper <file.vy>' (or the project's native compile command) to inspect the first compiler error.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "  No Vyper compiler was available from PATH, the project/active virtualenv, or the Python environment.",
+                    file=sys.stderr,
+                )
+                print(
+                    "  Install Vyper in the environment used by Lowkey, then rerun 'lk walkthrough'.",
+                    file=sys.stderr,
+                )
+                print(
+                    "  Official install options include 'pip install vyper', 'uv tool install vyper', or 'pipx install vyper'.",
+                    file=sys.stderr,
+                )
+        elif solidity_sources:
+            print(
+                "  Build the Solidity project or expose a supported ABI artifact before running the walkthrough.",
+                file=sys.stderr,
+            )
         return 2
 
     target,target_contract=_target_from_host(host,config,root,contract,auto)
