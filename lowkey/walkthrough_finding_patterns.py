@@ -549,7 +549,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                 p for p in list((_abi_function(model, name) or {}).get("inputs") or [])
                 if core._canonical_type(p) == "address"
             ]
-            if address_params and re.search(r"\b(?:=|\+=|\-=)\s*[^;\n]*\b(?:token|owner|admin|router|oracle|recipient|receiver|treasury|registry|authority)\b", body, re.I):
+            if address_params and re.search(r"\b(?:token|owner|admin|router|oracle|recipient|receiver|treasury|registry|authority)\w*\s*(?:=|\+=|-=)", body, re.I):
                 results.append(_result(
                     "ZEROADDR-001",
                     _pattern("ZEROADDR-001")["title"],
