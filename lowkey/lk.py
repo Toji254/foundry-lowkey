@@ -3170,7 +3170,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     }
     config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
     config["lab_harness"] = {
-        "type": "test-fixture-state-diff",
+        "type": "test-fixture-full-state",
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
         "state_file": str(state_path),
