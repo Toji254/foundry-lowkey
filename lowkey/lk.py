@@ -3170,6 +3170,8 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
                 f"LowkeyAutoFixtureScript_{safe_name}",
                 "--rpc-url",
                 rpc,
+                "--gas-limit",
+                "1000000000",
             ],
             capture=True,
         )
