@@ -398,6 +398,11 @@ def _project_config(root: str | Path = ".") -> dict[str, Any]:
     config = _config()
     if audit_context is None:
         return config
+    context_path = audit_context.context_path(Path(root))
+    if not context_path.exists():
+        # Unit callers and standalone generator flows may provide an explicit
+        # target without a persisted project context yet.
+        return config
     try:
         context = audit_context.load(Path(root))
     except Exception:
