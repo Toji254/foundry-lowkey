@@ -639,55 +639,135 @@ def _source_edges_for_name(model: ContractModel, function_name: str) -> list[dic
     ]
 
 def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractModel]:
-    """Build models for application sources, plus optional project-local fixtures."""
-    models: list[ContractModel] = []
-    out = root / "out"
-    if not out.is_dir():
-        return models
-    src_prefix = _foundry_src_dir(root).replace("\\", "/").strip("/") or "src"
-    allowed_prefixes = [src_prefix]
-    if include_aux:
-        allowed_prefixes.extend(["test", "script"])
+    """Build project application models from common Solidity/Vyper artifact layouts.
 
-    for path in out.rglob("*.json"):
+    Foundry is preferred when present, but walkthrough does not depend on Foundry's
+    out/ layout. Hardhat/Brownie-style Solidity artifacts and locally compiled Vyper
+    contracts are accepted when their ABI/bytecode can be resolved.
+    """
+    models: list[ContractModel] = []
+    seen: set[tuple[str, str]] = set()
+
+    # Solidity artifacts produced by Foundry, Hardhat, Brownie and similar tools.
+    artifact_paths: list[Path] = []
+    for directory in (
+        root / "out",
+        root / "artifacts",
+        root / "build" / "contracts",
+        root / "build",
+    ):
+        if not directory.is_dir():
+            continue
+        artifact_paths.extend(sorted(directory.rglob("*.json")))
+
+    source_roots: list[Path] = []
+    try:
+        foundry_src = _foundry_src_dir(root)
+    except Exception:
+        foundry_src = "src"
+    for name in (foundry_src, "src", "contracts", "interfaces"):
+        path = root / str(name)
+        if path.is_dir() and path not in source_roots:
+            source_roots.append(path)
+
+    def source_language(path: Path) -> str:
+        return "vyper" if path.suffix.lower() in {".vy", ".vyi"} else "solidity"
+
+    def candidate_sources(name: str, declared: str, artifact_path: Path) -> list[Path]:
+        result: list[Path] = []
+        if declared:
+            candidate = root / declared.lstrip("./")
+            if candidate.is_file():
+                result.append(candidate)
+        # Common artifact-relative paths, e.g. artifacts/contracts/Foo.sol/Foo.json.
+        try:
+            rel = artifact_path.relative_to(root)
+            parts = list(rel.parts)
+        except ValueError:
+            parts = []
+        for marker in ("artifacts", "out", "build"):
+            if marker in parts:
+                tail = parts[parts.index(marker) + 1:]
+                if tail:
+                    if len(tail) >= 2 and tail[-1].lower() == f"{name.lower()}.json":
+                        tail = tail[:-1]
+                    if tail:
+                        candidate = root.joinpath(*tail)
+                        if candidate.is_file():
+                            result.append(candidate)
+        for base in source_roots:
+            for suffix in (".sol", ".vy", ".vyi"):
+                exact = base / f"{name}{suffix}"
+                if exact.is_file():
+                    result.append(exact)
+            if base.is_dir():
+                for path in base.rglob(f"{name}.sol"):
+                    result.append(path)
+                for path in base.rglob(f"{name}.vy"):
+                    result.append(path)
+                for path in base.rglob(f"{name}.vyi"):
+                    result.append(path)
+        dedup: list[Path] = []
+        seen_paths: set[Path] = set()
+        for item in result:
+            resolved = item.resolve()
+            if resolved not in seen_paths:
+                seen_paths.add(resolved)
+                dedup.append(resolved)
+        return dedup
+
+    for path in artifact_paths:
         if "build-info" in path.parts:
             continue
         data = _json_file(path)
-        if not data or not isinstance(data.get("abi"), list):
+        if not isinstance(data, dict) or not isinstance(data.get("abi"), list):
             continue
-
         name = str(data.get("contractName") or path.stem)
         source = str(data.get("sourceName") or "").replace("\\", "/").lstrip("./")
-        if not source:
-            candidates = sorted((root / src_prefix).rglob(f"{name}.sol")) if (root / src_prefix).is_dir() else []
-            if candidates:
-                source = candidates[0].relative_to(root).as_posix()
-
-        if not any(source == prefix or source.startswith(prefix + "/") for prefix in allowed_prefixes):
+        source_path = next(iter(candidate_sources(name, source, path)), None)
+        if not source_path:
             continue
-
-        source_path = root / source
-        if not source_path.is_file():
+        source = source_path.relative_to(root).as_posix()
+        first = source.split("/", 1)[0]
+        allowed = {str(foundry_src).strip("/"), "src", "contracts", "interfaces"}
+        if first not in allowed and not include_aux:
             continue
         try:
             source_text = source_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-
         kind = _source_kind(source_text, name)
-        if kind == "library":
+        if kind in {"library", "abstract", "unknown"}:
+            # A Solidity ABI artifact without a contract declaration is not an
+            # executable application model. Vyper sources use a separate loader.
+            if source_path.suffix.lower() == ".sol":
+                continue
+
+        key = (name.lower(), source.lower())
+        if key in seen:
             continue
+        seen.add(key)
 
         abi = data["abi"]
-        functions = [_signature(x) for x in abi if x.get("type") == "function" and x.get("name")]
-        events = [_signature(x) for x in abi if x.get("type") == "event" and x.get("name")]
+        functions = [
+            _signature(x) for x in abi
+            if x.get("type") == "function" and x.get("name")
+        ]
+        events = [
+            _signature(x) for x in abi
+            if x.get("type") == "event" and x.get("name")
+        ]
         bases: list[str] = []
-        for match in re.finditer(r"\b(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\{", source_text):
+        for match in re.finditer(
+            r"\\b(?:abstract\\s+)?contract\\s+(\\w+)\\s+is\\s+([^{]+)\\{",
+            source_text,
+        ):
             if match.group(1) == name:
-                bases = [re.sub(r"\s+", "", value).split("(")[0] for value in match.group(2).split(",") if value.strip()]
-
-        if kind == "abstract":
-            continue
+                bases = [
+                    re.sub(r"\\s+", "", value).split("(")[0]
+                    for value in match.group(2).split(",")
+                    if value.strip()
+                ]
 
         model = ContractModel(
             name=name,
@@ -697,30 +777,202 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
             storage=data.get("storageLayout") or {},
             bases=bases,
             functions=functions,
-            modifiers=re.findall(r"\bmodifier\s+(\w+)", source_text),
+            modifiers=re.findall(r"\\bmodifier\\s+(\\w+)", source_text),
             structs=_parse_structs(source_text),
             mappings=_parse_mappings(source_text),
             arrays=_parse_arrays(source_text),
             events=events,
-            kind=kind,
+            kind=kind if kind != "unknown" else source_language(source_path),
             function_locations=_function_locations(source_text),
             type_bindings=_type_bindings(source_text),
             imports=_source_imports(source_text),
         )
-        if any(m.name == name and m.source == source for m in models):
-            continue
         models.append(model)
 
+    # Native Vyper compilation path. Vyper itself exposes ABI, bytecode and
+    # storage layout through the CLI; Lowkey keeps the normalized artifact under
+    # .audit so no project files are modified.
+    if shutil.which("vyper"):
+        vy_files: list[Path] = []
+        for base in source_roots + [root / "vyper"]:
+            if not base.is_dir():
+                continue
+            vy_files.extend(sorted(base.rglob("*.vy")))
+        vy_files = list(dict.fromkeys(path.resolve() for path in vy_files))
+        cache_dir = root / ".audit" / "walkthrough" / "vyper"
+        for source_path in vy_files:
+            source = source_path.relative_to(root).as_posix()
+            name = source_path.stem
+            key = (name.lower(), source.lower())
+            if key in seen:
+                continue
+
+            abi_code, abi_out, abi_err = _cmd(
+                ["vyper", "-f", "abi", str(source_path.relative_to(root))],
+                cwd=root, timeout=60,
+            )
+            byte_code, byte_out, byte_err = _cmd(
+                ["vyper", "-f", "bytecode", str(source_path.relative_to(root))],
+                cwd=root, timeout=60,
+            )
+            layout_code, layout_out, layout_err = _cmd(
+                ["vyper", "-f", "layout", str(source_path.relative_to(root))],
+                cwd=root, timeout=60,
+            )
+            if abi_code != 0 or byte_code != 0:
+                continue
+            try:
+                abi = json.loads(abi_out)
+                if not isinstance(abi, list):
+                    continue
+            except json.JSONDecodeError:
+                continue
+            bytecode = (byte_out or "").strip().splitlines()[-1] if byte_out.strip() else ""
+            if not re.fullmatch(r"0x[0-9a-fA-F]+", bytecode):
+                continue
+            layout: dict[str, Any] = {}
+            if layout_code == 0:
+                try:
+                    raw_layout = json.loads(layout_out)
+                    layout = raw_layout if isinstance(raw_layout, dict) else {}
+                except json.JSONDecodeError:
+                    layout = {}
+
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = cache_dir / f"{name}.json"
+            artifact = {
+                "contractName": name,
+                "sourceName": source,
+                "abi": abi,
+                "bytecode": {"object": bytecode},
+                "deployedBytecode": {"object": bytecode},
+                "storageLayout": _normalize_vyper_layout(layout),
+                "language": "Vyper",
+            }
+            try:
+                artifact_path.write_text(json.dumps(artifact, indent=2) + "\\n", encoding="utf-8")
+            except OSError:
+                continue
+
+            seen.add(key)
+            functions = [_signature(x) for x in abi if x.get("type") == "function" and x.get("name")]
+            events = [_signature(x) for x in abi if x.get("type") == "event" and x.get("name")]
+            model = ContractModel(
+                name=name,
+                source=source,
+                artifact=str(artifact_path.relative_to(root)),
+                abi=abi,
+                storage=artifact["storageLayout"],
+                functions=functions,
+                events=events,
+                kind="vyper",
+                function_locations=_vyper_function_locations(source_text := source_path.read_text(encoding="utf-8", errors="replace")),
+                imports=[],
+            )
+            models.append(model)
+
+    # Build source-call semantics after all models are known.
     for model in models:
         source_path = root / model.source
         try:
             source_text = source_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        model.calls = _merge_source_call_edges(root, model, _build_source_calls(model, models, source_text))
-        model.semantics = _function_semantics(model, source_text)
+        if model.kind == "vyper":
+            model.calls = _build_vyper_source_calls(source_text)
+            model.semantics = _vyper_semantics(model, source_text)
+        else:
+            model.calls = _merge_source_call_edges(
+                root, model, _build_source_calls(model, models, source_text)
+            )
+            model.semantics = _function_semantics(model, source_text)
 
     return sorted(models, key=lambda m: (m.name.lower(), m.source))
+
+def _normalize_vyper_layout(layout: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Vyper's layout output into Lowkey's storage-view shape."""
+    raw = layout.get("storage_layout") if isinstance(layout.get("storage_layout"), dict) else layout
+    if not isinstance(raw, dict):
+        return {"storage": [], "types": {}}
+    storage = []
+    for name, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        slot = entry.get("slot", 0)
+        storage.append({
+            "label": str(name),
+            "slot": str(slot),
+            "type": str(entry.get("type") or "unknown"),
+            "offset": int(entry.get("offset", 0) or 0),
+        })
+    return {"storage": storage, "types": {}}
+
+def _vyper_function_locations(source_text: str) -> dict[str, int]:
+    return {
+        str(match.group(1)): source_text.count("\\n", 0, match.start()) + 1
+        for match in re.finditer(r"(?m)^\\s*(?:@[^\\n]+\\n\\s*)*def\\s+([A-Za-z_]\\w*)\\s*\\(", source_text)
+    }
+
+def _build_vyper_source_calls(source_text: str) -> list[dict[str, Any]]:
+    """Capture obvious Vyper external/callback paths without pretending Python syntax is Solidity."""
+    text = _strip_source_comments(source_text, "vyper")
+    edges: list[dict[str, Any]] = []
+    for match in re.finditer(r"(?m)^\\s*([A-Za-z_]\\w*)\\s*=\\s*(?:extcall\\s+)?([A-Za-z_]\\w*)\\(", text):
+        edges.append({
+            "kind": "cross-contract",
+            "from": match.group(1),
+            "to_contract": match.group(2),
+            "to_function": "call",
+            "via": match.group(1),
+            "certainty": "INFERRED",
+        })
+    for match in re.finditer(r"\\braw_call\\s*\\(([^\\n]*)", text):
+        edges.append({
+            "kind": "cross-contract",
+            "from": "<unknown>",
+            "to_contract": "External",
+            "to_function": "raw_call",
+            "via": "raw_call",
+            "line": text.count("\\n", 0, match.start()) + 1,
+            "certainty": "INFERRED",
+        })
+    return edges
+
+def _vyper_semantics(model: ContractModel, source_text: str) -> dict[str, dict[str, Any]]:
+    """Extract safe, presentation-only Vyper function facts."""
+    text = _strip_source_comments(source_text, "vyper")
+    semantics: dict[str, dict[str, Any]] = {}
+    for match in re.finditer(r"(?m)^\\s*def\\s+([A-Za-z_]\\w*)\\s*\\(([^)]*)\\)", text):
+        name = match.group(1)
+        line = text.count("\\n", 0, match.start()) + 1
+        start = match.end()
+        next_fn = re.search(r"(?m)^\\s*def\\s+", text[start:])
+        end = start + next_fn.start() if next_fn else len(text)
+        body = text[start:end]
+        params = []
+        for chunk in (match.group(2) or "").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            pname = chunk.split(":", 1)[0].strip().lstrip("*")
+            if pname:
+                params.append({"name": pname, "source": chunk})
+        guards = [
+            "assert(" + " ".join(expr.split()) + ")"
+            for expr in re.findall(r"(?m)^\\s*assert\\s+(.+)$", body)
+        ]
+        writes = re.findall(r"self\\.([A-Za-z_]\\w*)\\s*(?:\\+=|-=|\\*=|/=|:=|=)", body)
+        semantics[name + "()"] = {
+            "reads": [],
+            "writes": list(dict.fromkeys(writes))[:12],
+            "guards": guards[:12],
+            "creates": [],
+            "emits": [],
+            "external_calls": [],
+            "inputs": params,
+            "line": line,
+        }
+    return semantics
 
 def _parse_structs(source: str) -> dict[str, list[Field]]:
     result: dict[str, list[Field]] = {}
@@ -3296,9 +3548,12 @@ def _diagnose_failed_call(
     models: list[ContractModel],
     actor_address: str | None = None,
 ) -> tuple[str | None, list[str]]:
-    arg_origin, arg_lines = _diagnose_argument_contracts(
-        rpc, step, model, models, caller_address=actor_address
-    )
+    try:
+        arg_origin, arg_lines = _diagnose_argument_contracts(
+            rpc, step, model, models, caller_address=actor_address
+        )
+    except Exception as exc:
+        arg_origin, arg_lines = None, [f"dependency diagnosis unavailable: {exc}"]
     origin = arg_origin
     diagnostics = list(arg_lines)
 
@@ -3310,7 +3565,8 @@ def _diagnose_failed_call(
     diagnostics.extend(zero_lines)
     source_lines = _source_guard_lines(model, step)
     diagnostics.extend(source_lines[:8])
-    diagnostics = _failure_flow_summary(root, model, step, origin)
+    flow_lines = _failure_flow_summary(root, model, step, origin)
+    diagnostics.extend(flow_lines)
 
     try:
         code, calldata, err = _cmd(["cast", "calldata", step.function, *[_cli_arg(x) for x in step.args]], timeout=6)
@@ -3784,9 +4040,20 @@ def _trace_tree(rpc: str, tx: str) -> dict[str, Any] | None:
 
 
 def _artifact_runtime_code(root: Path, model: ContractModel) -> str:
-    data=_json_file(root/model.artifact) or {}
-    bytecode=data.get("deployedBytecode")
-    return str(bytecode.get("object") if isinstance(bytecode,dict) else bytecode or "")
+    data = _json_file(root / model.artifact) or {}
+    bytecode = data.get("deployedBytecode")
+    if isinstance(bytecode, dict):
+        value = bytecode.get("object")
+    else:
+        value = bytecode
+    # Hardhat/Brownie/Vyper artifacts may only expose one bytecode field.
+    if not value:
+        fallback = data.get("runtimeBytecode")
+        if isinstance(fallback, dict):
+            value = fallback.get("object")
+        else:
+            value = fallback
+    return str(value or "")
 
 
 def _runtime_code(rpc: str, address: str) -> str:
@@ -6144,8 +6411,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     args=list(args or [])
     host=host or sys.modules.get("__main__")
     root=Path(getattr(host,"audit_context").foundry_project_root() if host and hasattr(host,"audit_context") else os.getcwd())
-    if not root or not (root/"foundry.toml").is_file():
-        print("Error: 'lk walkthrough' must be run inside a Foundry project.",file=sys.stderr)
+    foundry = (root / "foundry.toml").is_file()
+    vyper_sources = any(root.rglob("*.vy")) if root.is_dir() else False
+    solidity_sources = any(root.rglob("*.sol")) if root.is_dir() else False
+    if not root or not (foundry or vyper_sources or solidity_sources):
+        print("Error: 'lk walkthrough' needs a Solidity/Vyper project with source files.", file=sys.stderr)
         return 2
     test_mode=any(str(x).lower() in {"test", "random"} for x in args) or "--test" in args or "--random" in args
     auto="--auto" in args or "auto" in args
@@ -6179,14 +6449,19 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     archived = _quarantine_generated_replays(root)
     if archived:
         print(f"  refreshed {archived} previous generated walkthrough replay(s)")
-    code,out,err=_forge_build_with_info(root)
-    if code!=0:
-        print(out+err,file=sys.stderr); return code or 1
-
+    if foundry:
+        code,out,err=_forge_build_with_info(root)
+        if code!=0:
+            print(out+err,file=sys.stderr); return code or 1
     models=_artifact_models(root)
     support_models=_artifact_models(root, include_aux=True)
     if not models:
-        print("Error: no project application contracts found under the configured src directory.",file=sys.stderr)
+        print(
+            "Error: Lowkey could not build a contract model. "
+            "For Solidity projects, build the project or expose a supported ABI artifact. "
+            "For Vyper projects, install the matching 'vyper' compiler.",
+            file=sys.stderr,
+        )
         return 2
 
     target,target_contract=_target_from_host(host,config,root,contract,auto)
