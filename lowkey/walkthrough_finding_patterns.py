@@ -946,12 +946,11 @@ def run(
 ) -> tuple[list[PatternObservation], list[core.WalkthroughStory], list[core.Step]]:
     """Run source patterns plus a small set of isolated live probes."""
     observations = scan_project(root, models)
-    stories = []
-    stories.extend(_build_replay_stories(config, actors, targets, seed))
-    stories.extend(_build_initializer_stories(config, actors, targets, seed))
-    stories.extend(_build_deadline_stories(config, actors, targets, seed, core._block_timestamp(rpc)))
-    stories.extend(_build_zero_address_stories(config, actors, targets, seed))
-    stories = stories[:8]
+    replay_stories = _build_replay_stories(config, actors, targets, seed)[:3]
+    initializer_stories = _build_initializer_stories(config, actors, targets, seed)[:1]
+    deadline_stories = _build_deadline_stories(config, actors, targets, seed, core._block_timestamp(rpc))[:2]
+    zero_address_stories = _build_zero_address_stories(config, actors, targets, seed)[:2]
+    stories = replay_stories + initializer_stories + deadline_stories + zero_address_stories
 
     live_steps: list[core.Step] = []
     for story in stories:
