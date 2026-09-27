@@ -5433,13 +5433,14 @@ def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> li
     lines = [
         "",
         _paint("HOW TO READ THIS", BOLD + CYAN, _ansi_enabled(False)),
-        "  ✅ NORMAL       = the contract rejected the call for an explained reason.",
-        "  ⚠️ CHECK THIS   = the chain accepted the action; inspect what changed.",
-        "  ❓ UNKNOWN      = Lowkey could not prove why it failed.",
-        "  🔧 LAB ISSUE    = the test setup looks broken; do not blame the contract yet.",
+        "  ✅ NORMAL          = the contract rejected the call for an explained reason.",
+        "  🟦 EXPECTED ADMIN  = the configured owner/admin performed the action.",
+        "  ⚠️ CHECK THIS      = the chain accepted an action worth inspecting.",
+        "  ❓ UNKNOWN         = Lowkey could not prove why it failed.",
+        "  🔧 LAB ISSUE       = the test setup looks broken; do not blame the contract yet.",
         "",
-        "  Every check is isolated: Lowkey resets the local chain after each probe.",
-        "  The goal is not to collect a pile of 'bugs'. The goal is to find behavior worth investigating.",
+        "  Random probes reset after each call. Stateful stories reset after the whole attack sequence.",
+        "  The goal is not a pile of 'bugs' — it is reproducible behavior worth investigating.",
     ]
     if baseline_notes:
         lines += ["", "  BASELINE"]
@@ -5785,7 +5786,7 @@ def _run_adversarial_test(
 
     print(_paint("LOWKEY // ADVERSARIAL WALKTHROUGH TEST", BOLD + MAGENTA, _ansi_enabled(False)))
     print(f"  system : {len(targets)} live application instance(s)")
-    print("  engine : randomized args/roles/extremes → SEND → trace → diagnose → restore")
+    print("  engine : stateful attack stories + randomized probes → SEND → trace → diagnose → restore")
     print(f"  seed   : {actual_seed}")
     print("  view   : simple — Lowkey highlights NORMAL / CHECK THIS / UNKNOWN / LAB ISSUE")
     print("")
