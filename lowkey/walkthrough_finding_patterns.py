@@ -166,23 +166,31 @@ def _function_blocks(source: str, language: str = "solidity") -> list[tuple[str,
         lines = source.splitlines(True)
         current: tuple[str, int, int, str] | None = None
         body_lines: list[str] = []
+        decorators: list[str] = []
         for index, line in enumerate(lines):
-            match = re.match(r"^([ \t]*)def\s+(\w+)\s*\([^)]*\)\s*:\s*(?:#.*)?$", line.rstrip("\n"))
+            stripped_line = line.strip()
+            match = re.match(r"^([ \\t]*)def\\s+(\\w+)\\s*\\([^)]*\\)\\s*:\\s*(?:#.*)?$", line.rstrip("\\n"))
             if match:
                 if current:
                     name, start, indent, header = current
                     blocks.append((name, start, header, "".join(body_lines)))
-                current = (match.group(2), index + 1, len(match.group(1)), line.rstrip("\n"))
+                header = "\\n".join(decorators + [line.rstrip("\\n")])
+                current = (match.group(2), index + 1, len(match.group(1)), header)
                 body_lines = []
+                decorators = []
                 continue
             if current:
-                if line.strip() and len(line) - len(line.lstrip(" \t")) <= current[2]:
+                if line.strip() and len(line) - len(line.lstrip(" \\t")) <= current[2]:
                     name, start, indent, header = current
                     blocks.append((name, start, header, "".join(body_lines)))
                     current = None
                     body_lines = []
                 else:
                     body_lines.append(line)
+            elif stripped_line.startswith("@"):
+                decorators.append(line.rstrip("\\n"))
+            elif stripped_line:
+                decorators = []
         if current:
             name, start, indent, header = current
             blocks.append((name, start, header, "".join(body_lines)))
