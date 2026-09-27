@@ -1146,7 +1146,21 @@ def run_tx(config,args):
     tx_to=transaction.get("to") or ""
     abi_target=tx_to if is_address(tx_to) else config.get("target")
     abi=load_abi(abi_target,config)
-    print(f"Hash:  {transaction.get('hash',tx_hash)}")
+    tx_hash = transaction.get("hash", tx_hash)
+    root = audit_context.foundry_project_root()
+    receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
+    step = walkthrough.Step(
+        0,
+        str(config.get("actor") or "Caller"),
+        str(config.get("target_contract") or "Transaction"),
+        str(tx_to or config.get("target") or "0x" + "00" * 20),
+        "transaction",
+        [],
+        status="success" if isinstance(receipt, dict) and receipt.get("status") in ("0x1", 1) else "reverted" if receipt else "checking",
+        tx_hash=tx_hash,
+    )
+    walkthrough._write_transaction_evidence(root, rpc or "", step, receipt)
+    print(f"Hash:  {walkthrough._transaction_link(root, tx_hash)}")
     print(f"From:  {apply_labels(transaction.get('from','Unknown'),config)}")
     print(f"To:    {apply_labels(transaction.get('to','Unknown'),config)}")
     value=transaction.get("value","0")
@@ -1330,7 +1344,12 @@ def format_send_summary(output, config, call=None):
     if gas:
         lines.append(f"Gas used:  {gas}")
     if tx_hash:
-        lines.append(f"Tx hash:   {tx_hash}")
+        root = audit_context.foundry_project_root()
+        tx_label = walkthrough._transaction_link(root, tx_hash)
+        lines.append(f"Tx hash:   {tx_label}")
+        evidence = walkthrough._transaction_evidence_path(root, tx_hash)
+        if evidence.is_file():
+            lines.append("Confirm:   Ctrl+Click the tx hash to open Lowkey's on-chain evidence page")
 
     return "\n".join(lines)
 
@@ -1436,6 +1455,19 @@ def run_cast(args,config,capture=False):
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 root=audit_context.foundry_project_root()
                 audit_context.set_latest(root,tx_hash=tx_hash,function=call)
+                rpc = effective_rpc(config)
+                receipt = walkthrough._receipt(rpc, tx_hash) if rpc else None
+                step = walkthrough.Step(
+                    0,
+                    str(config.get("actor") or "Caller"),
+                    str(config.get("target_contract") or "Transaction"),
+                    str(config.get("target") or "0x" + "00" * 20),
+                    str(call or "transaction"),
+                    [],
+                    status="success" if isinstance(receipt, dict) and receipt.get("status") in ("0x1", 1, None) else "reverted",
+                    tx_hash=tx_hash,
+                )
+                walkthrough._write_transaction_evidence(root, rpc or "", step, receipt)
                 audit_context.emit(
                     "transaction",
                     root,
