@@ -4939,7 +4939,8 @@ def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> li
         "  🔧 LAB ISSUE       = the test setup looks broken; do not blame the contract yet.",
         "",
         "  Random probes reset after each call. Stateful stories reset after the whole attack sequence.",
-        "  The goal is not a pile of 'bugs' — it is reproducible behavior worth investigating.",
+        "  These are randomized transaction probes — not 24 vulnerability checks.",
+        "  Finding patterns and stateful attack stories are reported separately below.",
     ]
     if baseline_notes:
         lines += ["", "  BASELINE"]
@@ -5458,7 +5459,7 @@ def _run_adversarial_test(
             root, config, host, rpc, actors, models, targets, actual_seed
         )
         if render_pattern_summary:
-            print("\\n".join(render_pattern_summary(pattern_observations)))
+            print("\n".join(render_pattern_summary(pattern_observations)))
 
     benchmark_results: list[WalkthroughStory] = []
     benchmark_steps: list[Step] = []
