@@ -7865,8 +7865,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 # Visible local-lab prerequisite: once a real pool clone exists,
                 # approve the recorded mock stake token for that clone.
                 token_address = observed.get("staketoken")
-                use_pool_recipe = config.get("_walkthrough_recipe") == "confidence-pool"
-                if token_address and discovered and not use_pool_recipe:
+                adapter_manages_prerequisites = bool(
+                    benchmark_adapter and child and benchmark_adapter.manages_child_prerequisites(child)
+                )
+                if token_address and discovered and not adapter_manages_prerequisites:
                     child_model_name = str(config.get("lab_system", {}).get("child_model") or "").strip().lower()
                     for node in discovered:
                         if child_model_name and str(node.model).lower() != child_model_name:
