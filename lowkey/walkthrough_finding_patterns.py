@@ -52,6 +52,13 @@ PATTERN_CATALOG: tuple[dict[str, Any], ...] = (
         "provenance": ["CodeHawks Raisebox", "Immunefi Omni", "Immunefi Common Vulnerabilities"],
     },
     {
+        "id": "READONLY-001",
+        "title": "Read-only reentrancy around external callbacks",
+        "keywords": (),
+        "logic": "A callback can observe or trigger a read while the protocol's temporary state is inconsistent, causing another contract to consume a transient price/share/debt value.",
+        "provenance": ["Code4rena Revert Lend", "Immunefi Common Vulnerabilities"],
+    },
+    {
         "id": "AUTH-001",
         "title": "Sensitive state change without an obvious authorization boundary",
         "keywords": ("admin", "owner", "upgrade", "pause", "unpause", "set", "configure", "remove", "rescue", "sweep", "mint"),
@@ -127,6 +134,13 @@ PATTERN_CATALOG: tuple[dict[str, Any], ...] = (
         "keywords": ("call", "execute", "delegatecall", "multicall"),
         "logic": "An arbitrary external call primitive needs a deliberate authorization boundary and explicit trust model for target and calldata.",
         "provenance": ["Immunefi Common Vulnerabilities", "Code4rena Revert Lend"],
+    },
+    {
+        "id": "ECONOMIC-001",
+        "title": "Hardcoded fee/rate/price in an economic path",
+        "keywords": ("fee", "rate", "price", "exchange"),
+        "logic": "Economic parameters that are expected to track an external protocol, market, or governance setting can become incorrect when embedded as fixed literals.",
+        "provenance": ["CodeHawks Steadefi", "CodeHawks RAAC", "Code4rena BakerFi"],
     },
     {
         "id": "ZEROADDR-001",
@@ -332,6 +346,27 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     _pattern("REENTRANCY-001")["logic"],
                     "Trace the callee and try to reproduce a callback before the authorization/balance state is consumed.",
                     _pattern("REENTRANCY-001")["provenance"],
+                ))
+
+        # Read-only reentrancy candidate.
+        if calls:
+            first_call = calls[0].start()
+            readonly_call = re.search(
+                r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\\(",
+                body[first_call + 1:],
+            )
+            if readonly_call and re.search(r"(?:^|_)(?:get|quote|price|rate|balance|total|debt|share|value|preview)", readonly_call.group(1), re.I):
+                results.append(_result(
+                    "READONLY-001",
+                    _pattern("READONLY-001")["title"],
+                    model,
+                    name,
+                    source,
+                    line,
+                    ["An external interaction is followed by a getter/quote-like call in the same mutating path."],
+                    _pattern("READONLY-001")["logic"],
+                    "Trace the callback path and check whether the getter can observe transient state before it is restored.",
+                    _pattern("READONLY-001")["provenance"],
                 ))
 
         # Sensitive state changes without a visible auth check.
@@ -541,6 +576,24 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     _pattern("CALL-001")["logic"],
                     "Trace the callee and verify the authorization boundary around target + calldata.",
                     _pattern("CALL-001")["provenance"],
+                ))
+
+        # Hardcoded economic parameter candidate.
+        if _sensitive_name(name, _pattern("ECONOMIC-001")["keywords"]):
+            literal_economic = re.search(r"\\b(?:fee|rate|price|exchangeRate|feeBps)\\w*\\s*=\\s*(?:[0-9]+(?:\\.[0-9]+)?|(?:0x|0X)[0-9a-fA-F]+)", body, re.I)
+            configurable_read = re.search(r"\\b(?:config|settings|oracle|registry|governance|storage)\\w*", body, re.I)
+            if literal_economic and not configurable_read:
+                results.append(_result(
+                    "ECONOMIC-001",
+                    _pattern("ECONOMIC-001")["title"],
+                    model,
+                    name,
+                    source,
+                    line,
+                    ["An economic parameter is assigned from a literal inside a state-changing path without an obvious configuration/oracle read."],
+                    _pattern("ECONOMIC-001")["logic"],
+                    "Check whether the hardcoded value is intended to be immutable and compare it with the external protocol's current parameter.",
+                    _pattern("ECONOMIC-001")["provenance"],
                 ))
 
         # Zero-address configuration check.
