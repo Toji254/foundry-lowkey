@@ -300,8 +300,7 @@ def _bootstrap_step(label: str, command: Sequence[str], root: Path) -> int:
     else:
         print(f"FAIL  {label}")
         if output:
-            print("
-".join(output.splitlines()[-16:]))
+            print("\n".join(output.splitlines()[-16:]))
     return code
 
 
@@ -314,8 +313,7 @@ def bootstrap_project(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     """
     root = Path(info["root"])
     failures = 0
-    print("
-LOWKEY PROJECT BOOTSTRAP")
+    print("\nLOWKEY PROJECT BOOTSTRAP")
     print("========================")
 
     if (root / ".gitmodules").is_file() and shutil.which("git"):
