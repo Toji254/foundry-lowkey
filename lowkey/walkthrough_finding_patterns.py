@@ -401,6 +401,37 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                 PATTERN_CATALOG[7]["provenance"],
             ))
 
+        # Obvious paired-variable mismatch candidate.
+        paired_fields = (
+            ("token0", "token1"),
+            ("currency0", "currency1"),
+            ("longtoken", "indextoken"),
+            ("longtoken", "shorttoken"),
+            ("long", "short"),
+        )
+        conditions = re.findall(r"\b(?:if|require|assert)\s*\(([^;]+)\)", body, re.I)
+        for left, right in paired_fields:
+            if not (re.search(r"\b" + left + r"\b", body, re.I) and re.search(r"\b" + right + r"\b", body, re.I)):
+                continue
+            suspicious = next(
+                (cond for cond in conditions if re.search(r"\b" + left + r"\b", cond, re.I) and re.search(r"\b" + right + r"\b", cond, re.I)),
+                None,
+            )
+            if suspicious:
+                results.append(_result(
+                    "ACCOUNTING-001",
+                    PATTERN_CATALOG[8]["title"],
+                    model,
+                    name,
+                    source,
+                    line,
+                    [f"Validation condition references paired fields '{left}' and '{right}'; compare each check against the correct operand."],
+                    PATTERN_CATALOG[8]["logic"],
+                    "Inspect both sides of the paired validation and trace the value actually used later for accounting/pricing.",
+                    PATTERN_CATALOG[8]["provenance"],
+                ))
+                break
+
         # Fee-on-transfer assumption.
         if "transferFrom" in body and re.search(r"\b(?:balance|balances|amount|deposit|stake)\w*\s*(?:\+=|=)\s*\w*amount\w*\b", body, re.I) and "balanceOf" not in body:
             results.append(_result(
@@ -464,7 +495,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                 ))
 
         # Deadline / expiry boundary.
-        if _sensitive_name(name, PATTERN_CATALOG[13]["keywords"]) and re.search(r"\b(?:deadline|expiry|expiration|validUntil)\b", body, re.I):
+        if re.search(r"\b(?:deadline|expiry|expiration|validUntil)\b", body, re.I):
             results.append(_result(
                 "TIME-001",
                 PATTERN_CATALOG[13]["title"],
@@ -635,3 +666,194 @@ def render_summary(observations: list[PatternObservation]) -> list[str]:
     lines.append("")
     lines.append("    These are finding patterns distilled from public adjudicated reports — not automatic vulnerability verdicts.")
     return lines
+
+
+
+def _cast_read_simple(rpc: str, address: str, signature: str, args: list[Any] | None = None) -> Any:
+    if not core.is_address(address):
+        return None
+    command = ["cast", "call", address, signature]
+    command.extend(core._cli_arg(value) for value in (args or []))
+    command += ["--rpc-url", rpc]
+    code, out, err = core._cmd(command, timeout=8)
+    if code != 0:
+        return None
+    raw = " ".join((out or err or "").strip().split()).strip()
+    if not raw:
+        return None
+    raw = raw.splitlines()[-1].strip()
+    if raw.lower() in {"true", "false"}:
+        return raw.lower() == "true"
+    try:
+        return int(raw, 0)
+    except ValueError:
+        return raw
+
+
+def _build_initializer_stories(
+    config: dict[str, Any],
+    actors: list[core.Actor],
+    targets: list[tuple[str, str, core.ContractModel]],
+    seed: int,
+) -> list[core.WalkthroughStory]:
+    if len(actors) < 3:
+        return []
+    rng = __import__("random").Random(seed + 101)
+    observed = core._merge_protocol_observations(config.get("_walkthrough_observed") or {}, config=config)
+    stories: list[core.WalkthroughStory] = []
+    attacker = actors[2]
+    for _label, address, model in targets:
+        for fn in core._adversarial_functions(model):
+            name = str(fn.get("name") or "")
+            if not name.lower().startswith(("initialize", "reinitialize")):
+                continue
+            args = []
+            for param in list(fn.get("inputs") or []):
+                pname = str(param.get("name") or "").lower()
+                if core._canonical_type(param) == "address" and any(k in pname for k in ("owner", "admin", "authority", "guardian")):
+                    args.append(attacker.address)
+                else:
+                    args.append(core._random_sol_value(param, actors, address, rng, observed, model, name))
+            stories.append(core.WalkthroughStory(
+                story_id=f"IN-{len(stories)+1:02d}",
+                title=f"Initializer probe: {model.name}.{name}",
+                goal="Can an unprivileged actor initialize or reinitialize an already configured instance?",
+                actions=[{
+                    "kind": "call",
+                    "actor": attacker.name,
+                    "contract": model.name,
+                    "address": address,
+                    "function": core._signature(fn),
+                    "args": args,
+                    "value": 0,
+                    "reason": "real-world pattern probe: initializer takeover",
+                }],
+            ))
+            if len(stories) >= 2:
+                return stories
+    return stories
+
+
+def _build_deadline_stories(
+    config: dict[str, Any],
+    actors: list[core.Actor],
+    targets: list[tuple[str, str, core.ContractModel]],
+    seed: int,
+    now: int,
+) -> list[core.WalkthroughStory]:
+    if len(actors) < 1:
+        return []
+    rng = __import__("random").Random(seed + 202)
+    observed = core._merge_protocol_observations(config.get("_walkthrough_observed") or {}, config=config)
+    stories: list[core.WalkthroughStory] = []
+    actor = actors[2] if len(actors) > 2 else actors[0]
+    for _label, address, model in targets:
+        for fn in core._adversarial_functions(model):
+            name = str(fn.get("name") or "")
+            params = list(fn.get("inputs") or [])
+            deadline_index = next((i for i,p in enumerate(params) if re.search(r"\b(?:deadline|expiry|expiration|validuntil)\b", str(p.get("name") or ""), re.I)), None)
+            if deadline_index is None:
+                continue
+            args = []
+            for i, param in enumerate(params):
+                if i == deadline_index and core._canonical_type(param).startswith(("uint", "int")):
+                    args.append(max(0, int(now) - 1))
+                else:
+                    args.append(core._random_sol_value(param, actors, address, rng, observed, model, name))
+            stories.append(core.WalkthroughStory(
+                story_id=f"DL-{len(stories)+1:02d}",
+                title=f"Expired-input probe: {model.name}.{name}",
+                goal="Does a call with an already expired deadline get rejected at execution time?",
+                actions=[{
+                    "kind": "call",
+                    "actor": actor.name,
+                    "contract": model.name,
+                    "address": address,
+                    "function": core._signature(fn),
+                    "args": args,
+                    "value": 0,
+                    "reason": "real-world pattern probe: expired deadline boundary",
+                }],
+            ))
+            if len(stories) >= 2:
+                return stories
+    return stories
+
+
+def assess_initializer_story(
+    story: core.WalkthroughStory,
+    steps: list[core.Step],
+    rpc: str,
+    actors: list[core.Actor],
+) -> None:
+    if not steps or steps[0].status != "success":
+        story.signal = "NOT_TRIGGERED" if steps else "BLOCKED"
+        story.evidence = ["The initializer call was not accepted on the live target."]
+        return
+    attacker = actors[2] if len(actors) > 2 else actors[0]
+    owner = _cast_read_simple(rpc, steps[0].address, "owner()(address)")
+    if isinstance(owner, str) and owner.lower() == attacker.address.lower():
+        story.signal = "CONFIRMED"
+        story.evidence = ["an unprivileged actor called the initializer successfully", "owner() now resolves to that attacker"]
+    else:
+        story.signal = "REVIEW"
+        story.evidence = ["initializer succeeded, but ownership takeover was not proven by owner()"]
+
+
+def assess_deadline_story(story: core.WalkthroughStory, steps: list[core.Step]) -> None:
+    if not steps or steps[0].status != "success":
+        story.signal = "NOT_REPRODUCED"
+        story.evidence = ["The expired-input call was rejected or could not execute."]
+        return
+    story.signal = "REVIEW"
+    story.evidence = ["the call accepted an input that was one second before the observed block timestamp", "verify whether this function intentionally permits expired inputs"]
+
+
+def run(
+    root: Path,
+    config: dict[str, Any],
+    host: Any,
+    rpc: str,
+    actors: list[core.Actor],
+    models: list[core.ContractModel],
+    targets: list[tuple[str, str, core.ContractModel]],
+    seed: int,
+) -> tuple[list[PatternObservation], list[core.WalkthroughStory], list[core.Step]]:
+    """Run source patterns plus a small set of isolated live probes."""
+    observations = scan_project(root, models)
+    stories = []
+    stories.extend(_build_replay_stories(config, actors, targets, seed))
+    stories.extend(_build_initializer_stories(config, actors, targets, seed))
+    stories.extend(_build_deadline_stories(config, actors, targets, seed, core._block_timestamp(rpc)))
+    stories = stories[:8]
+
+    live_steps: list[core.Step] = []
+    for story in stories:
+        snapshot = core._rpc_snapshot(rpc)
+        if snapshot is None:
+            story.signal = "BLOCKED"
+            story.evidence = ["Anvil could not snapshot the pattern baseline."]
+            continue
+        story_steps: list[core.Step] = []
+        for action in story.actions:
+            step = core._execute_stateful_story_action(
+                root, config, host, rpc, actors, action, len(story_steps) + 1, models
+            )
+            story_steps.append(step)
+            live_steps.append(step)
+        if story.story_id.startswith("RP-"):
+            assess_replay_story(story, story_steps, actors)
+        elif story.story_id.startswith("IN-"):
+            assess_initializer_story(story, story_steps, rpc, actors)
+        else:
+            assess_deadline_story(story, story_steps)
+        for obs in observations:
+            if obs.pattern_id == "REPLAY-001" and obs.contract == story_steps[0].contract and obs.function == story_steps[0].function:
+                obs.status = story.signal if story.signal in {"CONFIRMED", "REVIEW"} else obs.status
+                if story.evidence:
+                    obs.evidence = story.evidence[:]
+        if not core._rpc_revert(rpc, snapshot):
+            story.signal = "BLOCKED"
+            story.evidence = ["Anvil could not restore the pattern snapshot."]
+            break
+    return observations, stories, live_steps
