@@ -144,8 +144,7 @@ jobs:
           grep -q "Pipeline: build -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
           ! grep -q "Pipeline: build -> Slither" /tmp/lowkey-audit-baseline.txt
           test -f script/LowkeyPoC_Fixture.s.sol
-          test -f .audit/poc/Poc_audit_candidate.json
-          test -f test/Poc_audit_candidate.t.sol
+          test -f .audit/poc/LowkeyPoc_Fixture.json
           lk audit --checks | tee /tmp/lowkey-audit-checks.txt
           grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-checks.txt
           lk audit--checks | tee /tmp/lowkey-audit-compact-checks.txt
