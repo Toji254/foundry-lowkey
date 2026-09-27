@@ -236,6 +236,22 @@ class ProjectDetectionTests(unittest.TestCase):
                 ],
             )
 
+    def test_pytest_runner_uses_local_tests_namespace_shim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname = \"demo\"\n",
+                encoding="utf-8",
+            )
+            (root / "tests").mkdir()
+
+            command = project_detection._project_python_runner(root, "pytest", "-q")
+
+            self.assertEqual(command[:4], ["uv", "run", "python", "-c"])
+            self.assertIn("sys.modules['tests']", command[4])
+            self.assertIn("pathlib.Path('tests').resolve()", command[4])
+            self.assertEqual(command[-1], "-q")
+
     def test_native_vyper_tests_use_project_python_runner(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -243,7 +259,8 @@ class ProjectDetectionTests(unittest.TestCase):
                 "[project]\nname = \"demo\"\n",
                 encoding="utf-8",
             )
-            (root / "contracts").mkdir()\n            (root / "contracts" / "Ping.vy").write_text("@external\\ndef ping():\\n    pass\\n", encoding="utf-8")\n            (root / "test_ping.py").write_text("def test_ping(): pass\n", encoding="utf-8")
+            (root / "contracts").mkdir()
+            (root / "contracts" / "Ping.vy").write_text("@external\\ndef ping():\\n    pass\\n", encoding="utf-8")\n            (root / "test_ping.py").write_text("def test_ping(): pass\n", encoding="utf-8")
             calls = []
 
             def fake_run(command, cwd):
