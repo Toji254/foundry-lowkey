@@ -3090,28 +3090,20 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print("Action  : running the fixture through Forge's native test runner, then materializing its full state into local Anvil...")
     print("Helper  : no broadcast; Forge invokes the fixture setUp() normally.")
 
-    previous_snapshot_check = os.environ.get("FORGE_SNAPSHOT_CHECK")
-    os.environ["FORGE_SNAPSHOT_CHECK"] = "true"
-
-    try:
-        result = run_foundry(
-            [
-                "test",
-                "--match-path",
-                relative_test,
-                "--match-contract",
-                f"LowkeyAutoFixtureTest_{safe_name}",
-                "--match-test",
-                "testLowkeyLabStateDump",
-                "-q",
-            ],
-            capture=True,
-        )
-    finally:
-        if previous_snapshot_check is None:
-            os.environ.pop("FORGE_SNAPSHOT_CHECK", None)
-        else:
-            os.environ["FORGE_SNAPSHOT_CHECK"] = previous_snapshot_check
+    result = run_foundry(
+        [
+            "test",
+            "--match-path",
+            relative_test,
+            "--match-contract",
+            f"LowkeyAutoFixtureTest_{safe_name}",
+            "--match-test",
+            "testLowkeyLabStateDump",
+            "--disable-block-gas-limit",
+            "-q",
+        ],
+        capture=True,
+    )
 
     output = result.text
     if result.code != 0:
