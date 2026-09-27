@@ -533,6 +533,37 @@ script/
 
 By default the interactive runner pauses after each transaction so you can watch the protocol state evolve. `--yes` or `--non-interactive` removes prompts for automation/CI.
 
+## Real-world finding pattern pass
+
+```bash
+lk walkthrough test --cases 24
+```
+
+The security test now includes a separate finding-pattern pass distilled from recurring, adjudicated logic seen across CodeHawks, Immunefi, Code4rena, and public bug-fix research. The suite does not copy report titles into hardcoded protocol checks.
+
+It currently looks for patterns such as:
+
+- replayable claims/withdrawals with user-state consumption
+- external interaction before a security-sensitive state update
+- sensitive state changes with no obvious authorization boundary
+- stale oracle/round validation
+- zero-share and rounding-loss candidates
+- signature replay / weak domain binding
+- unbounded storage loops on mutating paths
+- unchecked ERC20 transfer results
+- fee-on-transfer accounting assumptions
+- paired-variable validation mismatches
+- predictable randomness
+- initializer reuse
+- arbitrary external call targets
+- expired deadline/expiry boundaries
+
+Source matches are **CANDIDATE** signals. A live probe can move a pattern to **CONFIRMED** only when the local chain reproduces concrete impact evidence. Successful calls without proven impact remain **REVIEW** rather than being called vulnerabilities.
+
+The live pattern pass also includes isolated replay, initializer, and expired-deadline probes where the ABI and local state make them executable. Every probe is snapshot-isolated and restored afterward.
+
+The evidence is stored in `.audit/walkthrough/test.json` under `finding_patterns`, `finding_pattern_stories`, and `finding_pattern_steps`.
+
 ## Install
 
 From a machine that already has Foundry:
