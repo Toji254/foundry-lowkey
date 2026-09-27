@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_LOWKEY_DIR="$HOME/.lowkey"
 TARGET_BIN_DIR="$HOME/.foundry/bin"
+LEGACY_BIN="$HOME/bin/lk"
 STAGE_DIR="$TARGET_LOWKEY_DIR/.install-stage"
 
 mkdir -p "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR"
@@ -57,6 +58,13 @@ cp "$STAGE_DIR/project_tools.py" "$TARGET_LOWKEY_DIR/project_tools.py"
 cp "$STAGE_DIR/walkthrough.py" "$TARGET_LOWKEY_DIR/walkthrough.py"
 cp "$STAGE_DIR/bin-lk" "$TARGET_BIN_DIR/lk"
 chmod +x "$TARGET_BIN_DIR/lk"
+
+# Reconcile the legacy ~/bin/lk location when it is an existing Lowkey install
+# or symlink, preventing PATH shadowing of the canonical ~/.foundry/bin/lk.
+if [ -L "$LEGACY_BIN" ] || { [ -f "$LEGACY_BIN" ] && grep -qE '\\.lowkey/(lk|forge_tools|generator)|foundry-lowkey' "$LEGACY_BIN" 2>/dev/null; }; then
+  cp "$STAGE_DIR/bin-lk" "$LEGACY_BIN"
+  chmod +x "$LEGACY_BIN"
+fi
 
 python3 - "$REPO_DIR" "$TARGET_LOWKEY_DIR" "$TARGET_BIN_DIR" <<'PY'
 import hashlib
