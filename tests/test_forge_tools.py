@@ -170,7 +170,7 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[1].args[0], ["test", "-vvv", "--no-match-path", "test/Lowkey_*"])
         self.assertEqual(
             coverage.call_args.args[0],
-            ["coverage", "--no-match-path", "**/Lowkey_*"],
+            ["coverage"],
         )
         self.assertEqual(run.call_count, 2)
         self.assertEqual(available.call_count, 2)
