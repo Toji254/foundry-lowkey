@@ -331,6 +331,8 @@ def select_anvil_actor(config,index,name):
         )
         if replaceable:
             config.setdefault("wallets",{}).pop(assigned_index,None)
+            if assigned_address == assigned_index:
+                assigned_address = None
         else:
             return fail(f"Error: Anvil account {index} is already assigned to '{assigned_index}'.")
     if assigned_address and assigned_address!=name:
