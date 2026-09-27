@@ -1946,7 +1946,11 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
     if is_foundry:
         for name, command, timeout in (
             ("build", ["forge", "build"], 300),
-            ("tests", ["forge", "test", "-vvvv"], 600),
+            ("tests", [
+                "forge", "test", "-vvvv",
+                "--no-match-path", "test/Lowkey_*",
+                "--no-match-path", "test/Poc_*",
+            ], 600),
             ("coverage", ["forge", "coverage"], 600),
         ):
             print(f"\n=== LOWKEY EVIDENCE: FORGE {name.upper()} ===")
