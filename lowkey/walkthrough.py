@@ -781,7 +781,7 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
         ]
         bases: list[str] = []
         for match in re.finditer(
-            r"\b(?:abstract\\s+)?contract\\s+(\\w+)\\s+is\\s+([^{]+)\\{",
+            r"\b(?:abstract\s+)?contract\s+(\w+)\s+is\s+([^{]+)\{",
             source_text,
         ):
             if match.group(1) == name:
@@ -799,7 +799,7 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
             storage=data.get("storageLayout") or {},
             bases=bases,
             functions=functions,
-            modifiers=re.findall(r"\bmodifier\\s+(\\w+)", source_text),
+            modifiers=re.findall(r"\bmodifier\s+(\w+)", source_text),
             structs=_parse_structs(source_text),
             mappings=_parse_mappings(source_text),
             arrays=_parse_arrays(source_text),
@@ -883,7 +883,7 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
                 "language": "Vyper",
             }
             try:
-                artifact_path.write_text(json.dumps(artifact, indent=2) + "\\n", encoding="utf-8")
+                artifact_path.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
             except OSError:
                 continue
 
@@ -945,14 +945,14 @@ def _normalize_vyper_layout(layout: dict[str, Any]) -> dict[str, Any]:
 def _vyper_function_locations(source_text: str) -> dict[str, int]:
     return {
         str(match.group(1)): source_text.count("\n", 0, match.start()) + 1
-        for match in re.finditer(r"(?m)^\\s*(?:@[^\n]+\\n\\s*)*def\\s+([A-Za-z_]\\w*)\\s*\\(", source_text)
+        for match in re.finditer(r"(?m)^\s*(?:@[^\n]+\n\s*)*def\s+([A-Za-z_]\w*)\s*\(", source_text)
     }
 
 def _build_vyper_source_calls(source_text: str) -> list[dict[str, Any]]:
     """Capture obvious Vyper external/callback paths without pretending Python syntax is Solidity."""
     text = _strip_source_comments(source_text, "vyper")
     edges: list[dict[str, Any]] = []
-    for match in re.finditer(r"(?m)^\\s*([A-Za-z_]\\w*)\\s*=\\s*(?:extcall\\s+)?([A-Za-z_]\\w*)\\(", text):
+    for match in re.finditer(r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*(?:extcall\s+)?([A-Za-z_]\w*)\(", text):
         edges.append({
             "kind": "cross-contract",
             "from": match.group(1),
@@ -961,7 +961,7 @@ def _build_vyper_source_calls(source_text: str) -> list[dict[str, Any]]:
             "via": match.group(1),
             "certainty": "INFERRED",
         })
-    for match in re.finditer(r"\braw_call\\s*\\(([^\n]*)", text):
+    for match in re.finditer(r"\braw_call\s*\(([^\\n]*)", text):
         edges.append({
             "kind": "cross-contract",
             "from": "<unknown>",
@@ -977,7 +977,7 @@ def _vyper_semantics(model: ContractModel, source_text: str) -> dict[str, dict[s
     """Extract safe, presentation-only Vyper function facts."""
     text = _strip_source_comments(source_text, "vyper")
     semantics: dict[str, dict[str, Any]] = {}
-    for match in re.finditer(r"(?m)^\\s*def\\s+([A-Za-z_]\\w*)\\s*\\(([^)]*)\\)", text):
+    for match in re.finditer(r"(?m)^\s*def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)", text):
         name = match.group(1)
         line = text.count("\n", 0, match.start()) + 1
         start = match.end()
@@ -994,9 +994,9 @@ def _vyper_semantics(model: ContractModel, source_text: str) -> dict[str, dict[s
                 params.append({"name": pname, "source": chunk})
         guards = [
             "assert(" + " ".join(expr.split()) + ")"
-            for expr in re.findall(r"(?m)^\\s*assert\\s+(.+)$", body)
+            for expr in re.findall(r"(?m)^\s*assert\s+(.+)$", body)
         ]
-        writes = re.findall(r"self\\.([A-Za-z_]\\w*)\\s*(?:\\+=|-=|\\*=|/=|:=|=)", body)
+        writes = re.findall(r"self\.([A-Za-z_]\w*)\s*(?:\+=|-=|\*=|/=|:=|=)", body)
         semantics[name + "()"] = {
             "reads": [],
             "writes": list(dict.fromkeys(writes))[:12],
