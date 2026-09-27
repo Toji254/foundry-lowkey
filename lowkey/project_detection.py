@@ -491,26 +491,18 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         elif native.get("brownie") and _has(root, "brownie-config.yaml", "brownie-config.yml"):
             step("vyper tests", ["brownie", "test"])
         elif (native.get("pytest") or _nested_python_projects(root)) and (_has_test_files(root) or _nested_python_projects(root)):
-            nested_projects = _nested_python_projects(root)
-            ignored_test_roots = [project / "tests" for project in nested_projects if (project / "tests").is_dir()]
-            if _has_test_files(root, ignored_test_roots):
-                command = _project_python_runner(root, "pytest", "-q")
-                for test_root in ignored_test_roots:
-                    command.extend(["--ignore", str(test_root.relative_to(root))])
-                step("python tests", command)
-            elif not nested_projects:
-                step("python tests", _project_python_runner(root, "pytest", "-q"))
-            for project in nested_projects:
-                if _has_test_files(project):
-                    step(
-                        f"python tests ({project.relative_to(root)})",
-                        _project_python_runner(
-                            project,
-                            "pytest",
-                            "-q",
-                            dependency_root=root,
-                        ),
-                    )
+            test_submodules = [
+                path for path in _git_submodule_paths(root)
+                if path.parts and path.parts[0] == "tests"
+            ]
+            command = _project_python_runner(root, "pytest", "-q")
+            for submodule in test_submodules:
+                command.extend(["--ignore", str(submodule)])
+                print(
+                    f"INFO  ignoring test submodule {submodule} in parent pytest "
+                    "(project fixture/vendor tree)"
+                )
+            step("python tests", command)
         elif native.get("vyper"):
             vyper_files = [
                 path for path in _walk_files(root)
