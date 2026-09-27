@@ -854,6 +854,9 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             config["target_contract"] = shared_target.get("contract")
         if shared_target.get("artifact"):
             config.setdefault("abi_paths", {})[shared_target["address"]] = shared_target["artifact"]
+    else:
+        config["target"] = None
+        config.pop("target_contract", None)
 
     try:
         request = _parse_request(kind, root, config, args[1:])
