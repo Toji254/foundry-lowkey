@@ -2549,6 +2549,8 @@ def discover_audit_target_contract(root):
     if not artifacts:
         return None
 
+    root = Path(root).expanduser().resolve()
+
     # Audit evidence is still the strongest signal for the contract under review.
     for signal in audit_context.signals(root, "open"):
         if not isinstance(signal, dict):
