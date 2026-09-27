@@ -251,6 +251,22 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertTrue(edge["external"])
             self.assertEqual(edge["to"], "lib/openzeppelin-contracts/contracts/access/Ownable.sol")
 
+    def test_dependency_graph_ignores_comment_call_sites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "src/Vault.sol",
+                "pragma solidity ^0.8.20; contract Vault { "
+                "// target.call(ignored)\n"
+                "/* target.delegatecall(ignored) */\n"
+                "function f(address target) external { target.call(\"x\"); } }",
+            )
+            graph = project_tools.build_dependency_graph(root)
+            calls = graph["nodes"][0]["calls"]
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all(call["line"] >= 4 for call in calls))
+
     def test_graph_render_is_human_and_excludes_generated_support_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
