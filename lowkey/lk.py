@@ -4474,7 +4474,7 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     print("CONSTRUCTOR WIZARD")
     print("==================")
     print("Lowkey expands structs and arrays from the ABI.")
-    print("Project-specific meanings come from dedicated lab adapters, not the generic deployer.")
+    print("Lowkey prefers project-native deployment/test harnesses; the generic deployer is the fallback.")
     print("")
 
     values = []
@@ -4575,9 +4575,12 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
 
     # Use one artifact deployment path across Foundry/Hardhat/Brownie/Vyper-on-EVM.
     # It supports constructor prompts instead of assuming a zero-argument contract.
-    target, reason = _deploy_artifact_locally(
-        config, root, rpc, accounts, artifact, constructor_inputs
-    )
+    try:
+        target, reason = _deploy_artifact_locally(
+            config, root, rpc, accounts, artifact, constructor_inputs
+        )
+    finally:
+        config.pop("_lab_rpc", None)
     if not target:
         return fail(
             f"Error: generic local deployment failed. {reason or ''}".strip(),
@@ -4617,7 +4620,7 @@ def run_lab(config,args):
     if args and args[0].lower() in {"help","-h","--help"}:
         print("Usage: lk lab [Contract]")
         print("Start a disposable local audit lab and auto-connect its target.")
-        print("A project-specific lab adapter is preferred; otherwise Lowkey uses generic deployment.")
+        print("Lowkey discovers a project-native deployment/test harness when possible; otherwise it uses generic ABI deployment.")
         return 0
 
     root = audit_context.foundry_project_root()
@@ -4660,8 +4663,9 @@ def run_lab(config,args):
         return stop_project_anvil(root)
 
     requested = str(args[0]).strip() if args else None
-    script = discover_local_lab_script(root, requested)
-    fixture = discover_local_lab_fixture(root, requested)
+    auto_selected = requested or discover_audit_target_contract(root)
+    script = discover_local_lab_script(root, auto_selected)
+    fixture = discover_local_lab_fixture(root, auto_selected) if auto_selected else None
 
     if not requested or str(requested).lower() in {"confidencepool", "confidencepoolfactory", "confidencepooltest"}:
         try:
@@ -4728,7 +4732,7 @@ def run_lab(config,args):
 
     if fixture:
         fixture_code = run_test_fixture_lab(
-            config, root, fixture, rpc, accounts, key, requested
+            config, root, fixture, rpc, accounts, key, auto_selected
         )
         if fixture_code == 0:
             return 0
