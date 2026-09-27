@@ -586,7 +586,13 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         tools.get("forge-tests", {}).get("status") if isinstance(tools.get("forge-tests"), dict) else None,
         tools.get("forge-coverage", {}).get("status") if isinstance(tools.get("forge-coverage"), dict) else None,
     ]
-    overall = "BASELINE PASS" if pipeline_code == 0 and all(x == "completed" for x in mandatory) else "REVIEW NEEDED"
+    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
+    has_target = bool(target_data.get("address"))
+    mandatory_pass = bool(mandatory) and all(x == "completed" for x in mandatory)
+    if pipeline_code not in (None, 0) or not mandatory_pass or not has_target:
+        overall = "REVIEW NEEDED"
+    else:
+        overall = "PASS"
 
     print("\n=== LOWKEY AUDIT DASHBOARD ===")
     print("=" * 88)
@@ -618,6 +624,10 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
     )
     print("Static checks: " + ("recorded" if static_recorded else "not run in this baseline; use 'lk audit --checks' or 'lk audit run'") + ".")
     print("Heuristic/static results are investigation leads, not vulnerability verdicts.")
+    if not has_target:
+        print("Live audit state: INCOMPLETE")
+        print("  A passing build/tests/coverage only proves the static baseline ran.")
+        print("  Run 'lk lab' to create a disposable local target, then rerun 'lk audit'.")
     return 0 if overall in {"PASS", "BASELINE PASS"} else 1
 
 
@@ -635,8 +645,6 @@ def run_audit(args: Sequence[str]) -> int:
         test_cmd.extend(["--no-match-path", "test/Lowkey_*", "--no-match-path", "test/Poc_*"])
     coverage_cmd = ["coverage", *forwarded]
     coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded, quiet=quiet))
-    if not _has_path_filter(forwarded) and _supports_option("coverage", "--no-match-path"):
-        
     steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
     if checks:
         steps.append(("slither", None))
@@ -700,7 +708,13 @@ def run_audit(args: Sequence[str]) -> int:
     render_audit_dashboard(root, pipeline_code=0)
     print("\nAUDIT SUMMARY")
     print("=============")
-    print("Result  : BASELINE PASS")
+    context = audit_context.load(root)
+    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
+    has_target = bool(target_data.get("address"))
+    print(f"Result  : {'BASELINE PASS' if has_target else 'STATIC BASELINE — NO LIVE TARGET'}")
+    if not has_target:
+        print("Live    : NOT CONNECTED")
+        print("Fix     : run 'lk lab' for a disposable local target, then rerun 'lk audit'.")
     print("Artifacts: .audit/context.json + tool evidence")
     print("Next    : lk findings  |  lk context")
     if checks:
