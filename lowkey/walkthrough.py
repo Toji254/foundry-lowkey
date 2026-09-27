@@ -5898,6 +5898,63 @@ def _target_from_host(
     return resolved_target, config.get("target_contract") or contract
 
 
+def _artifact_creation_code(root: Path, model: ContractModel) -> str:
+    data = _json_file(root / model.artifact) or {}
+    raw = data.get("bytecode")
+    value = raw.get("object") if isinstance(raw, dict) else raw
+    value = str(value or "").strip()
+    return value if re.fullmatch(r"0x[0-9a-fA-F]+", value) else ""
+
+
+def _constructor_inputs(model: ContractModel) -> list[dict[str, Any]]:
+    for item in model.abi:
+        if item.get("type") == "constructor":
+            return list(item.get("inputs") or [])
+    return []
+
+
+def _deploy_generic_local_target(
+    root: Path,
+    rpc: str | None,
+    model: ContractModel,
+    actors: list[Actor],
+) -> tuple[str | None, str | None]:
+    """Deploy a zero-argument local EVM artifact without assuming Foundry."""
+    if not rpc:
+        return None, "no local RPC"
+    if not actors:
+        return None, "no local Anvil actor"
+    constructor = _constructor_inputs(model)
+    if constructor:
+        return None, (
+            f"{model.name} has {len(constructor)} constructor argument(s); "
+            "Lowkey will not invent deployment configuration"
+        )
+    creation_code = _artifact_creation_code(root, model)
+    if not creation_code:
+        return None, f"no deployable bytecode was found for {model.name}"
+    actor = actors[0]
+    _actor_rpc_setup(rpc, actor.address)
+    estimate = _rpc_call(rpc, "eth_estimateGas", [{
+        "from": actor.address,
+        "data": creation_code,
+    }])
+    tx = {
+        "from": actor.address,
+        "data": creation_code,
+    }
+    if isinstance(estimate, str) and estimate.startswith("0x"):
+        tx["gas"] = estimate
+    tx_hash = _rpc_call(rpc, "eth_sendTransaction", [tx])
+    if not isinstance(tx_hash, str) or not re.fullmatch(r"0x[0-9a-fA-F]{64}", tx_hash):
+        return None, "local node rejected generic deployment"
+    receipt = _receipt(rpc, tx_hash)
+    address = receipt.get("contractAddress") if isinstance(receipt, dict) else None
+    if not is_address(address):
+        return None, "deployment transaction was sent but no contract address was returned"
+    return address, None
+
+
 def _actors(host: Any, config: dict[str, Any], count: int = 4) -> list[Actor]:
     info = host.anvil_rpc_info(config) if hasattr(host, "anvil_rpc_info") else None
     if not info:
@@ -6469,6 +6526,31 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     if not model:
         print("Error: unable to choose an executable application contract.",file=sys.stderr); return 2
     actors=_actors(host,config,4) if host else []
+
+    # Generic EVM fallback: when project-specific lab/target discovery cannot
+    # produce a target, deploy a safe zero-constructor artifact on local Anvil.
+    if not target and auto and actors:
+        rpc_candidate = (
+            host.effective_rpc(config)
+            if host and hasattr(host, "effective_rpc")
+            else config.get("rpc")
+        )
+        if rpc_candidate:
+            deployed_target, deploy_reason = _deploy_generic_local_target(
+                root, rpc_candidate, model, actors
+            )
+            if deployed_target:
+                target = deployed_target
+                config["target"] = target
+                config["target_contract"] = model.name
+                if hasattr(host, "save_config"):
+                    try:
+                        host.save_config(config)
+                    except Exception:
+                        pass
+                print(f"  Generic local deployment: {model.name} {_addr(target)}")
+            elif deploy_reason and (auto and not target_contract):
+                print(f"  Generic local deployment: {deploy_reason}")
 
     if test_mode:
         rpc=host.effective_rpc(config) if host and hasattr(host,"effective_rpc") else config.get("rpc")
