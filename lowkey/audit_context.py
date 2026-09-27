@@ -26,18 +26,18 @@ def source_link(
     display: str | None = None,
 ) -> str:
     """Return a clean source label with an optional clickable VS Code target."""
-    project_root = project_root(root)
+    project_root_path = project_root(root)
     if not file:
         return "unknown location"
 
     path = Path(str(file))
-    absolute = (project_root / path).resolve() if not path.is_absolute() else path.resolve()
+    absolute = (project_root_path / path).resolve() if not path.is_absolute() else path.resolve()
 
     if display:
         label = display
     else:
         try:
-            label = absolute.relative_to(project_root).as_posix()
+            label = absolute.relative_to(project_root_path).as_posix()
         except ValueError:
             label = path.as_posix()
 
