@@ -565,9 +565,9 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                 source,
                 line,
                 ["A time-bounded parameter or state variable is used in this function."],
-                _pattern("ZEROADDR-001")["logic"],
+                _pattern("TIME-001")["logic"],
                 "Replay with a deadline/expiry just before the current block timestamp and verify the exact revert boundary.",
-                _pattern("ZEROADDR-001")["provenance"],
+                _pattern("TIME-001")["provenance"],
             ))
 
     return results
