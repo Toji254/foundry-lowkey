@@ -2707,68 +2707,89 @@ def artifact_is_project_application(root, path, artifact):
 
 
 def discover_audit_target_contract(root):
-    """Choose a likely first-party application contract without assuming Foundry layout."""
+    """Choose a likely application target using artifacts, source evidence, and audit signals."""
+    root_path = Path(root).expanduser().resolve()
     artifacts = {}
     scores = {}
     sources = {}
+    signals = [
+        item for item in audit_context.signals(root_path, "open")
+        if isinstance(item, dict)
+    ]
 
-    for path in local_artifact_paths(root):
+    for path in local_artifact_paths(root_path):
         if "build-info" in Path(path).parts:
             continue
         artifact = read_artifact(path)
         if not artifact or not artifact_is_deployable(artifact):
             continue
-        if not artifact_is_project_application(root, path, artifact):
-            continue
 
-        source = artifact_source_name(artifact, path, root) or source_contract_fallback(
-            root, artifact_contract_name(path, artifact)
-        )
         name = artifact_contract_name(path, artifact)
         key = str(name).lower()
+        source = artifact_source_name(artifact, path, root_path) or source_contract_fallback(
+            root_path, name
+        )
+        owned = artifact_is_project_application(root_path, path, artifact)
+        signal_match = any(
+            Path(str(item.get("file") or "")).stem.lower() == key
+            for item in signals
+        )
+        # Application ownership is preferred. When sparse test/build artifacts
+        # omit source metadata, a matching first-party audit signal is sufficient
+        # to rank the artifact as the current review target without pretending it
+        # is fully provenance-verified.
+        if not owned and not signal_match:
+            continue
+
         artifacts[key] = name
         sources[key] = source or str(path)
         scores.setdefault(key, 0)
 
         lowered = key
-        if lowered.endswith(("factory", "router", "manager", "coordinator", "controller", "registry", "gateway")):
-            scores[key] += 500
+        if lowered.endswith((
+            "factory", "router", "manager", "coordinator", "controller",
+            "registry", "gateway", "vault", "pool",
+        )):
+            scores[key] += 100
+
         if artifact_has_initializer(artifact):
             scores[key] += 20
 
-        # Prefer contracts whose source explicitly references other first-party
-        # application contracts; this is a conservative root heuristic.
+        if owned:
+            scores[key] += 10
+
+        if signal_match:
+            for signal in signals:
+                if Path(str(signal.get("file") or "")).stem.lower() == key:
+                    impact = str(signal.get("impact") or "").lower()
+                    scores[key] += {
+                        "critical": 250, "high": 100, "medium": 50,
+                        "low": 10, "informational": 2,
+                    }.get(impact, 5)
+
+    if not artifacts:
+        return None
+
+    # A source-backed contract referencing another known application contract is
+    # a useful conservative root signal. Never require it.
+    contract_names = set(artifacts.values())
+    for key, source in list(sources.items()):
         try:
-            source_text = (Path(root) / sources[key]).read_text(
+            source_text = (root_path / source).read_text(
                 encoding="utf-8", errors="replace"
             )
         except OSError:
             source_text = ""
-        for other in artifacts.values():
+        for other in contract_names:
             if other.lower() == key:
                 continue
             if re.search(r"\b" + re.escape(other) + r"\b", source_text):
                 scores[key] += 30
                 break
 
-    if not artifacts:
-        return None
-
-    # Static evidence can refine a candidate when the evidence path maps to a
-    # known application source, but evidence never changes project ownership.
-    for signal in audit_context.signals(Path(root).expanduser().resolve(), "open"):
-        if not isinstance(signal, dict):
-            continue
-        signal_file = str(signal.get("file") or "").replace("\\", "/")
-        stem = Path(signal_file).stem.lower()
-        if stem in scores:
-            impact = str(signal.get("impact") or "").lower()
-            scores[stem] += {
-                "high": 100, "medium": 50, "low": 10, "informational": 2,
-            }.get(impact, 5)
-
     ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
     return artifacts[ranked[0][0]] if ranked else None
+
 
 def discover_generic_lab_contract(root, query=None):
     preferred_name = str(query).strip() if query else discover_audit_target_contract(root)
