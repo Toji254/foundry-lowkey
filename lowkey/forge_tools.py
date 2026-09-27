@@ -817,3 +817,139 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
 
 
 
+
+def run_audit(args: Sequence[str]) -> int:
+    """Run the complete audit pipeline using the detected native project toolchain."""
+    root = Path.cwd().resolve()
+    profile = project_tools.detect_project(root) if project_tools is not None else {}
+    kind = str(profile.get("kind") or "foundry")
+    foundry_kind = kind in {"foundry", "mixed-foundry-vyper"}
+
+    if not foundry_kind:
+        return _run_generic_audit(root, kind, "--checks" in args)
+
+    checks = "--checks" in args
+    verbose = "--verbose" in args
+    quiet = not verbose
+    forwarded = [a for a in args if a not in {"--checks", "--verbose", "--quiet"}]
+    test_cmd = ["test", *forwarded]
+    if not has_verbosity(forwarded):
+        test_cmd.insert(1, "-vvv")
+    if not _has_path_filter(forwarded):
+        test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
+    coverage_cmd = ["coverage", *forwarded]
+    coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded, quiet=quiet))
+    steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
+    if checks:
+        steps.append(("slither", None))
+        for optional in ("lint", "geiger"):
+            if command_available(optional):
+                steps.append((optional, None))
+    steps.extend([("tests", test_cmd), ("coverage", coverage_cmd)])
+
+    print("LOWKEY CONNECTED AUDIT")
+    print("======================")
+    print(f"Project : {root}")
+    print(f"Mode    : {'verbose' if verbose else 'quiet'}")
+    print(
+        "Pipeline: build"
+        + (" -> Slither -> lint/geiger" if checks else "")
+        + " -> tests -> coverage"
+    )
+    print()
+
+    if not _project_owned_tests(root):
+        print("Tests   : no project-owned Forge tests (Lowkey experiments excluded)")
+
+    for label, command in steps:
+        if label == "slither":
+            code = run_slither_preflight(root, quiet=quiet)
+        elif label in {"lint", "geiger"}:
+            code = run_forge_diagnostics([label], label, quiet=quiet)
+        elif label == "coverage":
+            code = run_coverage_audit(command, root, quiet=quiet)
+        else:
+            code = run_forge(command, quiet=quiet)
+
+        context = audit_context.load(root)
+        detail = ""
+        if label == "slither":
+            state = context.get("tools", {}).get("slither", {})
+            if isinstance(state, dict) and state.get("finding_count") is not None:
+                detail = f" — {state['finding_count']} finding(s)"
+        print(f"{'PASS' if code == 0 else 'FAIL':<5} {label:<9}{detail}")
+
+        stable_key = {
+            "build": "forge-build",
+            "tests": "forge-tests",
+            "coverage": "forge-coverage",
+            "lint": "forge-lint",
+            "geiger": "forge-geiger",
+        }.get(label)
+        if stable_key:
+            audit_context.record_tool(
+                stable_key,
+                root,
+                status="completed" if code == 0 else "failed",
+                summary=f"{label} audit step",
+                data={"exit_code": code},
+            )
+
+        if code != 0:
+            print(f"\nLowkeyForge: audit stopped at {label}.", file=sys.stderr)
+            render_audit_dashboard(root, pipeline_code=code)
+            return code
+
+    try:
+        from generator import run_generate
+        poc_code = run_generate({}, ["poc"])
+        if poc_code != 0:
+            print(
+                "LowkeyForge: initial PoC scaffold was not generated.",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(
+            f"LowkeyForge: initial PoC scaffold skipped: {exc}",
+            file=sys.stderr,
+        )
+
+    render_audit_dashboard(root, pipeline_code=0)
+    print("\nAUDIT SUMMARY")
+    print("=============")
+    context = audit_context.load(root)
+    target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
+    has_target = bool(target_data.get("address"))
+    tool_states = context.get("tools", {}) if isinstance(context.get("tools"), dict) else {}
+
+    open_signals = sum(
+        1
+        for item in (context.get("signals") or [])
+        if isinstance(item, dict) and item.get("status") == "open"
+    )
+    pipeline_ok = all(
+        isinstance(tool_states.get(key), dict)
+        and tool_states.get(key, {}).get("status") == "completed"
+        for key in ("forge-build", "forge-tests", "forge-coverage")
+    )
+
+    if not pipeline_ok:
+        result_label = "PIPELINE FAILED"
+    elif not has_target:
+        result_label = "STATIC BASELINE — NO LIVE TARGET"
+    elif open_signals:
+        result_label = "REVIEW NEEDED"
+    else:
+        result_label = "BASELINE PASS"
+
+    print(f"Result  : {result_label}")
+    if not has_target:
+        print("Live    : NOT CONNECTED")
+        print("Fix     : run 'lk lab' for a disposable local target.")
+    elif open_signals:
+        print(f"Review  : {open_signals} open signal(s) still require investigation.")
+    else:
+        print("Review  : no open evidence signals recorded by Lowkey.")
+    print("Artifacts: .audit/context.json + tool evidence")
+    print("Next    : lk findings | lk context")
+    return 0
