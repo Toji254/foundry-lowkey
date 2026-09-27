@@ -244,13 +244,13 @@ jobs:
           rm -rf /tmp/lowkey-vyper-fixture
           mkdir -p /tmp/lowkey-vyper-fixture/contracts
           cat > /tmp/lowkey-vyper-fixture/contracts/Counter.vy <<'EOF'
-          # pragma version ^0.4.0
+          #pragma version ^0.4.3
 
           count: public(uint256)
 
           @external
-          def increment(value: uint256):
-              self.count += value
+          def increment():
+              self.count += 1
           EOF
       - name: Start Anvil
         run: |
@@ -269,6 +269,7 @@ jobs:
           vyper --version
           lk --version
           lk doctor
+          lk build
           lk walkthrough --static --contract Counter --steps 2
           test -f .audit/walkthrough/model.json
           grep -q '"kind": "vyper"' .audit/walkthrough/model.json
