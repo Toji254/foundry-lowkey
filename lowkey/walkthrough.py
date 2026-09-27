@@ -4679,6 +4679,151 @@ def _adversarial_category(step: Step) -> str:
     return "INPUT / BEHAVIOR"
 
 
+
+def _human_language(model: ContractModel | None) -> str:
+    """Return a human-friendly language label without assuming EVM/Solidity."""
+    source = str(getattr(model, "source", "") or "").lower()
+    suffix = Path(source).suffix.lower()
+    return {
+        ".sol": "Solidity",
+        ".vy": "Vyper",
+        ".vyi": "Vyper",
+        ".move": "Move",
+        ".cairo": "Cairo",
+        ".tact": "Tact",
+        ".fc": "FunC",
+        ".func": "FunC",
+        ".clar": "Clarity",
+        ".rs": "Rust",
+    }.get(suffix, "smart-contract code")
+
+
+def _human_subject(model: ContractModel | None) -> str:
+    """Use a language-neutral noun in teaching output."""
+    language = _human_language(model)
+    if language == "Move":
+        return "module"
+    if language == "Rust":
+        return "program"
+    return "contract"
+
+
+def _human_probe_status(step: Step) -> tuple[str, str, str]:
+    """Turn noisy probe outcomes into a small set of beginner-friendly states."""
+    haystack = " ".join([
+        str(step.error or ""),
+        str(step.error_reason or ""),
+        str(step.failure_origin or ""),
+        " ".join(str(x) for x in (step.diagnostics or [])),
+    ]).lower()
+
+    if any(token in haystack for token in (
+        "no contract code",
+        "fixture",
+        "bootstrap probe",
+        "lab issue",
+        "test environment",
+    )):
+        return (
+            "🔧 LAB ISSUE",
+            "The test setup appears to be pointing at something that is not a usable contract.",
+            "Fix the lab setup before treating this result as protocol behavior.",
+        )
+
+    if step.status == "success":
+        return (
+            "⚠️ CHECK THIS",
+            "The chain accepted the action, so a state-changing path was allowed.",
+            "A successful probe is not automatically a bug; inspect who can reach it and what state it changes.",
+        )
+
+    if any(token in haystack for token in (
+        "not the contract owner",
+        "not authorized",
+        "zero address",
+        "mapping gate blocks",
+        "returned false",
+        "source guard:",
+        "expirytoo",
+        "invalidamount",
+        "outcomealreadyset",
+        "withdrawsdisabled",
+        "stakingclosed",
+        "invalidoutcome",
+        "notattacker",
+        "claimwindowexpired",
+        "claimnot",
+    )):
+        return (
+            "✅ NORMAL",
+            "The call was rejected by a rule or precondition Lowkey can explain from the available evidence.",
+            "That is usually expected. Keep moving unless the rule itself is wrong or can be bypassed.",
+        )
+
+    return (
+        "❓ UNKNOWN",
+        "The call failed, but Lowkey cannot prove the exact reason yet.",
+        "Do not call this a bug. Open the function, inspect the checks, and trace the failing call.",
+    )
+
+
+def _human_next_step(step: Step, model: ContractModel) -> str:
+    status, _, action = _human_probe_status(step)
+    name = str(step.function or "").split("(", 1)[0]
+    location = model.function_locations.get(name)
+    where = f"{model.source}:{location}" if location else str(model.source or "source")
+    if status == "🔧 LAB ISSUE":
+        return action
+    if status == "⚠️ CHECK THIS":
+        if any(token in name.lower() for token in ("owner", "pause", "upgrade", "set", "initialize", "config")):
+            return f"Open {where} and ask: who is allowed to change this, and what breaks after the change?"
+        return f"Open {where} and inspect the state this function writes and who can reach that state."
+    if status == "❓ UNKNOWN":
+        return f"Open {where}, find the first failing check/call, then compare that rule with the intended behavior."
+    return "No immediate follow-up. Treat this as a normal guard working unless you discover a bypass."
+
+
+def _render_adversarial_probe_human(
+    root: Path,
+    step: Step,
+    model: ContractModel,
+    actors: list[Actor],
+) -> list[str]:
+    """Beginner-first probe view; keep the technical evidence directly underneath."""
+    status, why_simple, _ = _human_probe_status(step)
+    role = _adversarial_actor_role(step.actor)
+    language = _human_language(model)
+    subject = _human_subject(model)
+    function = _function_link(root, model, str(step.function))
+    args = ", ".join(_friendly_arg(value, actors) for value in step.args) or "∅"
+    call = f"{model.name}.{function}({args})" if args != "∅" else f"{model.name}.{function}()"
+    why, lesson, quality = _adversarial_probe_why(step, model, actors)
+
+    lines = [
+        "",
+        f"  {status}",
+        f"  {step.index:02d}. {step.actor or 'Caller'} tried {call}",
+        f"  ROLE     {role}",
+        f"  WHAT     {call}",
+        f"  RESULT   {'Accepted by the chain.' if step.status == 'success' else 'Rejected by the chain.'}",
+        f"  WHY      {why_simple}",
+        f"  WHY TECH {why}",
+        f"  NEXT     {_human_next_step(step, model)}",
+        f"  LESSON   {lesson}",
+        f"  EVIDENCE {quality}",
+        f"  CODE     {language} {subject} • {model.source}",
+    ]
+
+    source_lines = [line for line in (step.diagnostics or []) if str(line).lower().startswith("source guard:")]
+    if source_lines:
+        lines.append(f"  SOURCE   {source_lines[0]}")
+    elif step.failure_origin:
+        lines.append(f"  ORIGIN   {step.failure_origin}")
+
+    if step.tx_hash:
+        lines.append(f"  TX       {step.tx_hash[:10]}…{step.tx_hash[-8:]}")
+    return lines
+
 def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]) -> tuple[str, str, str]:
     """Explain randomized probes without overstating what the evidence proves."""
     name = str(step.function or "").split("(", 1)[0]
@@ -4774,7 +4919,7 @@ def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]
     )
 
 
-def _render_adversarial_probe(
+def _render_adversarial_probe_technical(
     root: Path,
     step: Step,
     model: ContractModel,
@@ -4819,58 +4964,80 @@ def _render_adversarial_probe(
     return lines
 
 
+def _render_adversarial_probe(
+    root: Path,
+    step: Step,
+    model: ContractModel,
+    actors: list[Actor],
+    technical: bool = False,
+) -> list[str]:
+    if technical:
+        return _render_adversarial_probe_technical(root, step, model, actors)
+    return _render_adversarial_probe_human(root, step, model, actors)
+
+
 def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> list[str]:
     lines = [
         "",
-        _paint("HOW TO READ THIS TEST", BOLD + CYAN, _ansi_enabled(False)),
-        "  WHAT     = what Lowkey attempted",
-        "  RESULT   = what the chain actually accepted/rejected",
-        "  WHY      = best available explanation from runtime/source evidence",
-        "  LESSON   = the Solidity/security idea worth noticing",
-        "  EVIDENCE = how strongly the explanation is supported",
+        _paint("HOW TO READ THIS", BOLD + CYAN, _ansi_enabled(False)),
+        "  ✅ NORMAL       = the contract rejected the call for an explained reason.",
+        "  ⚠️ CHECK THIS   = the chain accepted the action; inspect what changed.",
+        "  ❓ UNKNOWN      = Lowkey could not prove why it failed.",
+        "  🔧 LAB ISSUE    = the test setup looks broken; do not blame the contract yet.",
         "",
-        "  🧪 ISOLATED PROBES",
-        "  Every probe starts from the same prepared baseline.",
-        "  After the probe, Lowkey restores the Anvil snapshot.",
-        "  So repeated successes are intentional; they do not carry state forward.",
+        "  Every check is isolated: Lowkey resets the local chain after each probe.",
+        "  The goal is not to collect a pile of 'bugs'. The goal is to find behavior worth investigating.",
     ]
     if baseline_notes:
-        lines += ["", "  BASELINE SETUP"]
+        lines += ["", "  BASELINE"]
         lines += [f"    ✓ {note}" for note in baseline_notes]
-    lines += [
-        "",
-        f"  Running {total_cases} adversarial probe(s) across randomized actors, inputs and transaction values…",
-        "",
-    ]
+    lines += ["", f"  Running {total_cases} checks…", ""]
     return lines
 
 
 def _render_adversarial_summary(root: Path, results: list[Step], evidence: Path) -> list[str]:
-    accepted = sum(item.status == "success" for item in results)
-    reverted = len(results) - accepted
-    counts: dict[str, int] = {}
-    for item in results:
-        category = _adversarial_category(item)
-        counts[category] = counts.get(category, 0) + 1
+    normal = sum(_human_probe_status(item)[0] == "✅ NORMAL" for item in results)
+    review = sum(_human_probe_status(item)[0] == "⚠️ CHECK THIS" for item in results)
+    unknown = sum(_human_probe_status(item)[0] == "❓ UNKNOWN" for item in results)
+    lab = sum(_human_probe_status(item)[0] == "🔧 LAB ISSUE" for item in results)
 
     lines = [
         "",
-        _paint("TEST SUMMARY", BOLD + CYAN, _ansi_enabled(False)),
-        "  " + " • ".join([f"{len(results)} probes", f"{accepted} accepted", f"{reverted} reverted"]),
+        _paint("WHAT MATTERS", BOLD + CYAN, _ansi_enabled(False)),
+        f"  {len(results)} checks finished",
+        f"  ✅ NORMAL       {normal}",
+        f"  ⚠️ CHECK THIS   {review}",
+        f"  ❓ UNKNOWN      {unknown}",
+        f"  🔧 LAB ISSUE    {lab}",
         "",
-        "  PROBES BY CONCEPT",
     ]
-    for category, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])):
-        lines.append(f"    {category:<18} {count}")
+
+    review_items = [item for item in results if _human_probe_status(item)[0] == "⚠️ CHECK THIS"]
+    unknown_items = [item for item in results if _human_probe_status(item)[0] == "❓ UNKNOWN"]
+    if review_items:
+        lines.append("  START HERE")
+        for item in review_items[:5]:
+            fn = str(item.function or "").split("(", 1)[0]
+            lines.append(f"    ⚠️ #{item.index} {fn} — the chain allowed this action")
+    elif unknown_items:
+        lines.append("  START HERE")
+        for item in unknown_items[:3]:
+            fn = str(item.function or "").split("(", 1)[0]
+            lines.append(f"    ❓ #{item.index} {fn} — Lowkey could not prove the failure reason")
+    else:
+        lines.extend(["  START HERE", "    Nothing suspicious stood out in this probe set."])
+
     lines += [
         "",
         "  REMEMBER",
-        "    • ACCEPTED means the current state allowed the action.",
-        "    • REVERTED means some precondition rejected the action.",
-        "    • Neither result alone is a vulnerability verdict.",
+        "    A rejection is usually a guard working.",
+        "    A successful probe is not automatically a vulnerability.",
+        "    An unknown result needs source/trace verification.",
+        f"    Evidence: {evidence.relative_to(root)}",
+        "    Every probe was restored to the same local snapshot.",
         "",
-        f"  Evidence: {evidence.relative_to(root)}",
-        "  Snapshot policy: every probe restored; final project state restored too.",
+        "  TECHNICAL VIEW",
+        "    Run the same command with --technical to see the forensic-style output.",
     ]
     return lines
 
@@ -5064,6 +5231,7 @@ def _run_adversarial_test(
     total_cases: int,
     seed: int | None,
     system_targets: list[tuple[str, str, ContractModel]] | None = None,
+    human_view: bool = True,
 ) -> int:
     actual_seed = seed if seed is not None else int(time.time())
     rng = random.Random(actual_seed)
@@ -5224,7 +5392,7 @@ def _run_adversarial_test(
 
         results.append(step)
 
-        print("\n".join(_render_adversarial_probe(root, step, active_model, actors)))
+        print("\n".join(_render_adversarial_probe(root, step, active_model, actors, technical=not human_view)))
 
         if not _rpc_revert(rpc, snapshot):
             print("     ⚠ Anvil snapshot could not be restored; aborting.", file=sys.stderr)
@@ -7092,6 +7260,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         print("Error: 'lk walkthrough' needs a Solidity/Vyper project with source files.", file=sys.stderr)
         return 2
     test_mode=any(str(x).lower() in {"test", "random"} for x in args) or "--test" in args or "--random" in args
+    technical_test="--technical" in args
     auto="--auto" in args or "auto" in args
     # Adversarial walkthroughs are local-only and may bootstrap the disposable
     # project fixture automatically when no live target exists.
@@ -7238,6 +7407,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             root, config, host, target, model, models, actors, rpc,
             total_cases=test_cases, seed=test_seed,
             system_targets=system_targets,
+            human_view=not technical_test,
         )
 
     if static:
