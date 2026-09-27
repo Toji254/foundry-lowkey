@@ -520,7 +520,22 @@ def log_session(command, result):
         f.write(f"[{timestamp}] CMD: {command}\nRES: {result}\n{'-'*40}\n")
 
 def local_artifact_paths(root="."):
-    return [p for p in artifact_json_files(root) if "out" in Path(p).parts]
+    result = []
+    for path in artifact_json_files(root):
+        parts = Path(path).parts
+        if "out" not in parts:
+            continue
+        if "build-info" in parts or Path(path).name == "solc-input.json":
+            continue
+        artifact = read_artifact(path)
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("abi"), list):
+            continue
+        # Build metadata can have no contractName and a hash-like filename. It is
+        # not a deployable application artifact and must never become a target.
+        if not artifact.get("contractName") and not artifact.get("sourceName"):
+            continue
+        result.append(path)
+    return result
 
 def artifact_contract_name(path, artifact):
     if isinstance(artifact,dict) and artifact.get("contractName"): return str(artifact["contractName"])
@@ -2513,6 +2528,8 @@ def discover_audit_target_contract(root):
         except OSError:
             pass
         if not (normalized == src_prefix or normalized.startswith(src_prefix + "/")):
+            continue
+        if not artifact_is_project_application(root, path, artifact):
             continue
         name = artifact_contract_name(path, artifact)
         key = str(name).lower()
