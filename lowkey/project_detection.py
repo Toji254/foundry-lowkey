@@ -14,6 +14,7 @@ turn a Cairo/Vyper project into a Foundry project.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -146,6 +147,24 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         stacks.append("move")
 
     supporting: list[str] = []
+    for submodule in _nested_python_projects(root):
+        if shutil.which("uv"):
+            code = _bootstrap_step(
+                f"python subproject ({submodule.relative_to(root)})",
+                ["uv", "sync", "--all-extras", "--dev"],
+                submodule,
+            )
+        elif (submodule / "poetry.lock").is_file() and shutil.which("poetry"):
+            code = _bootstrap_step(
+                f"python subproject ({submodule.relative_to(root)})",
+                ["poetry", "install"],
+                submodule,
+            )
+        else:
+            continue
+        if code != 0:
+            failures = failures or code
+
     if (root / "package.json").is_file():
         supporting.append("node")
     if (root / "pyproject.toml").is_file() or (root / "requirements.txt").is_file():
@@ -251,8 +270,37 @@ def format_detection(info: dict[str, Any]) -> str:
         f"Native     : {', '.join(native) or 'none detected'}",
     ])
 
-def _has_test_files(root: Path) -> bool:
+def _git_submodule_paths(root: Path) -> list[Path]:
+    """Return submodule paths declared by the repository's .gitmodules file."""
+    text = _read(root / ".gitmodules")
+    paths: list[Path] = []
+    for line in text.splitlines():
+        match = re.match(r"\\s*path\\s*=\\s*(.+?)\\s*$", line)
+        if not match:
+            continue
+        path = Path(match.group(1).strip())
+        if path.is_absolute() or ".." in path.parts:
+            continue
+        paths.append(path)
+    return paths
+
+
+def _nested_python_projects(root: Path) -> list[Path]:
+    """Find Python projects rooted inside declared git submodules."""
+    projects: list[Path] = []
+    for relative in _git_submodule_paths(root):
+        project = root / relative
+        if (project / "pyproject.toml").is_file():
+            projects.append(project)
+    return projects
+
+
+def _has_test_files(root: Path, ignored_roots: Sequence[Path] = ()) -> bool:
+    ignored = [path.resolve() for path in ignored_roots]
     for path in _walk_files(root):
+        resolved = path.resolve()
+        if any(ignored_path == resolved or ignored_path in resolved.parents for ignored_path in ignored):
+            continue
         if path.name.startswith("test_") or path.name.endswith("_test.py") or path.suffix in {".t.sol", ".t.cairo"}:
             return True
     return False
@@ -436,8 +484,22 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             step("vyper tests", ["ape", "test"])
         elif native.get("brownie") and _has(root, "brownie-config.yaml", "brownie-config.yml"):
             step("vyper tests", ["brownie", "test"])
-        elif native.get("pytest") and _has_test_files(root):
-            step("python tests", _project_python_runner(root, "pytest", "-q"))
+        elif native.get("pytest") and (_has_test_files(root) or _nested_python_projects(root)):
+            nested_projects = _nested_python_projects(root)
+            ignored_test_roots = [project / "tests" for project in nested_projects if (project / "tests").is_dir()]
+            if _has_test_files(root, ignored_test_roots):
+                command = _project_python_runner(root, "pytest", "-q")
+                for test_root in ignored_test_roots:
+                    command.extend(["--ignore", str(test_root.relative_to(root))])
+                step("python tests", command)
+            elif not nested_projects:
+                step("python tests", _project_python_runner(root, "pytest", "-q"))
+            for project in nested_projects:
+                if _has_test_files(project):
+                    step(
+                        f"python tests ({project.relative_to(root)})",
+                        _project_python_runner(project, "pytest", "-q"),
+                    )
         elif native.get("vyper"):
             vyper_files = [
                 path for path in _walk_files(root)
