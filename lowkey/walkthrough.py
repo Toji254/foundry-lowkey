@@ -4940,7 +4940,7 @@ def _render_adversarial_probe_technical(
             GREEN if step.status == "success" else RED,
             _ansi_enabled(False),
         ),
-        f"     {_paint(step.actor or 'Caller', 'magenta')} → {call}",
+        f"     {_paint(step.actor or 'Caller', MAGENTA, _ansi_enabled(False))} → {call}",
         f"     ROLE     {role}",
         f"     WHAT     {_human_action_summary(step, actors)}",
         f"     RESULT   {status_word} — " + (
@@ -5311,7 +5311,7 @@ def _run_adversarial_test(
     print(f"  system : {len(targets)} live application instance(s)")
     print("  engine : randomized args/roles/extremes → SEND → trace → diagnose → restore")
     print(f"  seed   : {actual_seed}")
-    print("  view   : teaching — each probe explains WHAT / RESULT / WHY / LESSON")
+    print("  view   : simple — Lowkey highlights NORMAL / CHECK THIS / UNKNOWN / LAB ISSUE")
     print("")
 
     # Capture the post-warmup baseline. Every case is reverted to this state, and
