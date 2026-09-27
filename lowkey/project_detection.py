@@ -286,11 +286,19 @@ def _git_submodule_paths(root: Path) -> list[Path]:
 
 
 def _nested_python_projects(root: Path) -> list[Path]:
-    """Find Python projects rooted inside declared git submodules."""
+    """Find declared submodules that contain Python/Vyper test suites."""
     projects: list[Path] = []
     for relative in _git_submodule_paths(root):
         project = root / relative
-        if (project / "pyproject.toml").is_file():
+        if not project.is_dir():
+            continue
+        if (project / "pyproject.toml").is_file() or (
+            (project / "tests").is_dir()
+            and any(
+                path.suffix.lower() in {".py", ".vy", ".vyi"}
+                for path in _walk_files(project / "tests")
+            )
+        ):
             projects.append(project)
     return projects
 
