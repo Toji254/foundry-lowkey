@@ -37,6 +37,23 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertFalse(lk.is_address("0x" + "1" * 64))
         self.assertFalse(lk.is_address(None))
 
+    def test_transaction_send_summary_exposes_clickable_evidence(self):
+        tx_hash = "0x" + "1" * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            evidence = lk.walkthrough._transaction_evidence_path(root, tx_hash)
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text("<html>transaction</html>", encoding="utf-8")
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                rendered = lk.format_send_summary(
+                    "transactionHash " + tx_hash + "\nstatus 1\n",
+                    {"wallets": {}, "labels": {}, "aliases": {}, "targets": {}},
+                    "ping()",
+                )
+        self.assertIn("Ctrl+Click", rendered)
+        self.assertIn(tx_hash, rendered)
+        self.assertIn("\\x1b]8;;file://", rendered)
+
     def test_receipt_records_audit_evidence(self):
         tx_hash = "0x" + "1" * 64
         with patch.object(lk, "run_cast", return_value=0) as run_cast:
