@@ -175,7 +175,6 @@ class ProjectDetectionTests(unittest.TestCase):
             (root / "pyproject.toml").write_text("[project]\\nname = \"root-demo\"\\n", encoding="utf-8")
             (root / "test_root.py").write_text("def test_root(): pass\\n", encoding="utf-8")
             (nested / "tests").mkdir(parents=True)
-            (nested / "pyproject.toml").write_text("[project]\\nname = \"nested-demo\"\\n", encoding="utf-8")
             (nested / "tests" / "test_nested.py").write_text("def test_nested(): pass\\n", encoding="utf-8")
             calls = []
 
