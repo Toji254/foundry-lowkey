@@ -61,7 +61,7 @@ chmod +x "$TARGET_BIN_DIR/lk"
 
 # Reconcile the legacy ~/bin/lk location when it is an existing Lowkey install
 # or symlink, preventing PATH shadowing of the canonical ~/.foundry/bin/lk.
-if [ -L "$LEGACY_BIN" ] || { [ -f "$LEGACY_BIN" ] && grep -qE '\\.lowkey/(lk|forge_tools|generator)|foundry-lowkey' "$LEGACY_BIN" 2>/dev/null; }; then
+if [ -L "$LEGACY_BIN" ] || { [ -f "$LEGACY_BIN" ] && grep -qE '\.lowkey/(lk|forge_tools|generator)|foundry-lowkey' "$LEGACY_BIN" 2>/dev/null; }; then
   cp "$STAGE_DIR/bin-lk" "$LEGACY_BIN"
   chmod +x "$LEGACY_BIN"
 fi
