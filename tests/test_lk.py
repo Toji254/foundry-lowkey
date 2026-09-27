@@ -3075,14 +3075,16 @@ contract BountyArena {
                     sig;
                 }
                 function initialize(address owner_) external { owner = owner_; }
-                function randomWinner() external view returns (uint256) { return uint256(block.timestamp); }
+                function randomWinner() external returns (uint256) { return uint256(block.timestamp); }
+                function feePath() external { uint256 fee = 100; fee; }
+                function callbackPrice(address pool) external { pool.call(abi.encodeWithSignature("poke()")); IPrice(pool).price(); }
             }
             interface IFeed { function latestRoundData() external view returns (uint80,int256,uint256,uint256,uint80); }
             '''
             (root / "src" / "PatternFixture.sol").write_text(source, encoding="utf-8")
             abi = [
                 {"type": "function", "name": name, "stateMutability": "nonpayable", "inputs": []}
-                for name in ("processAll", "verify", "initialize", "unsafeToken", "claim", "oracle")
+                for name in ("processAll", "verify", "initialize", "unsafeToken", "claim", "oracle", "feePath", "callbackPrice")
             ]
             abi += [{"type": "function", "name": "randomWinner", "stateMutability": "nonpayable", "inputs": []}]
             model = lk.walkthrough.ContractModel(
@@ -3099,6 +3101,8 @@ contract BountyArena {
             self.assertIn("TOKEN-001", ids)
             self.assertIn("INIT-001", ids)
             self.assertIn("RNG-001", ids)
+            self.assertIn("READONLY-001", ids)
+            self.assertIn("ECONOMIC-001", ids)
 
     def test_real_world_pattern_scanner_covers_zero_address_and_expiry_boundaries(self):
         patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
