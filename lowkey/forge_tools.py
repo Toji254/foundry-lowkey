@@ -42,7 +42,7 @@ def _project_vyper_sources(root: Path) -> list[Path]:
     ignored = {
         ".git", ".audit", ".venv", ".tox", ".nox", "__pycache__",
         ".pytest_cache", "node_modules", "cache", "out", "artifacts",
-        "build", "dist", "lib",
+        "build", "dist", "lib", "tests", "test", "fixtures", "mocks", "mock",
     }
     return sorted(
         path for path in root.rglob("*.vy")
