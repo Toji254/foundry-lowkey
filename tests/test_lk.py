@@ -2929,6 +2929,12 @@ contract BountyArena {
         with patch.object(lk, "cast_output", return_value=(0, "", "Error: ABI decoding failed: buffer overrun while deserializing")):
             result = lk.run_event(config, ["Ping(uint256)", "0xdeadbeef"])
         self.assertNotEqual(result, 0)
+    def test_event_decoder_stdout_error_also_propagates_nonzero_status(self):
+        config = {"target": None}
+        with patch.object(lk, "cast_output", return_value=(0, "Error: ABI decoding failed: buffer overrun while deserializing", "")):
+            result = lk.run_event(config, ["Ping(uint256)", "0xdeadbeef"])
+        self.assertNotEqual(result, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
