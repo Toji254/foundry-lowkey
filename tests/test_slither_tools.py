@@ -135,6 +135,27 @@ class LowkeySlitherTests(unittest.TestCase):
         self.assertNotIn("success,None", rendered)
 
 
+    def test_summary_does_not_call_zero_findings_a_vyper_target_result(self):
+        payload = {"results": {"detectors": []}}
+        scope = {
+            "target": "ScrvusdOracleV2",
+            "target_language": "Vyper",
+            "solidity_sources": 4,
+            "vyper_sources": 27,
+            "coverage": "Vyper target coverage is not confirmed by this Slither run",
+        }
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            slither_tools._summary(payload, pathlib.Path("."), scope)
+        rendered = output.getvalue()
+        self.assertIn("Target                  : ScrvusdOracleV2", rendered)
+        self.assertIn("Target language         : Vyper", rendered)
+        self.assertIn("Solidity sources found  : 4", rendered)
+        self.assertIn("Vyper sources found     : 27", rendered)
+        self.assertIn("Vyper target coverage is not confirmed", rendered)
+        self.assertIn("Findings reported by Slither: 0", rendered)
+        self.assertIn("NOT a clean", rendered)
+
     @patch("slither_tools.slither_path", return_value="/usr/bin/slither")
     @patch("slither_tools.subprocess.run")
     def test_quiet_scan_suppresses_human_report(self, run, _path):
