@@ -22,6 +22,22 @@ class WalkthroughTests(unittest.TestCase):
         self.assertTrue(walkthrough._is_local_rpc("http://localhost:8545"))
         self.assertFalse(walkthrough._is_local_rpc("https://example.com/rpc"))
 
+    def test_fake_builtin_edges_are_not_external_dependencies(self):
+        model = walkthrough.ContractModel(
+            name="BountyArena",
+            source="src/BountyArena.sol",
+            artifact="out/BountyArena.sol/BountyArena.json",
+            calls=[
+                {"kind": "cross-contract", "from": "createbounty", "to_contract": "BountyArena", "to_function": "encode", "via": "abi"},
+                {"kind": "cross-contract", "from": "createbounty", "to_contract": "BountyArena", "to_function": "require", "via": "x"},
+                {"kind": "cross-contract", "from": "createbounty", "to_contract": "Registry", "to_function": "isAllowed", "via": "registry"},
+            ],
+        )
+        step = walkthrough.Step(1, "Alice", "BountyArena", "0x" + "1" * 40, "createbounty()", [])
+        edges = walkthrough._source_edges_for_step(model, step)
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(edges[0]["to_contract"], "Registry")
+
     def test_source_dependency_explanations_only_include_real_cross_contract_edges(self):
         model = walkthrough.ContractModel(
             name="BountyArena",
