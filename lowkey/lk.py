@@ -2377,6 +2377,37 @@ def _project_target_entries(config, root=None):
     return entries
 
 
+def _target_entry_is_protocol(root, entry):
+    """Return True for contracts that belong to the protocol, not its test/fixture support."""
+    name = str(entry.get("name") or entry.get("contract") or "").strip()
+    lowered_name = name.lower()
+    if any(token in lowered_name for token in ("mock", "fixture", "test")):
+        return False
+    if lowered_name in {"erc1967proxy", "erc1967beaconproxy", "stake_token"}:
+        return False
+
+    artifact = entry.get("artifact")
+    if artifact:
+        try:
+            artifact_path = Path(os.path.expanduser(str(artifact)))
+            if not artifact_path.is_absolute():
+                artifact_path = Path(root) / artifact_path
+            relative = artifact_path.resolve().relative_to(Path(root).resolve()).as_posix().lower()
+            support_parts = (
+                "/test/", "/tests/", "/mock/", "/mocks/", "/fixture/", "/fixtures/",
+                "/script/", "/scripts/", "/lib/", "/node_modules/",
+            )
+            if relative.startswith((
+                "test/", "tests/", "mock/", "mocks/", "fixture/", "fixtures/",
+                "script/", "scripts/", "lib/", "node_modules/",
+            )) or any(part in relative for part in support_parts):
+                return False
+        except (OSError, ValueError):
+            pass
+
+    return True
+
+
 def _select_project_target(config, entry, root):
     address = entry.get("address")
     if not is_address(address):
@@ -2404,41 +2435,53 @@ def _select_project_target(config, entry, root):
     return 0
 
 
-def run_targets(config, interactive=False):
-    """Show/select targets belonging to the current project only."""
+def run_targets(config, interactive=False, include_support=False):
+    """Show/select deployed protocol contracts for the current project."""
     root = audit_context.foundry_project_root()
-    current = active_project_target(config, root)
     entries = _project_target_entries(config, root)
 
-    if not entries:
-        print(f"No targets found for project: {root}")
-        print("Deploy a local target or use 'lk target <name> <address>'.")
+    protocol_entries = [entry for entry in entries if _target_entry_is_protocol(root, entry)]
+    support_entries = [entry for entry in entries if not _target_entry_is_protocol(root, entry)]
+    visible_entries = entries if include_support else protocol_entries
+
+    if not visible_entries:
+        print(f"No protocol targets found for project: {root}")
+        print("Build/deploy the protocol, then run 'lk targets --all' to inspect lab support contracts.")
         return 0
 
-    current = current or project_context_target(root)
+    current = active_project_target(config, root) or project_context_target(root)
     current_address = current.get("address") if isinstance(current, dict) else current
 
-    print(f"PROJECT TARGETS")
-    print("===============")
+    print("AUDIT TARGETS")
+    print("=============")
     print(root)
-    for index, entry in enumerate(entries, 1):
+    for index, entry in enumerate(visible_entries, 1):
         marker = "*" if str(entry.get("address")).lower() == str(current_address or "").lower() else " "
-        print(f" {marker} {index:>2}. {entry.get('name') or entry.get('contract') or 'target':<24} {entry.get('address')}")
+        print(
+            f" {marker} {index:>2}. "
+            f"{entry.get('name') or entry.get('contract') or 'target':<28} "
+            f"{entry.get('address')}"
+        )
+
+    if support_entries and not include_support:
+        print()
+        print(f"Lab/test support hidden: {len(support_entries)}")
+        print("Use 'lk targets --all' when you need to inspect those addresses.")
 
     if not interactive:
         return 0
 
     try:
-        choice = input(f"Select target [1-{len(entries)}] (Enter to cancel): ").strip()
+        choice = input(f"Select audit target [1-{len(visible_entries)}] (Enter to cancel): ").strip()
     except EOFError:
         print()
         return 0
     if not choice:
         return 0
-    if not choice.isdigit() or not (1 <= int(choice) <= len(entries)):
+    if not choice.isdigit() or not (1 <= int(choice) <= len(visible_entries)):
         print("Invalid target selection.")
         return 0
-    return _select_project_target(config, entries[int(choice) - 1], root)
+    return _select_project_target(config, visible_entries[int(choice) - 1], root)
 
 def discover_deployments(root="."):
     records=[]
@@ -7259,7 +7302,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
             )
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
         save_config(config)
-    elif cmd in {"targets","target-list"}: run_targets(config)
+    elif cmd in {"targets","target-list"}: return run_targets(config, include_support=bool(args and args[0] == "--all"))
     elif cmd=="use":
         root=audit_context.foundry_project_root()
         if not args:
