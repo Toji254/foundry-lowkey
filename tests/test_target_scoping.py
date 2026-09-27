@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import tempfile
 import unittest
@@ -64,6 +65,21 @@ class TargetScopingTests(unittest.TestCase):
                 lk.resolve_target_ref(config, "1", current_root),
                 "0x1111111111111111111111111111111111111111",
             )
+
+    def test_test_only_vyper_mock_is_not_application_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "tests" / "shared" / "contracts"
+            source.mkdir(parents=True)
+            source_path = source / "BlockHashOracleMock.vy"
+            source_path.write_text("# test mock\n", encoding="utf-8")
+            artifact = {
+                "contractName": "BlockHashOracleMock",
+                "sourceName": "tests/shared/contracts/BlockHashOracleMock.vy",
+                "bytecode": {"object": "0x6000"},
+                "abi": [],
+            }
+            self.assertFalse(lk.artifact_is_project_application(root, source_path, artifact))
 
     def test_interactive_targets_selects_current_project_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
