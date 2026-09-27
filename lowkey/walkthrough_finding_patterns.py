@@ -129,6 +129,13 @@ PATTERN_CATALOG: tuple[dict[str, Any], ...] = (
         "provenance": ["Immunefi Common Vulnerabilities", "Code4rena Revert Lend"],
     },
     {
+        "id": "ZEROADDR-001",
+        "title": "Zero-address accepted on a configuration path",
+        "keywords": ("set", "configure", "register", "initialize", "rescue", "router", "oracle", "treasury"),
+        "logic": "Critical dependencies such as owners, tokens, routers, or recipients can become permanently unusable when address(0) is accepted without an explicit design reason.",
+        "provenance": ["CodeHawks SNARKeling", "CodeHawks access/configuration findings", "Immunefi Common Vulnerabilities"],
+    },
+    {
         "id": "TIME-001",
         "title": "Deadline / expiry guard deserves a boundary probe",
         "keywords": ("deadline", "expiry", "expiration", "validuntil"),
@@ -522,6 +529,26 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     PATTERN_CATALOG[12]["provenance"],
                 ))
 
+        # Zero-address configuration check.
+        if _sensitive_name(name, PATTERN_CATALOG[13]["keywords"]) and re.search(r"\baddress\s*\(\s*0\s*\)", body, re.I) is None:
+            address_params = [
+                p for p in list((_abi_function(model, name) or {}).get("inputs") or [])
+                if core._canonical_type(p) == "address"
+            ]
+            if address_params and re.search(r"\b(?:=|\+=|\-=)\s*[^;\n]*\b(?:token|owner|admin|router|oracle|recipient|receiver|treasury|registry|authority)\b", body, re.I):
+                results.append(_result(
+                    "ZEROADDR-001",
+                    PATTERN_CATALOG[13]["title"],
+                    model,
+                    name,
+                    source,
+                    line,
+                    ["An address parameter reaches a configuration/state-write path, but the function contains no obvious zero-address guard."],
+                    PATTERN_CATALOG[13]["logic"],
+                    "Probe address(0) and verify whether the dependency becomes unusable or whether zero is an intentional sentinel.",
+                    PATTERN_CATALOG[13]["provenance"],
+                ))
+
         # Deadline / expiry boundary.
         if re.search(r"\b(?:deadline|expiry|expiration|validUntil)\b", body, re.I):
             results.append(_result(
@@ -808,6 +835,62 @@ def _build_deadline_stories(
     return stories
 
 
+def _build_zero_address_stories(
+    config: dict[str, Any],
+    actors: list[core.Actor],
+    targets: list[tuple[str, str, core.ContractModel]],
+    seed: int,
+) -> list[core.WalkthroughStory]:
+    if not actors:
+        return []
+    rng = __import__("random").Random(seed + 303)
+    observed = core._merge_protocol_observations(config.get("_walkthrough_observed") or {}, config=config)
+    stories: list[core.WalkthroughStory] = []
+    actor = actors[2] if len(actors) > 2 else actors[0]
+    for _label, address, model in targets:
+        for fn in core._adversarial_functions(model):
+            name = str(fn.get("name") or "")
+            if not _sensitive_name(name, PATTERN_CATALOG[13]["keywords"]):
+                continue
+            params = list(fn.get("inputs") or [])
+            address_index = next(
+                (i for i,p in enumerate(params)
+                 if core._canonical_type(p) == "address"
+                 and any(k in str(p.get("name") or "").lower() for k in ("owner", "admin", "token", "router", "oracle", "recipient", "receiver", "treasury", "registry"))),
+                None,
+            )
+            if address_index is None:
+                continue
+            args=[]
+            for i,param in enumerate(params):
+                if i == address_index:
+                    args.append("0x" + "00" * 20)
+                else:
+                    args.append(core._random_sol_value(param, actors, address, rng, observed, model, name))
+            stories.append(core.WalkthroughStory(
+                story_id=f"ZA-{len(stories)+1:02d}",
+                title=f"Zero-address probe: {model.name}.{name}",
+                goal="Does a configuration path accept address(0) where a real dependency is expected?",
+                actions=[{
+                    "kind": "call", "actor": actor.name, "contract": model.name,
+                    "address": address, "function": core._signature(fn), "args": args,
+                    "value": 0, "reason": "real-world pattern probe: zero-address boundary",
+                }],
+            ))
+            if len(stories) >= 2:
+                return stories
+    return stories
+
+
+def assess_zero_address_story(story: core.WalkthroughStory, steps: list[core.Step]) -> None:
+    if not steps or steps[0].status != "success":
+        story.signal = "NOT_REPRODUCED"
+        story.evidence = ["The zero-address call was rejected or could not execute."]
+        return
+    story.signal = "REVIEW"
+    story.evidence = ["the configuration call accepted address(0)", "verify whether zero is an intentional sentinel or leaves the dependency unusable"]
+
+
 def assess_initializer_story(
     story: core.WalkthroughStory,
     steps: list[core.Step],
@@ -853,6 +936,7 @@ def run(
     stories.extend(_build_replay_stories(config, actors, targets, seed))
     stories.extend(_build_initializer_stories(config, actors, targets, seed))
     stories.extend(_build_deadline_stories(config, actors, targets, seed, core._block_timestamp(rpc)))
+    stories.extend(_build_zero_address_stories(config, actors, targets, seed))
     stories = stories[:8]
 
     live_steps: list[core.Step] = []
@@ -873,6 +957,8 @@ def run(
             assess_replay_story(story, story_steps, actors)
         elif story.story_id.startswith("IN-"):
             assess_initializer_story(story, story_steps, rpc, actors)
+        elif story.story_id.startswith("ZA-"):
+            assess_zero_address_story(story, story_steps)
         else:
             assess_deadline_story(story, story_steps)
         for obs in observations:
