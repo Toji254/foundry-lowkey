@@ -7368,9 +7368,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 draw(step, before)
             else:
                 receipt=_receipt(rpc,tx)
+                step.tx_hash=tx
                 _write_transaction_evidence(root, rpc, step, receipt)
                 trace=_trace_tree(rpc,tx)
-                step.tx_hash=tx
                 step.calldata=_transaction_input(rpc,tx)
                 step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
                 step.events=_event_rows(host,config,receipt)
