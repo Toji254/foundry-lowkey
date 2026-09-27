@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
