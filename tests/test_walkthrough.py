@@ -1241,6 +1241,25 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("Function arguments and transaction value are separate", joined)
         self.assertIn("SOURCE-CORRELATED", joined)
 
+
+
+    def test_human_probe_renderer_can_switch_to_technical_view(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            functions=["pause()"],
+        )
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        step = walkthrough.Step(
+            1, "Alice", "Demo", "0x" + "2" * 40,
+            "pause()", [], status="success",
+        )
+        rendered = walkthrough._render_adversarial_probe(
+            pathlib.Path("/tmp/project"), step, model, actors, technical=True
+        )
+        self.assertIn("ACCESS CONTROL", "\n".join(rendered))
+
     def test_adversarial_test_renderer_explains_snapshot_isolation(self):
         rendered = walkthrough._render_adversarial_intro(24, ["createbounty(address,uint256): established"])
         joined = "\n".join(rendered)
