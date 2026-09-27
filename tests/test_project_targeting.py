@@ -178,6 +178,32 @@ class ProjectTargetingTests(unittest.TestCase):
             )
             self.assertEqual(lk.discover_audit_target_contract(root), "Factory")
 
+    def test_lab_deployer_can_be_replaced_by_named_user_actor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            config = {
+                "wallets": {
+                    "lab-deployer": {
+                        "source": "anvil-default",
+                        "anvil_index": 0,
+                        "address": "0x" + "1" * 40,
+                    }
+                },
+                "actor": "lab-deployer",
+            }
+            fake = {
+                "url": "http://127.0.0.1:8545",
+                "accounts": ["0x" + "1" * 40],
+            }
+            with patch.object(lk, "anvil_rpc_info", return_value=fake):
+                with patch.object(lk, "save_config"):
+                    with patch.object(lk, "derive_default_anvil_key", return_value="0x" + "a" * 64):
+                        result = lk.select_anvil_actor(config, 0, "Alice")
+            self.assertEqual(result, 0)
+            self.assertEqual(config["actor"], "Alice")
+            self.assertNotIn("lab-deployer", config["wallets"])
+            self.assertEqual(config["wallets"]["Alice"]["anvil_index"], 0)
+
     def test_repo_clone_helpers(self):
         self.assertEqual(
             lk.repo_clone_url("CodeHawks-Contests/2026-07-bc-confidence-pools"),
