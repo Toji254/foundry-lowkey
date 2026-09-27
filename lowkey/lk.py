@@ -2730,8 +2730,19 @@ def encode_target_call(config, function, values):
                 for index,item in enumerate(inputs)
             )
             suffix=f" Expected: {expected}." if expected else ""
+            signature_text = format_signature(matches[0])
+            hint = (
+                f" Use: lk changes '{signature_text}' "
+                + " ".join(
+                    f"<{item.get('name') or 'arg'+str(index+1)}>"
+                    for index,item in enumerate(inputs)
+                )
+                + "."
+            ) if inputs else ""
             raise ValueError(
-                f"{format_signature(matches[0])} expects {len(inputs)} argument(s), got {len(values)}.{suffix}"
+                f"{signature_text} expects {len(inputs)} argument(s), got {len(values)}.{suffix}"
+                f" The quoted function signature contains TYPES; pass real VALUES after the closing quote."
+                f"{hint}"
             )
 
     code,encoded,error=cast_output(["cast","calldata",signature,*values])
@@ -4304,9 +4315,57 @@ def run_investigate(config, args):
     if function:
         print(f"  lk fn {function}")
         print(f"  lk ask {function}")
-        print(f"  lk changes {function}")
+
+        abi = load_abi(config.get("target"), config)
+        matches = matching_functions(abi, function) if abi else []
+        item = matches[0] if len(matches) == 1 else None
+
+        print("\n  How function arguments work:")
+        print("    The quoted part is the function name + parameter TYPES (the ABI signature).")
+        print("    Put the real parameter VALUES AFTER the closing quote.")
+        if item:
+            inputs = item.get("inputs", [])
+            if inputs:
+                print("    Parameters:")
+                for index, param in enumerate(inputs, 1):
+                    name = param.get("name") or f"arg{index}"
+                    print(f"      {index}. {name} : {canonical_type(param)}")
+                placeholders = " ".join(
+                    f"<{param.get('name') or 'arg'+str(index)}>"
+                    for index, param in enumerate(inputs, 1)
+                )
+                print("    Pattern:")
+                print(f"      lk changes '{format_signature(item)}' {placeholders}")
+            else:
+                print("    This function takes no arguments.")
+                print(f"    Pattern: lk changes '{format_signature(item)}'")
+        else:
+            print("    Use lk ask '<function>' when you need the parameter names and types.")
+
+        print("\n  Execute / inspect state changes:")
+        print(f"    lk changes '{function}' <value1> <value2> ...")
+        print("    Real values go AFTER the quoted function signature.")
+        if item and item.get("inputs"):
+            print("    For this function:")
+            print(f"      lk changes '{format_signature(item)}' " + " ".join(
+                f"<{param.get('name') or 'arg'+str(index)}>"
+                for index, param in enumerate(item.get("inputs", []), 1)
+            ))
+        else:
+            print(f"      lk changes '{function}'")
+
+        print("\n  Generate a PoC/test:")
+        print(f"    lk generate test '{function}' <value1> <value2> ...")
+        print("    Real values go AFTER the quoted function signature.")
+        if item and item.get("inputs"):
+            print("    For this function:")
+            print(f"      lk generate test '{format_signature(item)}' " + " ".join(
+                f"<{param.get('name') or 'arg'+str(index)}>"
+                for index, param in enumerate(item.get("inputs", []), 1)
+            ))
+        print("    Or provide raw calldata:")
+        print(f"      lk generate test '{function}' --calldata <hex>")
         print("  lk trace")
-        print(f"  lk generate test {function} ...")
     print("  lk findings")
     print("  lk context")
     return 0
@@ -4731,7 +4790,12 @@ STORAGE
   lk mapping <slot> <key>            Calculate and read a mapping slot
   lk snapshot [slots]                Save storage values
   lk diff                            Compare saved storage values
-  lk changes <function> [args]       Show storage changes from a call
+  lk changes '<name(parameter TYPES...)>' <VALUES...>
+                                      Show storage changes from a call.
+                                      Signature = function name + parameter TYPES.
+                                      VALUES go AFTER the quoted signature.
+                                      Example:
+                                        lk changes 'createbounty(address,uint256)' <addr> <amount>
 
 TEST / REPRODUCE
   lk probe <function> [args]         Try a call without assertions
@@ -4741,7 +4805,12 @@ TEST / REPRODUCE
   lk symbolic                        Run Forge symbolic tests
   lk mutate                          Run Forge mutation testing
   lk brutalize                       Stress calldata/state assumptions
-  lk generate test <function> [...]  Generate a reusable Forge test
+  lk generate test '<name(parameter TYPES...)>' <VALUES...>
+                                      Generate a reusable Forge test.
+                                      Signature = function name + parameter TYPES.
+                                      VALUES go AFTER the quoted signature.
+                                      Example:
+                                        lk generate test 'createbounty(address,uint256)' <addr> <amount>
   lk generate poc <function> [...]   Generate a PoC script
   lk generate deployment <Contract> Generate a deployment script
 
