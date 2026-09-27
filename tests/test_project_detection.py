@@ -115,11 +115,11 @@ class ProjectDetectionTests(unittest.TestCase):
             submodule = root / "vendor" / "scrvusd"
             submodule.mkdir(parents=True)
             (root / ".gitmodules").write_text(
-                '[submodule "scrvusd"]\\n\\tpath = vendor/scrvusd\\n\\turl = https://example.com/scrvusd.git\\n',
+                '[submodule "scrvusd"]\n\tpath = vendor/scrvusd\n\turl = https://example.com/scrvusd.git\n',
                 encoding="utf-8",
             )
-            (root / "pyproject.toml").write_text("[project]\\nname = \"root-demo\"\\n", encoding="utf-8")
-            (submodule / "pyproject.toml").write_text("[project]\\nname = \"nested-demo\"\\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text("[project]\nname = \"root-demo\"\n", encoding="utf-8")
+            (submodule / "pyproject.toml").write_text("[project]\nname = \"nested-demo\"\n", encoding="utf-8")
             calls = []
 
             def fake_run(command, cwd):
@@ -169,13 +169,13 @@ class ProjectDetectionTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             nested = root / "tests" / "scrvusd" / "contracts" / "scrvusd"
             (root / ".gitmodules").write_text(
-                '[submodule "scrvusd"]\\n\\tpath = tests/scrvusd/contracts/scrvusd\\n\\turl = https://example.com/scrvusd.git\\n',
+                '[submodule "scrvusd"]\n\tpath = tests/scrvusd/contracts/scrvusd\n\turl = https://example.com/scrvusd.git\n',
                 encoding="utf-8",
             )
-            (root / "pyproject.toml").write_text("[project]\\nname = \"root-demo\"\\n", encoding="utf-8")
-            (root / "test_root.py").write_text("def test_root(): pass\\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text("[project]\nname = \"root-demo\"\n", encoding="utf-8")
+            (root / "test_root.py").write_text("def test_root(): pass\n", encoding="utf-8")
             (nested / "tests").mkdir(parents=True)
-            (nested / "tests" / "test_nested.py").write_text("def test_nested(): pass\\n", encoding="utf-8")
+            (nested / "tests" / "test_nested.py").write_text("def test_nested(): pass\n", encoding="utf-8")
             calls = []
 
             def fake_run(command, cwd):
@@ -191,7 +191,10 @@ class ProjectDetectionTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertEqual(calls[0], (["uv", "run", "pytest", "-q", "--ignore", "tests/scrvusd/contracts/scrvusd/tests"], root))
-            self.assertEqual(calls[1], (["uv", "run", "pytest", "-q"], nested))
+            self.assertEqual(
+                calls[1],
+                (["uv", "run", "--project", str(root), "pytest", "-q"], nested),
+            )
 
     def test_native_vyper_tests_use_project_python_runner(self):
         with tempfile.TemporaryDirectory() as tmp:
