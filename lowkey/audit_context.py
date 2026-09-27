@@ -151,7 +151,10 @@ def save(data: dict[str, Any], root: Path | None = None) -> Path:
     data["updated_at"] = _now()
 
     path = context_path(project_root)
-    tmp = path.with_suffix(".tmp")
+    # Multiple Lowkey processes may run against the same project (CI smoke checks,
+    # shell process substitutions, parallel tooling). A shared fixed temp filename
+    # creates a race where one writer can replace another writer's temp file.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
     return path
