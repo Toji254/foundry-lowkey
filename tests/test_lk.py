@@ -3100,6 +3100,27 @@ contract BountyArena {
             self.assertIn("INIT-001", ids)
             self.assertIn("RNG-001", ids)
 
+    def test_real_world_pattern_scanner_supports_vyper_functions(self):
+        patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = '''
+@external
+def withdraw(amount: uint256):
+    raw_call(msg.sender, b"", value=amount)
+    balances[msg.sender] -= amount
+'''
+            (root / "src" / "Vault.vy").write_text(source, encoding="utf-8")
+            model = lk.walkthrough.ContractModel(
+                name="Vault", source="src/Vault.vy", artifact="out/Vault.json", kind="vyper",
+                abi=[{"type": "function", "name": "withdraw", "stateMutability": "nonpayable", "inputs": [{"name": "amount", "type": "uint256"}]}],
+            )
+            results = patterns.scan_model(root, model)
+            ids = {item.pattern_id for item in results}
+            self.assertIn("REPLAY-001", ids)
+            self.assertIn("REENTRANCY-001", ids)
+
     def test_replay_pattern_requires_a_real_second_value_delta_for_confirmation(self):
         patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
         actors = [
