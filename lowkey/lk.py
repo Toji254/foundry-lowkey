@@ -1936,6 +1936,11 @@ def run_export(config):
     Path(os.path.join(export_dir,"contract.json")).write_text(json.dumps({"target":config.get("target"),"rpc":rpc_display(effective_rpc(config)),"abi":config.get("abi_paths",{}).get(config.get("target")),"last_tx":config.get("last_tx")},indent=4),encoding="utf-8")
     print(f"Audit report exported: {export_dir}")
 def run_self_test():
+    alias_address = "0x" + "1" * 40
+    alias_config = {"aliases": {}, "targets": {}, "project_roots": {}}
+    alias_root = audit_context.foundry_project_root()
+    remember_project_target(alias_config, alias_root, "one", alias_address)
+
     checks=[
         ("address validation",is_address("0x"+"1"*40) and not is_address("0x"+"1"*64) and not is_address(None)),
         ("slot validation",is_nonzero_slot("0x"+"1"+"0"*63) and not is_nonzero_slot("not-hex")),
@@ -1946,7 +1951,7 @@ def run_self_test():
         ("tuple canonicalization",canonical_type({"type":"tuple","components":[{"type":"address"},{"type":"uint256"}]})=="(address,uint256)"),
         ("nested tuple array",canonical_type({"type":"tuple[]","components":[{"type":"address"},{"type":"uint256[]"}]})=="(address,uint256[])[]"),
         ("output signature",format_output_signature({"name":"f","inputs":[{"type":"address"}],"outputs":[{"type":"uint256"}]})=="f(address)(uint256)"),
-        ("target alias resolution",resolve_target_ref({"aliases":{"one":"0x"+"1"*40},"targets":{}},"one")=="0x"+"1"*40),
+        ("target alias resolution",resolve_target_ref(alias_config,"one",alias_root)==alias_address),
         ("safe solidity identifier",solidity_identifier("unauthorized release #1")=="unauthorized_release__1"),
         ("solidity address literal","address(uint160(0x00" in solidity_address_literal("0x"+"1"*40)),
         ("lab options",split_lab_options(["release","1","--actor","Alice","--value","1ether"])[1:] == ("Alice","1ether",False)),
