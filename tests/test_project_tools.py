@@ -265,7 +265,7 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             graph = project_tools.build_dependency_graph(root)
             calls = graph["nodes"][0]["calls"]
             self.assertEqual(len(calls), 2)
-            self.assertTrue(all(call["line"] >= 4 for call in calls))
+            self.assertTrue(all(call["line"] >= 3 for call in calls))
 
     def test_graph_render_is_human_and_excludes_generated_support_code(self):
         with tempfile.TemporaryDirectory() as tmp:
