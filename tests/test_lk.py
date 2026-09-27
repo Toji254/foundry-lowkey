@@ -494,6 +494,39 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertIn('cast send "$TARGET"', content)
             self.assertIn("increment(uint256)", content)
 
+    def test_walkthrough_infers_payable_value_from_msg_value_equality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir(parents=True)
+            source = src / "Vault.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20;\\n"
+                "contract Vault {\\n"
+                "    function deposit(uint256 amount) external payable {\\n"
+                "        require(amount == msg.value, 'attach eth');\\n"
+                "    }\\n"
+                "}\\n",
+                encoding="utf-8",
+            )
+            model = lk.walkthrough.ContractModel(
+                name="Vault",
+                source="src/Vault.sol",
+                artifact="out/Vault.sol/Vault.json",
+                abi=[{
+                    "type": "function",
+                    "name": "deposit",
+                    "inputs": [{"name": "amount", "type": "uint256"}],
+                    "outputs": [],
+                    "stateMutability": "payable",
+                }],
+            )
+            fn = model.abi[0]
+            self.assertEqual(
+                lk.walkthrough._value_for(fn, model=model, root=root, args=[10**18]),
+                10**18,
+            )
+
     def test_walkthrough_transaction_evidence_is_clickable_and_confirmable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
