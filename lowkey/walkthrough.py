@@ -4925,6 +4925,7 @@ def _run_adversarial_test(
             trace = _trace_tree(rpc, tx)
             step.status = "success" if receipt and receipt.get("status") in (None, "0x1", 1) else "reverted"
             step.events = _event_rows(host, config, receipt)
+            _write_transaction_evidence(root, rpc, step, receipt)
             step.execution_edges = _trace_execution_edges(root, rpc, models, trace)
             if step.status != "success":
                 step.error = output or "transaction reverted"
@@ -4942,8 +4943,9 @@ def _run_adversarial_test(
         shown_args = ", ".join(_friendly_arg(value, actors) for value in args) or "∅"
         marker = "✓" if step.status == "success" else "✕"
         color = GREEN if step.status == "success" else RED
+        tx_display = f"  tx {_transaction_link(root, tx)}" if tx else ""
         print(_paint(
-            f"  {index:02d} {marker} {label}: [{actor.name}] ──▶ {active_model.name}.{linked}({shown_args})",
+            f"  {index:02d} {marker} {label}: [{actor.name}] ──▶ {active_model.name}.{linked}({shown_args}){tx_display}",
             color,
             _ansi_enabled(False),
         ))
