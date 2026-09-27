@@ -6623,6 +6623,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 target = deployed_target
                 config["target"] = target
                 config["target_contract"] = model.name
+                artifact_path = (root / model.artifact).resolve()
+                if artifact_path.is_file():
+                    config.setdefault("abi_paths", {})[target] = str(artifact_path)
+                config.setdefault("project_roots", {})[target] = str(root)
                 if hasattr(host, "save_config"):
                     try:
                         host.save_config(config)
