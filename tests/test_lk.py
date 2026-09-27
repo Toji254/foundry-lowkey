@@ -406,27 +406,38 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(command[:2], ["script", "script/LowkeyAutoConfidencePoolLab.s.sol"])
         self.assertNotIn("script/LowkeyAutoConfidencePoolLab.s.sol:LowkeyAutoConfidencePoolLab", command)
 
-    def test_confidence_pool_lab_adapter_is_generated_from_project_fixtures(self):
+    def test_promoted_test_fixture_is_generated_from_project_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            for path in [
-                "src/ConfidencePool.sol",
-                "src/ConfidencePoolFactory.sol",
-                "src/mocks/MockConfidencePoolModerator.sol",
-                "test/mocks/MockERC20.sol",
-                "test/mocks/MockAttackRegistry.sol",
-                "test/mocks/MockSafeHarborRegistry.sol",
-                "test/mocks/MockAgreement.sol",
-            ]:
-                target = root / path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text("// fixture", encoding="utf-8")
-            script = lk.ensure_confidence_pool_lab_script(root)
-            self.assertIsNotNone(script)
+            test_path = root / "test" / "PoolHarness.t.sol"
+            test_path.parent.mkdir(parents=True, exist_ok=True)
+            test_path.write_text(
+                """
+pragma solidity ^0.8.20;
+contract PoolHarness {
+    function setUp() public {}
+    function createPool() internal returns (address newPool, bytes memory args) {
+        newPool = address(new Pool());
+        args = "";
+    }
+}
+contract Pool {
+    uint256 public value = 1;
+}
+""",
+                encoding="utf-8",
+            )
+            fixture = lk.discover_local_lab_fixture(root, "Pool")
+            self.assertIsNotNone(fixture)
+            self.assertEqual(fixture["contract"], "PoolHarness")
+            self.assertEqual(fixture["create_function"], "createPool")
+            self.assertTrue(fixture["tuple_return"])
+
+            script = lk._generate_test_fixture_lab_script(root, fixture)
             self.assertTrue(pathlib.Path(script).is_file())
             content = pathlib.Path(script).read_text(encoding="utf-8")
-            self.assertIn("stop before createPool()", content)
-            self.assertNotIn("factory.createPool(", content)
+            self.assertIn("is PoolHarness", content)
+            self.assertIn("(target, ) = createPool();", content)
             self.assertIn("LOWKEY_TARGET", content)
 
     def test_walkthrough_failure_diagnosis_is_crash_safe(self):
@@ -918,43 +929,24 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("vscode://file/", rendered)
         self.assertIn("setStakeTokenAllowed", rendered)
 
-    def test_confidence_pool_auto_lab_uses_specialized_harness(self):
+    def test_local_lab_fixture_discovery_prefers_requested_project_test(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            (root / "src").mkdir(parents=True)
-            (root / "src" / "ConfidencePool.sol").write_text(
-                "pragma solidity ^0.8.20; contract ConfidencePool { }",
+            test_root = root / "test"
+            test_root.mkdir(parents=True)
+            (test_root / "Other.t.sol").write_text(
+                "pragma solidity ^0.8.20; contract OtherTest { function setUp() public {} function createPool() internal returns (address) { return address(0); } }",
                 encoding="utf-8",
             )
-            # The moderator lives under src/mocks; the remaining fixtures live
-            # under test/mocks in the contest repository.
-            (root / "src" / "ConfidencePoolFactory.sol").write_text(
-                "pragma solidity ^0.8.20; contract ConfidencePoolFactory { }",
+            (test_root / "Target.t.sol").write_text(
+                "pragma solidity ^0.8.20; contract TargetHarness { function setUp() public {} function createPool() internal returns (address) { return address(0); } }",
                 encoding="utf-8",
             )
-            (root / "src" / "mocks").mkdir(parents=True)
-            (root / "src" / "mocks" / "MockConfidencePoolModerator.sol").write_text(
-                "pragma solidity ^0.8.20; contract MockConfidencePoolModerator { }",
-                encoding="utf-8",
-            )
-            for name in ("MockERC20.sol","MockAttackRegistry.sol","MockSafeHarborRegistry.sol","MockAgreement.sol"):
-                (root / "test" / "mocks").mkdir(parents=True, exist_ok=True)
-                (root / "test" / "mocks" / name).write_text(
-                    f"pragma solidity ^0.8.20; contract {name[:-4]} {{ }}",
-                    encoding="utf-8",
-                )
-            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            fixture = lk.discover_local_lab_fixture(root, "TargetHarness")
+            self.assertIsNotNone(fixture)
+            self.assertEqual(fixture["contract"], "TargetHarness")
 
-            with patch.object(lk, "_confidence_pool_lab_supported", return_value=True), \
-                 patch.object(lk, "ensure_confidence_pool_lab_script", return_value=str(root / "script" / "Auto.s.sol")):
-                requested = "ConfidencePool"
-                auto_selected = requested or lk.discover_audit_target_contract(root)
-                generated = lk.ensure_confidence_pool_lab_script(root)
-
-            self.assertEqual(auto_selected, "ConfidencePool")
-            self.assertTrue(str(generated).endswith("Auto.s.sol"))
-
-    def test_bootstrap_does_not_reuse_saved_confidence_pool_without_fixture(self):
+    def test_bootstrap_does_not_reuse_saved_target_without_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "src").mkdir()
@@ -3054,7 +3046,7 @@ contract BountyArena {
         adapter = importlib.import_module("lowkey.walkthrough_benchmarks")
         self.assertIsNone(adapter.get_benchmark_adapter(model, [model], {}))
 
-    def test_confidence_pool_benchmark_adapter_matches_only_confidence_pool_system(self):
+    def test_target_fixture_benchmark_adapter_matches_only_confidence_pool_system(self):
         model = lk.walkthrough.ContractModel(
             name="ConfidencePoolFactory",
             source="src/ConfidencePoolFactory.sol",
