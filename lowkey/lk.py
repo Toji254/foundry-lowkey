@@ -2905,15 +2905,24 @@ def discover_local_lab_fixture(root=".", requested=None):
     return candidates[0] if candidates else None
 
 
-def _generate_test_fixture_lab_script(root, candidate):
-    """Generate a disposable wrapper that executes the fixture from a real helper contract."""
+def _fixture_state_files(root, safe_name):
+    state_dir = Path(root).resolve() / ".audit" / "lowkey"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return (
+        state_dir / f"fixture_state_{safe_name}.json",
+        state_dir / f"fixture_code_{safe_name}.txt",
+    )
+
+
+def _generate_test_fixture_lab_script(root, candidate, state_path, code_path):
+    """Generate a simulation-only runner whose state can be materialized into local Anvil."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
     relative = str(candidate["relative"]).replace("\\", "/")
     contract = str(candidate["contract"])
-    create_function = str(candidate.get("create_function") or "createPool")
-    tuple_return = bool(candidate.get("tuple_return"))
-
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
+
+    state_literal = str(state_path).replace("\\", "/")
+    code_literal = str(code_path).replace("\\", "/")
     script_dir = root_path / "script"
     script_dir.mkdir(parents=True, exist_ok=True)
     script_path = script_dir / f"LowkeyAutoFixture_{safe_name}.s.sol"
@@ -2923,48 +2932,217 @@ pragma solidity ^0.8.20;
 
 import {{Script}} from "forge-std/Script.sol";
 import {{console2}} from "forge-std/console2.sol";
+import {{Vm}} from "forge-std/Vm.sol";
 import {{ {contract} }} from "{relative}";
 
-/// @dev Runs the discovered test fixture from a deployed helper contract.
-/// This keeps address(this), storage, and fixture-local state on a normal
-/// contract instead of the ephemeral Forge script contract.
-contract LowkeyFixtureHelper_{safe_name} is {contract} {{
-    address public lastTarget;
-
-    function runFixture() external returns (address target) {{
+/// @dev Executes the discovered test fixture entirely inside Forge's local
+/// simulation VM. Lowkey materializes the resulting state delta into Anvil
+/// after the simulation finishes, so fixture cheatcodes remain valid.
+contract LowkeyFixtureRunner_{safe_name} is {contract} {{
+    function runFixture() external {{
         setUp();
-'''
-    if tuple_return:
-        code += f'''        (target, ) = {create_function}();
-'''
-    else:
-        code += f'''        target = {create_function}();
-'''
-    code += '''        lastTarget = target;
-    }
-}
+    }}
+}}
 
-contract LowkeyAutoFixtureScript_''' + safe_name + ''' is Script {
-    function run() external {
-        vm.startBroadcast();
+contract LowkeyAutoFixtureScript_{safe_name} is Script {{
+    function run() external {{
+        vm.startStateDiffRecording();
 
-        LowkeyFixtureHelper_''' + safe_name + ''' helper = new LowkeyFixtureHelper_''' + safe_name + '''();
+        LowkeyFixtureRunner_{safe_name} runner = new LowkeyFixtureRunner_{safe_name}();
+        runner.runFixture();
 
-        vm.stopBroadcast();
+        string memory stateDiff = vm.getStateDiffJson();
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
 
-        console2.log("LOWKEY_FIXTURE", "test-promotion");
-        console2.log("LOWKEY_HELPER", address(helper));
-    }
-}
+        vm.writeFile("{state_literal}", stateDiff);
+        vm.writeFile("{code_literal}", "");
+
+        for (uint256 i = 0; i < accesses.length; ++i) {{
+            if (
+                accesses[i].kind == Vm.AccountAccessKind.Create &&
+                accesses[i].deployedCode.length > 0
+            ) {{
+                vm.writeLine(
+                    "{code_literal}",
+                    string.concat(
+                        vm.toString(accesses[i].account),
+                        "|",
+                        vm.toString(accesses[i].deployedCode)
+                    )
+                );
+            }}
+        }}
+
+        console2.log("LOWKEY_FIXTURE", "state-diff-promotion");
+        console2.log("LOWKEY_RUNNER", address(runner));
+    }}
+}}
 '''
     script_path.write_text(code, encoding="utf-8")
     return script_path
 
 
+def _fixture_quantity(value):
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    return int(text, 16) if text.lower().startswith("0x") else int(text)
+
+
+def _fixture_hex_quantity(value):
+    return hex(_fixture_quantity(value))
+
+
+def _artifact_runtime_bytecode(artifact):
+    if not isinstance(artifact, dict):
+        return None
+    deployed = artifact.get("deployedBytecode")
+    if isinstance(deployed, dict):
+        deployed = deployed.get("object")
+    if isinstance(deployed, str) and deployed.startswith("0x") and len(deployed) > 2:
+        return deployed.lower()
+    return None
+
+
+def _fixture_target_artifact(root, target_contract):
+    target_name = str(target_contract or "").strip().lower()
+    if not target_name:
+        return None, None
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path) or {}
+        if artifact_contract_name(path, artifact).lower() == target_name:
+            return path, artifact
+    return None, None
+
+
+def _find_fixture_target(root, state_data, code_map, target_contract, rpc):
+    target_name = str(target_contract or "").strip().lower()
+    metadata_matches = []
+    if target_name:
+        for address, entry in state_data.items():
+            contract_label = str((entry or {}).get("contract") or "").strip().lower()
+            if contract_label.endswith(f":{target_name}") or contract_label == target_name:
+                if address.lower() in code_map:
+                    metadata_matches.append(address)
+
+    if len(metadata_matches) == 1:
+        return metadata_matches[0]
+
+    _, artifact = _fixture_target_artifact(root, target_contract)
+    expected_runtime = _artifact_runtime_bytecode(artifact)
+
+    runtime_matches = []
+    if expected_runtime:
+        for address in code_map:
+            code_result = run_cast(
+                ["code", address, "--rpc-url", str(rpc)],
+                config={},
+                capture=True,
+            )
+            runtime = str(code_result.text or "").strip().lower()
+            if code_result.code == 0 and runtime == expected_runtime:
+                runtime_matches.append(address)
+
+    if len(runtime_matches) == 1:
+        return runtime_matches[0]
+    if metadata_matches:
+        return metadata_matches[0]
+    if runtime_matches:
+        return runtime_matches[0]
+    return None
+
+
+def _materialize_fixture_state(root, rpc, state_path, code_path, target_contract):
+    try:
+        state_data = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, f"could not read fixture state diff: {exc}"
+
+    if not isinstance(state_data, dict):
+        return None, "fixture state diff is not a JSON object"
+
+    try:
+        code_lines = Path(code_path).read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return None, f"could not read fixture code map: {exc}"
+
+    code_map = {}
+    for line in code_lines:
+        if "|" not in line:
+            continue
+        address, code = line.split("|", 1)
+        address = address.strip().lower()
+        code = code.strip()
+        if is_address(address) and code.startswith("0x"):
+            code_map[address] = code
+
+    operations = 0
+
+    for address, code in code_map.items():
+        result = rpc_json(rpc, "anvil_setCode", [address, code])
+        if result is None:
+            return None, f"anvil_setCode failed for {address}"
+        operations += 1
+
+    for address, entry in state_data.items():
+        if not is_address(address) or not isinstance(entry, dict):
+            continue
+
+        balance_diff = entry.get("balanceDiff")
+        if isinstance(balance_diff, dict) and "newValue" in balance_diff:
+            result = rpc_json(
+                rpc,
+                "anvil_setBalance",
+                [address, _fixture_hex_quantity(balance_diff["newValue"])],
+            )
+            if result is None:
+                return None, f"anvil_setBalance failed for {address}"
+            operations += 1
+
+        nonce_diff = entry.get("nonceDiff")
+        if isinstance(nonce_diff, dict) and "newValue" in nonce_diff:
+            result = rpc_json(
+                rpc,
+                "anvil_setNonce",
+                [address, _fixture_hex_quantity(nonce_diff["newValue"])],
+            )
+            if result is None:
+                return None, f"anvil_setNonce failed for {address}"
+            operations += 1
+
+        state_diff = entry.get("stateDiff")
+        if isinstance(state_diff, dict):
+            for slot, change in state_diff.items():
+                if not isinstance(change, dict) or "newValue" not in change:
+                    continue
+                result = rpc_json(
+                    rpc,
+                    "anvil_setStorageAt",
+                    [address, slot, change["newValue"]],
+                )
+                if result is None:
+                    return None, f"anvil_setStorageAt failed for {address} slot {slot}"
+                operations += 1
+
+    target = _find_fixture_target(root, state_data, code_map, target_contract, rpc)
+    if not target:
+        return None, (
+            f"fixture state was materialized ({operations} RPC updates), "
+            f"but Lowkey could not identify target {target_contract or 'contract'}"
+        )
+
+    return target, None
+
 
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
-    """Run a discovered test fixture as a disposable real local deployment."""
-    script = _generate_test_fixture_lab_script(root, fixture)
+    """Replay a Foundry test fixture in simulation and materialize its state into local Anvil."""
+    safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
+    state_path, code_path = _fixture_state_files(root, safe_name)
+    script = _generate_test_fixture_lab_script(root, fixture, state_path, code_path)
     relative = os.path.relpath(script, root)
 
     print("LOWKEY LOCAL AUDIT LAB")
@@ -2975,8 +3153,8 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"RPC     : {rpc_display(rpc)}")
     print(f"Actor   : Anvil #0 ({accounts[0]})")
     print("Mode    : promoted project test fixture")
-    print("Action  : deploying a fixture helper, then replaying the project's own setup + pool creation as a normal local transaction...")
-    print("Helper  : deployed helper preserves fixture-local address(this) semantics; fixture execution runs outside Forge broadcast mode.")
+    print("Action  : replaying the fixture in Forge simulation, then materializing its state into local Anvil...")
+    print("Helper  : no broadcast; fixture vm.prank/startPrank semantics remain intact.")
 
     reserved = {
         "LOWKEY_LAB_KEY": str(int(str(key), 16)),
@@ -2988,19 +3166,14 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         os.environ[name] = value
 
     try:
-        safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
-        script_contract = f"LowkeyAutoFixtureScript_{safe_name}"
         result = run_foundry(
             [
                 "script",
                 relative,
                 "--tc",
-                script_contract,
+                f"LowkeyAutoFixtureScript_{safe_name}",
                 "--rpc-url",
                 rpc,
-                "--broadcast",
-                "--private-key",
-                key,
             ],
             capture=True,
         )
@@ -3015,71 +3188,32 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-40:]) if output else "forge script failed"
         return fail(
-            "Error: Lowkey's promoted project fixture failed.\n" + tail,
+            "Error: Lowkey fixture simulation failed.\n" + tail,
             result.code,
         )
 
-    target = parse_lab_marker(output)
+    target_name = str(requested or fixture.get("target_contract") or "")
+    target, materialize_error = _materialize_fixture_state(
+        root, rpc, state_path, code_path, target_name
+    )
     if not target:
-        return fail("Error: promoted project fixture ran, but did not report LOWKEY_TARGET.")
-
-    helper_match = re.search(
-        r"(?m)^\s*LOWKEY_HELPER\s*: ?(0x[0-9a-fA-F]{40})\s*$",
-        output or "",
-    )
-    helper = helper_match.group(1) if helper_match else None
-    if not helper:
-        return fail("Error: promoted project fixture deployed a helper, but Lowkey could not identify it.")
-
-    fixture_result = run_cast(
-        ["send", helper, "runFixture()", "--rpc-url", rpc, "--private-key", key],
-        config=config,
-        capture=True,
-    )
-    if fixture_result.code != 0:
-        tail = "\n".join((fixture_result.text or "").splitlines()[-40:])
         return fail(
-            "Error: promoted project fixture execution failed.\n"
-            + (tail or "helper.runFixture() reverted"),
-            fixture_result.code,
+            "Error: Lowkey fixture simulation succeeded, but Anvil state materialization failed.\n"
+            + str(materialize_error or "unknown materialization error")
         )
 
-    target_result = run_cast(
-        ["call", helper, "lastTarget()(address)", "--rpc-url", rpc],
-        config=config,
-        capture=True,
-    )
-    target_text = str(target_result.text or "").strip()
-    target_match = re.search(r"(0x[0-9a-fA-F]{40})", target_text)
-    target = target_match.group(1) if target_match else None
-    if not target:
-        return fail("Error: promoted project fixture executed, but helper.lastTarget() did not return an address.")
-
-    code_result = run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True)
-    runtime_code = str(code_result.text or "").strip()
-    if (
-        not is_address(target)
-        or code_result.code != 0
-        or runtime_code in {"", "0x", "0X"}
-    ):
-        return fail(
-            "Error: promoted project fixture reported a target, but Lowkey could not verify live bytecode on local Anvil."
-        )
-
-    fixture_target_name = str(requested or fixture.get("target_contract") or "")
     artifact = None
-    if fixture_target_name:
+    if target_name:
         for candidate_path in local_artifact_paths(root):
             candidate_artifact = read_artifact(candidate_path) or {}
             if (
                 artifact_contract_name(candidate_path, candidate_artifact).lower()
-                == fixture_target_name.lower()
+                == target_name.lower()
             ):
                 artifact = candidate_path
                 break
 
-    contract_name = fixture_target_name or str(fixture.get("contract") or "auto-detected")
-
+    contract_name = target_name or str(fixture.get("contract") or "auto-detected")
     config["actor"] = "lab-deployer"
     config.setdefault("wallets", {})["lab-deployer"] = {
         "source": "anvil-default",
@@ -3088,12 +3222,12 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     }
     config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
     config["lab_harness"] = {
-        "type": "test-fixture",
+        "type": "test-fixture-state-diff",
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
+        "state_file": str(state_path),
+        "code_file": str(code_path),
     }
-    if helper:
-        config["lab_harness"]["helper"] = helper
     set_lab_target(config, root, target, contract_name, artifact)
 
     print(f"Target  : {contract_name} -> {target}")
@@ -3101,7 +3235,6 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"Harness : {fixture['relative']}::{fixture['contract']}")
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
-
 
 def parse_lab_system(output):
     """Parse generic LOWKEY_<NAME> address markers emitted by lab harnesses."""
