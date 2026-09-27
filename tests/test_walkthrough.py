@@ -1115,6 +1115,43 @@ class WalkthroughTests(unittest.TestCase):
             )
         self.assertIn("false", rendered)
         self.assertIn("returned false", origin)
+    def test_adversarial_test_teaching_renderer_explains_value_invariant(self):
+        model = walkthrough.ContractModel(
+            name="BountyArena", source="src/BountyArena.sol", artifact="out/BountyArena.sol/BountyArena.json",
+            functions=["createbounty(address,uint256)"],
+            function_locations={"createbounty": 4},
+            abi=[{
+                "type":"function", "name":"createbounty", "stateMutability":"payable",
+                "inputs":[{"name":"recipient","type":"address"},{"name":"amount","type":"uint256"}],
+            }],
+            semantics={"createbounty()": {"guards":["require(amount==msg.value, \"attach eth\")"]}},
+        )
+        actors = [
+            walkthrough.Actor("Alice", "0x"+"1"*40, 0),
+            walkthrough.Actor("Treasury", "0x"+"2"*40, 1),
+        ]
+        step = walkthrough.Step(
+            1, "Treasury", "BountyArena", "0x"+"3"*40,
+            "createbounty(address,uint256)", ["0x"+"1"*40, 1], value_wei=0,
+            status="reverted", error_reason="the contract rejected this call under the current on-chain state",
+            diagnostics=['source guard: require(amount==msg.value,"attach eth")'],
+        )
+        rendered = walkthrough._render_adversarial_probe(pathlib.Path("/tmp/project"), step, model, actors)
+        joined = "\n".join(rendered)
+        self.assertIn("WHAT", joined)
+        self.assertIn("RESULT", joined)
+        self.assertIn("amount=1", joined)
+        self.assertIn("msg.value=0 ETH", joined)
+        self.assertIn("Function arguments and transaction value are separate", joined)
+        self.assertIn("SOURCE-CORRELATED", joined)
+
+    def test_adversarial_test_renderer_explains_snapshot_isolation(self):
+        rendered = walkthrough._render_adversarial_intro(24, ["createbounty(address,uint256): established"])
+        joined = "\n".join(rendered)
+        self.assertIn("Every probe starts from the same prepared baseline.", joined)
+        self.assertIn("restores the Anvil snapshot", joined)
+        self.assertIn("repeated successes are intentional", joined)
+
     def test_friendly_renderer_has_no_host_dependency(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
