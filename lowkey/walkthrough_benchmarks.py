@@ -11,6 +11,16 @@ from typing import Any, Protocol
 
 from . import walkthrough as core
 
+# The adapter may use core execution primitives, but never imports protocol logic back into core.
+is_address = core.is_address
+_cli_arg = core._cli_arg
+_cmd = core._cmd
+_runtime_code = core._runtime_code
+_confidence_pool_factory_recipe = core._confidence_pool_factory_recipe
+_block_timestamp = core._block_timestamp
+_send = core._send
+_short_error = core._short_error
+
 
 class WalkthroughBenchmarkAdapter(Protocol):
     adapter_id: str
@@ -40,6 +50,22 @@ class WalkthroughBenchmarkAdapter(Protocol):
         actors: list[core.Actor],
         target: dict[str, Any],
     ) -> list[core.WalkthroughStory]: ...
+    def warmup_steps(
+        self,
+        config: dict[str, Any],
+        actors: list[core.Actor],
+        model: core.ContractModel,
+        now: int,
+    ) -> list[core.Step]: ...
+
+    def workflow_steps(
+        self,
+        config: dict[str, Any],
+        actors: list[core.Actor],
+        model: core.ContractModel,
+        target: str,
+        now: int,
+    ) -> list[core.Step]: ...
 
     def assess(
         self,
@@ -67,6 +93,18 @@ class ConfidencePoolBenchmarkAdapter:
             core._model_has_function(model, {"createPool"})
             and any(item.name.lower() == "confidencepool" for item in models)
         )
+
+    def warmup_steps(self, config, actors, model, now):
+        if str(model.name).lower() != "confidencepoolfactory":
+            return []
+        return core._confidence_pool_factory_recipe(config, actors, now)[:2]
+
+    def workflow_steps(self, config, actors, model, target, now):
+        if str(model.name).lower() == "confidencepoolfactory":
+            return core._confidence_pool_factory_recipe(config, actors, now)
+        if str(model.name).lower() == "confidencepool":
+            return core._confidence_pool_recipe(config, actors, pool_override=target, now=now)
+        return []
 
     def prepare(self, root, config, host, rpc, actors, model, models):
         pool, reason = _confidence_pool_live_pool(rpc, config, host, actors)
