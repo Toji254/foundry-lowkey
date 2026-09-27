@@ -562,6 +562,8 @@ Source matches are **CANDIDATE** signals. A live probe can move a pattern to **C
 
 The live pattern pass also includes isolated replay, initializer, and expired-deadline probes where the ABI and local state make them executable. Every probe is snapshot-isolated and restored afterward.
 
+Research notes and the reasoning behind each pattern are documented in `docs/walkthrough-finding-patterns.md`.
+
 The evidence is stored in `.audit/walkthrough/test.json` under `finding_patterns`, `finding_pattern_stories`, and `finding_pattern_steps`.
 
 ## Install
