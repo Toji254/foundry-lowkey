@@ -314,6 +314,70 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(candidate["contract"], "ConfidencePoolFactory")
 
 
+    @patch.object(lk, "run_foundry")
+    @patch.object(lk, "derive_default_anvil_key", return_value="0x" + "1" * 64)
+    @patch.object(
+        lk,
+        "anvil_rpc_info",
+        return_value={
+            "url": "http://127.0.0.1:8545",
+            "accounts": [
+                "0x" + "2" * 40,
+                "0x" + "3" * 40,
+            ],
+        },
+    )
+    @patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545")
+    @patch.object(lk, "actor_display", return_value="lab-deployer")
+    def test_project_lab_script_lets_forge_auto_select_single_script(
+        self,
+        _actor_display,
+        _rpc,
+        _anvil,
+        _key,
+        run_foundry,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "src"\n',
+                encoding="utf-8",
+            )
+            script = root / "script" / "LowkeyAutoConfidencePoolLab.s.sol"
+            script.parent.mkdir(parents=True)
+            script.write_text("contract LowkeyAutoConfidencePoolLab {}", encoding="utf-8")
+
+            run_foundry.return_value = lk.CommandResult(
+                "LOWKEY_TARGET 0x" + "4" * 40,
+                0,
+            )
+
+            config = {
+                "actor": None,
+                "wallets": {},
+                "labels": {},
+                "aliases": {},
+                "targets": {},
+                "abi_paths": {},
+            }
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root),                  patch.object(lk, "auto_abi_path", return_value=None):
+                result = lk.run_project_lab_script(
+                    config,
+                    root,
+                    str(script),
+                    "http://127.0.0.1:8545",
+                    [
+                        "0x" + "2" * 40,
+                        "0x" + "3" * 40,
+                    ],
+                    "0x" + "1" * 64,
+                )
+
+        self.assertEqual(result, 0)
+        command = run_foundry.call_args.args[0]
+        self.assertEqual(command[:2], ["script", "script/LowkeyAutoConfidencePoolLab.s.sol"])
+        self.assertNotIn("script/LowkeyAutoConfidencePoolLab.s.sol:LowkeyAutoConfidencePoolLab", command)
+
     def test_confidence_pool_lab_adapter_is_generated_from_project_fixtures(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
