@@ -325,10 +325,60 @@ def _resolve_local_import(importer: Path, raw: str, root: Path, language: str) -
     return None
 
 
+def _solidity_remappings(root: Path) -> list[tuple[str, str]]:
+    """Read Foundry remappings so dependency resolution matches Forge."""
+    values: list[tuple[str, str]] = []
+    remappings_file = root / "remappings.txt"
+    try:
+        lines = remappings_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        value = line.strip()
+        if not value or value.startswith("#") or "=" not in value:
+            continue
+        prefix, destination = (part.strip() for part in value.split("=", 1))
+        if prefix and destination:
+            values.append((prefix, destination))
+
+    forge = shutil.which("forge")
+    if forge:
+        try:
+            result = subprocess.run(
+                [forge, "remappings"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                for line in (result.stdout or "").splitlines():
+                    value = line.strip()
+                    if not value or "=" not in value:
+                        continue
+                    prefix, destination = (part.strip() for part in value.split("=", 1))
+                    if prefix and destination:
+                        values.append((prefix, destination))
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    result = []
+    seen: set[tuple[str, str]] = set()
+    for item in values:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return sorted(result, key=lambda item: len(item[0]), reverse=True)
+
+
 def _solidity_external_candidates(raw: str, root: Path) -> list[Path]:
     clean = raw.strip().strip('"\'').replace("\\", "/")
     parts = [part for part in clean.split("/") if part]
     candidates: list[Path] = []
+    for prefix, destination in _solidity_remappings(root):
+        if clean.startswith(prefix):
+            suffix = clean[len(prefix):].lstrip("/")
+            candidates.append(root / destination.rstrip("/") / suffix)
     if parts:
         package_end = 2 if parts[0].startswith("@") and len(parts) >= 2 else 1
         package = "/".join(parts[:package_end])
