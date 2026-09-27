@@ -3043,6 +3043,83 @@ contract BountyArena {
         self.assertIsNotNone(selected)
         self.assertEqual(selected.adapter_id, "confidence-pool")
 
+    def test_real_world_pattern_scanner_covers_recurring_bug_families(self):
+        patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = '''
+            pragma solidity ^0.8.20;
+            contract PatternFixture {
+                mapping(address => uint256) public balances;
+                mapping(address => bool) public claimed;
+                address public owner;
+                uint256[] public items;
+                function claim(uint256 amount) external {
+                    balances[msg.sender] -= amount;
+                    payable(msg.sender).transfer(amount);
+                }
+                function unsafeToken(address token, uint256 amount) external {
+                    token.transfer(msg.sender, amount);
+                }
+                function oracle(address feed) external {
+                    (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound) = IFeed(feed).latestRoundData();
+                    answer;
+                    roundId; startedAt; updatedAt; answeredInRound;
+                }
+                function processAll() external {
+                    for (uint256 i = 0; i < items.length; ++i) { items[i] += 1; }
+                }
+                function verify(bytes32 digest, bytes calldata sig) external {
+                    ecrecover(digest, uint8(0), bytes32(0), bytes32(0));
+                    sig;
+                }
+                function initialize(address owner_) external { owner = owner_; }
+                function randomWinner() external view returns (uint256) { return uint256(block.timestamp); }
+            }
+            interface IFeed { function latestRoundData() external view returns (uint80,int256,uint256,uint256,uint80); }
+            '''
+            (root / "src" / "PatternFixture.sol").write_text(source, encoding="utf-8")
+            abi = [
+                {"type": "function", "name": name, "stateMutability": "nonpayable", "inputs": []}
+                for name in ("processAll", "verify", "initialize", "unsafeToken", "claim", "oracle")
+            ]
+            abi += [{"type": "function", "name": "randomWinner", "stateMutability": "view", "inputs": []}]
+            model = lk.walkthrough.ContractModel(
+                name="PatternFixture", source="src/PatternFixture.sol", artifact="out/PatternFixture.json",
+                abi=abi, arrays=[{"name": "items", "type": "uint256[]"}]
+            )
+            results = patterns.scan_model(root, model)
+            ids = {item.pattern_id for item in results}
+            self.assertIn("REPLAY-001", ids)
+            self.assertIn("REENTRANCY-001", ids)
+            self.assertIn("ORACLE-001", ids)
+            self.assertIn("DOS-001", ids)
+            self.assertIn("SIG-001", ids)
+            self.assertIn("TOKEN-001", ids)
+            self.assertIn("INIT-001", ids)
+            self.assertIn("RNG-001", ids)
+
+    def test_replay_pattern_requires_a_real_second_value_delta_for_confirmation(self):
+        patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
+        actors = [
+            lk.walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            lk.walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+            lk.walkthrough.Actor("Attacker", "0x" + "3" * 40, 2),
+        ]
+        first = lk.walkthrough.Step(1, "Attacker", "Vault", "0x" + "4" * 40, "claim()", [], status="success")
+        second = lk.walkthrough.Step(2, "Attacker", "Vault", "0x" + "4" * 40, "claim()", [], status="success")
+        key = actors[2].address.lower()
+        second.token_balance_before = {key: 10}
+        second.token_balance_after = {key: 10}
+        story = lk.walkthrough.WalkthroughStory("RP-01", "Replay probe", "test", [])
+        patterns.assess_replay_story(story, [first, second], actors)
+        self.assertEqual(story.signal, "REVIEW")
+
+        second.token_balance_after = {key: 11}
+        patterns.assess_replay_story(story, [first, second], actors)
+        self.assertEqual(story.signal, "CONFIRMED")
+
     def test_benchmark_adapter_can_be_registered_without_core_changes(self):
         adapter_module = importlib.import_module("lowkey.walkthrough_benchmarks")
 
