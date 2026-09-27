@@ -14,6 +14,20 @@ spec.loader.exec_module(project_detection)
 
 
 class ProjectDetectionTests(unittest.TestCase):
+    def test_detect_project_never_bootstraps_submodules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".gitmodules").write_text(
+                '[submodule "nested"]\n\tpath = nested\n\turl = https://example.com/nested.git\n',
+                encoding="utf-8",
+            )
+            nested = root / "nested"
+            nested.mkdir()
+            (nested / "pyproject.toml").write_text("[project]\nname = \"nested\"\n", encoding="utf-8")
+            with patch.object(project_detection, "_bootstrap_step", side_effect=AssertionError("detection must not bootstrap")):
+                info = project_detection.detect_project(root)
+            self.assertEqual(info["backend"], "generic")
+
     def test_cairo_manifest_wins_over_nested_solidity_dependency(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
