@@ -230,6 +230,29 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertEqual(len(project["submodules"]), 1)
             self.assertTrue(project["submodules"][0]["initialized"])
 
+    def test_graph_render_is_human_and_excludes_generated_support_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", "[profile.default]\nsrc = 'src'\n")
+            self.write(
+                root,
+                "src/BountyArena.sol",
+                "pragma solidity ^0.8.20; contract BountyArena { function pay(address x) external { x.call{value: 1}(''); } }",
+            )
+            self.write(root, "script/LowkeyPoC_BountyArena.s.sol", "contract LowkeyPoC_BountyArena {}")
+            self.write(root, "test/Poc_locked_ether.t.sol", "contract Poc_locked_ether {}")
+            output = __import__("io").StringIO()
+            from contextlib import redirect_stdout
+            with redirect_stdout(output):
+                result = project_tools.render_project_map(root)
+            rendered = output.getvalue()
+            self.assertIn("LOWKEY PROJECT MAP", rendered)
+            self.assertIn("BountyArena", rendered)
+            self.assertIn("Low-level calls", rendered)
+            self.assertIn("Generated PoCs/tests/scripts are evidence", rendered)
+            self.assertNotIn("LowkeyPoC_BountyArena.s.sol", rendered.split("1. WHAT IS THE PROTOCOL?")[1].split("2. HOW")[0])
+            self.assertEqual(result["human"]["contracts"][0][0], "BountyArena")
+
     def test_source_inventory_excludes_audit_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
