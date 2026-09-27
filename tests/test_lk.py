@@ -413,6 +413,35 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(models[0].name, "Vault")
         self.assertEqual(models[0].source, "contracts/Vault.sol")
 
+    def test_walkthrough_vyper_replay_is_not_solidity_script(self):
+        model = lk.walkthrough.ContractModel(
+            name="Counter",
+            source="contracts/Counter.vy",
+            artifact=".audit/walkthrough/vyper/Counter.json",
+            abi=[{
+                "type": "function",
+                "name": "increment",
+                "inputs": [{"name": "value", "type": "uint256"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+            functions=["increment(uint256)"],
+            kind="vyper",
+        )
+        step = lk.walkthrough.Step(
+            1, "Alice", model.name, "0x" + "1" * 40,
+            "increment(uint256)", [1], status="success",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = lk.walkthrough._generate_replay_script(
+                root, model, step.address, [step]
+            )
+            self.assertTrue(path.name.endswith(".sh"))
+            content = path.read_text(encoding="utf-8")
+            self.assertIn('cast send "$TARGET"', content)
+            self.assertIn("increment(uint256)", content)
+
     def test_walkthrough_empty_revert_explains_contract_argument(self):
         model = lk.walkthrough.ContractModel(
             name="Factory",
