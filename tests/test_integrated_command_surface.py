@@ -31,6 +31,11 @@ class IntegratedCommandSurfaceTests(unittest.TestCase):
         for item in required:
             self.assertIn(item, help_text)
 
+    def test_legacy_test_gen_template_escapes_named_import(self):
+        import inspect
+        source = inspect.getsource(lk.run_test_gen)
+        self.assertIn("import {{Test}}", source)
+
     def test_integrated_modules_are_importable(self):
         import lowkey.audit_engine  # noqa: F401
         import lowkey.project_tools  # noqa: F401
