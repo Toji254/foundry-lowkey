@@ -5442,6 +5442,24 @@ def _run_adversarial_test(
 
     print("\n".join(_render_adversarial_intro(total_cases, warmup_notes)))
 
+    pattern_observations: list[Any] = []
+    pattern_stories: list[WalkthroughStory] = []
+    pattern_steps: list[Step] = []
+    try:
+        from .walkthrough_finding_patterns import run as run_finding_patterns, render_summary as render_pattern_summary
+    except ImportError:
+        try:
+            from walkthrough_finding_patterns import run as run_finding_patterns, render_summary as render_pattern_summary
+        except ImportError:
+            run_finding_patterns = None
+            render_pattern_summary = None
+    if run_finding_patterns:
+        pattern_observations, pattern_stories, pattern_steps = run_finding_patterns(
+            root, config, host, rpc, actors, models, targets, actual_seed
+        )
+        if render_pattern_summary:
+            print("\\n".join(render_pattern_summary(pattern_observations)))
+
     benchmark_results: list[WalkthroughStory] = []
     benchmark_steps: list[Step] = []
     if benchmark:
@@ -5548,12 +5566,18 @@ def _run_adversarial_test(
                 "cases": [asdict(item) for item in results],
                 "stateful_story_steps": [asdict(item) for item in benchmark_steps],
                 "stateful_stories": [asdict(item) for item in benchmark_results],
+                "finding_pattern_steps": [asdict(item) for item in pattern_steps],
+                "finding_patterns": [asdict(item) for item in pattern_observations],
+                "finding_pattern_stories": [asdict(item) for item in pattern_stories],
                 "summary": {
                     "random_cases": len(results),
                     "accepted": accepted,
                     "reverted": reverted,
                     "stateful_stories": len(benchmark_results),
                     "stateful_confirmed": sum(1 for story in benchmark_results if story.signal == "CONFIRMED"),
+                    "finding_patterns": len(pattern_observations),
+                    "finding_pattern_confirmed": sum(1 for item in pattern_observations if item.status == "CONFIRMED"),
+                    "finding_pattern_reviews": sum(1 for item in pattern_observations if item.status == "REVIEW"),
                 },
             },
             indent=2,
