@@ -2954,6 +2954,7 @@ def _generate_test_fixture_lab_script(root, candidate, state_path):
 pragma solidity ^0.8.20;
 
 import {{ {contract} }} from "{relative}";
+import {{ console2 }} from "forge-std/console2.sol";
 
 /// @dev Runs the discovered protocol fixture using Forge's native test runner.
 /// The state dump is deliberately taken from inside setUp(), immediately after
@@ -2961,7 +2962,22 @@ import {{ {contract} }} from "{relative}";
 /// test execution state that vm.dumpState() serializes.
 contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
     function setUp() public override {{
+        vm.recordLogs();
         super.setUp();
+
+        // Many Balancer-style fixtures create the protocol target through a
+        // factory that emits PoolCreated(address). Carry that address out of
+        // the native test so the lab does not have to guess it from bytecode
+        // after state materialization.
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 poolCreatedTopic = keccak256("PoolCreated(address)");
+        for (uint256 i = 0; i < logs.length; ++i) {{
+            if (logs[i].topics.length > 1 && logs[i].topics[0] == poolCreatedTopic) {{
+                address target = address(uint160(uint256(logs[i].topics[1])));
+                console2.log("LOWKEY_TARGET:", target);
+            }}
+        }}
+
         vm.dumpState("{state_literal}");
     }}
 
@@ -3088,7 +3104,7 @@ def _fixture_accounts_map(snapshot):
     return None, "fixture state snapshot does not contain an address-keyed alloc/account map"
 
 
-def _materialize_fixture_state(root, rpc, state_path, target_contract):
+def _materialize_fixture_state(root, rpc, state_path, target_contract, target_hint=None):
     try:
         raw = Path(state_path).read_text(encoding="utf-8")
         snapshot = json.loads(raw)
@@ -3146,7 +3162,15 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
                     return None, f"anvil_setStorageAt failed for {address} slot {slot}: {detail}"
                 operations += 1
 
-    target = _find_fixture_target(root, code_map, target_contract, rpc)
+    target = None
+    hinted = str(target_hint or "").strip()
+    hinted_key = hinted.lower()
+    if hinted_key in code_map:
+        hinted_code = str(code_map.get(hinted_key) or "")
+        if hinted_code.startswith("0x") and len(hinted_code) > 2:
+            target = hinted
+    if not target:
+        target = _find_fixture_target(root, code_map, target_contract, rpc)
     if not target:
         return None, (
             f"fixture state was materialized ({operations} RPC updates; "
@@ -3307,8 +3331,9 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         )
 
     target_name = str(requested or fixture.get("target_contract") or "")
+    target_hint = parse_lab_marker(output, "LOWKEY_TARGET")
     target, materialize_error = _materialize_fixture_state(
-        root, rpc, state_path, target_name
+        root, rpc, state_path, target_name, target_hint=target_hint
     )
     if not target:
         return fail(
@@ -3439,11 +3464,11 @@ def discover_local_lab_script(root=".", requested=None):
     return None
 
 def parse_lab_marker(output, marker="LOWKEY_TARGET"):
-    match = re.search(
+    matches = re.findall(
         rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
         str(output or ""),
     )
-    return match.group(1) if match else None
+    return matches[-1] if matches else None
 
 def parse_deployed_address(output):
     text = str(output or "")
