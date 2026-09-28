@@ -11,6 +11,11 @@ from typing import Any
 from urllib.parse import quote
 import os
 
+try:
+    from project_detection import project_root as detected_project_root
+except ImportError:
+    detected_project_root = None
+
 
 SCHEMA_VERSION = 1
 AUDIT_DIR_NAME = ".audit"
@@ -62,45 +67,15 @@ def source_link(
 
 
 def project_root(start: Path | None = None) -> Path:
-    """Find the nearest conventional project root for audit scoping.
-
-    This is intentionally broader than Foundry detection so Cairo, Vyper,
-    Hardhat, Anchor, Move, and source-only projects keep one stable .audit
-    workspace even when Lowkey is invoked from a nested directory.
-    """
+    """Resolve the most relevant project root, including nested workspace projects."""
     path = (start or Path.cwd()).expanduser().resolve()
-    if path.is_file():
-        path = path.parent
-    markers = (
-        "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
-        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
-        "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
-        "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
-        "package.json", "Cargo.toml", "go.mod",
-    )
-    for parent in (path, *path.parents):
-        if any((parent / marker).is_file() for marker in markers):
-            return parent
+    if detected_project_root is not None:
+        return detected_project_root(path)
     return path
 
 def foundry_project_root(start: Path | None = None) -> Path:
-    """Backward-compatible Foundry-specific root lookup."""
-    """Resolve the active EVM project root across common project layouts."""
-    path = (start or Path.cwd()).expanduser().resolve()
-    if path.is_file():
-        path = path.parent
-
-    markers = (
-        "foundry.toml", "hardhat.config.js", "hardhat.config.cjs",
-        "hardhat.config.mjs", "hardhat.config.ts",
-        "brownie-config.yaml", "pyproject.toml", "package.json",
-    )
-    for parent in (path, *path.parents):
-        if any((parent / marker).is_file() for marker in markers):
-            return parent
-        if any((parent / dirname).is_dir() for dirname in ("src", "contracts", "vyper")):
-            return parent
-    return path
+    """Backward-compatible root lookup used throughout Lowkey."""
+    return project_root(start)
 
 
 def audit_dir(root: Path | None = None) -> Path:
