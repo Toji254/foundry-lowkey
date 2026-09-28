@@ -1852,6 +1852,50 @@ contract Pool {
             self.assertEqual(result, 0)
             render.assert_called_once_with(projects["shared"].resolve())
 
+    def test_workspace_paths_follow_selected_project_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            selected = root / "packages" / "app"
+            selected.mkdir(parents=True)
+            (selected / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            old = os.getcwd()
+            try:
+                os.chdir(root)
+                self.assertTrue(lk.set_workspace_selection(root, selected))
+                paths = lk.workspace_paths()
+            finally:
+                os.chdir(old)
+            self.assertEqual(pathlib.Path(paths["root"]).resolve(), (selected / ".audit").resolve())
+
+    def test_project_scope_menu_uses_richer_workspace_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            for name in ("app", "dep"):
+                project = root / "packages" / name
+                (project / "src").mkdir(parents=True)
+                (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            old = os.getcwd()
+            try:
+                os.chdir(root)
+                candidates = lk.discover_nested_projects(root)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    lk._print_workspace_scope_choices(candidates)
+            finally:
+                os.chdir(old)
+            rendered = output.getvalue()
+            self.assertIn("PRIMARY AUDIT CANDIDATE", rendered)
+            self.assertIn("Contracts", rendered)
+            self.assertIn("Tests", rendered)
+
     def test_help_long_alias(self):
         result = self.run_cli("--h")
         self.assertEqual(result.returncode, 0, result.stderr)

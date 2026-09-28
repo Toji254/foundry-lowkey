@@ -1773,10 +1773,12 @@ def run_finding(config, note):
 
     print("Finding recorded.")
 
-def workspace_paths():
+def workspace_paths(root=None):
+    project_root = Path(root or audit_context.foundry_project_root()).expanduser().resolve()
+    workspace_dir = project_root / ".audit"
     return {
-        "root": WORKSPACE_DIR,
-        "matrix": os.path.join(WORKSPACE_DIR, "matrix"),
+        "root": str(workspace_dir),
+        "matrix": os.path.join(workspace_dir, "matrix"),
         "matrix_actors": os.path.join(WORKSPACE_DIR, "matrix", "actors.json"),
         "matrix_states": os.path.join(WORKSPACE_DIR, "matrix", "states.json"),
         "matrix_scenarios": os.path.join(WORKSPACE_DIR, "matrix", "scenarios.json"),
@@ -1787,8 +1789,8 @@ def workspace_paths():
         "session": os.path.join(WORKSPACE_DIR, "history", "session.log"),
     }
 
-def run_workspace(config,args):
-    paths=workspace_paths(); action=args[0] if args else "init"
+def run_workspace(config,args,root=None):
+    paths=workspace_paths(root); action=args[0] if args else "init"
     if action!="init": print("Usage: lk workspace init"); return
     for directory in [paths["root"],os.path.join(paths["root"],"abi"),os.path.join(paths["root"],"transactions"),os.path.join(paths["root"],"traces"),os.path.join(paths["root"],"storage"),os.path.join(paths["root"],"findings"),os.path.join(paths["root"],"history"),paths["matrix"]]:
         os.makedirs(directory,exist_ok=True)
@@ -2371,7 +2373,8 @@ contract Exploit_Reproduction is Test {{
     root=audit_context.foundry_project_root()
     audit_context.record_tool("generator",root,status="completed",summary="exploit reproduction generated",data={"mode":"test-gen","output":filename,"function":func,"target":target})
 def run_checklist(config,action=None,item=None):
-    path=os.path.join(AUDIT_DIR,"CHECKLIST.md"); os.makedirs(AUDIT_DIR,exist_ok=True)
+    root = audit_context.foundry_project_root()
+    path=os.path.join(workspace_paths(root)["root"],"CHECKLIST.md"); os.makedirs(os.path.dirname(path),exist_ok=True)
     if not os.path.exists(path): Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8")
     lines=Path(path).read_text(encoding="utf-8").splitlines(True)
     if action=="reset":
@@ -4217,46 +4220,63 @@ def _run_project_build(config, root):
     return result.returncode
 
 def _workspace_project_description(project):
-    root = Path(project["root"])
-    package_path = root / "package.json"
-    if package_path.is_file():
-        try:
-            package = json.loads(package_path.read_text(encoding="utf-8"))
-            if isinstance(package, dict) and package.get("description"):
-                return str(package["description"]).strip()
-        except (OSError, json.JSONDecodeError):
-            pass
+    return str(project.get("description") or project.get("name") or Path(project["root"]).name).strip()
 
-    for filename in ("pyproject.toml", "Cargo.toml"):
-        path = root / filename
-        if path.is_file():
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore")
-                for line in text.splitlines():
-                    stripped = line.strip()
-                    if stripped.startswith("description") and "=" in stripped:
-                        return stripped.split("=", 1)[1].strip().strip('"').strip("'")
-            except OSError:
-                pass
+def _workspace_project_details(project):
+    languages = ", ".join(sorted(project.get("languages") or {})) or str(project.get("backend") or "unknown")
+    role = str(project.get("scope_role") or project.get("scope_hint") or "component")
+    lines = [
+        f"     Purpose   : {_workspace_project_description(project)}",
+        f"     Stack     : {languages}",
+    ]
+    if int(project.get("contract_count", 0)) > 0:
+        lines.append(f"     Contracts : {project.get('contract_count', 0)}")
+    else:
+        lines.append(f"     Code units: {project.get('protocol_source_files', 0)}")
+    lines.append(f"     Tests     : {project.get('test_files', 0)}")
+    if int(project.get("setup_files", 0)) > 0:
+        lines.append(f"     Setup     : {project.get('setup_files', 0)} file(s)")
+    depends_on = project.get("depends_on") or []
+    dependents = project.get("depended_on_by") or []
+    if depends_on:
+        lines.append(f"     Depends   : {', '.join(depends_on[:6])}{' ...' if len(depends_on) > 6 else ''}")
+    if dependents:
+        lines.append(f"     Used by   : {', '.join(dependents[:6])}{' ...' if len(dependents) > 6 else ''}")
+    if project.get("entrypoint"):
+        lines.append(f"     Entry     : {project['entrypoint']}")
+    lines.append(f"     Scope     : {role}")
+    lines.append(f"     Analysis  : {'audit backend available' if project.get('audit_capable') else 'source/static analysis only'}")
+    return lines
 
-    readme = root / "README.md"
-    if readme.is_file():
-        try:
-            for line in readme.read_text(encoding="utf-8", errors="ignore").splitlines():
-                text = line.strip().lstrip("#").strip()
-                if text and not text.startswith("!"):
-                    return text[:160] + ("..." if len(text) > 160 else "")
-        except OSError:
-            pass
-    return project.get("name") or root.name
+def _print_workspace_scope_choices(candidates):
+    groups = [
+        ("PRIMARY AUDIT CANDIDATE", lambda p: p.get("scope_role") == "primary audit candidate"),
+        ("IMPORTANT DEPENDENCIES", lambda p: p.get("scope_role") == "important dependency"),
+        ("COMPONENTS / LIBRARIES", lambda p: p.get("scope_role") == "component / library"),
+        ("SUPPORT / TOOLING", lambda p: p.get("scope_role") == "support / tooling"),
+    ]
+    index_map = {index: candidate for index, candidate in enumerate(candidates, 1)}
+    for title, predicate in groups:
+        members = [(index, candidate) for index, candidate in index_map.items() if predicate(candidate)]
+        if not members:
+            continue
+        print("")
+        print(title)
+        print("-" * len(title))
+        for index, candidate in members:
+            print(f"  {index}. {candidate.get('relative')}")
+            for line in _workspace_project_details(candidate):
+                print(line)
+    return index_map
 
 
 def run_projects(config, args):
-    if discover_nested_projects is None or workspace_root is None:
+    if workspace_context is None:
         return fail("Project discovery layer is unavailable. Reinstall Lowkey.")
 
-    root = workspace_root(Path.cwd())
-    candidates = discover_nested_projects(root)
+    scope = workspace_context(Path.cwd())
+    root = Path(scope["workspace"]).resolve()
+    candidates = list(scope.get("projects") or [])
 
     if args and args[0].lower() in {"-h", "--help", "help"}:
         print("Usage:")
@@ -4265,14 +4285,16 @@ def run_projects(config, args):
         print("  lk projects <path>")
         print("  lk projects reset")
         print("")
-        print("Shows the projects inside a workspace and lets you set the active project.")
+        print("Shows how Lowkey understands the workspace, then lets you set the active audit project.")
         return 0
+
+    if not candidates:
+        return fail(f"Error: no nested projects found in {root}.")
 
     if args:
         selector = str(args[0]).strip()
         if selector.lower() == "reset":
-            if clear_workspace_selection is not None:
-                clear_workspace_selection(root)
+            clear_workspace_selection(root)
             print(f"Active project cleared for {root}")
             return 0
 
@@ -4288,51 +4310,49 @@ def run_projects(config, args):
             if not selector_path.is_absolute():
                 selector_path = root / selector_path
             selector_path = selector_path.resolve()
-            selected = next((item for item in candidates if Path(item["root"]).resolve() == selector_path), None)
+            selected = next(
+                (item for item in candidates if Path(item["root"]).resolve() == selector_path),
+                None,
+            )
             if selected is None:
-                matches = [item for item in candidates if str(item.get("relative", "")).lower() == selector.lower() or str(item.get("name", "")).lower() == selector.lower()]
+                matches = [
+                    item for item in candidates
+                    if str(item.get("relative", "")).lower() == selector.lower()
+                    or str(item.get("name", "")).lower() == selector.lower()
+                    or str(item.get("package_name", "")).lower() == selector.lower()
+                ]
                 if len(matches) == 1:
                     selected = matches[0]
 
         if selected is None:
             return fail(f"Error: no workspace project matched '{selector}'.")
-        if set_workspace_selection is None or not set_workspace_selection(root, selected["root"]):
+
+        if not set_workspace_selection(root, selected["root"]):
             return fail("Error: could not save the active project selection.")
 
-        print("ACTIVE PROJECT")
-        print("==============")
-        print(f"Project : {selected['relative']}")
-        print(f"Type    : {selected.get('kind', 'unknown')}")
-        print(f"Stack   : {', '.join(sorted(selected.get('languages') or {})) or selected.get('backend', 'unknown')}")
-        print(f"About   : {_workspace_project_description(selected)}")
+        print("ACTIVE AUDIT PROJECT")
+        print("====================")
+        print(f"Project : {selected.get('relative')}")
+        for line in _workspace_project_details(selected):
+            print(line)
         print("")
-        print("Next:")
-        print("  lk project     Open the detailed project map")
-        print("  lk lab         Build a local lab for this project")
-        print("  lk audit       Audit this project")
+        print("Lowkey will now use this project when you work from the shared workspace.")
+        print("Next: lk project | lk lab | lk audit")
         return 0
 
-    active = workspace_selection(root) if workspace_selection is not None else None
+    active = scope.get("active")
+    current = scope.get("current")
     print("LOWKEY WORKSPACE")
-    print("================")
-    print(f"Workspace: {root}")
-    print(f"Projects : {len(candidates)}")
+    print("=" * 72)
+    print(f"Workspace : {root}")
+    print(f"Projects  : {len(candidates)}")
     if active:
-        active_match = next((item for item in candidates if Path(item["root"]).resolve() == active.resolve()), None)
-        if active_match:
-            print(f"Active   : {active_match['relative']}")
+        print(f"Active    : {active.relative_to(root).as_posix()}")
+    if current:
+        print(f"Here      : {current.relative_to(root).as_posix()}")
+    _print_workspace_scope_choices(candidates)
     print("")
-    for index, candidate in enumerate(candidates, 1):
-        marker = " *" if active and Path(candidate["root"]).resolve() == active.resolve() else "  "
-        languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
-        print(f"{marker}{index}. {candidate.get('relative')}")
-        print(f"     {candidate.get('scope_hint', 'component')} | {languages}")
-        print(f"     {_workspace_project_description(candidate)}")
-        if candidate.get("used_by_siblings"):
-            print(f"     Used by {candidate['used_by_siblings']} sibling project(s)")
-    print("")
-    print("Choose one with: lk projects <number>")
-    print("Then use:        lk project | lk lab | lk audit")
+    print("Use 'lk projects <number>' to set the audit scope.")
     return 0
 
 
@@ -5178,11 +5198,7 @@ def run_lab(config,args):
             print("LOWKEY FOUND MULTIPLE PROJECTS")
             print("============================")
             print(f"Workspace: {workspace_container}")
-            for index, candidate in enumerate(candidates, 1):
-                languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
-                print(f"  {index}. {candidate.get('relative')}")
-                print(f"     {candidate.get('scope_hint', 'component')} | {languages}")
-                print(f"     {_workspace_project_description(candidate)}")
+            _print_workspace_scope_choices(candidates)
             if not sys.stdin.isatty():
                 return fail(
                     "Error: this workspace contains multiple projects. "
@@ -7628,10 +7644,7 @@ def run_audit_mode(config, args=None, interactive=None):
             print("==================")
             print(f"Workspace: {workspace_container}")
             print("Choose the project you actually want to audit:")
-            for index, candidate in enumerate(candidates, 1):
-                languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
-                print(f"  {index}. {candidate.get('relative')}  [{languages}]")
-                print(f"     {candidate.get('scope_hint', 'component')}: {_workspace_project_description(candidate)}")
+            _print_workspace_scope_choices(candidates)
             while True:
                 try:
                     choice = input(f"Project [1-{len(candidates)}] or q: ").strip().lower()
@@ -7682,7 +7695,7 @@ def run_audit_mode(config, args=None, interactive=None):
     else:
         print("Runtime : native project backend; Anvil/Forge target mode disabled.")
 
-    run_workspace(config, ["init"])
+    run_workspace(config, ["init"], root)
     run_matrix(config, ["init"])
     run_checklist(config)
     if not config.get("session_active"):

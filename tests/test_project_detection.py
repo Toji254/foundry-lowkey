@@ -95,6 +95,54 @@ class ProjectDetectionTests(unittest.TestCase):
             self.assertEqual(pathlib.Path(info["root"]).resolve(), nested.resolve())
             self.assertEqual(info["backend"], "foundry")
 
+    def test_workspace_metadata_builds_audit_scope_roles_and_relationships(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["pkg/*"]}\n',
+                encoding="utf-8",
+            )
+            app = root / "pkg" / "app"
+            dep = root / "pkg" / "vault"
+            support = root / "pkg" / "helpers"
+            for project in (app, dep, support):
+                (project / "src").mkdir(parents=True)
+
+            (app / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (app / "package.json").write_text(
+                '{"name":"@demo/app","dependencies":{"@demo/vault":"workspace:*"}}\n',
+                encoding="utf-8",
+            )
+            (app / "script").mkdir()
+            (app / "script" / "Deploy.s.sol").write_text("", encoding="utf-8")
+            (app / "src" / "App.sol").write_text("contract App {}\n", encoding="utf-8")
+            (app / "test").mkdir()
+            (app / "test" / "App.t.sol").write_text("", encoding="utf-8")
+
+            (dep / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (dep / "package.json").write_text(
+                '{"name":"@demo/vault","description":"Core vault infrastructure"}\n',
+                encoding="utf-8",
+            )
+            (dep / "src" / "Vault.sol").write_text("contract Vault {}\n", encoding="utf-8")
+
+            (support / "package.json").write_text(
+                '{"name":"@demo/helpers","description":"Internal helpers"}\n',
+                encoding="utf-8",
+            )
+            (support / "tools.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+            candidates = project_detection.discover_nested_projects(root)
+            app_info = next(item for item in candidates if item["root"] == str(app))
+            dep_info = next(item for item in candidates if item["root"] == str(dep))
+            support_info = next(item for item in candidates if item["root"] == str(support))
+
+            self.assertEqual(app_info["scope_role"], "primary audit candidate")
+            self.assertIn("vault", " ".join(app_info["depends_on"]))
+            self.assertEqual(dep_info["scope_role"], "important dependency")
+            self.assertIn("pkg/app", " ".join(dep_info["depended_on_by"]))
+            self.assertEqual(support_info["scope_role"], "support / tooling")
+
     def test_workspace_with_multiple_nested_projects_stays_at_workspace_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

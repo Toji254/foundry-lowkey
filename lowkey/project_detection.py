@@ -134,11 +134,19 @@ def _candidate_score(root: Path) -> int:
     return score
 
 def _workspace_project_metadata(projects):
-    names = {}
+    """Enrich workspace projects with audit-scope evidence and relationships."""
+    package_projects = {}
     for project in projects:
         root = Path(project["root"])
         package = _package_json_data(root)
-        project["package_name"] = str(package.get("name")) if package.get("name") else None
+        package_name = str(package.get("name")).strip() if package.get("name") else None
+        project["package_name"] = package_name
+        if package_name:
+            package_projects[package_name.lower()] = project
+
+    for project in projects:
+        root = Path(project["root"])
+        package = _package_json_data(root)
 
         description = package.get("description")
         if not description:
@@ -154,49 +162,195 @@ def _workspace_project_metadata(projects):
                     pass
         project["description"] = str(description or root.name).strip()
 
-        scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
-        script_names = set(scripts) if isinstance(scripts, dict) else set()
-        project["test_files"] = sum(
-            1
-            for path in _walk_files(root)
-            if path.name.lower().startswith("test_")
-            or path.name.lower().endswith("_test.py")
-            or ".test." in path.name.lower()
-            or ".spec." in path.name.lower()
-            or path.suffix.lower() in {".t.sol", ".t.cairo"}
+        test_files = 0
+        setup_files = 0
+        protocol_source_files = 0
+        contract_count = 0
+        entry_contracts = []
+
+        source_suffixes = {
+            ".sol", ".vy", ".cairo", ".move", ".rs", ".go", ".huff", ".yul",
+        }
+        setup_dirs = {"script", "scripts", "deploy", "deployment", "migrations", "cmd", "programs"}
+        for path in _walk_files(root):
+            lower_name = path.name.lower()
+            suffix = path.suffix.lower()
+            if (
+                lower_name.startswith("test_")
+                or lower_name.endswith("_test.py")
+                or ".test." in lower_name
+                or ".spec." in lower_name
+                or suffix in {".t.sol", ".t.cairo"}
+            ):
+                test_files += 1
+            if any(part.lower() in setup_dirs for part in path.relative_to(root).parts):
+                setup_files += 1
+            if suffix in source_suffixes:
+                protocol_source_files += 1
+            if suffix == ".sol":
+                source = _read(path)
+                names = re.findall(r"(?m)\bcontract\s+([A-Za-z_][A-Za-z0-9_]*)", source)
+                contract_count += len(names)
+                for name in names:
+                    if len(entry_contracts) < 8:
+                        entry_contracts.append(name)
+
+        project["test_files"] = test_files
+        project["setup_files"] = setup_files
+        project["protocol_source_files"] = protocol_source_files
+        project["contract_count"] = contract_count
+        project["entry_contracts"] = entry_contracts
+        project["has_tests"] = test_files > 0
+        project["has_setup"] = setup_files > 0
+        project["audit_capable"] = project.get("backend") not in {"generic", "unknown"} and protocol_source_files > 0
+
+        # Package-manager relationships are the strongest workspace-level signal.
+        dependencies = set()
+        for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+            values = package.get(key, {}) if isinstance(package, dict) else {}
+            if isinstance(values, dict):
+                for name in values:
+                    sibling = package_projects.get(str(name).lower())
+                    if sibling is not None and sibling is not project:
+                        dependencies.add(Path(sibling["root"]).as_posix())
+
+        # Foundry remappings commonly point at sibling workspace packages.
+        remappings = root / "remappings.txt"
+        if remappings.is_file():
+            for line in _read(remappings).splitlines():
+                value = line.strip()
+                if not value or value.startswith("#") or "=" not in value:
+                    continue
+                _, destination = (part.strip() for part in value.split("=", 1))
+                if not destination:
+                    continue
+                candidate_path = (root / destination).resolve()
+                for sibling in projects:
+                    sibling_root = Path(sibling["root"]).resolve()
+                    if sibling is project:
+                        continue
+                    try:
+                        candidate_path.relative_to(sibling_root)
+                    except ValueError:
+                        continue
+                    dependencies.add(sibling_root.as_posix())
+                    break
+
+        # Direct relative imports can also cross package boundaries.
+        import_pattern = re.compile(r"""\bimport\s+(?:[^"']+\s+from\s+)?["']([^"']+)["']""")
+        for path in _walk_files(root):
+            if path.suffix.lower() not in {".sol", ".vy", ".vyi", ".cairo", ".move", ".rs"}:
+                continue
+            for raw in import_pattern.findall(_read(path)):
+                if not raw.startswith("."):
+                    continue
+                resolved = (path.parent / raw).resolve()
+                for sibling in projects:
+                    sibling_root = Path(sibling["root"]).resolve()
+                    if sibling is project:
+                        continue
+                    try:
+                        resolved.relative_to(sibling_root)
+                    except ValueError:
+                        continue
+                    dependencies.add(sibling_root.as_posix())
+                    break
+
+        project["depends_on_roots"] = sorted(dependencies)
+
+    project_by_root = {Path(item["root"]).resolve(): item for item in projects}
+    for project in projects:
+        dependency_items = []
+        for dep_root in project.get("depends_on_roots", []):
+            dep = project_by_root.get(Path(dep_root).resolve())
+            if dep is not None:
+                dependency_items.append(dep)
+        project["depends_on"] = sorted(
+            [str(item.get("relative") or item.get("name") or Path(item["root"]).name) for item in dependency_items],
+            key=str.lower,
         )
-        project["entrypoint_score"] = (
-            3 * sum((root / name).is_dir() for name in ("script", "scripts", "deploy", "deployment", "migrations"))
-            + 2 * sum((root / name).is_dir() for name in ("app", "apps", "cmd", "programs", "services"))
-            + 2 * len(script_names.intersection({"start", "dev", "serve", "deploy"}))
-        )
-        if project["package_name"]:
-            names[project["package_name"].lower()] = project
 
     for project in projects:
-        used_by = 0
+        dependents = []
+        current_root = Path(project["root"]).resolve()
         for other in projects:
             if other is project:
                 continue
-            package = _package_json_data(Path(other["root"]))
-            refs = set()
-            for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
-                values = package.get(key, {}) if isinstance(package, dict) else {}
-                if isinstance(values, dict):
-                    refs.update(str(name).lower() for name in values)
-            package_name = str(project.get("package_name") or "").lower()
-            if package_name and package_name in refs:
-                used_by += 1
-        project["used_by_siblings"] = used_by
+            if current_root.as_posix() in {Path(item).resolve().as_posix() for item in other.get("depends_on_roots", [])}:
+                dependents.append(str(other.get("relative") or other.get("name") or Path(other["root"]).name))
+        project["depended_on_by"] = sorted(dependents, key=str.lower)
+        project["used_by_siblings"] = len(dependents)
 
-        if used_by:
-            project["scope_hint"] = "shared dependency"
-        elif project["entrypoint_score"] >= 3:
-            project["scope_hint"] = "likely app / audit entry"
-        elif project["test_files"] > 0:
-            project["scope_hint"] = "component / library"
+        lower_identity = " ".join(
+            str(value or "").lower()
+            for value in (
+                project.get("name"),
+                project.get("package_name"),
+                project.get("description"),
+                project.get("relative"),
+            )
+        )
+        support_words = re.compile(r"(^|[/._-])(helper|helpers|common|toolbox|tools|benchmark|benchmarks|fixture|fixtures|mock|mocks)([/._-]|$)")
+        explicit_support = bool(support_words.search(lower_identity))
+
+        primary_score = (
+            int(project.get("setup_files", 0)) * 12
+            + int(project.get("contract_count", 0)) * 2
+            + min(int(project.get("test_files", 0)), 25)
+            - int(project.get("used_by_siblings", 0)) * 10
+        )
+        if explicit_support:
+            primary_score -= 100
+        if int(project.get("protocol_source_files", 0)) == 0:
+            primary_score -= 100
+        project["audit_entry_score"] = primary_score
+
+    eligible = [
+        item for item in projects
+        if int(item.get("protocol_source_files", 0)) > 0
+        and bool(item.get("audit_capable"))
+        and int(item.get("audit_entry_score", 0)) > 0
+        and not re.search(
+            r"(^|[/._-])(helper|helpers|common|toolbox|tools|benchmark|benchmarks|fixture|fixtures|mock|mocks)([/._-]|$)",
+            " ".join(str(item.get(x) or "").lower() for x in ("name", "package_name", "relative")),
+        )
+    ]
+    max_score = max((int(item.get("audit_entry_score", 0)) for item in eligible), default=0)
+    primary_roots = {
+        Path(item["root"]).resolve()
+        for item in eligible
+        if int(item.get("audit_entry_score", 0)) == max_score and max_score > 0
+    }
+
+    for project in projects:
+        root = Path(project["root"]).resolve()
+        if root in primary_roots:
+            project["scope_role"] = "primary audit candidate"
+            project["scope_reason"] = (
+                "Strongest project-level evidence of being an audit entry: application code, "
+                "tests, and/or deployment setup, with no stronger sibling entry signal."
+            )
+        elif project.get("depended_on_by"):
+            project["scope_role"] = "important dependency"
+            project["scope_reason"] = (
+                "Other workspace projects depend on this package, so its behavior can affect the audit target."
+            )
+        elif explicit_support if False else False:
+            project["scope_role"] = "support / tooling"
+            project["scope_reason"] = "Workspace metadata identifies this as supporting infrastructure."
+        elif int(project.get("protocol_source_files", 0)) > 0:
+            project["scope_role"] = "component / library"
+            project["scope_reason"] = "Contains protocol/source code but is not identified as the main audit entry."
         else:
-            project["scope_hint"] = "support / component"
+            project["scope_role"] = "support / tooling"
+            project["scope_reason"] = "No protocol source units were detected; treated as supporting workspace code."
+
+        project["entrypoint"] = project.get("entry_contracts", [None])[0] if project.get("entry_contracts") else None
+
+    # Replace internal absolute dependency roots with stable data for callers.
+    for project in projects:
+        project.pop("depends_on_roots", None)
+
     return projects
 
 def discover_nested_projects(

@@ -823,10 +823,11 @@ def run_audit(args: Sequence[str]) -> int:
     root = Path.cwd().resolve()
     profile = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(profile.get("kind") or "foundry")
-    foundry_kind = kind in {"foundry", "mixed-foundry-vyper"}
+    stacks = set(profile.get("stacks") or [])
+    foundry_kind = "foundry" in stacks or kind in {"foundry", "mixed-foundry-vyper"}
 
     if not foundry_kind:
-        return _run_generic_audit(root, kind, "--checks" in args)
+        return die(f"no Foundry project is available at {root} (detected {kind}).", 1)
 
     checks = "--checks" in args
     verbose = "--verbose" in args
