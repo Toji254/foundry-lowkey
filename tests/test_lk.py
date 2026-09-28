@@ -122,6 +122,22 @@ class LowkeyCastTests(unittest.TestCase):
                 lk._submodule_bootstrap_health(root),
                 ["contracts/lib/forge-std"],
             )
+    def test_source_walker_prunes_dependency_and_generated_trees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "node_modules" / "huge").mkdir(parents=True)
+            (root / "lib" / "vendor").mkdir(parents=True)
+            (root / ".git" / "objects").mkdir(parents=True)
+            (root / "dist").mkdir()
+            (root / "src" / "App.sol").write_text("contract App {}", encoding="utf-8")
+            (root / "node_modules" / "huge" / "Bad.sol").write_text("contract Bad {}", encoding="utf-8")
+            (root / "lib" / "vendor" / "Lib.sol").write_text("library Lib {}", encoding="utf-8")
+            (root / "dist" / "Generated.sol").write_text("contract Generated {}", encoding="utf-8")
+
+            files = lk.project_tools.project_source_files(root, {"sol"})
+
+        self.assertEqual(files, [root / "src" / "App.sol"])
     def test_address_validation(self):
         self.assertTrue(lk.is_address("0x" + "1" * 40))
         self.assertFalse(lk.is_address("0x" + "1" * 64))
