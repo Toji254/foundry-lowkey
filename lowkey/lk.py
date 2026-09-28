@@ -7598,6 +7598,54 @@ def run_audit_mode(config, args=None, interactive=None):
     mode_args = ["--checks"] if checks else []
 
     root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
+
+    # Never silently treat a multi-project workspace as one generic project.
+    # Honor an existing workspace selection; otherwise require the user to
+    # choose the actual project before audit analysis begins.
+    if (
+        is_workspace_root is not None
+        and is_workspace_root(root)
+        and discover_nested_projects is not None
+    ):
+        workspace_container = Path(root).resolve()
+        active = workspace_selection(workspace_container) if workspace_selection is not None else None
+        candidates = discover_nested_projects(workspace_container)
+        if active is not None and active.is_dir():
+            root = active
+        elif len(candidates) == 1:
+            root = Path(candidates[0]["root"])
+            if set_workspace_selection is not None:
+                set_workspace_selection(workspace_container, root)
+        elif len(candidates) > 1:
+            if force_noninteractive or not sys.stdin.isatty():
+                return fail(
+                    "Error: this workspace contains multiple projects. "
+                    "Run 'lk projects <number>' first, then run 'lk audit'."
+                )
+            print()
+            print("LOWKEY AUDIT SCOPE")
+            print("==================")
+            print(f"Workspace: {workspace_container}")
+            print("Choose the project you actually want to audit:")
+            for index, candidate in enumerate(candidates, 1):
+                languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
+                print(f"  {index}. {candidate.get('relative')}  [{languages}]")
+                print(f"     {candidate.get('scope_hint', 'component')}: {_workspace_project_description(candidate)}")
+            while True:
+                try:
+                    choice = input(f"Project [1-{len(candidates)}] or q: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return fail("Project selection cancelled.")
+                if choice == "q":
+                    return fail("Project selection cancelled.")
+                if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+                    root = Path(candidates[int(choice) - 1]["root"])
+                    if set_workspace_selection is not None:
+                        set_workspace_selection(workspace_container, root)
+                    print(f"Active audit scope: {root.relative_to(workspace_container)}")
+                    break
+                print("Please enter one of the project numbers, or q.")
     info = detect_project(root) if detect_project else {
         "root": str(root),
         "kind": "unknown",
