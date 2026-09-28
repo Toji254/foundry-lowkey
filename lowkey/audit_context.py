@@ -100,6 +100,28 @@ def audit_dir(root: Path | None = None, *, create: bool = False) -> Path:
     return path
 
 
+def _is_lowkey_source_root(root: Path) -> bool:
+    """Identify Lowkey's own checkout without naming any user protocol."""
+    root = root.expanduser().resolve()
+
+    # The installer records the checkout that owns the installed runtime.
+    manifest_path = Path(os.path.expanduser("~/.lowkey/install-manifest.json"))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        source_repo = manifest.get("source_repo")
+        if source_repo and Path(str(source_repo)).expanduser().resolve() == root:
+            return True
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    # Direct source-checkout execution still gets a stable structural boundary.
+    return (
+        (root / "lowkey" / "lk.py").is_file()
+        and (root / "lowkey" / "project_detection.py").is_file()
+        and (root / "install.sh").is_file()
+    )
+
+
 def _is_audit_project(root: Path) -> bool:
     """Return whether this root is a real Lowkey-auditable project.
 
@@ -107,6 +129,9 @@ def _is_audit_project(root: Path) -> bool:
     contain an old .audit directory from development, but that directory must
     never become the active audit ledger.
     """
+    if _is_lowkey_source_root(root):
+        return False
+
     if detected_project is None:
         return any(
             (root / marker).exists()
@@ -219,6 +244,11 @@ def load(root: Path | None = None) -> dict[str, Any]:
 
 def save(data: dict[str, Any], root: Path | None = None) -> Path:
     project_root = foundry_project_root(root)
+    path = context_path(project_root)
+    # Audit state is owned only by real user projects. Calls made while running
+    # Lowkey from its own source checkout must not create or mutate .audit.
+    if not _is_audit_project(project_root):
+        return path
     data = dict(data)
     data["schema_version"] = SCHEMA_VERSION
     data.setdefault("project", {})
@@ -226,7 +256,6 @@ def save(data: dict[str, Any], root: Path | None = None) -> Path:
     data["project"]["name"] = project_root.name
     data["updated_at"] = _now()
 
-    path = context_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Multiple Lowkey processes may run against the same project (CI smoke checks,
     # shell process substitutions, parallel tooling). A shared fixed temp filename
@@ -270,7 +299,10 @@ def emit(
     if data:
         record["data"] = data
 
-    path = events_path(root)
+    project_root = foundry_project_root(root)
+    if not _is_audit_project(project_root):
+        return
+    path = events_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
