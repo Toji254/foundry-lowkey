@@ -58,6 +58,18 @@ def source_link(
     if os.environ.get("TERM_PROGRAM", "").lower() != "vscode":
         return label
 
+    # Never emit a clickable editor target for a source path outside the
+    # active project. A stale/copied audit ledger may contain absolute paths
+    # from another repository; hyperlinking those paths would silently jump
+    # the auditor into the wrong project.
+    try:
+        absolute.relative_to(project_root_path)
+        in_project = True
+    except ValueError:
+        in_project = False
+    if not in_project:
+        return label
+
     target = f"vscode://file/{quote(str(absolute), safe='/')}"
     if line:
         target += f":{int(line)}"
@@ -185,6 +197,18 @@ def load(root: Path | None = None) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         data = {}
+
+    # Audit state is project-owned. A copied or stale .audit/context.json from
+    # another repository must not carry signals, targets, or evidence into the
+    # current project merely because the directory was reused.
+    stored_project = data.get("project") if isinstance(data, dict) else None
+    stored_root = stored_project.get("root") if isinstance(stored_project, dict) else None
+    if stored_root:
+        try:
+            if Path(str(stored_root)).expanduser().resolve() != project_root.resolve():
+                return _default_context(project_root)
+        except OSError:
+            return _default_context(project_root)
 
     context = _default_context(project_root)
     if isinstance(data, dict):
