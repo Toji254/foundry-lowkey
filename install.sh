@@ -29,6 +29,8 @@ for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audi
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
+cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
+
 python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"
 bash -n "$REPO_DIR/bin/lk"
 
