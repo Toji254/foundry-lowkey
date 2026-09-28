@@ -101,6 +101,38 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(node_actions[0]["command"], ["npm", "install"])
             self.assertIn("Hardhat binary missing", node_actions[0]["evidence"])
 
+    def test_node_runtime_pin_prefers_matching_installed_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, ".nvmrc", "18.18.0\\n")
+            runtime = pathlib.Path(tmp) / "node18" / "bin"
+            runtime.mkdir(parents=True)
+            node = runtime / "node"
+            node.write_text("#!/bin/sh\\nprintf 'v18.18.0\\n'\\n", encoding="utf-8")
+            node.chmod(0o755)
+
+            with patch.object(bootstrap.shutil, "which", return_value="/usr/bin/node"), \\
+                 patch.object(
+                     bootstrap.subprocess,
+                     "run",
+                     side_effect=lambda command, **kwargs: type("Result", (), {
+                         "returncode": 0,
+                         "stdout": "v26.8.1\\n" if command[0] == "/usr/bin/node" else "v18.18.0\\n",
+                         "stderr": "",
+                     })(),
+                 ):
+                with patch.object(bootstrap.Path, "home", return_value=pathlib.Path(tmp)):
+                    # The temporary home layout below mirrors the nvm location.
+                    nvm_runtime = pathlib.Path(tmp) / ".nvm" / "versions" / "node" / "v18.18.0" / "bin"
+                    nvm_runtime.mkdir(parents=True)
+                    nvm_node = nvm_runtime / "node"
+                    nvm_node.write_text(node.read_text(), encoding="utf-8")
+                    nvm_node.chmod(0o755)
+                    env, pin = bootstrap.runtime_environment(root)
+
+            self.assertEqual(pin, "18.18.0")
+            self.assertEqual(env["PATH"].split(bootstrap.os.pathsep)[0], str(nvm_runtime))
+
     def test_native_node_addon_failure_retries_without_scripts(self):
         action = {
             "kind": "node",
