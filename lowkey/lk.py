@@ -21,6 +21,10 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 import audit_context
 import walkthrough
+try:
+    import bootstrap as bootstrap_engine
+except ImportError:
+    bootstrap_engine = None
 
 try:
     from project_detection import (
@@ -4100,6 +4104,49 @@ def _format_build_failure(output):
         return "Build failed with no compiler output."
     # Keep the actionable compiler diagnostics intact while avoiding duplicate blank lines.
     return text
+
+
+def _node_package_bootstrap_command(root):
+    """Backward-compatible adapter to the shared Node dependency planner."""
+    if bootstrap_engine is None:
+        return None
+    plan = bootstrap_engine.bootstrap_plan(
+        {"root": str(Path(root))},
+        root,
+        force=True,
+        reason="dependency",
+    )
+    for action in plan.get("actions", []):
+        if action.get("kind") == "node":
+            return list(action.get("command") or []) or None
+    return None
+
+
+def _submodule_bootstrap_health(root):
+    """Backward-compatible adapter to shared submodule diagnostics."""
+    if bootstrap_engine is None:
+        return []
+    try:
+        state = bootstrap_engine._submodule_state(Path(root))
+    except Exception:
+        return []
+    return list(state.get("missing") or [])
+
+
+def _foundry_native_bootstrap_commands(root, build_output=""):
+    """Backward-compatible adapter; all recovery decisions live in bootstrap.py."""
+    if bootstrap_engine is None:
+        return []
+    classification = classify_build_failure(build_output, ["forge", "build"])
+    if not classification.get("repairable"):
+        return []
+    plan = bootstrap_engine.bootstrap_plan(
+        {"root": str(Path(root))},
+        root,
+        force=True,
+        reason=str(classification.get("category") or "dependency"),
+    )
+    return [list(action.get("command") or []) for action in plan.get("actions", []) if action.get("command")]
 
 
 def _run_project_build(config, root):

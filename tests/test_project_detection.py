@@ -378,7 +378,14 @@ class ProjectDetectionTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "contracts").mkdir()
-            (root / "contracts" / "Ping.vy").write_text("@external\\ndef ping():\\n    pass\\n", encoding="utf-8")\n            (root / "test_ping.py").write_text("def test_ping(): pass\n", encoding="utf-8")
+            (root / "contracts" / "Ping.vy").write_text(
+                "@external\ndef ping():\n    pass\n",
+                encoding="utf-8",
+            )
+            (root / "test_ping.py").write_text(
+                "def test_ping(): pass\n",
+                encoding="utf-8",
+            )
             calls = []
 
             def fake_run(command, cwd):
