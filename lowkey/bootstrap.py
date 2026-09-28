@@ -503,6 +503,25 @@ def _node_runtime_bin(root: Path) -> Path | None:
             pass
 
     home = Path.home()
+
+    # nvm is normally a shell function, so use its installed script only to
+    # resolve an already-installed matching runtime; never auto-install one.
+    nvm_sh = Path(os.environ.get("NVM_DIR", home / ".nvm")) / "nvm.sh"
+    if nvm_sh.is_file() and shutil.which("bash"):
+        try:
+            result = subprocess.run(
+                ["bash", "-lc", f'. "{nvm_sh}" >/dev/null 2>&1 && nvm which {required}'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                resolved = Path(result.stdout.strip())
+                if resolved.is_file() and resolved.name == "node":
+                    return resolved.parent
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     candidates = (
         home / ".nvm" / "versions" / "node" / f"v{required}" / "bin",
         home / ".local" / "share" / "fnm" / "node-versions" / f"v{required}" / "installation" / "bin",
