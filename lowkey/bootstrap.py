@@ -714,6 +714,23 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
     }
 
 
+def _native_node_script_failure(output: str) -> bool:
+    """Detect a native Node addon build failure that can be bypassed safely."""
+    text = str(output or "").lower()
+    return (
+        "node-gyp" in text
+        and any(
+            marker in text
+            for marker in (
+                "fatal error:",
+                "pkg-config: not found",
+                "prebuild-install",
+                "gyp err! build error",
+            )
+        )
+    )
+
+
 def run_bootstrap(
     info: dict[str, Any] | None = None,
     root: str | os.PathLike[str] = ".",
@@ -751,6 +768,7 @@ def run_bootstrap(
                 command,
                 cwd=str(cwd),
                 stdin=subprocess.DEVNULL,
+                capture_output=True,
                 text=True,
                 env={**os.environ, "CI": "1"},
                 timeout=timeout,
@@ -764,7 +782,58 @@ def run_bootstrap(
             failures = failures or 1
             continue
 
+        output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
+        if output:
+            print(output.rstrip())
+
         if result.returncode != 0:
+            # Some projects declare optional/native Node packages (for example
+            # Ledger HID tooling) whose postinstall requires host libraries.
+            # Keep the repository's lockfile-resolved dependency tree, then
+            # retry without package lifecycle scripts so unrelated audit tooling
+            # can still be installed and tested.
+            fallback = (
+                action["kind"] == "node"
+                and _native_node_script_failure(output)
+                and "--ignore-scripts" not in command
+            )
+            if fallback:
+                fallback_command = [*command, "--ignore-scripts"]
+                print("RETRY  node: native addon lifecycle script blocked dependency install")
+                print(f"       {' '.join(fallback_command)}")
+                try:
+                    fallback_result = subprocess.run(
+                        fallback_command,
+                        cwd=str(cwd),
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        text=True,
+                        env={**os.environ, "CI": "1"},
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    print(f"FAIL  node fallback: timed out after {timeout}s")
+                    failures = failures or 1
+                    continue
+                except OSError as error:
+                    print(f"FAIL  node fallback: {error}")
+                    failures = failures or 1
+                    continue
+
+                fallback_output = (
+                    (fallback_result.stdout or "")
+                    + (("\n" + fallback_result.stderr) if fallback_result.stderr else "")
+                )
+                if fallback_output:
+                    print(fallback_output.rstrip())
+                if fallback_result.returncode == 0:
+                    print("PASS  node fallback — dependency install completed with lifecycle scripts skipped")
+                    continue
+
+                print(f"FAIL  node fallback: exit {fallback_result.returncode}")
+                failures = failures or fallback_result.returncode or 1
+                continue
+
             print(f"FAIL  {action['kind']}: exit {result.returncode}")
             failures = failures or result.returncode or 1
         else:
