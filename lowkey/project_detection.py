@@ -22,6 +22,15 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+try:
+    from bootstrap import (
+        bootstrap_status as shared_bootstrap_status,
+        classify_build_failure as shared_classify_build_failure,
+        run_bootstrap as run_shared_bootstrap,
+    )
+except ImportError:
+    shared_bootstrap_status = shared_classify_build_failure = run_shared_bootstrap = None
+
 
 IGNORED_DIRS = {
     ".git", ".audit", ".venv", "venv", "__pycache__", ".pytest_cache",
@@ -843,97 +852,43 @@ def _bootstrap_step(label: str, command: Sequence[str], root: Path) -> int:
     return code
 
 
-def bootstrap_project(info: dict[str, Any], args: Sequence[str] = ()) -> int:
-    """Prepare an audit workspace using project-declared tooling.
+def bootstrap_project(
+    info: dict[str, Any],
+    args: Sequence[str] = (),
+    *,
+    force: bool = False,
+    reason: str = "prepare",
+) -> int:
+    """Prepare the selected project through Lowkey's shared bootstrap engine."""
+    if run_shared_bootstrap is None:
+        print("DEFER  shared bootstrap engine is unavailable.")
+        return 0
+    return run_shared_bootstrap(info, args=args, force=force, reason=reason)
 
-    This is intentionally project-local: Lowkey does not install protocol
-    dependencies system-wide. It prefers lockfiles and the package manager
-    declared/available for the repository.
-    """
-    root = Path(info["root"])
-    failures = 0
-    print("\nLOWKEY PROJECT BOOTSTRAP")
-    print("========================")
 
-    if (root / ".gitmodules").is_file() and shutil.which("git"):
-        code = _bootstrap_step(
-            "git submodules",
-            ["git", "submodule", "update", "--init", "--recursive", "--depth", "1"],
-            root,
-        )
-        if code != 0:
-            failures = failures or code
-    elif (root / ".gitmodules").is_file():
-        print("DEFER  git submodules — git is not installed.")
+def bootstrap_status(info: dict[str, Any]) -> dict[str, Any]:
+    """Expose diagnostics-only bootstrap state to CLI surfaces such as doctor."""
+    if shared_bootstrap_status is None:
+        return {
+            "project_root": str(info.get("root") or ""),
+            "workspace_root": str(info.get("root") or ""),
+            "dependency_root": str(info.get("root") or ""),
+            "actions": [],
+            "runtime_requirements": {},
+            "ready": True,
+            "repairable": False,
+        }
+    return shared_bootstrap_status(info)
 
-    if (root / "pyproject.toml").is_file():
-        if shutil.which("uv"):
-            code = _bootstrap_step(
-                "python dependencies",
-                ["uv", "sync", "--all-extras", "--dev"],
-                root,
-            )
-            if code != 0:
-                failures = failures or code
-        elif (root / "poetry.lock").is_file() and shutil.which("poetry"):
-            code = _bootstrap_step("python dependencies", ["poetry", "install"], root)
-            if code != 0:
-                failures = failures or code
-        elif (root / "Pipfile").is_file() and shutil.which("pipenv"):
-            code = _bootstrap_step("python dependencies", ["pipenv", "sync", "--dev"], root)
-            if code != 0:
-                failures = failures or code
-        elif not (root / ".venv" / "bin" / "python").is_file() and not (root / "venv" / "bin" / "python").is_file():
-            print("DEFER  python dependencies — no supported project manager found.")
-    elif (root / "requirements.txt").is_file() or (root / "requirements-dev.txt").is_file():
-        venv = root / ".venv"
-        python = venv / "bin" / "python"
-        pip = venv / "bin" / "pip"
-        if not python.is_file():
-            code = _bootstrap_step("python virtualenv", ["python3", "-m", "venv", str(venv)], root)
-            if code != 0:
-                failures = failures or code
-        if pip.is_file():
-            requirements = []
-            if (root / "requirements.txt").is_file():
-                requirements.append("requirements.txt")
-            if (root / "requirements-dev.txt").is_file():
-                requirements.append("requirements-dev.txt")
-            for requirement in requirements:
-                code = _bootstrap_step(
-                    f"python {requirement}",
-                    [str(pip), "install", "-r", requirement],
-                    root,
-                )
-                if code != 0:
-                    failures = failures or code
 
-    if (root / "package.json").is_file():
-        node_modules = root / "node_modules"
-        if not node_modules.is_dir():
-            if (root / "pnpm-lock.yaml").is_file() and shutil.which("pnpm"):
-                code = _bootstrap_step("node dependencies", ["pnpm", "install", "--frozen-lockfile"], root)
-            elif (root / "yarn.lock").is_file() and shutil.which("yarn"):
-                code = _bootstrap_step("node dependencies", ["yarn", "install", "--immutable"], root)
-            elif (root / "bun.lockb").is_file() and shutil.which("bun"):
-                code = _bootstrap_step("node dependencies", ["bun", "install", "--frozen-lockfile"], root)
-            elif (root / "package-lock.json").is_file() and shutil.which("npm"):
-                code = _bootstrap_step("node dependencies", ["npm", "ci"], root)
-            elif shutil.which("npm"):
-                code = _bootstrap_step("node dependencies", ["npm", "install"], root)
-            else:
-                code = 0
-                print("DEFER  node dependencies — no supported package manager found.")
-            if code != 0:
-                failures = failures or code
-
-    if (root / "go.mod").is_file() and shutil.which("go"):
-        code = _bootstrap_step("go dependencies", ["go", "mod", "download"], root)
-        if code != 0:
-            failures = failures or code
-
-    return failures
-
+def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> dict[str, Any]:
+    if shared_classify_build_failure is None:
+        return {
+            "category": "source_or_build_error",
+            "repairable": False,
+            "reason": "Shared failure classifier is unavailable.",
+        }
+    return shared_classify_build_failure(output, command)
 
 def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     """Run safe native verification for non-Foundry stacks.
