@@ -1052,10 +1052,6 @@ def _run_hardhat_fork_fallback(
         )
 
     _fork_url, block_number = spec
-    anvil = shutil.which("anvil")
-    if not anvil:
-        return None
-
     port = _find_free_local_port()
     if not port:
         return None
