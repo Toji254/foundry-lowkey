@@ -35,11 +35,13 @@ try:
         set_workspace_selection,
         clear_workspace_selection,
         workspace_context,
+        bootstrap_project,
     )
 except ImportError:
     detect_project = format_detection = run_native_audit = None
     discover_nested_projects = is_workspace_root = workspace_root = None
     workspace_selection = set_workspace_selection = clear_workspace_selection = None
+    bootstrap_project = None
     detected_project_root = lambda start=".": Path(start).resolve()
 
 try:
@@ -5473,6 +5475,20 @@ def run_lab(config,args):
                 print("Please enter one of the project numbers, or q.")
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
+
+    # Non-Foundry lab paths need the same repository-local dependency bootstrap
+    # that native audits receive. Foundry keeps its build-specific recovery loop,
+    # which can use compiler diagnostics to repair incomplete dependencies.
+    if kind not in {"foundry", "mixed-foundry-vyper"} and bootstrap_project is not None:
+        bootstrap_info = dict(project)
+        bootstrap_info["root"] = str(root)
+        bootstrap_code = bootstrap_project(bootstrap_info)
+        if bootstrap_code != 0:
+            print(
+                "Warning: project dependency bootstrap reported failures; "
+                "Lowkey will continue only if the native build/artifact checks succeed.",
+                file=sys.stderr,
+            )
 
     # Vyper projects do not have Forge artifacts. Build the project's own Vyper
     # sources before target discovery so lk lab never falls back to stale/test-only
