@@ -2140,7 +2140,10 @@ def _friendly_arg(
 
 
 def _friendly_contract_name(step: Step) -> str:
-    return str(step.contract or "Contract").replace("MockConfidencePoolModerator", "Moderator")
+    name = str(step.contract or "Contract")
+    if name.lower().startswith("mock") and len(name) > 4:
+        return name[4:]
+    return name
 
 
 _ACTIVE_MODEL_CATALOG: list[ContractModel] = []
@@ -6181,16 +6184,6 @@ def _candidate_proxy_artifact(root: Path) -> tuple[Path, dict[str, Any]] | None:
     return _artifact_entry_by_name(root, "ERC1967Proxy")
 
 
-def _looks_like_confidence_pool_system(root_model: ContractModel, child: ContractModel | None) -> bool:
-    names = {str(sig).split("(", 1)[0].lower() for sig in root_model.functions}
-    return (
-        root_model.name.lower() == "confidencepoolfactory"
-        and child is not None
-        and child.name.lower() == "confidencepool"
-        and "createpool" in names
-    )
-
-
 def _generic_constructor_args(model: ContractModel, root: Path, actor: Actor) -> list[Any] | None:
     """Return only conservative constructor arguments; None means unsafe/unknown."""
     entry = _artifact_entry_by_name(root, model.name)
@@ -6640,262 +6633,12 @@ def _synthesize_local_protocol_fixture(
             host._sync_audit_context(config, root)
         return True, f"synthesized single-contract lab for {root_model.name}"
 
-    if not _looks_like_confidence_pool_system(root_model, child):
-        return _synthesize_generic_protocol_fixture(
-            root, rpc, host, config, actors, models, support_models
-        )
-
-    # The full multi-contract bootstrap needs disposable mocks. Prefer the project's
-    # own test doubles; never substitute an EOA where the source treats an address
-    # as a contract.
-    token = _fixture_model(
-        support_models,
-        exact=("MockERC20",),
-        tokens=("erc20", "token"),
-        required_functions=("mint", "balanceof", "transfer"),
+    # The synthesis engine is intentionally protocol-neutral. It uses ABI/source
+    # relationships and compatible project fixtures instead of recognizing any
+    # particular contract or repository by name.
+    return _synthesize_generic_protocol_fixture(
+        root, rpc, host, config, actors, models, support_models
     )
-    registry = _fixture_model(
-        support_models,
-        exact=("MockSafeHarborRegistry",),
-        tokens=("safeharborregistry", "safeharbor", "registry"),
-        required_functions=("isagreementvalid",),
-    )
-    agreement = _fixture_model(
-        support_models,
-        exact=("MockAgreement",),
-        tokens=("agreement",),
-        required_functions=("owner",),
-    )
-    attack_registry = _fixture_model(
-        support_models,
-        exact=("MockAttackRegistry",),
-        tokens=("attackregistry",),
-        required_functions=("getagreementstate", "setagreementstate"),
-    )
-    moderator = _fixture_model(
-        support_models,
-        exact=("MockConfidencePoolModerator",),
-        tokens=("moderator",),
-        required_functions=("flag",),
-    )
-
-    if not all([token, registry, agreement]):
-        return False, "project test fixtures do not expose enough safe token/registry/agreement mocks"
-
-    needs_proxy = any(
-        str(item.get("name") or "").lower() == "initialize"
-        and item.get("type") == "function"
-        for item in root_model.abi
-    )
-    proxy = _candidate_proxy_artifact(root) if needs_proxy else None
-    if needs_proxy and not proxy:
-        return False, f"{root_model.name} is initializer-based but no compiled ERC1967Proxy artifact was found"
-
-    private_key = host.derive_default_anvil_key(0) if hasattr(host, "derive_default_anvil_key") else None
-    if not private_key:
-        return False, "could not derive the default Anvil deployer key"
-
-    alice = actors[0] if actors else Actor("Alice", "0x" + "00" * 20, 0)
-    bob = actors[1] if len(actors) > 1 else alice
-
-    def deploy_model(model: ContractModel, ctor_args: list[Any] | None = None) -> str | None:
-        return _deploy_local_artifact(root, rpc, private_key, _artifact_entry_by_name(root, model.name), ctor_args)
-
-    system: dict[str, Any] = {}
-
-    system["stake_token"] = deploy_model(token)
-    system["stake_token_model"] = token.name
-    system["safe_harbor_registry"] = deploy_model(registry)
-    system["safe_harbor_registry_model"] = registry.name
-    if attack_registry:
-        system["attack_registry"] = deploy_model(attack_registry)
-        system["attack_registry_model"] = attack_registry.name
-    if moderator:
-        system["moderator"] = deploy_model(moderator)
-        system["moderator_model"] = moderator.name
-    system["pool_implementation"] = deploy_model(child)
-    system["pool_implementation_model"] = child.name
-    system["agreement"] = deploy_model(agreement, [alice.address])
-    system["agreement_model"] = agreement.name
-
-    if not all(is_address(system.get(k)) for k in ("stake_token", "safe_harbor_registry", "pool_implementation", "agreement")):
-        return False, "one or more core protocol fixtures failed to deploy"
-
-    # Fund the named local actors when the project fixture exposes a mint() hook.
-    # The live ConfidencePool lifecycle needs enough tokens for Alice's bonus + stake
-    # and Bob's stake; other protocols simply skip this optional fixture capability.
-    mint_fn = next(
-        (
-            item for item in token.abi
-            if item.get("type") == "function"
-            and str(item.get("name") or "").lower() == "mint"
-            and len(item.get("inputs") or []) == 2
-        ),
-        None,
-    )
-    if mint_fn:
-        mint_signature = _signature(mint_fn)
-        for actor in actors[:4]:
-            _send_lab_control(
-                host,
-                config,
-                alice,
-                system["stake_token"],
-                mint_signature,
-                [actor.address, 1_000 * 10**18],
-            )
-
-    # Wire the disposable registry/Agreement fixtures before the root creates a child.
-    if system.get("attack_registry"):
-        if not _send_lab_control(
-            host, config, alice, system["safe_harbor_registry"],
-            "setAttackRegistry(address)", [system["attack_registry"]],
-        ):
-            return False, "failed to wire Safe Harbor Registry -> Attack Registry"
-
-    if not _send_lab_control(
-        host, config, alice, system["safe_harbor_registry"],
-        "setAgreementValid(address,bool)", [system["agreement"], True],
-    ):
-        return False, "failed to mark the synthetic Agreement valid in the Safe Harbor Registry"
-
-    # Agreement scope is required by child.initialize in systems with the same
-    # scope-validation pattern. Ignore the optional call for other fixtures.
-    agreement_scope_fn = next(
-        (
-            item for item in agreement.abi
-            if item.get("type") == "function"
-            and str(item.get("name") or "").lower() == "setcontractinscope"
-        ),
-        None,
-    )
-    if agreement_scope_fn:
-        for actor in actors[:4]:
-            if not _send_lab_control(
-                host, config, alice, system["agreement"],
-                _signature(agreement_scope_fn), [actor.address, True],
-            ):
-                return False, f"failed to add {actor.name} to the Agreement scope"
-
-    factory_impl = deploy_model(root_model)
-    if not is_address(factory_impl):
-        return False, f"failed to deploy {root_model.name} implementation"
-
-    init = next(
-        (
-            item for item in root_model.abi
-            if item.get("type") == "function"
-            and str(item.get("name") or "").lower() == "initialize"
-        ),
-        None,
-    )
-
-    root_target = factory_impl
-    if init:
-        # Resolve initializer address parameters by semantic role. The child implementation
-        # and fixture contracts are concrete, not placeholder EOAs.
-        values: list[Any] = []
-        for param in init.get("inputs", []):
-            name = str(param.get("name") or "").lower()
-            ptype = _canonical_type(param)
-            compact = re.sub(r"[^a-z0-9]", "", name)
-            if ptype == "address":
-                mapping = {
-                    "safeharborregistry": system["safe_harbor_registry"],
-                    "registry": system["safe_harbor_registry"],
-                    "poolimplementation": system["pool_implementation"],
-                    "implementation": system["pool_implementation"],
-                    "defaultoutcomemoderator": system.get("moderator"),
-                    "outcomemoderator": system.get("moderator"),
-                    "moderator": system.get("moderator"),
-                    "owner": alice.address,
-                    "owneraddress": alice.address,
-                    "admin": alice.address,
-                    "adminaddress": alice.address,
-                }
-                resolved = mapping.get(compact) or system.get(compact)
-                if not is_address(resolved):
-                    return False, f"initializer dependency '{name or 'address'}' could not be resolved safely"
-                values.append(resolved)
-            elif ptype == "bool":
-                values.append(False)
-            elif ptype.startswith("uint") or ptype.startswith("int"):
-                values.append(0)
-            elif ptype == "bytes":
-                values.append("0x")
-            elif ptype == "bytes32":
-                values.append("0x" + "00" * 32)
-            elif ptype == "string":
-                values.append("lowkey")
-            elif ptype.endswith("[]"):
-                values.append([])
-            else:
-                values.append(0)
-
-        init_data = _encode_calldata(_signature(init), values)
-        if not init_data:
-            return False, f"failed to encode {root_model.name}.initialize(...)"
-
-        if proxy:
-            proxy_args = [factory_impl, init_data]
-            root_target = _deploy_local_artifact(root, rpc, private_key, proxy, proxy_args)
-            if not is_address(root_target):
-                return False, f"failed to deploy ERC1967Proxy for {root_model.name}"
-        else:
-            tx = _send_lab_control(host, config, alice, factory_impl, _signature(init), values)
-            if not tx:
-                return False, f"failed to initialize {root_model.name}"
-    system["factory"] = root_target
-    system["factory_model"] = root_model.name
-
-    # Configure the common token allowlist gate after the root is initialized.
-    allow_fn = next(
-        (
-            item for item in root_model.abi
-            if item.get("type") == "function"
-            and str(item.get("name") or "").lower() in {"setstaketokenallowed", "settokenallowed"}
-        ),
-        None,
-    )
-    if allow_fn:
-        if not _send_lab_control(
-            host, config, alice, root_target,
-            _signature(allow_fn), [system["stake_token"], True],
-        ):
-            return False, "failed to allowlist the synthetic stake token on the protocol entry point"
-
-    # Publish the complete discovered environment into the shared audit context.
-    config["target"] = root_target
-    config["target_contract"] = root_model.name
-    config["_walkthrough_recipe"] = "confidence-pool" if _looks_like_confidence_pool_system(root_model, child) else "generic-system"
-    config["lab_system"] = {
-        **{key: value for key, value in system.items() if is_address(value)},
-        "root": root_target,
-        "root_model": root_model.name,
-        "child": None,
-        "child_model": child.name,
-        "factory_model": root_model.name,
-    }
-    if hasattr(host, "set_lab_target"):
-        artifact_path = str(root / root_model.artifact)
-        host.set_lab_target(config, root, root_target, root_model.name, artifact_path)
-    else:
-        config.setdefault("aliases", {})[root_model.name] = root_target
-        config.setdefault("targets", {})[root_model.name] = root_target
-        config.setdefault("abi_paths", {})[root_target] = str(root / root_model.artifact)
-        config["actor"] = "lab-deployer"
-
-    if hasattr(host, "save_config"):
-        host.save_config(config)
-    audit_context.set_target(
-        root,
-        address=root_target,
-        contract=root_model.name,
-        artifact=str(root / root_model.artifact),
-        source="synthesized-project-lab",
-    )
-    audit_context.update(root, actor=alice.name, rpc=rpc)
-    return True, f"synthesized {root_model.name} + {child.name} protocol environment"
 
 
 def _system_has_live_core(config: dict[str, Any], rpc: str | None) -> bool:
