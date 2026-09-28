@@ -5002,26 +5002,26 @@ def run_lab(config,args):
         print("  lk lab stop")
         print("")
         print("MODES")
-        print("  auto      Prefer a project-native deployment script, then a real test fixture,")
-        print("            then fall back to Lowkey's generic ABI deployer.")
-        print("  --generic Force direct ABI deployment with Lowkey's constructor wizard.")
-        print("            Optional Contract selects the deployable first-party artifact.")
-        print("  --artifact Force direct deployment of the exact built artifact named by Contract.")
-        print("            Use this to exercise constructor arguments for a specific artifact.")
+        print("  auto      Let Lowkey choose the easiest way to build a working local lab.")
+        print("            It reuses the project's own setup when possible, then deploys directly.")
+        print("  --generic Start from a contract and enter its constructor values yourself.")
+        print("             Optional Contract chooses which contract to deploy.")
+        print("  --artifact Deploy the exact compiled contract you name.")
+        print("             Useful when a project has several contracts with similar names.")
         print("")
         print("EXAMPLES")
         print("  lk lab")
-        print("      Build a realistic local lab using the project's own harness when available.")
+        print("      Let Lowkey set up a realistic local lab automatically.")
         print("  lk lab MyContract")
-        print("      Prefer native project harnesses, targeting MyContract.")
+        print("      Same as above, but prefer MyContract as the main target.")
         print("  lk lab --generic")
-        print("      Skip native harnesses and deploy Lowkey's automatically selected target.")
+        print("      Skip the project's setup and deploy a contract directly.")
         print("  lk lab --generic MyContract")
-        print("      Skip native harnesses and open the constructor wizard for this contract.")
+        print("      Deploy MyContract directly and answer its constructor prompts.")
         print("  lk lab --artifact MyContract")
-        print("      Deploy this exact built artifact directly; constructor inputs are prompted.")
+        print("      Deploy exactly this compiled contract.")
         print("  lk lab stop")
-        print("      Stop the Anvil instance Lowkey started for the project.")
+        print("      Stop the local Anvil instance started by Lowkey.")
         return 0
 
     root = audit_context.foundry_project_root()
@@ -8325,10 +8325,10 @@ PROJECT / TARGET SETUP
   lk use <name|number>              Switch to a saved target. Example: lk use escrow
   lk deployments                    List deployment records.
   lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
-  lk lab [Contract]                 Smart local lab: native script -> test fixture -> artifact fallback.
-  lk lab --generic [Contract]      Force Lowkey's generic ABI deployer (shows constructor prompts).
-  lk lab --artifact <Contract>     Force direct deployment of this exact built artifact.
-  lk lab stop                      Stop the Anvil Lowkey started.
+  lk lab [Contract]                 Set up a realistic local lab automatically.
+  lk lab --generic [Contract]      Deploy a contract directly and enter constructor values.
+  lk lab --artifact <Contract>     Deploy this exact compiled contract.
+  lk lab stop                      Stop the local Anvil instance started by Lowkey.
   lk rpc <url>                      Set RPC manually. Example: lk rpc http://127.0.0.1:8545
   lk rpc set <name> <url>           Save an RPC profile.
   lk rpc use <name>                 Select an RPC profile.
