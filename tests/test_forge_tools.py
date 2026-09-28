@@ -139,6 +139,17 @@ class LowkeyForgeTests(unittest.TestCase):
             self.assertEqual(forge_tools.run_forge(["build"], quiet=True), 0)
         self.assertEqual(output.getvalue(), "")
 
+    def test_run_audit_uses_active_project_when_called_from_workspace_parent(self):
+        root = pathlib.Path("/workspace/pkg/quantamm")
+        profile = {
+            "root": str(root),
+            "kind": "multi-stack",
+            "stacks": ["foundry", "hardhat"],
+            "languages": {"solidity": 10},
+        }
+        with patch.object(forge_tools, "_project_root", return_value=root),              patch.object(forge_tools.project_tools, "detect_project", return_value=profile),              patch.object(forge_tools, "run_forge", return_value=0),              patch.object(forge_tools, "run_coverage_audit", return_value=0),              patch.object(forge_tools, "_coverage_compatibility_flags", return_value=[]),              patch.object(forge_tools, "_supports_option", return_value=True):
+            self.assertEqual(forge_tools.run_audit([]), 0)
+
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_coverage_audit", return_value=0)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])

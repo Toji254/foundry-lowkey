@@ -820,7 +820,7 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
 
 def run_audit(args: Sequence[str]) -> int:
     """Run the complete audit pipeline using the detected native project toolchain."""
-    root = Path.cwd().resolve()
+    root = _project_root()
     profile = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(profile.get("kind") or "foundry")
     stacks = set(profile.get("stacks") or [])

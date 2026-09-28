@@ -324,6 +324,21 @@ def _workspace_project_metadata(projects):
 
     for project in projects:
         root = Path(project["root"]).resolve()
+        lower_identity = " ".join(
+            str(value or "").lower()
+            for value in (
+                project.get("name"),
+                project.get("package_name"),
+                project.get("description"),
+                project.get("relative"),
+            )
+        )
+        explicit_support = bool(
+            re.search(
+                r"(^|[/._-])(helper|helpers|common|toolbox|tools|benchmark|benchmarks|fixture|fixtures|mock|mocks)([/._-]|$)",
+                lower_identity,
+            )
+        )
         if root in primary_roots:
             project["scope_role"] = "primary audit candidate"
             project["scope_reason"] = (

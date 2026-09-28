@@ -8469,11 +8469,9 @@ def run_project_map(config, args):
                 candidate_root = Path(candidate["root"]).resolve()
                 marker = " *" if active_project and candidate_root == active_project.resolve() else "  "
                 here = "  <here>" if current_project and candidate_root == current_project.resolve() else ""
-                languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
-                print(f"{marker}{index}. {candidate.get('relative')}{here}  [{languages}]")
-                print(f"     {candidate.get('scope_hint', 'component')} | {_workspace_project_description(candidate)}")
-                if candidate.get("used_by_siblings"):
-                    print(f"     Used by {candidate['used_by_siblings']} sibling project(s)")
+                print(f"{marker}{index}. {candidate.get('relative')}{'  <here>' if here else ''}")
+                for line in _workspace_project_details(candidate):
+                    print(line)
             print("")
             print("Deep dive:     lk project <number>")
             print("Set scope:     lk projects <number>")
