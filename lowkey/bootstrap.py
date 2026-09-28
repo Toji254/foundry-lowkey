@@ -220,9 +220,8 @@ def _is_workspace_project(project: Path, workspace: Path) -> bool:
 def _git_root(start: Path) -> Path:
     current = start.resolve()
     for candidate in (current, *current.parents):
-        if (candidate / ".gitmodules").is_file() or (candidate / ".git").exists():
-            if (candidate / ".gitmodules").is_file():
-                return candidate
+        if (candidate / ".git").exists():
+            return candidate
     return start.resolve()
 
 
@@ -325,12 +324,16 @@ def _node_install_command(root: Path) -> tuple[Path, list[str], str] | None:
         command = exact_manager("pnpm")
         if command:
             return boundary, command, f"packageManager={declared}"
+        return boundary, [], f"packageManager={declared}; Corepack is required to enforce this pin"
     if declared.lower().startswith("yarn@"):
         command = exact_manager("yarn")
         if command:
             return boundary, command, f"packageManager={declared}"
-    if declared.lower().startswith("bun@") and shutil.which("bun"):
-        return boundary, ["bun", "install", "--frozen-lockfile"], f"packageManager={declared}"
+        return boundary, [], f"packageManager={declared}; Corepack is required to enforce this pin"
+    if declared.lower().startswith("bun@"):
+        if shutil.which("bun"):
+            return boundary, ["bun", "install", "--frozen-lockfile"], f"packageManager={declared}"
+        return boundary, [], f"packageManager={declared}; Bun is not installed"
 
     pnpm_lock = boundary / "pnpm-lock.yaml"
     if pnpm_lock.is_file():
@@ -510,10 +513,12 @@ def _node_run_command(root: Path, script: str) -> list[str] | None:
     if not (manager_root / "package.json").is_file():
         return None
     declared = str(_package_json(manager_root).get("packageManager") or "").strip().lower()
-    if declared.startswith(("pnpm@", "yarn@")) and shutil.which("corepack"):
-        manager = declared.split("@", 1)[0]
-        version = declared.split("@", 1)[1]
-        return ["corepack", f"{manager}@{version}", "run", script]
+    if declared.startswith(("pnpm@", "yarn@")):
+        if shutil.which("corepack"):
+            manager = declared.split("@", 1)[0]
+            version = declared.split("@", 1)[1]
+            return ["corepack", f"{manager}@{version}", "run", script]
+        return None
     if (manager_root / "pnpm-lock.yaml").is_file() and shutil.which("pnpm"):
         return ["pnpm", "run", script]
     if (manager_root / "yarn.lock").is_file() and shutil.which("yarn"):
@@ -560,6 +565,12 @@ def project_build_command(
         return project, ["cargo", "build", "--manifest-path", str(project / "Cargo.toml")], "Cargo.toml"
     if backend == "go" and ((project / "go.mod").is_file() or (project / "go.work").is_file()) and shutil.which("go"):
         return project, ["go", "build", "./..."], "Go workspace/module"
+    if backend == "move":
+        if shutil.which("aptos") and (project / "Move.toml").is_file():
+            return project, ["aptos", "move", "compile"], "Aptos Move.toml"
+        if shutil.which("sui") and (project / "Move.toml").is_file():
+            return project, ["sui", "move", "build"], "Sui Move.toml"
+        return None
     if backend == "solana-anchor" and shutil.which("anchor"):
         return project, ["anchor", "build"], "Anchor.toml"
     if backend == "brownie" and shutil.which("brownie"):

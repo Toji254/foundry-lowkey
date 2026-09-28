@@ -150,6 +150,17 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(evidence, "local Hardhat binary")
             self.assertNotIn("npx", argv)
 
+    def test_build_command_supports_aptos_move(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "Move.toml", "[package]\nname=\"demo\"\nversion=\"1.0.0\"\n")
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda name: name == "aptos"):
+                command = bootstrap.project_build_command(
+                    {"root": str(root), "backend": "move", "build_backend": "move"}
+                )
+            self.assertEqual(command[1], ["aptos", "move", "compile"])
+            self.assertEqual(command[2], "Aptos Move.toml")
+
     def test_build_command_supports_cargo_and_go(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
