@@ -8449,6 +8449,8 @@ def run_project_map(config, args):
             return 0
 
         root = Path(selected["root"])
+        if set_workspace_selection is not None:
+            set_workspace_selection(workspace_root, root)
 
     try:
         result = project_tools.render_project_map(root)
