@@ -44,30 +44,24 @@ def source_link(
 
     if display:
         label = display
+        in_project = True
     else:
         try:
             label = absolute.relative_to(project_root_path).as_posix()
+            in_project = True
         except ValueError:
-            label = path.as_posix()
+            # Do not expose an absolute external path. VS Code can auto-link
+            # plain paths even without OSC-8, so stale evidence must render as
+            # a non-clickable external-source label.
+            label = f"external source: {absolute.name}"
+            in_project = False
 
         if line:
             label += f":{int(line)}"
         if column:
             label += f":{int(column)}"
 
-    if os.environ.get("TERM_PROGRAM", "").lower() != "vscode":
-        return label
-
-    # Never emit a clickable editor target for a source path outside the
-    # active project. A stale/copied audit ledger may contain absolute paths
-    # from another repository; hyperlinking those paths would silently jump
-    # the auditor into the wrong project.
-    try:
-        absolute.relative_to(project_root_path)
-        in_project = True
-    except ValueError:
-        in_project = False
-    if not in_project:
+    if os.environ.get("TERM_PROGRAM", "").lower() != "vscode" or not in_project:
         return label
 
     target = f"vscode://file/{quote(str(absolute), safe='/')}"
