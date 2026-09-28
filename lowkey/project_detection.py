@@ -1217,9 +1217,15 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
 
             test_command = [str(binary), "test"]
             test_code, test_output = _run(test_command, root)
-            _report_step("hardhat tests", test_command, test_code, test_output)
+            historical_state_issue = test_code != 0 and _historical_state_unavailable(test_output)
+            if historical_state_issue:
+                print(f"DEFER  hardhat tests        {' '.join(test_command)}")
+                if test_output:
+                    print("\n".join(test_output.splitlines()[-12:]))
+            else:
+                _report_step("hardhat tests", test_command, test_code, test_output)
 
-            if test_code != 0 and _historical_state_unavailable(test_output):
+            if historical_state_issue:
                 fallback_result = _run_hardhat_fork_fallback(root, binary, test_command)
                 if fallback_result is not None:
                     fallback_code, fallback_output, fallback_status = fallback_result
