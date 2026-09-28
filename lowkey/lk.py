@@ -4205,7 +4205,10 @@ def _foundry_native_bootstrap_commands(root, build_output=""):
             if re.search(r"(?m)^\s*install\s*:", make_text):
                 commands.append(["make", "install"])
 
-    return commandsdef _run_project_build(config, root):def _run_project_build(config, root):
+    return commands
+
+
+def _run_project_build(config, root):
     """Build with the detected project's native toolchain, with visible output and dependency recovery."""
     root_path = Path(root)
 
