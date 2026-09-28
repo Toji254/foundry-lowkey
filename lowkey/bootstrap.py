@@ -504,6 +504,32 @@ def _node_runtime_bin(root: Path) -> Path | None:
 
     home = Path.home()
 
+    # asdf exposes shims on PATH; resolve its concrete installation directory
+    # first so a pinned Node runtime cannot silently fall back to another version.
+    asdf = shutil.which("asdf")
+    if asdf:
+        try:
+            result = subprocess.run(
+                [asdf, "where", "nodejs", required],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                resolved_root = Path(result.stdout.strip())
+                node = resolved_root / "bin" / "node"
+                if node.is_file() and os.access(node, os.X_OK):
+                    version = subprocess.run(
+                        [str(node), "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if version.returncode == 0 and version.stdout.strip().lstrip("v") == required:
+                        return node.parent
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     # nvm is normally a shell function, so use its installed script only to
     # resolve an already-installed matching runtime; never auto-install one.
     nvm_sh = Path(os.environ.get("NVM_DIR", home / ".nvm")) / "nvm.sh"
@@ -517,7 +543,9 @@ def _node_runtime_bin(root: Path) -> Path | None:
             )
             if result.returncode == 0:
                 resolved = Path(result.stdout.strip())
-                if resolved.is_file() and resolved.name == "node":
+                # asdf can be selected by nvm's shell lookup; a shim is not a
+                # concrete runtime and may resolve back to the wrong version.
+                if resolved.is_file() and resolved.name == "node" and ".asdf" not in resolved.parts:
                     return resolved.parent
         except (OSError, subprocess.SubprocessError):
             pass
