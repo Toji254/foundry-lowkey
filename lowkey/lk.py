@@ -5013,7 +5013,7 @@ def run_lab(config,args):
         print("  lk lab")
         print("      Build a realistic local lab using the project's own harness when available.")
         print("  lk lab MyContract")
-        print("      Prefer native project harnesses, targeting QuantAMMWeightedPool.")
+        print("      Prefer native project harnesses, targeting MyContract.")
         print("  lk lab --generic")
         print("      Skip native harnesses and deploy Lowkey's automatically selected target.")
         print("  lk lab --generic MyContract")
