@@ -229,6 +229,45 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk.resolve_target_ref(config, "alpha"), first)
         self.assertEqual(lk.resolve_target_ref(config, "1"), first)
 
+    def test_artifact_discovery_honors_configured_foundry_output_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "contracts/src"\nout = "forge-artifacts"\n',
+                encoding="utf-8",
+            )
+            artifact_dir = root / "forge-artifacts" / "AaveDIVAWrapper.sol"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "AaveDIVAWrapper.json").write_text(
+                json.dumps({
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                    "contractName": "AaveDIVAWrapper",
+                    "sourceName": "contracts/src/AaveDIVAWrapper.sol",
+                }),
+                encoding="utf-8",
+            )
+            paths = lk.artifact_json_files(root)
+
+        self.assertIn(str(artifact_dir / "AaveDIVAWrapper.json"), paths)
+
+    def test_artifact_discovery_keeps_common_defaults_with_custom_foundry_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nout = "forge-artifacts"\n',
+                encoding="utf-8",
+            )
+            default_dir = root / "out" / "Legacy.sol"
+            custom_dir = root / "forge-artifacts" / "Current.sol"
+            default_dir.mkdir(parents=True)
+            custom_dir.mkdir(parents=True)
+            (default_dir / "Legacy.json").write_text('{"abi":[]}\n', encoding="utf-8")
+            (custom_dir / "Current.json").write_text('{"abi":[]}\n', encoding="utf-8")
+            paths = lk.artifact_json_files(root)
+
+        self.assertIn(str(default_dir / "Legacy.json"), paths)
+        self.assertIn(str(custom_dir / "Current.json"), paths)
     def test_auto_lab_ignores_dependency_library_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
