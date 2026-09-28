@@ -2945,24 +2945,45 @@ contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
 
 def _fixture_accounts_map(snapshot):
     """Find the account map in Foundry/anvil-compatible state JSON without assuming one wrapper shape."""
+    def decode_nested_json(value):
+        current = value
+        for _ in range(4):
+            if not isinstance(current, str):
+                return current
+            text = current.strip()
+            if not text or text[0] not in "{[":
+                return current
+            try:
+                decoded = json.loads(text)
+            except (TypeError, json.JSONDecodeError):
+                return current
+            if decoded == current:
+                return current
+            current = decoded
+        return current
+
+    snapshot = decode_nested_json(snapshot)
     if not isinstance(snapshot, (dict, list)):
-        return None, "fixture state snapshot must be a JSON object or array"
+        return None, "fixture state snapshot is not a JSON object or array"
 
     def direct_address_map(value):
+        value = decode_nested_json(value)
         if not isinstance(value, dict):
             return None
         entries = {
-            key: account
+            key: decode_nested_json(account)
             for key, account in value.items()
-            if is_address(key) and isinstance(account, dict)
+            if is_address(str(key).strip()) and isinstance(decode_nested_json(account), dict)
         }
         return entries if entries else None
 
     def account_list(value):
+        value = decode_nested_json(value)
         if not isinstance(value, list):
             return None
         result = {}
         for item in value:
+            item = decode_nested_json(item)
             if not isinstance(item, dict):
                 continue
             address = (
@@ -2970,13 +2991,14 @@ def _fixture_accounts_map(snapshot):
                 or item.get("addr")
                 or item.get("account")
             )
+            address = str(address or "").strip()
             if not is_address(address):
                 continue
             account = dict(item)
             account.pop("address", None)
             account.pop("addr", None)
             account.pop("account", None)
-            result[str(address)] = account
+            result[address] = account
         return result or None
 
     direct = direct_address_map(snapshot)
@@ -2986,8 +3008,8 @@ def _fixture_accounts_map(snapshot):
     # Known wrappers first. Anvil uses "accounts"; genesis-style data commonly
     # uses "alloc"/"allocs".
     if isinstance(snapshot, dict):
-        for key in ("alloc", "allocs", "accounts", "state", "genesis"):
-            candidate = snapshot.get(key)
+        for key in ("alloc", "allocs", "accounts", "state", "genesis", "result", "data"):
+            candidate = decode_nested_json(snapshot.get(key))
             direct = direct_address_map(candidate)
             if direct:
                 return direct, key
@@ -3000,6 +3022,7 @@ def _fixture_accounts_map(snapshot):
     seen = set()
 
     def walk(value, path):
+        value = decode_nested_json(value)
         marker = id(value)
         if marker in seen:
             return None
@@ -3023,6 +3046,10 @@ def _fixture_accounts_map(snapshot):
                 found = walk(child, f"{path}[{index}]")
                 if found:
                     return found
+        elif isinstance(value, str):
+            nested = decode_nested_json(value)
+            if nested is not value:
+                return walk(nested, path)
         return None
 
     found = walk(snapshot, "$")
