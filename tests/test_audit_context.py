@@ -67,7 +67,8 @@ class AuditContextTests(unittest.TestCase):
                     42,
                     root=root,
                 )
-            self.assertIn("/tmp/another-project/src/Vault.sol:42", linked)
+            self.assertIn("external source: Vault.sol:42", linked)
+            self.assertNotIn("/tmp/another-project/src/Vault.sol", linked)
             self.assertNotIn("vscode://file/", linked)
 
     def test_load_rejects_context_owned_by_another_project(self):
