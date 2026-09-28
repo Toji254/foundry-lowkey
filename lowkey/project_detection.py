@@ -41,6 +41,9 @@ except ImportError:
     shared_bootstrap_status = shared_classify_build_failure = run_shared_bootstrap = None
     shared_project_build_command = shared_dependency_boundary = None
 
+    def runtime_environment(root: str | os.PathLike[str] = ".") -> tuple[dict[str, str], str | None]:
+        return dict(os.environ), None
+
 
 IGNORED_DIRS = {
     ".git", ".audit", ".venv", "venv", "__pycache__", ".pytest_cache",
