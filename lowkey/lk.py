@@ -2094,18 +2094,45 @@ def run_doctor():
 
     root = audit_context.foundry_project_root()
     foundry_project = (root / "foundry.toml").is_file()
-    ignored = {
-        ".git", ".audit", ".venv", ".tox", ".nox", "__pycache__",
-        ".pytest_cache", "node_modules", "out", "cache", "artifacts",
-        "build", "dist", "lib",
+    info = detect_project(root) if detect_project is not None else {
+        "root": str(root),
+        "backend": "generic",
+        "build_backend": "generic",
+        "languages": {},
     }
-    source_files = []
-    if root.is_dir():
-        for path in root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".sol", ".vy", ".vyi"}:
-                if not any(part in ignored for part in path.parts):
-                    source_files.append(path)
+    if project_tools is not None:
+        try:
+            source_files = project_tools.project_source_files(root, {"sol", "vy", "vyi"})
+        except Exception:
+            source_files = []
+    else:
+        source_files = []
     vyper_project = any(path.suffix.lower() in {".vy", ".vyi"} for path in source_files)
+
+    if bootstrap_status is not None:
+        try:
+            status = bootstrap_status(info)
+            print("")
+            print("DEPENDENCY / WORKSPACE STATUS")
+            print("=============================")
+            print(f"Workspace root  : {status.get('workspace_root')}")
+            print(f"Dependency root : {status.get('dependency_root')}")
+            if status.get("runtime_requirements"):
+                print("Runtime pins    : " + ", ".join(
+                    f"{k}={v}" for k, v in status["runtime_requirements"].items()
+                ))
+            actions = status.get("actions") or []
+            if actions:
+                print("Repair plan     : available (not executed by doctor)")
+                for action in actions[:8]:
+                    print(
+                        f"  - {action.get('kind')}: "
+                        f"{' '.join(str(item) for item in action.get('command', []))}"
+                    )
+            else:
+                print("Repair plan     : none needed")
+        except Exception as exc:
+            print(f"NOTE  bootstrap diagnostics unavailable: {exc}")
 
     required_tools = ["python3", "cast", "anvil"]
     optional_project_tools = []
@@ -7718,6 +7745,11 @@ def run_audit_mode(config, args=None, interactive=None):
 
     print()
     print(format_detection(info) if format_detection else f"Project : {root}")
+
+    if bootstrap_project is not None:
+        bootstrap_code = bootstrap_project(info, args, reason="audit")
+        if bootstrap_code == 0:
+            info["_bootstrap_done"] = True
 
     info_anvil = anvil_rpc_info(config) if evm_project else None
     started = False
