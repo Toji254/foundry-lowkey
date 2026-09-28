@@ -1110,7 +1110,12 @@ def _run_hardhat_fork_fallback(
             f"RETRY  hardhat tests via local Anvil fork at 127.0.0.1:{port} "
             f"(pinned block {block_number})"
         )
-        return _run(fallback_command, root)
+        fallback_code, fallback_output = _run(fallback_command, root)
+        return (
+            fallback_code,
+            fallback_output,
+            "pass" if fallback_code == 0 else "fail",
+        )
     finally:
         if anvil_proc is not None and anvil_proc.poll() is None:
             anvil_proc.terminate()
