@@ -39,7 +39,7 @@ jobs:
       - name: Verify installed runtime module
         run: |
           test -f "$HOME/.lowkey/bootstrap.py"
-          grep -q '"bootstrap.py"' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/bootstrap.py":' "$HOME/.lowkey/install-manifest.json"
           python3 - "$HOME/.lowkey" <<'PY'
           import pathlib
           import sys
