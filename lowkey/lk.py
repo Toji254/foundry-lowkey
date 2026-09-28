@@ -4926,9 +4926,11 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     print(f"Target  : {contract}")
     print(f"RPC     : {rpc_display(rpc)}")
     print(f"Actor   : Anvil #0 ({accounts[0]})")
-    print("Mode    : generic artifact deployment")
+    if mode == "artifact":
+        print("Mode    : explicit artifact deployment")
+    else:
+        print("Mode    : generic ABI deployment")
 
-    values = []
     print(f"Action  : deploying {contract}...")
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or ("foundry" if (Path(root) / "foundry.toml").is_file() else "generic"))
@@ -4942,8 +4944,9 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     finally:
         config.pop("_lab_rpc", None)
     if not target:
+        label = "artifact" if mode == "artifact" else "generic"
         return fail(
-            f"Error: generic local deployment failed. {reason or ''}".strip(),
+            f"Error: {label} local deployment failed. {reason or ''}".strip(),
             1,
         )
 
