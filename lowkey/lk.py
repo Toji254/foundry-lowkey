@@ -7844,6 +7844,15 @@ def run_audit_mode(config, args=None, interactive=None):
             print("         Static audit can continue; use 'lk lab' (or 'lk audit auto') for a live local target.")
 
     audit_code = run_audit(config, mode_args)
+
+    # The session-level detector has the authoritative mixed-stack scope.
+    # Run non-Foundry native checks here instead of asking the Foundry runner
+    # to rediscover the project and potentially lose the selected backend.
+    if foundry_project and len(stacks) > 1 and run_native_audit:
+        native_code = run_native_audit(info, mode_args)
+        if native_code != 0 and audit_code == 0:
+            audit_code = native_code
+
     if walkthrough_mode and evm_project:
         walkthrough_args = ["--auto"] if auto_mode else []
         walkthrough_args.append("--yes" if force_noninteractive or not sys.stdin.isatty() else "--interactive")
@@ -8171,10 +8180,8 @@ def run_audit(config, args):
             summary="connected Foundry audit pipeline",
             data={"exit_code": return_code, "backend": "foundry"},
         )
-        if len(stacks) > 1 and run_native_audit:
-            native_code = run_native_audit(info, args)
-            if native_code != 0:
-                return native_code
+        # Mixed-stack native checks are orchestrated by run_audit_mode, which
+        # already holds the selected project scope and detected stack inventory.
         return return_code
 
     if run_native_audit:
