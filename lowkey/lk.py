@@ -4212,7 +4212,7 @@ def _run_project_build(config, root):
 
 def run_projects(config, args):
     """List project boundaries discovered inside the current workspace."""
-    if project_tools is None:
+    if discover_nested_projects is None:
         return fail("Project discovery layer is unavailable. Reinstall Lowkey.")
     root = audit_context.foundry_project_root()
     candidates = discover_nested_projects(root) if discover_nested_projects is not None else []
