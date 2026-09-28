@@ -223,6 +223,16 @@ def _foundry_src_dir(root: Path) -> str:
     return match.group(1).strip().rstrip("/") if match else "src"
 
 
+def _foundry_out_dir(root: Path) -> str:
+    """Return Foundry's configured artifact output directory when declared."""
+    try:
+        text = (root / "foundry.toml").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "out"
+    match = re.search(r'(?m)^\s*out\s*=\s*"([^"]+)"', text)
+    return match.group(1).strip().rstrip("/") if match else "out"
+
+
 def _strip_source_comments(text: str, language: str) -> str:
     """Remove comments while preserving strings and line structure for heuristics."""
     chars = list(text)
@@ -751,12 +761,19 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
 
     # Solidity artifacts produced by Foundry, Hardhat, Brownie and similar tools.
     artifact_paths: list[Path] = []
+    configured_out = root / _foundry_out_dir(root)
+    artifact_directories: list[Path] = []
     for directory in (
+        configured_out,
         root / "out",
         root / "artifacts",
         root / "build" / "contracts",
         root / "build",
     ):
+        resolved = directory.resolve()
+        if resolved in {item.resolve() for item in artifact_directories if item.exists()}:
+            continue
+        artifact_directories.append(directory)
         if not directory.is_dir():
             continue
         artifact_paths.extend(sorted(directory.rglob("*.json")))
