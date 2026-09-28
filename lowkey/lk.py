@@ -5162,27 +5162,30 @@ def run_lab(config,args):
     if is_workspace_root is not None and is_workspace_root(root):
         workspace_container = Path(root).resolve()
         active = workspace_selection(workspace_container) if workspace_selection is not None else None
+        candidates = discover_nested_projects(workspace_container) if discover_nested_projects is not None else []
+
         if active is not None and active.is_dir():
             root = active
-        workspace_root = Path(root).resolve()
-        candidates = discover_nested_projects(workspace_container) if discover_nested_projects is not None else []
-        if len(candidates) == 1:
+            print(f"INFO  Using active project: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
+        elif len(candidates) == 1:
             root = candidates[0]["root"]
-            relative = Path(root).resolve().relative_to(workspace_root).as_posix()
-            print(f"INFO  Found one project inside this workspace: {relative}")
+            if set_workspace_selection is not None:
+                set_workspace_selection(workspace_container, root)
+            print(f"INFO  Found one project inside this workspace: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
         elif len(candidates) > 1:
             print()
             print("LOWKEY FOUND MULTIPLE PROJECTS")
             print("============================")
-            print(f"Workspace: {root}")
+            print(f"Workspace: {workspace_container}")
             for index, candidate in enumerate(candidates, 1):
-                languages = candidate.get("languages") or {}
-                language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
-                print(f"  {index}. {candidate.get('relative')}  [{language_text}]")
+                languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
+                print(f"  {index}. {candidate.get('relative')}")
+                print(f"     {candidate.get('scope_hint', 'component')} | {languages}")
+                print(f"     {_workspace_project_description(candidate)}")
             if not sys.stdin.isatty():
                 return fail(
                     "Error: this workspace contains multiple projects. "
-                    "Run 'lk lab' from the project directory you want to use."
+                    "Run 'lk projects <number>' first, or run 'lk lab' from the project directory."
                 )
             while True:
                 try:
@@ -5194,6 +5197,9 @@ def run_lab(config,args):
                     return fail("Project selection cancelled.")
                 if choice.isdigit() and 1 <= int(choice) <= len(candidates):
                     root = candidates[int(choice) - 1]["root"]
+                    if set_workspace_selection is not None:
+                        set_workspace_selection(workspace_container, root)
+                    print(f"ACTIVE PROJECT: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
                     break
                 print("Please enter one of the project numbers, or q.")
     project = project_tools.detect_project(root) if project_tools is not None else {}
