@@ -362,7 +362,8 @@ def _node_install_command(root: Path) -> tuple[Path, list[str], str] | None:
     return boundary, [], "package.json found but no compatible package manager"
 
 
-def _python_plan(root: Path) -> tuple[Path, list[str], str] | None:
+def _python_plan(root: Path) -> list[tuple[Path, list[str], str]]:
+    plans: list[tuple[Path, list[str], str]] = []
     boundary = root
     pyproject = boundary / "pyproject.toml"
     if not pyproject.is_file():
@@ -376,32 +377,41 @@ def _python_plan(root: Path) -> tuple[Path, list[str], str] | None:
         text = _read(pyproject)
         if (boundary / "uv.lock").is_file() or re.search(r"(?m)^\s*\[tool\.uv(?:\.|\])", text):
             if shutil.which("uv"):
-                return boundary, ["uv", "sync", "--all-extras", "--dev"], "uv lock/configuration"
+                plans.append((boundary, ["uv", "sync", "--all-extras", "--dev"], "uv lock/configuration"))
+                return plans
         if (boundary / "poetry.lock").is_file() and shutil.which("poetry"):
-            return boundary, ["poetry", "install"], "poetry.lock"
+            plans.append((boundary, ["poetry", "install"], "poetry.lock"))
+            return plans
         if (boundary / "Pipfile").is_file() and shutil.which("pipenv"):
             command = ["pipenv", "sync", "--dev"] if (boundary / "Pipfile.lock").is_file() else ["pipenv", "install", "--dev"]
-            return boundary, command, "Pipfile"
-        return None
+            plans.append((boundary, command, "Pipfile"))
+            return plans
+        return plans
 
     requirement_files = [
         name for name in ("requirements.txt", "requirements-dev.txt")
         if (boundary / name).is_file()
     ]
     if not requirement_files:
-        return None
+        return plans
 
     venv = boundary / ".venv"
     python = venv / "bin" / "python"
     if not python.is_file():
         if shutil.which("python3"):
-            return boundary, ["python3", "-m", "venv", str(venv)], "requirements -> project .venv"
-        return boundary, [], "requirements found but python3 is unavailable"
+            plans.append((boundary, ["python3", "-m", "venv", str(venv)], "requirements -> project .venv"))
+            # Installation follows in the same bootstrap run once the venv exists.
+            pip = venv / "bin" / "python"
+            commands = [str(pip), "-m", "pip", "install"]
+        else:
+            return [(boundary, [], "requirements found but python3 is unavailable")]
+    else:
+        commands = [str(python), "-m", "pip", "install"]
 
-    commands: list[str] = [str(python), "-m", "pip", "install"]
     for requirement in requirement_files:
         commands.extend(["-r", requirement])
-    return boundary, commands, "requirements files -> project .venv"
+    plans.append((boundary, commands, "requirements files -> project .venv"))
+    return plans
 
 
 def _workspace_commands(root: Path) -> list[dict[str, Any]]:
@@ -476,6 +486,86 @@ def runtime_requirements(root: str | os.PathLike[str] = ".") -> dict[str, str]:
     return requirements
 
 
+
+def _node_run_command(root: Path, script: str) -> list[str] | None:
+    boundary = dependency_boundary(root)
+    package = _package_json(root)
+    manager_root = boundary if (boundary / "package.json").is_file() else root
+    if not (manager_root / "package.json").is_file():
+        return None
+    declared = str(_package_json(manager_root).get("packageManager") or "").strip().lower()
+    if declared.startswith(("pnpm@", "yarn@")) and shutil.which("corepack"):
+        manager = declared.split("@", 1)[0]
+        version = declared.split("@", 1)[1]
+        return ["corepack", f"{manager}@{version}", "run", script]
+    if (manager_root / "pnpm-lock.yaml").is_file() and shutil.which("pnpm"):
+        return ["pnpm", "run", script]
+    if (manager_root / "yarn.lock").is_file() and shutil.which("yarn"):
+        return ["yarn", script]
+    if ((manager_root / "bun.lockb").is_file() or (manager_root / "bun.lock").is_file()) and shutil.which("bun"):
+        return ["bun", "run", script]
+    if shutil.which("npm"):
+        return ["npm", "run", script]
+    return None
+
+
+def project_build_command(
+    info: dict[str, Any] | None = None,
+    root: str | os.PathLike[str] = ".",
+) -> tuple[Path, list[str], str] | None:
+    """Select a native build command from the project's own manifests."""
+    project = Path((info or {}).get("root") or root).expanduser().resolve()
+    package = _package_json(project)
+    scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+    if isinstance(scripts, dict) and scripts.get("build"):
+        command = _node_run_command(project, "build")
+        if command:
+            return project, command, "package.json scripts.build"
+
+    backend = str((info or {}).get("backend") or (info or {}).get("kind") or "").lower()
+    if backend in {"foundry", "multi-stack"} and (project / "foundry.toml").is_file():
+        return project, ["forge", "build"], "foundry.toml"
+    if backend in {"hardhat", "node"} or any(
+        (project / name).is_file()
+        for name in ("hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts")
+    ):
+        boundary = dependency_boundary(project)
+        binary = boundary / "node_modules" / ".bin" / "hardhat"
+        if os.name == "nt":
+            binary = binary.with_suffix(".cmd")
+        if binary.is_file():
+            return project, [str(binary), "compile"], "local Hardhat binary"
+        return None
+    if backend in {"cairo", "cairo-starknet"} and (project / "Scarb.toml").is_file():
+        if shutil.which("scarb"):
+            return project, ["scarb", "build"], "Scarb.toml"
+        return None
+    if backend in {"cargo", "rust"} and (project / "Cargo.toml").is_file() and shutil.which("cargo"):
+        return project, ["cargo", "build", "--manifest-path", str(project / "Cargo.toml")], "Cargo.toml"
+    if backend == "go" and ((project / "go.mod").is_file() or (project / "go.work").is_file()) and shutil.which("go"):
+        return project, ["go", "build", "./..."], "Go workspace/module"
+    if backend == "solana-anchor" and shutil.which("anchor"):
+        return project, ["anchor", "build"], "Anchor.toml"
+    if backend == "brownie" and shutil.which("brownie"):
+        return project, ["brownie", "compile"], "Brownie"
+    if backend in {"mix", "elixir"} and (project / "mix.exs").is_file() and shutil.which("mix"):
+        return project, ["mix", "compile"], "mix.exs"
+    if (project / "mvnw").is_file() or (project / "pom.xml").is_file():
+        executable = project / "mvnw" if (project / "mvnw").is_file() else shutil.which("mvn")
+        if executable:
+            return project, [str(executable), "test"], "Maven project"
+    if (project / "gradlew").is_file() or (project / "build.gradle").is_file() or (project / "build.gradle.kts").is_file():
+        executable = project / "gradlew" if (project / "gradlew").is_file() else shutil.which("gradle")
+        if executable:
+            return project, [str(executable), "build"], "Gradle project"
+    if (project / "Package.swift").is_file() and shutil.which("swift"):
+        return project, ["swift", "build"], "Package.swift"
+    if (project / "Makefile").is_file():
+        make_text = _read(project / "Makefile")
+        if re.search(r"(?m)^\s*build\s*:", make_text) and shutil.which("make"):
+            return project, ["make", "build"], "Makefile build target"
+    return None
+
 def bootstrap_plan(
     info: dict[str, Any] | None = None,
     root: str | os.PathLike[str] = ".",
@@ -527,9 +617,7 @@ def bootstrap_plan(
                 "evidence": evidence,
             })
 
-    python_plan = _python_plan(selected_root)
-    if python_plan:
-        cwd, command, evidence = python_plan
+    for cwd, command, evidence in _python_plan(selected_root):
         if command and (force or not (cwd / ".venv").is_dir() or reason in {"dependency", "workspace"}):
             actions.append({
                 "kind": "python",
