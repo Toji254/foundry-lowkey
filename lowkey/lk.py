@@ -30,10 +30,15 @@ try:
         run_native_audit,
         discover_nested_projects,
         is_workspace_root,
+        workspace_root,
+        workspace_selection,
+        set_workspace_selection,
+        clear_workspace_selection,
     )
 except ImportError:
     detect_project = format_detection = run_native_audit = None
-    discover_nested_projects = is_workspace_root = None
+    discover_nested_projects = is_workspace_root = workspace_root = None
+    workspace_selection = set_workspace_selection = clear_workspace_selection = None
     detected_project_root = lambda start=".": Path(start).resolve()
 
 try:
@@ -4210,27 +4215,125 @@ def _run_project_build(config, root):
         print("Status       : complete")
     return result.returncode
 
+def _workspace_project_description(project):
+    root = Path(project["root"])
+    package_path = root / "package.json"
+    if package_path.is_file():
+        try:
+            package = json.loads(package_path.read_text(encoding="utf-8"))
+            if isinstance(package, dict) and package.get("description"):
+                return str(package["description"]).strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    for filename in ("pyproject.toml", "Cargo.toml"):
+        path = root / filename
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("description") and "=" in stripped:
+                        return stripped.split("=", 1)[1].strip().strip('"').strip("'")
+            except OSError:
+                pass
+
+    readme = root / "README.md"
+    if readme.is_file():
+        try:
+            for line in readme.read_text(encoding="utf-8", errors="ignore").splitlines():
+                text = line.strip().lstrip("#").strip()
+                if text and not text.startswith("!"):
+                    return text[:160] + ("..." if len(text) > 160 else "")
+        except OSError:
+            pass
+    return project.get("name") or root.name
+
+
 def run_projects(config, args):
-    """List project boundaries discovered inside the current workspace."""
-    if discover_nested_projects is None:
+    if discover_nested_projects is None or workspace_root is None:
         return fail("Project discovery layer is unavailable. Reinstall Lowkey.")
-    root = audit_context.foundry_project_root()
-    candidates = discover_nested_projects(root) if discover_nested_projects is not None else []
-    if not candidates:
-        print("No nested projects detected.")
-        print(f"Current project: {root}")
+
+    root = workspace_root(Path.cwd())
+    candidates = discover_nested_projects(root)
+
+    if args and args[0].lower() in {"-h", "--help", "help"}:
+        print("Usage:")
+        print("  lk projects")
+        print("  lk projects <number>")
+        print("  lk projects <path>")
+        print("  lk projects reset")
+        print("")
+        print("Shows the projects inside a workspace and lets you set the active project.")
         return 0
 
-    print("LOWKEY PROJECTS")
-    print("===============")
+    if args:
+        selector = str(args[0]).strip()
+        if selector.lower() == "reset":
+            if clear_workspace_selection is not None:
+                clear_workspace_selection(root)
+            print(f"Active project cleared for {root}")
+            return 0
+
+        selected = None
+        if selector.isdigit():
+            index = int(selector)
+            if 1 <= index <= len(candidates):
+                selected = candidates[index - 1]
+            else:
+                return fail(f"Error: project number must be between 1 and {len(candidates)}.")
+        else:
+            selector_path = Path(selector).expanduser()
+            if not selector_path.is_absolute():
+                selector_path = root / selector_path
+            selector_path = selector_path.resolve()
+            selected = next((item for item in candidates if Path(item["root"]).resolve() == selector_path), None)
+            if selected is None:
+                matches = [item for item in candidates if str(item.get("relative", "")).lower() == selector.lower() or str(item.get("name", "")).lower() == selector.lower()]
+                if len(matches) == 1:
+                    selected = matches[0]
+
+        if selected is None:
+            return fail(f"Error: no workspace project matched '{selector}'.")
+        if set_workspace_selection is None or not set_workspace_selection(root, selected["root"]):
+            return fail("Error: could not save the active project selection.")
+
+        print("ACTIVE PROJECT")
+        print("==============")
+        print(f"Project : {selected['relative']}")
+        print(f"Type    : {selected.get('kind', 'unknown')}")
+        print(f"Stack   : {', '.join(sorted(selected.get('languages') or {})) or selected.get('backend', 'unknown')}")
+        print(f"About   : {_workspace_project_description(selected)}")
+        print("")
+        print("Next:")
+        print("  lk project     Open the detailed project map")
+        print("  lk lab         Build a local lab for this project")
+        print("  lk audit       Audit this project")
+        return 0
+
+    active = workspace_selection(root) if workspace_selection is not None else None
+    print("LOWKEY WORKSPACE")
+    print("================")
     print(f"Workspace: {root}")
-    for index, candidate in enumerate(candidates, 1):
-        languages = candidate.get("languages") or {}
-        language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
-        print(f"  {index}. {candidate.get('relative')}  [{language_text}]")
+    print(f"Projects : {len(candidates)}")
+    if active:
+        active_match = next((item for item in candidates if Path(item["root"]).resolve() == active.resolve()), None)
+        if active_match:
+            print(f"Active   : {active_match['relative']}")
     print("")
-    print("Tip: cd into a project directory and run Lowkey there.")
+    for index, candidate in enumerate(candidates, 1):
+        marker = " *" if active and Path(candidate["root"]).resolve() == active.resolve() else "  "
+        languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
+        print(f"{marker}{index}. {candidate.get('relative')}")
+        print(f"     {candidate.get('scope_hint', 'component')} | {languages}")
+        print(f"     {_workspace_project_description(candidate)}")
+        if candidate.get("used_by_siblings"):
+            print(f"     Used by {candidate['used_by_siblings']} sibling project(s)")
+    print("")
+    print("Choose one with: lk projects <number>")
+    print("Then use:        lk project | lk lab | lk audit")
     return 0
+
 
 def run_clone(config, args):
     """Clone with the cache-aware engine, then perform full Lowkey onboarding."""
@@ -5057,8 +5160,12 @@ def run_lab(config,args):
     # Lowkey discovers nested projects from manifests and source trees without assuming
     # names such as "pkg", "contracts", or any particular language.
     if is_workspace_root is not None and is_workspace_root(root):
+        workspace_container = Path(root).resolve()
+        active = workspace_selection(workspace_container) if workspace_selection is not None else None
+        if active is not None and active.is_dir():
+            root = active
         workspace_root = Path(root).resolve()
-        candidates = discover_nested_projects(workspace_root) if discover_nested_projects is not None else []
+        candidates = discover_nested_projects(workspace_container) if discover_nested_projects is not None else []
         if len(candidates) == 1:
             root = candidates[0]["root"]
             relative = Path(root).resolve().relative_to(workspace_root).as_posix()
