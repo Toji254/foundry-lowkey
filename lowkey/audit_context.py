@@ -12,9 +12,13 @@ from urllib.parse import quote
 import os
 
 try:
-    from project_detection import project_root as detected_project_root
+    from project_detection import (
+        project_root as detected_project_root,
+        detect_project as detected_project,
+    )
 except ImportError:
     detected_project_root = None
+    detected_project = None
 
 
 SCHEMA_VERSION = 1
@@ -78,10 +82,46 @@ def foundry_project_root(start: Path | None = None) -> Path:
     return project_root(start)
 
 
-def audit_dir(root: Path | None = None) -> Path:
+def audit_dir(root: Path | None = None, *, create: bool = False) -> Path:
     path = project_root(root) / AUDIT_DIR_NAME
-    path.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _is_audit_project(root: Path) -> bool:
+    """Return whether this root is a real Lowkey-auditable project.
+
+    Lowkey's own source checkout has no protocol/build manifest. It can still
+    contain an old .audit directory from development, but that directory must
+    never become the active audit ledger.
+    """
+    if detected_project is None:
+        return any(
+            (root / marker).exists()
+            for marker in (
+                "foundry.toml",
+                "hardhat.config.js",
+                "hardhat.config.cjs",
+                "hardhat.config.mjs",
+                "hardhat.config.ts",
+                "Scarb.toml",
+                "Move.toml",
+                "Anchor.toml",
+                "ape-config.yaml",
+                "ape-config.yml",
+                "brownie-config.yaml",
+                "brownie-config.yml",
+                "package.json",
+            )
+        )
+    try:
+        info = detected_project(root)
+    except Exception:
+        return False
+    if not isinstance(info, dict):
+        return False
+    return str(info.get("kind") or "unknown").lower() != "unknown"
 
 
 def context_path(root: Path | None = None) -> Path:
@@ -127,6 +167,11 @@ def _default_context(root: Path) -> dict[str, Any]:
 
 def load(root: Path | None = None) -> dict[str, Any]:
     project_root = foundry_project_root(root)
+    # A .audit directory left behind in Lowkey's own source checkout (or some
+    # unrelated directory) must not resurrect another project's audit signals.
+    if not _is_audit_project(project_root):
+        return _default_context(project_root)
+
     path = context_path(project_root)
     if not path.exists():
         return _default_context(project_root)
@@ -159,6 +204,7 @@ def save(data: dict[str, Any], root: Path | None = None) -> Path:
     data["updated_at"] = _now()
 
     path = context_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     # Multiple Lowkey processes may run against the same project (CI smoke checks,
     # shell process substitutions, parallel tooling). A shared fixed temp filename
     # creates a race where one writer can replace another writer's temp file.
@@ -202,6 +248,7 @@ def emit(
         record["data"] = data
 
     path = events_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
