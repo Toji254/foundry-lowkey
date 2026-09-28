@@ -98,6 +98,10 @@ class BootstrapTests(unittest.TestCase):
             "Error: CompilerError: Stack too deep",
             ["forge", "build"],
         )
+        missing_first_party = bootstrap.classify_build_failure(
+            'Source "contracts/src/Missing.sol" not found',
+            ["forge", "build"],
+        )
         toolchain = bootstrap.classify_build_failure(
             "This project requires node >=18 but current version is 16",
             ["hardhat", "compile"],
@@ -107,6 +111,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertTrue(dependency["repairable"])
         self.assertEqual(source["category"], "source_or_build_error")
         self.assertFalse(source["repairable"])
+        self.assertEqual(missing_first_party["category"], "source_or_build_error")
+        self.assertFalse(missing_first_party["repairable"])
         self.assertEqual(toolchain["category"], "toolchain_mismatch")
         self.assertFalse(toolchain["repairable"])
 

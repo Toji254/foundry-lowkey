@@ -41,17 +41,14 @@ RUNTIME_FILES = (
 )
 
 DEPENDENCY_FAILURE_PATTERNS = (
-    r"source .* not found",
-    r"file .* not found",
-    r"no such file or directory",
-    r"could not resolve",
-    r"cannot resolve",
-    r"module .* not found",
-    r"module not found",
-    r"package .* not found",
+    r"node_modules[/\\]",
+    r"\\b(?:@openzeppelin|@(?:nomicfoundation|chainlink|aave|uniswap|balancer)[^\\s]*)/",
     r"library .* not found",
+    r"import .* not found",
     r"cannot find module",
     r"cannot find package",
+    r"module .* not found",
+    r"package .* not found",
     r"unresolved import",
     r"unresolved external",
     r"missing .* dependency",
@@ -61,8 +58,6 @@ DEPENDENCY_FAILURE_PATTERNS = (
     r"npm err!",
     r"yarn error",
     r"bun error",
-    r"\bnode_modules[/\\]",
-    r"@openzeppelin/",
 )
 
 TOOLCHAIN_FAILURE_PATTERNS = (
