@@ -414,44 +414,54 @@ def _python_plan(root: Path) -> list[tuple[Path, list[str], str]]:
     return plans
 
 
-def _workspace_commands(root: Path) -> list[dict[str, Any]]:
+def _workspace_commands(
+    root: Path,
+    info: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Plan only dependency systems relevant to the selected project."""
     actions: list[dict[str, Any]] = []
+    backend = str((info or {}).get("backend") or "").lower()
+    build_backend = str((info or {}).get("build_backend") or "").lower()
+    languages = (info or {}).get("languages") or {}
+    rust_relevant = backend in {"cargo", "rust"} or build_backend == "cargo" or bool(languages.get("rust"))
+    go_relevant = backend == "go" or build_backend == "go" or bool(languages.get("go"))
+    mix_relevant = backend in {"mix", "elixir"} or build_backend == "mix"
+    maven_relevant = backend == "maven" or build_backend == "maven"
+    gradle_relevant = backend == "gradle" or build_backend == "gradle"
+    swift_relevant = backend == "swift" or build_backend == "swift"
 
-    cargo_boundary = _nearest_manifest(root, ("Cargo.toml",))
-    if cargo_boundary and (cargo_boundary / "Cargo.toml").is_file():
-        cargo_text = _read(cargo_boundary / "Cargo.toml")
-        if re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]", cargo_text) and shutil.which("cargo"):
+    if rust_relevant:
+        cargo_manifest = _nearest_manifest(root, ("Cargo.toml",))
+        if cargo_manifest and (cargo_manifest / "Cargo.toml").is_file() and shutil.which("cargo"):
             actions.append({
                 "kind": "cargo",
-                "cwd": cargo_boundary,
-                "command": ["cargo", "fetch", "--locked"] if (cargo_boundary / "Cargo.lock").is_file() else ["cargo", "fetch"],
-                "evidence": "Cargo workspace",
+                "cwd": cargo_manifest,
+                "command": (
+                    ["cargo", "fetch", "--locked"]
+                    if (cargo_manifest / "Cargo.lock").is_file()
+                    else ["cargo", "fetch"]
+                ),
+                "evidence": "Cargo workspace/manifest",
             })
-        elif (root / "Cargo.toml").is_file() and shutil.which("cargo"):
+
+    if go_relevant:
+        go_root = workspace_root(root)
+        if (go_root / "go.work").is_file() and shutil.which("go"):
             actions.append({
-                "kind": "cargo",
+                "kind": "go",
+                "cwd": go_root,
+                "command": ["go", "work", "sync"],
+                "evidence": "go.work",
+            })
+        elif (root / "go.mod").is_file() and shutil.which("go"):
+            actions.append({
+                "kind": "go",
                 "cwd": root,
-                "command": ["cargo", "fetch", "--locked"] if (root / "Cargo.lock").is_file() else ["cargo", "fetch"],
-                "evidence": "Cargo manifest",
+                "command": ["go", "mod", "download"],
+                "evidence": "go.mod",
             })
 
-    go_root = workspace_root(root)
-    if (go_root / "go.work").is_file() and shutil.which("go"):
-        actions.append({
-            "kind": "go",
-            "cwd": go_root,
-            "command": ["go", "work", "sync"],
-            "evidence": "go.work",
-        })
-    elif (root / "go.mod").is_file() and shutil.which("go"):
-        actions.append({
-            "kind": "go",
-            "cwd": root,
-            "command": ["go", "mod", "download"],
-            "evidence": "go.mod",
-        })
-
-    if (root / "mix.exs").is_file() and shutil.which("mix"):
+    if mix_relevant and (root / "mix.exs").is_file() and shutil.which("mix"):
         actions.append({
             "kind": "mix",
             "cwd": root,
@@ -459,8 +469,12 @@ def _workspace_commands(root: Path) -> list[dict[str, Any]]:
             "evidence": "mix.exs",
         })
 
-    return actions
+    if maven_relevant or gradle_relevant or swift_relevant:
+        # These ecosystems normally resolve dependencies as part of their
+        # declared build command. Do not invent a separate package install.
+        pass
 
+    return actions
 
 def runtime_requirements(root: str | os.PathLike[str] = ".") -> dict[str, str]:
     """Read project-declared runtime pins without changing the environment."""
@@ -626,7 +640,7 @@ def bootstrap_plan(
                 "evidence": evidence,
             })
 
-    actions.extend(_workspace_commands(selected_root))
+    actions.extend(_workspace_commands(selected_root, info))
 
     return {
         "project_root": str(selected_root),
