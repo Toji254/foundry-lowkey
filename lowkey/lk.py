@@ -2931,12 +2931,16 @@ pragma solidity ^0.8.20;
 import {{ {contract} }} from "{relative}";
 
 /// @dev Runs the discovered protocol fixture using Forge's native test runner.
-/// Forge invokes the inherited setUp() before this test, preserving the
-/// fixture's normal cheatcode, prank, and deployment semantics.
+/// The state dump is deliberately taken from inside setUp(), immediately after
+/// the fixture finishes, so setup-created deployments are still in the active
+/// test execution state that vm.dumpState() serializes.
 contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
-    function testLowkeyLabStateDump() public {{
+    function setUp() public override {{
+        super.setUp();
         vm.dumpState("{state_literal}");
     }}
+
+    function testLowkeyLabStateDump() public {{}}
 }}
 '''
     test_path.write_text(code, encoding="utf-8")
