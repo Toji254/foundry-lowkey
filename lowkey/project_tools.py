@@ -65,13 +65,25 @@ def project_root(root: str | Path = ".") -> Path:
 
 
 def _walk_files(root: Path, suffixes: set[str]) -> list[Path]:
+    """Walk source trees while pruning generated/dependency directories early."""
     files: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in suffixes:
-            continue
-        if any(part in EXCLUDED_DIRS for part in path.parts):
-            continue
-        files.append(path)
+    root = root.resolve()
+
+    for current, dirs, names in os.walk(root):
+        # Prune before descending. This is materially faster than rglob() plus
+        # checking excluded path components after the filesystem walk, especially
+        # after Node/Python dependency installation or in large monorepos.
+        dirs[:] = sorted(
+            name for name in dirs
+            if name not in EXCLUDED_DIRS and not name.startswith(".")
+        )
+
+        current_path = Path(current)
+        for name in names:
+            path = current_path / name
+            if path.suffix.lower() in suffixes:
+                files.append(path)
+
     return sorted(files)
 
 
