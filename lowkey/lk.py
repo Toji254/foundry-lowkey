@@ -28,9 +28,12 @@ try:
         format_detection,
         project_root as detected_project_root,
         run_native_audit,
+        discover_nested_projects,
+        is_workspace_root,
     )
 except ImportError:
     detect_project = format_detection = run_native_audit = None
+    discover_nested_projects = is_workspace_root = None
     detected_project_root = lambda start=".": Path(start).resolve()
 
 try:
@@ -4212,7 +4215,7 @@ def run_projects(config, args):
     if project_tools is None:
         return fail("Project discovery layer is unavailable. Reinstall Lowkey.")
     root = audit_context.foundry_project_root()
-    candidates = project_tools.discover_nested_projects(root)
+    candidates = discover_nested_projects(root) if discover_nested_projects is not None else []
     if not candidates:
         print("No nested projects detected.")
         print(f"Current project: {root}")
@@ -5053,9 +5056,9 @@ def run_lab(config,args):
     # A repository root may be a workspace/monorepo rather than the project to audit.
     # Lowkey discovers nested projects from manifests and source trees without assuming
     # names such as "pkg", "contracts", or any particular language.
-    if project_tools is not None and project_tools.is_workspace_root(root):
+    if is_workspace_root is not None and is_workspace_root(root):
         workspace_root = Path(root).resolve()
-        candidates = project_tools.discover_nested_projects(workspace_root)
+        candidates = discover_nested_projects(workspace_root) if discover_nested_projects is not None else []
         if len(candidates) == 1:
             root = candidates[0]["root"]
             relative = Path(root).resolve().relative_to(workspace_root).as_posix()
