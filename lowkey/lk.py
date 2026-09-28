@@ -8463,6 +8463,7 @@ FIRST 10 MINUTES
   3. Build the local lab:          lk lab
   4. See what Lowkey selected:      lk status
   5. See the project/system map:    lk project
+                                     lk project 2
                                      lk system
   6. Understand the flow:           lk walkthrough --auto --steps 6
   7. List the attack surface:      lk functions
@@ -8492,6 +8493,7 @@ PROJECT / TARGET SETUP
   lk deployments                    List deployment records.
   lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
   lk projects                       Show projects found inside the current workspace.
+  lk project [number|path]          Show the human-readable project map.
   lk lab [Contract]                 Set up a realistic local lab automatically.
   lk lab --generic [Contract]      Deploy a contract directly and enter constructor values.
   lk lab --artifact <Contract>     Deploy this exact compiled contract.
