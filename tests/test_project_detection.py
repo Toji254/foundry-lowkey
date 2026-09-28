@@ -260,94 +260,42 @@ class ProjectDetectionTests(unittest.TestCase):
             self.assertNotIn("solidity", info["languages"])
             self.assertEqual(info["languages"]["vyper"], 1)
 
-    def test_bootstrap_initializes_submodules_and_uv_project(self):
+    def test_bootstrap_delegates_to_shared_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            (root / ".gitmodules").write_text(
-                '[submodule "vendor"]\n\tpath = vendor\n\turl = https://example.com/vendor.git\n',
-                encoding="utf-8",
-            )
-            (root / "pyproject.toml").write_text(
-                "[project]\nname = \"demo\"\ndependencies = [\"vyper>=0.4.0\"]\n",
-                encoding="utf-8",
-            )
-            calls = []
+            info = project_detection.detect_project(root)
 
-            def fake_run(command, cwd):
-                calls.append((list(command), cwd))
-                return 0, "ok"
-
-            with patch.object(project_detection.shutil, "which", side_effect=lambda name: name in {"git", "uv"}), \
-                 patch.object(project_detection, "_run", side_effect=fake_run):
-                code = project_detection.bootstrap_project(project_detection.detect_project(root))
+            with patch.object(project_detection, "run_shared_bootstrap", return_value=0) as bootstrap:
+                code = project_detection.bootstrap_project(info, reason="audit")
 
             self.assertEqual(code, 0)
-            self.assertEqual(
-                calls,
-                [
-                    (
-                        ["git", "submodule", "update", "--init", "--recursive", "--depth", "1"],
-                        root,
-                    ),
-                    (["uv", "sync", "--all-extras", "--dev"], root),
-                ],
-            )
+            bootstrap.assert_called_once()
+            args, kwargs = bootstrap.call_args
+            self.assertEqual(args[0]["root"], str(root))
+            self.assertEqual(kwargs["reason"], "audit")
 
-    def test_bootstrap_keeps_dependency_install_scoped_to_root_project(self):
+    def test_bootstrap_status_comes_from_shared_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            submodule = root / "vendor" / "scrvusd"
-            submodule.mkdir(parents=True)
-            (root / ".gitmodules").write_text(
-                '[submodule "scrvusd"]\n\tpath = vendor/scrvusd\n\turl = https://example.com/scrvusd.git\n',
-                encoding="utf-8",
-            )
-            (root / "pyproject.toml").write_text(
-                "[project]\nname = \"root-demo\"\n", encoding="utf-8"
-            )
-            (submodule / "pyproject.toml").write_text(
-                "[project]\nname = \"nested-demo\"\n", encoding="utf-8"
-            )
-            calls = []
+            info = project_detection.detect_project(root)
+            expected = {"dependency_root": str(root), "ready": True}
 
-            def fake_run(command, cwd):
-                calls.append((list(command), cwd))
-                return 0, "ok"
+            with patch.object(project_detection, "shared_bootstrap_status", return_value=expected):
+                self.assertEqual(project_detection.bootstrap_status(info), expected)
 
-            with patch.object(project_detection.shutil, "which", side_effect=lambda name: name in {"git", "uv"}), \\
-                 patch.object(project_detection, "_run", side_effect=fake_run):
-                code = project_detection.bootstrap_project(project_detection.detect_project(root))
-
-            self.assertEqual(code, 0)
-            self.assertEqual(
-                calls,
-                [
-                    (
-                        ["git", "submodule", "update", "--init", "--recursive", "--depth", "1"],
-                        root,
-                    ),
-                    (["uv", "sync", "--all-extras", "--dev"], root),
-                ],
-            )
-
-    def test_bootstrap_uses_lockfile_aware_node_install(self):
+    def test_project_detection_exposes_non_evm_build_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            (root / "package.json").write_text('{"private":true}\n', encoding="utf-8")
-            (root / "package-lock.json").write_text("{}\n", encoding="utf-8")
-            calls = []
+            (root / "Cargo.toml").write_text(
+                "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+                encoding="utf-8",
+            )
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text("pub fn ping() {}\n", encoding="utf-8")
 
-            def fake_run(command, cwd):
-                calls.append(list(command))
-                return 0, "ok"
+            info = project_detection.detect_project(root)
 
-            with patch.object(project_detection.shutil, "which", side_effect=lambda name: name == "npm"), \
-                 patch.object(project_detection, "_run", side_effect=fake_run):
-                code = project_detection.bootstrap_project(project_detection.detect_project(root))
-
-            self.assertEqual(code, 0)
-            self.assertEqual(calls, [["npm", "ci"]])
-
+            self.assertEqual(info["build_backend"], "cargo")
     def test_project_python_runner_prefers_uv_over_global_pytest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
