@@ -319,13 +319,16 @@ def project_root(start: str | os.PathLike[str] = ".") -> Path:
             return Path(nested[0]["root"])
         return path
 
-    if nearest == path and is_workspace_root(nearest):
+    # A workspace marker may be above the directory where Lowkey was invoked.
+    # Honor an explicitly selected nested project anywhere inside that workspace.
+    if is_workspace_root(nearest):
         selected = workspace_selection(nearest)
         if selected is not None:
             return selected
-        nested = discover_nested_projects(nearest)
-        if len(nested) == 1:
-            return Path(nested[0]["root"])
+        if nearest == path:
+            nested = discover_nested_projects(nearest)
+            if len(nested) == 1:
+                return Path(nested[0]["root"])
 
     return nearest
 
