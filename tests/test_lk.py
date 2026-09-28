@@ -63,6 +63,7 @@ class LowkeyCastTests(unittest.TestCase):
             [
                 ["git", "submodule", "sync", "--recursive"],
                 ["git", "submodule", "update", "--init", "--recursive", "--force"],
+                ["git", "clone", "--depth", "1", "https://github.com/foundry-rs/forge-std.git", "contracts/lib/forge-std"],
                 ["pnpm", "install", "--frozen-lockfile"],
             ],
         )
