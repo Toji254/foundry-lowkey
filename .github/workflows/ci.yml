@@ -36,6 +36,19 @@ jobs:
           anvil --version
       - name: Install Lowkey
         run: ./install.sh
+      - name: Verify installed runtime module
+        run: |
+          test -f "$HOME/.lowkey/bootstrap.py"
+          grep -q '"bootstrap.py"' "$HOME/.lowkey/install-manifest.json"
+          python3 - "$HOME/.lowkey" <<'PY'
+          import pathlib
+          import sys
+          root = pathlib.Path(sys.argv[1])
+          sys.path.insert(0, str(root))
+          import bootstrap
+          assert pathlib.Path(bootstrap.__file__).resolve() == root / "bootstrap.py"
+          PY
+
       - name: Build integration fixture
         run: |
           rm -rf /tmp/lowkey-fixture
