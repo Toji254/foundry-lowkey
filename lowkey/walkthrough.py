@@ -3933,7 +3933,14 @@ def _diagnose_failed_call(
     diagnostics.extend(flow_lines)
 
     try:
-        code, calldata, err = _cmd(["cast", "calldata", step.function, *[_cli_arg(x) for x in step.args]], timeout=6)
+        inputs = _function_inputs(model, step.function)
+        code, calldata, err = _cmd([
+            "cast", "calldata", step.function,
+            *[
+                _cli_arg(item, inputs[index] if index < len(inputs) else None)
+                for index, item in enumerate(step.args)
+            ],
+        ], timeout=6)
         if code != 0:
             diagnostics.append("Lowkey could not encode the failing calldata for trace analysis")
             decoded = _decode_custom_error(err, models)
@@ -5227,7 +5234,8 @@ def _generic_walkthrough_warmup(
         if not actor:
             continue
 
-        ok, preflight = _preflight(rpc, candidate, actor.address)
+        candidate_inputs = _function_inputs(active_model, candidate.function)
+        ok, preflight = _preflight(rpc, candidate, actor.address, candidate_inputs)
         if not ok:
             notes.append(
                 f"{candidate.function}: preflight blocked — {_short_error(preflight)}"
@@ -5237,6 +5245,7 @@ def _generic_walkthrough_warmup(
         tx, output = _send(
             host, config, actor, candidate.address,
             candidate.function, candidate.args, candidate.value_wei,
+            candidate_inputs,
         )
         if not tx:
             notes.append(
@@ -5330,7 +5339,11 @@ def _execute_stateful_story_action(
     step.balance_before = _snapshot_balances(rpc, actor_addresses)
     step.token_balance_before = _snapshot_token_balances(rpc, token, actor_addresses)
 
-    tx, output = _send(host, config, actor, address, function, args, value)
+    action_model = next((item for item in models if item.name == contract), None)
+    tx, output = _send(
+        host, config, actor, address, function, args, value,
+        _function_inputs(action_model, function),
+    )
     step.tx_hash = tx
     if tx:
         receipt = _receipt(rpc, tx)
@@ -5601,7 +5614,10 @@ def _run_adversarial_test(
             _rpc_revert(rpc, cleanup_snapshot)
             return 1
 
-        tx, output = _send(host, config, actor, active_target, step.function, args, value)
+        tx, output = _send(
+            host, config, actor, active_target, step.function, args, value,
+            list(fn.get("inputs") or []),
+        )
         step.tx_hash = tx
 
         if tx:
