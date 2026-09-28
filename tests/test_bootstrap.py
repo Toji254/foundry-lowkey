@@ -101,6 +101,42 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(node_actions[0]["command"], ["npm", "install"])
             self.assertIn("Hardhat binary missing", node_actions[0]["evidence"])
 
+    def test_native_node_addon_failure_retries_without_scripts(self):
+        action = {
+            "kind": "node",
+            "cwd": pathlib.Path("/tmp/lowkey-bootstrap-test"),
+            "command": ["corepack", "pnpm@8", "install", "--frozen-lockfile"],
+            "evidence": "pnpm-lockfile",
+        }
+        calls = []
+
+        class Result:
+            def __init__(self, code, stdout="", stderr=""):
+                self.returncode = code
+                self.stdout = stdout
+                self.stderr = stderr
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if len(calls) == 1:
+                return Result(
+                    1,
+                    stderr="node-gyp ERR! build error\n"
+                    "fatal error: libusb.h: No such file or directory\n",
+                )
+            return Result(0, stdout="Lockfile is up to date\n")
+
+        with patch.object(bootstrap.subprocess, "run", side_effect=fake_run):
+            code = bootstrap.run_bootstrap(
+                {
+                    "root": str(action["cwd"]),
+                    "stacks": ["foundry", "hardhat"],
+                }
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[1], [*action["command"], "--ignore-scripts"])
+
     def test_shared_plan_uses_repository_declared_rust_dependencies_only_for_rust_projects(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
