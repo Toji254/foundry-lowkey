@@ -1091,12 +1091,13 @@ def _run_hardhat_fork_fallback(
                 time.sleep(0.25)
 
         if not ready:
+            if hardhat_node.poll() is None:
+                hardhat_node.terminate()
             output = ""
-            if hardhat_node.stdout is not None:
-                try:
-                    output = hardhat_node.stdout.read()
-                except Exception:
-                    output = ""
+            try:
+                output, _ = hardhat_node.communicate(timeout=3)
+            except (OSError, subprocess.TimeoutExpired):
+                output = ""
             message = f"Lowkey Hardhat fork failed to start. {output}".strip()
             if _historical_state_unavailable(output):
                 return 1, message, "defer"
