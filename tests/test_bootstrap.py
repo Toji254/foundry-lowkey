@@ -104,11 +104,11 @@ class BootstrapTests(unittest.TestCase):
     def test_node_runtime_pin_prefers_matching_installed_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, ".nvmrc", "18.18.0\\n")
+            self.write(root, ".nvmrc", "18.18.0\n")
             runtime = pathlib.Path(tmp) / "node18" / "bin"
             runtime.mkdir(parents=True)
             node = runtime / "node"
-            node.write_text("#!/bin/sh\\nprintf 'v18.18.0\\n'\\n", encoding="utf-8")
+            node.write_text("#!/bin/sh\nprintf 'v18.18.0\n'\n", encoding="utf-8")
             node.chmod(0o755)
 
             with patch.object(bootstrap.shutil, "which", return_value="/usr/bin/node"), \\
@@ -117,7 +117,7 @@ class BootstrapTests(unittest.TestCase):
                      "run",
                      side_effect=lambda command, **kwargs: type("Result", (), {
                          "returncode": 0,
-                         "stdout": "v26.8.1\\n" if command[0] == "/usr/bin/node" else "v18.18.0\\n",
+                         "stdout": "v26.8.1\n" if command[0] == "/usr/bin/node" else "v18.18.0\n",
                          "stderr": "",
                      })(),
                  ):
