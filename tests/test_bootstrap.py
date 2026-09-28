@@ -110,6 +110,27 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(toolchain["category"], "toolchain_mismatch")
         self.assertFalse(toolchain["repairable"])
 
+    def test_build_command_uses_workspace_level_hardhat_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"private":true,"workspaces":["packages/*"]}\n')
+            self.write(root, "pnpm-workspace.yaml", "packages:\n  - packages/*\n")
+            project = root / "packages" / "app"
+            self.write(project, "hardhat.config.ts", "export default {}\n")
+            self.write(project, "package.json", '{"name":"app"}\n')
+            binary = root / "node_modules" / ".bin" / "hardhat"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("", encoding="utf-8")
+
+            info = {"root": str(project), "backend": "hardhat", "build_backend": "hardhat"}
+            command = bootstrap.project_build_command(info)
+
+            self.assertIsNotNone(command)
+            cwd, argv, evidence = command
+            self.assertEqual(cwd, project.resolve())
+            self.assertEqual(argv, [str(binary), "compile"])
+            self.assertEqual(evidence, "local Hardhat binary")
+
     def test_build_command_uses_local_hardhat_without_npx_downloads(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
