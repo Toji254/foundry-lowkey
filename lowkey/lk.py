@@ -4043,8 +4043,8 @@ def _format_build_failure(output):
     return text
 
 
-def _declared_submodule_paths(root):
-    """Return repository-declared submodule paths from .gitmodules."""
+def _declared_submodules(root):
+    """Return .gitmodules entries as (path, url) pairs."""
     path = Path(root) / ".gitmodules"
     if not path.is_file():
         return []
@@ -4052,14 +4052,48 @@ def _declared_submodule_paths(root):
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
-    paths = []
-    for line in text.splitlines():
-        match = re.match(r"\s*path\s*=\s*(.+?)\s*$", line)
+
+    entries = []
+    current = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("[submodule "):
+            if current.get("path"):
+                entries.append((current["path"], current.get("url")))
+            current = {}
+            continue
+        match = re.match(r"path\s*=\s*(.+?)\s*$", line)
         if match:
-            value = match.group(1).strip()
-            if value and value not in paths:
-                paths.append(value)
-    return paths
+            current["path"] = match.group(1).strip()
+            continue
+        match = re.match(r"url\s*=\s*(.+?)\s*$", line)
+        if match:
+            current["url"] = match.group(1).strip()
+
+    if current.get("path"):
+        entries.append((current["path"], current.get("url")))
+
+    return entries
+
+
+def _declared_submodule_paths(root):
+    return [path for path, _url in _declared_submodules(root)]
+
+
+def _tracked_gitlink(root, relative_path):
+    """Return True when Git tracks the path as a real gitlink (mode 160000)."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--stage", "--", str(relative_path)],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    return any(line.split(maxsplit=1)[0] == "160000" for line in result.stdout.splitlines() if line.strip())
 
 
 def _node_package_bootstrap_command(root_path):
@@ -4110,13 +4144,31 @@ def _submodule_bootstrap_health(root):
     return missing
 
 
+def _orphan_submodule_clone_commands(root):
+    """Recover .gitmodules entries that are not tracked as gitlinks."""
+    root_path = Path(root)
+    commands = []
+    for relative, url in _declared_submodules(root_path):
+        if not url or _tracked_gitlink(root_path, relative):
+            continue
+        path = root_path / relative
+        try:
+            incomplete = (not path.is_dir()) or (not any(path.iterdir()))
+        except OSError:
+            incomplete = True
+        if incomplete:
+            commands.append(["git", "clone", "--depth", "1", url, relative])
+    return commands
+
+
 def _foundry_native_bootstrap_commands(root, build_output=""):
     """
     Infer repository-owned dependency recovery commands from the actual project.
 
     Build failures can happen even when node_modules or a submodule directory
-    already exists but is incomplete. Lowkey therefore treats missing dependency
-    paths as a repair signal instead of using directory existence alone.
+    already exists but is incomplete. Lowkey repairs dependencies using only
+    repository-declared mechanisms: Git submodules, .gitmodules URLs,
+    package-manager lockfiles, and explicit Makefile install targets.
     """
     root_path = Path(root)
     commands = []
@@ -4127,13 +4179,14 @@ def _foundry_native_bootstrap_commands(root, build_output=""):
         if shutil.which("git"):
             commands.append(["git", "submodule", "sync", "--recursive"])
             commands.append(["git", "submodule", "update", "--init", "--recursive", "--force"])
+            commands.extend(_orphan_submodule_clone_commands(root_path))
         else:
             print("DEFER  build dependency repair — git is not installed.", file=sys.stderr)
 
     package_path = root_path / "package.json"
     node_modules = root_path / "node_modules"
     node_dependency_failure = bool(
-        re.search(r"(node_modules[/\\\\]|npm|pnpm|yarn|bun|package\.json|@openzeppelin/)", output, re.I)
+        re.search(r"(node_modules[/\\]|npm|pnpm|yarn|bun|package\.json|@openzeppelin/)", output, re.I)
     )
     if package_path.is_file() and (not node_modules.is_dir() or node_dependency_failure):
         command = _node_package_bootstrap_command(root_path)
@@ -4152,10 +4205,7 @@ def _foundry_native_bootstrap_commands(root, build_output=""):
             if re.search(r"(?m)^\s*install\s*:", make_text):
                 commands.append(["make", "install"])
 
-    return commands
-
-
-def _run_project_build(config, root):def _run_project_build(config, root):
+    return commandsdef _run_project_build(config, root):def _run_project_build(config, root):
     """Build with the detected project's native toolchain, with visible output and dependency recovery."""
     root_path = Path(root)
 
