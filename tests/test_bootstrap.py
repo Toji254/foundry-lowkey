@@ -72,6 +72,35 @@ class BootstrapTests(unittest.TestCase):
             )
             self.assertEqual(node_actions[0]["cwd"], root.resolve())
 
+    def test_partial_node_modules_triggers_hardhat_dependency_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "package.json",
+                '{"private":true,"devDependencies":{"hardhat":"^2.22.0"}}\n',
+            )
+            (root / "node_modules").mkdir()
+
+            info = {
+                "root": str(root),
+                "backend": "multi",
+                "stacks": ["foundry", "hardhat"],
+                "languages": {"solidity": 1, "typescript": 1},
+            }
+
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: name == "npm",
+            ):
+                plan = bootstrap.bootstrap_plan(info, reason="audit")
+
+            node_actions = [a for a in plan["actions"] if a["kind"] == "node"]
+            self.assertEqual(len(node_actions), 1)
+            self.assertEqual(node_actions[0]["command"], ["npm", "install"])
+            self.assertIn("Hardhat binary missing", node_actions[0]["evidence"])
+
     def test_shared_plan_uses_repository_declared_rust_dependencies_only_for_rust_projects(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
