@@ -56,6 +56,27 @@ class ProjectDetectionTests(unittest.TestCase):
             self.assertEqual(shared_info["used_by_siblings"], 1)
             self.assertEqual(shared_info["scope_hint"], "shared dependency")
 
+    def test_active_workspace_project_is_used_from_child_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            nested = root / "packages" / "app"
+            nested.mkdir(parents=True)
+            (nested / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+
+            self.assertTrue(project_detection.set_workspace_selection(root, nested))
+
+            child = nested / "src"
+            child.mkdir()
+            self.assertEqual(project_detection.project_root(child).resolve(), nested.resolve())
+
+            sibling_area = root / "pkg"
+            sibling_area.mkdir()
+            self.assertEqual(project_detection.project_root(sibling_area).resolve(), nested.resolve())
+
     def test_workspace_with_one_nested_project_resolves_to_nested_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
