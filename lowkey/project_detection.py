@@ -26,6 +26,7 @@ try:
     from bootstrap import (
         bootstrap_status as shared_bootstrap_status,
         classify_build_failure as shared_classify_build_failure,
+        project_build_command as shared_project_build_command,
         run_bootstrap as run_shared_bootstrap,
     )
 except ImportError:
@@ -604,6 +605,13 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
     )
     anchor = (root / "Anchor.toml").is_file()
     move = (root / "Move.toml").is_file()
+    cargo = (root / "Cargo.toml").is_file()
+    go = (root / "go.mod").is_file() or (root / "go.work").is_file()
+    mix = (root / "mix.exs").is_file()
+    maven = (root / "pom.xml").is_file() or (root / "mvnw").is_file()
+    gradle = any((root / name).is_file() for name in ("build.gradle", "build.gradle.kts", "gradlew"))
+    swift = (root / "Package.swift").is_file()
+    cmake = (root / "CMakeLists.txt").is_file()
     ape = _has(root, "ape-config.yaml", "ape-config.yml")
     brownie = _has(root, "brownie-config.yaml", "brownie-config.yml")
     vyper = bool(sources.get("vyper") or sources.get("vyper-interface")) and (
@@ -672,6 +680,33 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
     else:
         backend = "generic"
 
+    build_backend = backend
+    package = {}
+    package_path = root / "package.json"
+    if package_path.is_file():
+        try:
+            loaded = json.loads(_read(package_path))
+            package = loaded if isinstance(loaded, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            package = {}
+    scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+    if isinstance(scripts, dict) and scripts.get("build") and "hardhat" not in stacks:
+        build_backend = "node-script"
+    elif cargo:
+        build_backend = "cargo"
+    elif go:
+        build_backend = "go"
+    elif mix:
+        build_backend = "mix"
+    elif maven:
+        build_backend = "maven"
+    elif gradle:
+        build_backend = "gradle"
+    elif swift:
+        build_backend = "swift"
+    elif cmake:
+        build_backend = "cmake"
+
     native = {
         "git": bool(shutil.which("git")),
         "uv": bool(shutil.which("uv")),
@@ -699,6 +734,7 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "root": str(root),
         "kind": kind,
         "backend": backend,
+        "build_backend": build_backend,
         "stacks": stacks,
         "languages": sources,
         "supporting_tools": supporting,
@@ -726,6 +762,7 @@ def format_detection(info: dict[str, Any]) -> str:
         f"Root       : {info.get('root')}",
         f"Type       : {info.get('kind', 'unknown')}",
         f"Backend    : {info.get('backend', 'generic')}",
+        f"Build      : {info.get('build_backend', info.get('backend', 'generic'))}",
         f"Languages  : {', '.join(f'{name} ({count})' for name, count in languages.items()) or 'none'}",
         f"Toolchains : {', '.join(stacks) or 'none detected'}",
         f"Supporting : {', '.join(supporting) or 'none detected'}",
@@ -890,6 +927,12 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
         }
     return shared_classify_build_failure(output, command)
 
+
+def project_build_command(info: dict[str, Any]) -> tuple[Path, list[str], str] | None:
+    if shared_project_build_command is None:
+        return None
+    return shared_project_build_command(info)
+
 def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     """Run safe native verification for non-Foundry stacks.
 
@@ -996,6 +1039,17 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             child_code = run_native_audit(child, args)
             if child_code != 0:
                 failures = failures or child_code
+        return failures
+
+    build_backend = str(info.get("build_backend") or "").lower()
+    if build_backend in {"node-script", "cargo", "go", "mix", "maven", "gradle", "swift"}:
+        command_info = project_build_command(info)
+        if command_info:
+            _cwd, command, evidence = command_info
+            step("project build", command)
+            print(f"      evidence: {evidence}")
+        else:
+            print(f"DEFER  {build_backend} build — no executable project build command is available.")
         return failures
 
     print("STATIC-ONLY: no specialized project audit backend is installed.")
