@@ -8486,6 +8486,7 @@ def run_project_map(config, args):
             root = Path(selected["root"]).resolve()
             if set_workspace_selection is not None:
                 set_workspace_selection(workspace_container, root)
+            active_project = root
             print(f"Active project: {root.relative_to(workspace_container).as_posix()}")
         elif current_project:
             root = current_project.resolve()
