@@ -5404,6 +5404,59 @@ def _run_stateful_benchmark(
     results: list[WalkthroughStory] = []
     all_steps: list[Step] = []
     for story in stories:
+        # Record the authorization state before a successful admin action so the
+        # teaching renderer can distinguish expected role usage from an open boundary.
+        function_name = str(step.function or "").split("(", 1)[0].lower()
+        if function_name in {"renounceownership", "transferownership", "acceptownership"}:
+            if function_name == "acceptownership":
+                pending = next(
+                    (
+                        item for item in active_model.abi
+                        if item.get("type") == "function"
+                        and item.get("name") == "pendingOwner"
+                        and not item.get("inputs")
+                        and item.get("outputs")
+                        and _canonical_type(item["outputs"][0]) == "address"
+                    ),
+                    None,
+                )
+                if pending:
+                    ok_pending, rendered_pending = _read_contract_getter(rpc, active_target, pending)
+                    pending_value = rendered_pending.splitlines()[-1].strip() if rendered_pending else ""
+                    if ok_pending and is_address(pending_value):
+                        if pending_value.lower() == actor.address.lower():
+                            step.diagnostics.append(
+                                "pendingOwner() = " + _addr(pending_value) + " matches " + step.actor
+                            )
+                        else:
+                            step.diagnostics.append(
+                                "pendingOwner() = " + _addr(pending_value) + "; caller is " + step.actor
+                            )
+            else:
+                owner = next(
+                    (
+                        item for item in active_model.abi
+                        if item.get("type") == "function"
+                        and item.get("name") == "owner"
+                        and not item.get("inputs")
+                        and item.get("outputs")
+                        and _canonical_type(item["outputs"][0]) == "address"
+                    ),
+                    None,
+                )
+                if owner:
+                    ok_owner, rendered_owner = _read_contract_getter(rpc, active_target, owner)
+                    owner_value = rendered_owner.splitlines()[-1].strip() if rendered_owner else ""
+                    if ok_owner and is_address(owner_value):
+                        if owner_value.lower() == actor.address.lower():
+                            step.diagnostics.append(
+                                "owner() = " + _addr(owner_value) + " matches " + step.actor
+                            )
+                        else:
+                            step.diagnostics.append(
+                                "owner() = " + _addr(owner_value) + "; caller is " + step.actor
+                            )
+
         snapshot = _rpc_snapshot(rpc)
         if snapshot is None:
             story.signal = "BLOCKED"
