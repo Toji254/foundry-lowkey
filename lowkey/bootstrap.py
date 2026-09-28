@@ -631,12 +631,22 @@ def bootstrap_plan(
     node = _node_install_command(selected_root)
     if node:
         cwd, command, evidence = node
-        if command and (force or not (cwd / "node_modules").is_dir()):
+        node_modules = cwd / "node_modules"
+        # A present node_modules directory is not sufficient evidence that the
+        # detected Node toolchain is usable. In particular, a partially restored
+        # install can be missing the Hardhat binary while node_modules/ exists.
+        stacks = set((info or {}).get("stacks") or [])
+        hardhat_ready = (cwd / "node_modules" / ".bin" / "hardhat").is_file()
+        node_incomplete = "hardhat" in stacks and not hardhat_ready
+        if command and (force or not node_modules.is_dir() or node_incomplete):
             actions.append({
                 "kind": "node",
                 "cwd": cwd,
                 "command": command,
-                "evidence": evidence,
+                "evidence": (
+                    f"{evidence}; Hardhat binary missing from node_modules/.bin"
+                    if node_incomplete else evidence
+                ),
             })
 
     for cwd, command, evidence in _python_plan(selected_root):
