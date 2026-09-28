@@ -129,6 +129,40 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(pin, "18.18.0")
             self.assertEqual(env["PATH"].split(bootstrap.os.pathsep)[0], str(nvm_runtime))
 
+    def test_node_runtime_pin_prefers_concrete_asdf_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, ".nvmrc", "18.18.0\n")
+            runtime = pathlib.Path(tmp) / "nodejs" / "18.18.0" / "bin"
+            runtime.mkdir(parents=True)
+            node = runtime / "node"
+            node.write_text("", encoding="utf-8")
+            node.chmod(0o755)
+
+            def fake_which(name):
+                return {
+                    "node": "/home/rogue/.asdf/shims/node",
+                    "asdf": "/usr/bin/asdf",
+                    "bash": "/bin/bash",
+                }.get(name)
+
+            def fake_run(command, **kwargs):
+                if command[:2] == ["/home/rogue/.asdf/shims/node", "--version"]:
+                    return type("Result", (), {"returncode": 0, "stdout": "v26.8.1\n", "stderr": ""})()
+                if command[:4] == ["/usr/bin/asdf", "where", "nodejs", "18.18.0"]:
+                    return type("Result", (), {"returncode": 0, "stdout": str(runtime.parent) + "\n", "stderr": ""})()
+                if command[:2] == [str(node), "--version"]:
+                    return type("Result", (), {"returncode": 0, "stdout": "v18.18.0\n", "stderr": ""})()
+                raise AssertionError(f"unexpected command: {command}")
+
+            with patch.object(bootstrap.shutil, "which", side_effect=fake_which), patch.object(
+                bootstrap.subprocess, "run", side_effect=fake_run
+            ):
+                env, pin = bootstrap.runtime_environment(root)
+
+            self.assertEqual(pin, "18.18.0")
+            self.assertEqual(env["PATH"].split(bootstrap.os.pathsep)[0], str(runtime))
+
     def test_native_node_addon_failure_retries_without_scripts(self):
         action = {
             "kind": "node",
