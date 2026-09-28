@@ -1134,6 +1134,15 @@ def run_abi(config):
             for item in items:
                 print(f"  {format_signature(item)}")
 def run_functions(config,query=None):
+    if query and str(query).lower() in {"-h", "--help", "help"}:
+        print("Usage: lk fn [query]")
+        print("List all functions, or search the current target/build artifacts by function name or signature.")
+        print("Examples:")
+        print("  lk fn")
+        print("  lk fn withdraw")
+        print("  lk fn 'batchRedeemWToken((address,uint256,address)[])'")
+        return 0
+
     root=audit_context.foundry_project_root()
     target=active_project_target(config,root)
     if not target:
@@ -7986,9 +7995,29 @@ def run_investigate(config, args):
     root = audit_context.foundry_project_root()
     if not args or args[0].lower() in {"help", "-h", "--help"}:
         print("Usage: lk focus <SIGNAL_ID>")
-        print("Focus one audit finding and mark it as investigating.")
+        print("Focus one audit signal and mark it as investigating.")
         print("Use: lk findings to list signal IDs.")
+        print("For a function, use: lk fn '<function signature>'")
+        print("Then use: lk focus <SIGNAL_ID> for the audit signal you want to investigate.")
         return 0
+
+    candidate = str(args[0]).strip()
+    if "(" in candidate or ")" in candidate:
+        try:
+            target = config.get("target")
+            functions = abi_functions(load_abi(target, config)) if target else []
+            matches = matching_functions(functions, candidate)
+        except Exception:
+            matches = []
+        if matches:
+            print("LOWKEY FUNCTION FOCUS")
+            print("=====================")
+            print(f"Function : {candidate}")
+            print("Focus stores an audit signal, not a function selection.")
+            print(f"Use: lk fn '{candidate}'")
+            print(f"Use: lk ask '{candidate}'")
+            print("Then use 'lk findings' + 'lk focus <SIGNAL_ID>' for the related audit signal.")
+            return 0
 
     if args[0].lower() == "clear":
         context = audit_context.load(root)
@@ -8856,7 +8885,8 @@ UNDERSTAND THE PROJECT
   lk info                          Show target, bytecode, ABI, proxy information.
   lk recon                         Quick contract reconnaissance: balance/code/nonce.
   lk functions [query]             List contract functions. Example: lk functions
-  lk fn <query>                    Find a function. Example: lk fn release
+  lk fn [query]                    Find/list functions. Example: lk fn release
+  lk fn -h                         Explain function-search syntax.
   lk ask <function>                Show function inputs. Example: lk ask createEscrow
   lk wizard <function> [mode]     Interactive argument helper.
   lk layout <Contract>             Show Forge storage layout.
@@ -9286,9 +9316,18 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="snapshot": run_snapshot(config,args)
     elif cmd=="diff": run_diff(config)
     elif cmd=="finding":
-        if args and args[0]=="add" and len(args)>=4: run_finding(config,f"[{args[1].upper()}] {args[2]}: {' '.join(args[3:])}")
-        elif args: run_finding(config," ".join(args))
-        else: print("Usage: lk finding <note>")
+        if not args:
+            print("Usage:")
+            print("  lk finding add <high|medium|low|info> <title> <description>")
+            print("  lk finding <note>")
+            print("  lk findings              List audit signals/findings")
+            return 0
+        if args[0].lower() in {"list", "ls"}:
+            return run_signals(config, args[1:])
+        if args[0]=="add" and len(args)>=4:
+            run_finding(config,f"[{args[1].upper()}] {args[2]}: {' '.join(args[3:])}")
+        else:
+            run_finding(config," ".join(args))
     elif cmd=="checklist":
         if args and args[0]=="done": run_checklist(config,"done"," ".join(args[1:]))
         elif args and args[0]=="reset": run_checklist(config,"reset")
