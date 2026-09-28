@@ -629,7 +629,28 @@ def function_score(item,query):
     candidate=format_signature(item).lower(); query=query.lower()
     return 1.0 if query in candidate else SequenceMatcher(None,candidate,query).ratio()
 
+def _configured_artifact_bases(root_path):
+    """Return artifact directories declared by the project's build configuration."""
+    bases = []
+
+    foundry_path = root_path / "foundry.toml"
+    if foundry_path.is_file():
+        try:
+            text = foundry_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        # Collect root/profile out= values. This intentionally does not attempt
+        # to execute TOML; path discovery only needs the declared output folders.
+        for match in re.finditer(r'(?m)^\s*out\s*=\s*["\']([^"\']+)["\']', text):
+            value = match.group(1).strip()
+            if value:
+                bases.append(Path(value))
+
+    return bases
+
+
 def artifact_json_files(root="."):
+    """Find ABI-bearing artifacts across common and project-declared output trees."""
     root_path = Path(root).expanduser().resolve()
     result = []
     bases = [
@@ -640,11 +661,16 @@ def artifact_json_files(root="."):
         root_path / ".audit" / "walkthrough" / "vyper",
         root_path / ".audit" / "build" / "vyper",
     ]
+
+    for configured in _configured_artifact_bases(root_path):
+        bases.append(configured if configured.is_absolute() else root_path / configured)
+
     ignored = {
         ".git", ".venv", ".tox", "__pycache__", "node_modules",
         "cache", "build-info",
     }
     for base_path in bases:
+        base_path = base_path.resolve()
         if not base_path.is_dir():
             continue
         for path, dirs, files in os.walk(base_path):
