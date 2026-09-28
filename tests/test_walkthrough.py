@@ -1641,5 +1641,46 @@ class WalkthroughTests(unittest.TestCase):
 
 
 
+    def test_artifact_models_honor_foundry_custom_out_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "forge-artifacts" / "AaveDIVAWrapper.sol").mkdir(parents=True)
+
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "src"\nout = "forge-artifacts"\n',
+                encoding="utf-8",
+            )
+            (root / "src" / "AaveDIVAWrapper.sol").write_text(
+                "pragma solidity ^0.8.20;\ncontract AaveDIVAWrapper {\n"
+                "    function owner() external view returns (address) {}\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            artifact = {
+                "contractName": "AaveDIVAWrapper",
+                "sourceName": "src/AaveDIVAWrapper.sol",
+                "abi": [
+                    {
+                        "type": "function",
+                        "name": "owner",
+                        "inputs": [],
+                        "outputs": [{"name": "", "type": "address"}],
+                        "stateMutability": "view",
+                    }
+                ],
+            }
+            (root / "forge-artifacts" / "AaveDIVAWrapper.sol" / "AaveDIVAWrapper.json").write_text(
+                json.dumps(artifact),
+                encoding="utf-8",
+            )
+
+            models = walkthrough._artifact_models(root)
+            self.assertTrue(any(model.name == "AaveDIVAWrapper" for model in models))
+            model = next(model for model in models if model.name == "AaveDIVAWrapper")
+            self.assertEqual(model.artifact, "forge-artifacts/AaveDIVAWrapper.sol/AaveDIVAWrapper.json")
+            self.assertIn("owner()", model.functions)
+
+
 if __name__ == "__main__":
     unittest.main()
