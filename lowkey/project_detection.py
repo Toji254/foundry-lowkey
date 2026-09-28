@@ -1019,7 +1019,7 @@ def _run_hardhat_fork_fallback(
     root: Path,
     hardhat_binary: Path,
     command: Sequence[str],
-) -> tuple[int, str] | None:
+) -> tuple[int, str, str] | None:
     """Retry fork-backed Hardhat tests through a local Anvil fork."""
     spec = _hardhat_fork_spec(root)
     anvil = shutil.which("anvil")
@@ -1096,7 +1096,14 @@ def _run_hardhat_fork_fallback(
                     output = anvil_proc.stdout.read()
                 except Exception:
                     output = ""
-            return 1, f"Lowkey local fork failed to start. {output}".strip()
+            message = f"Lowkey local fork failed to start. {output}".strip()
+            if re.search(
+                r"missing trie node|historical state .* is not available|state 0x[0-9a-f]+ is not available",
+                output,
+                re.IGNORECASE,
+            ):
+                return 1, message, "defer"
+            return 1, message, "fail"
 
         fallback_command = [str(hardhat_binary), "--config", str(wrapper), "test"]
         print(
@@ -1215,10 +1222,16 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             ):
                 fallback_result = _run_hardhat_fork_fallback(root, binary, test_command)
                 if fallback_result is not None:
-                    fallback_code, fallback_output = fallback_result
+                    fallback_code, fallback_output, fallback_status = fallback_result
                     if fallback_output:
                         print("\n".join(fallback_output.splitlines()[-40:]))
-                    if fallback_code == 0:
+                    if fallback_status == "defer":
+                        test_code = 0
+                        print(
+                            "DEFER hardhat tests (local fork fallback) — the configured RPC "
+                            "cannot serve the pinned historical state."
+                        )
+                    elif fallback_code == 0:
                         test_code = 0
                         print("PASS  hardhat tests (local fork fallback)")
                     else:
