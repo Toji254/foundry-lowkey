@@ -50,7 +50,7 @@ lk project 2
 lk projects 2
 ~~~
 
-lk project shows the workspace overview when you are not inside a specific package. lk project <number> opens that project's full map and makes it the active workspace scope. When you are already inside a package, lk project maps that package even if a different workspace project was previously selected.
+At a workspace root, lk project shows the workspace overview until an active project has been selected. After lk projects <number>, plain lk project opens the selected project's full map. lk project <number> also switches directly to that project's map. When you are already inside a package, lk project maps that package even if a different workspace project was previously selected.
 
 The active workspace scope is used by commands such as lk audit and lk lab when they are invoked from a shared workspace directory. Entering another actual project directory uses that project's own scope, so Lowkey does not accidentally mix sibling packages.
 

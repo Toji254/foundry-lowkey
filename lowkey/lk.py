@@ -4136,6 +4136,24 @@ def _run_project_build(config, root):
             return 0
 
     project = project_tools.detect_project(root) if project_tools is not None else {}
+    selected_scope = None
+    if discover_nested_projects is not None and workspace_context is not None:
+        scope = workspace_context(root)
+        for candidate in scope.get("projects") or []:
+            if Path(candidate["root"]).resolve() == Path(root).resolve():
+                selected_scope = candidate
+                break
+    if selected_scope:
+        print("")
+        print("LAB SCOPE")
+        print("=========")
+        print(f"Project    : {selected_scope.get('relative')}")
+        print(f"Role       : {selected_scope.get('scope_role') or selected_scope.get('scope_hint')}")
+        print(f"Purpose    : {_workspace_project_description(selected_scope)}")
+        if selected_scope.get("depends_on"):
+            print(f"Depends on : {', '.join(selected_scope['depends_on'])}")
+        if selected_scope.get("depended_on_by"):
+            print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     kind = str(project.get("kind") or "generic")
 
     if kind in {"foundry", "mixed-foundry-vyper"}:
@@ -7681,6 +7699,24 @@ def run_audit_mode(config, args=None, interactive=None):
         "stacks": [],
         "languages": {},
     }
+    selected_scope = None
+    if discover_nested_projects is not None and workspace_context is not None:
+        scope = workspace_context(root)
+        for candidate in scope.get("projects") or []:
+            if Path(candidate["root"]).resolve() == Path(root).resolve():
+                selected_scope = candidate
+                break
+    if selected_scope:
+        print("")
+        print("AUDIT SCOPE")
+        print("===========")
+        print(f"Project    : {selected_scope.get('relative')}")
+        print(f"Role       : {selected_scope.get('scope_role') or selected_scope.get('scope_hint')}")
+        print(f"Purpose    : {_workspace_project_description(selected_scope)}")
+        if selected_scope.get("depends_on"):
+            print(f"Depends on : {', '.join(selected_scope['depends_on'])}")
+        if selected_scope.get("depended_on_by"):
+            print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     stacks = set(info.get("stacks", []))
     foundry_project = "foundry" in stacks
     evm_project = bool(stacks & {"foundry", "hardhat", "vyper"})
@@ -8515,6 +8551,8 @@ def run_project_map(config, args):
             print(f"Active project: {root.relative_to(workspace_container).as_posix()}")
         elif current_project:
             root = current_project.resolve()
+        elif active_project:
+            root = active_project.resolve()
         else:
             if json_mode:
                 print(json.dumps({
@@ -8527,11 +8565,10 @@ def run_project_map(config, args):
             print("=" * 72)
             print(f"Workspace : {workspace_container}")
             print(f"Projects  : {len(candidates)}")
-            if active_project:
-                print(f"Active    : {active_project.relative_to(workspace_container).as_posix()}")
             print("")
-            print("This workspace contains multiple projects.")
-            print("Run 'lk project <number>' for a project map, or 'lk project --workspace' for this overview.")
+            print("No active project is selected yet.")
+            print("Run 'lk projects <number>' to choose the audit project.")
+            print("Use 'lk project --workspace' for the full workspace overview.")
             return 0
     else:
         root = current_project.resolve() if current_project else audit_context.foundry_project_root()
