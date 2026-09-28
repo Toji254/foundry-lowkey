@@ -36,12 +36,16 @@ try:
         clear_workspace_selection,
         workspace_context,
         bootstrap_project,
+        bootstrap_status,
+        classify_build_failure,
+        project_build_command,
     )
 except ImportError:
     detect_project = format_detection = run_native_audit = None
     discover_nested_projects = is_workspace_root = workspace_root = None
     workspace_selection = set_workspace_selection = clear_workspace_selection = None
     bootstrap_project = None
+    bootstrap_status = classify_build_failure = project_build_command = None
     detected_project_root = lambda start=".": Path(start).resolve()
 
 try:
@@ -4071,277 +4075,21 @@ def _format_build_failure(output):
     return text
 
 
-def _declared_submodules(root):
-    """Return .gitmodules entries as (path, url) pairs."""
-    path = Path(root) / ".gitmodules"
-    if not path.is_file():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-
-    entries = []
-    current = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line.startswith("[submodule "):
-            if current.get("path"):
-                entries.append((current["path"], current.get("url")))
-            current = {}
-            continue
-        match = re.match(r"path\s*=\s*(.+?)\s*$", line)
-        if match:
-            current["path"] = match.group(1).strip()
-            continue
-        match = re.match(r"url\s*=\s*(.+?)\s*$", line)
-        if match:
-            current["url"] = match.group(1).strip()
-
-    if current.get("path"):
-        entries.append((current["path"], current.get("url")))
-
-    return entries
-
-
-def _declared_submodule_paths(root):
-    return [path for path, _url in _declared_submodules(root)]
-
-
-def _tracked_gitlink(root, relative_path):
-    """Return True when Git tracks the path as a real gitlink (mode 160000)."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--stage", "--", str(relative_path)],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return False
-    if result.returncode != 0:
-        return False
-    return any(line.split(maxsplit=1)[0] == "160000" for line in result.stdout.splitlines() if line.strip())
-
-
-def _node_package_bootstrap_command(root_path):
-    """
-    Select a project-compatible Node package manager.
-
-    Lockfile format is authoritative when the repository does not pin a
-    package-manager version in package.json. In particular, pnpm lockfile v6
-    is compatible with pnpm 8, while newer pnpm majors may reject it.
-    """
-    package_path = root_path / "package.json"
-    if not package_path.is_file():
-        return None
-
-    try:
-        package = json.loads(package_path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        package = {}
-
-    declared = str(package.get("packageManager") or "").strip().lower()
-
-    if declared.startswith("pnpm"):
-        # Honor an explicit packageManager pin when the project provides one.
-        if shutil.which("corepack"):
-            version_match = re.search(r"pnpm@([0-9]+(?:\.[0-9]+){0,2})", declared)
-            version = version_match.group(1) if version_match else None
-            return (
-                ["corepack", f"pnpm@{version}", "install", "--frozen-lockfile"]
-                if version else
-                ["corepack", "pnpm", "install", "--frozen-lockfile"]
-            )
-        if shutil.which("pnpm"):
-            return ["pnpm", "install", "--frozen-lockfile"]
-        return None
-
-    pnpm_lock = root_path / "pnpm-lock.yaml"
-    if pnpm_lock.is_file():
-        try:
-            lock_text = pnpm_lock.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            lock_text = ""
-        version_match = re.search(r"(?m)^\s*lockfileVersion\s*:\s*[\"']?([0-9]+)(?:\.([0-9]+))?", lock_text)
-        major = int(version_match.group(1)) if version_match else None
-
-        if shutil.which("corepack"):
-            if major == 6:
-                # pnpm 8 is the conservative compatibility target for v6
-                # lockfiles and does not rewrite the repository's lockfile.
-                return ["corepack", "pnpm@8", "install", "--frozen-lockfile"]
-            if major in {7, 9}:
-                return ["corepack", f"pnpm@{major}", "install", "--frozen-lockfile"]
-
-        if shutil.which("pnpm"):
-            return ["pnpm", "install", "--frozen-lockfile"]
-        return None
-
-    if (root_path / "yarn.lock").is_file():
-        if shutil.which("yarn"):
-            return ["yarn", "install", "--immutable"]
-        return None
-
-    if (root_path / "bun.lockb").is_file() or (root_path / "bun.lock").is_file():
-        if shutil.which("bun"):
-            return ["bun", "install", "--frozen-lockfile"]
-        return None
-
-    if (root_path / "package-lock.json").is_file():
-        if shutil.which("npm"):
-            return ["npm", "ci"]
-        return None
-
-    if shutil.which("npm"):
-        return ["npm", "install"]
-    return None
-
-def _submodule_bootstrap_health(root):
-    """Verify declared submodules actually contain checked-out content."""
-    root_path = Path(root)
-    missing = []
-    for relative in _declared_submodule_paths(root_path):
-        path = root_path / relative
-        if not path.is_dir():
-            missing.append(relative)
-            continue
-        try:
-            if not any(path.iterdir()):
-                missing.append(relative)
-        except OSError:
-            missing.append(relative)
-    return missing
-
-
-def _orphan_submodule_clone_commands(root):
-    """Recover .gitmodules entries that are not tracked as gitlinks."""
-    root_path = Path(root)
-    commands = []
-    for relative, url in _declared_submodules(root_path):
-        if not url or _tracked_gitlink(root_path, relative):
-            continue
-        path = root_path / relative
-        try:
-            incomplete = (not path.is_dir()) or (not any(path.iterdir()))
-        except OSError:
-            incomplete = True
-        if incomplete:
-            commands.append(["git", "clone", "--depth", "1", url, relative])
-    return commands
-
-
-def _foundry_native_bootstrap_commands(root, build_output=""):
-    """
-    Infer repository-owned dependency recovery commands from the actual project.
-
-    Build failures can happen even when node_modules or a submodule directory
-    already exists but is incomplete. Lowkey repairs dependencies using only
-    repository-declared mechanisms: Git submodules, .gitmodules URLs,
-    package-manager lockfiles, and explicit Makefile install targets.
-    """
-    root_path = Path(root)
-    commands = []
-    output = str(build_output or "")
-
-    gitmodules = root_path / ".gitmodules"
-    if gitmodules.is_file():
-        if shutil.which("git"):
-            commands.append(["git", "submodule", "sync", "--recursive"])
-            commands.append(["git", "submodule", "update", "--init", "--recursive", "--force"])
-            commands.extend(_orphan_submodule_clone_commands(root_path))
-        else:
-            print("DEFER  build dependency repair — git is not installed.", file=sys.stderr)
-
-    package_path = root_path / "package.json"
-    node_modules = root_path / "node_modules"
-    node_dependency_failure = bool(
-        re.search(r"(node_modules[/\\]|npm|pnpm|yarn|bun|package\.json|@openzeppelin/)", output, re.I)
-    )
-    if package_path.is_file() and (not node_modules.is_dir() or node_dependency_failure):
-        command = _node_package_bootstrap_command(root_path)
-        if command:
-            commands.append(command)
-
-    # Only infer a Makefile install target when the repo does not already expose
-    # a more specific dependency mechanism above.
-    if not commands:
-        makefile = root_path / "Makefile"
-        if makefile.is_file():
-            try:
-                make_text = makefile.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                make_text = ""
-            if re.search(r"(?m)^\s*install\s*:", make_text):
-                commands.append(["make", "install"])
-
-    return commands
-
-
 def _run_project_build(config, root):
-    """Build with the detected project's native toolchain, with visible output and dependency recovery."""
+    """Build through the shared repository-aware bootstrap/recovery layer."""
     root_path = Path(root)
+    project = detect_project(root) if detect_project is not None else {
+        "root": str(root_path),
+        "kind": "generic",
+        "backend": "generic",
+        "build_backend": "generic",
+    }
 
-    # Hardhat-first projects may also ship a Foundry config. Honor their
-    # declared package-manager build script first so 'lk lab' does not invoke
-    # an inappropriate forge build.
-    package_path = root_path / "package.json"
-    hardhat_config = next(
-        (
-            root_path / name
-            for name in (
-                "hardhat.config.js",
-                "hardhat.config.ts",
-                "hardhat.config.cjs",
-                "hardhat.config.mjs",
-            )
-            if (root_path / name).is_file()
-        ),
-        None,
-    )
-
-    if package_path.is_file() and hardhat_config is not None:
-        try:
-            package = json.loads(package_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            return fail(f"Error: could not read package.json for project build: {error}")
-
-        scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
-        if isinstance(scripts, dict) and scripts.get("build"):
-            yarn = tool_path("yarn")
-            if not yarn:
-                return fail(
-                    "Error: this project declares a Yarn build script, but 'yarn' was not found on PATH."
-                )
-
-            print()
-            print("LOWKEY BUILD")
-            print("============")
-            print("Build system : yarn build")
-            print(f"Project      : {root}")
-            print("Status       : running...")
-
-            try:
-                completed = subprocess.run(
-                    [yarn, "build"],
-                    cwd=str(root_path),
-                    text=True,
-                )
-            except OSError as error:
-                return fail(f"Error executing yarn build: {error}", 1)
-
-            if completed.returncode != 0:
-                return fail("Error: yarn build failed.", completed.returncode)
-
-            print("Status       : complete")
-            return 0
-
-    project = project_tools.detect_project(root) if project_tools is not None else {}
     selected_scope = None
     if discover_nested_projects is not None and workspace_context is not None:
         scope = workspace_context(root)
         for candidate in scope.get("projects") or []:
-            if Path(candidate["root"]).resolve() == Path(root).resolve():
+            if Path(candidate["root"]).resolve() == root_path.resolve():
                 selected_scope = candidate
                 break
     if selected_scope:
@@ -4355,12 +4103,15 @@ def _run_project_build(config, root):
             print(f"Depends on : {', '.join(selected_scope['depends_on'])}")
         if selected_scope.get("depended_on_by"):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
-    kind = str(project.get("kind") or "generic")
 
-    if kind in {"foundry", "mixed-foundry-vyper"}:
+    bootstrap_project(project, reason="prepare")
+
+    kind = str(project.get("kind") or project.get("backend") or "generic")
+
+    if str(project.get("backend") or "") == "foundry" or kind in {"foundry", "mixed-foundry-vyper"}:
         result = run_foundry(["build"], capture=True)
         if result.code == 0:
-            print()
+            print("")
             print("LOWKEY BUILD")
             print("============")
             print("Build system : forge build")
@@ -4371,106 +4122,109 @@ def _run_project_build(config, root):
         first_output = _format_build_failure(
             getattr(result, "text", None) or getattr(result, "output", None) or result
         )
-        dependency_failure = bool(re.search(
-            r"(source\s+.+not\s+found|file\s+.+not\s+found|could\s+not\s+resolve|import\s+.+not\s+found|"
-            r"no\s+such\s+file|library\s+.+not\s+found)",
-            first_output,
-            re.I,
-        ))
-
-        if dependency_failure:
-            for command in _foundry_native_bootstrap_commands(root, first_output):
-                try:
-                    print(f"INFO  build bootstrap: {' '.join(command)}")
-                    bootstrap = subprocess.run(
-                        command,
-                        cwd=str(root),
-                        stdin=subprocess.DEVNULL,
-                        text=True,
-                        env={**os.environ, "CI": "1"},
-                        timeout=300,
-                    )
-                except subprocess.TimeoutExpired:
-                    print(
-                        f"FAIL  build bootstrap: {' '.join(command)} timed out after 300s.",
-                        file=sys.stderr,
-                    )
-                    print(
-                        "      Lowkey stopped waiting for the dependency manager. "
-                        "Check network/package-manager state, then rerun 'lk lab'.",
-                        file=sys.stderr,
-                    )
-                    continue
-                except OSError as exc:
-                    print(f"Warning: build bootstrap failed to start: {exc}", file=sys.stderr)
-                    continue
-
-                bootstrap_output = ""
-                if bootstrap.returncode != 0:
-                    print(
-                        f"Warning: build bootstrap {' '.join(command)} failed:\n"
-                        f"{_format_build_failure(bootstrap_output)}",
-                        file=sys.stderr,
-                    )
-                else:
-                    missing_submodules = []
-                    if command[:3] == ["git", "submodule", "update"]:
-                        missing_submodules = _submodule_bootstrap_health(root)
-                    if missing_submodules:
-                        print(
-                            "Warning: build bootstrap reported success but these declared "
-                            f"submodules are still incomplete: {', '.join(missing_submodules)}",
-                            file=sys.stderr,
-                        )
-                    else:
-                        print(f"PASS  build bootstrap: {' '.join(command)}")
-
-                retry = run_foundry(["build"], capture=True)
-                if retry.code == 0:
-                    print()
-                    print("LOWKEY BUILD")
-                    print("============")
-                    print("Build system : forge build")
-                    print(f"Project      : {root}")
-                    print("Status       : complete")
-                    return 0
-
-                retry_output = _format_build_failure(
-                    getattr(retry, "text", None) or getattr(retry, "output", None) or retry
-                )
-                first_output = retry_output
-
+        classification = classify_build_failure(first_output, ["forge", "build"])
         print(
-            "Build diagnostics:\n" + first_output,
+            f"BUILD FAILURE : {classification.get('category', 'unknown')}",
             file=sys.stderr,
         )
+        print(f"Reason        : {classification.get('reason', '')}", file=sys.stderr)
+
+        if classification.get("repairable"):
+            repair_code = bootstrap_project(
+                project,
+                force=True,
+                reason=str(classification.get("category") or "dependency"),
+            )
+            if repair_code != 0:
+                print(
+                    "Warning: repository-declared bootstrap reported a failure; "
+                    "Lowkey will still retry the build once.",
+                    file=sys.stderr,
+                )
+            retry = run_foundry(["build"], capture=True)
+            if retry.code == 0:
+                print("")
+                print("LOWKEY BUILD")
+                print("============")
+                print("Build system : forge build")
+                print(f"Project      : {root}")
+                print("Status       : complete")
+                return 0
+            first_output = _format_build_failure(
+                getattr(retry, "text", None) or getattr(retry, "output", None) or retry
+            )
+
+        print("Build diagnostics:\n" + first_output, file=sys.stderr)
         return result.code
 
-    commands = {
-        "hardhat": ["npx", "hardhat", "compile"],
-        "brownie": ["brownie", "compile"],
-        "vyper": [sys.executable, "-m", "forge_tools", "build"],
-        "vyper-uv": [sys.executable, "-m", "forge_tools", "build"],
-    }
-    command = commands.get(kind)
-    if not command:
+    command_info = project_build_command(project) if project_build_command is not None else None
+    if not command_info:
+        print("LOWKEY BUILD")
+        print("============")
+        print(f"Project      : {root}")
+        print(f"Build system : {project.get('build_backend') or project.get('backend') or 'unknown'}")
+        print("Status       : no safe native build command detected")
+        print("Lowkey will not invent an install or build command.")
         return 0
 
-    print()
+    build_root, command, evidence = command_info
+    print("")
     print("LOWKEY BUILD")
     print("============")
     print(f"Build system : {' '.join(command)}")
-    print(f"Project      : {root}")
+    print(f"Project      : {build_root}")
+    print(f"Evidence     : {evidence}")
     print("Status       : running...")
 
-    try:
-        result = subprocess.run(command, cwd=str(root_path), text=True)
-    except OSError as exc:
-        return fail(f"Build failed: {exc}", 1)
+    def run_native_build():
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(build_root),
+                capture_output=True,
+                text=True,
+                env={**os.environ, "CI": "1"},
+                timeout=900,
+            )
+        except subprocess.TimeoutExpired as error:
+            return 1, str(error)
+        except OSError as error:
+            return 1, str(error)
+        output = (completed.stdout or "") + (("\n" + completed.stderr) if completed.stderr else "")
+        return completed.returncode, output.strip()
 
-    if result.returncode == 0:
+    code, output = run_native_build()
+    if code == 0:
         print("Status       : complete")
-    return result.returncode
+        return 0
+
+    classification = classify_build_failure(output, command)
+    print(
+        f"BUILD FAILURE : {classification.get('category', 'unknown')}",
+        file=sys.stderr,
+    )
+    print(f"Reason        : {classification.get('reason', '')}", file=sys.stderr)
+
+    if classification.get("repairable"):
+        repair_code = bootstrap_project(
+            project,
+            force=True,
+            reason=str(classification.get("category") or "dependency"),
+        )
+        if repair_code != 0:
+            print(
+                "Warning: repository-declared bootstrap reported a failure; "
+                "Lowkey will still retry the build once.",
+                file=sys.stderr,
+            )
+        code, output = run_native_build()
+        if code == 0:
+            print("Status       : complete")
+            return 0
+
+    if output:
+        print("Build diagnostics:\n" + output, file=sys.stderr)
+    return code or 1
 
 def _workspace_project_description(project):
     return str(project.get("description") or project.get("name") or Path(project["root"]).name).strip()
