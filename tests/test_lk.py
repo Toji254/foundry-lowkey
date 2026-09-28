@@ -32,6 +32,75 @@ class LowkeyCastTests(unittest.TestCase):
                 text=True,
             )
 
+    def test_foundry_dependency_recovery_repairs_partial_node_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".gitmodules").write_text(
+                '[submodule "contracts/lib/forge-std"]\n'
+                '\tpath = contracts/lib/forge-std\n'
+                '\turl = https://github.com/foundry-rs/forge-std.git\n',
+                encoding="utf-8",
+            )
+            (root / "package.json").write_text(
+                '{"devDependencies":{"@openzeppelin/contracts":"^5.0.2"}}\n',
+                encoding="utf-8",
+            )
+            (root / "pnpm-lock.yaml").write_text("lockfileVersion: 9.0\n", encoding="utf-8")
+            (root / "node_modules").mkdir()
+
+            build_output = (
+                'Source "node_modules/@openzeppelin/contracts/access/Ownable.sol" not found\n'
+            )
+            with patch.object(
+                lk.shutil,
+                "which",
+                side_effect=lambda name: name in {"git", "pnpm"},
+            ):
+                commands = lk._foundry_native_bootstrap_commands(root, build_output)
+
+        self.assertEqual(
+            commands,
+            [
+                ["git", "submodule", "sync", "--recursive"],
+                ["git", "submodule", "update", "--init", "--recursive", "--force"],
+                ["pnpm", "install", "--frozen-lockfile"],
+            ],
+        )
+
+    def test_foundry_dependency_recovery_uses_package_manager_only_when_dependency_failure_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"devDependencies":{"@openzeppelin/contracts":"^5.0.2"}}\n',
+                encoding="utf-8",
+            )
+            (root / "pnpm-lock.yaml").write_text("lockfileVersion: 9.0\n", encoding="utf-8")
+            (root / "node_modules").mkdir()
+
+            unrelated = 'Source "contracts/src/Missing.sol" not found'
+            with patch.object(
+                lk.shutil,
+                "which",
+                side_effect=lambda name: name == "pnpm",
+            ):
+                commands = lk._foundry_native_bootstrap_commands(root, unrelated)
+
+        self.assertEqual(commands, [])
+
+    def test_declared_submodule_health_detects_successful_command_with_empty_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".gitmodules").write_text(
+                '[submodule "forge-std"]\n\tpath = contracts/lib/forge-std\n'
+                '\turl = https://github.com/foundry-rs/forge-std.git\n',
+                encoding="utf-8",
+            )
+            (root / "contracts" / "lib" / "forge-std").mkdir(parents=True)
+
+            self.assertEqual(
+                lk._submodule_bootstrap_health(root),
+                ["contracts/lib/forge-std"],
+            )
     def test_address_validation(self):
         self.assertTrue(lk.is_address("0x" + "1" * 40))
         self.assertFalse(lk.is_address("0x" + "1" * 64))
