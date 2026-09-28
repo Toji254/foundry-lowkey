@@ -57,6 +57,42 @@ class AuditContextTests(unittest.TestCase):
             self.assertEqual(loaded["signals"], [])
             self.assertEqual(audit_context.signals(root), [])
 
+    def test_source_link_does_not_hyperlink_outside_active_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            with patch.dict("os.environ", {"TERM_PROGRAM": "vscode"}):
+                linked = audit_context.source_link(
+                    "/tmp/another-project/src/Vault.sol",
+                    42,
+                    root=root,
+                )
+            self.assertIn("/tmp/another-project/src/Vault.sol:42", linked)
+            self.assertNotIn("vscode://file/", linked)
+
+    def test_load_rejects_context_owned_by_another_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            audit_dir = root / ".audit"
+            audit_dir.mkdir()
+            (audit_dir / "context.json").write_text(
+                json.dumps({
+                    "project": {"root": "/home/rogue/other-project"},
+                    "signals": [{
+                        "id": "SLITHER-STALE",
+                        "tool": "slither",
+                        "title": "stale",
+                        "file": "/home/rogue/other-project/src/Vault.sol",
+                        "line": 42,
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            loaded = audit_context.load(root)
+            self.assertEqual(loaded["project"]["root"], str(root))
+            self.assertEqual(loaded["signals"], [])
+
     def test_source_link_preserves_relative_label_and_targets_exact_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
