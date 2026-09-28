@@ -14,6 +14,18 @@ spec.loader.exec_module(project_detection)
 
 
 class ProjectDetectionTests(unittest.TestCase):
+    def test_lowkey_source_checkout_is_not_detected_as_user_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "lowkey").mkdir()
+            (root / "lowkey" / "lk.py").write_text("print('lowkey')\n", encoding="utf-8")
+            (root / "lowkey" / "project_detection.py").write_text("print('lowkey')\n", encoding="utf-8")
+            (root / "install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            (root / "Makefile").write_text("all:\n\t@true\n", encoding="utf-8")
+            info = project_detection.detect_project(root)
+            self.assertEqual(info["kind"], "lowkey-source")
+            self.assertEqual(project_detection.project_root(root), root)
+
     def test_workspace_selection_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
