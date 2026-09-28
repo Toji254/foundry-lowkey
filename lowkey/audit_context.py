@@ -132,7 +132,7 @@ def _is_audit_project(root: Path) -> bool:
         return False
     if not isinstance(info, dict):
         return False
-    return str(info.get("kind") or "unknown").lower() != "unknown"
+    return str(info.get("kind") or "unknown").lower() not in {"unknown", "lowkey-source"}
 
 
 def context_path(root: Path | None = None) -> Path:
