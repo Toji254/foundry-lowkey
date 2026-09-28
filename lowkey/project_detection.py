@@ -956,10 +956,19 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         bootstrap_code = bootstrap_project(info, args)
         if bootstrap_code != 0:
             return bootstrap_code
-    info = detect_project(root)
-    info["_bootstrap_done"] = True
-    backend = info.get("backend", "generic")
-    native = info.get("native", {})
+
+    # Parent multi-stack audits may dispatch a child backend explicitly.
+    # Do not rediscover the project in that case: rediscovery collapses the
+    # child back into "multi" and causes infinite multi -> child -> multi recursion.
+    forced_backend = info.get("_native_backend")
+    if forced_backend:
+        backend = str(forced_backend)
+        native = info.get("native", {})
+    else:
+        info = detect_project(root)
+        info["_bootstrap_done"] = True
+        backend = info.get("backend", "generic")
+        native = info.get("native", {})
     failures = 0
 
     print("\nLOWKEY NATIVE AUDIT")
@@ -1055,6 +1064,8 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                 continue
             child = dict(info)
             child["backend"] = stack
+            child["_native_backend"] = stack
+            child["_bootstrap_done"] = True
             child_code = run_native_audit(child, args)
             if child_code != 0:
                 failures = failures or child_code
