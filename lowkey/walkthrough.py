@@ -4877,8 +4877,14 @@ def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]
     if step.status == "success":
         if lower in {"renounceownership", "transferownership"}:
             return (
-                f"{actor} passed the ownership check before the transaction was accepted.",
+                f"{actor} passed the owner check before the transaction was accepted.",
                 "Owner-only functions are authorization boundaries: the caller's role matters before the state change.",
+                "OBSERVED + SOURCE",
+            )
+        if lower == "acceptownership":
+            return (
+                f"{actor} matched pendingOwner before the transaction was accepted.",
+                "Two-step ownership transfer uses a pending-owner boundary; the pending owner must accept the transfer.",
                 "OBSERVED + SOURCE",
             )
         if lower == "createbounty" and "msg.value" in source_text:
