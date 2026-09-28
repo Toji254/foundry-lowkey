@@ -307,7 +307,8 @@ def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         path = path.parent
 
     root = workspace_root(path)
-    candidates = discover_nested_projects(root)
+    workspace_mode = is_workspace_root(root)
+    candidates = discover_nested_projects(root) if workspace_mode else []
 
     current = None
     for candidate in candidates:
