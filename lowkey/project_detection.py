@@ -335,9 +335,9 @@ def _workspace_project_metadata(projects):
             project["scope_reason"] = (
                 "Other workspace projects depend on this package, so its behavior can affect the audit target."
             )
-        elif explicit_support if False else False:
+        elif explicit_support:
             project["scope_role"] = "support / tooling"
-            project["scope_reason"] = "Workspace metadata identifies this as supporting infrastructure."
+            project["scope_reason"] = "Project metadata identifies this as supporting infrastructure rather than an audit entry."
         elif int(project.get("protocol_source_files", 0)) > 0:
             project["scope_role"] = "component / library"
             project["scope_reason"] = "Contains protocol/source code but is not identified as the main audit entry."

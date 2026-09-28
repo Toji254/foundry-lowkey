@@ -1715,16 +1715,14 @@ def run_diff(config):
             changed+=1; print(f"Slot {slot}: {old_val} -> {new_val}")
     if not changed: print("No changes detected in snapshotted slots.")
 def run_finding(config, note):
-    os.makedirs(AUDIT_DIR, exist_ok=True)
+    root = audit_context.foundry_project_root()
+    paths = workspace_paths(root)
+    os.makedirs(paths["root"], exist_ok=True)
     line = f"- [{datetime.now().strftime('%Y-%m-%d %H:%M')}] {note}\n"
-    with open(os.path.join(AUDIT_DIR, "findings.md"), "a") as f:
+    with open(paths["findings"], "a", encoding="utf-8") as f:
         f.write(line)
-    workspace_finding = workspace_paths()["findings"]
-    if os.path.isdir(WORKSPACE_DIR):
-        with open(workspace_finding, "a") as f:
-            f.write(line)
 
-    # Keep manually recorded findings in the same shared ledger as analyzer signals.
+    # Keep manually recorded findings in the same project-scoped ledger as analyzer signals.
     impact = "Unknown"
     title = str(note)
     description = str(note)
@@ -1746,7 +1744,6 @@ def run_finding(config, note):
         else:
             title = remainder
 
-    root = audit_context.foundry_project_root()
     focus = audit_context.load(root).get("focus")
     signal = {
         "tool": "manual",
@@ -1779,14 +1776,14 @@ def workspace_paths(root=None):
     return {
         "root": str(workspace_dir),
         "matrix": os.path.join(workspace_dir, "matrix"),
-        "matrix_actors": os.path.join(WORKSPACE_DIR, "matrix", "actors.json"),
-        "matrix_states": os.path.join(WORKSPACE_DIR, "matrix", "states.json"),
-        "matrix_scenarios": os.path.join(WORKSPACE_DIR, "matrix", "scenarios.json"),
-        "notes": os.path.join(WORKSPACE_DIR, "notes.md"),
-        "todos": os.path.join(WORKSPACE_DIR, "TODO.md"),
-        "config": os.path.join(WORKSPACE_DIR, "config.json"),
-        "findings": os.path.join(WORKSPACE_DIR, "findings.md"),
-        "session": os.path.join(WORKSPACE_DIR, "history", "session.log"),
+        "matrix_actors": os.path.join(workspace_dir, "matrix", "actors.json"),
+        "matrix_states": os.path.join(workspace_dir, "matrix", "states.json"),
+        "matrix_scenarios": os.path.join(workspace_dir, "matrix", "scenarios.json"),
+        "notes": os.path.join(workspace_dir, "notes.md"),
+        "todos": os.path.join(workspace_dir, "TODO.md"),
+        "config": os.path.join(workspace_dir, "config.json"),
+        "findings": os.path.join(workspace_dir, "findings.md"),
+        "session": os.path.join(workspace_dir, "history", "session.log"),
     }
 
 def run_workspace(config,args,root=None):
@@ -1959,12 +1956,15 @@ def run_session_lifecycle(config, action):
         print("Usage: lk session start|resume")
 
 def run_export(config):
-    paths=workspace_paths(); export_dir=os.path.join(os.getcwd(),"audit-report"); os.makedirs(export_dir,exist_ok=True)
+    root = audit_context.foundry_project_root()
+    paths=workspace_paths(root)
+    export_dir=os.path.join(str(root),"audit-report")
+    os.makedirs(export_dir,exist_ok=True)
     lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(effective_rpc(config)) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Auto-discovered when needed'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Findings",""]
     finding_path=paths["findings"] if os.path.exists(paths["findings"]) else os.path.join(AUDIT_DIR,"findings.md")
     lines.append(Path(finding_path).read_text(encoding="utf-8") if os.path.exists(finding_path) else "No findings recorded.")
     lines += ["","## Checklist",""]
-    checklist_path=os.path.join(AUDIT_DIR,"CHECKLIST.md")
+    checklist_path=os.path.join(paths["root"],"CHECKLIST.md")
     lines.append(Path(checklist_path).read_text(encoding="utf-8") if os.path.exists(checklist_path) else "No checklist initialized.")
     Path(os.path.join(export_dir,"report.md")).write_text("\n".join(lines),encoding="utf-8")
     for name,source in [("notes.md",paths["notes"]),("TODO.md",paths["todos"]),("session.log",paths["session"]),("matrix_actors.json",paths["matrix_actors"]),("matrix_states.json",paths["matrix_states"]),("matrix_scenarios.json",paths["matrix_scenarios"])]:
@@ -2366,26 +2366,37 @@ contract Exploit_Reproduction is Test {{
     }}
 }}
 '''
-    os.makedirs("test",exist_ok=True)
-    filename=os.path.join("test",f"Exploit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
+    root = audit_context.foundry_project_root()
+    test_dir = Path(root) / "test"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    filename=str(test_dir / f"Exploit_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.t.sol")
     Path(filename).write_text(test,encoding="utf-8")
     print(f"Exploit reproduction generated: {filename}")
     root=audit_context.foundry_project_root()
     audit_context.record_tool("generator",root,status="completed",summary="exploit reproduction generated",data={"mode":"test-gen","output":filename,"function":func,"target":target})
 def run_checklist(config,action=None,item=None):
     root = audit_context.foundry_project_root()
-    path=os.path.join(workspace_paths(root)["root"],"CHECKLIST.md"); os.makedirs(os.path.dirname(path),exist_ok=True)
-    if not os.path.exists(path): Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8")
+    path = os.path.join(workspace_paths(root)["root"], "CHECKLIST.md")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n", encoding="utf-8")
     lines=Path(path).read_text(encoding="utf-8").splitlines(True)
     if action=="reset":
-        Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n",encoding="utf-8"); print("Checklist reset."); return
+        Path(path).write_text("\n".join(f"- [ ] {x}" for x in AUDIT_CHECKLIST)+"\n", encoding="utf-8")
+        print("Checklist reset.")
+        return
     if action=="done" and item:
         q=item.lower()
         for i,line in enumerate(lines):
             if q in line.lower() and "[ ]" in line:
-                lines[i]=line.replace("[ ]","[x]",1); Path(path).write_text("".join(lines),encoding="utf-8"); print(f"Marked complete: {line.strip()[6:]}"); return
-        print(f"Checklist item not found: {item}"); return
+                lines[i]=line.replace("[ ]","[x]",1)
+                Path(path).write_text("".join(lines),encoding="utf-8")
+                print(f"Marked complete: {line.strip()[6:]}")
+                return
+        print(f"Checklist item not found: {item}")
+        return
     print("".join(lines))
+
 def _project_target_entries(config, root=None):
     """Build a target list from the current project only, enriched with provenance."""
     project_root = Path(audit_context.foundry_project_root(root)).resolve()
@@ -5198,6 +5209,7 @@ def run_lab(config,args):
             print("LOWKEY FOUND MULTIPLE PROJECTS")
             print("============================")
             print(f"Workspace: {workspace_container}")
+            print("Choose the project whose code, tests, setup, and local state should form the lab scope.")
             _print_workspace_scope_choices(candidates)
             if not sys.stdin.isatty():
                 return fail(
@@ -7645,6 +7657,8 @@ def run_audit_mode(config, args=None, interactive=None):
             print(f"Workspace: {workspace_container}")
             print("Choose the project you actually want to audit:")
             _print_workspace_scope_choices(candidates)
+            print("")
+            print("Lowkey will audit the selected project as the primary scope and keep its listed dependencies in context.")
             while True:
                 try:
                     choice = input(f"Project [1-{len(candidates)}] or q: ").strip().lower()
