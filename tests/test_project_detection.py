@@ -14,6 +14,48 @@ spec.loader.exec_module(project_detection)
 
 
 class ProjectDetectionTests(unittest.TestCase):
+    def test_workspace_selection_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            nested = root / "packages" / "app"
+            nested.mkdir(parents=True)
+
+            self.assertTrue(project_detection.set_workspace_selection(root, nested))
+            self.assertEqual(project_detection.workspace_selection(root).resolve(), nested.resolve())
+
+            project_detection.clear_workspace_selection(root)
+            self.assertIsNone(project_detection.workspace_selection(root))
+
+    def test_workspace_metadata_includes_description_and_sibling_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+
+            shared = root / "packages" / "shared"
+            app = root / "packages" / "app"
+            for project in (shared, app):
+                (project / "src").mkdir(parents=True)
+                (project / "src" / "main.sol").write_text("contract Main {}\n", encoding="utf-8")
+
+            (shared / "package.json").write_text(
+                '{"name":"@demo/shared","description":"Shared protocol utilities"}\n',
+                encoding="utf-8",
+            )
+            (app / "package.json").write_text(
+                '{"name":"@demo/app","dependencies":{"@demo/shared":"workspace:*"}}\n',
+                encoding="utf-8",
+            )
+
+            candidates = project_detection.discover_nested_projects(root)
+            shared_info = next(item for item in candidates if item["root"] == str(shared))
+
+            self.assertEqual(shared_info["description"], "Shared protocol utilities")
+            self.assertEqual(shared_info["used_by_siblings"], 1)
+            self.assertEqual(shared_info["scope_hint"], "shared dependency")
+
     def test_workspace_with_one_nested_project_resolves_to_nested_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
