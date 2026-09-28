@@ -301,6 +301,81 @@ class ProjectDetectionTests(unittest.TestCase):
         )
         self.assertFalse(project_detection._historical_state_unavailable("AssertionError: value mismatch"))
 
+    def test_hardhat_fork_fallback_defers_without_archive_rpc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "hardhat.config.ts").write_text(
+                'export const NETWORK = "arbitrumMain";\\n', encoding="utf-8"
+            )
+            (root / "utils").mkdir()
+            (root / "utils" / "forkConfig.ts").write_text(
+                'const FORK_CONFIGS = { arbitrumMain: { url: "https://example.invalid/rpc", blockNumber: 289488417 } };\\n',
+                encoding="utf-8",
+            )
+            with patch.dict(project_detection.os.environ, {}, clear=False):
+                project_detection.os.environ.pop("LOWKEY_ARCHIVE_RPC", None)
+                result = project_detection._run_hardhat_fork_fallback(
+                    root, root / "node_modules/.bin/hardhat", ["hardhat", "test"]
+                )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result[2], "defer")
+            self.assertIn("LOWKEY_ARCHIVE_RPC", result[1])
+
+    def test_hardhat_fork_fallback_runs_tests_on_temporary_hardhat_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "hardhat.config.ts").write_text(
+                'export const NETWORK = "arbitrumMain";\\n', encoding="utf-8"
+            )
+            (root / "utils").mkdir()
+            (root / "utils" / "forkConfig.ts").write_text(
+                'const FORK_CONFIGS = { arbitrumMain: { url: "https://example.invalid/rpc", blockNumber: 289488417 } };\\n',
+                encoding="utf-8",
+            )
+
+            class DummyProcess:
+                stdout = None
+
+                def poll(self):
+                    return None
+
+                def terminate(self):
+                    pass
+
+                def wait(self, timeout=5):
+                    return 0
+
+            class DummySocket:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            calls = []
+
+            def fake_run(command, cwd):
+                calls.append(list(command))
+                return 0, "all tests passed"
+
+            with patch.dict(project_detection.os.environ, {"LOWKEY_ARCHIVE_RPC": "https://archive.example/rpc"}, clear=False), \\
+                 patch.object(project_detection.subprocess, "Popen", return_value=DummyProcess()) as popen, \\
+                 patch.object(project_detection.socket, "create_connection", return_value=DummySocket()), \\
+                 patch.object(project_detection, "_run", side_effect=fake_run):
+                result = project_detection._run_hardhat_fork_fallback(
+                    root, root / "node_modules/.bin/hardhat", ["hardhat", "test"]
+                )
+
+            self.assertEqual(result, (0, "all tests passed", "pass"))
+            popen.assert_called_once()
+            fork_command = popen.call_args.args[0]
+            self.assertIn("--fork", fork_command)
+            self.assertIn("https://archive.example/rpc", fork_command)
+            self.assertIn("--fork-block-number", fork_command)
+            self.assertIn("289488417", fork_command)
+            self.assertEqual(calls, [[str(root / "node_modules/.bin/hardhat"), "--network", "localhost", "test"]])
+
     def test_bootstrap_delegates_to_shared_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
