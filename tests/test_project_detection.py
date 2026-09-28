@@ -14,6 +14,65 @@ spec.loader.exec_module(project_detection)
 
 
 class ProjectDetectionTests(unittest.TestCase):
+    def test_workspace_with_one_nested_project_resolves_to_nested_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            nested = root / "packages" / "app"
+            nested.mkdir(parents=True)
+            (nested / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (nested / "src").mkdir()
+            (nested / "src" / "Vault.sol").write_text("contract Vault {}\n", encoding="utf-8")
+
+            info = project_detection.detect_project(root)
+
+            self.assertEqual(pathlib.Path(info["root"]).resolve(), nested.resolve())
+            self.assertEqual(info["backend"], "foundry")
+
+    def test_workspace_with_multiple_nested_projects_stays_at_workspace_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            for name, marker in (("evm", "foundry.toml"), ("python", "pyproject.toml"), ("rust", "Cargo.toml")):
+                nested = root / "packages" / name
+                nested.mkdir(parents=True)
+                (nested / marker).write_text("", encoding="utf-8")
+
+            candidates = project_detection.discover_nested_projects(root)
+            self.assertEqual(
+                {item["relative"] for item in candidates},
+                {"packages/evm", "packages/python", "packages/rust"},
+            )
+            self.assertEqual(project_detection.project_root(root).resolve(), root.resolve())
+
+    def test_nested_detection_is_language_agnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for name, marker, source_name in (
+                ("python-app", "pyproject.toml", "app.py"),
+                ("rust-app", "Cargo.toml", "main.rs"),
+                ("go-app", "go.mod", "main.go"),
+                ("solidity-app", "foundry.toml", "Vault.sol"),
+            ):
+                nested = root / name
+                nested.mkdir(parents=True)
+                (nested / marker).write_text("", encoding="utf-8")
+                source_dir = nested / "src"
+                source_dir.mkdir()
+                (source_dir / source_name).write_text("", encoding="utf-8")
+
+            candidates = project_detection.discover_nested_projects(root)
+            self.assertEqual(
+                {item["relative"] for item in candidates},
+                {"python-app", "rust-app", "go-app", "solidity-app"},
+            )
+
     def test_detect_project_never_bootstraps_submodules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
