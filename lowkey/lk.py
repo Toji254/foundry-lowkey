@@ -4256,7 +4256,7 @@ def _run_project_build(config, root):def _run_project_build(config, root):
         ))
 
         if dependency_failure:
-            for command in _foundry_native_bootstrap_commands(root):
+            for command in _foundry_native_bootstrap_commands(root, first_output):
                 try:
                     print(f"INFO  build bootstrap: {' '.join(command)}")
                     bootstrap = subprocess.run(
@@ -4277,7 +4277,17 @@ def _run_project_build(config, root):def _run_project_build(config, root):
                         file=sys.stderr,
                     )
                 else:
-                    print(f"PASS  build bootstrap: {' '.join(command)}")
+                    missing_submodules = []
+                    if command[:3] == ["git", "submodule", "update"]:
+                        missing_submodules = _submodule_bootstrap_health(root)
+                    if missing_submodules:
+                        print(
+                            "Warning: build bootstrap reported success but these declared "
+                            f"submodules are still incomplete: {', '.join(missing_submodules)}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(f"PASS  build bootstrap: {' '.join(command)}")
 
                 retry = run_foundry(["build"], capture=True)
                 if retry.code == 0:
