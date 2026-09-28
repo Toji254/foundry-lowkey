@@ -35,6 +35,7 @@ try:
         project_build_command as shared_project_build_command,
         dependency_boundary as shared_dependency_boundary,
         run_bootstrap as run_shared_bootstrap,
+        runtime_environment,
     )
 except ImportError:
     shared_bootstrap_status = shared_classify_build_failure = run_shared_bootstrap = None
@@ -822,12 +823,14 @@ def _has_test_files(root: Path, ignored_roots: Sequence[Path] = ()) -> bool:
 
 def _run(command: Sequence[str], root: Path) -> tuple[int, str]:
     try:
+        runtime_env, _node_pin = runtime_environment(root)
         result = subprocess.run(
             list(command),
             cwd=root,
             capture_output=True,
             text=True,
             timeout=900,
+            env=runtime_env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, str(exc)
@@ -1031,67 +1034,58 @@ def _run_hardhat_fork_fallback(
     hardhat_binary: Path,
     command: Sequence[str],
 ) -> tuple[int, str, str] | None:
-    """Retry fork-backed Hardhat tests through a local Anvil fork."""
+    """Retry fork-backed Hardhat tests through a temporary Hardhat JSON-RPC node."""
     spec = _hardhat_fork_spec(root)
-    anvil = shutil.which("anvil")
-    if spec is None or not anvil:
+    if spec is None:
         return None
 
-    fork_url, block_number = spec
+    # A pinned fork needs historical state. Do not silently substitute a
+    # latest-state RPC because that changes the semantics of the repository's
+    # tests. An explicit Lowkey archive endpoint is the safe fallback.
+    archive_url = os.environ.get("LOWKEY_ARCHIVE_RPC", "").strip()
+    if not archive_url:
+        return (
+            1,
+            "No LOWKEY_ARCHIVE_RPC is configured for the pinned Hardhat fork; "
+            "the repository's current fork endpoint cannot serve the requested historical state.",
+            "defer",
+        )
+
+    _fork_url, block_number = spec
+    anvil = shutil.which("anvil")
+    if not anvil:
+        return None
+
     port = _find_free_local_port()
     if not port:
         return None
 
-    wrapper = root / ".audit" / "LowkeyHardhatForkConfig.ts"
-    wrapper.parent.mkdir(parents=True, exist_ok=True)
-    wrapper.write_text(
-        "import path from \"node:path\";\n"
-        "import baseConfig from \"../hardhat.config\";\n"
-        "const baseNetworks = baseConfig.networks || {};\n"
-        "export default {\n"
-        "  ...baseConfig,\n"
-        "  paths: { ...(baseConfig.paths || {}), root: path.resolve(__dirname, \"..\") },\n"
-        "  networks: {\n"
-        "    ...baseNetworks,\n"
-        "    hardhat: {\n"
-        "      ...(baseNetworks.hardhat || {}),\n"
-        "      forking: {\n"
-        "        ...(baseNetworks.hardhat && baseNetworks.hardhat.forking || {}),\n"
-        f"        url: \"http://127.0.0.1:{port}\",\n"
-        "        enabled: true,\n"
-        "        blockNumber: undefined,\n"
-        "      },\n"
-        "    },\n"
-        "  },\n"
-        "};\n",
-        encoding="utf-8",
+    env, _node_pin = runtime_environment(root)
+    hardhat_node = subprocess.Popen(
+        [
+            str(hardhat_binary),
+            "node",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--fork",
+            archive_url,
+            "--fork-block-number",
+            str(block_number),
+        ],
+        cwd=str(root),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
     )
 
-    anvil_proc = None
     try:
-        anvil_proc = subprocess.Popen(
-            [
-                anvil,
-                "--fork-url",
-                fork_url,
-                "--fork-block-number",
-                str(block_number),
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--silent",
-            ],
-            cwd=str(root),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env={**os.environ},
-        )
         ready = False
-        for _ in range(40):
-            if anvil_proc.poll() is not None:
+        for _ in range(60):
+            if hardhat_node.poll() is not None:
                 break
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.25):
@@ -1102,38 +1096,36 @@ def _run_hardhat_fork_fallback(
 
         if not ready:
             output = ""
-            if anvil_proc.stdout is not None:
+            if hardhat_node.stdout is not None:
                 try:
-                    output = anvil_proc.stdout.read()
+                    output = hardhat_node.stdout.read()
                 except Exception:
                     output = ""
-            message = f"Lowkey local fork failed to start. {output}".strip()
+            message = f"Lowkey Hardhat fork failed to start. {output}".strip()
             if _historical_state_unavailable(output):
                 return 1, message, "defer"
             return 1, message, "fail"
 
-        fallback_command = [str(hardhat_binary), "--config", str(wrapper), "test"]
+        fallback_command = [str(hardhat_binary), "--network", "localhost", "test"]
         print(
-            f"RETRY  hardhat tests via local Anvil fork at 127.0.0.1:{port} "
+            f"RETRY  hardhat tests via local Hardhat fork at 127.0.0.1:{port} "
             f"(pinned block {block_number})"
         )
         fallback_code, fallback_output = _run(fallback_command, root)
+        if fallback_code != 0 and _historical_state_unavailable(fallback_output):
+            return fallback_code, fallback_output, "defer"
         return (
             fallback_code,
             fallback_output,
             "pass" if fallback_code == 0 else "fail",
         )
     finally:
-        if anvil_proc is not None and anvil_proc.poll() is None:
-            anvil_proc.terminate()
+        if hardhat_node.poll() is None:
+            hardhat_node.terminate()
             try:
-                anvil_proc.wait(timeout=5)
+                hardhat_node.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                anvil_proc.kill()
-        try:
-            wrapper.unlink()
-        except OSError:
-            pass
+                hardhat_node.kill()
 
 
 def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
@@ -1236,8 +1228,8 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                     if fallback_status == "defer":
                         test_code = 0
                         print(
-                            "DEFER hardhat tests (local fork fallback) — the configured RPC "
-                            "cannot serve the pinned historical state."
+                            "DEFER hardhat tests (fork fallback) — historical state is unavailable "
+                            "or no archive RPC is configured."
                         )
                     elif fallback_code == 0:
                         test_code = 0
