@@ -1682,5 +1682,70 @@ class WalkthroughTests(unittest.TestCase):
             self.assertIn("owner()", model.functions)
 
 
+    def test_cli_arg_renders_tuples_and_tuple_arrays_for_cast(self):
+        tuple_param = {
+            "type": "tuple",
+            "components": [
+                {"type": "address"},
+                {"type": "uint256"},
+            ],
+        }
+        self.assertEqual(
+            walkthrough._cli_arg(
+                ["0x" + "1" * 40, 7],
+                tuple_param,
+            ),
+            "(0x" + "1" * 40 + ",7)",
+        )
+
+        tuple_array_param = {
+            "type": "tuple[]",
+            "components": [
+                {"type": "address"},
+                {"type": "uint256"},
+            ],
+        }
+        self.assertEqual(
+            walkthrough._cli_arg(
+                [["0x" + "1" * 40, 7], ["0x" + "2" * 40, 8]],
+                tuple_array_param,
+            ),
+            "[(0x" + "1" * 40 + ",7),(0x" + "2" * 40 + ",8)]",
+        )
+
+    def test_adversarial_probe_without_arguments_does_not_duplicate_function_parentheses(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            abi=[{
+                "type": "function",
+                "name": "ping",
+                "inputs": [],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+            functions=["ping()"],
+            function_locations={"ping": 3},
+        )
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Demo",
+            "0x" + "1" * 40,
+            "ping()",
+            [],
+            status="success",
+        )
+        rendered = walkthrough._render_adversarial_probe_human(
+            pathlib.Path("/tmp/project"),
+            step,
+            model,
+            [walkthrough.Actor("Alice", "0x" + "2" * 40, 0)],
+        )
+        self.assertTrue(any("Demo.ping()" in line for line in rendered))
+        self.assertFalse(any("Demo.ping()()" in line for line in rendered))
+
+
 if __name__ == "__main__":
     unittest.main()
