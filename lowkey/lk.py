@@ -2957,25 +2957,24 @@ import {{ {contract} }} from "{relative}";
 import {{ console2 }} from "forge-std/console2.sol";
 import {{ Vm }} from "forge-std/Vm.sol";
 
-/// @dev Runs the discovered protocol fixture using Forge's native test runner.
-/// The state dump is deliberately taken from inside setUp(), immediately after
-/// the fixture finishes, so setup-created deployments are still in the active
-/// test execution state that vm.dumpState() serializes.
+/// @dev Runs the discovered project fixture using Forge's native test runner.
+/// The state dump is taken from inside setUp(), immediately after the fixture
+/// finishes, while the setup-created contracts are still observable.
 contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
     function setUp() public override {{
-        vm.recordLogs();
+        vm.startStateDiffRecording();
         super.setUp();
 
-        // Many Balancer-style fixtures create the protocol target through a
-        // factory that emits PoolCreated(address). Carry that address out of
-        // the native test so the lab does not have to guess it from bytecode
-        // after state materialization.
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        bytes32 poolCreatedTopic = keccak256("PoolCreated(address)");
-        for (uint256 i = 0; i < logs.length; ++i) {{
-            if (logs[i].topics.length > 1 && logs[i].topics[0] == poolCreatedTopic) {{
-                address target = address(uint160(uint256(logs[i].topics[1])));
-                console2.log("LOWKEY_TARGET:", target);
+        // Keep this project-agnostic: report every contract account actually
+        // created during the fixture. Lowkey later matches those candidates
+        // against the requested artifact's runtime bytecode.
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        for (uint256 i = 0; i < accesses.length; ++i) {{
+            if (
+                accesses[i].kind == Vm.AccountAccessKind.Create &&
+                accesses[i].account != address(0)
+            ) {{
+                console2.log("LOWKEY_CREATE:", accesses[i].account);
             }}
         }}
 
@@ -3105,7 +3104,7 @@ def _fixture_accounts_map(snapshot):
     return None, "fixture state snapshot does not contain an address-keyed alloc/account map"
 
 
-def _materialize_fixture_state(root, rpc, state_path, target_contract, target_hint=None):
+def _materialize_fixture_state(root, rpc, state_path, target_contract, target_hints=None):
     try:
         raw = Path(state_path).read_text(encoding="utf-8")
         snapshot = json.loads(raw)
@@ -3163,15 +3162,13 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract, target_hi
                     return None, f"anvil_setStorageAt failed for {address} slot {slot}: {detail}"
                 operations += 1
 
-    target = None
-    hinted = str(target_hint or "").strip()
-    hinted_key = hinted.lower()
-    if hinted_key in code_map:
-        hinted_code = str(code_map.get(hinted_key) or "")
-        if hinted_code.startswith("0x") and len(hinted_code) > 2:
-            target = hinted
-    if not target:
-        target = _find_fixture_target(root, code_map, target_contract, rpc)
+    target = _find_fixture_target(
+        root,
+        code_map,
+        target_contract,
+        rpc,
+        preferred_addresses=target_hints,
+    )
     if not target:
         return None, (
             f"fixture state was materialized ({operations} RPC updates; "
@@ -3268,14 +3265,27 @@ def _artifact_runtime_normalizer(artifact):
     return normalize
 
 
-def _find_fixture_target(root, code_map, target_contract, rpc):
+def _find_fixture_target(root, code_map, target_contract, rpc, preferred_addresses=None):
     _, artifact = _fixture_target_artifact(root, target_contract)
     normalizer = _artifact_runtime_normalizer(artifact)
     if normalizer is None:
         return None
 
-    matches = []
+    ordered = []
+    seen = set()
+    for address in preferred_addresses or []:
+        key = str(address or "").strip().lower()
+        if key in code_map and key not in seen:
+            ordered.append(key)
+            seen.add(key)
     for address in code_map:
+        key = str(address or "").strip().lower()
+        if key not in seen:
+            ordered.append(key)
+            seen.add(key)
+
+    matches = []
+    for address in ordered:
         code_result = run_cast(
             ["code", address, "--rpc-url", str(rpc)],
             config={},
@@ -3332,9 +3342,9 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         )
 
     target_name = str(requested or fixture.get("target_contract") or "")
-    target_hint = parse_lab_marker(output, "LOWKEY_TARGET")
+    target_hints = parse_lab_markers(output, "LOWKEY_CREATE")
     target, materialize_error = _materialize_fixture_state(
-        root, rpc, state_path, target_name, target_hint=target_hint
+        root, rpc, state_path, target_name, target_hints=target_hints
     )
     if not target:
         return fail(
@@ -3464,11 +3474,15 @@ def discover_local_lab_script(root=".", requested=None):
 
     return None
 
-def parse_lab_marker(output, marker="LOWKEY_TARGET"):
-    matches = re.findall(
+def parse_lab_markers(output, marker):
+    return re.findall(
         rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
         str(output or ""),
     )
+
+
+def parse_lab_marker(output, marker):
+    matches = parse_lab_markers(output, marker)
     return matches[-1] if matches else None
 
 def parse_deployed_address(output):
@@ -4998,13 +5012,13 @@ def run_lab(config,args):
         print("EXAMPLES")
         print("  lk lab")
         print("      Build a realistic local lab using the project's own harness when available.")
-        print("  lk lab QuantAMMWeightedPool")
+        print("  lk lab MyContract")
         print("      Prefer native project harnesses, targeting QuantAMMWeightedPool.")
         print("  lk lab --generic")
         print("      Skip native harnesses and deploy Lowkey's automatically selected target.")
-        print("  lk lab --generic QuantAMMWeightedPool")
+        print("  lk lab --generic MyContract")
         print("      Skip native harnesses and open the constructor wizard for this contract.")
-        print("  lk lab --artifact QuantAMMWeightedPool")
+        print("  lk lab --artifact MyContract")
         print("      Deploy this exact built artifact directly; constructor inputs are prompted.")
         print("  lk lab stop")
         print("      Stop the Anvil instance Lowkey started for the project.")
