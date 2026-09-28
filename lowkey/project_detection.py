@@ -1034,9 +1034,11 @@ def _run_hardhat_fork_fallback(
     wrapper = root / ".audit" / "LowkeyHardhatForkConfig.ts"
     wrapper.parent.mkdir(parents=True, exist_ok=True)
     wrapper.write_text(
+        "import path from \"node:path\";\n"
         "import baseConfig from \"../hardhat.config\";\n"
         "const baseNetworks = baseConfig.networks || {};\n"
         "export default {\n"
+        "  paths: { ...(baseConfig.paths || {}), root: path.resolve(__dirname, \"..\") },\n"
         "  ...baseConfig,\n"
         "  networks: {\n"
         "    ...baseNetworks,\n"
