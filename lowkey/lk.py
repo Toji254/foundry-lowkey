@@ -242,6 +242,31 @@ def rpc_json(url, method, params=None):
     except Exception:
         return None
 
+def rpc_json_ok(url, method, params=None):
+    """Execute a JSON-RPC mutation and distinguish success-with-null from an RPC error."""
+    if not url:
+        return False, "RPC URL is not configured"
+    try:
+        payload=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params or []}).encode()
+        req=urllib_request.Request(url, data=payload, headers={"Content-Type":"application/json"})
+        with urllib_request.urlopen(req, timeout=2.0) as response:
+            body=json.loads(response.read().decode("utf-8"))
+        if not isinstance(body, dict):
+            return False, "RPC returned a non-object response"
+        error = body.get("error")
+        if error is not None:
+            if isinstance(error, dict):
+                detail = error.get("message") or str(error)
+            else:
+                detail = str(error)
+            return False, detail
+        # JSON-RPC methods such as eth_sendTransaction/anvil_setCode may
+        # legitimately return result:null on success. Presence of no error is
+        # the success condition; do not interpret null as failure.
+        return True, body.get("result")
+    except Exception as exc:
+        return False, str(exc)
+
 def local_port_open(host,port):
     try:
         with socket.create_connection((host,port),timeout=0.05): return True
@@ -3085,28 +3110,28 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
         parsed_accounts += 1
         code = str(account.get("code") or "0x")
         if code.startswith("0x") and len(code) > 2:
-            result = rpc_json(rpc, "anvil_setCode", [address, code])
-            if result is None:
-                return None, f"anvil_setCode failed for {address}"
+            ok, detail = rpc_json_ok(rpc, "anvil_setCode", [address, code])
+            if not ok:
+                return None, f"anvil_setCode failed for {address}: {detail}"
             code_map[address.lower()] = code
             operations += 1
 
         balance = account.get("balance")
         if balance is not None:
-            result = rpc_json(
+            ok, detail = rpc_json_ok(
                 rpc, "anvil_setBalance", [address, _fixture_hex_quantity(balance)]
             )
-            if result is None:
-                return None, f"anvil_setBalance failed for {address}"
+            if not ok:
+                return None, f"anvil_setBalance failed for {address}: {detail}"
             operations += 1
 
         nonce = account.get("nonce")
         if nonce is not None:
-            result = rpc_json(
+            ok, detail = rpc_json_ok(
                 rpc, "anvil_setNonce", [address, _fixture_hex_quantity(nonce)]
             )
-            if result is None:
-                return None, f"anvil_setNonce failed for {address}"
+            if not ok:
+                return None, f"anvil_setNonce failed for {address}: {detail}"
             operations += 1
 
         storage = account.get("storage") or {}
@@ -3114,11 +3139,11 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract):
             for slot, value in storage.items():
                 if not str(slot).startswith("0x") or not str(value).startswith("0x"):
                     continue
-                result = rpc_json(
+                ok, detail = rpc_json_ok(
                     rpc, "anvil_setStorageAt", [address, slot, value]
                 )
-                if result is None:
-                    return None, f"anvil_setStorageAt failed for {address} slot {slot}"
+                if not ok:
+                    return None, f"anvil_setStorageAt failed for {address} slot {slot}: {detail}"
                 operations += 1
 
     target = _find_fixture_target(root, code_map, target_contract, rpc)
