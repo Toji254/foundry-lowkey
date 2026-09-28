@@ -13,6 +13,7 @@ turn a Cairo/Vyper project into a Foundry project.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
