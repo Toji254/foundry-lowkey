@@ -8248,12 +8248,19 @@ def run_project_map(config, args):
             print("  lk project <number>")
             print("  lk project <path>")
             print("  lk project --workspace")
+            print("  lk project --json")
             print("")
             print("From a workspace, 'lk project' shows the big picture.")
             print("Use a project number or path to open the full contract/dependency/security map.")
             return 0
 
         if args and args[0] in {"--workspace", "workspace"}:
+            if len(args) > 1 and args[1] in {"json", "--json"}:
+                print(json.dumps({
+                    "workspace": str(workspace_root),
+                    "projects": candidates,
+                }, indent=2, default=str))
+                return 0
             print("LOWKEY WORKSPACE OVERVIEW")
             print("=" * 72)
             print(f"Workspace : {workspace_root}")
