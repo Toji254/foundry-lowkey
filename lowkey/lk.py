@@ -4043,41 +4043,119 @@ def _format_build_failure(output):
     return text
 
 
-def _foundry_native_bootstrap_commands(root):
-    """
-    Return repository-owned dependency bootstrap commands that are safe to infer.
+def _declared_submodule_paths(root):
+    """Return repository-declared submodule paths from .gitmodules."""
+    path = Path(root) / ".gitmodules"
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    paths = []
+    for line in text.splitlines():
+        match = re.match(r"\s*path\s*=\s*(.+?)\s*$", line)
+        if match:
+            value = match.group(1).strip()
+            if value and value not in paths:
+                paths.append(value)
+    return paths
 
-    Lowkey does not invent dependency URLs. It only uses explicit project conventions:
-    a Makefile install target and/or Git submodules already declared by the repository.
+
+def _node_package_bootstrap_command(root_path):
+    """Select the repository-declared Node package manager without inventing one."""
+    package_path = root_path / "package.json"
+    if not package_path.is_file():
+        return None
+
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        package = {}
+
+    declared = str(package.get("packageManager") or "").strip().lower()
+    candidates = []
+
+    if declared.startswith("pnpm") or (root_path / "pnpm-lock.yaml").is_file():
+        candidates.append(("pnpm", ["pnpm", "install", "--frozen-lockfile"]))
+    elif declared.startswith("yarn") or (root_path / "yarn.lock").is_file():
+        candidates.append(("yarn", ["yarn", "install", "--immutable"]))
+    elif declared.startswith("bun") or (root_path / "bun.lockb").is_file() or (root_path / "bun.lock").is_file():
+        candidates.append(("bun", ["bun", "install", "--frozen-lockfile"]))
+    elif declared.startswith("npm") or (root_path / "package-lock.json").is_file():
+        candidates.append(("npm", ["npm", "ci"]))
+    else:
+        candidates.append(("npm", ["npm", "install"]))
+
+    for name, command in candidates:
+        if shutil.which(name):
+            return command
+    return None
+
+
+def _submodule_bootstrap_health(root):
+    """Verify declared submodules actually contain checked-out content."""
+    root_path = Path(root)
+    missing = []
+    for relative in _declared_submodule_paths(root_path):
+        path = root_path / relative
+        if not path.is_dir():
+            missing.append(relative)
+            continue
+        try:
+            if not any(path.iterdir()):
+                missing.append(relative)
+        except OSError:
+            missing.append(relative)
+    return missing
+
+
+def _foundry_native_bootstrap_commands(root, build_output=""):
+    """
+    Infer repository-owned dependency recovery commands from the actual project.
+
+    Build failures can happen even when node_modules or a submodule directory
+    already exists but is incomplete. Lowkey therefore treats missing dependency
+    paths as a repair signal instead of using directory existence alone.
     """
     root_path = Path(root)
     commands = []
+    output = str(build_output or "")
 
     gitmodules = root_path / ".gitmodules"
     if gitmodules.is_file():
-        # Repositories with checked-in submodules own their dependency graph.
-        # Initialize/sync the declared submodules first and force checkout into
-        # the expected paths. Avoid "make install" here: many such Makefiles call
-        # forge install and collide with the very same .gitmodules entries.
-        commands.append(["git", "submodule", "sync", "--recursive"])
-        commands.append(["git", "submodule", "update", "--init", "--recursive", "--force"])
-        return commands
+        if shutil.which("git"):
+            commands.append(["git", "submodule", "sync", "--recursive"])
+            commands.append(["git", "submodule", "update", "--init", "--recursive", "--force"])
+        else:
+            print("DEFER  build dependency repair — git is not installed.", file=sys.stderr)
 
-    makefile = root_path / "Makefile"
-    if makefile.is_file():
-        try:
-            make_text = makefile.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            make_text = ""
-        if re.search(r"(?m)^\s*install\s*:", make_text):
-            commands.append(["make", "install"])
+    package_path = root_path / "package.json"
+    node_modules = root_path / "node_modules"
+    node_dependency_failure = bool(
+        re.search(r"(node_modules[/\\\\]|npm|pnpm|yarn|bun|package\.json|@openzeppelin/)", output, re.I)
+    )
+    if package_path.is_file() and (not node_modules.is_dir() or node_dependency_failure):
+        command = _node_package_bootstrap_command(root_path)
+        if command:
+            commands.append(command)
+
+    # Only infer a Makefile install target when the repo does not already expose
+    # a more specific dependency mechanism above.
+    if not commands:
+        makefile = root_path / "Makefile"
+        if makefile.is_file():
+            try:
+                make_text = makefile.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                make_text = ""
+            if re.search(r"(?m)^\s*install\s*:", make_text):
+                commands.append(["make", "install"])
 
     return commands
 
 
-
-
-def _run_project_build(config, root):
+def _run_project_build(config, root):def _run_project_build(config, root):
     """Build with the detected project's native toolchain, with visible output and dependency recovery."""
     root_path = Path(root)
 
