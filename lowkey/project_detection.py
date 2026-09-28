@@ -17,8 +17,10 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -948,6 +950,171 @@ def dependency_boundary(info: dict[str, Any] | str | os.PathLike[str]) -> Path:
         return Path(value or ".").expanduser().resolve()
     return shared_dependency_boundary(value or ".")
 
+def _hardhat_fork_spec(root: Path) -> tuple[str, int] | None:
+    """Read the repository's pinned Hardhat fork endpoint and block."""
+    config_candidates = (
+        root / "hardhat.config.ts",
+        root / "hardhat.config.js",
+        root / "hardhat.config.cjs",
+        root / "hardhat.config.mjs",
+    )
+    config_path = next((path for path in config_candidates if path.is_file()), None)
+    if config_path is None:
+        return None
+
+    hardhat_text = _read(config_path)
+    network_match = re.search(
+        r"(?m)^\s*(?:export\s+const|const)\s+NETWORK\s*=\s*["']([^"']+)["']",
+        hardhat_text,
+    )
+    network = network_match.group(1) if network_match else None
+    if not network:
+        network_match = re.search(
+            r"(?m)^\s*const\s+network\s*=\s*["']([^"']+)["']",
+            hardhat_text,
+        )
+        network = network_match.group(1) if network_match else None
+
+    fork_path = root / "utils" / "forkConfig.ts"
+    if not fork_path.is_file() or not network:
+        return None
+    fork_text = _read(fork_path)
+    network_match = re.search(
+        rf"(?ms)^\s*{re.escape(network)}\s*:\s*\{{(.*?)^\s*\}},?",
+        fork_text,
+    )
+    if not network_match:
+        return None
+    block = network_match.group(1)
+
+    url_match = re.search(
+        r"""url\s*:\s*vars\.get\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*\)""",
+        block,
+    )
+    if url_match:
+        env_name, default_url = url_match.groups()
+        url = os.environ.get(env_name, default_url)
+    else:
+        direct_url = re.search(r"""url\s*:\s*["']([^"']+)["']""", block)
+        url = direct_url.group(1) if direct_url else None
+
+    block_match = re.search(r"(?m)^\s*blockNumber\s*:\s*(\d+)", block)
+    if not url or not block_match:
+        return None
+    return str(url), int(block_match.group(1))
+
+
+def _find_free_local_port(start: int = 9545) -> int:
+    for port in range(start, start + 20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    return 0
+
+
+def _run_hardhat_fork_fallback(
+    root: Path,
+    hardhat_binary: Path,
+    command: Sequence[str],
+) -> tuple[int, str] | None:
+    """Retry fork-backed Hardhat tests through a local Anvil fork."""
+    spec = _hardhat_fork_spec(root)
+    anvil = shutil.which("anvil")
+    if spec is None or not anvil:
+        return None
+
+    fork_url, block_number = spec
+    port = _find_free_local_port()
+    if not port:
+        return None
+
+    wrapper = root / ".audit" / "LowkeyHardhatForkConfig.ts"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text(
+        "import baseConfig from \"../hardhat.config\";\n"
+        "const baseNetworks = baseConfig.networks || {};\n"
+        "export default {\n"
+        "  ...baseConfig,\n"
+        "  networks: {\n"
+        "    ...baseNetworks,\n"
+        "    hardhat: {\n"
+        "      ...(baseNetworks.hardhat || {}),\n"
+        "      forking: {\n"
+        "        ...(baseNetworks.hardhat && baseNetworks.hardhat.forking || {}),\n"
+        f"        url: \"http://127.0.0.1:{port}\",\n"
+        "        enabled: true,\n"
+        "        blockNumber: undefined,\n"
+        "      },\n"
+        "    },\n"
+        "  },\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    anvil_proc = None
+    try:
+        anvil_proc = subprocess.Popen(
+            [
+                anvil,
+                "--fork-url",
+                fork_url,
+                "--fork-block-number",
+                str(block_number),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--silent",
+            ],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env={**os.environ},
+        )
+        ready = False
+        for _ in range(40):
+            if anvil_proc.poll() is not None:
+                break
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                    ready = True
+                    break
+            except OSError:
+                time.sleep(0.25)
+
+        if not ready:
+            output = ""
+            if anvil_proc.stdout is not None:
+                try:
+                    output = anvil_proc.stdout.read()
+                except Exception:
+                    output = ""
+            return 1, f"Lowkey local fork failed to start. {output}".strip()
+
+        fallback_command = [str(hardhat_binary), "--config", str(wrapper), "test"]
+        print(
+            f"RETRY  hardhat tests via local Anvil fork at 127.0.0.1:{port} "
+            f"(pinned block {block_number})"
+        )
+        return _run(fallback_command, root)
+    finally:
+        if anvil_proc is not None and anvil_proc.poll() is None:
+            anvil_proc.terminate()
+            try:
+                anvil_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                anvil_proc.kill()
+        try:
+            wrapper.unlink()
+        except OSError:
+            pass
+
+
 def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     """Run safe native verification for non-Foundry stacks.
 
@@ -1034,7 +1201,28 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             binary = binary.with_suffix(".cmd")
         if binary.is_file():
             step("hardhat compile", [str(binary), "compile"])
-            step("hardhat tests", [str(binary), "test"])
+
+            test_command = [str(binary), "test"]
+            test_code, test_output = _run(test_command, root)
+            _report_step("hardhat tests", test_command, test_code, test_output)
+
+            if test_code != 0 and re.search(
+                r"historical state .* is not available|historical state .* unavailable",
+                test_output,
+                re.IGNORECASE,
+            ):
+                fallback_result = _run_hardhat_fork_fallback(root, binary, test_command)
+                if fallback_result is not None:
+                    fallback_code, fallback_output = fallback_result
+                    if fallback_output:
+                        print("\n".join(fallback_output.splitlines()[-40:]))
+                    if fallback_code == 0:
+                        test_code = 0
+                        print("PASS  hardhat tests (local fork fallback)")
+                    else:
+                        print("FAIL  hardhat tests (local fork fallback)")
+            if test_code != 0:
+                failures = failures or test_code
         else:
             print(
                 "DEFER  hardhat checks — local Hardhat binary not found at "
