@@ -175,6 +175,49 @@ def discover_nested_projects(
         key=lambda item: (-int(item.get("score", 0)), str(item.get("relative", ""))),
     )
 
+def workspace_root(start: str | os.PathLike[str] = ".") -> Path:
+    path = Path(start).expanduser().resolve()
+    if path.is_file():
+        path = path.parent
+    for parent in (path, *path.parents):
+        if any((parent / marker).is_file() for marker in WORKSPACE_MARKERS):
+            return parent
+        if (parent / "package.json").is_file() and _is_workspace_package(parent):
+            return parent
+        cargo = parent / "Cargo.toml"
+        if cargo.is_file() and re.search(r"(?m)^\\s*\\[workspace(?:\\.[^]]+)?\\]", _read(cargo)):
+            return parent
+    return path
+
+def workspace_selection(start: str | os.PathLike[str] = ".") -> Path | None:
+    root = workspace_root(start)
+    try:
+        data = json.loads((root / ".audit" / "workspace.json").read_text(encoding="utf-8"))
+        selected = Path(str(data.get("active_project", ""))).expanduser().resolve()
+        selected.relative_to(root)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return selected if selected.is_dir() and selected != root else None
+
+def set_workspace_selection(workspace: str | os.PathLike[str], project: str | os.PathLike[str]) -> bool:
+    root = Path(workspace).expanduser().resolve()
+    selected = Path(project).expanduser().resolve()
+    try:
+        selected.relative_to(root)
+    except ValueError:
+        return False
+    if selected == root or not selected.is_dir():
+        return False
+    state_path = root / ".audit" / "workspace.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"active_project": str(selected)}, indent=2) + "\n", encoding="utf-8")
+    return True
+
+def clear_workspace_selection(workspace: str | os.PathLike[str]) -> None:
+    try:
+        (Path(workspace).expanduser().resolve() / ".audit" / "workspace.json").unlink()
+    except OSError:
+        pass
 def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
     root = Path(start).expanduser().resolve()
     if root.is_file():
@@ -210,6 +253,9 @@ def project_root(start: str | os.PathLike[str] = ".") -> Path:
         return path
 
     if nearest == path and is_workspace_root(nearest):
+        selected = workspace_selection(nearest)
+        if selected is not None:
+            return selected
         nested = discover_nested_projects(nearest)
         if len(nested) == 1:
             return Path(nested[0]["root"])
