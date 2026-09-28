@@ -1754,8 +1754,34 @@ def plan_workflow(
     return steps
 
 
-def _cli_arg(value: Any) -> str:
-    """Render a Solidity argument in a cast-friendly command-line form."""
+def _cli_arg(value: Any, param: dict[str, Any] | None = None) -> str:
+    """Render an ABI value in the syntax expected by Cast."""
+    param_type = str((param or {}).get("type") or "")
+
+    if param_type.startswith("tuple"):
+        components = list((param or {}).get("components") or [])
+        if param_type.endswith("[]"):
+            base = dict(param or {})
+            base["type"] = param_type[:-2]
+            values = value if isinstance(value, (list, tuple)) else []
+            return "[" + ",".join(
+                _cli_arg(item, base) for item in values
+            ) + "]"
+        values = value if isinstance(value, (list, tuple)) else []
+        rendered = []
+        for index, component in enumerate(components):
+            item = values[index] if index < len(values) else 0
+            rendered.append(_cli_arg(item, component))
+        return "(" + ",".join(rendered) + ")"
+
+    if param_type.endswith("[]"):
+        base = dict(param or {})
+        base["type"] = param_type[:-2]
+        values = value if isinstance(value, (list, tuple)) else []
+        return "[" + ",".join(
+            _cli_arg(item, base) for item in values
+        ) + "]"
+
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (list, tuple)):
@@ -3243,10 +3269,23 @@ def _forge_build_with_info(root: Path) -> tuple[int, str, str]:
     return code, out, err
 
 def _build_info_payloads(root: Path) -> list[dict[str, Any]]:
-    directory = root / "out" / "build-info"
-    if not directory.is_dir():
-        return []
+    directories = []
+    configured = root / _foundry_out_dir(root) / "build-info"
+    fallback = root / "out" / "build-info"
+    for directory in (configured, fallback):
+        resolved = directory.resolve()
+        if any(existing.resolve() == resolved for existing in directories):
+            continue
+        directories.append(directory)
+
     result = []
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            data = _json_file(path)
+            if isinstance(data, dict):
+                result.append(data)
     for path in sorted(directory.glob("*.json")):
         data = _json_file(path)
         if isinstance(data, dict):
@@ -3984,9 +4023,19 @@ def _validate_step_arguments(step: Step, model: ContractModel) -> tuple[bool, st
     return True, None
 
 
-def _preflight(rpc: str, step: Step, actor_address: str | None = None) -> tuple[bool, str]:
+def _preflight(
+    rpc: str,
+    step: Step,
+    actor_address: str | None = None,
+    inputs: list[dict[str, Any]] | None = None,
+) -> tuple[bool, str]:
     try:
-        command=["cast","call",step.address,step.function,*[_cli_arg(x) for x in step.args],"--rpc-url",rpc]
+        inputs = inputs or []
+        encoded_args = [
+            _cli_arg(item, inputs[index] if index < len(inputs) else None)
+            for index, item in enumerate(step.args)
+        ]
+        command=["cast","call",step.address,step.function,*encoded_args,"--rpc-url",rpc]
         if actor_address:
             command += ["--from",actor_address]
         if step.value_wei:
@@ -4022,13 +4071,26 @@ def _actor_rpc_setup(rpc: str, address: str) -> None:
     _rpc_call(rpc, "anvil_setBalance", [address, hex(10**20)])
 
 
-def _send(host: Any, config: dict[str, Any], actor: Actor, target: str, signature: str, args: list[Any], value: int) -> tuple[str | None, str]:
+def _send(
+    host: Any,
+    config: dict[str, Any],
+    actor: Actor,
+    target: str,
+    signature: str,
+    args: list[Any],
+    value: int,
+    inputs: list[dict[str, Any]] | None = None,
+) -> tuple[str | None, str]:
     rpc = config.get("rpc") or getattr(host, "effective_rpc", lambda c: None)(config)
     if not rpc:
         return None, "no RPC"
     _actor_rpc_setup(rpc, actor.address)
 
-    encoded_args = [_cli_arg(x) for x in args]
+    inputs = inputs or []
+    encoded_args = [
+        _cli_arg(item, inputs[index] if index < len(inputs) else None)
+        for index, item in enumerate(args)
+    ]
     command = [
         "send", target, signature, *encoded_args,
         "--rpc-url", rpc,
@@ -4765,7 +4827,10 @@ def _render_adversarial_probe_human(
     subject = _human_subject(model)
     function = _function_link(root, model, str(step.function))
     args = ", ".join(_friendly_arg(value, actors) for value in step.args) or "∅"
-    call = f"{model.name}.{function}({args})" if args != "∅" else f"{model.name}.{function}()"
+    if args == "∅":
+        call = f"{model.name}.{function}"
+    else:
+        call = f"{model.name}.{function}({args})" if "(" not in function else f"{model.name}.{function}"
     why, lesson, quality = _adversarial_probe_why(step, model, actors)
 
     lines = [
@@ -5759,16 +5824,30 @@ def _target_is_live_instance(
 
 def _all_artifact_entries(root: Path) -> list[tuple[Path, dict[str, Any]]]:
     """Return every compiled artifact, including dependency proxy artifacts."""
-    out = root / "out"
-    if not out.is_dir():
-        return []
-    found: list[tuple[Path, dict[str, Any]]] = []
-    for path in out.rglob("*.json"):
-        if "build-info" in path.parts:
+    directories: list[Path] = []
+    configured = root / _foundry_out_dir(root)
+    fallback = root / "out"
+    for directory in (configured, fallback):
+        resolved = directory.resolve()
+        if any(existing.resolve() == resolved for existing in directories):
             continue
-        data = _json_file(path)
-        if isinstance(data, dict) and isinstance(data.get("abi"), list):
-            found.append((path, data))
+        directories.append(directory)
+
+    found: list[tuple[Path, dict[str, Any]]] = []
+    seen: set[Path] = set()
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*.json"):
+            if "build-info" in path.parts:
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            data = _json_file(path)
+            if isinstance(data, dict) and isinstance(data.get("abi"), list):
+                found.append((path, data))
     return found
 
 
@@ -5944,8 +6023,21 @@ def _infer_child_model(root_model: ContractModel, models: list[ContractModel]) -
     return sorted(siblings, key=lambda item: ("pool" not in item.name.lower(), item.name.lower()))[0] if siblings else None
 
 
-def _encode_calldata(signature: str, args: list[Any]) -> str | None:
-    command = ["cast", "calldata", signature, *[_cli_arg(item) for item in args]]
+def _encode_calldata(
+    signature: str,
+    args: list[Any],
+    inputs: list[dict[str, Any]] | None = None,
+) -> str | None:
+    inputs = inputs or []
+    command = [
+        "cast",
+        "calldata",
+        signature,
+        *[
+            _cli_arg(item, inputs[index] if index < len(inputs) else None)
+            for index, item in enumerate(args)
+        ],
+    ]
     code, out, err = _cmd(command, timeout=8)
     if code != 0:
         return None
