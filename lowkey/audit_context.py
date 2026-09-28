@@ -82,6 +82,11 @@ def foundry_project_root(start: Path | None = None) -> Path:
     return project_root(start)
 
 
+def is_audit_project(root: Path | None = None) -> bool:
+    """Whether the resolved root is a real project that can own audit state."""
+    return _is_audit_project(foundry_project_root(root))
+
+
 def audit_dir(root: Path | None = None, *, create: bool = False) -> Path:
     path = project_root(root) / AUDIT_DIR_NAME
     if create:
