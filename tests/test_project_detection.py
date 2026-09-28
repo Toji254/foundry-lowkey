@@ -26,6 +26,23 @@ class ProjectDetectionTests(unittest.TestCase):
             self.assertEqual(info["kind"], "lowkey-source")
             self.assertEqual(project_detection.project_root(root), root)
 
+    def test_lowkey_source_root_wins_over_single_nested_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "lowkey").mkdir()
+            (root / "lowkey" / "lk.py").write_text("print('lowkey')\\n", encoding="utf-8")
+            (root / "lowkey" / "project_detection.py").write_text("print('lowkey')\\n", encoding="utf-8")
+            (root / "install.sh").write_text("#!/usr/bin/env bash\\n", encoding="utf-8")
+
+            nested = root / "example-project"
+            nested.mkdir()
+            (nested / "foundry.toml").write_text("[profile.default]\\n", encoding="utf-8")
+            (nested / "src").mkdir()
+            (nested / "src" / "Example.sol").write_text("contract Example {}\\n", encoding="utf-8")
+
+            self.assertEqual(project_detection.project_root(root).resolve(), root.resolve())
+            self.assertEqual(project_detection.detect_project(root)["kind"], "lowkey-source")
+
     def test_workspace_selection_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
