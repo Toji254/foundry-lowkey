@@ -25,6 +25,38 @@ class AuditContextTests(unittest.TestCase):
             self.assertEqual(context["target"]["contract"], None)
             self.assertEqual(context["signals"], [])
 
+    def test_read_does_not_create_audit_dir_for_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            context = audit_context.load(root)
+            self.assertEqual(context["signals"], [])
+            self.assertFalse((root / ".audit").exists())
+
+    def test_stale_audit_context_is_ignored_outside_auditable_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            audit_dir = root / ".audit"
+            audit_dir.mkdir()
+            (audit_dir / "context.json").write_text(
+                json.dumps({
+                    "project": {"root": "/home/rogue/2026-07-bc-confidence-pools"},
+                    "signals": [{
+                        "id": "SLITHER-STALE",
+                        "tool": "slither",
+                        "title": "Incorrect Equality",
+                        "file": "src/ConfidencePool.sol",
+                        "line": 696,
+                        "status": "open",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            loaded = audit_context.load(root)
+            self.assertEqual(loaded["signals"], [])
+            self.assertEqual(audit_context.signals(root), [])
+
     def test_source_link_preserves_relative_label_and_targets_exact_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
