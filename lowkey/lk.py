@@ -4097,7 +4097,13 @@ def _tracked_gitlink(root, relative_path):
 
 
 def _node_package_bootstrap_command(root_path):
-    """Select the repository-declared Node package manager without inventing one."""
+    """
+    Select a project-compatible Node package manager.
+
+    Lockfile format is authoritative when the repository does not pin a
+    package-manager version in package.json. In particular, pnpm lockfile v6
+    is compatible with pnpm 8, while newer pnpm majors may reject it.
+    """
     package_path = root_path / "package.json"
     if not package_path.is_file():
         return None
@@ -4108,24 +4114,60 @@ def _node_package_bootstrap_command(root_path):
         package = {}
 
     declared = str(package.get("packageManager") or "").strip().lower()
-    candidates = []
 
-    if declared.startswith("pnpm") or (root_path / "pnpm-lock.yaml").is_file():
-        candidates.append(("pnpm", ["pnpm", "install", "--frozen-lockfile"]))
-    elif declared.startswith("yarn") or (root_path / "yarn.lock").is_file():
-        candidates.append(("yarn", ["yarn", "install", "--immutable"]))
-    elif declared.startswith("bun") or (root_path / "bun.lockb").is_file() or (root_path / "bun.lock").is_file():
-        candidates.append(("bun", ["bun", "install", "--frozen-lockfile"]))
-    elif declared.startswith("npm") or (root_path / "package-lock.json").is_file():
-        candidates.append(("npm", ["npm", "ci"]))
-    else:
-        candidates.append(("npm", ["npm", "install"]))
+    if declared.startswith("pnpm"):
+        # Honor an explicit packageManager pin when the project provides one.
+        if shutil.which("corepack"):
+            version_match = re.search(r"pnpm@([0-9]+(?:\.[0-9]+){0,2})", declared)
+            version = version_match.group(1) if version_match else None
+            return (
+                ["corepack", f"pnpm@{version}", "install", "--frozen-lockfile"]
+                if version else
+                ["corepack", "pnpm", "install", "--frozen-lockfile"]
+            )
+        if shutil.which("pnpm"):
+            return ["pnpm", "install", "--frozen-lockfile"]
+        return None
 
-    for name, command in candidates:
-        if shutil.which(name):
-            return command
+    pnpm_lock = root_path / "pnpm-lock.yaml"
+    if pnpm_lock.is_file():
+        try:
+            lock_text = pnpm_lock.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            lock_text = ""
+        version_match = re.search(r"(?m)^\s*lockfileVersion\s*:\s*[\"']?([0-9]+)(?:\.([0-9]+))?", lock_text)
+        major = int(version_match.group(1)) if version_match else None
+
+        if shutil.which("corepack"):
+            if major == 6:
+                # pnpm 8 is the conservative compatibility target for v6
+                # lockfiles and does not rewrite the repository's lockfile.
+                return ["corepack", "pnpm@8", "install", "--frozen-lockfile"]
+            if major in {7, 9}:
+                return ["corepack", f"pnpm@{major}", "install", "--frozen-lockfile"]
+
+        if shutil.which("pnpm"):
+            return ["pnpm", "install", "--frozen-lockfile"]
+        return None
+
+    if (root_path / "yarn.lock").is_file():
+        if shutil.which("yarn"):
+            return ["yarn", "install", "--immutable"]
+        return None
+
+    if (root_path / "bun.lockb").is_file() or (root_path / "bun.lock").is_file():
+        if shutil.which("bun"):
+            return ["bun", "install", "--frozen-lockfile"]
+        return None
+
+    if (root_path / "package-lock.json").is_file():
+        if shutil.which("npm"):
+            return ["npm", "ci"]
+        return None
+
+    if shutil.which("npm"):
+        return ["npm", "install"]
     return None
-
 
 def _submodule_bootstrap_health(root):
     """Verify declared submodules actually contain checked-out content."""
