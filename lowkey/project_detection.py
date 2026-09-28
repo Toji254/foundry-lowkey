@@ -906,7 +906,9 @@ def bootstrap_project(
     if run_shared_bootstrap is None:
         print("DEFER  shared bootstrap engine is unavailable.")
         return 0
-    # The shared bootstrap engine derives its plan from info and\n    # intentionally does not consume audit CLI arguments.\n    return run_shared_bootstrap(info, force=force, reason=reason)
+    # The shared bootstrap engine derives its plan from info and
+    # intentionally does not consume audit CLI arguments.
+    return run_shared_bootstrap(info, force=force, reason=reason)
 
 
 def bootstrap_status(info: dict[str, Any]) -> dict[str, Any]:
