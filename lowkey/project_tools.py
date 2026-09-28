@@ -15,6 +15,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+try:
+    from project_detection import project_root as detected_project_root
+except ImportError:
+    detected_project_root = None
+
 EXCLUDED_DIRS = {
     ".git",
     ".audit",
@@ -37,7 +42,13 @@ EXCLUDED_DIRS = {
 
 
 def project_root(root: str | Path = ".") -> Path:
-    path = Path(root).resolve()
+    """Use the same workspace-aware root resolver as the Lowkey CLI."""
+    path = Path(root).expanduser().resolve()
+    if detected_project_root is not None:
+        try:
+            return Path(detected_project_root(path)).resolve()
+        except Exception:
+            pass
     if not path.is_dir():
         return path.parent
     if (path / "pyproject.toml").exists() or (path / "foundry.toml").exists() or (path / "package.json").exists():
@@ -721,6 +732,21 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     project = detect_project(root)
     graph = build_dependency_graph(root)
 
+    workspace_info = None
+    try:
+        from project_detection import workspace_context
+        scope = workspace_context(project["root"])
+        if len(scope.get("projects") or []) > 1:
+            workspace_info = {
+                "root": str(scope["workspace"]),
+                "current_project": str(Path(project["root"]).resolve()),
+                "active_project": str(scope["active"]) if scope.get("active") else None,
+                "project_count": len(scope["projects"]),
+                "projects": scope["projects"],
+            }
+    except Exception:
+        workspace_info = None
+
     protocol_nodes = [node for node in graph["nodes"] if _protocol_node(node)]
     protocol_ids = {node["id"] for node in protocol_nodes}
     protocol_edges = [
@@ -764,6 +790,14 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     print("LOWKEY PROJECT MAP")
     print("=" * 72)
     print(f"Project       : {project['root']}")
+    if workspace_info:
+        current_rel = Path(project["root"]).resolve().relative_to(Path(workspace_info["root"]).resolve()).as_posix()
+        print(f"Workspace     : {workspace_info['root']}")
+        print(f"Workspace app : {current_rel}")
+        print(f"Projects      : {workspace_info['project_count']}")
+        active = workspace_info.get("active_project")
+        if active:
+            print(f"Active scope  : {Path(active).resolve().relative_to(Path(workspace_info['root']).resolve()).as_posix()}")
     print(f"Type          : {project['kind']}")
     print(f"Compiler      : {', '.join(project.get('solidity_compilers') or ['not detected'])}")
     print()
@@ -856,7 +890,10 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         "unresolved": unresolved,
         "support_files": support_paths,
     }
-    return {"project": project, "graph": graph, "human": human_graph}
+    result = {"project": project, "graph": graph, "human": human_graph}
+    if workspace_info:
+        result["workspace"] = workspace_info
+    return result
 
 
 __all__ = [

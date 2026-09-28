@@ -300,6 +300,39 @@ def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
     nested = discover_nested_projects(root, max_depth=3)
     return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and len(nested) > 1
 
+def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
+    """Return one consistent workspace view for commands that need package scope."""
+    path = Path(start).expanduser().resolve()
+    if path.is_file():
+        path = path.parent
+
+    root = workspace_root(path)
+    candidates = discover_nested_projects(root)
+
+    current = None
+    for candidate in candidates:
+        candidate_root = Path(candidate["root"]).resolve()
+        try:
+            path.relative_to(candidate_root)
+        except ValueError:
+            continue
+        if current is None or len(candidate_root.parts) > len(current.parts):
+            current = candidate_root
+
+    active = workspace_selection(root)
+    if active is not None and not any(
+        Path(item["root"]).resolve() == active.resolve() for item in candidates
+    ):
+        active = None
+
+    return {
+        "workspace": root,
+        "projects": candidates,
+        "current": current,
+        "active": active,
+    }
+
+
 def project_root(start: str | os.PathLike[str] = ".") -> Path:
     path = Path(start).expanduser().resolve()
     if path.is_file():

@@ -1766,6 +1766,92 @@ contract Pool {
             output.getvalue(),
         )
 
+    def test_project_map_workspace_overview_works_with_active_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            for name in ("app", "shared"):
+                nested = root / "packages" / name
+                (nested / "src").mkdir(parents=True)
+                (nested / "src" / "Main.sol").write_text("contract Main {}\n", encoding="utf-8")
+                (nested / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+
+            old = os.getcwd()
+            try:
+                os.chdir(root)
+                self.assertTrue(lk.set_workspace_selection(root, root / "packages" / "app"))
+                with patch.object(lk.project_tools, "render_project_map") as render:
+                    render.return_value = {"project": {}, "graph": {}, "human": {}}
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        result = lk.run_project_map({}, [])
+            finally:
+                os.chdir(old)
+
+            self.assertEqual(result, 0)
+            self.assertIn("LOWKEY WORKSPACE OVERVIEW", output.getvalue())
+            render.assert_not_called()
+
+    def test_project_map_explicit_workspace_project_selector_ignores_active_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            for name in ("app", "shared"):
+                nested = root / "packages" / name
+                (nested / "src").mkdir(parents=True)
+                (nested / "src" / "Main.sol").write_text("contract Main {}\n", encoding="utf-8")
+                (nested / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+
+            old = os.getcwd()
+            try:
+                os.chdir(root / "packages")
+                self.assertTrue(lk.set_workspace_selection(root, root / "packages" / "app"))
+                with patch.object(lk.project_tools, "render_project_map") as render:
+                    render.return_value = {"project": {}, "graph": {}, "human": {}}
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        result = lk.run_project_map({}, ["2"])
+            finally:
+                os.chdir(old)
+
+            self.assertEqual(result, 0)
+            render.assert_called_once_with((root / "packages" / "shared").resolve())
+            self.assertIn("Active project: packages/shared", output.getvalue())
+
+    def test_project_map_from_project_directory_uses_that_project_not_workspace_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            projects = {}
+            for name in ("app", "shared"):
+                nested = root / "packages" / name
+                (nested / "src").mkdir(parents=True)
+                (nested / "src" / "Main.sol").write_text("contract Main {}\n", encoding="utf-8")
+                (nested / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+                projects[name] = nested
+
+            old = os.getcwd()
+            try:
+                os.chdir(projects["shared"])
+                self.assertTrue(lk.set_workspace_selection(root, projects["app"]))
+                with patch.object(lk.project_tools, "render_project_map") as render:
+                    render.return_value = {"project": {}, "graph": {}, "human": {}}
+                    result = lk.run_project_map({}, [])
+            finally:
+                os.chdir(old)
+
+            self.assertEqual(result, 0)
+            render.assert_called_once_with(projects["shared"].resolve())
+
     def test_help_long_alias(self):
         result = self.run_cli("--h")
         self.assertEqual(result.returncode, 0, result.stderr)

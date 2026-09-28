@@ -39,6 +39,21 @@ lk poc
 The output tells you what happened, why it matters, and what source/function to inspect next. The full forensic renderer is still available with `lk walkthrough test --technical`.
 
 The teaching layer is language-neutral: it does not assume the target is Solidity or a particular protocol. It can label Solidity, Vyper, Move, Cairo, Tact, FunC, Clarity, Rust, and unknown source files without changing the underlying audit semantics. Chain execution remains adapter-specific, so a language needs a compatible build/runtime adapter before live probes can run.
+### Working inside a multi-project workspace
+
+Lowkey treats a monorepo as a workspace first and an audit target second. From the workspace root or a shared parent directory:
+
+~~~bash
+lk project
+lk project --workspace
+lk project 2
+lk projects 2
+~~~
+
+lk project shows the workspace overview when you are not inside a specific package. lk project <number> opens that project's full map and makes it the active workspace scope. When you are already inside a package, lk project maps that package even if a different workspace project was previously selected.
+
+The active workspace scope is used by commands such as lk audit and lk lab when they are invoked from a shared workspace directory. Entering another actual project directory uses that project's own scope, so Lowkey does not accidentally mix sibling packages.
+
 ## What each layer does
 
 - Project model: detects Foundry/Vyper/Hardhat/Brownie-style project structure and builds an import/dependency graph.

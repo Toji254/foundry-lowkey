@@ -34,6 +34,7 @@ try:
         workspace_selection,
         set_workspace_selection,
         clear_workspace_selection,
+        workspace_context,
     )
 except ImportError:
     detect_project = format_detection = run_native_audit = None
@@ -8392,53 +8393,63 @@ def run_project_map(config, args):
     if project_tools is None:
         return fail("Project tools are not installed. Re-run install.sh from this checkout.")
 
-    root = audit_context.foundry_project_root()
-    if not root:
-        return fail("Error: Lowkey could not resolve the current project root.")
-
     json_mode = any(str(item).lower() in {"json", "--json"} for item in args)
     selectors = [str(item).strip() for item in args if str(item).lower() not in {"json", "--json"}]
 
-    # Keep the rich project map intact. When the current directory is a workspace
-    # containing multiple projects, first give the user a useful workspace view,
-    # then allow an explicit project number/path for the full deep-dive map.
-    if discover_nested_projects is not None and is_workspace_root is not None and is_workspace_root(root):
-        workspace_root = Path(root).resolve()
-        candidates = discover_nested_projects(workspace_root)
+    # Resolve the workspace from the real working directory, not from the
+    # active-project selection. This keeps explicit project selectors useful
+    # even when another project is currently active.
+    scope = workspace_context(Path.cwd()) if workspace_context is not None else None
+    workspace_container = Path(scope["workspace"]).resolve() if scope else None
+    candidates = list(scope.get("projects") or []) if scope else []
+    current_project = scope.get("current") if scope else None
+    active_project = scope.get("active") if scope else None
+    in_multi_workspace = bool(workspace_container and len(candidates) > 1)
 
-        if selectors and selectors[0].lower() in {"-h", "--help", "help"}:
-            print("Usage:")
-            print("  lk project")
-            print("  lk project <number>")
-            print("  lk project <path>")
-            print("  lk project --workspace")
-            print("  lk project <number> --json")
-            print("  lk project <path> --json")
-            print("")
-            print("From a workspace, 'lk project' shows the big picture.")
-            print("Use a project number or path to open the full contract/dependency/security map.")
-            return 0
+    if selectors and selectors[0].lower() in {"-h", "--help", "help"}:
+        print("Usage:")
+        print("  lk project")
+        print("  lk project <number>")
+        print("  lk project <path>")
+        print("  lk project --workspace")
+        print("  lk project <number> --json")
+        print("  lk project <path> --json")
+        print("")
+        print("A workspace gives Lowkey the big picture; a project opens the full contract/dependency/security map.")
+        print("Use a number or path when you want to switch the active project and inspect it.")
+        return 0
 
+    if workspace_container and (in_multi_workspace or (selectors and selectors[0].lower() in {"--workspace", "workspace"})):
         if selectors and selectors[0].lower() in {"--workspace", "workspace"}:
             if json_mode:
                 print(json.dumps({
-                    "workspace": str(workspace_root),
+                    "workspace": str(workspace_container),
+                    "active_project": str(active_project) if active_project else None,
+                    "current_project": str(current_project) if current_project else None,
                     "projects": candidates,
                 }, indent=2, default=str))
                 return 0
             print("LOWKEY WORKSPACE OVERVIEW")
             print("=" * 72)
-            print(f"Workspace : {workspace_root}")
+            print(f"Workspace : {workspace_container}")
             print(f"Projects  : {len(candidates)}")
-            print()
+            if active_project:
+                print(f"Active    : {active_project.relative_to(workspace_container).as_posix()}")
+            if current_project:
+                print(f"Here      : {current_project.relative_to(workspace_container).as_posix()}")
+            print("")
             for index, candidate in enumerate(candidates, 1):
-                languages = candidate.get("languages") or {}
-                language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
-                print(f"  {index:>2}. {candidate.get('relative')}  [{language_text}]")
-            print()
-            print("DEEP DIVE")
-            print("  lk project <number>   Full map for one project")
-            print("  lk project <path>     Full map for that project")
+                candidate_root = Path(candidate["root"]).resolve()
+                marker = " *" if active_project and candidate_root == active_project.resolve() else "  "
+                here = "  <here>" if current_project and candidate_root == current_project.resolve() else ""
+                languages = ", ".join(sorted(candidate.get("languages") or {})) or str(candidate.get("backend") or "unknown")
+                print(f"{marker}{index}. {candidate.get('relative')}{here}  [{languages}]")
+                print(f"     {candidate.get('scope_hint', 'component')} | {_workspace_project_description(candidate)}")
+                if candidate.get("used_by_siblings"):
+                    print(f"     Used by {candidate['used_by_siblings']} sibling project(s)")
+            print("")
+            print("Deep dive:     lk project <number>")
+            print("Set scope:     lk projects <number>")
             return 0
 
         selected = None
@@ -8453,7 +8464,7 @@ def run_project_map(config, args):
             else:
                 selector_path = Path(selector).expanduser()
                 if not selector_path.is_absolute():
-                    selector_path = workspace_root / selector_path
+                    selector_path = workspace_container / selector_path
                 selector_path = selector_path.resolve()
                 selected = next(
                     (candidate for candidate in candidates
@@ -8465,45 +8476,68 @@ def run_project_map(config, args):
                         candidate for candidate in candidates
                         if str(candidate.get("relative", "")).lower() == selector.lower()
                         or str(candidate.get("name", "")).lower() == selector.lower()
+                        or str(candidate.get("package_name", "")).lower() == selector.lower()
                     ]
                     if len(matches) == 1:
                         selected = matches[0]
             if selected is None:
                 return fail(f"Error: no workspace project matched '{selector}'.")
 
-        if selected is None:
+            root = Path(selected["root"]).resolve()
+            if set_workspace_selection is not None:
+                set_workspace_selection(workspace_container, root)
+            print(f"Active project: {root.relative_to(workspace_container).as_posix()}")
+        elif current_project:
+            root = current_project.resolve()
+        else:
             if json_mode:
                 print(json.dumps({
-                    "workspace": str(workspace_root),
+                    "workspace": str(workspace_container),
+                    "active_project": str(active_project) if active_project else None,
                     "projects": candidates,
                 }, indent=2, default=str))
                 return 0
             print("LOWKEY WORKSPACE OVERVIEW")
             print("=" * 72)
-            print(f"Workspace : {workspace_root}")
+            print(f"Workspace : {workspace_container}")
             print(f"Projects  : {len(candidates)}")
-            print()
-            print("This repository contains multiple projects. The full project map is still available;")
-            print("choose one explicitly so Lowkey does not mix unrelated packages together.")
-            print()
-            print("PROJECTS")
-            for index, candidate in enumerate(candidates, 1):
-                languages = candidate.get("languages") or {}
-                language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
-                print(f"  {index:>2}. {candidate.get('relative')}  [{language_text}]")
-            print()
-            print("Deep dive example: lk project 2")
-            print("Or use the path:        lk project path/to/project")
+            if active_project:
+                print(f"Active    : {active_project.relative_to(workspace_container).as_posix()}")
+            print("")
+            print("This workspace contains multiple projects.")
+            print("Run 'lk project <number>' for a project map, or 'lk project --workspace' for this overview.")
             return 0
+    else:
+        root = current_project.resolve() if current_project else audit_context.foundry_project_root()
+        if workspace_container and len(candidates) == 1 and root.resolve() == workspace_container:
+            root = Path(candidates[0]["root"]).resolve()
+            if set_workspace_selection is not None:
+                set_workspace_selection(workspace_container, root)
 
-        root = Path(selected["root"])
-        if set_workspace_selection is not None:
-            set_workspace_selection(workspace_root, root)
+    if not root:
+        return fail("Error: Lowkey could not resolve the current project root.")
 
     try:
         result = project_tools.render_project_map(root)
+        if workspace_container and len(candidates) > 1:
+            result["workspace"] = {
+                "root": str(workspace_container),
+                "active_project": str(active_project) if active_project else None,
+                "current_project": str(root),
+                "project_count": len(candidates),
+                "projects": candidates,
+            }
         if json_mode:
             print(json.dumps(result, indent=2, default=str))
+            return 0
+
+        if workspace_container and len(candidates) > 1:
+            selected_rel = root.relative_to(workspace_container).as_posix() if path_is_within(root, workspace_container) else str(root)
+            print("")
+            print(f"WORKSPACE SCOPE : {selected_rel}")
+            print(f"OTHER PROJECTS  : {len(candidates) - 1}")
+            print("Use 'lk project --workspace' to see the workspace map.")
+            print("")
         return 0
     except Exception as error:
         return fail(f"Project map failed: {error}", 1)
