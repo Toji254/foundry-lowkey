@@ -75,7 +75,7 @@ def _walk_files(root: Path, suffixes: set[str]) -> list[Path]:
         # after Node/Python dependency installation or in large monorepos.
         dirs[:] = sorted(
             name for name in dirs
-            if name not in EXCLUDED_DIRS and not name.startswith(".")
+            if name not in EXCLUDED_DIRS
         )
 
         current_path = Path(current)
