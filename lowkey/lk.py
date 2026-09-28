@@ -2955,6 +2955,7 @@ pragma solidity ^0.8.20;
 
 import {{ {contract} }} from "{relative}";
 import {{ console2 }} from "forge-std/console2.sol";
+import {{ Vm }} from "forge-std/Vm.sol";
 
 /// @dev Runs the discovered protocol fixture using Forge's native test runner.
 /// The state dump is deliberately taken from inside setUp(), immediately after
