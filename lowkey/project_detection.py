@@ -49,22 +49,173 @@ LANGUAGE_BY_SUFFIX = {
     ".yul": "yul",
 }
 
+PROJECT_MARKERS = (
+    "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
+    "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
+    "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
+    "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
+    "requirements.txt", "requirements-dev.txt", "Pipfile",
+    "package.json", "pnpm-workspace.yaml",
+    "Cargo.toml", "go.mod", "go.work",
+    "mix.exs", "pom.xml", "build.gradle", "build.gradle.kts",
+    "settings.gradle", "settings.gradle.kts",
+    "Package.swift", "CMakeLists.txt", "Makefile",
+)
+
+PRIMARY_PROJECT_MARKERS = (
+    "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
+    "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
+    "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
+    "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
+    "requirements.txt", "requirements-dev.txt", "Pipfile",
+    "Cargo.toml", "go.mod", "mix.exs",
+    "pom.xml", "build.gradle", "build.gradle.kts",
+    "settings.gradle", "settings.gradle.kts",
+    "Package.swift", "CMakeLists.txt",
+)
+
+WORKSPACE_MARKERS = (
+    "pnpm-workspace.yaml", "go.work",
+)
+
+def _marker_names(root: Path, markers: Sequence[str] = PROJECT_MARKERS) -> list[str]:
+    return [marker for marker in markers if (root / marker).is_file()]
+
+def _package_json_data(root: Path) -> dict[str, Any]:
+    path = root / "package.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(_read(path))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _is_workspace_package(root: Path) -> bool:
+    if any((root / marker).is_file() for marker in WORKSPACE_MARKERS):
+        return True
+    package = _package_json_data(root)
+    return bool(package.get("workspaces")) if isinstance(package, dict) else False
+
+def _source_tree_present(root: Path) -> bool:
+    return bool(_source_counts(root))
+
+def _is_project_candidate(root: Path) -> bool:
+    if any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS):
+        return True
+    if (root / "package.json").is_file():
+        package = _package_json_data(root)
+        if _is_workspace_package(root):
+            return False
+        scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+        return bool(_source_tree_present(root) or (isinstance(scripts, dict) and scripts))
+    return _source_tree_present(root) and any(
+        (root / marker).is_file()
+        for marker in ("Makefile", "CMakeLists.txt", "package.json", "pyproject.toml")
+    )
+
+def _candidate_score(root: Path) -> int:
+    score = 0
+    for marker in _marker_names(root, PRIMARY_PROJECT_MARKERS):
+        if marker in {"foundry.toml", "Scarb.toml", "Cargo.toml", "go.mod", "Move.toml", "Anchor.toml"}:
+            score += 100
+        elif marker.startswith("hardhat.config") or marker.startswith("ape-") or marker.startswith("brownie-"):
+            score += 90
+        else:
+            score += 70
+    if (root / "package.json").is_file() and not _is_workspace_package(root):
+        score += 40
+    if _source_tree_present(root):
+        score += min(30, sum(_source_counts(root).values()))
+    if (root / "tests").is_dir():
+        score += 10
+    if (root / "src").is_dir() or (root / "contracts").is_dir():
+        score += 10
+    return score
+
+def discover_nested_projects(
+    start: str | os.PathLike[str] = ".",
+    *,
+    max_depth: int = 5,
+) -> list[dict[str, Any]]:
+    """Discover nested projects without assuming a language or directory name."""
+    root = Path(start).expanduser().resolve()
+    if root.is_file():
+        root = root.parent
+
+    found: dict[str, dict[str, Any]] = {}
+    for current, dirs, _files in os.walk(root):
+        current_path = Path(current)
+        try:
+            depth = len(current_path.relative_to(root).parts)
+        except ValueError:
+            continue
+        dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS)
+        if depth == 0:
+            continue
+        if depth > max_depth:
+            dirs[:] = []
+            continue
+        if not _is_project_candidate(current_path):
+            continue
+
+        info = detect_project(current_path)
+        found[str(current_path)] = {
+            "root": str(current_path),
+            "relative": current_path.relative_to(root).as_posix(),
+            "name": current_path.name,
+            "kind": info.get("kind", "unknown"),
+            "backend": info.get("backend", "generic"),
+            "languages": info.get("languages", {}),
+            "score": _candidate_score(current_path),
+        }
+
+    return sorted(
+        found.values(),
+        key=lambda item: (-int(item.get("score", 0)), str(item.get("relative", ""))),
+    )
+
+def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
+    root = Path(start).expanduser().resolve()
+    if root.is_file():
+        root = root.parent
+    if any((root / marker).is_file() for marker in WORKSPACE_MARKERS):
+        return True
+    if (root / "package.json").is_file() and _is_workspace_package(root):
+        return True
+    if (root / "Cargo.toml").is_file():
+        text = _read(root / "Cargo.toml")
+        if re.search(r"(?m)^\\s*\\[workspace(?:\\.[^]]+)?\\]", text):
+            return True
+    nested = discover_nested_projects(root, max_depth=3)
+    return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and len(nested) > 1
+
 def project_root(start: str | os.PathLike[str] = ".") -> Path:
     path = Path(start).expanduser().resolve()
     if path.is_file():
         path = path.parent
 
-    markers = (
-        "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
-        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
-        "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
-        "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
-        "package.json", "Cargo.toml", "go.mod",
-    )
+    nearest = path
+    found_marker = False
     for parent in (path, *path.parents):
-        if any((parent / marker).is_file() for marker in markers):
-            return parent
-    return path
+        if any((parent / marker).is_file() for marker in PROJECT_MARKERS):
+            nearest = parent
+            found_marker = True
+            break
+
+    if not found_marker:
+        nested = discover_nested_projects(path)
+        if len(nested) == 1:
+            return Path(nested[0]["root"])
+        return path
+
+    if nearest == path and is_workspace_root(nearest):
+        nested = discover_nested_projects(nearest)
+        if len(nested) == 1:
+            return Path(nested[0]["root"])
+
+    return nearest
+
 
 def _walk_files(root: Path) -> Iterable[Path]:
     for current, dirs, files in os.walk(root):
