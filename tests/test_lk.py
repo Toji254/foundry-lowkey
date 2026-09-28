@@ -3531,6 +3531,47 @@ def withdraw(amount: uint256):
 
 
 
+    def test_fn_help_is_not_treated_as_a_function_query(self):
+        config = lk.fresh_config()
+        with patch("builtins.print"):
+            result = lk.run_functions(config, "-h")
+        self.assertEqual(result, 0)
+
+    def test_finding_without_args_returns_usage_cleanly(self):
+        config = lk.fresh_config()
+        with patch("builtins.print"):
+            result = lk.dispatch_command("finding", [], config)
+        self.assertEqual(result, 0)
+
+    def test_focus_quoted_function_signature_explains_function_vs_signal(self):
+        config = lk.fresh_config()
+        config["target"] = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "batchRedeemWToken",
+            "inputs": [
+                {
+                    "name": "",
+                    "type": "tuple[]",
+                    "components": [
+                        {"name": "wToken", "type": "address"},
+                        {"name": "wTokenAmount", "type": "uint256"},
+                        {"name": "recipient", "type": "address"},
+                    ],
+                }
+            ],
+        }]
+        with patch.object(lk, "load_abi", return_value=abi), patch("builtins.print") as printed:
+            result = lk.run_investigate(
+                config,
+                ["batchRedeemWToken((address,uint256,address)[])"],
+            )
+        self.assertEqual(result, 0)
+        rendered = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn("LOWKEY FUNCTION FOCUS", rendered)
+        self.assertIn("Focus stores an audit signal, not a function selection.", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()
 
