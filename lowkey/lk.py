@@ -3829,6 +3829,33 @@ def discover_generic_lab_contract(root, query=None):
     return candidates[0]
 
 
+def discover_artifact_lab_contract(root, query):
+    """Resolve an explicitly requested built artifact for direct local deployment."""
+    requested = str(query or "").strip()
+    if not requested:
+        return None
+
+    matches = []
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path)
+        if not artifact or not artifact_is_deployable(artifact):
+            continue
+        contract = artifact_contract_name(path, artifact)
+        if contract.lower() != requested.lower():
+            continue
+        matches.append((
+            0,
+            contract,
+            path,
+            artifact,
+            artifact_constructor_inputs(artifact),
+            f"{artifact_source_name(artifact, path, root) or path}:{contract}",
+        ))
+
+    matches.sort(key=lambda item: str(item[2]))
+    return matches[0] if matches else None
+
+
 def set_lab_target(config, root, target, contract, artifact):
     config["target"] = target
     config["target_contract"] = contract
@@ -4874,8 +4901,12 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
     return None, "deployment succeeded but no contract address was found in cast output"
 
 
-def run_generic_lab(config, root, rpc, accounts, key, requested=None):
-    candidate = discover_generic_lab_contract(root, requested)
+def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic"):
+    candidate = (
+        discover_artifact_lab_contract(root, requested)
+        if mode == "artifact"
+        else discover_generic_lab_contract(root, requested)
+    )
     if not candidate:
         app = discover_audit_target_contract(root)
         return fail(
@@ -4947,9 +4978,33 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None):
 
 def run_lab(config,args):
     if args and args[0].lower() in {"help","-h","--help"}:
-        print("Usage: lk lab [Contract]")
-        print("Start a disposable local audit lab and auto-connect its target.")
-        print("Lowkey discovers a project-native deployment/test harness when possible; otherwise it uses generic ABI deployment.")
+        print("Usage:")
+        print("  lk lab [Contract]")
+        print("  lk lab --generic [Contract]")
+        print("  lk lab --artifact <Contract>")
+        print("  lk lab stop")
+        print("")
+        print("MODES")
+        print("  auto      Prefer a project-native deployment script, then a real test fixture,")
+        print("            then fall back to Lowkey's generic ABI deployer.")
+        print("  --generic Force direct ABI deployment with Lowkey's constructor wizard.")
+        print("            Optional Contract selects the deployable first-party artifact.")
+        print("  --artifact Force direct deployment of the exact built artifact named by Contract.")
+        print("            Use this to exercise constructor arguments for a specific artifact.")
+        print("")
+        print("EXAMPLES")
+        print("  lk lab")
+        print("      Build a realistic local lab using the project's own harness when available.")
+        print("  lk lab QuantAMMWeightedPool")
+        print("      Prefer native project harnesses, targeting QuantAMMWeightedPool.")
+        print("  lk lab --generic")
+        print("      Skip native harnesses and deploy Lowkey's automatically selected target.")
+        print("  lk lab --generic QuantAMMWeightedPool")
+        print("      Skip native harnesses and open the constructor wizard for this contract.")
+        print("  lk lab --artifact QuantAMMWeightedPool")
+        print("      Deploy this exact built artifact directly; constructor inputs are prompted.")
+        print("  lk lab stop")
+        print("      Stop the Anvil instance Lowkey started for the project.")
         return 0
 
     root = audit_context.foundry_project_root()
@@ -4991,10 +5046,32 @@ def run_lab(config,args):
     if args and args[0].lower() == "stop":
         return stop_project_anvil(root)
 
-    requested = str(args[0]).strip() if args else None
+    mode = "auto"
+    requested = None
+    if args:
+        first = str(args[0]).strip()
+        lowered = first.lower()
+        if lowered in {"generic", "--generic"}:
+            mode = "generic"
+            requested = str(args[1]).strip() if len(args) > 1 else None
+        elif lowered in {"artifact", "--artifact"}:
+            mode = "artifact"
+            requested = str(args[1]).strip() if len(args) > 1 else None
+        elif lowered in {"forge", "--forge"}:
+            # Backward-compatible alias: bypass native harnesses and use generic deployment.
+            mode = "generic"
+            requested = str(args[1]).strip() if len(args) > 1 else None
+        else:
+            requested = first
+
+        if len(args) > (2 if mode in {"generic", "artifact"} else 1):
+            return fail("Usage: lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop")
+        if mode == "artifact" and not requested:
+            return fail("Usage: lk lab --artifact <Contract>")
+    
     auto_selected = requested or discover_audit_target_contract(root)
-    script = discover_local_lab_script(root, auto_selected)
-    fixture = discover_local_lab_fixture(root, auto_selected) if auto_selected else None
+    script = discover_local_lab_script(root, auto_selected) if mode == "auto" else None
+    fixture = discover_local_lab_fixture(root, auto_selected) if mode == "auto" else None
 
     rpc = effective_rpc(config)
     info = anvil_rpc_info(config)
@@ -5028,7 +5105,7 @@ def run_lab(config,args):
 
     config["_lab_rpc"] = rpc
 
-    if script and (not requested or requested.lower() not in {"generic", "forge", "artifact"}):
+    if script:
         script_code = run_project_lab_script(config, root, script, rpc, accounts, key, requested)
         if script_code == 0:
             return 0
@@ -5075,7 +5152,7 @@ def run_lab(config,args):
             if isinstance(signal, dict) and signal.get("function"):
                 requested = str(signal.get("function")).split("(", 1)[0]
 
-    return run_generic_lab(config, root, rpc, accounts, key, requested)
+    return run_generic_lab(config, root, rpc, accounts, key, requested, mode=mode)
 
 def run_ens(config,args):
     if not args: print("Usage: lk ens <name|address>"); return
@@ -8231,8 +8308,10 @@ PROJECT / TARGET SETUP
   lk use <name|number>              Switch to a saved target. Example: lk use escrow
   lk deployments                    List deployment records.
   lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
-  lk lab [Contract]                 Create or reuse a disposable local audit environment.
-  lk lab stop                       Stop the Anvil Lowkey started.
+  lk lab [Contract]                 Smart local lab: native script -> test fixture -> artifact fallback.
+  lk lab --generic [Contract]      Force Lowkey's generic ABI deployer (shows constructor prompts).
+  lk lab --artifact <Contract>     Force direct deployment of this exact built artifact.
+  lk lab stop                      Stop the Anvil Lowkey started.
   lk rpc <url>                      Set RPC manually. Example: lk rpc http://127.0.0.1:8545
   lk rpc set <name> <url>           Save an RPC profile.
   lk rpc use <name>                 Select an RPC profile.
