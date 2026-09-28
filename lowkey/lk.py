@@ -8254,6 +8254,12 @@ def run_context(config):
 def run_signals(config, args):
     root = audit_context.foundry_project_root()
 
+    if not audit_context.is_audit_project(root):
+        print("No audit project detected at the current root.")
+        print(f"Root : {root}")
+        print("Findings are project-scoped; run 'lk findings' from the target project.")
+        return 0
+
     if args and args[0].lower() in {"set", "status"}:
         if len(args) < 3:
             return fail("Usage: lk signals set <SIGNAL_ID> <open|investigating|proven|dismissed> [note]")
