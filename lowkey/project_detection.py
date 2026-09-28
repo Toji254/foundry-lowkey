@@ -964,13 +964,13 @@ def _hardhat_fork_spec(root: Path) -> tuple[str, int] | None:
 
     hardhat_text = _read(config_path)
     network_match = re.search(
-        r"(?m)^\s*(?:export\s+const|const)\s+NETWORK\s*=\s*["']([^"']+)["']",
+        r'(?m)^\s*(?:export\s+const|const)\s+NETWORK\s*=\s*["\']([^"\']+)["\']',
         hardhat_text,
     )
     network = network_match.group(1) if network_match else None
     if not network:
         network_match = re.search(
-            r"(?m)^\s*const\s+network\s*=\s*["']([^"']+)["']",
+            r'(?m)^\s*const\s+network\s*=\s*["\']([^"\']+)["\']',
             hardhat_text,
         )
         network = network_match.group(1) if network_match else None
