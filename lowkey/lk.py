@@ -3317,7 +3317,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
             "--match-test",
             "testLowkeyLabStateDump",
             "--disable-block-gas-limit",
-            "-q",
+            "-vv",
         ],
         capture=True,
     )
