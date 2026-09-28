@@ -288,6 +288,19 @@ class ProjectDetectionTests(unittest.TestCase):
                     ("https://archive.example/rpc", 289488417),
                 )
 
+    def test_historical_state_errors_are_classified_as_infrastructure(self):
+        self.assertTrue(
+            project_detection._historical_state_unavailable(
+                "ProviderError: historical state c065 is not available"
+            )
+        )
+        self.assertTrue(
+            project_detection._historical_state_unavailable(
+                "missing trie node c065 state 0xc065 is not available, not found"
+            )
+        )
+        self.assertFalse(project_detection._historical_state_unavailable("AssertionError: value mismatch"))
+
     def test_bootstrap_delegates_to_shared_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
