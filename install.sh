@@ -25,26 +25,16 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py audit_engine.py system_model.py project_tools.py; do
+for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py audit_engine.py system_model.py project_tools.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
-cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
-python3 -m py_compile \
-  "$STAGE_DIR/lk.py" \
-  "$STAGE_DIR/forge_tools.py" \
-  "$STAGE_DIR/generator.py" \
-  "$STAGE_DIR/slither_tools.py" \
-  "$STAGE_DIR/audit_context.py" \
-  "$STAGE_DIR/project_detection.py" \
-  "$STAGE_DIR/clone_tools.py" \
-  "$STAGE_DIR/audit_engine.py" \
-  "$STAGE_DIR/system_model.py" \
-  "$STAGE_DIR/project_tools.py"
-bash -n "$STAGE_DIR/bin-lk"
+python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"
+bash -n "$REPO_DIR/bin/lk"
 
 # Publish exactly the validated stage so the manifest always describes the
 # code that was syntax-checked.
+cp "$STAGE_DIR/bootstrap.py" "$TARGET_LOWKEY_DIR/bootstrap.py"
 cp "$STAGE_DIR/lk.py" "$TARGET_LOWKEY_DIR/lk.py"
 cp "$STAGE_DIR/forge_tools.py" "$TARGET_LOWKEY_DIR/forge_tools.py"
 cp "$STAGE_DIR/generator.py" "$TARGET_LOWKEY_DIR/generator.py"
@@ -63,7 +53,7 @@ chmod +x "$TARGET_BIN_DIR/lk"
 
 # Reconcile the legacy ~/bin/lk location when it is an existing Lowkey install
 # or symlink, preventing PATH shadowing of the canonical ~/.foundry/bin/lk.
-if [ -L "$LEGACY_BIN" ] || { [ -f "$LEGACY_BIN" ] && grep -qE '\.lowkey/(lk|forge_tools|generator)|foundry-lowkey' "$LEGACY_BIN" 2>/dev/null; }; then
+if [ -L "$LEGACY_BIN" ] || { [ -f "$LEGACY_BIN" ] && grep -qE '.lowkey/(lk|forge_tools|generator)|foundry-lowkey' "$LEGACY_BIN" 2>/dev/null; }; then
   cp "$STAGE_DIR/bin-lk" "$LEGACY_BIN"
   chmod +x "$LEGACY_BIN"
 fi
@@ -97,6 +87,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 installed = {
+    str(lowkey_dir / "bootstrap.py"): sha256(lowkey_dir / "bootstrap.py"),
     str(lowkey_dir / "lk.py"): sha256(lowkey_dir / "lk.py"),
     str(lowkey_dir / "forge_tools.py"): sha256(lowkey_dir / "forge_tools.py"),
     str(lowkey_dir / "generator.py"): sha256(lowkey_dir / "generator.py"),
@@ -132,6 +123,7 @@ cat <<EOF
 LowkeyCast installed successfully.
 
 Files copied:
+  - $TARGET_LOWKEY_DIR/bootstrap.py
   - $TARGET_LOWKEY_DIR/lk.py
   - $TARGET_LOWKEY_DIR/forge_tools.py
   - $TARGET_LOWKEY_DIR/generator.py
