@@ -69,7 +69,7 @@ lk -h
 lk doctor
 
 # Clone and prepare a project for auditing
-lk clone https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git
+lk clone <repository-url>
 ~~~
 
 `lk clone` is the project entry point. Give Lowkey the repository; it derives the project directory and handles the audit setup automatically.
@@ -499,7 +499,7 @@ Lowkey also has a visual, source-guided protocol walkthrough for understanding a
 lk walkthrough
 lk walkthrough --auto
 lk walkthrough --static
-lk walkthrough --contract ConfidencePoolFactory --steps 10
+lk walkthrough --contract <ContractName> --steps 10
 ```
 
 The walkthrough pipeline is:
