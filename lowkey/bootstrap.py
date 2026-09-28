@@ -476,6 +476,69 @@ def _workspace_commands(
 
     return actions
 
+def _node_runtime_requirement(root: Path) -> str | None:
+    """Return an exact Node runtime pin when the project declares one."""
+    for filename in (".nvmrc", ".node-version"):
+        value = _read(root / filename).strip()
+        if re.fullmatch(r"v?\d+\.\d+\.\d+", value):
+            return value.lstrip("v")
+    return None
+
+
+def _node_runtime_bin(root: Path) -> Path | None:
+    """Find an already-installed Node runtime matching the project pin."""
+    required = _node_runtime_requirement(root)
+    if not required:
+        return None
+
+    current = shutil.which("node")
+    if current:
+        try:
+            result = subprocess.run(
+                [current, "--version"], capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip().lstrip("v") == required:
+                return Path(current).resolve().parent
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    home = Path.home()
+    candidates = (
+        home / ".nvm" / "versions" / "node" / f"v{required}" / "bin",
+        home / ".local" / "share" / "fnm" / "node-versions" / f"v{required}" / "installation" / "bin",
+        home / ".asdf" / "installs" / "nodejs" / required / "bin",
+        home / ".local" / "share" / "mise" / "installs" / "node" / required / "bin",
+        home / ".mise" / "installs" / "node" / required / "bin",
+        home / ".hermes" / "node-versions" / f"v{required}" / "bin",
+        home / ".hermes" / "versions" / "node" / f"v{required}" / "bin",
+    )
+    for candidate in candidates:
+        node = candidate / "node"
+        if not node.is_file() or not os.access(node, os.X_OK):
+            continue
+        try:
+            result = subprocess.run(
+                [str(node), "--version"], capture_output=True, text=True, timeout=5
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0 and result.stdout.strip().lstrip("v") == required:
+            return candidate
+    return None
+
+
+def runtime_environment(root: str | os.PathLike[str] = ".") -> tuple[dict[str, str], str | None]:
+    """Return an environment that honors an already-installed Node pin."""
+    path = Path(root).expanduser().resolve()
+    env = dict(os.environ)
+    runtime_bin = _node_runtime_bin(path)
+    required = _node_runtime_requirement(path)
+    if runtime_bin is None:
+        return env, required
+    env["PATH"] = str(runtime_bin) + os.pathsep + env.get("PATH", "")
+    return env, required
+
+
 def runtime_requirements(root: str | os.PathLike[str] = ".") -> dict[str, str]:
     """Read project-declared runtime pins without changing the environment."""
     path = Path(root).expanduser().resolve()
@@ -752,6 +815,13 @@ def run_bootstrap(
         print("Runtime pins     : " + ", ".join(
             f"{key}={value}" for key, value in plan["runtime_requirements"].items()
         ))
+        runtime_env, node_pin = runtime_environment(Path(plan["project_root"]))
+        if node_pin:
+            node_path = runtime_env.get("PATH", "").split(os.pathsep)[0]
+            if node_path and Path(node_path).is_dir():
+                print(f"Node runtime    : {node_pin} via {node_path}")
+            else:
+                print(f"Node runtime    : {node_pin} (using current PATH; matching install not found)")
 
     if not actions:
         print("Status           : no repository-declared repair needed")
@@ -770,7 +840,7 @@ def run_bootstrap(
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
-                env={**os.environ, "CI": "1"},
+                env={**runtime_environment(cwd)[0], "CI": "1"},
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
@@ -808,7 +878,7 @@ def run_bootstrap(
                         stdin=subprocess.DEVNULL,
                         capture_output=True,
                         text=True,
-                        env={**os.environ, "CI": "1"},
+                        env={**runtime_environment(cwd)[0], "CI": "1"},
                         timeout=timeout,
                     )
                 except subprocess.TimeoutExpired:
