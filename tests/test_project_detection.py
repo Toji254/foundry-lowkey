@@ -305,11 +305,11 @@ class ProjectDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "hardhat.config.ts").write_text(
-                'export const NETWORK = "arbitrumMain";\\n', encoding="utf-8"
+                'export const NETWORK = "arbitrumMain";\n', encoding="utf-8"
             )
             (root / "utils").mkdir()
             (root / "utils" / "forkConfig.ts").write_text(
-                'const FORK_CONFIGS = { arbitrumMain: { url: "https://example.invalid/rpc", blockNumber: 289488417 } };\\n',
+                'const FORK_CONFIGS = { arbitrumMain: { url: "https://example.invalid/rpc", blockNumber: 289488417 } };\n',
                 encoding="utf-8",
             )
             with patch.dict(project_detection.os.environ, {}, clear=False):
@@ -326,11 +326,11 @@ class ProjectDetectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "hardhat.config.ts").write_text(
-                'export const NETWORK = "arbitrumMain";\\n', encoding="utf-8"
+                'export const NETWORK = "arbitrumMain";\n', encoding="utf-8"
             )
             (root / "utils").mkdir()
             (root / "utils" / "forkConfig.ts").write_text(
-                'const FORK_CONFIGS = { arbitrumMain: { url: "https://example.invalid/rpc", blockNumber: 289488417 } };\\n',
+                'const FORK_CONFIGS = { arbitrumMain: { url: "https://example.invalid/rpc", blockNumber: 289488417 } };\n',
                 encoding="utf-8",
             )
 
