@@ -103,6 +103,24 @@ WORKSPACE_MARKERS = (
 def _marker_names(root: Path, markers: Sequence[str] = PROJECT_MARKERS) -> list[str]:
     return [marker for marker in markers if (root / marker).is_file()]
 
+def _is_lowkey_source_checkout(root: Path) -> bool:
+    """Recognize Lowkey's own source checkout without tying behavior to a target protocol."""
+    try:
+        resolved = root.resolve()
+        source_root = Path(__file__).resolve().parents[1]
+        if resolved == source_root:
+            return True
+    except OSError:
+        pass
+
+    # The source tree has this stable self-identity even when the installed
+    # runtime module is being invoked from ~/.lowkey/.
+    return (
+        (root / "lowkey" / "lk.py").is_file()
+        and (root / "lowkey" / "project_detection.py").is_file()
+        and (root / "install.sh").is_file()
+    )
+
 def _package_json_data(root: Path) -> dict[str, Any]:
     path = root / "package.json"
     if not path.is_file():
@@ -606,6 +624,18 @@ def _source_counts(root: Path) -> dict[str, int]:
 
 def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
     root = project_root(start)
+    if _is_lowkey_source_checkout(root):
+        return {
+            "root": str(root),
+            "kind": "lowkey-source",
+            "backend": "none",
+            "build_backend": "none",
+            "stacks": [],
+            "languages": {},
+            "supporting_tools": [],
+            "native": {},
+            "manifests": {},
+        }
     sources = _source_counts(root)
 
     foundry = (root / "foundry.toml").is_file()
