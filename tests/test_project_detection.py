@@ -359,10 +359,7 @@ class ProjectDetectionTests(unittest.TestCase):
                 calls.append(list(command))
                 return 0, "all tests passed"
 
-            with patch.dict(project_detection.os.environ, {"LOWKEY_ARCHIVE_RPC": "https://archive.example/rpc"}, clear=False), \\
-                 patch.object(project_detection.subprocess, "Popen", return_value=DummyProcess()) as popen, \\
-                 patch.object(project_detection.socket, "create_connection", return_value=DummySocket()), \\
-                 patch.object(project_detection, "_run", side_effect=fake_run):
+            with patch.dict(project_detection.os.environ, {"LOWKEY_ARCHIVE_RPC": "https://archive.example/rpc"}, clear=False), patch.object(project_detection.subprocess, "Popen", return_value=DummyProcess()) as popen, patch.object(project_detection.socket, "create_connection", return_value=DummySocket()), patch.object(project_detection, "_run", side_effect=fake_run):
                 result = project_detection._run_hardhat_fork_fallback(
                     root, root / "node_modules/.bin/hardhat", ["hardhat", "test"]
                 )
