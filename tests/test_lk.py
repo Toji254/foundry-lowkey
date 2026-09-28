@@ -1766,7 +1766,7 @@ contract Pool {
             output.getvalue(),
         )
 
-    def test_project_map_workspace_overview_works_with_active_selection(self):
+    def test_project_map_active_workspace_selection_opens_selected_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "package.json").write_text(
@@ -1792,8 +1792,7 @@ contract Pool {
                 os.chdir(old)
 
             self.assertEqual(result, 0)
-            self.assertIn("LOWKEY WORKSPACE OVERVIEW", output.getvalue())
-            render.assert_not_called()
+            render.assert_called_once_with((root / "packages" / "app").resolve())
 
     def test_project_map_explicit_workspace_project_selector_ignores_active_project(self):
         with tempfile.TemporaryDirectory() as tmp:
