@@ -56,11 +56,13 @@ DEPENDENCY_FAILURE_PATTERNS = (
     r"unresolved external",
     r"missing .* dependency",
     r"dependency .* missing",
-    r"node_modules",
+    r"error while loading .* module",
+    r"err_pnpm_",
+    r"npm err!",
+    r"yarn error",
+    r"bun error",
+    r"\bnode_modules[/\\]",
     r"@openzeppelin/",
-    r"pnpm",
-    r"yarn",
-    r"npm",
 )
 
 TOOLCHAIN_FAILURE_PATTERNS = (
