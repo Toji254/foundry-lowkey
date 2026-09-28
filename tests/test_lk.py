@@ -268,6 +268,26 @@ class LowkeyCastTests(unittest.TestCase):
 
         self.assertIn(str(default_dir / "Legacy.json"), paths)
         self.assertIn(str(custom_dir / "Current.json"), paths)
+    def test_artifact_discovery_honors_configured_foundry_output_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "contracts/src"\nout = "forge-artifacts"\n',
+                encoding="utf-8",
+            )
+            artifact_dir = root / "forge-artifacts" / "AaveDIVAWrapper.sol"
+            artifact_dir.mkdir(parents=True)
+            (artifact_dir / "AaveDIVAWrapper.json").write_text(
+                json.dumps({
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                    "contractName": "AaveDIVAWrapper",
+                    "sourceName": "contracts/src/AaveDIVAWrapper.sol",
+                }),
+                encoding="utf-8",
+            )
+            paths = lk.artifact_json_files(root)
+        self.assertIn(str(artifact_dir / "AaveDIVAWrapper.json"), paths)
     def test_auto_lab_ignores_dependency_library_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
