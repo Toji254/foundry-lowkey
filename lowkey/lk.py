@@ -4315,14 +4315,27 @@ def _run_project_build(config, root):
                     bootstrap = subprocess.run(
                         command,
                         cwd=str(root),
-                        capture_output=True,
+                        stdin=subprocess.DEVNULL,
                         text=True,
+                        env={**os.environ, "CI": "1"},
+                        timeout=300,
                     )
+                except subprocess.TimeoutExpired:
+                    print(
+                        f"FAIL  build bootstrap: {' '.join(command)} timed out after 300s.",
+                        file=sys.stderr,
+                    )
+                    print(
+                        "      Lowkey stopped waiting for the dependency manager. "
+                        "Check network/package-manager state, then rerun 'lk lab'.",
+                        file=sys.stderr,
+                    )
+                    continue
                 except OSError as exc:
                     print(f"Warning: build bootstrap failed to start: {exc}", file=sys.stderr)
                     continue
 
-                bootstrap_output = (bootstrap.stdout or "") + (bootstrap.stderr or "")
+                bootstrap_output = ""
                 if bootstrap.returncode != 0:
                     print(
                         f"Warning: build bootstrap {' '.join(command)} failed:\n"
