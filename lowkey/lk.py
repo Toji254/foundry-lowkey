@@ -5028,6 +5028,40 @@ def run_lab(config,args):
     if not root:
         return fail("Error: Lowkey could not resolve the current project root.")
 
+    # A repository root may be a workspace/monorepo rather than the project to audit.
+    # Lowkey discovers nested projects from manifests and source trees without assuming
+    # names such as "pkg", "contracts", or any particular language.
+    if project_tools is not None and project_tools.is_workspace_root(root):
+        candidates = project_tools.discover_nested_projects(root)
+        if len(candidates) == 1:
+            root = candidates[0]["root"]
+            print(f"INFO  Found one project inside this workspace: {Path(root).relative_to(Path(audit_context.foundry_project_root())).as_posix()}")
+        elif len(candidates) > 1:
+            print()
+            print("LOWKEY FOUND MULTIPLE PROJECTS")
+            print("============================")
+            print(f"Workspace: {root}")
+            for index, candidate in enumerate(candidates, 1):
+                languages = candidate.get("languages") or {}
+                language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
+                print(f"  {index}. {candidate.get('relative')}  [{language_text}]")
+            if not sys.stdin.isatty():
+                return fail(
+                    "Error: this workspace contains multiple projects. "
+                    "Run 'lk lab' from the project directory you want to use."
+                )
+            while True:
+                try:
+                    choice = input("Choose a project [1-%d] or q to cancel: " % len(candidates)).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return fail("Project selection cancelled.")
+                if choice == "q":
+                    return fail("Project selection cancelled.")
+                if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+                    root = candidates[int(choice) - 1]["root"]
+                    break
+                print("Please enter one of the project numbers, or q.")
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
 
