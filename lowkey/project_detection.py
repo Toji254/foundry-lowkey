@@ -31,6 +31,7 @@ try:
         bootstrap_status as shared_bootstrap_status,
         classify_build_failure as shared_classify_build_failure,
         project_build_command as shared_project_build_command,
+        dependency_boundary as shared_dependency_boundary,
         run_bootstrap as run_shared_bootstrap,
     )
 except ImportError:
@@ -937,6 +938,13 @@ def project_build_command(info: dict[str, Any]) -> tuple[Path, list[str], str] |
         return None
     return shared_project_build_command(info)
 
+
+def dependency_boundary(info: dict[str, Any] | str | os.PathLike[str]) -> Path:
+    value = info.get("root") if isinstance(info, dict) else info
+    if shared_dependency_boundary is None:
+        return Path(value or ".").expanduser().resolve()
+    return shared_dependency_boundary(value or ".")
+
 def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     """Run safe native verification for non-Foundry stacks.
 
@@ -1008,12 +1016,18 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         return failures
 
     if backend == "hardhat":
-        binary = root / "node_modules" / ".bin" / "hardhat"
+        boundary = dependency_boundary(info)
+        binary = boundary / "node_modules" / ".bin" / "hardhat"
+        if os.name == "nt":
+            binary = binary.with_suffix(".cmd")
         if binary.is_file():
             step("hardhat compile", [str(binary), "compile"])
             step("hardhat tests", [str(binary), "test"])
         else:
-            print("DEFER  hardhat checks — local node_modules hardhat binary not found.")
+            print(
+                "DEFER  hardhat checks — local Hardhat binary not found at "
+                f"{binary}. Lowkey did not use npx because that could download a different version."
+            )
         return failures
 
     if backend == "solana-anchor":
