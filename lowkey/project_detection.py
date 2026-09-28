@@ -133,6 +133,72 @@ def _candidate_score(root: Path) -> int:
         score += 10
     return score
 
+def _workspace_project_metadata(projects):
+    names = {}
+    for project in projects:
+        root = Path(project["root"])
+        package = _package_json_data(root)
+        project["package_name"] = str(package.get("name")) if package.get("name") else None
+
+        description = package.get("description")
+        if not description:
+            readme = root / "README.md"
+            if readme.is_file():
+                try:
+                    for line in readme.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        text = line.strip().lstrip("#").strip()
+                        if text and not text.startswith(("!", "[")):
+                            description = text
+                            break
+                except OSError:
+                    pass
+        project["description"] = str(description or root.name).strip()
+
+        scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+        script_names = set(scripts) if isinstance(scripts, dict) else set()
+        project["test_files"] = sum(
+            1
+            for path in _walk_files(root)
+            if path.name.lower().startswith("test_")
+            or path.name.lower().endswith("_test.py")
+            or ".test." in path.name.lower()
+            or ".spec." in path.name.lower()
+            or path.suffix.lower() in {".t.sol", ".t.cairo"}
+        )
+        project["entrypoint_score"] = (
+            3 * sum((root / name).is_dir() for name in ("script", "scripts", "deploy", "deployment", "migrations"))
+            + 2 * sum((root / name).is_dir() for name in ("app", "apps", "cmd", "programs", "services"))
+            + 2 * len(script_names.intersection({"start", "dev", "serve", "deploy"}))
+        )
+        if project["package_name"]:
+            names[project["package_name"].lower()] = project
+
+    for project in projects:
+        used_by = 0
+        for other in projects:
+            if other is project:
+                continue
+            package = _package_json_data(Path(other["root"]))
+            refs = set()
+            for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+                values = package.get(key, {}) if isinstance(package, dict) else {}
+                if isinstance(values, dict):
+                    refs.update(str(name).lower() for name in values)
+            package_name = str(project.get("package_name") or "").lower()
+            if package_name and package_name in refs:
+                used_by += 1
+        project["used_by_siblings"] = used_by
+
+        if used_by:
+            project["scope_hint"] = "shared dependency"
+        elif project["entrypoint_score"] >= 3:
+            project["scope_hint"] = "likely app / audit entry"
+        elif project["test_files"] > 0:
+            project["scope_hint"] = "component / library"
+        else:
+            project["scope_hint"] = "support / component"
+    return projects
+
 def discover_nested_projects(
     start: str | os.PathLike[str] = ".",
     *,
@@ -170,10 +236,11 @@ def discover_nested_projects(
             "score": _candidate_score(current_path),
         }
 
-    return sorted(
+    projects = sorted(
         found.values(),
         key=lambda item: (-int(item.get("score", 0)), str(item.get("relative", ""))),
     )
+    return _workspace_project_metadata(projects)
 
 def workspace_root(start: str | os.PathLike[str] = ".") -> Path:
     path = Path(start).expanduser().resolve()
