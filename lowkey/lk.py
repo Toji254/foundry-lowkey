@@ -4207,6 +4207,28 @@ def _run_project_build(config, root):
         print("Status       : complete")
     return result.returncode
 
+def run_projects(config, args):
+    """List project boundaries discovered inside the current workspace."""
+    if project_tools is None:
+        return fail("Project discovery layer is unavailable. Reinstall Lowkey.")
+    root = audit_context.foundry_project_root()
+    candidates = project_tools.discover_nested_projects(root)
+    if not candidates:
+        print("No nested projects detected.")
+        print(f"Current project: {root}")
+        return 0
+
+    print("LOWKEY PROJECTS")
+    print("===============")
+    print(f"Workspace: {root}")
+    for index, candidate in enumerate(candidates, 1):
+        languages = candidate.get("languages") or {}
+        language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
+        print(f"  {index}. {candidate.get('relative')}  [{language_text}]")
+    print("")
+    print("Tip: cd into a project directory and run Lowkey there.")
+    return 0
+
 def run_clone(config, args):
     """Clone with the cache-aware engine, then perform full Lowkey onboarding."""
     try:
@@ -5032,10 +5054,12 @@ def run_lab(config,args):
     # Lowkey discovers nested projects from manifests and source trees without assuming
     # names such as "pkg", "contracts", or any particular language.
     if project_tools is not None and project_tools.is_workspace_root(root):
-        candidates = project_tools.discover_nested_projects(root)
+        workspace_root = Path(root).resolve()
+        candidates = project_tools.discover_nested_projects(workspace_root)
         if len(candidates) == 1:
             root = candidates[0]["root"]
-            print(f"INFO  Found one project inside this workspace: {Path(root).relative_to(Path(audit_context.foundry_project_root())).as_posix()}")
+            relative = Path(root).resolve().relative_to(workspace_root).as_posix()
+            print(f"INFO  Found one project inside this workspace: {relative}")
         elif len(candidates) > 1:
             print()
             print("LOWKEY FOUND MULTIPLE PROJECTS")
@@ -8359,6 +8383,7 @@ PROJECT / TARGET SETUP
   lk use <name|number>              Switch to a saved target. Example: lk use escrow
   lk deployments                    List deployment records.
   lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
+  lk projects                       Show projects found inside the current workspace.
   lk lab [Contract]                 Set up a realistic local lab automatically.
   lk lab --generic [Contract]      Deploy a contract directly and enter constructor values.
   lk lab --artifact <Contract>     Deploy this exact compiled contract.
@@ -8652,6 +8677,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         return fail("Error: target belongs to a different project context.")
     elif cmd=="deployments": run_deployments(config)
     elif cmd in {"project","graph"}: return run_project_map(config,args)
+    elif cmd=="projects": return run_projects(config,args)
     elif cmd=="system": return run_system_model(config,args)
     elif cmd=="clone": return run_clone(config,args)
     elif cmd=="lab": return run_lab(config,args)
