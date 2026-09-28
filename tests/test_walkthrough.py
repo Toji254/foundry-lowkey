@@ -16,6 +16,35 @@ spec.loader.exec_module(walkthrough)
 
 
 class WalkthroughTests(unittest.TestCase):
+    def test_runtime_walkthrough_contains_no_known_project_specific_adapters(self):
+        production_files = [
+            ROOT.parent / "lowkey" / "lk.py",
+            ROOT.parent / "lowkey" / "audit_context.py",
+            ROOT.parent / "lowkey" / "audit_engine.py",
+            ROOT.parent / "lowkey" / "bootstrap.py",
+            ROOT.parent / "lowkey" / "clone_tools.py",
+            ROOT.parent / "lowkey" / "forge_tools.py",
+            ROOT.parent / "lowkey" / "generator.py",
+            ROOT.parent / "lowkey" / "project_detection.py",
+            ROOT.parent / "lowkey" / "project_tools.py",
+            ROOT.parent / "lowkey" / "slither_tools.py",
+            ROOT.parent / "lowkey" / "system_model.py",
+            ROOT.parent / "lowkey" / "walkthrough.py",
+        ]
+        banned = (
+            "ConfidencePool",
+            "AaveDIVAWrapper",
+            "QuantAMM",
+            "Zaros",
+            "2026-07-bc-confidence-pools",
+            "2024-12-quantamm",
+            "2025-01-diva",
+        )
+        for path in production_files:
+            source = path.read_text(encoding="utf-8")
+            for token in banned:
+                self.assertNotIn(token, source, f"{token} leaked into runtime: {path}")
+
 
     def test_local_rpc_detection_is_available_at_runtime(self):
         self.assertTrue(walkthrough._is_local_rpc("http://127.0.0.1:8545"))
