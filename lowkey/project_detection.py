@@ -548,6 +548,13 @@ def project_root(start: str | os.PathLike[str] = ".") -> Path:
     if path.is_file():
         path = path.parent
 
+    # Lowkey's own source checkout is a development/tooling tree, not an audit
+    # workspace. Do this before nested-project discovery so a single example
+    # project inside the checkout cannot become the active audit root merely
+    # because the user is standing at ~/foundry-lowkey.
+    if _is_lowkey_source_checkout(path):
+        return path
+
     nearest = path
     found_marker = False
     for parent in (path, *path.parents):
