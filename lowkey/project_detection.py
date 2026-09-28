@@ -22,6 +22,10 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+MODULE_DIR = Path(__file__).resolve().parent
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
+
 try:
     from bootstrap import (
         bootstrap_status as shared_bootstrap_status,
