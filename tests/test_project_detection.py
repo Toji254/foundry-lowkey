@@ -260,6 +260,34 @@ class ProjectDetectionTests(unittest.TestCase):
             self.assertNotIn("solidity", info["languages"])
             self.assertEqual(info["languages"]["vyper"], 1)
 
+    def test_hardhat_fork_spec_reads_pinned_network_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "hardhat.config.ts").write_text(
+                'export const NETWORK = "arbitrumMain";\n', encoding="utf-8"
+            )
+            (root / "utils").mkdir()
+            (root / "utils" / "forkConfig.ts").write_text(
+                'import { vars } from "hardhat/config";\n'
+                'const FORK_CONFIGS = {\n'
+                '  arbitrumMain: {\n'
+                '    url: vars.get("ARBITRUM_MAINNET_URL", "https://example.invalid/rpc"),\n'
+                '    blockNumber: 289488417,\n'
+                '  },\n'
+                '};\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                project_detection.os.environ,
+                {"ARBITRUM_MAINNET_URL": "https://archive.example/rpc"},
+                clear=False,
+            ):
+                self.assertEqual(
+                    project_detection._hardhat_fork_spec(root),
+                    ("https://archive.example/rpc", 289488417),
+                )
+
     def test_bootstrap_delegates_to_shared_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
