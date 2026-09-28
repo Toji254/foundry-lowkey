@@ -8235,6 +8235,9 @@ def run_project_map(config, args):
     if not root:
         return fail("Error: Lowkey could not resolve the current project root.")
 
+    json_mode = any(str(item).lower() in {"json", "--json"} for item in args)
+    selectors = [str(item).strip() for item in args if str(item).lower() not in {"json", "--json"}]
+
     # Keep the rich project map intact. When the current directory is a workspace
     # containing multiple projects, first give the user a useful workspace view,
     # then allow an explicit project number/path for the full deep-dive map.
@@ -8242,20 +8245,21 @@ def run_project_map(config, args):
         workspace_root = Path(root).resolve()
         candidates = discover_nested_projects(workspace_root)
 
-        if args and args[0] in {"-h", "--help", "help"}:
+        if selectors and selectors[0].lower() in {"-h", "--help", "help"}:
             print("Usage:")
             print("  lk project")
             print("  lk project <number>")
             print("  lk project <path>")
             print("  lk project --workspace")
-            print("  lk project --json")
+            print("  lk project <number> --json")
+            print("  lk project <path> --json")
             print("")
             print("From a workspace, 'lk project' shows the big picture.")
             print("Use a project number or path to open the full contract/dependency/security map.")
             return 0
 
-        if args and args[0] in {"--workspace", "workspace"}:
-            if len(args) > 1 and args[1] in {"json", "--json"}:
+        if selectors and selectors[0].lower() in {"--workspace", "workspace"}:
+            if json_mode:
                 print(json.dumps({
                     "workspace": str(workspace_root),
                     "projects": candidates,
@@ -8277,8 +8281,8 @@ def run_project_map(config, args):
             return 0
 
         selected = None
-        if args:
-            selector = str(args[0]).strip()
+        if selectors:
+            selector = selectors[0]
             if selector.isdigit():
                 index = int(selector)
                 if 1 <= index <= len(candidates):
@@ -8304,9 +8308,15 @@ def run_project_map(config, args):
                     if len(matches) == 1:
                         selected = matches[0]
             if selected is None:
-                return fail(f"Error: no workspace project matched '{args[0]}'.")
+                return fail(f"Error: no workspace project matched '{selector}'.")
 
         if selected is None:
+            if json_mode:
+                print(json.dumps({
+                    "workspace": str(workspace_root),
+                    "projects": candidates,
+                }, indent=2, default=str))
+                return 0
             print("LOWKEY WORKSPACE OVERVIEW")
             print("=" * 72)
             print(f"Workspace : {workspace_root}")
@@ -8322,14 +8332,14 @@ def run_project_map(config, args):
                 print(f"  {index:>2}. {candidate.get('relative')}  [{language_text}]")
             print()
             print("Deep dive example: lk project 2")
-            print("Or use the path:        lk project pkg/pool-quantamm")
+            print("Or use the path:        lk project path/to/project")
             return 0
 
         root = Path(selected["root"])
 
     try:
         result = project_tools.render_project_map(root)
-        if args and args[0] in {"json", "--json"}:
+        if json_mode:
             print(json.dumps(result, indent=2, default=str))
         return 0
     except Exception as error:
