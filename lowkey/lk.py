@@ -8230,7 +8230,96 @@ def run_version():
 def run_project_map(config, args):
     if project_tools is None:
         return fail("Project tools are not installed. Re-run install.sh from this checkout.")
+
     root = audit_context.foundry_project_root()
+    if not root:
+        return fail("Error: Lowkey could not resolve the current project root.")
+
+    # Keep the rich project map intact. When the current directory is a workspace
+    # containing multiple projects, first give the user a useful workspace view,
+    # then allow an explicit project number/path for the full deep-dive map.
+    if discover_nested_projects is not None and is_workspace_root is not None and is_workspace_root(root):
+        workspace_root = Path(root).resolve()
+        candidates = discover_nested_projects(workspace_root)
+
+        if args and args[0] in {"-h", "--help", "help"}:
+            print("Usage:")
+            print("  lk project")
+            print("  lk project <number>")
+            print("  lk project <path>")
+            print("  lk project --workspace")
+            print("")
+            print("From a workspace, 'lk project' shows the big picture.")
+            print("Use a project number or path to open the full contract/dependency/security map.")
+            return 0
+
+        if args and args[0] in {"--workspace", "workspace"}:
+            print("LOWKEY WORKSPACE OVERVIEW")
+            print("=" * 72)
+            print(f"Workspace : {workspace_root}")
+            print(f"Projects  : {len(candidates)}")
+            print()
+            for index, candidate in enumerate(candidates, 1):
+                languages = candidate.get("languages") or {}
+                language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
+                print(f"  {index:>2}. {candidate.get('relative')}  [{language_text}]")
+            print()
+            print("DEEP DIVE")
+            print("  lk project <number>   Full map for one project")
+            print("  lk project <path>     Full map for that project")
+            return 0
+
+        selected = None
+        if args:
+            selector = str(args[0]).strip()
+            if selector.isdigit():
+                index = int(selector)
+                if 1 <= index <= len(candidates):
+                    selected = candidates[index - 1]
+                else:
+                    return fail(f"Error: project number must be between 1 and {len(candidates)}.")
+            else:
+                selector_path = Path(selector).expanduser()
+                if not selector_path.is_absolute():
+                    selector_path = workspace_root / selector_path
+                selector_path = selector_path.resolve()
+                selected = next(
+                    (candidate for candidate in candidates
+                     if Path(candidate["root"]).resolve() == selector_path),
+                    None,
+                )
+                if selected is None:
+                    matches = [
+                        candidate for candidate in candidates
+                        if str(candidate.get("relative", "")).lower() == selector.lower()
+                        or str(candidate.get("name", "")).lower() == selector.lower()
+                    ]
+                    if len(matches) == 1:
+                        selected = matches[0]
+            if selected is None:
+                return fail(f"Error: no workspace project matched '{args[0]}'.")
+
+        if selected is None:
+            print("LOWKEY WORKSPACE OVERVIEW")
+            print("=" * 72)
+            print(f"Workspace : {workspace_root}")
+            print(f"Projects  : {len(candidates)}")
+            print()
+            print("This repository contains multiple projects. The full project map is still available;")
+            print("choose one explicitly so Lowkey does not mix unrelated packages together.")
+            print()
+            print("PROJECTS")
+            for index, candidate in enumerate(candidates, 1):
+                languages = candidate.get("languages") or {}
+                language_text = ", ".join(sorted(languages)) or str(candidate.get("backend") or "unknown")
+                print(f"  {index:>2}. {candidate.get('relative')}  [{language_text}]")
+            print()
+            print("Deep dive example: lk project 2")
+            print("Or use the path:        lk project pkg/pool-quantamm")
+            return 0
+
+        root = Path(selected["root"])
+
     try:
         result = project_tools.render_project_map(root)
         if args and args[0] in {"json", "--json"}:
@@ -8238,7 +8327,6 @@ def run_project_map(config, args):
         return 0
     except Exception as error:
         return fail(f"Project map failed: {error}", 1)
-
 
 def run_system_model(config, args):
     if system_model is None:
