@@ -32,6 +32,26 @@ class LowkeyCastTests(unittest.TestCase):
                 text=True,
             )
 
+    def test_pnpm_lockfile_v6_uses_compatible_corepack_pnpm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text('{"devDependencies":{"@openzeppelin/contracts":"^5.0.2"}}\n', encoding="utf-8")
+            (root / "pnpm-lock.yaml").write_text("lockfileVersion: 6.0\n", encoding="utf-8")
+            with patch.object(lk.shutil, "which", side_effect=lambda name: name == "corepack"):
+                command = lk._node_package_bootstrap_command(root)
+        self.assertEqual(command, ["corepack", "pnpm@8", "install", "--frozen-lockfile"])
+
+    def test_explicit_package_manager_pin_wins_over_lockfile_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"packageManager":"pnpm@9.15.0","devDependencies":{}}\n',
+                encoding="utf-8",
+            )
+            (root / "pnpm-lock.yaml").write_text("lockfileVersion: 6.0\n", encoding="utf-8")
+            with patch.object(lk.shutil, "which", side_effect=lambda name: name == "corepack"):
+                command = lk._node_package_bootstrap_command(root)
+        self.assertEqual(command, ["corepack", "pnpm@9.15.0", "install", "--frozen-lockfile"])
     def test_foundry_dependency_recovery_repairs_partial_node_modules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
