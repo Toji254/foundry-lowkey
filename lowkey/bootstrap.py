@@ -527,6 +527,14 @@ def _node_runtime_bin(root: Path) -> Path | None:
     return None
 
 
+def command_uses_node(command: Sequence[str]) -> bool:
+    """Return whether a subprocess is expected to execute through Node.js."""
+    if not command:
+        return False
+    first = Path(str(command[0])).name.lower()
+    return first in {"node", "npm", "npx", "pnpm", "yarn", "bun", "corepack", "hardhat"}
+
+
 def runtime_environment(root: str | os.PathLike[str] = ".") -> tuple[dict[str, str], str | None]:
     """Return an environment that honors an already-installed Node pin."""
     path = Path(root).expanduser().resolve()
@@ -840,7 +848,7 @@ def run_bootstrap(
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
-                env={**runtime_environment(cwd)[0], "CI": "1"},
+                env={**(runtime_environment(cwd)[0] if command_uses_node(command) else os.environ), "CI": "1"},
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
