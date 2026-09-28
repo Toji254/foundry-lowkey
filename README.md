@@ -427,6 +427,14 @@ A block can be pinned:
 lk fork https://your-rpc.example 18000000
 ~~~
 
+For repository-native Hardhat tests that pin a historical fork, Lowkey preserves the pinned block. If the project's configured RPC cannot serve that history, Lowkey does not substitute latest state. Set an archive-capable endpoint for the fallback with:
+
+~~~bash
+export LOWKEY_ARCHIVE_RPC=https://your-archive-rpc.example
+~~~
+
+The fallback starts a temporary local Hardhat JSON-RPC node at the exact pinned block and runs the project's tests against that local node. This keeps Hardhat-specific test RPC methods available and avoids changing the repository's test semantics.
+
 The fork is started on port 8546 by default so a normal development Anvil instance on 8545 can remain running.
 
 ## Cast shortcuts
