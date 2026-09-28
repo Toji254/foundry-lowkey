@@ -1004,6 +1004,17 @@ def _hardhat_fork_spec(root: Path) -> tuple[str, int] | None:
     return str(url), int(block_match.group(1))
 
 
+def _historical_state_unavailable(output: str | None) -> bool:
+    return bool(
+        output
+        and re.search(
+            r"missing trie node|historical state .* is not available|historical state .* unavailable|state 0x[0-9a-f]+ is not available",
+            output,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _find_free_local_port(start: int = 9545) -> int:
     for port in range(start, start + 20):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -1097,11 +1108,7 @@ def _run_hardhat_fork_fallback(
                 except Exception:
                     output = ""
             message = f"Lowkey local fork failed to start. {output}".strip()
-            if re.search(
-                r"missing trie node|historical state .* is not available|state 0x[0-9a-f]+ is not available",
-                output,
-                re.IGNORECASE,
-            ):
+            if _historical_state_unavailable(output):
                 return 1, message, "defer"
             return 1, message, "fail"
 
@@ -1220,11 +1227,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             test_code, test_output = _run(test_command, root)
             _report_step("hardhat tests", test_command, test_code, test_output)
 
-            if test_code != 0 and re.search(
-                r"historical state .* is not available|historical state .* unavailable",
-                test_output,
-                re.IGNORECASE,
-            ):
+            if test_code != 0 and _historical_state_unavailable(test_output):
                 fallback_result = _run_hardhat_fork_fallback(root, binary, test_command)
                 if fallback_result is not None:
                     fallback_code, fallback_output, fallback_status = fallback_result
