@@ -4850,12 +4850,11 @@ def _render_adversarial_probe_human(
     role = _adversarial_actor_role(step.actor)
     language = _human_language(model)
     subject = _human_subject(model)
-    function = _function_link(root, model, str(step.function))
-    args = ", ".join(_friendly_arg(value, actors) for value in step.args) or "∅"
-    if args == "∅":
-        call = f"{model.name}.{function}"
-    else:
-        call = f"{model.name}.{function}({args})" if "(" not in function else f"{model.name}.{function}"
+    function_name = str(step.function).split("(", 1)[0]
+    args = ", ".join(_friendly_arg(value, actors) for value in step.args)
+    call_expr = f"{function_name}({args})" if args else f"{function_name}()"
+    function = _function_link(root, model, call_expr)
+    call = f"{model.name}.{function}"
     why, lesson, quality = _adversarial_probe_why(step, model, actors)
 
     lines = [
@@ -4891,6 +4890,33 @@ def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]
     source_lines = [line for line in diagnostics if line.lower().startswith("source guard:")]
     source_text = " ".join(source_lines)
     actor = str(step.actor or "Caller")
+
+    # Show the actual boolean sent to acceptance/consent entry points.
+    # A typed signature such as acceptescrow(bool) is not enough for an audit trace.
+    inputs = _function_inputs(model, step.function)
+    bool_values = [
+        step.args[index]
+        for index, param in enumerate(inputs)
+        if index < len(step.args) and _canonical_type(param) == "bool"
+    ]
+    if (
+        step.status != "success"
+        and lower in {"accept", "acceptescrow", "confirm"}
+        and bool_values
+    ):
+        accepted = bool(bool_values[0])
+        if not accepted and any("require(accept" in line.lower() for line in source_lines):
+            return (
+                f"{actor} called {name}(false), and the source requires accept == true before the function can complete.",
+                "The false argument selects the rejection path; the later require(false) reverts the whole transaction, so earlier state writes are rolled back.",
+                "SOURCE + ACTUAL CALL",
+            )
+        if accepted:
+            return (
+                f"{actor} called {name}(true), so the visible require(accept) guard is satisfied; another precondition or state rule caused the revert.",
+                "Being a normal participant does not guarantee that the caller is the recorded recipient or that the escrow is in the right state.",
+                "SOURCE + ACTUAL CALL",
+            )
 
     if step.status == "success":
         if lower in {"renounceownership", "transferownership"}:
@@ -4994,9 +5020,11 @@ def _render_adversarial_probe_technical(
     status_word = "ACCEPTED" if step.status == "success" else "REVERTED"
     category = _adversarial_category(step)
     role = _adversarial_actor_role(step.actor)
-    function = _function_link(root, model, str(step.function))
-    args = ", ".join(_friendly_arg(value, actors) for value in step.args) or "∅"
-    call = f"{model.name}.{function}({args})" if args != "∅" else f"{model.name}.{function}()"
+    function_name = str(step.function).split("(", 1)[0]
+    args = ", ".join(_friendly_arg(value, actors) for value in step.args)
+    call_expr = f"{function_name}({args})" if args else f"{function_name}()"
+    function = _function_link(root, model, call_expr)
+    call = f"{model.name}.{function}"
     why, lesson, quality = _adversarial_probe_why(step, model, actors)
 
     lines = [
