@@ -2129,7 +2129,10 @@ class WalkthroughTests(unittest.TestCase):
                 result = walkthrough._forge_storage_layout(root, "Escrow")
             self.assertEqual(result, payload)
             mocked.assert_called_once()
-            self.assertEqual(mocked.call_args.args[0][-3:], ["Escrow", "storage-layout"] if False else mocked.call_args.args[0][-2:])
+            self.assertEqual(
+                mocked.call_args.args[0],
+                ["forge", "inspect", "--json", "Escrow", "storage-layout"],
+            )
     
 
 
