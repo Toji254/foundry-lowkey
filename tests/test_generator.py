@@ -506,6 +506,81 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertEqual(evidence["tools"]["slither_findings"], 2)
             self.assertEqual(evidence["tools"]["source_triage_markers"], 4)
 
+    def test_audit_candidate_does_not_attach_unrelated_focus_to_latest_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            context = {
+                "focus": {"signal_id": "SLITHER-NAMING"},
+                "signals": [
+                    {
+                        "id": "SLITHER-NAMING",
+                        "status": "investigating",
+                        "impact": "Informational",
+                        "confidence": "High",
+                        "check": "naming-convention",
+                        "title": "Naming convention",
+                        "file": "src/EthEscrow.sol",
+                        "line": 13,
+                        "function": None,
+                    },
+                    {
+                        "id": "SLITHER-RELEASE",
+                        "status": "investigating",
+                        "impact": "Informational",
+                        "confidence": "High",
+                        "check": "low-level-calls",
+                        "title": "Low-level external call",
+                        "file": "src/EthEscrow.sol",
+                        "line": 61,
+                        "function": "release()",
+                    },
+                ],
+                "latest": {
+                    "tx_hash": "0x" + "b" * 64,
+                    "function": "createescrow(uint256,address)",
+                },
+                "tools": {},
+            }
+            with patch.object(generator.audit_context, "load", return_value=context):
+                evidence = generator._audit_candidate(root)
+
+            self.assertIsNone(evidence["candidate"]["id"])
+
+    def test_audit_candidate_keeps_matching_focus_for_latest_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            context = {
+                "focus": {"signal_id": "SLITHER-RELEASE"},
+                "signals": [
+                    {
+                        "id": "SLITHER-OTHER",
+                        "status": "open",
+                        "impact": "High",
+                        "confidence": "High",
+                        "check": "reentrancy-eth",
+                        "function": "withdraw()",
+                    },
+                    {
+                        "id": "SLITHER-RELEASE",
+                        "status": "investigating",
+                        "impact": "Informational",
+                        "confidence": "High",
+                        "check": "low-level-calls",
+                        "title": "Low-level external call",
+                        "function": "release()",
+                    },
+                ],
+                "latest": {
+                    "tx_hash": "0x" + "c" * 64,
+                    "function": "release()",
+                },
+                "tools": {},
+            }
+            with patch.object(generator.audit_context, "load", return_value=context):
+                evidence = generator._audit_candidate(root)
+
+            self.assertEqual(evidence["candidate"]["id"], "SLITHER-RELEASE")
+
     def test_generate_test_writes_evidence_brief(self):
         target = "0x" + "1" * 40
         with tempfile.TemporaryDirectory() as tmp:
