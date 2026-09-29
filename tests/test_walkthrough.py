@@ -1855,6 +1855,19 @@ class WalkthroughTests(unittest.TestCase):
         self.assertEqual(stories[0].signal, "BLOCKED")
         self.assertEqual(stories[0].actions, [])
 
+    def test_replay_story_maps_live_evidence_to_repeated_payout_target(self):
+        story = walkthrough_finding_patterns.core.WalkthroughStory(
+            story_id="RP-01",
+            title="Replay probe",
+            goal="repeat payout",
+            actions=[],
+        )
+        setup = walkthrough.Step(1, "Attacker", "Escrow", "0x" + "2" * 40, "createescrow(uint256,address)", [])
+        first = walkthrough.Step(2, "Attacker", "Escrow", "0x" + "2" * 40, "release()", [])
+        second = walkthrough.Step(3, "Attacker", "Escrow", "0x" + "2" * 40, "release()", [])
+        self.assertIs(walkthrough_finding_patterns._observation_step_for_story(story, [setup, first, second]), first)
+
+
     def test_replay_story_assessment_uses_last_two_steps_after_setup(self):
         actor = walkthrough.Actor("Attacker", "0x" + "1" * 40, 2)
         story = walkthrough_finding_patterns.core.WalkthroughStory(
