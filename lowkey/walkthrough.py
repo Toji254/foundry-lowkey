@@ -5395,6 +5395,33 @@ def _execute_stateful_story_action(
             error=None if ok else "Anvil time advance failed",
         )
 
+    if action.get("kind") == "fund_target":
+        target = str(action.get("address") or "")
+        amount = int(action.get("amount") or 0)
+        step = Step(
+            index=index,
+            actor=actor.name,
+            contract="AnvilLab",
+            address=target,
+            function="setBalance(uint256)",
+            args=[amount],
+            reason=str(action.get("reason") or "provision local native reserve"),
+            inferred=False,
+        )
+        if not is_address(target) or amount <= 0:
+            step.status = "reverted"
+            step.error = "invalid local reserve target or amount"
+            return step
+        _rpc_call(rpc, "anvil_setBalance", [target, hex(amount)])
+        raw_balance = _rpc_call(rpc, "eth_getBalance", [target, "latest"])
+        try:
+            ok = int(raw_balance, 16) == amount if isinstance(raw_balance, str) else False
+        except (TypeError, ValueError):
+            ok = False
+        step.status = "success" if ok else "reverted"
+        step.error = None if ok else "Anvil could not provision the requested native reserve"
+        return step
+
     address = str(action.get("address") or "")
     function = str(action.get("function") or "")
     args = list(action.get("args") or [])
