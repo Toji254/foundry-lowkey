@@ -1799,5 +1799,44 @@ class WalkthroughTests(unittest.TestCase):
         self.assertNotIn('Treasury', [actor.name for actor in actors])
 
 
+    def test_adversarial_human_view_shows_actual_call_arguments(self):
+        model = walkthrough.ContractModel(
+            name="Escrow",
+            source="src/EthEscrow.sol",
+            artifact="out/EthEscrow.sol/Escrow.json",
+            abi=[{
+                "type": "function",
+                "name": "acceptescrow",
+                "inputs": [{"name": "accept", "type": "bool"}],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+            functions=["acceptescrow(bool)"],
+            function_locations={"acceptescrow": 43},
+            semantics={"acceptescrow()": {"guards": ['require(accept, "rejected")']}},
+        )
+        step = walkthrough.Step(
+            6,
+            "Bob",
+            "Escrow",
+            "0x" + "3" * 40,
+            "acceptescrow(bool)",
+            [False],
+            status="reverted",
+        )
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        rendered = walkthrough._render_adversarial_probe_human(
+            pathlib.Path("/tmp/project"), step, model, actors
+        )
+        joined = "
+".join(rendered)
+        self.assertIn("Escrow.acceptescrow(false)", joined)
+        self.assertIn("source requires accept == true", joined)
+        self.assertIn("SOURCE + ACTUAL CALL", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
