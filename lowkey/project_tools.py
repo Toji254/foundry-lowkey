@@ -241,6 +241,8 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         root_path / "hardhat.config.ts",
     ]
     brownie_config = root_path / "brownie-config.yaml"
+    scarb_toml = root_path / "Scarb.toml"
+    cairo_files = _walk_files(root_path, {".cairo"})
 
     sol_files = project_source_files(root_path, {"sol"})
     vy_files = project_source_files(root_path, {"vy", "vyi"})
@@ -254,6 +256,7 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         package_json.exists() and bool(re.search(r'["\']hardhat["\']', package_text))
     )
     has_brownie = brownie_config.exists()
+    has_scarb = scarb_toml.exists() or bool(cairo_files)
 
     languages: list[str] = []
     if sol_files:
@@ -264,6 +267,8 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         languages.append("javascript/typescript")
     if pyproject.exists():
         languages.append("python")
+    if has_scarb:
+        languages.append("cairo")
 
     systems: list[str] = []
     if has_foundry:
@@ -276,6 +281,8 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         systems.append("hardhat")
     if has_brownie:
         systems.append("brownie")
+    if has_scarb:
+        systems.append("scarb")
 
     if has_foundry and has_vyper:
         kind = "mixed-foundry-vyper"
@@ -289,6 +296,8 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         kind = "hardhat"
     elif has_brownie:
         kind = "brownie"
+    elif has_scarb:
+        kind = "cairo-starknet"
     elif pyproject.exists():
         kind = "python"
     elif package_json.exists():
@@ -322,6 +331,7 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
             "package_json": _relative(package_json, root_path) if package_json.exists() else None,
             "hardhat": next((_relative(path, root_path) for path in hardhat_configs if path.exists()), None),
             "brownie": _relative(brownie_config, root_path) if brownie_config.exists() else None,
+            "scarb": _relative(scarb_toml, root_path) if scarb_toml.exists() else None,
         },
         "python": {
             "requires_python": _python_requirement(pyproject_text) if pyproject.exists() else None,
