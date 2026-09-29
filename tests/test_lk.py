@@ -20,6 +20,20 @@ spec.loader.exec_module(lk)
 
 
 class LowkeyCastTests(unittest.TestCase):
+    def test_parse_lab_marker_preserves_default_and_custom_marker_contract(self):
+        target = "0x" + "4" * 40
+        created = "0x" + "5" * 40
+
+        self.assertEqual(
+            lk.parse_lab_marker(f"LOWKEY_TARGET {target}"),
+            target,
+        )
+        self.assertEqual(
+            lk.parse_lab_marker(f"LOWKEY_CREATE {created}", "LOWKEY_CREATE"),
+            created,
+        )
+        self.assertIsNone(lk.parse_lab_marker("no lab target here"))
+
     def test_tracked_scarb_manifest_drift_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
