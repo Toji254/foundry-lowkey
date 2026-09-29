@@ -656,46 +656,129 @@ def _build_replay_stories(
     actors: list[core.Actor],
     targets: list[tuple[str, str, core.ContractModel]],
     rng_seed: int,
+    root: Path | None = None,
 ) -> list[core.WalkthroughStory]:
     stories: list[core.WalkthroughStory] = []
-    rng = __import__("random").Random(rng_seed)
-    observed = core._merge_protocol_observations(config.get("_walkthrough_observed") or {}, config=config)
-    for label, address, model in targets:
+    observed = core._merge_protocol_observations(
+        config.get("_walkthrough_observed") or {},
+        config=config,
+    )
+
+    for _label, address, model in targets:
         for fn in core._adversarial_functions(model):
             name = str(fn.get("name") or "")
             if not _sensitive_name(name, _pattern("REPLAY-001")["keywords"]):
                 continue
             if not actors:
                 continue
+
+            # Replay must start from a state in which the target action is actually
+            # executable. Reuse Lowkey's normal lifecycle planner rather than
+            # inventing a second, protocol-specific setup engine.
             actor = actors[2] if len(actors) > 2 else actors[0]
-            args = [
-                core._random_sol_value(
-                    param,
-                    actors,
-                    address,
-                    rng,
-                    observed,
-                    model,
-                    name,
+            replay_actors = [actor, actor, actor]
+            planned = core.plan_workflow(
+                model,
+                replay_actors,
+                address,
+                0,
+                24,
+                observed,
+                root=root,
+            )
+            target_index = next(
+                (
+                    index for index, step in enumerate(planned)
+                    if str(step.function or "").split("(", 1)[0].lower() == name.lower()
+                ),
+                None,
+            )
+
+            if target_index is None:
+                stories.append(core.WalkthroughStory(
+                    story_id=f"RP-{len(stories)+1:02d}",
+                    title=f"Replay probe: {model.name}.{name}",
+                    goal="Does the same economic action pay again when repeated by the same actor?",
+                    actions=[],
+                    signal="BLOCKED",
+                    evidence=[
+                        "Lowkey could not derive a valid lifecycle setup that reaches the target payout action.",
+                    ],
+                ))
+                if len(stories) >= 4:
+                    return stories
+                continue
+
+            setup_steps = planned[:target_index]
+            if not setup_steps:
+                stories.append(core.WalkthroughStory(
+                    story_id=f"RP-{len(stories)+1:02d}",
+                    title=f"Replay probe: {model.name}.{name}",
+                    goal="Does the same economic action pay again when repeated by the same actor?",
+                    actions=[],
+                    signal="BLOCKED",
+                    evidence=[
+                        "No source-guided setup action was available before the payout path; Lowkey refused to test an invalid starting state.",
+                    ],
+                ))
+                if len(stories) >= 4:
+                    return stories
+                continue
+
+            actions: list[dict[str, Any]] = []
+            for setup in setup_steps[-4:]:
+                setup_fn = next(
+                    (
+                        item for item in model.abi
+                        if item.get("type") == "function"
+                        and core._signature(item) == setup.function
+                    ),
+                    None,
                 )
-                for param in _function_inputs(model, fn)
-            ]
-            signature = core._signature(fn)
-            action = {
+                value = int(setup.value_wei or 0)
+                if setup_fn and setup_fn.get("stateMutability") == "payable" and value <= 0:
+                    # Economic setup needs a nonzero payment to create a real entitlement.
+                    # One wei is deliberately the smallest possible local amount.
+                    value = 1
+                actions.append({
+                    "kind": "call",
+                    "actor": actor.name,
+                    "contract": setup.contract,
+                    "address": setup.address,
+                    "function": setup.function,
+                    "args": list(setup.args),
+                    "value": value,
+                    "reason": "replay setup: establish the target action's source-guided preconditions",
+                })
+
+            target_signature = core._signature(fn)
+            target_action = {
                 "kind": "call",
                 "actor": actor.name,
                 "contract": model.name,
                 "address": address,
-                "function": signature,
-                "args": args,
+                "function": target_signature,
+                "args": list(
+                    core._random_sol_value(
+                        param,
+                        replay_actors,
+                        address,
+                        __import__("random").Random(rng_seed),
+                        observed,
+                        model,
+                        name,
+                    )
+                    for param in _function_inputs(model, fn)
+                ),
                 "value": 0,
                 "reason": "real-world pattern probe: execute the same payout path twice",
             }
+            actions.extend([dict(target_action), dict(target_action)])
             stories.append(core.WalkthroughStory(
                 story_id=f"RP-{len(stories)+1:02d}",
                 title=f"Replay probe: {model.name}.{name}",
                 goal="Does the same economic action pay again when repeated by the same actor?",
-                actions=[dict(action), dict(action)],
+                actions=actions,
             ))
             if len(stories) >= 4:
                 return stories
@@ -707,19 +790,31 @@ def assess_replay_story(
     steps: list[core.Step],
     actors: list[core.Actor],
 ) -> None:
+    if story.signal == "BLOCKED" and not story.actions:
+        return
     if len(steps) < 2:
         story.signal = "BLOCKED"
-        story.evidence = ["Replay probe did not produce two executable steps."]
+        story.evidence = ["Replay probe did not produce the two repeated payout actions."]
         return
 
-    first, second = steps[0], steps[1]
+    setup_steps = steps[:-2]
+    if any(step.status != "success" for step in setup_steps):
+        story.signal = "BLOCKED"
+        failed = next(step for step in setup_steps if step.status != "success")
+        story.evidence = [
+            "The replay setup did not establish the target action's preconditions.",
+            f"setup failed at {failed.function}: {failed.error_reason or failed.error or 'unknown failure'}",
+        ]
+        return
+
+    first, second = steps[-2], steps[-1]
     if first.status != "success":
         story.signal = "NOT_TRIGGERED"
-        story.evidence = ["The first call was rejected, so a replay condition was not reached."]
+        story.evidence = ["The first payout call was rejected, so a replay condition was not reached."]
         return
     if second.status != "success":
         story.signal = "NOT_REPRODUCED"
-        story.evidence = ["The first call succeeded but the repeated call was rejected."]
+        story.evidence = ["The first payout call succeeded but the repeated call was rejected."]
         return
 
     actor = next((a for a in actors if a.name == second.actor), None)
@@ -734,13 +829,13 @@ def assess_replay_story(
         story.signal = "CONFIRMED"
         gain = f"{token_gain / 10**18:.4f} token units" if token_gain > 0 else f"{native_gain} wei"
         story.evidence = [
-            "the same call succeeded twice from the same actor",
-            f"the second call produced a positive value delta: {gain}",
+            "the same payout call succeeded twice from the same actor after a valid setup",
+            f"the second payout call produced a positive value delta: {gain}",
         ]
     else:
         story.signal = "REVIEW"
         story.evidence = [
-            "the same call succeeded twice, but this run did not prove a positive payout/state delta on the actor",
+            "the same payout call succeeded twice after a valid setup, but this run did not prove a positive payout/state delta on the actor",
             "the function may intentionally support repeated partial withdrawals",
         ]
 
@@ -1058,7 +1153,7 @@ def run(
 ) -> tuple[list[PatternObservation], list[core.WalkthroughStory], list[core.Step]]:
     """Run source patterns plus a small set of isolated live probes."""
     observations = scan_project(root, models)
-    replay_stories = _build_replay_stories(config, actors, targets, seed)[:3]
+    replay_stories = _build_replay_stories(config, actors, targets, seed, root=root)[:3]
     initializer_stories = _build_initializer_stories(config, actors, targets, seed)[:1]
     deadline_stories = _build_deadline_stories(config, actors, targets, seed, core._block_timestamp(rpc))[:2]
     zero_address_stories = _build_zero_address_stories(config, actors, targets, seed)[:2]
