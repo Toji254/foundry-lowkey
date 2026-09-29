@@ -304,7 +304,17 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         if _sensitive_name(name, _pattern("REPLAY-001")["keywords"]):
             has_user_key = bool(re.search(r"\[[^\]]*(msg\.sender|_msgSender|caller|owner|user)", body))
             has_state_write = bool(re.search(r"\b(claimed|claimedAmount|withdrawn|used|spent|redeemed|nonce|balance|balances|entitled|remaining)\w*\s*\[?[^;=]*\]?\s*(?:[-+]?=|\+\+|--)", body))
-            if has_user_key or has_state_write:
+            has_native_payout = bool(re.search(r"\.call\s*\{\s*value\s*:|\.transfer\s*\(|\.send\s*\(", body))
+            if has_user_key or has_state_write or has_native_payout:
+                evidence = [
+                    "This function looks like an economic claim/withdraw/redeem path.",
+                ]
+                if has_state_write:
+                    evidence.append("The body writes user/entitlement state; this is the state that must be consumed exactly once.")
+                elif has_native_payout:
+                    evidence.append("The function performs a native-value payout but does not show an entitlement-consumption write in this function.")
+                elif has_user_key:
+                    evidence.append("The function is keyed by caller/user state; replay safety depends on how that state is consumed.")
                 results.append(_result(
                     "REPLAY-001",
                     _pattern("REPLAY-001")["title"],
@@ -312,12 +322,9 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
                     name,
                     source,
                     line,
-                    [
-                        "This function looks like an economic claim/withdraw/redeem path.",
-                        "The body also writes user/entitlement state; this is the state that must be consumed exactly once.",
-                    ],
+                    evidence,
                     _pattern("REPLAY-001")["logic"],
-                    "Run the same concrete call twice from the same actor and compare the second call's value/state delta.",
+                    "Run the same concrete call twice from the same actor with enough protocol reserve and compare the second call's value/state delta.",
                     _pattern("REPLAY-001")["provenance"],
                 ))
 
@@ -773,6 +780,16 @@ def _build_replay_stories(
                 "value": 0,
                 "reason": "real-world pattern probe: execute the same payout path twice",
             }
+            setup_value = sum(int(step.value_wei or 0) for step in setup_steps)
+            if setup_value > 0:
+                actions.append({
+                    "kind": "fund_target",
+                    "actor": actor.name,
+                    "contract": "AnvilLab",
+                    "address": address,
+                    "amount": max(2, setup_value * 2),
+                    "reason": "replay harness: provision enough native reserve for two payout attempts",
+                })
             actions.extend([dict(target_action), dict(target_action)])
             stories.append(core.WalkthroughStory(
                 story_id=f"RP-{len(stories)+1:02d}",
