@@ -216,6 +216,18 @@ class BootstrapTests(unittest.TestCase):
                 ["cargo", "fetch", "--locked"],
             )
 
+    def test_failure_classifier_marks_package_solver_conflicts_as_hard_dependency_conflicts(self):
+        conflict = bootstrap.classify_build_failure(
+            "error: version solving failed: staking depends on snforge_std >=0.64.0, <0.65.0 "
+            "and starkware_utils_testing depends on snforge_std >=0.34.0, <0.35.0; "
+            "staking is forbidden.",
+            ["scarb", "build"],
+        )
+
+        self.assertEqual(conflict["category"], "dependency_conflict")
+        self.assertFalse(conflict["repairable"])
+        self.assertIn("mutually incompatible", conflict["reason"])
+
     def test_failure_classifier_does_not_turn_source_errors_into_dependency_repairs(self):
         dependency = bootstrap.classify_build_failure(
             "Error: source '@openzeppelin/contracts/token/ERC20.sol' not found",
