@@ -423,8 +423,19 @@ def _workspace_commands(
     backend = str((info or {}).get("backend") or "").lower()
     build_backend = str((info or {}).get("build_backend") or "").lower()
     languages = (info or {}).get("languages") or {}
-    rust_relevant = backend in {"cargo", "rust"} or build_backend == "cargo" or bool(languages.get("rust"))
-    go_relevant = backend == "go" or build_backend == "go" or bool(languages.get("go"))
+
+    # Project metadata has historically crossed a few internal boundaries where
+    # languages was represented as either a count mapping or a simple name list.
+    # Bootstrap must accept both forms instead of crashing the whole lab.
+    def _language_enabled(name: str) -> bool:
+        if isinstance(languages, dict):
+            return bool(languages.get(name))
+        if isinstance(languages, (list, tuple, set)):
+            return any(str(item).strip().lower() == name for item in languages)
+        return False
+
+    rust_relevant = backend in {"cargo", "rust"} or build_backend == "cargo" or _language_enabled("rust")
+    go_relevant = backend == "go" or build_backend == "go" or _language_enabled("go")
     mix_relevant = backend in {"mix", "elixir"} or build_backend == "mix"
     maven_relevant = backend == "maven" or build_backend == "maven"
     gradle_relevant = backend == "gradle" or build_backend == "gradle"
