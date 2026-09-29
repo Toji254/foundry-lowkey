@@ -20,6 +20,36 @@ spec.loader.exec_module(lk)
 
 
 class LowkeyCastTests(unittest.TestCase):
+    def test_tracked_scarb_manifest_drift_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            nested = root / "workspace" / "app"
+            nested.mkdir(parents=True)
+            manifest = root / "Scarb.toml"
+            manifest.write_text('[workspace]\n[workspace.dependencies]\nsnforge_std = "0.34.0"\n', encoding="utf-8")
+
+            subprocess.run(["git", "init"], cwd=root, capture_output=True, text=True, check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Lowkey Tests"],
+                cwd=root, capture_output=True, text=True, check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "lowkey-tests@example.invalid"],
+                cwd=root, capture_output=True, text=True, check=True,
+            )
+            subprocess.run(["git", "add", "Scarb.toml"], cwd=root, capture_output=True, text=True, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "initial"],
+                cwd=root, capture_output=True, text=True, check=True,
+            )
+
+            manifest.write_text('[workspace]\n[workspace.dependencies]\nsnforge_std = "0.64.0"\n', encoding="utf-8")
+
+            self.assertEqual(
+                lk._tracked_scarb_manifest_drift(nested),
+                ["Scarb.toml"],
+            )
+
     def run_cli(self, *args):
         with tempfile.TemporaryDirectory() as home:
             env = os.environ.copy()
