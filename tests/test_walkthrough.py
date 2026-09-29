@@ -2114,7 +2114,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("Escrow", rendered)
         self.assertIn("0x99999999…99999999", rendered)
         self.assertNotIn("not live", rendered)
-        self.assertIn("no source-level first-party cross-contract edge resolved", rendered)
+        self.assertIn("source relationships: none resolved", rendered)
 
     def test_native_value_flow_separates_gas_from_protocol_value(self):
         step = walkthrough.Step(
