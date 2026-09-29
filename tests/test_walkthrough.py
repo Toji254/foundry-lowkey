@@ -1504,6 +1504,24 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("▼",rendered)
         self.assertIn("◀ NOW",rendered)
 
+    def test_actor_rpc_setup_does_not_reset_funded_account(self):
+        calls = []
+
+        def rpc(_url, method, params=None):
+            calls.append((method, params))
+            if method == "eth_getBalance":
+                return hex(2 * 10**18)
+            return None
+
+        with patch.object(walkthrough, "_rpc_call", side_effect=rpc):
+            walkthrough._actor_rpc_setup("http://127.0.0.1:8545", "0x" + "1" * 40)
+
+        methods = [method for method, _params in calls]
+        self.assertIn("anvil_impersonateAccount", methods)
+        self.assertIn("eth_getBalance", methods)
+        self.assertNotIn("anvil_setBalance", methods)
+
+
     def test_token_balance_lines_show_real_deltas(self):
         actor=walkthrough.Actor("Alice","0x"+"1"*40,0)
         step=walkthrough.Step(1,"Alice","Pool","0x"+"2"*40,"stake(uint256)",[1],status="success")
