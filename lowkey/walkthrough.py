@@ -4257,8 +4257,17 @@ def _cast_json(host: Any, args: list[str], config: dict[str, Any]) -> Any:
 
 
 def _actor_rpc_setup(rpc: str, address: str) -> None:
+    """Impersonate a local actor without resetting an already-funded account."""
     _rpc_call(rpc, "anvil_impersonateAccount", [address])
-    _rpc_call(rpc, "anvil_setBalance", [address, hex(10**20)])
+    raw_balance = _rpc_call(rpc, "eth_getBalance", [address, "latest"])
+    try:
+        balance = int(raw_balance, 16)
+    except (TypeError, ValueError):
+        balance = 0
+    # Only top up genuinely empty/low local actors. Never reset a funded account
+    # between the before/after balance snapshots used by live walkthrough steps.
+    if balance < 10**18:
+        _rpc_call(rpc, "anvil_setBalance", [address, hex(10**20)])
 
 
 def _send(
@@ -8046,6 +8055,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.failure_origin = verify_origin
             step.diagnostics.extend(verify_lines)
 
+            # Prepare/impersonate before the observation interval begins. Any top-up
+            # performed here belongs to setup, not the live transaction's balance delta.
+            _actor_rpc_setup(rpc, actor.address)
             balance_addresses = [a.address for a in actors] + [node.address for node in runtime]
             step.balance_before = _snapshot_balances(rpc, balance_addresses)
             step.token_balance_before = _snapshot_token_balances(
@@ -8105,10 +8117,23 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                         if hasattr(host, "save_config"):
                             host.save_config(config)
 
+                # Snapshot the main transaction immediately. Environment-preparation
+                # transactions that follow are separate live interactions and must not
+                # contaminate this step's before/after evidence.
+                after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors], step.args + list(system.values()))
+                step.balance_after = _snapshot_balances(rpc, balance_addresses)
+                step.token_balance_after = _snapshot_token_balances(
+                    rpc, observed.get("staketoken"),
+                    [a.address for a in actors] + [node.address for node in runtime],
+                )
+                step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
+                step.runtime_contracts=[asdict(x) for x in runtime]
+
                 # Record the actual protocol interaction before any environment
                 # preparation that it causes. This preserves create -> discover ->
                 # approve ordering in the live path and saved evidence.
                 steps.append(step); completed.add(key)
+                draw(step, after)
 
                 # Visible local-lab prerequisite: once a real pool clone exists,
                 # approve the recorded mock stake token for that clone.
@@ -8135,15 +8160,6 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                         if approval:
                             draw(approval)
 
-                after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors], step.args + list(system.values()))
-                step.balance_after = _snapshot_balances(rpc, balance_addresses)
-                step.token_balance_after = _snapshot_token_balances(
-                    rpc, observed.get("staketoken"),
-                    [a.address for a in actors] + [node.address for node in runtime],
-                )
-                step.storage_before=before; step.storage_after=after; step.storage_changes=_storage_changed(before,after)
-                step.runtime_contracts=[asdict(x) for x in runtime]
-                draw(step, after)
                 for node in discovered:
                     child=next((m for m in models if m.name==node.model),None)
                     if not child:
