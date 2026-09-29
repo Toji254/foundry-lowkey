@@ -818,6 +818,7 @@ contract LowkeyPoC_{ident} is Script {{
 
         // Raw call is intentional: it replays exact calldata while you are still learning the ABI.
         // Later, replace this with a typed interface call once the contract behavior is understood.
+        // forge-lint: disable-next-line low-level-calls
         (bool success, bytes memory returndata) =
             TARGET.call{{value: {_value(value)}}}(hex"{calldata}");
 
