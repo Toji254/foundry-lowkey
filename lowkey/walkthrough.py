@@ -2866,7 +2866,7 @@ def _render_interaction_graph_full(
     elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
         lines.append(f"  │   token flow: {contract} ──▶ {actor}")
 
-duplicate runtime renderer    if step.discovered_contracts:
+if step.discovered_contracts:
         lines += ["  │", "  │   NEW CONTRACTS DISCOVERED"]
         for node in step.discovered_contracts[:5]:
             lines.append(f"  │   ├─ {ARROW} {node.get('label') or node.get('model')} {_addr(node.get('address'))} [{node.get('relation') or 'contract'}]")
