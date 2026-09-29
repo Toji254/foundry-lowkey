@@ -3649,6 +3649,40 @@ def withdraw(amount: uint256):
         self.assertIn("LOWKEY FUNCTION FOCUS", rendered)
         self.assertIn("Focus stores an audit signal, not a function selection.", rendered)
 
+    def test_actor_rebinds_anvil_default_profile(self):
+        old = '0x' + '1' * 40
+        new = '0x' + '2' * 40
+        config = {
+            'actor': 'Alice',
+            'wallets': {
+                'Alice': {'source': 'anvil-default', 'anvil_index': 0, 'address': old},
+            },
+            'labels': {old: 'Alice'},
+        }
+        info = {'url': 'http://127.0.0.1:8545', 'accounts': [old, '0x' + '3' * 40, '0x' + '4' * 40, new]}
+        with patch.object(lk, 'anvil_rpc_info', return_value=info), patch.object(lk, 'save_config'):
+            result = lk.select_anvil_actor(config, 3, 'Alice')
+        self.assertEqual(result, 0)
+        self.assertEqual(config['wallets']['Alice']['anvil_index'], 3)
+        self.assertEqual(config['wallets']['Alice']['address'], new)
+        self.assertNotIn(old, config.get('labels', {}))
+        self.assertEqual(lk.assigned_anvil_address(config, new), 'Alice')
+        self.assertIsNone(lk.assigned_anvil_address(config, old))
+
+    def test_internal_lab_deployer_does_not_shadow_public_actor(self):
+        address = '0x' + '1' * 40
+        config = {
+            'actor': 'Alice',
+            'wallets': {
+                'Alice': {'source': 'anvil-default', 'anvil_index': 0, 'address': address},
+            },
+            'labels': {address: 'Alice'},
+        }
+        lk._ensure_lab_deployer(config, address, 0)
+        self.assertEqual(config['actor'], 'Alice')
+        self.assertTrue(config['wallets']['lab-deployer']['internal'])
+        self.assertEqual(lk.assigned_anvil_address(config, address), 'Alice')
+
 
 if __name__ == "__main__":
     unittest.main()

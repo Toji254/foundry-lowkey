@@ -337,25 +337,62 @@ def derive_default_anvil_key(index):
     match=re.search(r"0x[0-9a-fA-F]{64}",out or "")
     return normalize_private_key(match.group(0)) if match else None
 
+INTERNAL_WALLET_NAMES = {'lab-deployer', 'lowkey'}
+
+def wallet_is_internal(name, entry):
+    return (
+        str(name or '').lower() in INTERNAL_WALLET_NAMES
+        or (isinstance(entry, dict) and bool(entry.get('internal')))
+    )
+
 def wallet_entry_kind(entry):
     if isinstance(entry,dict):
-        if entry.get("source") == "anvil-default": return f"anvil #{entry.get('anvil_index','?')}"
-        if entry.get("env"): return "env"
-        if entry.get("private_key"): return "key"
-    return "key"
+        if entry.get('source') == 'anvil-default': return f"anvil #{entry.get('anvil_index','?')}"
+        if entry.get('env'): return 'env'
+        if entry.get('private_key'): return 'key'
+    return 'key'
 
 def assigned_anvil_index(config,index):
-    for name,entry in config.get("wallets",{}).items():
-        if isinstance(entry,dict) and entry.get("source")=="anvil-default" and str(entry.get("anvil_index"))==str(index):
+    for name,entry in config.get('wallets',{}).items():
+        if wallet_is_internal(name, entry):
+            continue
+        if isinstance(entry,dict) and entry.get('source')=='anvil-default' and str(entry.get('anvil_index'))==str(index):
             return name
     return None
 
 def assigned_anvil_address(config,address):
-    for name,entry in config.get("wallets",{}).items():
-        if isinstance(entry,dict) and str(entry.get("address","")).lower()==str(address).lower():
+    for name,entry in config.get('wallets',{}).items():
+        if wallet_is_internal(name, entry):
+            continue
+        if isinstance(entry,dict) and str(entry.get('address','')).lower()==str(address).lower():
             return name
     return None
 
+def _ensure_lab_deployer(config, address, index=0):
+    '''Keep the deployment signer separate from user-facing actor profiles.'''
+    address = str(address or '')
+    current = config.get('actor')
+    public_same_address = None
+    for name, entry in (config.get('wallets', {}) or {}).items():
+        if wallet_is_internal(name, entry) or not isinstance(entry, dict):
+            continue
+        if str(entry.get('address', '')).lower() == address.lower():
+            public_same_address = name
+            break
+    config.setdefault('wallets', {})['lab-deployer'] = {
+        'source': 'anvil-default',
+        'anvil_index': int(index),
+        'address': address,
+        'internal': True,
+    }
+    if config.get('labels', {}).get(address) == 'lab-deployer':
+        config['labels'].pop(address, None)
+    if config.get('labels', {}).get(address.lower()) == 'lab-deployer':
+        config['labels'].pop(address.lower(), None)
+    current_entry = config.get('wallets', {}).get(current) if current else None
+    if not current or wallet_is_internal(current, current_entry):
+        config['actor'] = public_same_address or 'lab-deployer'
+    return public_same_address
 
 def select_anvil_actor(config,index,name):
     try:
@@ -402,17 +439,32 @@ def select_anvil_actor(config,index,name):
             config.setdefault("wallets",{}).pop(assigned_address,None)
         else:
             return fail(f"Error: address {address} is already assigned to '{assigned_address}'.")
-    existing=config.get("wallets",{}).get(name)
-    if existing and not (
-        isinstance(existing,dict)
-        and existing.get("source")=="anvil-default"
-        and str(existing.get("anvil_index"))==str(index)
-    ):
-        return fail(f"Error: wallet profile '{name}' already exists. Pick another actor name.")
-    config.setdefault("wallets",{})[name]={
-        "source":"anvil-default",
-        "anvil_index":index,
-        "address":address,
+    existing=config.get('wallets',{}).get(name)
+    if existing and not wallet_is_internal(name, existing):
+        if (
+            isinstance(existing, dict)
+            and existing.get('source') == 'anvil-default'
+            and str(existing.get('anvil_index')) != str(index)
+        ):
+            old_address = str(existing.get('address') or '')
+            config.setdefault('wallets', {}).pop(name, None)
+            if old_address and config.get('labels', {}).get(old_address) == name:
+                config['labels'].pop(old_address, None)
+        elif not (
+            isinstance(existing,dict)
+            and existing.get('source')=='anvil-default'
+            and str(existing.get('anvil_index'))==str(index)
+        ):
+            return fail(
+                f"Error: wallet profile '{name}' uses an explicit key/env and cannot be rebound. "
+                "Use a new actor name or remove that profile first."
+            )
+    elif existing and wallet_is_internal(name, existing):
+        return fail(f"Error: '{name}' is reserved for Lowkey's internal deployment signer.")
+    config.setdefault('wallets',{})[name]={
+        'source':'anvil-default',
+        'anvil_index':index,
+        'address':address,
     }
     config.setdefault("labels",{})[address]=name
     config["actor"]=name
@@ -3459,13 +3511,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
                 break
 
     contract_name = target_name or str(fixture.get("contract") or "auto-detected")
-    config["actor"] = "lab-deployer"
-    config.setdefault("wallets", {})["lab-deployer"] = {
-        "source": "anvil-default",
-        "anvil_index": 0,
-        "address": accounts[0],
-    }
-    config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+    _ensure_lab_deployer(config, accounts[0], 0)
     config["lab_harness"] = {
         "type": "test-fixture-full-state",
         "fixture": fixture.get("relative"),
@@ -5223,13 +5269,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
         and isinstance(current_entry, dict)
         and current_entry.get("source") not in {"anvil-default", "anvil-impersonated"}
     ):
-        config["actor"] = "lab-deployer"
-        config.setdefault("wallets", {})["lab-deployer"] = {
-            "source": "anvil-default",
-            "anvil_index": 0,
-            "address": accounts[0],
-        }
-        config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
+        _ensure_lab_deployer(config, accounts[0], 0)
     set_lab_target(config, root, target, contract, path)
 
     print(f"Target  : {contract} -> {target}")
@@ -7644,13 +7684,7 @@ def _bind_detected_anvil(config, info):
         )
 
     if not current_actor or not keep_actor:
-        config.setdefault("wallets", {})["lab-deployer"] = {
-            "source": "anvil-default",
-            "anvil_index": 0,
-            "address": account0,
-        }
-        config.setdefault("labels", {})[account0] = "lab-deployer"
-        config["actor"] = "lab-deployer"
+        _ensure_lab_deployer(config, account0, 0)
         # The actor profile contains only public account metadata; the private key
         # is still derived on demand from Anvil's default mnemonic.
         save_config(config)

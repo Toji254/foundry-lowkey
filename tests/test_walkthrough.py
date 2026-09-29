@@ -1775,6 +1775,29 @@ class WalkthroughTests(unittest.TestCase):
         self.assertTrue(any("Demo.ping()" in line for line in rendered))
         self.assertFalse(any("Demo.ping()()" in line for line in rendered))
 
+    def test_walkthrough_actors_use_configured_profiles_and_do_not_fabricate_treasury(self):
+        class Host:
+            def anvil_rpc_info(self, config):
+                return {'accounts': [
+                    '0x' + '1' * 40,
+                    '0x' + '2' * 40,
+                    '0x' + '3' * 40,
+                    '0x' + '4' * 40,
+                ]}
+
+        addresses = ['0x' + str(i) * 40 for i in range(1, 5)]
+        config = {
+            'wallets': {
+                'Alice': {'source': 'anvil-default', 'anvil_index': 0, 'address': addresses[0]},
+                'Bob': {'source': 'anvil-default', 'anvil_index': 1, 'address': addresses[1]},
+                'Attacker': {'source': 'anvil-default', 'anvil_index': 2, 'address': addresses[2]},
+                'lab-deployer': {'source': 'anvil-default', 'anvil_index': 0, 'address': addresses[0], 'internal': True},
+            }
+        }
+        actors = walkthrough._actors(Host(), config, 4)
+        self.assertEqual([actor.name for actor in actors], ['Alice', 'Bob', 'Attacker', 'Anvil #3'])
+        self.assertNotIn('Treasury', [actor.name for actor in actors])
+
 
 if __name__ == "__main__":
     unittest.main()

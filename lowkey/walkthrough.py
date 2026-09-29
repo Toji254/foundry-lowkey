@@ -4698,6 +4698,9 @@ def _random_sol_value(
     return 0
 
 def _adversarial_actor_role(actor_name: str) -> str:
+    actor_name = str(actor_name or '')
+    if re.fullmatch(r'Anvil #\d+', actor_name):
+        return 'unassigned local Anvil account'
     roles = {
         "Alice": "normal protocol participant",
         "Bob": "normal protocol participant",
@@ -6835,16 +6838,35 @@ def _deploy_generic_local_target(
 
 
 def _actors(host: Any, config: dict[str, Any], count: int = 4) -> list[Actor]:
-    info = host.anvil_rpc_info(config) if hasattr(host, "anvil_rpc_info") else None
+    info = host.anvil_rpc_info(config) if hasattr(host, 'anvil_rpc_info') else None
     if not info:
         return []
-    accounts = info.get("accounts") or []
-    names = ["Alice", "Bob", "Attacker", "Treasury", "Charlie", "Protocol"]
-    return [
-        Actor(names[i] if i < len(names) else f"Actor{i}", addr, i)
-        for i, addr in enumerate(accounts[:count])
-    ]
+    accounts = info.get('accounts') or []
 
+    # Prefer user-configured actor profiles. The walkthrough must not turn an
+    # unassigned Anvil slot into a protocol role such as 'Treasury'.
+    configured: dict[str, str] = {}
+    for name, entry in (config.get('wallets', {}) or {}).items():
+        if not isinstance(entry, dict) or entry.get('internal'):
+            continue
+        address = str(entry.get('address') or '').lower()
+        if address and is_address(address):
+            configured[address] = str(name)
+
+    synthetic = ['Alice', 'Bob', 'Attacker']
+    actors: list[Actor] = []
+    for index, addr in enumerate(accounts[:count]):
+        address = str(addr)
+        name = configured.get(address.lower())
+        if not name:
+            if configured:
+                name = f'Anvil #{index}'
+            elif index < len(synthetic):
+                name = synthetic[index]
+            else:
+                name = f'Anvil #{index}'
+        actors.append(Actor(name, address, index))
+    return actors
 
 def _render_actor_row(actors: list[Actor], enabled: bool) -> str:
     chunks = []
