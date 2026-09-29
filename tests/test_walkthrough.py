@@ -1822,8 +1822,11 @@ class WalkthroughTests(unittest.TestCase):
             123,
         )
         self.assertEqual(len(stories), 1)
-        self.assertEqual([action["function"] for action in stories[0].actions],
+        self.assertEqual([action.get("function") for action in stories[0].actions if action.get("kind") == "call"],
                          ["createescrow(uint256,address)", "acceptescrow(bool)", "release()", "release()"])
+        reserve = next(action for action in stories[0].actions if action.get("kind") == "fund_target")
+        self.assertEqual(reserve["amount"], 2)
+        self.assertEqual(reserve["address"], "0x" + "2" * 40)
         self.assertEqual(stories[0].actions[0]["actor"], "Attacker")
         self.assertEqual(stories[0].actions[0]["args"][1], actor.address)
         self.assertEqual(stories[0].actions[0]["value"], 1)
