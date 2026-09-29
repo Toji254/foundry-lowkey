@@ -7342,7 +7342,13 @@ def _render_event_log(step: Step, enabled: bool) -> str:
     lines = [_paint(f"{EVENT} EVENT STREAM", BOLD + YELLOW, enabled)]
     for event in step.events[:8]:
         if isinstance(event, dict) and event.get("event"):
-            lines.append(f"  {EVENT} {event.get('event')}  {event}")
+            lines.append(f"  {EVENT} {event.get('event')}")
+            decoded = str(event.get("decoded") or "").strip()
+            if decoded:
+                compact = " | ".join(part.strip() for part in decoded.splitlines() if part.strip())
+                if len(compact) > 220:
+                    compact = compact[:219] + "…"
+                lines.append(f"      decoded: {compact}")
         elif isinstance(event, dict):
             lines.append(f"  {EVENT} raw log @ {_addr(event.get('address'))}")
         else:
