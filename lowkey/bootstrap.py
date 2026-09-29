@@ -806,6 +806,27 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
     lowered = text.lower()
     command_text = " ".join(str(item) for item in command)
 
+    # Package resolvers such as Scarb can reject a graph even when every
+    # individual dependency exists. This is not a missing dependency and must
+    # not trigger Lowkey's repair/bootstrap loop.
+    if (
+        re.search(r"version solving failed", lowered)
+        or (
+            re.search(r"\bdepends on\b", lowered)
+            and re.search(r"\bis forbidden\b", lowered)
+            and re.search(r"\b(?:no version|incompatible|conflict)\b", lowered)
+        )
+    ):
+        return {
+            "category": "dependency_conflict",
+            "repairable": False,
+            "reason": (
+                "The package resolver found mutually incompatible dependency "
+                "constraints. Lowkey will not rewrite manifest constraints or "
+                "lockfiles automatically."
+            ),
+        }
+
     if any(re.search(pattern, lowered) for pattern in TOOLCHAIN_FAILURE_PATTERNS):
         return {
             "category": "toolchain_mismatch",
