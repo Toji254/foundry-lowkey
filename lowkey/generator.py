@@ -433,12 +433,30 @@ def _detector_mode(check: str) -> str:
     return "generic"
 
 
+def _function_matches(signal_function: Any, preferred_function: str | None) -> bool:
+    """Match an audit signal to a concrete function without confusing overloads."""
+    left = str(signal_function or "").strip()
+    right = str(preferred_function or "").strip()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    # Some callers store a bare function name while others store a full signature.
+    # Only fall back to the name when one side has no signature, avoiding false
+    # matches between overloaded functions.
+    if "(" not in left or "(" not in right:
+        return left.split("(", 1)[0] == right.split("(", 1)[0]
+    return False
+
+
 def _audit_candidate(root: Path) -> dict[str, Any]:
     """Select the current investigation signal and summarize the evidence bus."""
     context = audit_context.load(root)
     signals = context.get("signals", [])
     if not isinstance(signals, list):
         signals = []
+
+    latest_function = str(latest.get("function") or "").strip()
 
     focus = context.get("focus")
     focused_id = focus.get("signal_id") if isinstance(focus, dict) else None
@@ -447,6 +465,13 @@ def _audit_candidate(root: Path) -> dict[str, Any]:
         None,
     )
 
+    # Human focus remains authoritative when there is no transaction/function
+    # context to compare against. Once a concrete function is known, however,
+    # never attach an unrelated focused signal to that transaction.
+    if candidate is not None and latest_function:
+        if not _function_matches(candidate.get("function"), latest_function):
+            candidate = None
+
     if candidate is None:
         impact_order = {"high": 0, "medium": 1, "low": 2, "informational": 3, "unknown": 4}
         confidence_order = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
@@ -454,6 +479,11 @@ def _audit_candidate(root: Path) -> dict[str, Any]:
             item for item in signals
             if isinstance(item, dict) and item.get("status") in {"open", "investigating"}
         ]
+        if latest_function:
+            open_signals = [
+                item for item in open_signals
+                if _function_matches(item.get("function"), latest_function)
+            ]
         candidate = min(
             open_signals,
             key=lambda item: (
