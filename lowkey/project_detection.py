@@ -803,6 +803,12 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
 
 def format_detection(info: dict[str, Any]) -> str:
     languages = info.get("languages", {})
+    if isinstance(languages, dict):
+        language_items = languages.items()
+    elif isinstance(languages, (list, tuple, set)):
+        language_items = ((str(name), 1) for name in languages)
+    else:
+        language_items = ()
     stacks = info.get("stacks", [])
     supporting = info.get("supporting_tools", [])
     native = [name for name, ok in (info.get("native") or {}).items() if ok]
@@ -812,7 +818,7 @@ def format_detection(info: dict[str, Any]) -> str:
         f"Type       : {info.get('kind', 'unknown')}",
         f"Backend    : {info.get('backend', 'generic')}",
         f"Build      : {info.get('build_backend', info.get('backend', 'generic'))}",
-        f"Languages  : {', '.join(f'{name} ({count})' for name, count in languages.items()) or 'none'}",
+        f"Languages  : {', '.join(f'{name} ({count})' for name, count in language_items) or 'none'}",
         f"Toolchains : {', '.join(stacks) or 'none detected'}",
         f"Supporting : {', '.join(supporting) or 'none detected'}",
         f"Native     : {', '.join(native) or 'none detected'}",
