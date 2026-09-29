@@ -119,6 +119,8 @@ class Step:
     tx_hash: str | None = None
     calldata: str | None = None
     gas_used: int | None = None
+    gas_price_wei: int | None = None
+    gas_cost_wei: int | None = None
     error: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     trace_edges: list[str] = field(default_factory=list)
@@ -2664,31 +2666,82 @@ def _friendly_balance_lines(
     actors: list[Actor],
     runtime: list[RuntimeContract] | None = None,
 ) -> list[str]:
+    """Render observed native protocol value separately from the actor's gas cost."""
     if not step.balance_before or not step.balance_after:
         return []
-    lines = []
-    addresses = set(step.balance_before) | set(step.balance_after)
-    names = {actor.address.lower(): actor.name for actor in actors}
-    if runtime:
-        names.update({
-            node.address.lower(): node.label
-            for node in runtime
-            if is_address(node.address)
-        })
-    if step.address:
-        names.setdefault(str(step.address).lower(), _friendly_contract_name(step))
-    for address in sorted(addresses):
+
+    deltas: dict[str, int] = {}
+    actor_address = next(
+        (
+            item.address.lower()
+            for item in actors
+            if item.name == step.actor and is_address(item.address)
+        ),
+        None,
+    )
+
+    for address in sorted(set(step.balance_before) | set(step.balance_after)):
         before = step.balance_before.get(address)
         after = step.balance_after.get(address)
         if before is None or after is None:
             continue
         delta = after - before
-        if delta == 0:
+        if actor_address == address.lower() and step.gas_cost_wei is not None:
+            # The top-level actor pays transaction gas; remove that known cost
+            # before interpreting the remaining delta as protocol value.
+            delta += step.gas_cost_wei
+        if delta:
+            deltas[address] = delta
+
+    if not deltas:
+        return []
+
+    negatives = [[address, -delta] for address, delta in deltas.items() if delta < 0]
+    positives = [[address, delta] for address, delta in deltas.items() if delta > 0]
+    lines: list[str] = []
+
+    # Pair observed debits and credits into actual value-flow edges when possible.
+    for neg in negatives:
+        source, remaining = neg
+        for pos in positives:
+            if remaining <= 0:
+                break
+            destination, credit = pos
+            if credit <= 0:
+                continue
+            amount = min(remaining, credit)
+            if amount <= 0:
+                continue
+            lines.append(
+                f"NATIVE VALUE {_label_for_balance_address(source, step, actors)} "
+                f"→ {_label_for_balance_address(destination, step, actors)}: {_friendly_eth(amount)}"
+            )
+            remaining -= amount
+            pos[1] -= amount
+
+    # Any unmatched delta stays explicitly labeled as a balance observation.
+    remaining_by_address: dict[str, int] = {address: abs(delta) for address, delta in deltas.items()}
+    for address, remaining in negatives + positives:
+        remaining_by_address[address] = remaining
+
+    for address, remaining in remaining_by_address.items():
+        if remaining <= 0:
             continue
-        label = names.get(address, _addr(address))
-        direction = "+" if delta > 0 else "-"
-        lines.append(f"ETH {label}: {direction}{_friendly_eth(abs(delta))}")
+        original = deltas[address]
+        sign = "+" if original > 0 else "-"
+        lines.append(
+            f"NATIVE BALANCE {_label_for_balance_address(address, step, actors)}: "
+            f"{sign}{_friendly_eth(remaining)} [unpaired observation]"
+        )
+
     return lines
+
+
+def _friendly_gas_lines(step: Step) -> list[str]:
+    if step.gas_cost_wei is None:
+        return []
+    actor = step.actor or "caller"
+    return [f"GAS COST {actor}: -{_friendly_eth(step.gas_cost_wei)}"]
 
 
 def _friendly_state_lines(step: Step, actors: list[Actor]) -> list[str]:
@@ -2872,7 +2925,7 @@ def _render_interaction_graph_full(
 
     lower = function.lower()
     if step.value_wei:
-        lines += ["  │", f"  │   ETH FLOW      {actor} ── {_friendly_eth(step.value_wei)} ──▶ {contract}"]
+        lines += ["  │", f"  │   TX VALUE     {actor} ── {_friendly_eth(step.value_wei)} ──▶ {contract}"]
     if lower in {"stake", "deposit", "contributebonus", "fund", "contribute"} and step.args:
         lines.append(f"  │   token flow: {actor} ── {_friendly_value(step.args[0])} ──▶ {contract}")
     elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
@@ -2899,12 +2952,13 @@ def _render_interaction_graph_full(
             lines.extend(f"  │   ├─ {item}" for item in verified[:6])
 
         state_lines = _friendly_state_lines(step, actors)
+        gas_lines = _friendly_gas_lines(step)
         balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors, runtime)
         event_lines = _friendly_event_lines(step)
         lines += ["  │", "  │   WHAT CHANGED"]
         changes = [
             item.strip()
-            for item in state_lines[:7] + balance_lines[:7] + event_lines[:6]
+            for item in gas_lines[:2] + state_lines[:7] + balance_lines[:7] + event_lines[:6]
             if item.strip()
         ]
         if changes:
@@ -2956,7 +3010,12 @@ def _render_interaction_graph_full(
         lines += ["  │", f"  │   RESULT  ✓  {actor} completed {contract}.{function}()"]
     elif step.status in {"blocked", "reverted"}:
         lines += ["  │", f"  │   RESULT  ✕  {actor} could not complete {contract}.{function}()"]
-    lines += ["  │", f"  │   WHY THIS STEP: {step.reason} [{marker}]", "  ╰" + "─" * 86 + "╯"]
+    lines += ["  │", f"  │   WHY THIS STEP: {step.reason} [{marker}]"]
+    if step.status == "success":
+        lines.append("  │   BASIS: source-guided candidate passed live preflight and was confirmed on-chain")
+    elif step.status in {"blocked", "reverted"}:
+        lines.append("  │   BASIS: the live preflight or transaction rejected this candidate")
+    lines.append("  ╰" + "─" * 86 + "╯")
     return "\n".join(lines)
 def _story_timeline_line(
     root: Path,
@@ -4331,6 +4390,40 @@ def _quarantine_generated_replays(root: Path) -> int:
 def _receipt(rpc: str, tx: str) -> dict[str, Any] | None:
     value = _rpc_call(rpc, "eth_getTransactionReceipt", [tx])
     return value if isinstance(value, dict) else None
+
+
+def _record_gas_cost(
+    step: Step,
+    rpc: str,
+    tx: str,
+    receipt: dict[str, Any] | None,
+) -> None:
+    """Record execution gas separately so native protocol value is not mislabeled as gas."""
+    if not isinstance(receipt, dict):
+        return
+    raw_gas_used = receipt.get("gasUsed")
+    try:
+        step.gas_used = int(raw_gas_used, 16) if isinstance(raw_gas_used, str) else int(raw_gas_used)
+    except (TypeError, ValueError):
+        return
+
+    raw_price = receipt.get("effectiveGasPrice")
+    if raw_price is None:
+        tx_data = _rpc_call(rpc, "eth_getTransactionByHash", [tx])
+        if isinstance(tx_data, dict):
+            raw_price = tx_data.get("gasPrice")
+    try:
+        step.gas_price_wei = (
+            int(raw_price, 16)
+            if isinstance(raw_price, str) and raw_price.startswith("0x")
+            else int(raw_price)
+        )
+    except (TypeError, ValueError):
+        step.gas_price_wei = None
+        step.gas_cost_wei = None
+        return
+
+    step.gas_cost_wei = step.gas_used * step.gas_price_wei
 
 
 def _block_timestamp(rpc: str) -> int:
@@ -7469,12 +7562,13 @@ def _render_system_workflow_graph(
 
     if edge_lines == 0:
         lines.append(
-            "  │  ○ no source-level first-party cross-contract edge resolved; "
-            "live calls appear in the protocol story below"
+            "  │  ○ source relationships: none resolved in the first-party source map"
         )
+    else:
+        lines.append("  │  ○ source relationships: mapped above")
 
     lines.append("  │")
-    lines.append("  └─ ○ source relationship   ● observed live")
+    lines.append("  └─ ○ source map   ● live execution: observed in the protocol story")
     return "\n".join(lines)
 
 
@@ -7840,6 +7934,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
 
     draw()
 
+    stop_reason = "exhausted"
     while pending and len(steps)<max_steps:
         step=pending.pop(0)
         step.index=len(steps)+1
@@ -7894,6 +7989,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             if not no_prompt:
                 choice = _wait_for_next_interaction(no_prompt)
                 if choice == "q":
+                    stop_reason = "user"
                     break
             continue
 
@@ -7962,7 +8058,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 _write_transaction_evidence(root, rpc, step, receipt)
                 trace=_trace_tree(rpc,tx)
                 step.calldata=_transaction_input(rpc,tx)
-                step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
+                _record_gas_cost(step, rpc, tx, receipt)
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx,trace)
                 step.execution_edges=_trace_execution_edges(root,rpc,model_catalog,trace)
@@ -8075,7 +8171,20 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 no_prompt=True
 
     replay=_generate_replay_script(root,model,target,steps)
-    print("\n"+_paint("WALKTHROUGH COMPLETE",BOLD+GREEN,_ansi_enabled(False)))
+    if stop_reason == "user" and pending:
+        final_label = "WALKTHROUGH PAUSED"
+        final_color = BOLD + YELLOW
+        final_detail = "  stopped by user; no unobserved future interaction was executed"
+    elif pending and len(steps) >= max_steps:
+        final_label = "WALKTHROUGH LIMIT REACHED"
+        final_color = BOLD + YELLOW
+        final_detail = f"  {len(steps)} live interaction(s) observed; remaining candidates were not executed"
+    else:
+        final_label = "WALKTHROUGH COMPLETE"
+        final_color = BOLD + GREEN
+        final_detail = "  all currently queued live interactions were exhausted"
+    print("\n"+_paint(final_label,final_color,_ansi_enabled(False)))
+    print(final_detail)
     print("  Every interaction frame follows a live preflight or transaction; the initial frame is the ready/model state.")
     print("  model    : .audit/walkthrough/model.json")
     print("  evidence : .audit/walkthrough/latest.json")
