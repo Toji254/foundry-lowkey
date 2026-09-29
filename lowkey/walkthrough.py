@@ -125,8 +125,8 @@ class Step:
     storage_before: list[dict[str, Any]] = field(default_factory=list)
     storage_after: list[dict[str, Any]] = field(default_factory=list)
     storage_changes: list[dict[str, Any]] = field(default_factory=list)
-    balance_before: dict[str, str] = field(default_factory=dict)
-    balance_after: dict[str, str] = field(default_factory=dict)
+    balance_before: dict[str, int] = field(default_factory=dict)
+    balance_after: dict[str, int] = field(default_factory=dict)
     token_balance_before: dict[str, int] = field(default_factory=dict)
     token_balance_after: dict[str, int] = field(default_factory=dict)
     error_reason: str | None = None
@@ -749,6 +749,35 @@ def _vyper_compiler_command(root: Path) -> list[str] | None:
     return None
 
 
+_STORAGE_LAYOUT_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _forge_storage_layout(root: Path, contract_name: str) -> dict[str, Any]:
+    """Recover a Foundry storage layout when the artifact omitted storageLayout."""
+    key = (str(root.resolve()), str(contract_name).lower())
+    cached = _STORAGE_LAYOUT_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    result: dict[str, Any] = {}
+    if (root / "foundry.toml").is_file() and shutil.which("forge"):
+        code, out, _err = _cmd(
+            ["forge", "inspect", "--json", contract_name, "storage-layout"],
+            cwd=root,
+            timeout=60,
+        )
+        if code == 0:
+            try:
+                payload = json.loads((out or "").strip())
+                if isinstance(payload, dict):
+                    result = payload
+            except json.JSONDecodeError:
+                result = {}
+
+    _STORAGE_LAYOUT_CACHE[key] = result
+    return result
+
+
 def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractModel]:
     """Build project application models from common Solidity/Vyper artifact layouts.
 
@@ -921,12 +950,20 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
                     if value.strip()
                 ]
 
+        storage_layout = data.get("storageLayout")
+        if not isinstance(storage_layout, dict) or not storage_layout.get("storage"):
+            inspected_layout = _forge_storage_layout(root, name)
+            if inspected_layout:
+                storage_layout = inspected_layout
+        if not isinstance(storage_layout, dict):
+            storage_layout = {}
+
         model = ContractModel(
             name=name,
             source=source,
             artifact=str(path.relative_to(root)),
             abi=abi,
-            storage=data.get("storageLayout") or {},
+            storage=storage_layout,
             bases=bases,
             functions=functions,
             modifiers=re.findall(r"\bmodifier\s+(\w+)", source_text),
@@ -2634,12 +2671,6 @@ def _friendly_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
         if before is None or after is None:
             continue
         delta = after - before
-        # Ignore tiny native-balance movement caused only by gas when this wasn't
-        # a value-bearing call. Native value movement is rendered explicitly below.
-        if not step.value_wei and abs(delta) < 10**12:
-            continue
-        if not step.value_wei and abs(delta) < 10**15:
-            continue
         if delta == 0:
             continue
         label = names.get(address, _addr(address))
@@ -2681,9 +2712,14 @@ def _friendly_event_lines(step: Step) -> list[str]:
     for event in step.events[:4]:
         if not isinstance(event, dict):
             continue
-        name = event.get("event")
-        if name:
-            lines.append(f"    ✦ event: {name}")
+        name = event.get("event") or "raw log"
+        lines.append(f"    ✦ event: {name}")
+        decoded = str(event.get("decoded") or "").strip()
+        if decoded:
+            compact = " | ".join(part.strip() for part in decoded.splitlines() if part.strip())
+            if len(compact) > 220:
+                compact = compact[:219] + "…"
+            lines.append(f"    ✦ decoded: {compact}")
     return lines
 
 
@@ -2830,18 +2866,7 @@ def _render_interaction_graph_full(
     elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
         lines.append(f"  │   token flow: {contract} ──▶ {actor}")
 
-    if step.execution_edges:
-        lines += ["  │", "  │   ACTUAL RUNTIME PATH", "  │      caller", "  │        │"]
-        runtime_count = min(8, len(step.execution_edges))
-        for index, edge in enumerate(step.execution_edges[:runtime_count]):
-            dst = edge.get("to_contract") or _addr(edge.get("to_address"))
-            resolved_label = edge.get("to_label") or dst
-            fn = str(edge.get("function") or edge.get("type") or "")
-            branch = "└─" if index == runtime_count - 1 else "├─"
-            mark = " ✕" if edge.get("error") or edge.get("revert") else " ✓"
-            lines.append(f"  │       {branch} {EXTERNAL} {resolved_label}.{fn}{mark}")
-
-    if step.discovered_contracts:
+duplicate runtime renderer    if step.discovered_contracts:
         lines += ["  │", "  │   NEW CONTRACTS DISCOVERED"]
         for node in step.discovered_contracts[:5]:
             lines.append(f"  │   ├─ {ARROW} {node.get('label') or node.get('model')} {_addr(node.get('address'))} [{node.get('relation') or 'contract'}]")
@@ -2865,11 +2890,43 @@ def _render_interaction_graph_full(
         balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors)
         event_lines = _friendly_event_lines(step)
         lines += ["  │", "  │   WHAT CHANGED"]
-        changes = [item.strip() for item in state_lines[:7] + balance_lines[:5] + event_lines[:4] if item.strip()]
+        changes = [
+            item.strip()
+            for item in state_lines[:7] + balance_lines[:7] + event_lines[:6]
+            if item.strip()
+        ]
         if changes:
             lines.extend(f"  │   ├─ {item}" for item in changes)
         else:
-            lines.append("  │   └─ no tracked storage, balance, or event delta")
+            if step.storage_before or step.storage_after:
+                lines.append("  │   ├─ storage: no change in the slots Lowkey tracked")
+            else:
+                lines.append("  │   ├─ storage: not observed (no usable storage layout/data was available)")
+            if step.balance_before and step.balance_after:
+                lines.append("  │   ├─ native balances: no tracked address changed")
+            else:
+                lines.append("  │   ├─ native balances: not observed")
+            if step.token_balance_before and step.token_balance_after:
+                lines.append("  │   ├─ token balances: no tracked address changed")
+            elif step.token_balance_before or step.token_balance_after:
+                lines.append("  │   ├─ token balances: partial observation only")
+            else:
+                lines.append("  │   ├─ token balances: not observed")
+            if not step.events:
+                lines.append("  │   └─ events: none recorded in the receipt")
+            else:
+                lines.append("  │   └─ events: recorded, but no decoded delta was available")
+
+            runtime_value = sum(
+                int(edge.get("value_wei") or 0)
+                for edge in step.execution_edges
+                if isinstance(edge, dict)
+            )
+            if runtime_value and not balance_lines:
+                lines.append(
+                    f"  │   ⚠ runtime call trace carried {_friendly_eth(runtime_value)} "
+                    "in ETH, but no tracked native-balance delta was recorded"
+                )
     elif step.status in {"blocked", "reverted"}:
         reason = step.error_reason or _explain_failure(step, step.error, actor)
         lines += ["  │", "  │   WHY IT FAILED", f"  │   ├─ {reason}"]
@@ -3105,6 +3162,11 @@ def _trace_execution_edges(
                 "to_contract": known_contract or _addr(to),
                 "function": signature or selector or typ,
                 "depth": depth,
+                "value_wei": (
+                    int(node.get("value"), 16)
+                    if isinstance(node.get("value"), str) and str(node.get("value")).startswith("0x")
+                    else int(node.get("value") or 0)
+                ),
                 "error": node.get("error"),
                 "revert": node.get("revertReason"),
             })
@@ -4455,18 +4517,46 @@ def _storage_changed(before: list[dict[str, Any]], after: list[dict[str, Any]]) 
     return changes
 
 
-def _trace_edges(rpc: str, tx: str) -> list[str]:
+def _trace_edges(
+    rpc: str,
+    tx: str,
+    trace: dict[str, Any] | None = None,
+) -> list[str]:
+    """Return compact trace edges, with a structured-trace fallback."""
     code, out, _err = _cmd(["cast", "run", tx, "--rpc-url", rpc], timeout=20)
-    if code != 0:
+    edges: list[str] = []
+    if code == 0:
+        for line in out.splitlines():
+            s = line.strip()
+            if any(kind in s for kind in ("CALL", "STATICCALL", "DELEGATECALL", "CREATE", "CREATE2")):
+                if len(s) > 180:
+                    s = s[-180:]
+                edges.append(s)
+        if edges:
+            return edges[-24:]
+
+    trace = trace or _trace_tree(rpc, tx)
+    if not trace:
         return []
-    edges = []
-    for line in out.splitlines():
-        s = line.strip()
-        if any(kind in s for kind in ("CALL", "STATICCALL", "DELEGATECALL", "CREATE", "CREATE2")):
-            if len(s) > 180:
-                s = s[-180:]
-            edges.append(s)
-    return edges[-24:]
+
+    def walk(node: dict[str, Any], depth: int = 0) -> None:
+        if not isinstance(node, dict):
+            return
+        typ = str(node.get("type") or "CALL").upper()
+        to = node.get("to")
+        if isinstance(to, str) and to:
+            raw_value = node.get("value")
+            try:
+                value_wei = int(raw_value, 16) if isinstance(raw_value, str) and raw_value.startswith("0x") else int(raw_value or 0)
+            except (TypeError, ValueError):
+                value_wei = 0
+            suffix = f" value={value_wei} wei" if value_wei else ""
+            edges.append(f"{'  ' * depth}{typ} to={to}{suffix}")
+        for child in node.get("calls") or []:
+            walk(child, depth + 1)
+
+    walk(trace)
+    return edges[:24]
 
 
 def _trace_tree(rpc: str, tx: str) -> dict[str, Any] | None:
@@ -4562,19 +4652,35 @@ def _discover_runtime_contracts(root: Path, rpc: str, models: list[ContractModel
 def _event_rows(host: Any, config: dict[str, Any], receipt: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not receipt:
         return []
-    result = []
+    result: list[dict[str, Any]] = []
     for log in receipt.get("logs", []):
+        raw = {
+            "address": log.get("address"),
+            "topics": log.get("topics", []),
+            "data": log.get("data", "0x"),
+        }
         decoded = None
         try:
             if hasattr(host, "decode_event_log"):
                 decoded = host.decode_event_log(config, log)
         except Exception:
             decoded = None
-        result.append(decoded or {
-            "address": log.get("address"),
-            "topics": log.get("topics", []),
-            "data": log.get("data", "0x"),
-        })
+
+        if isinstance(decoded, dict):
+            event = dict(decoded)
+            for key, value in raw.items():
+                event.setdefault(key, value)
+            result.append(event)
+        elif isinstance(decoded, (tuple, list)) and len(decoded) == 2:
+            result.append({
+                **raw,
+                "event": str(decoded[0]),
+                "decoded": str(decoded[1]),
+            })
+        elif decoded:
+            result.append({**raw, "decoded": str(decoded)})
+        else:
+            result.append(raw)
     return result
 
 
@@ -7188,6 +7294,11 @@ def _render_actual_call_tree(step: Step, runtime: list[RuntimeContract], enabled
         fn = str(edge.get("function") or edge.get("type") or "unknown")
         error = bool(edge.get("error") or edge.get("revert"))
         mark = "✕" if error else "✓"
+        try:
+            value_wei = int(edge.get("value_wei") or 0)
+        except (TypeError, ValueError):
+            value_wei = 0
+        value_text = f"  ↦ {_friendly_eth(value_wei)}" if value_wei else ""
 
         # The root call is already shown in the header. Descendants become branches.
         if depth == 0 and str(target).lower() == str(step.contract).lower():
@@ -7195,7 +7306,7 @@ def _render_actual_call_tree(step: Step, runtime: list[RuntimeContract], enabled
 
         prefix = "  │      " + "    " * min(depth, 5)
         connector = "└─▶" if edge_index == len(edges) - 1 else "├─▶"
-        lines.append(f"{prefix}{connector} {target}.{fn}  {mark}")
+        lines.append(f"{prefix}{connector} {target}.{fn}{value_text}  {mark}")
 
     return "\n".join(lines)
 
@@ -7237,7 +7348,9 @@ def _render_live_path(steps: list[Step], runtime: list[RuntimeContract], enabled
             lines.append(f"       {DOTTED} parent {_addr(target.parent)}")
         if step.status == "success":
             if step.events:
-                lines.append(f"       {EXTERNAL} {len(step.events)} event(s)  →  state observed")
+                lines.append(f"       {EXTERNAL} {len(step.events)} event(s) recorded in receipt")
+            if step.storage_changes or _friendly_balance_lines(step, []):
+                lines.append(f"       {STATE} state/balance delta observed")
             if step.discovered_contracts:
                 for node in step.discovered_contracts[:4]:
                     lines.append(f"       {ARROW} {node.label}  {_addr(node.address)}  [{node.relation}]")
@@ -7258,12 +7371,17 @@ def _render_system_workflow_graph(
     impls = _implementation_mapping(models)
     runtime_by_model: dict[str, list[RuntimeContract]] = {}
     for node in runtime:
-        if node.model and node.model != "External":
-            runtime_by_model.setdefault(node.model.lower(), []).append(node)
+        if node.relation == "target" or (node.model and node.model != "External"):
+            runtime_by_model.setdefault(str(node.model).lower(), []).append(node)
 
     lines = [_paint("SYSTEM WORKFLOW", BOLD + CYAN, enabled)]
     root_nodes = runtime_by_model.get(root_model.name.lower(), [])
-    root_address = _addr(root_nodes[0].address) if root_nodes else "not live"
+    if not root_nodes:
+        root_nodes = [
+            node for node in runtime
+            if node.relation == "target" and is_address(node.address)
+        ]
+    root_address = _addr(root_nodes[0].address) if root_nodes else "not represented in runtime map"
     lines.append(
         f"  {ACTOR} {_pretty_identifier(root_model.name)}  {root_address}  [entry point]"
     )
@@ -7317,7 +7435,10 @@ def _render_system_workflow_graph(
             )
 
     if edge_lines == 0:
-        lines.append("  │  ○ no first-party cross-contract relationship resolved yet")
+        lines.append(
+            "  │  ○ no source-level first-party cross-contract edge resolved; "
+            "live calls appear in the protocol story below"
+        )
 
     lines.append("  │")
     lines.append("  └─ ○ source relationship   ● observed live")
@@ -7385,7 +7506,7 @@ def _slither_status(root: Path) -> str:
         findings = results
     else:
         findings = data.get("findings") or []
-    return f"Slither: {len(findings)} recorded finding(s) [context evidence]"
+    return f"Slither: {len(findings)} finding(s) recorded [static context evidence; not live execution proof]"
 
 
 def _render_board(
@@ -7408,7 +7529,7 @@ def _render_board(
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
         "  ENTER = next live interaction   Q = stop   |   RANDOM TEST: lk walkthrough test",
         "  the story is live: no future step is rendered before it is observed",
-        "  arrows = actual call path   boxes = state   function names = Ctrl+Click source",
+        "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
         "",
         _box("ACTORS", [
             "   ".join(f"{ACTOR} {actor.name} {_addr(actor.address)}" for actor in actors)
@@ -7810,7 +7931,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.calldata=_transaction_input(rpc,tx)
                 step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
                 step.events=_event_rows(host,config,receipt)
-                step.trace_edges=_trace_edges(rpc,tx)
+                step.trace_edges=_trace_edges(rpc,tx,trace)
                 step.execution_edges=_trace_execution_edges(root,rpc,model_catalog,trace)
                 runtime_by_addr = {node.address.lower(): node.label for node in runtime}
                 for edge in step.execution_edges:
@@ -7922,7 +8043,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
 
     replay=_generate_replay_script(root,model,target,steps)
     print("\n"+_paint("WALKTHROUGH COMPLETE",BOLD+GREEN,_ansi_enabled(False)))
-    print("  Every state frame was produced after a live preflight or transaction.")
+    print("  Every interaction frame follows a live preflight or transaction; the initial frame is the ready/model state.")
     print("  model    : .audit/walkthrough/model.json")
     print("  evidence : .audit/walkthrough/latest.json")
     print(f"  replay   : {replay.relative_to(root)}")
