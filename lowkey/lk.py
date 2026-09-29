@@ -5565,6 +5565,14 @@ def run_lab(config,args):
                 file=sys.stderr,
             )
 
+    # Lowkey-generated walkthrough replay scripts are derived artifacts, not
+    # project source. Archive stale copies before the lab build so an older
+    # generated script cannot break a fresh lab bootstrap.
+    if kind in {"foundry", "mixed-foundry-vyper"} and walkthrough is not None:
+        archived = walkthrough._quarantine_generated_replays(root)
+        if archived:
+            print(f"  Refreshed {archived} previous generated walkthrough replay(s)")
+    
     # A clean checkout should be enough. Build before reading artifacts so the
     # lab does not depend on a manual "lk build" step.
     if kind in {"foundry", "mixed-foundry-vyper"}:
