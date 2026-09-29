@@ -305,7 +305,7 @@ class LowkeyGeneratorTests(unittest.TestCase):
             generated = root / "script" / "LowkeyDeploy_Escrow.s.sol"
             self.assertTrue(generated.exists())
             text = generated.read_text(encoding="utf-8")
-            self.assertIn("import { Escrow }", text)
+            self.assertRegex(text, r'import \{\s*Escrow\s*\} from "\.\./src/EthEscrow\.sol";')
             self.assertIn("instance = new Escrow();", text)
 
 
