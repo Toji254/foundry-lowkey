@@ -8187,7 +8187,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             "runtime_contracts":[asdict(x) for x in runtime],
         },steps)
 
-        if not no_prompt:
+        if not no_prompt and pending and len(steps) < max_steps:
             try:
                 choice = _wait_for_next_interaction(no_prompt)
                 if choice == "q":
