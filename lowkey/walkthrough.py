@@ -2713,8 +2713,8 @@ def _friendly_balance_lines(
             if amount <= 0:
                 continue
             lines.append(
-                f"NATIVE VALUE {_label_for_balance_address(source, step, actors)} "
-                f"→ {_label_for_balance_address(destination, step, actors)}: {_friendly_eth(amount)}"
+                f"NATIVE VALUE {_label_for_balance_address(source, step, actors, runtime)} "
+                f"→ {_label_for_balance_address(destination, step, actors, runtime)}: {_friendly_eth(amount)}"
             )
             remaining -= amount
             pos[1] -= amount
@@ -2730,7 +2730,7 @@ def _friendly_balance_lines(
         original = deltas[address]
         sign = "+" if original > 0 else "-"
         lines.append(
-            f"NATIVE BALANCE {_label_for_balance_address(address, step, actors)}: "
+            f"NATIVE BALANCE {_label_for_balance_address(address, step, actors, runtime)}: "
             f"{sign}{_friendly_eth(remaining)} [unpaired observation]"
         )
 
@@ -2788,10 +2788,19 @@ def _friendly_event_lines(step: Step) -> list[str]:
     return lines
 
 
-def _label_for_balance_address(address: str, step: Step, actors: list[Actor]) -> str:
+def _label_for_balance_address(
+    address: str,
+    step: Step,
+    actors: list[Actor],
+    runtime: list[RuntimeContract] | None = None,
+) -> str:
     actor = _actor_for_address(address, actors)
     if actor:
         return actor
+    if runtime:
+        for node in runtime:
+            if is_address(node.address) and node.address.lower() == str(address).lower():
+                return node.label
     if str(address).lower() == str(step.address).lower():
         return _friendly_contract_name(step)
     return _addr(address)
