@@ -8166,6 +8166,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             try:
                 choice = _wait_for_next_interaction(no_prompt)
                 if choice == "q":
+                    stop_reason = "user"
                     break
             except EOFError:
                 no_prompt=True
