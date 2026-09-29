@@ -390,7 +390,11 @@ def _ensure_lab_deployer(config, address, index=0):
     if config.get('labels', {}).get(address.lower()) == 'lab-deployer':
         config['labels'].pop(address.lower(), None)
     current_entry = config.get('wallets', {}).get(current) if current else None
-    if not current or wallet_is_internal(current, current_entry):
+    if (
+        not current
+        or not isinstance(current_entry, dict)
+        or wallet_is_internal(current, current_entry)
+    ):
         config['actor'] = public_same_address or 'lab-deployer'
     return public_same_address
 
