@@ -1775,6 +1775,106 @@ class WalkthroughTests(unittest.TestCase):
         self.assertTrue(any("Demo.ping()" in line for line in rendered))
         self.assertFalse(any("Demo.ping()()" in line for line in rendered))
 
+    def test_replay_story_builds_source_guided_setup_before_repeating_payout(self):
+        model = walkthrough.ContractModel(
+            name="Escrow",
+            source="src/Escrow.sol",
+            artifact="out/Escrow.sol/Escrow.json",
+            abi=[
+                {
+                    "type": "function",
+                    "name": "createescrow",
+                    "inputs": [
+                        {"name": "amount", "type": "uint256"},
+                        {"name": "recipient", "type": "address"},
+                    ],
+                    "outputs": [],
+                    "stateMutability": "payable",
+                },
+                {
+                    "type": "function",
+                    "name": "acceptescrow",
+                    "inputs": [{"name": "accept", "type": "bool"}],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+                {
+                    "type": "function",
+                    "name": "release",
+                    "inputs": [],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+            ],
+            functions=["createescrow(uint256,address)", "acceptescrow(bool)", "release()"],
+        )
+        actor = walkthrough.Actor("Attacker", "0x" + "1" * 40, 2)
+        stories = walkthrough_finding_patterns._build_replay_stories(
+            {},
+            [actor],
+            [("Escrow", "0x" + "2" * 40, model)],
+            123,
+        )
+        self.assertEqual(len(stories), 1)
+        self.assertEqual([action["function"] for action in stories[0].actions],
+                         ["createescrow(uint256,address)", "acceptescrow(bool)", "release()", "release()"])
+        self.assertEqual(stories[0].actions[0]["actor"], "Attacker")
+        self.assertEqual(stories[0].actions[0]["args"][1], actor.address)
+        self.assertEqual(stories[0].actions[0]["value"], 1)
+
+    def test_replay_story_blocks_when_lifecycle_setup_is_unavailable(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            abi=[{
+                "type": "function",
+                "name": "release",
+                "inputs": [],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+            functions=["release()"],
+        )
+        actor = walkthrough.Actor("Attacker", "0x" + "1" * 40, 2)
+        stories = walkthrough_finding_patterns._build_replay_stories(
+            {},
+            [actor],
+            [("Demo", "0x" + "2" * 40, model)],
+            123,
+        )
+        self.assertEqual(stories[0].signal, "BLOCKED")
+        self.assertEqual(stories[0].actions, [])
+
+    def test_replay_story_assessment_uses_last_two_steps_after_setup(self):
+        actor = walkthrough.Actor("Attacker", "0x" + "1" * 40, 2)
+        story = walkthrough_finding_patterns.core.WalkthroughStory(
+            story_id="RP-01",
+            title="Replay probe",
+            goal="repeat payout",
+            actions=[
+                {"function": "createescrow(uint256,address)"},
+                {"function": "acceptescrow(bool)"},
+                {"function": "release()"},
+                {"function": "release()"},
+            ],
+        )
+        setup = [
+            walkthrough.Step(1, "Attacker", "Escrow", "0x" + "2" * 40, "createescrow(uint256,address)", [1, actor.address], value_wei=1, status="success"),
+            walkthrough.Step(2, "Attacker", "Escrow", "0x" + "2" * 40, "acceptescrow(bool)", [True], status="success"),
+        ]
+        first = walkthrough.Step(3, "Attacker", "Escrow", "0x" + "2" * 40, "release()", [], status="success")
+        second = walkthrough.Step(4, "Attacker", "Escrow", "0x" + "2" * 40, "release()", [], status="success")
+        key = actor.address.lower()
+        first.balance_after = {key: 101}
+        first.balance_before = {key: 100}
+        second.balance_after = {key: 102}
+        second.balance_before = {key: 101}
+        walkthrough_finding_patterns.assess_replay_story(
+            story, setup + [first, second], [actor]
+        )
+        self.assertEqual(story.signal, "CONFIRMED")
+
     def test_record_walkthrough_latest_persists_successful_concrete_call(self):
         calls = []
 
