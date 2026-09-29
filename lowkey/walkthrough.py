@@ -7781,8 +7781,6 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 _write_transaction_evidence(root, rpc, step, receipt)
                 trace=_trace_tree(rpc,tx)
                 step.calldata=_transaction_input(rpc,tx)
-
-                _record_walkthrough_latest(host, root, step)
                 step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx)
@@ -7793,6 +7791,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     if isinstance(address, str):
                         edge["to_label"] = runtime_by_addr.get(address.lower())
                 step.status="success" if receipt and receipt.get("status") in (None,"0x1",1) else "reverted"
+                _record_walkthrough_latest(host, root, step)
                 step.error_reason = (
                     "preflight passed and the live transaction was accepted"
                     if step.status == "success"
