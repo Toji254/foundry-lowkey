@@ -14,6 +14,12 @@ walkthrough = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = walkthrough
 spec.loader.exec_module(walkthrough)
 
+FINDING_PATTERNS = ROOT / "lowkey" / "walkthrough_finding_patterns.py"
+pattern_spec = importlib.util.spec_from_file_location("walkthrough_finding_patterns", FINDING_PATTERNS)
+walkthrough_finding_patterns = importlib.util.module_from_spec(pattern_spec)
+sys.modules[pattern_spec.name] = walkthrough_finding_patterns
+pattern_spec.loader.exec_module(walkthrough_finding_patterns)
+
 
 class WalkthroughTests(unittest.TestCase):
     def test_runtime_walkthrough_contains_no_known_project_specific_adapters(self):
