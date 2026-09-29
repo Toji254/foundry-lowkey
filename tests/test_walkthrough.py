@@ -1969,8 +1969,7 @@ class WalkthroughTests(unittest.TestCase):
         rendered = walkthrough._render_adversarial_probe_human(
             pathlib.Path("/tmp/project"), step, model, actors
         )
-        joined = "
-".join(rendered)
+        joined = "\n".join(rendered)
         self.assertIn("Escrow.acceptescrow(false)", joined)
         self.assertIn("source requires accept == true", joined)
         self.assertIn("SOURCE + ACTUAL CALL", joined)
