@@ -28,6 +28,17 @@ class ProjectToolsTests(unittest.TestCase):
             self.assertIn("solidity", project["languages"])
             self.assertEqual(project["sources"]["solidity"], 1)
 
+    def test_detects_cairo_starknet_from_scarb(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "Scarb.toml", "[package]\nname = \"staking\"\nversion = \"0.1.0\"\n")
+            self.write(root, "src/staking.cairo", "fn main() {}\n")
+            project = project_tools.detect_project(root)
+            self.assertEqual(project["kind"], "cairo-starknet")
+            self.assertIn("cairo", project["languages"])
+            self.assertIn("scarb", project["build_systems"])
+            self.assertEqual(project["configs"]["scarb"], "Scarb.toml")
+
     def test_detects_vyper_uv_from_pyproject_without_src(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
