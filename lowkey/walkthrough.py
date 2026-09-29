@@ -832,6 +832,18 @@ def _artifact_models(root: Path, include_aux: bool = False) -> list[ContractMode
                         candidate = root.joinpath(*tail)
                         if candidate.is_file():
                             result.append(candidate)
+
+                        # Foundry commonly stores artifacts as out/Foo.sol/Foo.json.
+                        # When sourceName is absent, map the source basename back into
+                        # the project's configured src directory instead of requiring
+                        # a root-level Foo.sol file.
+                        if marker == "out" and str(tail[-1]).lower().endswith(".sol"):
+                            try:
+                                foundry_source = root / _foundry_src_dir(root) / str(tail[-1])
+                            except Exception:
+                                foundry_source = root / "src" / str(tail[-1])
+                            if foundry_source.is_file():
+                                result.append(foundry_source)
         for base in source_roots:
             for suffix in (".sol", ".vy", ".vyi"):
                 exact = base / f"{name}{suffix}"
