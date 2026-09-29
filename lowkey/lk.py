@@ -5232,6 +5232,72 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
+def run_native_lab(config, root, project):
+    """Run a backend-native local lab for non-EVM projects.
+
+    EVM labs materialize an Anvil contract address and ABI. Cairo/Starknet and
+    other non-EVM stacks have different execution/state models, so never route
+    them through Anvil/ABI bytecode discovery. Prefer the project's native
+    build/test runner and report the resulting local execution honestly.
+    """
+    root_path = Path(root).expanduser().resolve()
+    backend = str(project.get("backend") or project.get("kind") or "generic").lower()
+    kind = str(project.get("kind") or "").lower()
+
+    if backend == "cairo-starknet" or kind in {"cairo", "cairo-starknet"}:
+        if not shutil.which("scarb"):
+            return fail("Error: Cairo/Starknet project detected, but 'scarb' is not installed.")
+        commands = [["scarb", "build"]]
+        if shutil.which("snforge"):
+            commands.append(["snforge", "test"])
+        elif (root_path / "Scarb.toml").is_file():
+            commands.append(["scarb", "test"])
+    elif backend in {"move", "solana-anchor"} or kind in {"move", "move-source", "solana-anchor"}:
+        return fail(
+            f"Error: {kind or backend} projects do not have an interactive Lowkey lab backend yet. "
+            "Lowkey will not pretend they are EVM projects or start Anvil for them."
+        )
+    else:
+        return fail(
+            f"Error: backend '{backend}' is non-EVM and has no native Lowkey lab adapter yet. "
+            "Lowkey will not route it through Anvil/ABI deployment."
+        )
+
+    print("LOWKEY NATIVE LOCAL LAB")
+    print("=======================")
+    print(f"Project : {root_path}")
+    print(f"Backend : {backend}")
+    print("Mode    : native toolchain execution")
+    print("State   : isolated to the project's native runner; no Anvil and no EVM deployment")
+
+    for command in commands:
+        print(f"Action  : {' '.join(command)}")
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root_path,
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"FAIL    : {exc}", file=sys.stderr)
+            return fail("Error: native lab command could not be executed.", 1)
+
+        output = "\n".join(
+            part.strip() for part in (completed.stdout or "", completed.stderr or "")
+            if part and part.strip()
+        )
+        if output:
+            print(output)
+        if completed.returncode != 0:
+            print(f"FAIL    : {' '.join(command)} (exit {completed.returncode})", file=sys.stderr)
+            return completed.returncode
+        print(f"PASS    : {' '.join(command)}")
+
+    print("Ready   : native build/test state completed; EVM commands such as 'lk read' require an EVM lab target.")
+    return 0
+
 def run_lab(config,args):
     if args and args[0].lower() in {"help","-h","--help"}:
         print("Usage:")
@@ -5326,6 +5392,10 @@ def run_lab(config,args):
                 "Lowkey will continue only if the native build/artifact checks succeed.",
                 file=sys.stderr,
             )
+
+    # Non-EVM backends must not fall through into the Anvil/ABI lab path.
+    if str(project.get("backend") or "").lower() == "cairo-starknet" or str(project.get("kind") or "").lower() in {"cairo", "cairo-starknet"}:
+        return run_native_lab(config, root, project)
 
     # Vyper projects do not have Forge artifacts. Build the project's own Vyper
     # sources before target discovery so lk lab never falls back to stale/test-only
