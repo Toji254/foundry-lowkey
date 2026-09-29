@@ -802,6 +802,16 @@ def _build_replay_stories(
     return stories
 
 
+def _observation_step_for_story(story: core.WalkthroughStory, steps: list[core.Step]) -> core.Step | None:
+    if not steps:
+        return None
+    if story.story_id.startswith("RP-"):
+        # Replay stories contain setup + repeated target calls. The source
+        # observation belongs to the repeated payout target, not setup.
+        return steps[-2] if len(steps) >= 2 else steps[-1]
+    return steps[0]
+
+
 def assess_replay_story(
     story: core.WalkthroughStory,
     steps: list[core.Step],
@@ -1204,11 +1214,12 @@ def run(
             else "ZEROADDR-001" if story.story_id.startswith("ZA-")
             else "TIME-001"
         )
-        if story_steps:
+        observation_step = _observation_step_for_story(story, story_steps)
+        if observation_step:
             for obs in observations:
                 obs_name = str(obs.function or "").split("(", 1)[0]
-                step_name = str(story_steps[0].function or "").split("(", 1)[0]
-                if obs.pattern_id == family_id and obs.contract == story_steps[0].contract and obs_name == step_name:
+                step_name = str(observation_step.function or "").split("(", 1)[0]
+                if obs.pattern_id == family_id and obs.contract == observation_step.contract and obs_name == step_name:
                     if story.signal in {"CONFIRMED", "REVIEW"}:
                         obs.status = story.signal
                     if story.evidence:
