@@ -5232,6 +5232,69 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
+def _tracked_scarb_manifest_drift(root):
+    """Report tracked Scarb manifests that differ from the repository HEAD.
+
+    This is diagnostics-only. Lowkey never rewrites the user's manifests or
+    lockfiles; it uses git HEAD as evidence when a native resolver conflict
+    occurs.
+    """
+    root_path = Path(root).expanduser().resolve()
+    try:
+        git_result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=root_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+    if git_result.returncode != 0:
+        return []
+
+    repo_root = Path((git_result.stdout or "").strip()).resolve()
+    if not repo_root.is_dir():
+        return []
+
+    manifests = []
+    current = root_path
+    while True:
+        for name in ("Scarb.toml", "Scarb.lock"):
+            path = current / name
+            if not path.is_file():
+                continue
+            try:
+                relative = path.relative_to(repo_root).as_posix()
+            except ValueError:
+                continue
+            try:
+                current_text = path.read_text(encoding="utf-8", errors="replace")
+                tracked = subprocess.run(
+                    ["git", "show", f"HEAD:{relative}"],
+                    cwd=repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if tracked.returncode == 0 and current_text != (tracked.stdout or ""):
+                manifests.append(relative)
+
+        if current == repo_root:
+            break
+        try:
+            next_current = current.parent
+            next_current.relative_to(repo_root)
+        except ValueError:
+            break
+        current = next_current
+
+    return sorted(set(manifests))
+
+
 def run_native_lab(config, root, project):
     """Run a backend-native local lab for non-EVM projects.
 
@@ -5310,6 +5373,21 @@ def run_native_lab(config, root, project):
                     "Lowkey will not silently rewrite them.",
                     file=sys.stderr,
                 )
+                drift = _tracked_scarb_manifest_drift(root_path)
+                if drift:
+                    print("Manifest drift     : detected against git HEAD", file=sys.stderr)
+                    for manifest in drift:
+                        print(f"  modified         : {manifest}", file=sys.stderr)
+                    print(
+                        "Manifest note      : local Scarb metadata differs from the checked-out commit; "
+                        "resolve the local change before treating the repository dependency graph as canonical.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "Manifest drift     : none detected for Scarb.toml/Scarb.lock against git HEAD",
+                        file=sys.stderr,
+                    )
             print(
                 f"Command            : {' '.join(command)} (exit {completed.returncode})",
                 file=sys.stderr,
