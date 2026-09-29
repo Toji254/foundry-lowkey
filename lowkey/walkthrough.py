@@ -4830,11 +4830,11 @@ def _save_artifacts(root: Path, model_payload: dict[str, Any], steps: list[Step]
     )
 
 def _sol_address_literal(value: Any) -> str:
-    """Emit an address literal without Solidity checksum rules."""
+    """Emit an address as a numeric conversion so Solc cannot apply address-literal checksum rules."""
     raw = str(value or "").strip()
     if not is_address(raw):
         return "address(0)"
-    return f"address(uint160(0x{raw[2:]}))"
+    return f"address(uint160({int(raw[2:], 16)}))"
 
 
 def _sol_literal(value: Any) -> str:
