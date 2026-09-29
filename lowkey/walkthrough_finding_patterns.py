@@ -780,16 +780,16 @@ def _build_replay_stories(
                 "value": 0,
                 "reason": "real-world pattern probe: execute the same payout path twice",
             }
-            setup_value = sum(int(step.value_wei or 0) for step in setup_steps)
-            if setup_value > 0:
-                actions.append({
-                    "kind": "fund_target",
-                    "actor": actor.name,
-                    "contract": "AnvilLab",
-                    "address": address,
-                    "amount": max(2, setup_value * 2),
-                    "reason": "replay harness: provision enough native reserve for two payout attempts",
-                })
+            setup_value = sum(int(action.get("value") or 0) for action in actions)
+            payout_value = max(1, setup_value)
+            actions.append({
+                "kind": "fund_target",
+                "actor": actor.name,
+                "contract": "AnvilLab",
+                "address": address,
+                "amount": max(2, payout_value * 2),
+                "reason": "replay harness: provision enough native reserve for two payout attempts",
+            })
             actions.extend([dict(target_action), dict(target_action)])
             stories.append(core.WalkthroughStory(
                 story_id=f"RP-{len(stories)+1:02d}",
