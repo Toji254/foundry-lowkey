@@ -2659,13 +2659,25 @@ def _friendly_token_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
     return lines
 
 
-def _friendly_balance_lines(step: Step, actors: list[Actor]) -> list[str]:
+def _friendly_balance_lines(
+    step: Step,
+    actors: list[Actor],
+    runtime: list[RuntimeContract] | None = None,
+) -> list[str]:
     if not step.balance_before or not step.balance_after:
         return []
     lines = []
     addresses = set(step.balance_before) | set(step.balance_after)
     names = {actor.address.lower(): actor.name for actor in actors}
-    for address in addresses:
+    if runtime:
+        names.update({
+            node.address.lower(): node.label
+            for node in runtime
+            if is_address(node.address)
+        })
+    if step.address:
+        names.setdefault(str(step.address).lower(), _friendly_contract_name(step))
+    for address in sorted(addresses):
         before = step.balance_before.get(address)
         after = step.balance_after.get(address)
         if before is None or after is None:
@@ -2872,7 +2884,7 @@ def _render_interaction_graph_full(
             lines.append(f"  │   ├─ {ARROW} {node.get('label') or node.get('model')} {_addr(node.get('address'))} [{node.get('relation') or 'contract'}]")
 
     if step.execution_edges:
-        call_tree = _render_actual_call_tree(step, [], enabled)
+        call_tree = _render_actual_call_tree(step, runtime or [], enabled, actors)
         if call_tree:
             lines += ["  │", call_tree]
 
@@ -2887,7 +2899,7 @@ def _render_interaction_graph_full(
             lines.extend(f"  │   ├─ {item}" for item in verified[:6])
 
         state_lines = _friendly_state_lines(step, actors)
-        balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors)
+        balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors, runtime)
         event_lines = _friendly_event_lines(step)
         lines += ["  │", "  │   WHAT CHANGED"]
         changes = [
@@ -2920,7 +2932,7 @@ def _render_interaction_graph_full(
             runtime_value = sum(
                 int(edge.get("value_wei") or 0)
                 for edge in step.execution_edges
-                if isinstance(edge, dict)
+                if isinstance(edge, dict) and int(edge.get("depth") or 0) > 0
             )
             if runtime_value and not balance_lines:
                 lines.append(
@@ -4372,6 +4384,10 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
     entries = model.storage.get("storage") or []
     observed_keys = list(observed_keys or [])
     observed_addresses = [x for x in observed_keys if isinstance(x, str) and is_address(x)]
+    observed_words = [
+        x for x in observed_keys
+        if isinstance(x, str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", x)
+    ]
     observed_numbers = [str(x) for x in observed_keys if isinstance(x, int) or (isinstance(x, str) and x.isdigit())]
     types = model.storage.get("types") or {}
 
@@ -4411,7 +4427,7 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
             elif key_label.startswith("uint") or key_label.startswith("int"):
                 keys = list(dict.fromkeys(["0", "1"] + observed_numbers))[:12]
             elif key_label == "bytes32":
-                keys = ["0x" + "00" * 32]
+                keys = list(dict.fromkeys(["0x" + "00" * 32] + observed_words))[:12]
             for key in keys:
                 code, out, _err = _cmd(["cast", "index", key_label, key, slot], timeout=5)
                 if code != 0:
@@ -7268,7 +7284,12 @@ def _render_connections(
     return "\n".join(lines)
 
 
-def _render_actual_call_tree(step: Step, runtime: list[RuntimeContract], enabled: bool) -> str:
+def _render_actual_call_tree(
+    step: Step,
+    runtime: list[RuntimeContract],
+    enabled: bool,
+    actors: list[Actor] | None = None,
+) -> str:
     """Render the observed EVM call tree as a human-readable protocol chain."""
     if not step.execution_edges:
         return ""
@@ -7278,6 +7299,12 @@ def _render_actual_call_tree(step: Step, runtime: list[RuntimeContract], enabled
         for node in runtime
         if is_address(node.address)
     }
+    if actors:
+        runtime_by_addr.update({
+            actor.address.lower(): actor.name
+            for actor in actors
+            if is_address(actor.address)
+        })
     root_fn = str(step.function or "").split("(", 1)[0]
     lines = [
         _paint("  │   LIVE CALL CHAIN", BOLD + BLUE, enabled),
@@ -7349,7 +7376,7 @@ def _render_live_path(steps: list[Step], runtime: list[RuntimeContract], enabled
         if step.status == "success":
             if step.events:
                 lines.append(f"       {EXTERNAL} {len(step.events)} event(s) recorded in receipt")
-            if step.storage_changes or _friendly_balance_lines(step, []):
+            if step.storage_changes or _friendly_balance_lines(step, [], runtime):
                 lines.append(f"       {STATE} state/balance delta observed")
             if step.discovered_contracts:
                 for node in step.discovered_contracts[:4]:
