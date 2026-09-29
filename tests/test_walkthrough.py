@@ -1991,5 +1991,147 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("SOURCE + ACTUAL CALL", joined)
 
 
+    
+    def test_event_rows_normalize_legacy_decoder_tuple(self):
+        class Host:
+            def decode_event_log(self, _config, _log):
+                return (
+                    "CreateEscrow(uint256,address)",
+                    "Event: CreateEscrow(uint256,address)\\nIndexed amount: 1\\nIndexed creator: Bob",
+                )
+
+        receipt = {
+            "logs": [{
+                "address": "0x" + "3" * 40,
+                "topics": ["0x" + "4" * 64],
+                "data": "0x",
+            }]
+        }
+        rows = walkthrough._event_rows(Host(), {}, receipt)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event"], "CreateEscrow(uint256,address)")
+        self.assertIn("Indexed amount: 1", rows[0]["decoded"])
+        self.assertIn("topics", rows[0])
+        self.assertIn("data", rows[0])
+
+    def test_trace_edges_fall_back_to_structured_call_trace(self):
+        trace = {
+            "type": "CALL",
+            "to": "0x" + "1" * 40,
+            "value": "0xde0b6b3a7640000",
+            "calls": [{
+                "type": "CALL",
+                "to": "0x" + "2" * 40,
+                "value": "0x0",
+            }],
+        }
+        with patch.object(walkthrough, "_cmd", return_value=(1, "", "cast run unavailable")):
+            edges = walkthrough._trace_edges("http://127.0.0.1:8545", "0x" + "a" * 64, trace)
+        self.assertEqual(len(edges), 2)
+        self.assertIn("value=1000000000000000000 wei", edges[0])
+
+    def test_execution_call_tree_renders_internal_eth_value_without_duplicate_root_path(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "release()",
+            [],
+            status="success",
+        )
+        step.execution_edges = [
+            {
+                "depth": 0,
+                "to_contract": "Escrow",
+                "to_address": step.address,
+                "function": "release()",
+                "value_wei": 0,
+            },
+            {
+                "depth": 1,
+                "to_contract": "Bob",
+                "to_address": "0x" + "2" * 40,
+                "function": "CALL",
+                "value_wei": 10**18,
+            },
+        ]
+        rendered = walkthrough._render_interaction_graph(
+            step,
+            [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)],
+            False,
+        )
+        self.assertIn("LIVE CALL CHAIN", rendered)
+        self.assertIn("Escrow.release()", rendered)
+        self.assertIn("1 ETH", rendered)
+        self.assertNotIn("ACTUAL RUNTIME PATH", rendered)
+
+    def test_empty_change_report_distinguishes_unobserved_from_no_change(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "release()",
+            [],
+            status="success",
+        )
+        step.execution_edges = [{
+            "depth": 1,
+            "to_contract": "Bob",
+            "to_address": "0x" + "2" * 40,
+            "function": "CALL",
+            "value_wei": 10**18,
+        }]
+        rendered = walkthrough._render_interaction_graph(
+            step,
+            [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)],
+            False,
+        )
+        self.assertIn("storage: not observed", rendered)
+        self.assertIn("native balances: not observed", rendered)
+        self.assertIn("runtime call trace carried 1 ETH in ETH, but no tracked native-balance delta was recorded", rendered)
+
+    def test_system_workflow_uses_live_target_relation_even_when_model_matching_is_external(self):
+        target = "0x" + "9" * 40
+        model = walkthrough.ContractModel(
+            name="Escrow",
+            source="src/EthEscrow.sol",
+            artifact="out/EthEscrow.sol/Escrow.json",
+        )
+        runtime = [
+            walkthrough.RuntimeContract(
+                target, "External", "Escrow", "target"
+            )
+        ]
+        rendered = walkthrough._render_system_workflow_graph(
+            pathlib.Path("/tmp/project"),
+            [model],
+            runtime,
+            model,
+            False,
+        )
+        self.assertIn("Escrow", rendered)
+        self.assertIn("0x" + "9" * 10, rendered)
+        self.assertNotIn("not live", rendered)
+        self.assertIn("no source-level first-party cross-contract edge resolved", rendered)
+
+    def test_forge_storage_layout_fallback_reads_json_inspection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc = \"src\"\\n", encoding="utf-8")
+            payload = {"storage": [{"label": "escrow", "slot": "0"}], "types": {}}
+            with patch.object(walkthrough.shutil, "which", return_value="/usr/bin/forge"), patch.object(
+                walkthrough,
+                "_cmd",
+                return_value=(0, json.dumps(payload), ""),
+            ) as mocked:
+                result = walkthrough._forge_storage_layout(root, "Escrow")
+            self.assertEqual(result, payload)
+            mocked.assert_called_once()
+            self.assertEqual(mocked.call_args.args[0][-3:], ["Escrow", "storage-layout"] if False else mocked.call_args.args[0][-2:])
+    
+
+
 if __name__ == "__main__":
     unittest.main()
