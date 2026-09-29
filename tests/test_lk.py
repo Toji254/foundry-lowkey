@@ -551,6 +551,7 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(candidate["contract"], "ConfidencePoolFactory")
 
 
+    @patch.object(lk, "run_cast")
     @patch.object(lk, "run_foundry")
     @patch.object(lk, "derive_default_anvil_key", return_value="0x" + "1" * 64)
     @patch.object(
@@ -573,6 +574,7 @@ class LowkeyCastTests(unittest.TestCase):
         _anvil,
         _key,
         run_foundry,
+        run_cast,
     ):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -588,6 +590,7 @@ class LowkeyCastTests(unittest.TestCase):
                 "LOWKEY_TARGET 0x" + "4" * 40,
                 0,
             )
+            run_cast.return_value = lk.CommandResult("0x6000", 0)
 
             config = {
                 "actor": None,
