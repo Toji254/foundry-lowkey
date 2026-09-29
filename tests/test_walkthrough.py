@@ -2116,6 +2116,79 @@ class WalkthroughTests(unittest.TestCase):
         self.assertNotIn("not live", rendered)
         self.assertIn("no source-level first-party cross-contract edge resolved", rendered)
 
+    def test_native_value_flow_separates_gas_from_protocol_value(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "release()",
+            [],
+            status="success",
+        )
+        alice = "0x" + "1" * 40
+        escrow = "0x" + "3" * 40
+        bob = "0x" + "2" * 40
+        step.balance_before = {
+            alice.lower(): 100 * 10**18,
+            escrow.lower(): 5 * 10**18,
+            bob.lower(): 0,
+        }
+        step.balance_after = {
+            alice.lower(): 98 * 10**18,
+            escrow.lower(): 4 * 10**18,
+            bob.lower(): 1 * 10**18,
+        }
+        step.gas_cost_wei = 2 * 10**18
+        actors = [
+            walkthrough.Actor("Alice", alice, 0),
+            walkthrough.Actor("Bob", bob, 1),
+        ]
+        lines = walkthrough._friendly_gas_lines(step) + walkthrough._friendly_balance_lines(step, actors, [])
+        self.assertIn("GAS COST Alice: -2 ETH", lines)
+        self.assertIn("NATIVE VALUE Escrow → Bob: 1 ETH", lines)
+        self.assertNotIn("NATIVE BALANCE Alice", lines)
+
+    def test_system_workflow_legend_does_not_call_source_relationship_observed_live(self):
+        model = walkthrough.ContractModel(
+            name="Escrow",
+            source="src/EthEscrow.sol",
+            artifact="out/EthEscrow.sol/Escrow.json",
+        )
+        runtime = [
+            walkthrough.RuntimeContract(
+                "0x" + "9" * 40, "External", "Escrow", "target"
+            )
+        ]
+        rendered = walkthrough._render_system_workflow_graph(
+            pathlib.Path("/tmp/project"),
+            [model],
+            runtime,
+            model,
+            False,
+        )
+        self.assertIn("source relationships: none resolved", rendered)
+        self.assertIn("live execution: observed in the protocol story", rendered)
+        self.assertNotIn("source relationship   ● observed live", rendered)
+
+    def test_success_step_exposes_evidence_basis(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "release()",
+            [],
+            reason="release after acceptance",
+            status="success",
+        )
+        rendered = walkthrough._render_interaction_graph(
+            step,
+            [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)],
+            False,
+        )
+        self.assertIn("BASIS: source-guided candidate passed live preflight and was confirmed on-chain", rendered)
+
     def test_forge_storage_layout_fallback_reads_json_inspection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
