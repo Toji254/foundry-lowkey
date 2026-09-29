@@ -2157,6 +2157,32 @@ def _friendly_contract_name(step: Step) -> str:
         return name[4:]
     return name
 
+def _record_walkthrough_latest(host: Any, root: Path, step: Step) -> None:
+    """Persist the latest successful walkthrough call for connected generators."""
+    if not step.tx_hash or step.status != "success" or not step.function or not step.calldata:
+        return
+
+    context_module = getattr(host, "audit_context", None)
+    if context_module is None:
+        try:
+            import audit_context as context_module
+        except ImportError:
+            return
+
+    try:
+        context_module.set_latest(
+            root,
+            tx_hash=step.tx_hash,
+            function=step.function,
+            value=f"{int(step.value_wei)} wei",
+            calldata=step.calldata,
+        )
+    except Exception:
+        # Evidence generation must never turn a completed walkthrough into a failure.
+        return
+
+
+
 
 _ACTIVE_MODEL_CATALOG: list[ContractModel] = []
 
@@ -5729,8 +5755,10 @@ def _run_adversarial_test(
             receipt = _receipt(rpc, tx)
             trace = _trace_tree(rpc, tx)
             step.status = "success" if receipt and receipt.get("status") in (None, "0x1", 1) else "reverted"
+            step.calldata = _transaction_input(rpc, tx)
             step.events = _event_rows(host, config, receipt)
             _write_transaction_evidence(root, rpc, step, receipt)
+            _record_walkthrough_latest(host, root, step)
             step.execution_edges = _trace_execution_edges(root, rpc, models, trace)
             if step.status != "success":
                 step.error = output or "transaction reverted"
@@ -7753,6 +7781,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 _write_transaction_evidence(root, rpc, step, receipt)
                 trace=_trace_tree(rpc,tx)
                 step.calldata=_transaction_input(rpc,tx)
+
+                _record_walkthrough_latest(host, root, step)
                 step.gas_used=int(receipt.get("gasUsed"),16) if receipt and isinstance(receipt.get("gasUsed"),str) else None
                 step.events=_event_rows(host,config,receipt)
                 step.trace_edges=_trace_edges(rpc,tx)

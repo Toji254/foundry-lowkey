@@ -1775,6 +1775,38 @@ class WalkthroughTests(unittest.TestCase):
         self.assertTrue(any("Demo.ping()" in line for line in rendered))
         self.assertFalse(any("Demo.ping()()" in line for line in rendered))
 
+    def test_record_walkthrough_latest_persists_successful_concrete_call(self):
+        calls = []
+
+        class Context:
+            def set_latest(self, root, **kwargs):
+                calls.append((root, kwargs))
+
+        class Host:
+            audit_context = Context()
+
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "2" * 40,
+            "acceptescrow(bool)",
+            [True],
+            value_wei=0,
+            status="success",
+            tx_hash="0x" + "a" * 64,
+            calldata="0x5c36b186" + "0" * 63 + "1",
+        )
+        root = pathlib.Path("/tmp/project")
+        walkthrough._record_walkthrough_latest(Host(), root, step)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], root)
+        self.assertEqual(calls[0][1]["function"], "acceptescrow(bool)")
+        self.assertEqual(calls[0][1]["calldata"], "0x5c36b186" + "0" * 63 + "1")
+        self.assertEqual(calls[0][1]["tx_hash"], "0x" + "a" * 64)
+
+
     def test_walkthrough_actors_use_configured_profiles_and_do_not_fabricate_treasury(self):
         class Host:
             def anvil_rpc_info(self, config):

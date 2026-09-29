@@ -378,6 +378,76 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIn("Lowkey-generated deployment", generated.read_text(encoding="utf-8"))
             self.assertEqual(run.call_args.args[2], ["build", "--skip", "test", "--skip", "script"])
 
+    def test_request_from_latest_prefers_project_context_over_stale_history(self):
+        target = "0x" + "1" * 40
+        context = {
+            "target": {"address": target},
+            "latest": {
+                "tx_hash": "0x" + "a" * 64,
+                "function": "acceptescrow(bool)",
+                "value": "0 wei",
+                "calldata": "0x5c36b186" + "0" * 63 + "1",
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(generator.audit_context, "load", return_value=context):
+                with patch.object(
+                    generator,
+                    "_latest_send",
+                    return_value="cast send 0x" + "2" * 40 + " ping()",
+                ) as stale:
+                    request = generator._request_from_latest(root, expected_target=target)
+        self.assertIsNotNone(request)
+        self.assertEqual(request.target, target)
+        self.assertEqual(request.function, "acceptescrow(bool)")
+        self.assertEqual(request.calldata, "5c36b186" + "0" * 63 + "1")
+        stale.assert_not_called()
+
+
+    def test_request_from_latest_rejects_history_for_wrong_project_target(self):
+        target = "0x" + "1" * 40
+        history_target = "0x" + "2" * 40
+        context = {"target": {"address": target}, "latest": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(generator.audit_context, "load", return_value=context):
+                with patch.object(
+                    generator,
+                    "_latest_send",
+                    return_value=f"cast send {history_target} ping()",
+                ):
+                    request = generator._request_from_latest(root, expected_target=target)
+        self.assertIsNone(request)
+
+
+    def test_generate_poc_context_latest_with_calldata_is_not_placeholder(self):
+        target = "0x" + "3" * 40
+        context = {
+            "target": {"address": target, "contract": "Escrow"},
+            "latest": {
+                "tx_hash": "0x" + "b" * 64,
+                "function": "acceptescrow(bool)",
+                "value": "0 wei",
+                "calldata": "0x5c36b186" + "0" * 63 + "1",
+            },
+            "signals": [],
+            "focus": {},
+            "tools": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(generator.Path, "cwd", return_value=root):
+                with patch.object(generator.audit_context, "load", return_value=context):
+                    result = generator.run_generate({"target": target}, ["poc"])
+            self.assertEqual(result, 0)
+            generated = next((root / "script").glob("LowkeyPoC_*.s.sol"))
+            source = generated.read_text(encoding="utf-8")
+            self.assertIn('Function:", "acceptescrow(bool)"', source)
+            self.assertIn('hex"5c36b186', source)
+            self.assertNotIn("PLACEHOLDER", source)
+
+
     def test_generate_test_uses_supplied_calldata(self):
         target = "0x" + "1" * 40
         with tempfile.TemporaryDirectory() as tmp:

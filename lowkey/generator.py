@@ -367,7 +367,39 @@ def _parse_send(command: str) -> tuple[str, str, list[str], str] | None:
     return target, function, args, value
 
 
-def _request_from_latest(root: Path) -> Request | None:
+def _request_from_latest(root: Path, expected_target: str | None = None) -> Request | None:
+    """Load the latest concrete transaction from project context before shell history.
+
+    A project-scoped context is authoritative. Never let a stale cast-send from
+    another target become the subject of a newly generated PoC.
+    """
+    context = audit_context.load(root)
+    project_target = (
+        context.get("target", {}).get("address")
+        if isinstance(context.get("target"), dict)
+        else None
+    )
+    latest = context.get("latest", {}) if isinstance(context.get("latest"), dict) else {}
+
+    if _is_address(project_target):
+        if expected_target and project_target.lower() != expected_target.lower():
+            return None
+        function = latest.get("function")
+        calldata = latest.get("calldata")
+        if function and calldata:
+            value = latest.get("value") or "0"
+            return Request(
+                "latest",
+                project_target,
+                function=str(function),
+                args=[],
+                value=str(value),
+                calldata=str(calldata).removeprefix("0x"),
+            )
+        # The current project has explicit target state, but no concrete latest
+        # call. Do not fall back to global shell history.
+        return None
+
     command = _latest_send(root)
     if not command:
         return None
@@ -375,6 +407,8 @@ def _request_from_latest(root: Path) -> Request | None:
     if not parsed:
         return None
     target, function, args, value = parsed
+    if expected_target and target.lower() != expected_target.lower():
+        return None
     code, calldata, error = _run(root, "cast", ["calldata", function, *args])
     if code != 0:
         raise ValueError(error or "cast calldata failed")
@@ -594,7 +628,7 @@ def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]
     if positional:
         request.function, request.args = positional[0], positional[1:]
     else:
-        latest = _request_from_latest(root)
+        latest = _request_from_latest(root, expected_target=request.target)
         if latest:
             latest.output = request.output
             latest.force = request.force
@@ -988,7 +1022,7 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
     # create a scaffold even when concrete argument values are not known yet.
     # This keeps the suggested command copy/pasteable without pretending that
     # missing call data has been proved.
-    if _signature_has_unresolved_arguments(request.function, request.args):
+    if not request.calldata and _signature_has_unresolved_arguments(request.function, request.args):
         placeholder_request = True
 
     if not request.function and not request.calldata:
