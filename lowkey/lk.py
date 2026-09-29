@@ -5291,7 +5291,29 @@ def run_native_lab(config, root, project):
         if output:
             print(output)
         if completed.returncode != 0:
-            print(f"FAIL    : {' '.join(command)} (exit {completed.returncode})", file=sys.stderr)
+            classification = classify_build_failure(output, command) if callable(classify_build_failure) else {
+                "category": "source_or_build_error",
+                "reason": "Native toolchain command failed.",
+                "repairable": False,
+            }
+            print(
+                f"NATIVE LAB FAILURE : {classification.get('category', 'unknown')}",
+                file=sys.stderr,
+            )
+            print(
+                f"Reason             : {classification.get('reason', '')}",
+                file=sys.stderr,
+            )
+            if classification.get("category") == "dependency_conflict":
+                print(
+                    "Action             : dependency constraints must be reconciled in the project manifest/workspace; "
+                    "Lowkey will not silently rewrite them.",
+                    file=sys.stderr,
+                )
+            print(
+                f"Command            : {' '.join(command)} (exit {completed.returncode})",
+                file=sys.stderr,
+            )
             return completed.returncode
         print(f"PASS    : {' '.join(command)}")
 
