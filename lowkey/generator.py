@@ -456,6 +456,9 @@ def _audit_candidate(root: Path) -> dict[str, Any]:
     if not isinstance(signals, list):
         signals = []
 
+    latest = context.get("latest", {})
+    if not isinstance(latest, dict):
+        latest = {}
     latest_function = str(latest.get("function") or "").strip()
 
     focus = context.get("focus")
