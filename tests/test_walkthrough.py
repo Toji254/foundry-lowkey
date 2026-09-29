@@ -2112,7 +2112,7 @@ class WalkthroughTests(unittest.TestCase):
             False,
         )
         self.assertIn("Escrow", rendered)
-        self.assertIn("0x" + "9" * 10, rendered)
+        self.assertIn("0x99999999…99999999", rendered)
         self.assertNotIn("not live", rendered)
         self.assertIn("no source-level first-party cross-contract edge resolved", rendered)
 
