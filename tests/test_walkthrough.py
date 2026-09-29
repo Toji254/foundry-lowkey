@@ -1522,6 +1522,16 @@ class WalkthroughTests(unittest.TestCase):
         self.assertNotIn("anvil_setBalance", methods)
 
 
+    def test_sol_address_literal_avoids_hex_address_checksum_rule(self):
+        raw = "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512"
+        literal = walkthrough._sol_address_literal(raw)
+        self.assertEqual(
+            literal,
+            f"address(uint160({int(raw[2:], 16)}))",
+        )
+        self.assertNotIn(raw, literal)
+
+
     def test_token_balance_lines_show_real_deltas(self):
         actor=walkthrough.Actor("Alice","0x"+"1"*40,0)
         step=walkthrough.Step(1,"Alice","Pool","0x"+"2"*40,"stake(uint256)",[1],status="success")
