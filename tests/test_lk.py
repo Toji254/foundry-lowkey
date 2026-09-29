@@ -713,6 +713,37 @@ contract Pool {
             ],
         )
 
+    def test_walkthrough_maps_source_name_less_foundry_artifact_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            (root / "out" / "EthEscrow.sol").mkdir(parents=True)
+            (root / "src" / "EthEscrow.sol").write_text(
+                "pragma solidity ^0.8.20; contract Escrow { function ping() external {} }",
+                encoding="utf-8",
+            )
+            artifact = {
+                "contractName": "Escrow",
+                "abi": [
+                    {
+                        "type": "function",
+                        "name": "ping",
+                        "inputs": [],
+                        "outputs": [],
+                        "stateMutability": "nonpayable",
+                    }
+                ],
+                "bytecode": "0x6000",
+                "deployedBytecode": "0x6000",
+            }
+            (root / "out" / "EthEscrow.sol" / "Escrow.json").write_text(
+                json.dumps(artifact), encoding="utf-8"
+            )
+            models = lk.walkthrough._artifact_models(root)
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0].name, "Escrow")
+        self.assertEqual(models[0].source, "src/EthEscrow.sol")
+
     def test_walkthrough_accepts_hardhat_style_artifact_layout(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
