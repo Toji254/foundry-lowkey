@@ -3576,7 +3576,12 @@ def parse_lab_markers(output, marker):
     )
 
 
-def parse_lab_marker(output, marker):
+def parse_lab_marker(output, marker="LOWKEY_TARGET"):
+    """Return the last target address for the given lab marker.
+
+    Keep LOWKEY_TARGET as the default for backwards compatibility with
+    existing project-native deployment scripts and callers.
+    """
     matches = parse_lab_markers(output, marker)
     return matches[-1] if matches else None
 
