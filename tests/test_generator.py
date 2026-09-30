@@ -45,6 +45,19 @@ class LowkeyGeneratorTests(unittest.TestCase):
             rendered,
         )
 
+    def test_poc_renderer_uses_forge_broadcast_identity(self):
+        rendered = generator._template_poc(
+            "BountyArena",
+            "0x1111111111111111111111111111111111111111",
+            "ping",
+            "0",
+            "deadbeef",
+        )
+        self.assertIn("vm.startBroadcast();", rendered)
+        self.assertIn("vm.readCallers();", rendered)
+        self.assertIn("address attacker;", rendered)
+        self.assertNotIn("LOWKEY_ATTACKER_KEY", rendered)
+
     def test_poc_renderer_marks_raw_call_intentional(self):
         rendered = generator._template_poc(
             "BountyArena",
