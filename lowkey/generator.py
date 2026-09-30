@@ -803,11 +803,12 @@ contract LowkeyPoC_{ident} is Script {{
 
     function run() external {{
         // SAFETY: start with Anvil or a local fork. A broadcasted script changes real chain state.
-        // The private key stays outside source code and is loaded from the environment here.
-        uint256 attackerKey = vm.envUint("LOWKEY_ATTACKER_KEY");
-        address attacker = vm.addr(attackerKey);
+        // Forge owns the signing identity. Pass --sender for simulation or --private-key when broadcasting;
+        // Lowkey deliberately does not invent a private-key environment variable in generated source.
+        address attacker;
 
-        vm.startBroadcast(attackerKey);
+        vm.startBroadcast();
+        (, attacker, ) = vm.readCallers();
 
         // recordLogs captures emitted events so you can inspect behavior, not just balances.
         vm.recordLogs();
