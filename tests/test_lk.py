@@ -191,6 +191,10 @@ class LowkeyCastTests(unittest.TestCase):
         target = "0x" + "1" * 40
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text(
+                "[profile.default]\nsrc = \"src\"\nout = \"out\"\n",
+                encoding="utf-8",
+            )
             artifact = root / "out" / "BountyArena.sol" / "BountyArena.json"
             artifact.parent.mkdir(parents=True)
             abi = [
