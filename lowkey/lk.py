@@ -8167,6 +8167,14 @@ def run_audit_mode(config, args=None, interactive=None):
         target = _bootstrap_audit_target(config, root, allow_deploy=auto_mode)
         if target:
             _sync_audit_context(config, root)
+            abi_source = resolve_abi_path(config, target) or auto_abi_path(target, config)
+            audit_abi = audit_abi_path(target, config)
+            if abi_source and audit_abi and audit_abi.exists():
+                try:
+                    audit_label = audit_abi.relative_to(Path(root).resolve())
+                except (OSError, ValueError):
+                    audit_label = audit_abi
+                print(f"ABI workspace: {audit_label}")
         else:
             print("Target : none configured for this project")
             print("         Static audit can continue; use 'lk lab' (or 'lk audit auto') for a live local target.")
