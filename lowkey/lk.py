@@ -942,6 +942,99 @@ def configured_project_root(target,config):
     except OSError:
         return None
 
+
+def audit_abi_path(target, config):
+    """Return the project-local, human-readable ABI copy for a target."""
+    if not target:
+        return None
+    roots = config.get("project_roots", {}) if isinstance(config, dict) else {}
+    root = None
+    if isinstance(roots, dict):
+        root = roots.get(target)
+        if not root and isinstance(target, str):
+            lowered = target.lower()
+            root = next(
+                (
+                    value for address, value in roots.items()
+                    if isinstance(address, str) and address.lower() == lowered
+                ),
+                None,
+            )
+    try:
+        project_root = Path(root).expanduser().resolve() if root else Path(
+            audit_context.foundry_project_root()
+        ).expanduser().resolve()
+    except OSError:
+        return None
+    if not project_root.is_dir():
+        return None
+    contract = str(config.get("target_contract") or "contract").strip() or "contract"
+    safe_contract = re.sub(r"[^A-Za-z0-9_.-]", "_", contract).strip("._") or "contract"
+    return project_root / ".audit" / "abi" / f"{safe_contract}.json"
+
+
+def materialize_audit_abi(target, source_path, config):
+    """Write a pretty, project-local ABI wrapper without replacing the source artifact."""
+    if not target or not source_path:
+        return None
+    try:
+        source = Path(os.path.expanduser(str(source_path))).resolve()
+    except OSError:
+        return None
+    if not source.is_file():
+        return None
+
+    artifact = read_artifact(str(source))
+    if not isinstance(artifact, dict):
+        # A manually supplied bare ABI array is still accepted.
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, list):
+            return None
+        artifact = {"abi": payload}
+
+    abi = artifact.get("abi")
+    if not isinstance(abi, list):
+        return None
+
+    contract = artifact_contract_name(str(source), artifact)
+    if not contract:
+        contract = str(config.get("target_contract") or "contract")
+    config.setdefault("target_contract", contract)
+
+    destination = audit_abi_path(target, config)
+    if destination is None:
+        return None
+
+    try:
+        source_project_root = Path(audit_context.foundry_project_root()).expanduser().resolve()
+        destination = source_project_root / ".audit" / "abi" / (
+            re.sub(r"[^A-Za-z0-9_.-]", "_", str(contract)).strip("._") or "contract"
+        ) + Path(".json")
+    except OSError:
+        pass
+
+    # Never rewrite the file if the source already is the project-local ABI.
+    try:
+        if destination.resolve() == source.resolve():
+            return destination
+    except OSError:
+        pass
+
+    payload = {
+        "contractName": str(contract),
+        "abi": abi,
+    }
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        rendered = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        destination.write_text(rendered, encoding="utf-8")
+    except OSError:
+        return None
+    return destination
+
 def remember_abi_path(config,target,path):
     if not target or not path:
         return path
@@ -967,6 +1060,12 @@ def remember_abi_path(config,target,path):
         changed=True
     if changed:
         config["_config_dirty"]=True
+    try:
+        materialize_audit_abi(target, absolute, config)
+    except Exception:
+        # ABI discovery must never fail merely because the audit-workspace copy
+        # cannot be written. The original artifact remains the source of truth.
+        pass
     return absolute
 
 def resolve_abi_path(config,target,path=None):
@@ -1184,6 +1283,13 @@ def run_abi(config):
     ]
     path=resolve_abi_path(config,target) or auto_abi_path(target,config)
     print(f"ABI: {path or 'not loaded'}")
+    audit_path = audit_abi_path(target, config)
+    if audit_path and audit_path.exists():
+        try:
+            audit_label = audit_path.relative_to(Path(audit_context.foundry_project_root()).resolve())
+        except (OSError, ValueError):
+            audit_label = audit_path
+        print(f"Audit ABI: {audit_label}")
     for group, items in groups:
         if items:
             print(f"\n{group}")
