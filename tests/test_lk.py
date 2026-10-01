@@ -187,6 +187,55 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertFalse(lk.is_address("0x" + "1" * 64))
         self.assertFalse(lk.is_address(None))
 
+    def test_abi_is_materialized_as_pretty_project_local_json(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            artifact = root / "out" / "BountyArena.sol" / "BountyArena.json"
+            artifact.parent.mkdir(parents=True)
+            abi = [
+                {
+                    "type": "function",
+                    "name": "createbounty",
+                    "inputs": [
+                        {"name": "addr", "type": "address", "internalType": "address"},
+                        {"name": "amount", "type": "uint256", "internalType": "uint256"},
+                    ],
+                    "outputs": [{"name": "", "type": "bytes32", "internalType": "bytes32"}],
+                    "stateMutability": "payable",
+                }
+            ]
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "contractName": "BountyArena",
+                        "abi": abi,
+                        "bytecode": {"object": "0x6000"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = {
+                "target": target,
+                "target_contract": "BountyArena",
+                "abi_paths": {},
+                "project_roots": {target: str(root)},
+            }
+
+            remembered = lk.remember_abi_path(config, target, str(artifact))
+            audit_file = root / ".audit" / "abi" / "BountyArena.json"
+
+            self.assertEqual(remembered, str(artifact.resolve()))
+            self.assertEqual(config["abi_paths"][target], str(artifact.resolve()))
+            self.assertTrue(audit_file.is_file())
+
+            rendered = audit_file.read_text(encoding="utf-8")
+            payload = json.loads(rendered)
+            self.assertEqual(payload["contractName"], "BountyArena")
+            self.assertEqual(payload["abi"], abi)
+            self.assertIn("\n  \"abi\": [", rendered)
+            self.assertTrue(rendered.endswith("\n"))
+
     def test_transaction_send_summary_exposes_clickable_evidence(self):
         tx_hash = "0x" + "1" * 64
         with tempfile.TemporaryDirectory() as tmp:
