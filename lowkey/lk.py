@@ -1008,14 +1008,6 @@ def materialize_audit_abi(target, source_path, config):
     if destination is None:
         return None
 
-    try:
-        source_project_root = Path(audit_context.foundry_project_root()).expanduser().resolve()
-        destination = source_project_root / ".audit" / "abi" / (
-            re.sub(r"[^A-Za-z0-9_.-]", "_", str(contract)).strip("._") or "contract"
-        ) + Path(".json")
-    except OSError:
-        pass
-
     # Never rewrite the file if the source already is the project-local ABI.
     try:
         if destination.resolve() == source.resolve():
