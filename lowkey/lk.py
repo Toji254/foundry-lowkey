@@ -943,7 +943,7 @@ def configured_project_root(target,config):
         return None
 
 
-def audit_abi_path(target, config):
+def audit_abi_path(target, config, contract=None):
     """Return the project-local, human-readable ABI copy for a target."""
     if not target:
         return None
@@ -968,7 +968,7 @@ def audit_abi_path(target, config):
         return None
     if not project_root.is_dir():
         return None
-    contract = str(config.get("target_contract") or "contract").strip() or "contract"
+    contract = str(contract or config.get("target_contract") or "contract").strip() or "contract"
     safe_contract = re.sub(r"[^A-Za-z0-9_.-]", "_", contract).strip("._") or "contract"
     return project_root / ".audit" / "abi" / f"{safe_contract}.json"
 
@@ -1004,7 +1004,7 @@ def materialize_audit_abi(target, source_path, config):
         contract = str(config.get("target_contract") or "contract")
     config.setdefault("target_contract", contract)
 
-    destination = audit_abi_path(target, config)
+    destination = audit_abi_path(target, config, contract)
     if destination is None:
         return None
 
