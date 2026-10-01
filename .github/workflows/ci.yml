@@ -135,6 +135,10 @@ jobs:
           lk system
           test -f .audit/evidence/system_bootstrap.json
           lk lab Fixture
+          lk abi | tee /tmp/lowkey-abi.txt
+          test -f .audit/abi/Fixture.json
+          grep -q '"abi": \[' .audit/abi/Fixture.json
+          test "$(wc -l < .audit/abi/Fixture.json)" -gt 2
           lk status
           lk audit --non-interactive | tee /tmp/lowkey-audit-noninteractive.txt
           grep -Eq "Target[[:space:]]+: Fixture" /tmp/lowkey-audit-noninteractive.txt
