@@ -160,6 +160,16 @@ Manual override is still available:
 lk abi out/EthEscrow.sol/EthEscrow.json
 ~~~
 
+When Lowkey resolves an ABI, it keeps the original Foundry artifact as the source of truth and also materializes a human-readable copy under the project audit workspace:
+
+~~~text
+.audit/
+└── abi/
+    └── <Contract>.json
+~~~
+
+The project-local copy is pretty-printed JSON with an `abi` field. This makes the audit workspace easy to inspect or archive without changing the original `out/` artifact.
+
 ## Storage and state forensics
 
 ~~~bash
