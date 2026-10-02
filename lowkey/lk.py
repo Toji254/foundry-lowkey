@@ -9528,7 +9528,7 @@ COMMAND_HELP = {
         "lk project 2",
         "Use it at the start of an audit so you know which package is the application scope and which packages are dependencies/tooling.",
         children={
-            "workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace", "Use it before choosing a primary audit project in a monorepo."),
+            "--workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace --h", "Use it before choosing a primary audit project in a monorepo."),
         },
         options=[("--json", "Print machine-readable project data.", "lk project 2 --json")],
         related=["lk projects", "lk system", "lk deps"],
