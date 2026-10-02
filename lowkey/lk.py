@@ -9436,6 +9436,7 @@ COMMAND_HELP = {
             "done": _help_entry("Mark the current question answered and move the frontier.", "lk q done", "lk q done", "Use it only after you have actually established the answer."),
             "note": _help_entry("Record your answer/evidence for the current question.", "lk q note \"...\"", "lk q note \"owner check is enforced in X\"", "Use it when you want the learning state to retain the reasoning you established."),
             "skip": _help_entry("Record that the current question is not being pursued.", "lk q skip \"...\"", "lk q skip \"feature is not present\"", "Use it when a question is irrelevant or intentionally deferred."),
+            "na": _help_entry("Record that the current question is not applicable.", "lk q na \"...\"", "lk q na \"feature is not present\"", "Use it when the project evidence shows the branch does not apply."),
             "source": _help_entry("Show the research sources attached to a question.", "lk q source <QUESTION_ID>", "lk q source ARCH-001", "Use it to inspect the provenance behind a question."),
             "reset": _help_entry("Reset question-learning state without deleting audit evidence.", "lk q reset", "lk q reset", "Use it when starting a fresh reasoning pass on the same project."),
         },
