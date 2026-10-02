@@ -380,23 +380,32 @@ def add_security_pattern(
         "verification": {"status": incoming_status, "mode": evidence_mode, "evidence": incoming_evidence},
         "status": "open",
     }
-    result = add_signal(signal, root)
+    incoming_id = _signal_id(signal)
+    context_before = load(root)
+    previous = next(
+        (item for item in context_before.get("signals", [])
+         if isinstance(item, dict) and item.get("id") == incoming_id),
+        None,
+    )
+    previous_status = str((previous or {}).get("verification_status") or "CANDIDATE").upper()
+    previous_verification = (previous or {}).get("verification")
+    if not isinstance(previous_verification, dict):
+        previous_verification = {}
+    previous_evidence = previous_verification.get("evidence")
+    if not isinstance(previous_evidence, list):
+        previous_evidence = []
 
+    result = add_signal(signal, root)
     context = load(root)
     stored = next(
         (item for item in context.setdefault("signals", []) if item.get("id") == result.get("id")),
         result,
     )
     rank = {"CANDIDATE": 0, "REVIEW": 1, "CONFIRMED": 2}
-    stored_status = str(stored.get("verification_status") or "CANDIDATE").upper()
     effective_status = (
-        stored_status if rank.get(stored_status, -1) > rank.get(incoming_status, -1)
+        previous_status if rank.get(previous_status, -1) > rank.get(incoming_status, -1)
         else incoming_status
     )
-    previous = stored.get("verification") if isinstance(stored.get("verification"), dict) else {}
-    previous_evidence = previous.get("evidence") if isinstance(previous, dict) else []
-    if not isinstance(previous_evidence, list):
-        previous_evidence = []
     combined_evidence = list(previous_evidence)
     for item in incoming_evidence:
         if item not in combined_evidence:
@@ -406,7 +415,7 @@ def add_security_pattern(
     stored["verification_status"] = effective_status
     stored["verification"] = {
         "status": effective_status,
-        "mode": evidence_mode if effective_status == incoming_status else str(previous.get("mode") or "source+stateful"),
+        "mode": evidence_mode if effective_status == incoming_status else str(previous_verification.get("mode") or "source+stateful"),
         "evidence": combined_evidence,
     }
     stored["confidence"] = (
