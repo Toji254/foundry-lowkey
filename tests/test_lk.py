@@ -3920,6 +3920,11 @@ def withdraw(amount: uint256):
 
 
 
+    def test_security_pattern_summary_delegates_to_shared_audit_context(self):
+        expected = {"total": 3, "reviews": 1, "confirmed": 1, "candidates": 1}
+        with patch.object(lk.audit_context, "security_pattern_summary", return_value=expected):
+            self.assertEqual(lk._security_pattern_summary(pathlib.Path("/tmp/project")), expected)
+
 if __name__ == "__main__":
     unittest.main()
 
