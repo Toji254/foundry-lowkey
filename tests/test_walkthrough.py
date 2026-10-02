@@ -232,6 +232,63 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn('"gas_used": "21000"', html)
         self.assertIn("0x552410770000000000000000000000000000000000000000000000000000000000000007", html)
 
+    def test_live_target_rejects_eoa_even_for_non_initializer_contract(self):
+        model = walkthrough.ContractModel(
+            name="Fallback",
+            source="src/Fallback.sol",
+            artifact="out/Fallback.sol/Fallback.json",
+            abi=[{
+                "type": "function",
+                "name": "withdraw",
+                "inputs": [],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+        )
+        with patch.object(walkthrough, "_runtime_code", return_value="0x"):
+            ok, reason = walkthrough._target_is_live_instance(
+                pathlib.Path("/tmp/project"),
+                "http://127.0.0.1:8545",
+                "0x" + "1" * 40,
+                model,
+            )
+        self.assertFalse(ok)
+        self.assertIn("no contract bytecode", reason)
+
+    def test_storage_renderer_explains_mapping_anchor_and_raw_slot_word(self):
+        storage = [
+            {
+                "label": "contributions",
+                "slot": "0",
+                "type": "mapping(address => uint256)",
+                "encoding": "mapping",
+                "mapping": {
+                    "key_type": "address",
+                    "value_type": "uint256",
+                    "rows": [{
+                        "key": "0x" + "1" * 40,
+                        "value": 1000,
+                        "slot": "0x" + "2" * 64,
+                        "raw": "0x" + "0" * 63 + "1",
+                    }],
+                },
+            },
+            {
+                "label": "owner",
+                "slot": "1",
+                "type": "address",
+                "encoding": "inplace",
+                "value": "0x" + "3" * 40,
+                "raw": "0x" + "0" * 24 + "3" * 40,
+            },
+        ]
+        rendered = walkthrough._render_storage(storage, False)
+        self.assertIn("anchor slot → 0   (the mapping itself)", rendered)
+        self.assertIn("value slots → keccak256(pad(key) || pad(0))", rendered)
+        self.assertIn("stored at 0x" + "2" * 64, rendered)
+        self.assertIn("raw word: 0x" + "0" * 24 + "3" * 40, rendered)
+        self.assertIn("SLOT 1", rendered)
+
     def test_cli_arg_lowercases_booleans(self):
         self.assertEqual(walkthrough._cli_arg(True), "true")
         self.assertEqual(walkthrough._cli_arg(False), "false")
