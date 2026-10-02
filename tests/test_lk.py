@@ -3794,6 +3794,52 @@ def withdraw(amount: uint256):
         self.assertTrue(config['wallets']['lab-deployer']['internal'])
         self.assertEqual(lk.assigned_anvil_address(config, address), 'Alice')
 
+    def test_security_pattern_is_first_class_project_signal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            signal = lk.audit_context.add_security_pattern(
+                root,
+                pattern_id="REPLAY-001",
+                title="Replayable payout / claim path",
+                contract="Fallback",
+                function="withdraw()",
+                file="src/Fallback.sol",
+                line=30,
+                logic="A one-shot entitlement is dangerous when repeated payout does not consume state.",
+                description="withdraw() is an economic payout path.",
+                next_step="Compare state and value across two persistent calls.",
+                provenance=["public audit research"],
+                verification_status="REVIEW",
+                verification_evidence=["same isolated call succeeded; persistent delta not proven"],
+                evidence_mode="source+stateful",
+            )
+            self.assertEqual(signal["category"], "security-pattern")
+            self.assertEqual(signal["pattern_id"], "REPLAY-001")
+            self.assertEqual(signal["verification_status"], "REVIEW")
+            self.assertEqual(
+                lk.audit_context.security_patterns(root, function="withdraw()")[0]["id"],
+                signal["id"],
+            )
+
+    def test_security_pattern_summary_is_shared_with_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            lk.audit_context.add_security_pattern(
+                root,
+                pattern_id="AUTH-001",
+                title="Authorization signal",
+                contract="Demo",
+                function="setValue()",
+                file="src/Demo.sol",
+                line=10,
+                verification_status="CANDIDATE",
+            )
+            summary = lk._security_pattern_summary(root)
+            self.assertEqual(summary["total"], 1)
+            self.assertEqual(summary["candidates"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
