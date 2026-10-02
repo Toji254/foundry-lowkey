@@ -8599,6 +8599,47 @@ def _sync_audit_context(config, root=None):
     )
 
 
+def _sync_security_patterns(root, *, announce: bool = False):
+    """Synchronize source security-pattern observations into shared Lowkey context."""
+    root = Path(root).resolve()
+    if not audit_context.is_audit_project(root):
+        return []
+    try:
+        import walkthrough as _walkthrough
+        from walkthrough_finding_patterns import scan_project, persist_security_patterns
+    except ImportError:
+        try:
+            from . import walkthrough as _walkthrough
+            from .walkthrough_finding_patterns import scan_project, persist_security_patterns
+        except ImportError:
+            return []
+    try:
+        models = _walkthrough._artifact_models(root)
+        if not models:
+            return []
+        observations = scan_project(root, models)
+        persist_security_patterns(root, observations)
+    except Exception as exc:
+        if announce:
+            print(f"Security pattern synchronization skipped: {exc}", file=sys.stderr)
+        return []
+    if announce and observations:
+        confirmed = sum(1 for item in observations if item.status == "CONFIRMED")
+        reviews = sum(1 for item in observations if item.status == "REVIEW")
+        candidates = sum(1 for item in observations if item.status == "CANDIDATE")
+        print(f"Security patterns : {len(observations)} source match(es) ({confirmed} confirmed, {reviews} review, {candidates} candidate)")
+    return observations
+
+
+def _security_pattern_summary(root):
+    patterns = audit_context.security_patterns(root)
+    return {
+        "total": len(patterns),
+        "reviews": sum(1 for item in patterns if item.get("verification_status") == "REVIEW"),
+        "confirmed": sum(1 for item in patterns if item.get("verification_status") == "CONFIRMED"),
+        "candidates": sum(1 for item in patterns if item.get("verification_status") == "CANDIDATE"),
+    }
+
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
         print("Usage: lk audit [--no-checks] [--verbose]")
@@ -8628,6 +8669,7 @@ def run_audit(config, args):
         "languages": info.get("languages", {}),
     }
     audit_context.update(root, project=project_data)
+    _sync_security_patterns(root, announce=True)
 
     stacks = set(info.get("stacks", []))
     if "foundry" in stacks:
@@ -8681,6 +8723,7 @@ def refresh_generated_poc(config):
 def run_context(config):
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
+    _sync_security_patterns(root)
     print("LOWKEY AUDIT CONTEXT")
     print("====================")
     print(audit_context.human_snapshot(root))
@@ -8713,6 +8756,7 @@ def run_signals(config, args):
 
     requested = args[0].lower() if args else "open"
     status = requested if requested in {"open", "closed", "all", "investigating", "proven", "dismissed"} else "open"
+    _sync_security_patterns(root)
     selected = audit_context.signals(root, None if status == "all" else status)
 
     print("LOWKEY AUDIT SIGNALS")
@@ -8742,6 +8786,15 @@ def run_signals(config, args):
         if signal.get("triage_note"):
             print(f"   Note       : {signal['triage_note']}")
         print(f"   Status     : {signal.get('status', 'open')}")
+        verification = signal.get("verification") if isinstance(signal.get("verification"), dict) else {}
+        if signal.get("category") == "security-pattern":
+            print(f"   Pattern    : {signal.get('pattern_id') or signal.get('check')}")
+            print(f"   Verification: {signal.get('verification_status') or verification.get('status') or 'CANDIDATE'}")
+            if verification.get("mode"):
+                print(f"   Evidence mode: {verification.get('mode')}")
+            provenance = signal.get("provenance")
+            if isinstance(provenance, list) and provenance:
+                print(f"   Research   : {', '.join(str(item) for item in provenance[:4])}")
         evidence = _signal_evidence(signal)
         if evidence:
             print(f"   Evidence   : {len(evidence)} captured")
@@ -9243,6 +9296,7 @@ def run_external_audit(config, args):
         else:
             slither_args.append(item)
     root = audit_context.foundry_project_root()
+    _sync_security_patterns(root, announce=True)
     # The evidence engine reads ~/.lowkey/config.json directly; persist the
     # current command context first so target/RPC changes from this invocation
     # are visible to it.
