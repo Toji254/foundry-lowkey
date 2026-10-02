@@ -7883,15 +7883,18 @@ def _render_storage(
             )
 
             lines = [
-                f"purpose     → {purpose}",
-                f"how to read → find a key (like Alice), then read the value stored for that key",
-                f"storage     → slot {anchor_slot}   [the mapping's numbered storage position]",
-                f"key         → {key_type}   [what identifies an entry]",
-                f"value       → {value_type}   [what is stored for that key]",
-                f"stored value→ {value_meaning}",
+                f"purpose       → {purpose}",
+                "how to read   → find a key (like Alice), then read the value stored for that key",
+                f"mapping slot  → {anchor_slot}   [the mapping's anchor; this slot identifies the mapping itself]",
+                "important     → slot 0 is not Alice's value; each key gets its own storage location",
+                f"key type      → {key_type}   [what identifies an entry]",
+                f"value type    → {value_type}   [what is stored for that key]",
+                f"stored value  → {value_meaning}",
+                f"entry location→ the EVM calculates a separate storage location from the key + mapping slot {anchor_slot}",
+                "               [think: hash(Alice's address + slot 0) → Alice's storage location]",
             ]
             if native_value:
-                lines.append("unit        → ETH is stored internally as wei [1 ETH = 10^18 wei]")
+                lines.append("unit          → ETH is stored internally as wei [1 ETH = 10^18 wei]")
 
             rows = list(mapping_info.get("rows", []) or [])
             shown_rows = rows[:6]
@@ -7987,10 +7990,11 @@ def _render_storage(
             else f"remembers the current {label}"
         )
         lines = [
-            f"purpose     → {purpose}",
-            f"value       → {value_text}",
-            f"type        → {type_name}   [Solidity type]",
-            f"storage     → slot {slot}   [numbered storage box]",
+            f"purpose       → {purpose}",
+            f"value         → {value_text}",
+            f"type          → {type_name}   [Solidity type]",
+            f"storage box   → slot {slot}   [a numbered 32-byte storage box; slots start at 0]",
+            "where it lives → this value is stored directly in this slot; it is not a mapping row",
         ]
         if technical and raw:
             lines.append(f"raw word    → {raw}   [32-byte EVM storage word]")
