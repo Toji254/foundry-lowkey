@@ -400,7 +400,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("technical storage:", rendered)
         self.assertIn("mapping base slot = 0", rendered)
         self.assertIn("row location        = keccak256(pad(key) || pad(0))", rendered)
-        self.assertIn("row slot 0x" + "2" * 64, rendered)
+        self.assertIn("row slot 0x" + "2" * 20, rendered)
 
     def test_security_radar_uses_real_newlines(self):
         with tempfile.TemporaryDirectory() as tmp:
