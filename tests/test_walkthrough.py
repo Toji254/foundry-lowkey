@@ -261,8 +261,53 @@ class WalkthroughTests(unittest.TestCase):
             walkthrough._friendly_eth(10**18),
             "1 ETH [1,000,000,000,000,000,000 wei]",
         )
+        self.assertEqual(
+            walkthrough._friendly_eth(1000 * 10**18 + 3),
+            "1,000 ETH + 3 wei [1,000,000,000,000,000,000,003 wei]",
+        )
 
-    def test_storage_renderer_explains_mapping_rows_and_native_units(self):
+    def test_storage_renderer_is_meaning_first_for_mapping_rows_and_slots(self):
+        storage = [
+            {
+                "label": "contributions",
+                "slot": "0",
+                "type": "mapping(address => uint256)",
+                "encoding": "mapping",
+                "mapping": {
+                    "key_type": "address",
+                    "value_type": "uint256",
+                    "native_value": True,
+                    "rows": [{
+                        "key": "0x" + "1" * 40,
+                        "value": 1000 * 10**18 + 3,
+                        "slot": "0x" + "2" * 64,
+                        "raw": "0x" + "4" * 64,
+                    }],
+                },
+            },
+            {
+                "label": "owner",
+                "slot": "1",
+                "type": "address",
+                "encoding": "inplace",
+                "value": "0x" + "3" * 40,
+                "raw": "0x" + "0" * 24 + "3" * 40,
+            },
+        ]
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        rendered = walkthrough._render_storage(storage, False, actors)
+        self.assertIn("meaning     → tracks how much native ETH is associated with each address", rendered)
+        self.assertIn("base slot   → 0   [the mapping's numbered storage position]", rendered)
+        self.assertIn("key type    → address", rendered)
+        self.assertIn("value type  → uint256", rendered)
+        self.assertIn("Alice → 1,000 ETH + 3 wei [1,000,000,000,000,000,000,003 wei]", rendered)
+        self.assertIn("SLOT 1 • owner", rendered)
+        self.assertIn("meaning     → stores the current owner", rendered)
+        self.assertIn("value       → 0x33333333…33333333", rendered)
+        self.assertNotIn("raw word", rendered)
+        self.assertNotIn("keccak256(pad(key)", rendered)
+
+    def test_storage_renderer_keeps_mapping_slot_evidence_in_technical_mode(self):
         storage = [{
             "label": "contributions",
             "slot": "0",
@@ -279,46 +324,31 @@ class WalkthroughTests(unittest.TestCase):
                 }],
             },
         }]
-        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
-        rendered = walkthrough._render_storage(storage, False, actors)
-        self.assertIn("meaning     → one uint256 value is stored for each address key", rendered)
-        self.assertIn("key         → address   [what identifies a row]", rendered)
-        self.assertIn("Alice → 1e-18 ETH [1 wei] [stored as uint256; msg.value is measured in wei]", rendered)
-        self.assertIn("[calculated storage slot]", rendered)
+        rendered = walkthrough._render_storage(storage, False, [], technical=True)
+        self.assertIn("technical storage:", rendered)
+        self.assertIn("mapping base slot = 0", rendered)
+        self.assertIn("entry location    = keccak256(pad(key) || pad(0))", rendered)
+        self.assertIn("row slot 0x" + "2" * 64, rendered)
 
-    def test_storage_renderer_explains_mapping_anchor_and_raw_slot_word(self):
-        storage = [
-            {
-                "label": "contributions",
-                "slot": "0",
-                "type": "mapping(address => uint256)",
-                "encoding": "mapping",
-                "mapping": {
-                    "key_type": "address",
-                    "value_type": "uint256",
-                    "rows": [{
-                        "key": "0x" + "1" * 40,
-                        "value": 1000,
-                        "slot": "0x" + "2" * 64,
-                        "raw": "0x" + "0" * 63 + "1",
-                    }],
-                },
-            },
-            {
-                "label": "owner",
-                "slot": "1",
-                "type": "address",
-                "encoding": "inplace",
-                "value": "0x" + "3" * 40,
-                "raw": "0x" + "0" * 24 + "3" * 40,
-            },
-        ]
-        rendered = walkthrough._render_storage(storage, False)
-        self.assertIn("anchor slot → 0   (the mapping itself)", rendered)
-        self.assertIn("value slots → keccak256(pad(key) || pad(0))", rendered)
-        self.assertIn("1000  at 0x" + "2" * 8, rendered)
-        self.assertIn("raw word: 0x" + "0" * 24 + "3" * 40, rendered)
-        self.assertIn("SLOT 1", rendered)
+    def test_render_board_accepts_technical_storage_flag(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+        )
+        rendered = walkthrough._render_board(
+            pathlib.Path("/tmp/project"),
+            model,
+            [model],
+            [walkthrough.RuntimeContract("0x" + "1" * 40, "Demo", "Demo", "target")],
+            [walkthrough.Actor("Alice", "0x" + "2" * 40, 0)],
+            [],
+            None,
+            [],
+            False,
+            technical_storage=True,
+        )
+        self.assertIn("LOWKEY // LIVE PROTOCOL WALKTHROUGH", rendered)
 
     def test_cli_arg_lowercases_booleans(self):
         self.assertEqual(walkthrough._cli_arg(True), "true")
