@@ -453,6 +453,21 @@ def security_patterns(
         items = [item for item in items if str(item.get("function") or "").split("(", 1)[0].lower() == wanted]
     return items
 
+
+def security_pattern_summary(root: Path | None = None) -> dict[str, int]:
+    """Return one canonical count set for Lowkey security-pattern signals."""
+    items = security_patterns(root)
+    statuses = {
+        str(item.get("verification_status") or "CANDIDATE").upper()
+        for item in items
+    }
+    return {
+        "total": len(items),
+        "reviews": sum(1 for item in items if str(item.get("verification_status") or "CANDIDATE").upper() == "REVIEW"),
+        "confirmed": sum(1 for item in items if str(item.get("verification_status") or "CANDIDATE").upper() == "CONFIRMED"),
+        "candidates": sum(1 for item in items if str(item.get("verification_status") or "CANDIDATE").upper() == "CANDIDATE"),
+    }
+
 def add_signal(signal: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     context = load(root)
     signal = dict(signal)
@@ -666,9 +681,7 @@ def human_snapshot(root: Path | None = None) -> str:
     latest = data.get("latest", {})
     tools = data.get("tools", {})
     open_signals = len(signals(root, "open"))
-    security_signal_count = len(security_patterns(root))
-    security_reviews = len([item for item in security_patterns(root) if item.get("verification_status") == "REVIEW"])
-    security_confirmed = len([item for item in security_patterns(root) if item.get("verification_status") == "CONFIRMED"])
+    security_summary = security_pattern_summary(root)
 
     lines = [
         f"Project : {data['project']['root']}",
@@ -680,7 +693,7 @@ def human_snapshot(root: Path | None = None) -> str:
         f"Latest  : {latest.get('function') or 'none'}"
         + (f" [{latest.get('tx_hash')}]" if latest.get("tx_hash") else ""),
         f"Signals : {open_signals} open",
-        f"Security: {security_signal_count} pattern(s) ({security_reviews} review, {security_confirmed} confirmed)",
+        f"Security: {security_summary['total']} pattern(s) ({security_summary['reviews']} review, {security_summary['confirmed']} confirmed, {security_summary['candidates']} candidate)",
     ]
 
     for name, state in sorted(tools.items()):
