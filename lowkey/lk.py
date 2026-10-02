@@ -3664,6 +3664,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"Target  : {contract_name} -> {target}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     print(f"Harness : {fixture['relative']}::{fixture['contract']}")
+    _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
@@ -4950,6 +4951,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     print(f"Target  : {contract} -> {effective_target}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
+    _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
@@ -5503,6 +5505,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
 
     print(f"Target  : {contract} -> {target}")
     print(f"ABI     : {path}")
+    _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
@@ -8697,6 +8700,16 @@ def _sync_security_patterns(root, *, announce: bool = False):
 
 def _security_pattern_summary(root):
     return audit_context.security_pattern_summary(root)
+
+
+def _print_security_scope(root, *, prefix="SECURITY SCOPE"):
+    summary = _security_pattern_summary(root)
+    print(
+        f"{prefix} : {summary['total']} pattern(s) — "
+        f"{summary['reviews']} review, {summary['confirmed']} confirmed, "
+        f"{summary['candidates']} candidate"
+    )
+    return summary
 
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
