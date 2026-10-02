@@ -142,6 +142,7 @@ class Step:
     # Isolated randomized probes are restored after each observation; consumers
     # must not interpret repeated success across that boundary as replay evidence.
     observation_scope: str = "live"
+    security_signals: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -3120,6 +3121,28 @@ def _human_argument_rows(
     return rows
 
 
+def _security_signals_for_step(
+    host: Any,
+    root: Path,
+    step: Step,
+) -> list[dict[str, Any]]:
+    """Read security-pattern signals from the shared project audit context."""
+    try:
+        context_api = getattr(host, "audit_context", None)
+        if context_api is None or not hasattr(context_api, "security_patterns"):
+            return []
+        return [
+            dict(item)
+            for item in context_api.security_patterns(
+                root,
+                contract=step.contract,
+                function=step.function,
+            )
+            if isinstance(item, dict)
+        ][:8]
+    except Exception:
+        return []
+
 def _render_interaction_graph_full(
     root: Path,
     step: Step,
@@ -3165,6 +3188,18 @@ def _render_interaction_graph_full(
         lines += ["  │", "  │   WHAT THE CODE CHECKS"]
         for item in source_guard_lines[:8]:
             lines.append(f"  │   ├─ {item}")
+
+    security_signals = list(getattr(step, "security_signals", []) or [])
+    if security_signals:
+        lines += ["  │", "  │   SECURITY LENS"]
+        for signal in security_signals[:6]:
+            pattern_id = str(signal.get("pattern_id") or signal.get("check") or "SECURITY")
+            verification = str(signal.get("verification_status") or "CANDIDATE").upper()
+            description = str(signal.get("description") or "Source pattern matched.")
+            next_step = str(signal.get("next") or "")
+            lines.append(f"  │   ├─ {pattern_id} [{verification}] {description}")
+            if next_step:
+                lines.append(f"  │   └─ NEXT: {next_step}")
 
     source_edges = _source_edges_for_step(model, step) if model else []
     if source_edges:
@@ -5468,6 +5503,14 @@ def _render_adversarial_probe_human(
         f"  EVIDENCE {quality}",
         f"  CODE     {language} {subject} • {model.source}",
     ]
+    for signal in list(getattr(step, "security_signals", []) or [])[:4]:
+        pattern_id = str(signal.get("pattern_id") or signal.get("check") or "SECURITY")
+        verification = str(signal.get("verification_status") or "CANDIDATE").upper()
+        lines.append(f"  SECURITY {pattern_id} [{verification}]")
+        if signal.get("description"):
+            lines.append(f"           {signal.get('description')}")
+        if signal.get("next"):
+            lines.append(f"           NEXT: {signal.get('next')}")
 
     source_lines = [line for line in (step.diagnostics or []) if str(line).lower().startswith("source guard:")]
     if source_lines:
@@ -5659,6 +5702,12 @@ def _render_adversarial_probe_technical(
 
     if step.tx_hash:
         lines.append(f"     TX       {step.tx_hash[:10]}…{step.tx_hash[-8:]}")
+    for signal in list(getattr(step, "security_signals", []) or [])[:4]:
+        pattern_id = str(signal.get("pattern_id") or signal.get("check") or "SECURITY")
+        verification = str(signal.get("verification_status") or "CANDIDATE").upper()
+        lines.append(f"     SECURITY {pattern_id} [{verification}]")
+        if signal.get("description"):
+            lines.append(f"              {signal.get('description')}")
     return lines
 
 
@@ -6383,6 +6432,7 @@ def _run_adversarial_test(
             inferred=False,
             observation_scope="isolated_probe",
         )
+        step.security_signals = _security_signals_for_step(host, root, step)
 
         snapshot = _rpc_snapshot(rpc)
         if snapshot is None:
@@ -8554,6 +8604,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         key=(step.contract,step.address.lower(),step.function)
         if key in completed: continue
 
+        step.security_signals = _security_signals_for_step(host, root, step)
         step.status = "checking"
         steps.append(step)
         draw(step)
