@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import json
 import pathlib
 import sys
@@ -22,6 +23,24 @@ pattern_spec.loader.exec_module(walkthrough_finding_patterns)
 
 
 class WalkthroughTests(unittest.TestCase):
+    def test_live_loop_uses_review_state_machine_for_every_pause_point(self):
+        source = inspect.getsource(walkthrough.run)
+        self.assertEqual(source.count("choice = wait_for_action()"), 2)
+        self.assertEqual(source.count("choice = _wait_for_next_interaction(no_prompt)"), 1)
+        self.assertIn("REVIEW PICKER", source)
+        self.assertIn("review_mode=True", source)
+
+    def test_review_help_describes_observed_steps_not_future_steps(self):
+        source = inspect.getsource(walkthrough.run)
+        self.assertIn(
+            "1-9 = review observed steps 1-9   R = review any observed step",
+            source,
+        )
+        self.assertIn(
+            "ENTER here resumes live execution",
+            source,
+        )
+
     def test_runtime_walkthrough_contains_no_known_project_specific_adapters(self):
         production_files = [
             ROOT.parent / "lowkey" / "lk.py",
