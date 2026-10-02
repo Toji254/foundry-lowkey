@@ -2600,6 +2600,73 @@ class WalkthroughTests(unittest.TestCase):
             )
     
 
+    def test_snapshot_runtime_recovers_missing_storage_layout_and_mapping_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            model = walkthrough.ContractModel(
+                name="Fallback",
+                source="src/Fallback.sol",
+                artifact="out/Fallback.sol/Fallback.json",
+                storage={},
+            )
+            runtime = [
+                walkthrough.RuntimeContract(
+                    "0x" + "3" * 40,
+                    "Fallback",
+                    "Fallback",
+                    "target",
+                )
+            ]
+            key = "0x" + "1" * 40
+            mapped_slot = "0x" + "2" * 64
+            layout = {
+                "storage": [{
+                    "label": "contributions",
+                    "slot": "0",
+                    "type": "t_mapping",
+                }],
+                "types": {
+                    "t_mapping": {
+                        "label": "mapping(address => uint256)",
+                        "encoding": "mapping",
+                        "key": "t_address",
+                        "value": "t_uint256",
+                    },
+                    "t_address": {
+                        "label": "address",
+                        "encoding": "inplace",
+                        "numberOfBytes": 20,
+                    },
+                    "t_uint256": {
+                        "label": "uint256",
+                        "encoding": "inplace",
+                        "numberOfBytes": 32,
+                    },
+                },
+            }
+            def fake_cmd(args, cwd=None, timeout=30):
+                self.assertEqual(args[:2], ["cast", "index"])
+                return 0, mapped_slot + "\n", ""
+            with patch.object(walkthrough, "_forge_storage_layout", return_value=layout), \
+                 patch.object(walkthrough, "_cmd", side_effect=fake_cmd), \
+                 patch.object(walkthrough, "_storage_read", return_value="0x" + "0" * 63 + "1"):
+                result = walkthrough._snapshot_runtime(
+                    runtime,
+                    [model],
+                    "http://127.0.0.1:8545",
+                    [key],
+                    observed_keys=[],
+                    root=root,
+                )
+
+            self.assertEqual(len(result), 1)
+            self.assertEqual(model.storage, layout)
+            self.assertEqual(result[0]["label"], "contributions")
+            self.assertEqual(result[0]["mapping"]["rows"][0]["key"], key)
+            self.assertEqual(result[0]["mapping"]["rows"][0]["slot"], mapped_slot)
+            self.assertEqual(result[0]["mapping"]["rows"][0]["value"], 1)
+
+
     def test_replay_assessment_rejects_isolated_probe_repeatability(self):
         story = walkthrough.WalkthroughStory(
             story_id="RP-ISO",
