@@ -296,17 +296,18 @@ class WalkthroughTests(unittest.TestCase):
         ]
         actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
         rendered = walkthrough._render_storage(storage, False, actors)
-        self.assertIn("purpose     → keeps track of how much ETH each address has contributed", rendered)
-        self.assertIn("storage     → slot 0", rendered)
-        self.assertIn("key         → address   [what identifies an entry]", rendered)
-        self.assertIn("value       → uint256   [what is stored for that key]", rendered)
+        self.assertIn("purpose       → keeps track of how much ETH each address has contributed", rendered)
+        self.assertIn("mapping slot  → 0   [the mapping's anchor; this slot identifies the mapping itself]", rendered)
+        self.assertIn("important     → slot 0 is not Alice's value; each key gets its own storage location", rendered)
+        self.assertIn("key type      → address   [what identifies an entry]", rendered)
+        self.assertIn("value type    → uint256   [what is stored for that key]", rendered)
         self.assertIn("Alice → 1,000 ETH + 3 wei", rendered)
         self.assertNotIn("1,000,000,000,000,000,000,003 wei", rendered)
         self.assertIn("SLOT 1 • owner", rendered)
-        self.assertIn("purpose     → remembers the current owner", rendered)
-        self.assertIn("value       → 0x33333333…33333333", rendered)
+        self.assertIn("purpose       → remembers the current owner", rendered)
+        self.assertIn("value         → 0x33333333…33333333", rendered)
+        self.assertIn("storage box   → slot 1   [a numbered 32-byte storage box; slots start at 0]", rendered)
         self.assertNotIn("raw word", rendered)
-        self.assertNotIn("keccak256(pad(key)", rendered)
 
     def test_storage_renderer_keeps_mapping_slot_evidence_in_technical_mode(self):
         storage = [{
