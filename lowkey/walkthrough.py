@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from decimal import Decimal, InvalidOperation
 import time
 from html import escape
 from urllib.parse import quote, urlsplit
@@ -1254,6 +1255,20 @@ def _mutators(model: ContractModel) -> list[dict[str, Any]]:
         and x.get("stateMutability") not in {"view", "pure"}
     ]
 
+
+def _special_value_entries(model: ContractModel) -> list[dict[str, Any]]:
+    """Expose Solidity receive/fallback handlers as raw-value workflow steps."""
+    result = []
+    for item in model.abi:
+        if item.get("type") not in {"receive", "fallback"}:
+            continue
+        if item.get("stateMutability") in {"view", "pure"}:
+            continue
+        entry = dict(item)
+        entry["name"] = str(item.get("type"))
+        result.append(entry)
+    return result
+
 _ADMIN_TOKENS = ("upgrade","setadmin","transferownership","renounceownership","selfdestruct","pause","unpause","acceptownership")
 
 def _lifecycle_candidate(name: str) -> bool:
@@ -1612,6 +1627,73 @@ def _arg_for(
     return 0
 
 
+def _source_msg_value_literal(value: str) -> int | None:
+    """Parse a Solidity numeric literal used in a msg.value constraint."""
+    raw = " ".join(str(value or "").strip().split())
+    match = re.fullmatch(
+        r"([0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\\s*(wei|gwei|ether)?",
+        raw,
+        re.I,
+    )
+    if not match:
+        return None
+
+    number_text, unit = match.groups()
+    scale = {
+        "wei": Decimal("1"),
+        "gwei": Decimal("1000000000"),
+        "ether": Decimal("1000000000000000000"),
+        None: Decimal("1"),
+    }[unit.lower() if unit else None]
+    try:
+        value_wei = Decimal(number_text) * scale
+    except (InvalidOperation, ValueError):
+        return None
+
+    if value_wei != value_wei.to_integral_value():
+        return None
+    value_int = int(value_wei)
+    return value_int if value_int >= 0 else None
+
+
+def _source_msg_value_constraints(source_body: str) -> list[tuple[str, int]]:
+    """Extract simple Solidity comparisons involving msg.value."""
+    literal = r"(?:[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\s*(?:wei|gwei|ether)?)"
+    constraints: list[tuple[str, int]] = []
+
+    patterns = [
+        (
+            re.compile(
+                r"\\bmsg\\.value\\b\\s*(==|<=|>=|<|>)\\s*(" + literal + r")",
+                re.I,
+            ),
+            False,
+        ),
+        (
+            re.compile(
+                r"(" + literal + r")\\s*(==|<=|>=|<|>)\\s*\\bmsg\\.value\\b",
+                re.I,
+            ),
+            True,
+        ),
+    ]
+
+    for pattern, reversed_operands in patterns:
+        for match in pattern.finditer(source_body or ""):
+            if reversed_operands:
+                raw_value, operator = match.groups()
+                inverse = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "=="}
+                operator = inverse[operator]
+            else:
+                operator, raw_value = match.groups()
+
+            parsed = _source_msg_value_literal(raw_value)
+            if parsed is not None:
+                constraints.append((operator, parsed))
+
+    return constraints
+
+
 def _value_for(
     fn: dict[str, Any],
     model: ContractModel | None = None,
@@ -1619,7 +1701,8 @@ def _value_for(
     args: list[Any] | None = None,
 ) -> int:
     """Infer msg.value from ABI plus source constraints, with a conservative fallback."""
-    if fn.get("stateMutability") != "payable":
+    mutability = str(fn.get("stateMutability") or "").lower()
+    if mutability != "payable":
         return 0
 
     supplied = list(args or [])
@@ -1630,19 +1713,22 @@ def _value_for(
         try:
             source = (root / model.source).read_text(encoding="utf-8", errors="replace")
             function_name = str(fn.get("name") or "")
-            match = re.search(
-                r"\bfunction\s+" + re.escape(function_name) + r"\s*\([^)]*\)[^{;]*\{",
-                source,
-                re.S,
-            )
+            if str(fn.get("type") or "") in {"receive", "fallback"}:
+                pattern = (
+                    r"\\b" + re.escape(function_name)
+                    + r"\\s*\\(\\s*\\)\\s*(?:external\\s+)?(?:payable\\s*)?\\{"
+                )
+            else:
+                pattern = (
+                    r"\\bfunction\\s+" + re.escape(function_name)
+                    + r"\\s*\\([^)]*\\)[^{;]*\\{"
+                )
+            match = re.search(pattern, source, re.S | re.I)
             if match:
                 source_body = _balanced_block(source, match.end() - 1)
         except OSError:
             source_body = ""
 
-    # Strongest evidence: the source explicitly binds msg.value to an ABI argument.
-    # This handles generic names such as createBounty(amount), fund(bytes32, value),
-    # contribute(uint256 topUp), etc. without relying on verb-specific naming.
     inputs = fn.get("inputs") or []
     for index, param in enumerate(inputs):
         pname = str(param.get("name") or "").strip()
@@ -1651,28 +1737,57 @@ def _value_for(
             continue
 
         exact_patterns = (
-            r"\b" + re.escape(pname) + r"\s*==\s*msg\.value\b",
-            r"\bmsg\.value\s*==\s*" + re.escape(pname) + r"\b",
+            r"\\b" + re.escape(pname) + r"\\s*==\\s*msg\\.value\\b",
+            r"\\bmsg\\.value\\s*==\\s*" + re.escape(pname) + r"\\b",
         )
         bound_patterns = (
-            r"\b" + re.escape(pname) + r"\s*>=\s*msg\.value\b",
-            r"\bmsg\.value\s*<=\s*" + re.escape(pname) + r"\b",
+            r"\\b" + re.escape(pname) + r"\\s*>=\\s*msg\\.value\\b",
+            r"\\bmsg\\.value\\s*<=\\s*" + re.escape(pname) + r"\\b",
+            r"\\b" + re.escape(pname) + r"\\s*<=\\s*msg\\.value\\b",
+            r"\\bmsg\\.value\\s*>=\\s*" + re.escape(pname) + r"\\b",
         )
         if source_body and any(re.search(pattern, source_body, re.S) for pattern in exact_patterns):
             return int(value)
         if source_body and any(re.search(pattern, source_body, re.S) for pattern in bound_patterns):
             return int(value)
 
-    # Source-proven positive payment: use the smallest nonzero amount unless an ABI
-    # argument already gives the exact/bounded amount above.
-    if source_body and re.search(r"\bmsg\.value\s*(?:>|>=)\s*0\b", source_body):
+    constraints = _source_msg_value_constraints(source_body)
+    if constraints:
+        equalities = [value for operator, value in constraints if operator == "=="]
+        if equalities:
+            return equalities[0]
+
+        lower = 0
+        upper: int | None = None
+        for operator, value in constraints:
+            if operator == ">":
+                lower = max(lower, value + 1)
+            elif operator == ">=":
+                lower = max(lower, value)
+            elif operator == "<":
+                candidate_upper = value - 1
+                upper = candidate_upper if upper is None else min(upper, candidate_upper)
+            elif operator == "<=":
+                upper = value if upper is None else min(upper, value)
+
+        if upper is not None:
+            if upper < lower:
+                return max(0, lower)
+            return max(0, lower if lower > 0 else min(1, upper))
+
+        return max(0, lower)
+
+    if source_body and re.search(r"\\bmsg\\.value\\s*(?:>|>=)\\s*0\\b", source_body):
         return 1
 
-    # Preserve the old semantic fallback for recognizable funding verbs.
     if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")):
         return 10**15
 
     return 0
+
+
+def _is_raw_value_function(function: str) -> bool:
+    return str(function or "").split("(", 1)[0].lower() in {"receive", "fallback"}
 
 
 def _actor_for_function(name: str, actors: list[Actor], observed: dict[str, Any]) -> Actor:
@@ -1736,7 +1851,10 @@ def plan_workflow(
     root: Path | None = None,
 ) -> list[Step]:
     observed = observed or {}
-    candidates = [x for x in _mutators(model) if _lifecycle_candidate(str(x.get("name") or ""))]
+    candidates = [
+        *[x for x in _mutators(model) if _lifecycle_candidate(str(x.get("name") or ""))],
+        *_special_value_entries(model),
+    ]
     test_hints = _test_flow_hints(root, model)
     candidates.sort(
         key=lambda item: (
@@ -2504,7 +2622,7 @@ def _explain_failure(step: Step, raw: str | None, actor: str) -> str:
     if "argument resolution blocked" in lower or "no matching protocol dependency" in lower:
         return "Lowkey could not resolve a required contract address, so it refused to send an impossible call"
     if 'data:"0x"' in lower:
-        return "the node returned an empty revert payload; a dependency call or ABI decoding step likely failed before a custom error was returned"
+        return "the node returned an empty revert payload; Lowkey could not decode the exact failing instruction"
     if "executionreverted" in lower:
         return "the contract rejected this call under the current on-chain state"
     return "the live call was not accepted"
@@ -2562,6 +2680,10 @@ def _human_action_summary(step: Step, actors: list[Actor]) -> str:
         amount = _friendly_value(args[0]) if args else "the requested amount"
         verb = "adds" if step.status == "success" else "tries to add"
         return f"{actor} {verb} {amount} to {contract}'s bonus pool"
+    if lower in {"receive", "fallback"}:
+        route = "receive" if lower == "receive" else "fallback"
+        amount = _friendly_eth(step.value_wei) if step.value_wei else "0 ETH"
+        return f"{actor} sends {amount} to {contract} through its {route} entry point"
     if lower == "withdraw":
         verb = "withdraws" if step.status == "success" else "tries to withdraw"
         return f"{actor} {verb} their stake from {contract}"
@@ -4323,6 +4445,18 @@ def _preflight(
 ) -> tuple[bool, str]:
     try:
         inputs = inputs or []
+        if _is_raw_value_function(step.function):
+            tx = {
+                "to": step.address,
+                "data": "0x",
+                "value": hex(int(step.value_wei or 0)),
+            }
+            if actor_address:
+                tx["from"] = actor_address
+            result = _rpc_call(rpc, "eth_call", [tx, "latest"])
+            if result is not None:
+                return True, str(result)[-1200:] or "eth_call succeeded"
+            return False, "empty-data eth_call reverted or could not be evaluated"
         encoded_args = [
             _cli_arg(item, inputs[index] if index < len(inputs) else None)
             for index, item in enumerate(step.args)
@@ -4392,11 +4526,13 @@ def _send(
         _cli_arg(item, inputs[index] if index < len(inputs) else None)
         for index, item in enumerate(args)
     ]
-    command = [
-        "send", target, signature, *encoded_args,
+    command = ["send", target]
+    if not _is_raw_value_function(signature):
+        command.extend([signature, *encoded_args])
+    command.extend([
         "--rpc-url", rpc,
         "--unlocked", "--from", actor.address,
-    ]
+    ])
     if value:
         command += ["--value", str(value)]
     if hasattr(host, "run_cast"):
@@ -8179,7 +8315,20 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         step=pending.pop(0)
         step.index=len(steps)+1
         current_model=next((m for m in model_catalog if m.name==step.contract),model)
-        abi_item=next((x for x in current_model.abi if x.get("type")=="function" and _signature(x)==step.function),None)
+        abi_item = next(
+            (
+                x for x in current_model.abi
+                if (
+                    x.get("type") == "function"
+                    and _signature(x) == step.function
+                )
+                or (
+                    x.get("type") in {"receive", "fallback"}
+                    and f"{x.get('type')}()" == step.function
+                )
+            ),
+            None,
+        )
         if abi_item:
             # Recipe/LAB_CONTROL steps already contain authoritative arguments
             # derived from the live protocol fixture. Only inferred steps are
