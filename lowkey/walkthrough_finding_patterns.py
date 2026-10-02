@@ -827,6 +827,10 @@ def assess_replay_story(
     if (
         str(getattr(story, "execution_scope", "")) != "persistent_story"
         or bool(getattr(story, "reset_between_actions", True))
+        or any(
+            str(getattr(step, "observation_scope", "")) == "isolated_probe"
+            for step in steps[-2:]
+        )
     ):
         story.signal = "BLOCKED"
         story.evidence = [
