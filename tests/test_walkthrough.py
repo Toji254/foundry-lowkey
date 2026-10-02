@@ -2896,5 +2896,112 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("repeated in probes #2", rendered)
 
 
+
+    def test_source_guard_accepts_eoa_for_native_transfer_without_lab_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "src").mkdir()
+            source = """
+            pragma solidity ^0.8.20;
+            contract FallbackLike {
+                address payable public owner;
+                modifier onlyOwner() {
+                    require(msg.sender == owner);
+                    _;
+                }
+                function withdraw() external onlyOwner {
+                    owner.transfer(address(this).balance);
+                }
+            }
+            """
+            (root / "src" / "FallbackLike.sol").write_text(source, encoding="utf-8")
+            model = walkthrough.ContractModel(
+                name="FallbackLike",
+                source="src/FallbackLike.sol",
+                artifact="out/FallbackLike.sol/FallbackLike.json",
+                abi=[
+                    {
+                        "type": "function",
+                        "name": "withdraw",
+                        "inputs": [],
+                        "outputs": [],
+                        "stateMutability": "nonpayable",
+                    },
+                    {
+                        "type": "function",
+                        "name": "owner",
+                        "inputs": [],
+                        "outputs": [{"type": "address"}],
+                        "stateMutability": "view",
+                    },
+                ],
+                functions=["withdraw()"],
+            )
+            step = walkthrough.Step(
+                1,
+                "Attacker",
+                "FallbackLike",
+                "0x" + "3" * 40,
+                "withdraw()",
+                [],
+                status="reverted",
+            )
+            owner = "0x" + "1" * 40
+            edge = {
+                "kind": "cross-contract",
+                "from": "withdraw",
+                "to_contract": "address",
+                "to_function": "transfer",
+                "via": "owner",
+            }
+            with patch.object(walkthrough, "_source_edges_for_step", return_value=[edge]),                  patch.object(walkthrough, "_source_dependency_address", return_value=(owner, "owner")),                  patch.object(walkthrough, "_runtime_code", return_value="0x"),                  patch.object(walkthrough, "_read_contract_getter", return_value=(True, owner)):
+                origin, diagnostics = walkthrough._probe_source_guards(
+                    root,
+                    "http://127.0.0.1:8545",
+                    step,
+                    model,
+                    [model],
+                    "0x" + "2" * 40,
+                )
+
+        self.assertIsNotNone(origin)
+        self.assertTrue(any("is an EOA (wallet address)" in line for line in diagnostics))
+        self.assertFalse(any(str(line).startswith("LAB ISSUE:") for line in diagnostics))
+
+
+    def test_replay_assessment_falls_back_to_text_trace_when_structured_trace_is_missing(self):
+        story = walkthrough.WalkthroughStory(
+            story_id="RP-TEXT",
+            title="Replay probe",
+            goal="repeat payout",
+            actions=[{"function": "release()"}, {"function": "release()"}],
+            execution_scope="persistent_story",
+            reset_between_actions=False,
+        )
+        actor = walkthrough.Actor("Attacker", "0x" + "1" * 40, 2)
+        target = "0x" + "2" * 40
+        setup = walkthrough.Step(
+            1, actor.name, "Escrow", target, "createescrow(uint256,address)",
+            [1, actor.address], value_wei=1, status="success",
+        )
+        first = walkthrough.Step(
+            2, actor.name, "Escrow", target, "release()", [], status="success",
+        )
+        second = walkthrough.Step(
+            3, actor.name, "Escrow", target, "release()", [], status="success",
+        )
+        key = actor.address.lower()
+        second.balance_before = {key: 10**18}
+        second.balance_after = {key: 10**18 - 200000}
+        second.execution_edges = []
+        second.trace_edges = [f"CALL to={actor.address} value=1 wei"]
+
+        walkthrough_finding_patterns.assess_replay_story(
+            story, [setup, first, second], [actor]
+        )
+
+        self.assertEqual(story.signal, "CONFIRMED")
+        self.assertIn("1 wei", " ".join(story.evidence))
+
 if __name__ == "__main__":
     unittest.main()
