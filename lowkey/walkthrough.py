@@ -4616,6 +4616,7 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
             "slot": slot,
             "type": type_label(typ),
             "encoding": encoding,
+            "raw": None,
         }
 
         if encoding == "mapping":
@@ -4661,6 +4662,7 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
                     row["struct"] = {"type": type_label(value_type), "fields": fields}
                 else:
                     word = _storage_read(rpc, address, mapped_slot)
+                    row["raw"] = word
                     row["value"] = _decode_word(
                         word,
                         type_label(value_type),
@@ -4672,6 +4674,7 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
 
         elif encoding == "inplace":
             word = _storage_read(rpc, address, slot)
+            item["raw"] = word
             item["value"] = _decode_word(
                 word,
                 type_label(typ),
@@ -6297,7 +6300,14 @@ def _target_is_live_instance(
     target: str,
     model: ContractModel,
 ) -> tuple[bool, str | None]:
-    """Reject implementation-only or uninitialized initializer-style addresses."""
+    """Reject EOAs/no-code addresses before sending protocol calls or reading storage."""
+    runtime = _normalize_code(_runtime_code(rpc, target))
+    if not runtime or runtime == "0x":
+        return False, (
+            f"{_addr(target)} has no contract bytecode on {rpc}; "
+            "Lowkey would otherwise treat an EOA/no-code address as a successful target"
+        )
+
     has_initializer = any(
         item.get("type") == "function"
         and str(item.get("name") or "").lower().startswith("initialize")
@@ -6306,7 +6316,6 @@ def _target_is_live_instance(
     if not has_initializer:
         return True, None
 
-    runtime = _normalize_code(_runtime_code(rpc, target))
     implementation = _artifact_runtime_code(root, model)
     expected = _normalize_code(implementation)
     if runtime and expected and runtime == expected:
@@ -7307,17 +7316,24 @@ def _render_storage(storage: list[dict[str, Any]], enabled: bool) -> str:
     for item in storage[:16]:
         encoding = item.get("encoding")
         if encoding == "mapping":
+            anchor_slot = item.get("slot")
+            mapping_info = item.get("mapping", {})
             lines = [
-                f"key   → {item.get('mapping', {}).get('key_type')}",
-                f"value → {item.get('mapping', {}).get('value_type')}",
+                f"anchor slot → {anchor_slot}   (the mapping itself)",
+                f"key         → {mapping_info.get('key_type')}",
+                f"value       → {mapping_info.get('value_type')}",
+                f"value slots → keccak256(pad(key) || pad({anchor_slot}))",
             ]
-            for row in item.get("mapping", {}).get("rows", [])[:4]:
+            for row in mapping_info.get("rows", [])[:4]:
                 if row.get("struct"):
-                    lines.append(f"{_addr(row.get('key'))}  @ {row.get('slot')}")
+                    lines.append(f"{_addr(row.get('key'))}  stored at {row.get('slot')}")
                     for field in row["struct"].get("fields", [])[:8]:
                         lines.append(f"  ├─ {field['name']:<14} = {field['value']}  [{field['type']}]")
                 else:
-                    lines.append(f"{_addr(row.get('key'))} → {row.get('value')}  @ {row.get('slot')}")
+                    lines.append(
+                        f"{_addr(row.get('key'))} → {row.get('value')}  "
+                        f"at {row.get('slot')}"
+                    )
             out.append(_box(f"{MAPPING} MAPPING {item.get('label')}", lines, width=82))
         elif item.get("struct"):
             fields = item["struct"]["fields"]
@@ -7341,9 +7357,16 @@ def _render_storage(storage: list[dict[str, Any]], enabled: bool) -> str:
                 width=82,
             ))
         else:
+            raw = item.get("raw")
+            slot_lines = [
+                f"{item.get('label')}: {item.get('value')}",
+                f"type: {item.get('type')}",
+            ]
+            if raw:
+                slot_lines.append(f"raw word: {raw}")
             out.append(_box(
                 f"{STORAGE} SLOT {item.get('slot')}",
-                [f"{item.get('label')}: {item.get('value')}", f"type: {item.get('type')}"],
+                slot_lines,
                 width=82,
             ))
     return "\n\n".join(out) if out else "  <storage layout unavailable>"
