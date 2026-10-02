@@ -8726,8 +8726,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 return ""
             if choice in "123456789":
                 index = int(choice)
-                if index <= len(steps):
-                    selected = steps[index - 1]
+                selected = next((item for item in steps if item.index == index), None)
+                if selected is not None:
                     draw(selected, selected.storage_after, review_mode=True)
                     continue
                 print(f"\n  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
@@ -8749,7 +8749,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 except EOFError:
                     return ""
                 if not raw:
-                    continue
+                    return ""
                 if not raw.isdigit():
                     print("  Review cancelled: enter an observed step number.")
                     continue
