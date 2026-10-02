@@ -139,6 +139,8 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("LOWKEY HELP  •  lk questions", output)
         self.assertIn("lk questions --all", output)
+        self.assertIn("lk q skip", output)
+        self.assertIn("lk q reset", output)
 
 
 
