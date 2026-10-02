@@ -9404,13 +9404,447 @@ def run_external_audit(config, args):
     return audit_run_pipeline(str(root), slither_args=slither_args, generate=generate)
 
 
+
+HELP_FLAGS = {"--h", "--help", "-h", "help"}
+
+def _help_entry(summary, usage, example, use_case, *, children=None, options=None, related=None):
+    return {
+        "summary": summary,
+        "usage": usage,
+        "example": example,
+        "use": use_case,
+        "children": children or {},
+        "options": options or [],
+        "related": related or [],
+    }
+
+COMMAND_HELP = {
+    "walkthrough": _help_entry(
+        "Walk through the protocol as a live story: execute one interaction, observe what changed, then redraw the board.",
+        "lk walkthrough [options]",
+        "lk walkthrough --auto --steps 8",
+        "Use it when you want to understand how contracts, actors, calls, events, balances, and storage changes fit together before deep auditing.",
+        children={
+            "test": _help_entry(
+                "Run randomized adversarial interactions against disposable local Anvil snapshots, restoring state between probes.",
+                "lk walkthrough test [options]",
+                "lk walkthrough test --auto --cases 50",
+                "Use it when you want to stress assumptions and collect reproducible behavior without permanently mutating the lab state.",
+                options=[
+                    ("--auto", "Automatically build/provision a local target when possible.", "lk walkthrough test --auto"),
+                    ("--cases N", "Run N randomized cases; Lowkey caps this at 200.", "lk walkthrough test --cases 50"),
+                    ("--seed N", "Reuse a deterministic seed so the run can be reproduced.", "lk walkthrough test --seed 42"),
+                    ("--technical", "Show lower-level storage details while testing.", "lk walkthrough test --technical"),
+                    ("--yes", "Run without interactive pauses.", "lk walkthrough test --yes"),
+                ],
+                related=["lk walkthrough", "lk trace", "lk findings"],
+            ),
+        },
+        options=[
+            ("--auto", "Let Lowkey find/provision a safe local target and Anvil runtime.", "lk walkthrough --auto"),
+            ("--static", "Render the compiled protocol model without sending live transactions.", "lk walkthrough --static"),
+            ("--contract NAME", "Focus on a specific compiled contract.", "lk walkthrough --contract Escrow"),
+            ("--steps N", "Limit the live story to N observed interactions.", "lk walkthrough --steps 6"),
+            ("--technical", "Show lower-level storage details.", "lk walkthrough --technical"),
+            ("--yes", "Run without interactive pauses.", "lk walkthrough --auto --yes"),
+        ],
+        related=["lk project", "lk system", "lk lab", "lk audit"],
+    ),
+    "target": _help_entry(
+        "Choose which deployed contract Lowkey should treat as the current project target.",
+        "lk target <address> | lk target <name> <address> | lk target auto",
+        "lk target escrow 0x1111111111111111111111111111111111111111",
+        "Use it when no target is selected or Lowkey is pointing at the wrong contract.",
+        children={
+            "list": _help_entry("List remembered targets.", "lk target list", "lk target list", "Use it before switching when several targets exist."),
+            "auto": _help_entry("Reconnect to a usable current-project deployment.", "lk target auto [name]", "lk target auto Escrow", "Use it after local deployment when you do not want to copy an address by hand."),
+            "reset": _help_entry("Clear the current project target.", "lk target reset", "lk target reset", "Use it after a reset or when stale target state is getting in the way."),
+        },
+        related=["lk deployments", "lk status", "lk lab"],
+    ),
+    "lab": _help_entry(
+        "Create a disposable local EVM lab for safe contract interaction and audit experiments.",
+        "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop",
+        "lk lab QuantAMMWeightedPool",
+        "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
+        children={
+            "stop": _help_entry("Stop the project-local Anvil that Lowkey started.", "lk lab stop", "lk lab stop", "Use it when the disposable lab is no longer needed."),
+        },
+        options=[
+            ("--generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic Escrow"),
+            ("--artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact Escrow"),
+        ],
+        related=["lk target", "lk walkthrough", "lk status"],
+    ),
+    "audit": _help_entry(
+        "Coordinate Lowkey's project-aware audit baseline, evidence gathering, checks, and optional live analysis.",
+        "lk audit [auto|run] [options]",
+        "lk audit auto --checks",
+        "Use it when you want Lowkey to coordinate the audit workflow instead of invoking each inspection tool yourself.",
+        children={
+            "auto": _help_entry("Run the audit in autonomous mode and allow safe local target provisioning.", "lk audit auto [options]", "lk audit auto --checks", "Use it when you want the audit session to bootstrap itself."),
+            "run": _help_entry("Run the full evidence pipeline, with optional PoC generation.", "lk audit run [--poc]", "lk audit run --poc", "Use it for a repeatable baseline pass that leaves evidence in the audit workspace.", options=[("--poc", "Generate a connected PoC scaffold after the evidence pass.", "lk audit run --poc")]),
+        },
+        options=[
+            ("--checks", "Request the default static-check baseline.", "lk audit --checks"),
+            ("--no-checks", "Skip the static-check layer.", "lk audit --no-checks"),
+            ("--walkthrough", "Run the protocol walkthrough in the audit session.", "lk audit auto --walkthrough"),
+            ("--interactive", "Force the interactive audit menu.", "lk audit --interactive"),
+            ("--non-interactive", "Skip the interactive menu.", "lk audit --non-interactive"),
+        ],
+        related=["lk project", "lk findings", "lk walkthrough"],
+    ),
+    "project": _help_entry(
+        "Explain a project or monorepo in plain English: purpose, contracts, tests, dependencies, and audit scope.",
+        "lk project [number|path|--workspace] [--json]",
+        "lk project 2",
+        "Use it at the start of an audit so you know which package is the application scope and which packages are dependencies/tooling.",
+        children={
+            "workspace": _help_entry("Show the larger workspace map.", "lk project --workspace", "lk project --workspace", "Use it before choosing a primary audit project in a monorepo."),
+        },
+        options=[("--json", "Print machine-readable project data.", "lk project 2 --json")],
+        related=["lk projects", "lk system", "lk deps"],
+    ),
+    "projects": _help_entry(
+        "Choose the active project inside a multi-project workspace.",
+        "lk projects | lk projects <number|path> | lk projects reset",
+        "lk projects 2",
+        "Use it when Lowkey finds several packages and you need one primary audit scope.",
+        children={
+            "reset": _help_entry("Clear the active workspace project.", "lk projects reset", "lk projects reset", "Use it to make Lowkey ask for the workspace scope again."),
+        },
+        related=["lk project", "lk audit", "lk lab"],
+    ),
+    "system": _help_entry(
+        "Build Lowkey's reusable model of contracts, deployments, relationships, roles, and initialization.",
+        "lk system [json]",
+        "lk system",
+        "Use it when you want the protocol architecture before drilling into individual functions.",
+        options=[("json", "Print the full system manifest as JSON.", "lk system json")],
+        related=["lk project", "lk walkthrough"],
+    ),
+    "rpc": _help_entry(
+        "Select the JSON-RPC endpoint Lowkey should use.",
+        "lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset",
+        "lk rpc http://127.0.0.1:8545",
+        "Use it when switching between local nodes, forks, or other RPC endpoints.",
+        children={
+            "set": _help_entry("Save an RPC profile.", "lk rpc set <name> <url>", "lk rpc set anvil http://127.0.0.1:8545", "Use it when you have several endpoints."),
+            "use": _help_entry("Select a saved RPC profile.", "lk rpc use <name>", "lk rpc use anvil", "Use it to switch RPCs without retyping URLs."),
+            "reset": _help_entry("Clear the manual RPC selection.", "lk rpc reset", "lk rpc reset", "Use it when automatic local-node detection should take over."),
+        },
+        related=["lk fork", "lk lab", "lk status"],
+    ),
+    "wallet": _help_entry(
+        "Manage signer profiles used for transactions.",
+        "lk wallet list | set | set-env | use | remove",
+        "lk wallet set-env Alice ALICE_PRIVATE_KEY",
+        "Use it when you need repeatable actor identities.",
+        children={
+            "list": _help_entry("List signer profiles without printing secrets.", "lk wallet list", "lk wallet list", "Use it to see available signers."),
+            "set": _help_entry("Save a private key locally.", "lk wallet set <name> <private-key>", "lk wallet set Alice 0x...", "Use it only for local/non-production keys you deliberately want persisted."),
+            "set-env": _help_entry("Use an environment variable for a wallet key.", "lk wallet set-env <name> <ENV_VAR>", "lk wallet set-env Alice ALICE_PRIVATE_KEY", "Use it when you do not want the key stored in Lowkey config."),
+            "use": _help_entry("Select a wallet profile.", "lk wallet use <name>", "lk wallet use Alice", "Use it to change the signer."),
+            "remove": _help_entry("Delete a wallet profile.", "lk wallet remove <name>", "lk wallet remove Alice", "Use it to clean up old signers."),
+        },
+        related=["lk actor", "lk as"],
+    ),
+    "actor": _help_entry("Name/select a local Anvil account.", "lk actor <index> <name> | lk actor <name> | lk actor reset", "lk actor 0 Alice", "Use it when you want readable role names instead of anonymous Anvil slots.", related=["lk actors", "lk impersonate"]),
+    "actors": _help_entry("List available local Anvil accounts.", "lk actors", "lk actors", "Use it when you need to know which local addresses are available.", related=["lk actor", "lk impersonate"]),
+    "impersonate": _help_entry("Impersonate an address on local Anvil/a fork.", "lk impersonate <address> [name]", "lk impersonate 0x... Whale", "Use it when the account you care about already exists on a local fork.", related=["lk fork", "lk actor"]),
+    "as": _help_entry("Run one command as another configured actor, then restore your previous actor.", "lk as <actor> <command> [args...]", "lk as Bob send approve 0x... 1000", "Use it when one investigation needs several protocol roles.", related=["lk actor", "lk wallet"]),
+    "read": _help_entry("Call a contract without intentionally changing state.", "lk read <function> [args...]", "lk read balanceOf <address>", "Use it for getters and state observation.", related=["lk ask", "lk send"]),
+    "send": _help_entry(
+        "Send a real transaction to the selected target.",
+        "lk send <function> [args...] [--preview|--confirm]",
+        "lk send release --preview",
+        "Use it to exercise state-changing behavior in a local lab or selected RPC.",
+        options=[("--preview", "Encode/check without sending.", "lk send release --preview"), ("--confirm", "Preview first, then ask before sending.", "lk send release --confirm")],
+        related=["lk changes", "lk trace", "lk receipt"],
+    ),
+    "functions": _help_entry("List the selected contract's ABI functions.", "lk functions [query]", "lk functions withdraw", "Use it when starting an unfamiliar contract and you need its callable surface.", related=["lk fn", "lk ask", "lk risk"]),
+    "fn": _help_entry("Search ABI functions by name/signature.", "lk fn [query]", "lk fn release", "Use it when you remember part of a function name but not the exact signature.", related=["lk functions", "lk ask"]),
+    "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createbounty", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
+    "wizard": _help_entry("Interactively collect arguments for a function, then call, send, or encode it.", "lk wizard <function> [call|send|encode]", "lk wizard release call", "Use it when manual ABI argument entry is getting annoying.", related=["lk ask", "lk read", "lk send"]),
+    "probe": _help_entry("Try a function as local actors and record success/revert behavior without assertions.", "lk probe <function> [args...]", "lk probe withdraw 1000 --actor Attacker", "Use it for a quick behavioral experiment before writing a full proof.", related=["lk walkthrough test", "lk generate test"]),
+    "changes": _help_entry("Show storage changes caused by a function call in an isolated context.", "lk changes '<name(parameter TYPES...)>' <VALUES...>", "lk changes 'createbounty(address,uint256)' 0x... 100 ether", "Use it to connect function behavior to concrete state changes.", related=["lk mapping", "lk layout", "lk trace"]),
+    "state-diff": _help_entry("Alias for the storage-change reproduction workflow.", "lk state-diff '<name(parameter TYPES...)>' <VALUES...>", "lk state-diff 'deposit(uint256)' 1000", "Use it when the state-diff terminology makes more sense to you.", related=["lk changes", "lk snapshot", "lk diff"]),
+    "risk": _help_entry("Show rule-based ABI review hints and source security-pattern signals.", "lk risk", "lk risk", "Use it to find functions/patterns that deserve manual review; hints are not vulnerability verdicts.", related=["lk scan", "lk seams", "lk findings"]),
+    "scan": _help_entry("Find high-signal Solidity review markers.", "lk scan [src]", "lk scan src", "Use it for fast source triage before manual reading.", related=["lk risk", "lk rg"]),
+    "seams": _help_entry("Show audit hotspots where protocol boundaries and assumptions deserve extra scrutiny.", "lk seams", "lk seams", "Use it to decide where manual review should start.", related=["lk project", "lk risk", "lk walkthrough"]),
+    "deps": _help_entry("Show imports, inheritance, and source dependencies.", "lk deps [src]", "lk deps src", "Use it to separate application logic from libraries, interfaces, and dependency code.", related=["lk project", "lk layout"]),
+    "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout Escrow", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
+    "mapping": _help_entry("Calculate/read a mapping entry's storage location.", "lk mapping <slot> <key> | lk mapping <key_type> <slot> <key>", "lk mapping address 3 0x1111111111111111111111111111111111111111", "Use it when you know a mapping's anchor slot and want to inspect one key.", related=["lk layout", "lk snapshot"]),
+    "namespace": _help_entry("Calculate an ERC-7201 namespaced storage slot.", "lk namespace <erc7201-namespace-id>", "lk namespace example.storage", "Use it when auditing namespaced storage.", related=["lk layout", "lk mapping"]),
+    "proof": _help_entry("Read an account/storage proof for a slot.", "lk proof <slot> [block]", "lk proof 3 21000000", "Use it when you need storage evidence tied to a specific block.", related=["lk mapping", "lk snapshot"]),
+    "snapshot": _help_entry("Save selected storage slots for later comparison.", "lk snapshot [slot ...]", "lk snapshot 0 1 2", "Use it before an experiment when you want a clean storage reference point.", related=["lk diff", "lk changes"]),
+    "diff": _help_entry("Compare the saved storage snapshot with current values.", "lk diff", "lk diff", "Use it after an experiment to see which snapshotted slots changed.", related=["lk snapshot", "lk changes"]),
+    "tx": _help_entry("Inspect and decode a transaction.", "lk tx [tx]", "lk tx 0x...", "Use it when you have a transaction hash and want call/receipt context.", related=["lk receipt", "lk trace", "lk logs"]),
+    "receipt": _help_entry("Read a transaction receipt.", "lk receipt [tx]", "lk receipt 0x...", "Use it to check success/revert status, gas, and logs.", related=["lk tx", "lk trace"]),
+    "trace": _help_entry("Trace transaction execution and expose the EVM call chain.", "lk trace [tx] [flags]", "lk trace 0x...", "Use it when the final result is not enough and you need to see where execution went.", related=["lk receipt", "lk walkthrough"]),
+    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
+    "logs": _help_entry("Query logs and optionally decode events.", "lk logs [args...]", "lk logs --decode", "Use it when events are part of behavior or security evidence.", options=[("--decode", "Decode matching events with the current ABI.", "lk logs --decode")], related=["lk event", "lk tx"]),
+    "chain": _help_entry("Show chain ID, current block, and RPC.", "lk chain", "lk chain", "Use it to verify exactly which local chain/fork you are talking to.", related=["lk rpc", "lk fork"]),
+    "label": _help_entry("Give an address a readable label in Lowkey output.", "lk label <address> <name>", "lk label 0x... Treasury", "Use it when traces and balances are easier to read with protocol role names.", related=["lk actor", "lk walkthrough"]),
+    "encode": _help_entry("Build ABI calldata for a function and its values.", "lk encode <function> [args...]", "lk encode transfer 0x... 1000", "Use it for calldata debugging or low-level calls.", related=["lk decode", "lk sig", "lk calldata"]),
+    "decode": _help_entry("Decode return data using the current target ABI.", "lk decode <function> <return-data>", "lk decode balanceOf 0x...", "Use it when a low-level call returned encoded bytes.", related=["lk encode", "lk decode-error"]),
+    "decode-error": _help_entry("Decode a Solidity custom-error payload.", "lk decode-error <data>", "lk decode-error 0x...", "Use it when a revert payload is hex and you want the actual error and arguments.", related=["lk trace", "lk decode"]),
+    "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
+    "poc": _help_entry("Generate an evidence-backed PoC scaffold.", "lk poc [--finding N] [--name NAME]", "lk poc --finding 2 --name withdraw-bypass", "Use it when a finding is concrete enough to deserve a reproducible proof scaffold.", related=["lk finding", "lk export"]),
+    "generate": _help_entry(
+        "Create reusable Forge tests, PoC scaffolds, or deployment scripts.",
+        "lk generate <test|poc|deployment> ...",
+        "lk generate test 'withdraw(address,uint256)' 0x... 1000",
+        "Use it after observing behavior you want to turn into repeatable evidence.",
+        children={
+            "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<name(parameter TYPES...)>' <VALUES...>", "lk generate test 'withdraw(address,uint256)' 0x... 1000", "Use it to turn an observed transition into regression evidence."),
+            "poc": _help_entry("Generate a PoC scaffold connected to current evidence.", "lk generate poc <function>", "lk generate poc withdraw", "Use it as a starting point for exploit reproduction."),
+            "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment Escrow", "Use it when you need a repeatable local deployment entry point."),
+        },
+        related=["lk matrix", "lk poc"],
+    ),
+    "finding": _help_entry(
+        "Record a manual audit observation in the project-scoped findings ledger.",
+        "lk finding <note> | lk finding add <severity> <title> <description>",
+        "lk finding add medium withdraw lacks caller restriction",
+        "Use it while manually reviewing source or reproducing behavior you want to track.",
+        children={
+            "add": _help_entry("Record a structured finding.", "lk finding add <high|medium|low|info> <title> <description>", "lk finding add medium unexpected withdraw access", "Use it when you have a concrete observation."),
+            "list": _help_entry("List findings/signals.", "lk finding list", "lk finding list", "Use it as a friendly shortcut to the findings list."),
+            "ls": _help_entry("Alias for finding list.", "lk finding ls", "lk finding ls", "Use it as the short form."),
+        },
+        related=["lk findings", "lk focus"],
+    ),
+    "findings": _help_entry("Show stored audit signals and their evidence.", "lk findings [status]", "lk findings open", "Use it to move from broad scanning into individual issues that need manual verification.", related=["lk focus", "lk finding"]),
+    "focus": _help_entry("Set one audit signal as the investigation focus.", "lk focus <SIGNAL_ID> | lk focus clear", "lk focus SEC-0007", "Use it when one review lead becomes the main investigation thread.", related=["lk findings", "lk changes"]),
+    "checklist": _help_entry(
+        "Track the standard audit questions you want to cover.",
+        "lk checklist | lk checklist done <item> | lk checklist reset",
+        "lk checklist",
+        "Use it so an interesting exploit idea does not make you skip routine review areas.",
+        children={
+            "done": _help_entry("Mark a checklist item complete.", "lk checklist done <item>", "lk checklist done 3", "Use it after you have actually reviewed the item."),
+            "reset": _help_entry("Reset the checklist.", "lk checklist reset", "lk checklist reset", "Use it when starting a fresh review."),
+        },
+        related=["lk audit", "lk findings"],
+    ),
+    "note": _help_entry("Save a free-form audit note.", "lk note <text>", "lk note owner is initialized during setup", "Use it for thoughts that are useful but are not yet findings or TODOs.", related=["lk todo", "lk finding"]),
+    "todo": _help_entry("Add an audit TODO.", "lk todo <text>", "lk todo inspect emergencyWithdraw path", "Use it when the next investigation step is clear but not yet a finding.", related=["lk note", "lk findings"]),
+    "context": _help_entry("Show the current audit/project context.", "lk context", "lk context", "Use it when you are unsure which target, actor, RPC, or finding focus is active.", related=["lk status", "lk findings"]),
+    "session": _help_entry(
+        "Start, resume, or end a project-scoped audit session.",
+        "lk session start | lk session resume | lk session end",
+        "lk session resume",
+        "Use it when an investigation spans multiple terminal sessions.",
+        children={
+            "start": _help_entry("Start a session.", "lk session start", "lk session start", "Use it when beginning an investigation."),
+            "resume": _help_entry("Resume a session.", "lk session resume", "lk session resume", "Use it when returning to an existing audit."),
+            "end": _help_entry("End a session.", "lk session end", "lk session end", "Use it when done for the day."),
+        },
+        related=["lk context", "lk export"],
+    ),
+    "workspace": _help_entry("Inspect/initialize project-local audit workspace files.", "lk workspace [args]", "lk workspace init", "Use it when you need Lowkey's evidence workspace on disk.", related=["lk session", "lk export"]),
+    "export": _help_entry("Package current audit evidence into an audit-report directory.", "lk export", "lk export", "Use it when you want a portable audit evidence bundle.", related=["lk findings", "lk workspace"]),
+    "matrix": _help_entry(
+        "Build an attacker/state matrix and turn scenarios into Forge tests.",
+        "lk matrix init | actor | state | add | list | test",
+        "lk matrix add badRelease release Attacker revert",
+        "Use it when the same security question needs testing across several callers or states.",
+        children={
+            "init": _help_entry("Create matrix files.", "lk matrix init", "lk matrix init", "Use it before adding scenarios."),
+            "actor": _help_entry("Add a named actor/address.", "lk matrix actor <name> <address>", "lk matrix actor Attacker 0x...", "Use it when a scenario needs a specific caller."),
+            "state": _help_entry("Define a named state condition.", "lk matrix state <name> <description>", "lk matrix state funded escrow holds 1 ETH", "Use it to document a scenario precondition."),
+            "add": _help_entry("Add a testable scenario.", "lk matrix add <name> <function> <actor> <expected>", "lk matrix add badRelease release Attacker revert", "Use it to capture a security hypothesis before generating a test."),
+            "list": _help_entry("List saved scenarios.", "lk matrix list", "lk matrix list", "Use it to review queued reproductions."),
+            "test": _help_entry("Generate/run a Forge test for one scenario.", "lk matrix test <name>", "lk matrix test badRelease", "Use it when you are ready to turn the scenario into executable evidence."),
+        },
+        related=["lk probe", "lk generate test"],
+    ),
+    "fork": _help_entry(
+        "Start and control a local Anvil fork of another RPC endpoint.",
+        "lk fork <rpc-url> [block] [--port PORT] | lk fork status | stop | dump | load",
+        "lk fork https://rpc.example 20000000",
+        "Use it when you need realistic chain state but still want local control and safe mutations.",
+        children={
+            "status": _help_entry("Show whether the fork is running.", "lk fork status", "lk fork status", "Use it before relying on the fork RPC."),
+            "stop": _help_entry("Stop the Lowkey-managed fork.", "lk fork stop", "lk fork stop", "Use it when finished with fork testing."),
+            "dump": _help_entry("Checkpoint the current Anvil state.", "lk fork dump [file]", "lk fork dump fork-state.json", "Use it before destructive experiments."),
+            "load": _help_entry("Restore a dumped state snapshot.", "lk fork load <file>", "lk fork load fork-state.json", "Use it to return to a known local state."),
+        },
+        related=["lk impersonate", "lk lab", "lk rpc"],
+    ),
+    "proxy": _help_entry("Inspect an EIP-1967-style proxy.", "lk proxy", "lk proxy", "Use it when a target may be a proxy and you need to distinguish proxy from implementation.", related=["lk implementation", "lk admin"]),
+    "implementation": _help_entry("Resolve the implementation behind the selected proxy.", "lk implementation", "lk implementation", "Use it to find the code that executes behind a proxy.", related=["lk proxy", "lk admin"]),
+    "admin": _help_entry("Resolve the proxy admin when supported.", "lk admin", "lk admin", "Use it when reviewing who controls upgrades.", related=["lk proxy", "lk implementation"]),
+    "selectors": _help_entry("Extract function selectors.", "lk selectors [args...]", "lk selectors", "Use it for bytecode-level callable-surface analysis.", related=["lk sig", "lk calldata"]),
+    "calldata": _help_entry("Decode raw calldata and selectors.", "lk calldata <data>", "lk calldata 0xa9059cbb...", "Use it when a trace or transaction gives you raw hex.", related=["lk encode", "lk sig"]),
+    "sig": _help_entry("Print a function signature/selector representation.", "lk sig <function>", "lk sig transfer(address,uint256)", "Use it when reasoning about selectors.", related=["lk calldata", "lk encode"]),
+    "disasm": _help_entry("Disassemble bytecode into EVM instructions.", "lk disasm [args...]", "lk disasm 0x...", "Use it when source or ABI evidence is unavailable.", related=["lk selectors", "lk tx"]),
+    "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),
+    "chisel": _help_entry("Launch/use Foundry Chisel for tiny Solidity experiments.", "lk chisel [args...]", "lk chisel", "Use it for quick Solidity/EVM experiments without creating a full contract."),
+    "ens": _help_entry("Resolve ENS names or reverse-resolve addresses.", "lk ens <name|address>", "lk ens vitalik.eth", "Use it when human-readable names help identify addresses.", related=["lk label"]),
+    "token": _help_entry("Read basic ERC-20 metadata or a holder balance.", "lk token <token> | lk token balance <token> <holder>", "lk token balance 0xToken 0xHolder", "Use it for quick token/accounting checks.", related=["lk read", "lk logs"]),
+    "fuzz": _help_entry("Run Forge fuzz tests through Lowkey.", "lk fuzz [args...]", "lk fuzz test --match-test test_withdraw", "Use it when one fixed input is not enough.", related=["lk invariant", "lk brutalize"]),
+    "invariant": _help_entry("Run Forge invariant tests.", "lk invariant [args...]", "lk invariant test", "Use it when a property should remain true across many state transitions.", related=["lk fuzz", "lk matrix"]),
+    "mutate": _help_entry("Run mutation testing when configured.", "lk mutate [args...]", "lk mutate", "Use it to check whether your tests notice meaningful code changes.", related=["lk test", "lk fuzz"]),
+    "symbolic": _help_entry("Run symbolic-testing workflows when configured.", "lk symbolic [args...]", "lk symbolic", "Use it when symbolic path exploration is useful.", related=["lk fuzz", "lk invariant"]),
+    "brutalize": _help_entry("Stress calldata/state assumptions with adversarial inputs.", "lk brutalize [args...]", "lk brutalize", "Use it when you suspect edge cases around malformed/extreme input.", related=["lk probe", "lk fuzz"]),
+    "cheatcodes": _help_entry("Show or run useful Foundry cheatcode helpers.", "lk cheatcodes [args...]", "lk cheatcodes", "Use it when you need controlled local callers, balances, time, or storage.", related=["lk forge", "lk matrix"]),
+    "test-gen": _help_entry("Turn the latest useful transaction/evidence into a Forge test.", "lk test-gen", "lk test-gen", "Use it after reproducing behavior and wanting a regression test.", related=["lk generate test", "lk trace"]),
+    "forge": _help_entry("Pass a native Forge command through Lowkey.", "lk forge <forge-command> [args...]", "lk forge test -vvvv", "Use it when you need a Forge feature that Lowkey does not wrap separately.", related=["lk build", "lk test"]),
+    "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
+    "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
+    "script": _help_entry("Run a native Forge script.", "lk script <args...>", "lk script script/LocalDeploy.s.sol --sig run()", "Use it when the project already has a useful setup/deployment script.", related=["lk lab", "lk forge"]),
+    "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect Escrow storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
+    "coverage": _help_entry("Run Forge coverage reporting.", "lk coverage <args...>", "lk coverage", "Use it to see which code paths your tests actually execute.", related=["lk test", "lk audit run"]),
+    "lint": _help_entry("Run Forge lint tooling when supported.", "lk lint", "lk lint", "Use it for quick static/code-quality checks.", related=["lk geiger", "lk doctor"]),
+    "geiger": _help_entry("Run Geiger-style scanning when available.", "lk geiger", "lk geiger", "Use it as an extra dependency/security signal.", related=["lk lint", "lk audit"]),
+    "fmt": _help_entry("Format Foundry source files.", "lk fmt", "lk fmt", "Use it after intentional Solidity edits.", related=["lk build", "lk test"]),
+    "create": _help_entry("Create a new Foundry component.", "lk create", "lk create", "Use it while bootstrapping contracts, libraries, or tests."),
+    "batch": _help_entry("Run one Lowkey command per line from a file.", "lk batch <command-file>", "lk batch audit-steps.lk", "Use it for repeatable local investigation sequences.", related=["lk audit"]),
+    "raw": _help_entry("Run a raw Cast command when Lowkey has no friendlier wrapper.", "lk raw <cast-subcommand> [args...]", "lk raw storage 0", "Use it as the advanced EVM inspection escape hatch.", related=["lk encode", "lk tx"]),
+    "gas": _help_entry("Estimate gas for a function call.", "lk gas <function> [args]", "lk gas release", "Use it to see the transaction's estimated gas cost before sending.", related=["lk send", "lk trace"]),
+    "slither": _help_entry("Run Slither through Lowkey's audit reporter.", "lk slither [args...]", "lk slither", "Use it for static-analysis signals that you then manually verify.", related=["lk scan", "lk findings"]),
+    "rg": _help_entry("Search source with ripgrep and save the search in the audit context.", "lk rg <pattern> [path] [rg-options...]", "lk rg delegatecall src", "Use it for targeted source archaeology.", related=["lk scan", "lk deps"]),
+    "info": _help_entry("Show target facts such as bytecode, ABI, and proxy information.", "lk info", "lk info", "Use it for quick reconnaissance.", related=["lk recon", "lk status"]),
+    "status": _help_entry("Show active target, RPC, actor, ABI, last transaction, and open signals.", "lk status", "lk status", "Use it whenever you are unsure what Lowkey is currently pointing at.", related=["lk context", "lk target"]),
+    "recon": _help_entry("Quickly inspect a live target for balance/code/nonce and proxy hints.", "lk recon", "lk recon", "Use it as a first-pass sanity check.", related=["lk info", "lk proxy"]),
+    "deployments": _help_entry("List deployment records discovered in the current project.", "lk deployments", "lk deployments", "Use it when you need addresses created by a Foundry deployment run.", related=["lk target auto", "lk lab"]),
+    "clone": _help_entry("Clone and onboard a repository for auditing.", "lk clone <repo> [dir] [options]", "lk clone https://github.com/example/protocol", "Use it when starting work on a repository that is not onboarded yet.", related=["lk build", "lk audit", "lk lab"]),
+    "doctor": _help_entry("Diagnose Lowkey, Foundry, Anvil, dependencies, and optional tools.", "lk doctor", "lk doctor", "Use it before debugging higher-level audit behavior when the toolchain may be the problem.", related=["lk self-test"]),
+    "self-test": _help_entry("Run Lowkey's built-in regression checks.", "lk self-test", "lk self-test", "Use it after changing Lowkey itself."),
+    "interface": _help_entry("Inspect interface-related ABI/contract information.", "lk interface [args...]", "lk interface IERC20", "Use it when investigating interface calls or contract boundaries.", related=["lk deps", "lk selectors"]),
+    "4byte": _help_entry("Use Cast's 4byte lookup helpers.", "lk 4byte ...", "lk 4byte 0xa9059cbb", "Use it when a selector needs to be matched to possible signatures.", related=["lk sig", "lk calldata"]),
+    "access-list": _help_entry("Build an access list for a transaction.", "lk access-list ...", "lk access-list 0x...", "Use it when analyzing/storage-access behavior for a transaction.", related=["lk tx", "lk trace"]),
+    "constructor-args": _help_entry("Inspect constructor arguments.", "lk constructor-args ...", "lk constructor-args 0x...", "Use it when reverse-engineering deployment inputs.", related=["lk creation-code", "lk lab"]),
+    "creation-code": _help_entry("Inspect contract creation/init code.", "lk creation-code ...", "lk creation-code 0x...", "Use it when deployment-time behavior matters.", related=["lk constructor-args", "lk disasm"]),
+    "decode-calldata": _help_entry("Decode calldata directly.", "lk decode-calldata ...", "lk decode-calldata 0xa9059cbb...", "Use it when you need a direct Cast-style calldata decoder.", related=["lk calldata", "lk sig"]),
+    "abi-encode": _help_entry("ABI-encode arguments using Cast helpers.", "lk abi-encode ...", "lk abi-encode ...", "Use it for low-level encoding experiments.", related=["lk encode", "lk decode"]),
+    "version": _help_entry("Show the installed Lowkey runtime version/status.", "lk version", "lk version", "Use it when checking which Lowkey runtime is installed."),
+    "detect": _help_entry("Detect the current project/toolchain.", "lk detect", "lk detect", "Use it when you want Lowkey to explain which build/backend it sees.", related=["lk project", "lk doctor"]),
+    "detect-project": _help_entry("Alias for project/toolchain detection.", "lk detect-project", "lk detect-project", "Use it as an explicit project-detection command.", related=["lk detect", "lk project"]),
+    "storage": _help_entry("Use raw storage inspection through Cast.", "lk storage ...", "lk raw storage 0", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping"]),
+    "slots": _help_entry("Alias-style low-level storage inspection.", "lk slots ...", "lk raw storage 0", "Use it for direct slot inspection.", related=["lk layout", "lk mapping"]),
+    "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c balanceOf 0x...", "Use it when you want the compact read form.", related=["lk read"]),
+    "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s release --preview", "Use it when you want the compact send form.", related=["lk send"]),
+    "st": _help_entry("Short low-level/state helper alias.", "lk st ...", "lk st storage 0", "Use it when you want the compact forensic form.", related=["lk raw", "lk state-diff"]),
+}
+
+HELP_ALIASES = {
+    "walk": "walkthrough",
+    "graph": "project",
+    "signals": "findings",
+    "signal": "findings",
+    "investigate": "focus",
+    "investigation": "focus",
+    "try": "probe",
+    "statediff": "state-diff",
+    "state_diff": "state-diff",
+    "map": "mapping",
+    "hotspots": "seams",
+    "target-list": "targets",
+    "actor-list": "actors",
+    "erc20": "token",
+    "resolve": "ens",
+    "lookup": "ens",
+    "decode-event": "event",
+    "decode-calldata": "calldata",
+    "returns": "decode",
+    "error": "decode-error",
+}
+
+# Aliases not otherwise given their own page still get the canonical command help.
+for _alias, _canonical in HELP_ALIASES.items():
+    if _canonical in COMMAND_HELP:
+        COMMAND_HELP.setdefault(_alias, COMMAND_HELP[_canonical])
+
+def _canonical_help_command(command):
+    return HELP_ALIASES.get(str(command or "").strip().lower(), str(command or "").strip().lower())
+
+def _help_entry_for_path(path):
+    if not path:
+        return None, []
+    root = _canonical_help_command(path[0])
+    entry = COMMAND_HELP.get(root)
+    if not entry:
+        return None, []
+    consumed = [root]
+    current = entry
+    for token in path[1:]:
+        key = str(token or "").strip().lower()
+        children = current.get("children", {})
+        key = HELP_ALIASES.get(key, key)
+        if key in children:
+            current = children[key]
+            consumed.append(key)
+        else:
+            break
+    return current, consumed
+
+def _render_command_help(path):
+    entry, resolved = _help_entry_for_path(path)
+    shown_path = " ".join(resolved or [str(item) for item in path])
+    print()
+    print(f"LOWKEY HELP  •  lk {shown_path}")
+    print("=" * 72)
+    if not entry:
+        command = _canonical_help_command(path[0] if path else "")
+        print(f"What it does : Lowkey has no dedicated help page for '{command}' yet.")
+        print("Try          : lk --h")
+        print(f"Native help  : lk {command} --help")
+        return 0
+
+    print(f"What it does : {entry['summary']}")
+    print(f"When to use  : {entry['use']}")
+    print(f"Usage        : {entry['usage']}")
+    print(f"Example      : {entry['example']}")
+
+    children = entry.get("children") or {}
+    if children:
+        print("")
+        print("NEXT COMMANDS")
+        print("-------------")
+        for name, child in children.items():
+            print(f"  lk {shown_path} {name}")
+            print(f"      What it does: {child['summary']}")
+            print(f"      When to use : {child['use']}")
+            print(f"      Example     : {child['example']}")
+
+    options = entry.get("options") or []
+    if options:
+        print("")
+        print("OPTIONS / MODES")
+        print("---------------")
+        for option, description, example in options:
+            print(f"  {option}")
+            print(f"      {description}")
+            print(f"      Example: {example}")
+
+    related = entry.get("related") or []
+    if related:
+        print("")
+        print("RELATED COMMANDS")
+        print("---------------")
+        for command in related:
+            print(f"  {command}")
+
+    print("")
+    print("HELP TIP")
+    print("  Every Lowkey command accepts --h, --help, -h, or help.")
+    print("  Example: lk walkthrough --h")
+    print("  Drill down: lk walkthrough test --h")
+    return 0
+
 def print_help():
     print(r"""
 LOWKEY — SMART CONTRACT AUDITOR CONSOLE
 =======================================
 
 START HERE
-  lk -h / lk --help                  Show this menu.
+  lk -h / lk --help                  Show the full command catalog.
+  lk <command> --h                  Show friendly help for that command.
+  lk <command> <subcommand> --h     Drill into the next command level.
+                                   Example: lk walkthrough test --h
   lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
@@ -9586,14 +10020,8 @@ AUDIT WORKFLOW / EVIDENCE
   lk export                        Build an audit-report/ bundle.
 
 PROTOCOL WALKTHROUGH
-  lk walkthrough [options]         Build and execute a visual whole-protocol workflow.
-  lk walk [options]                Alias for walkthrough.
-  lk walkthrough --auto            Auto-provision/use a local target.
-  lk walkthrough --static          Render the compiled model without execution.
-  lk walkthrough --contract X      Focus on contract X.
-  lk walkthrough --steps 6         Limit the displayed/executed flow length.
-  lk walkthrough test --auto       Randomized live probes on isolated Anvil snapshots.
-  lk walkthrough test --cases 50   Run 50 adversarial probes and save replayable evidence.
+  lk walkthrough --h                Explain the walkthrough, its options, and next commands.
+  lk walkthrough test --h           Explain randomized adversarial testing.
   Example: lk walkthrough --auto --steps 8
 
 FORK / PROXY / ABI FORENSICS
@@ -9650,8 +10078,26 @@ SAFETY / EXPECTATIONS
 """)
 
 def dispatch_command(cmd,args,config,from_batch=False):
+    # Contextual help is side-effect free: do not activate targets or execute
+    # commands when the user is only asking for documentation.
+    lowered_cmd = str(cmd or "").strip().lower()
+    if lowered_cmd in HELP_FLAGS:
+        if args:
+            return _render_command_help(args)
+        print_help()
+        return 0
+
+    help_index = next(
+        (
+            index for index, token in enumerate(args or [])
+            if str(token).strip().lower() in HELP_FLAGS
+        ),
+        None,
+    )
+    if help_index is not None:
+        return _render_command_help([cmd, *(args or [])[:help_index]])
+
     activate_project_target(config)
-    if cmd in {"--h","--help","-h","help"}: print_help()
     elif cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
         root=audit_context.foundry_project_root()
