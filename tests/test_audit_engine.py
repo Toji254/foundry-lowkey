@@ -240,6 +240,8 @@ class AuditEngineTests(unittest.TestCase):
         self.assertIn("Slither", rendered)
         self.assertIn("SKIPPED", rendered)
         self.assertIn("19 review markers", rendered)
+        self.assertIn("Security patterns", rendered)
+        self.assertIn("0 signals", rendered)
         self.assertIn("Heuristic findings are review leads", rendered)
 
     def test_run_rg_treats_no_match_as_success(self):
