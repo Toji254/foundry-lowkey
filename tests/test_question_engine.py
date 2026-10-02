@@ -93,6 +93,30 @@ class QuestionEngineTests(unittest.TestCase):
             self.assertIsNotNone(first)
             self.assertIn("trace", " ".join(first["evidence"]).lower())
 
+    def test_current_question_screen_has_one_obvious_next_action_and_trust_legend(self):
+        temp, root = self.make_project(source="contract Demo { function withdraw() public {} }\n")
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            rendered = questions.render_current(root)
+        self.assertIn("YOUR MOVE", rendered)
+        self.assertIn("START HERE", rendered)
+        self.assertIn("lk q note", rendered)
+        self.assertIn("TRUST GUIDE", rendered)
+        self.assertIn("HIGH", rendered)
+        self.assertIn("MEDIUM", rendered)
+        self.assertIn("LOW", rendered)
+
+    def test_overview_puts_usage_recipe_before_frontier(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            rendered = questions.overview(root)
+        self.assertIn("HOW YOU USE THIS", rendered)
+        self.assertIn("START command", rendered)
+        self.assertIn("lk q note", rendered)
+        self.assertLess(rendered.index("HOW YOU USE THIS"), rendered.index("FRONTIER"))
+
     def test_source_references_exist(self):
         for q in questions.QUESTION_CATALOG.values():
             for source in q.sources:
