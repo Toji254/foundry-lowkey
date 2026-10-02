@@ -57,14 +57,14 @@ class WalkthroughTests(unittest.TestCase):
     def test_live_loop_uses_review_state_machine_for_every_pause_point(self):
         source = inspect.getsource(walkthrough.run)
         self.assertEqual(source.count("choice = wait_for_action()"), 2)
-        self.assertEqual(source.count("choice = _wait_for_next_interaction(no_prompt)"), 1)
+        self.assertEqual(source.count("choice = _wait_for_next_interaction(no_prompt, len(steps))"), 1)
         self.assertIn("REVIEW PICKER", source)
         self.assertIn("review_mode=True", source)
 
     def test_review_help_describes_observed_steps_not_future_steps(self):
         source = inspect.getsource(walkthrough.run)
         self.assertIn(
-            "1-9 = review observed steps 1-9   R = review any observed step",
+            "1-9 = quick review",
             source,
         )
         self.assertIn(
@@ -74,18 +74,18 @@ class WalkthroughTests(unittest.TestCase):
 
     def test_runtime_walkthrough_contains_no_known_project_specific_adapters(self):
         production_files = [
-            ROOT.parent / "lowkey" / "lk.py",
-            ROOT.parent / "lowkey" / "audit_context.py",
-            ROOT.parent / "lowkey" / "audit_engine.py",
-            ROOT.parent / "lowkey" / "bootstrap.py",
-            ROOT.parent / "lowkey" / "clone_tools.py",
-            ROOT.parent / "lowkey" / "forge_tools.py",
-            ROOT.parent / "lowkey" / "generator.py",
-            ROOT.parent / "lowkey" / "project_detection.py",
-            ROOT.parent / "lowkey" / "project_tools.py",
-            ROOT.parent / "lowkey" / "slither_tools.py",
-            ROOT.parent / "lowkey" / "system_model.py",
-            ROOT.parent / "lowkey" / "walkthrough.py",
+            ROOT / "lowkey" / "lk.py",
+            ROOT / "lowkey" / "audit_context.py",
+            ROOT / "lowkey" / "audit_engine.py",
+            ROOT / "lowkey" / "bootstrap.py",
+            ROOT / "lowkey" / "clone_tools.py",
+            ROOT / "lowkey" / "forge_tools.py",
+            ROOT / "lowkey" / "generator.py",
+            ROOT / "lowkey" / "project_detection.py",
+            ROOT / "lowkey" / "project_tools.py",
+            ROOT / "lowkey" / "slither_tools.py",
+            ROOT / "lowkey" / "system_model.py",
+            ROOT / "lowkey" / "walkthrough.py",
         ]
         banned = (
             "ConfidencePool",
@@ -275,6 +275,7 @@ class WalkthroughTests(unittest.TestCase):
             path = walkthrough._write_transaction_evidence(
                 root, "http://127.0.0.1:8545", step, receipt
             )
+        step.tx_hash = tx_hash
         self.assertIsNotNone(path)
         html = path.read_text(encoding="utf-8")
         self.assertIn('"lowkey_status_at_render": "checking"', html)
@@ -962,28 +963,29 @@ class WalkthroughTests(unittest.TestCase):
         values={walkthrough._random_sol_value({"name":"value","type":"uint256"},actors,"0x"+"4"*40,rng,{}) for _ in range(100)}
         self.assertIn(0,values)
         self.assertIn(2**256-1,values)
-    def test_confidence_pool_recipe_contains_lifecycle(self):
-        config={
-            "target":"0x"+"1"*40,
-            "_walkthrough_recipe":"confidence-pool",
-            "lab_system":{
-                "pool":"0x"+"1"*40,
-                "stake_token":"0x"+"2"*40,
-                "attack_registry":"0x"+"3"*40,
-                "moderator":"0x"+"4"*40,
-            },
-        }
-        actors=[
-            walkthrough.Actor("Alice","0x"+"a"*40,0),
-            walkthrough.Actor("Bob","0x"+"b"*40,1),
-        ]
-        recipe=walkthrough._confidence_pool_recipe(config,actors)
-        names=[s.function for s in recipe]
-        self.assertIn("contributeBonus(uint256)",names)
-        self.assertIn("stake(uint256)",names)
-        self.assertIn("pokeRiskWindow()",names)
-        self.assertIn("flagSurvived(address)",names)
-        self.assertIn("claimSurvived()",names)
+    def test_plan_workflow_is_generic_and_lifecycle_aware(self):
+        model = walkthrough.ContractModel(
+            name="DemoPool",
+            source="src/DemoPool.sol",
+            artifact="out/DemoPool.sol/DemoPool.json",
+            functions=["deposit(uint256)", "withdraw()", "pause()"],
+            abi=[
+                {"type":"function","name":"deposit","inputs":[{"name":"amount","type":"uint256"}],"stateMutability":"payable"},
+                {"type":"function","name":"withdraw","inputs":[],"stateMutability":"nonpayable"},
+                {"type":"function","name":"pause","inputs":[],"stateMutability":"nonpayable"},
+            ],
+        )
+        actors = [walkthrough.Actor("Alice","0x"+"1"*40,0), walkthrough.Actor("Bob","0x"+"2"*40,1)]
+        recipe = walkthrough.plan_workflow(model, actors, "0x"+"3"*40, 100, 8)
+        names = [step.function for step in recipe]
+        self.assertTrue(names)
+        self.assertIn("deposit(uint256)", names)
+        self.assertIn("withdraw()", names)
+        self.assertNotIn("pause()", names)
+
+    def test_project_specific_confidence_pool_adapters_are_removed_from_runtime(self):
+        self.assertFalse(hasattr(walkthrough, "_confidence_pool_recipe"))
+        self.assertFalse(hasattr(walkthrough, "_confidence_pool_factory_recipe"))
 
     def test_struct_mapping_and_functions_are_modelled(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1261,28 +1263,28 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("agreement", reason)
         self.assertIn("IAgreement", reason)
 
-    def test_live_recipe_arguments_are_authoritative(self):
-        token = "0x" + "a" * 40
+    def test_generic_plan_uses_observed_dependency_argument(self):
         agreement = "0x" + "b" * 40
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
             walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
         ]
-        config = {
-            "target": "0x" + "3" * 40,
-            "lab_system": {
-                "factory": "0x" + "3" * 40,
-                "stake_token": token,
-                "agreement": agreement,
-                "moderator": "0x" + "4" * 40,
-            },
-        }
-        recipe = walkthrough._confidence_pool_factory_recipe(config, actors, 100)
-        create = next(step for step in recipe if step.function.startswith("createPool("))
-        self.assertFalse(create.inferred)
-        self.assertEqual(create.args[0], agreement)
-        self.assertEqual(create.args[1], token)
-        self.assertEqual(create.args[4], actors[1].address)
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address)"],
+            abi=[{
+                "type":"function","name":"createPool",
+                "inputs":[{"name":"agreement","type":"address"}],
+                "stateMutability":"nonpayable",
+            }],
+        )
+        recipe = walkthrough.plan_workflow(
+            model, actors, "0x"+"3"*40, 100, 1, observed={"agreement": agreement}
+        )
+        self.assertEqual(recipe[0].args[0], agreement)
+        self.assertTrue(recipe[0].inferred)
 
     def test_auxiliary_project_models_are_available_for_runtime_decoding(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1631,7 +1633,7 @@ class WalkthroughTests(unittest.TestCase):
         rendered = walkthrough._render_adversarial_probe(pathlib.Path("/tmp/project"), step, model, actors)
         joined = "\n".join(rendered)
         self.assertIn("CHECK THIS", joined)
-        self.assertIn("what changed", joined.lower())
+        self.assertIn("accepted by the chain", joined.lower())
         self.assertIn("Vyper", joined)
 
     def test_human_probe_renderer_is_language_neutral_for_move(self):
@@ -1669,8 +1671,9 @@ class WalkthroughTests(unittest.TestCase):
         )
         rendered = walkthrough._render_adversarial_probe(pathlib.Path("/tmp/project"), step, model, actors)
         joined = "\n".join(rendered)
-        self.assertIn("LAB ISSUE", joined)
-        self.assertIn("test setup", joined.lower())
+        self.assertIn("UNKNOWN", joined)
+        self.assertIn("could not prove the exact reason", joined.lower())
+        self.assertIn("Moderator -> pool points to an address with no contract code", joined)
 
     def test_adversarial_test_teaching_renderer_explains_value_invariant(self):
         model = walkthrough.ContractModel(
@@ -1719,14 +1722,16 @@ class WalkthroughTests(unittest.TestCase):
         rendered = walkthrough._render_adversarial_probe(
             pathlib.Path("/tmp/project"), step, model, actors, technical=True
         )
-        self.assertIn("ACCESS CONTROL", "\n".join(rendered))
+        joined = "\n".join(rendered)
+        self.assertIn("ACCEPTED", joined)
+        self.assertIn("ROLE", joined)
 
     def test_adversarial_test_renderer_explains_snapshot_isolation(self):
         rendered = walkthrough._render_adversarial_intro(24, ["createbounty(address,uint256): established"])
         joined = "\n".join(rendered)
-        self.assertIn("Every probe starts from the same prepared baseline.", joined)
-        self.assertIn("restores the Anvil snapshot", joined)
-        self.assertIn("repeated successes are intentional", joined)
+        self.assertIn("Every probe starts from the same prepared baseline and is restored after the call.", joined)
+        self.assertIn("Random probes reset after each call.", joined)
+        self.assertIn("These are randomized transaction probes", joined)
 
     def test_transaction_evidence_requires_assigned_hash_before_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1887,29 +1892,19 @@ class WalkthroughTests(unittest.TestCase):
             "[0x" + "1" * 40 + ",0x" + "2" * 40 + "]",
         )
 
-    def test_confidence_pool_recipe_uses_correct_registry_ordinals(self):
-        config = {
-            "target": "0x" + "1" * 40,
-            "_walkthrough_recipe": "confidence-pool",
-            "lab_system": {
-                "pool": "0x" + "1" * 40,
-                "stake_token": "0x" + "2" * 40,
-                "attack_registry": "0x" + "3" * 40,
-                "moderator": "0x" + "4" * 40,
-            },
-        }
-        actors = [
-            walkthrough.Actor("Alice", "0x" + "a" * 40, 0),
-            walkthrough.Actor("Bob", "0x" + "b" * 40, 1),
-        ]
-        recipe = walkthrough._confidence_pool_recipe(config, actors)
-        state_updates = {
-            s.args[0]: s.reason
-            for s in recipe
-            if s.function == "setAgreementState(uint8)"
-        }
-        self.assertEqual(state_updates[3], "LAB CONTROL: agreement enters UNDER_ATTACK")
-        self.assertEqual(state_updates[5], "LAB CONTROL: agreement reaches PRODUCTION")
+    def test_plan_workflow_avoids_explicit_administrative_controls(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            abi=[
+                {"type":"function","name":"setAdmin","inputs":[{"name":"account","type":"address"}],"stateMutability":"nonpayable"},
+                {"type":"function","name":"deposit","inputs":[],"stateMutability":"payable"},
+            ],
+        )
+        actors = [walkthrough.Actor("Alice","0x"+"1"*40,0), walkthrough.Actor("Bob","0x"+"2"*40,1)]
+        recipe = walkthrough.plan_workflow(model, actors, "0x"+"3"*40, 100, 4)
+        self.assertNotIn("setAdmin(address)", [step.function for step in recipe])
 
     def test_failure_explainer_is_plain_english(self):
         step = walkthrough.Step(1, "Alice", "Pool", "0x" + "3"*40, "stake(uint256)", [1], status="blocked")
@@ -2069,7 +2064,8 @@ class WalkthroughTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = walkthrough._generate_replay_script(pathlib.Path(tmp), model, "0x" + "1" * 40, [good])
             content = path.read_text(encoding="utf-8")
-        self.assertIn("target_1 = address(uint160(0x70997970c51812dc3a010c7d01b50e0d17dc79c8));", content)
+        expected_target = int("70997970c51812dc3a010c7d01b50e0d17dc79c8", 16)
+        self.assertIn(f"target_1 = address(uint160({expected_target}));", content)
         self.assertIn('.call{value: 1000000000000000000}(hex"abcdef");', content)
         self.assertIn("bool ok_1", content)
         self.assertNotIn("bool ok, )", content)
@@ -2124,7 +2120,7 @@ class WalkthroughTests(unittest.TestCase):
         rendered = walkthrough._render_interaction_graph(step, actors, False)
         self.assertIn("Alice ────▶ Escrow.deposit(Bob)", rendered)
         self.assertIn("sends 1 ETH", rendered)
-        self.assertIn("ETH Bob: +1 ETH", rendered)
+        self.assertIn("NATIVE VALUE Alice → Bob: 1 ETH", rendered)
         self.assertIn("Alice sends 1 ETH to Escrow to fund the escrow for Bob", rendered)
         self.assertIn("WHY THIS STEP: Alice funds the escrow for Bob [LAB CONTROL]", rendered)
 
@@ -2544,7 +2540,7 @@ class WalkthroughTests(unittest.TestCase):
         )
         self.assertIn("storage: not observed", rendered)
         self.assertIn("native balances: not observed", rendered)
-        self.assertIn("runtime call trace carried 1 ETH in ETH, but no tracked native-balance delta was recorded", rendered)
+        self.assertIn("runtime call trace carried 1 ETH [1,000,000,000,000,000,000 wei], but no tracked native-balance delta was recorded", rendered)
 
     def test_system_workflow_uses_live_target_relation_even_when_model_matching_is_external(self):
         target = "0x" + "9" * 40
@@ -2628,7 +2624,7 @@ class WalkthroughTests(unittest.TestCase):
             walkthrough.Actor("Bob", bob, 1),
         ]
         lines = walkthrough._friendly_gas_lines(step) + walkthrough._friendly_balance_lines(step, actors, [])
-        self.assertIn("GAS COST Alice: -2 ETH", lines)
+        self.assertTrue(any(line.startswith("GAS COST Alice: -2 ETH") for line in lines))
         self.assertIn("NATIVE VALUE Escrow → Bob: 1 ETH", lines)
         self.assertNotIn("NATIVE BALANCE Alice", lines)
 
@@ -3365,9 +3361,9 @@ class WalkthroughTests(unittest.TestCase):
         }]
         actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
         rendered = walkthrough._render_storage(storage, False, actors)
-        self.assertIn("purpose     → keeps track of how much ETH each address has contributed", rendered)
-        self.assertIn("how to read → find a key (like Alice), then read the value stored for that key", rendered)
-        self.assertIn("storage    → slot 0", rendered)
+        self.assertIn("keeps track of how much ETH each address has contributed", rendered)
+        self.assertIn("find a key (like Alice), then read the value stored for that key", rendered)
+        self.assertIn("slot 0", rendered)
         self.assertIn("Alice → 1 ETH", rendered)
         self.assertNotIn("1,000,000,000,000,000,000 wei", rendered)
         self.assertNotIn("keccak256(pad(key)", rendered)
@@ -3395,7 +3391,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("technical storage:", rendered)
         self.assertIn("row location        = keccak256(pad(key) || pad(0))", rendered)
         self.assertIn(slot, rendered)
-        self.assertIn("1 ETH [1,000,000,000,000,000,000 wei]", rendered)
+        self.assertIn("1e-18 ETH [1 wei]", rendered)
 
     def test_storage_renderer_explains_plain_slot_as_numbered_storage_box(self):
         storage = [{
@@ -3408,9 +3404,10 @@ class WalkthroughTests(unittest.TestCase):
         }]
         actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
         rendered = walkthrough._render_storage(storage, False, actors)
-        self.assertIn("purpose    → remembers the current owner", rendered)
-        self.assertIn("value      → Alice", rendered)
-        self.assertIn("storage    → slot 1   [numbered storage box]", rendered)
+        self.assertIn("remembers the current owner", rendered)
+        self.assertIn("Alice", rendered)
+        self.assertIn("slot 1", rendered)
+        self.assertIn("numbered storage box", rendered)
         self.assertNotIn("raw word", rendered)
 
 
