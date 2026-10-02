@@ -3579,7 +3579,7 @@ def _review_controls_hint(observed_count: int) -> str:
         review = f"1-{count} review observed"
     else:
         review = f"1-9 quick review | r review any (1-{count})"
-    return f"⏎ next  |  {review}  |  q stop" if count <= 9 else f"⏎ next  |  {review}  |  q stop"
+    return f"⏎ next  |  {review}  |  q stop"
 
 
 def _wait_for_next_interaction(no_prompt: bool, observed_count: int = 0) -> str:
@@ -3607,7 +3607,7 @@ def _wait_for_next_interaction(no_prompt: bool, observed_count: int = 0) -> str:
         return os.read(fd,1).decode(errors="ignore").lower()
     except Exception:
         try:
-            return input("\n  ⏎ next  |  q stop  ").strip().lower()
+            return input(prompt).strip().lower()
         except EOFError:
             return ""
     finally:
