@@ -2464,16 +2464,35 @@ def _storage_address_label(value: Any, actors: list[Actor]) -> str:
 
 
 def _mapping_teaching_purpose(label: str, key_type: str, value_type: str, native_value: bool) -> tuple[str, str]:
+    """Describe a mapping in the language a beginner needs before the EVM mechanics."""
+    normalized = re.sub(r"[^a-z0-9]", "", str(label or "").lower())
+
     if native_value:
         if key_type == "address":
+            if any(token in normalized for token in ("contribution", "contributed", "deposit", "deposited")):
+                return (
+                    "keeps track of how much ETH each address has contributed",
+                    "the ETH amount contributed by that address",
+                )
+            if any(token in normalized for token in ("balance", "balances")):
+                return (
+                    "keeps track of how much ETH belongs to each address inside the contract",
+                    "the ETH amount currently associated with that address",
+                )
+            if any(token in normalized for token in ("claim", "claims", "entitlement", "entitled", "reward", "rewards")):
+                return (
+                    "keeps track of how much ETH each address can claim",
+                    "the ETH amount available to that address",
+                )
             return (
-                f"tracks how much native ETH is associated with each {key_type}",
+                f"stores a native ETH amount for each {key_type} key",
                 "the ETH amount associated with that key",
             )
         return (
-            f"stores one native ETH amount for each {key_type} key",
+            f"stores a native ETH amount for each {key_type} key",
             "the ETH amount associated with that key",
         )
+
     return (
         f"stores one {value_type} value for each {key_type} key",
         f"the {value_type} value associated with that key",
@@ -7864,15 +7883,15 @@ def _render_storage(
             )
 
             lines = [
-                f"meaning     → {purpose}",
-                "how to read → each key has its own stored value; the key identifies the entry",
-                f"base slot   → {anchor_slot}   [the mapping's numbered storage position]",
-                f"key type    → {key_type}",
-                f"value type  → {value_type}",
+                f"purpose     → {purpose}",
+                f"how to read → find a key (like Alice), then read the value stored for that key",
+                f"storage     → slot {anchor_slot}   [the mapping's numbered storage position]",
+                f"key         → {key_type}   [what identifies an entry]",
+                f"value       → {value_type}   [what is stored for that key]",
                 f"stored value→ {value_meaning}",
             ]
             if native_value:
-                lines.append("unit        → native ETH is stored as wei [1 ETH = 10^18 wei]")
+                lines.append("unit        → ETH is stored internally as wei [1 ETH = 10^18 wei]")
 
             rows = list(mapping_info.get("rows", []) or [])
             shown_rows = rows[:6]
@@ -7904,7 +7923,7 @@ def _render_storage(
                     "",
                     "technical storage:",
                     f"  mapping base slot = {anchor_slot}",
-                    f"  entry location    = keccak256(pad(key) || pad({anchor_slot}))",
+                    f"  row location        = keccak256(pad(key) || pad({anchor_slot}))",
                     "  [the EVM hashes the key with the mapping slot to find that entry]",
                 ]
                 for row in shown_rows:
@@ -7961,11 +7980,17 @@ def _render_storage(
         label = str(item.get("label") or "value")
         type_name = str(item.get("type") or "unknown")
         value_text = _storage_address_label(value, actors) if is_address(value) else _friendly_value(value)
+        slot = item.get("slot") if item.get("slot") is not None else "?"
+        purpose = (
+            "remembers the current owner"
+            if label.lower() == "owner"
+            else f"remembers the current {label}"
+        )
         lines = [
-            f"meaning     → stores the current {label}",
+            f"purpose     → {purpose}",
             f"value       → {value_text}",
-            f"type        → {type_name}",
-            f"slot        → {item.get('slot') if item.get('slot') is not None else '?'}   [the variable's numbered storage position]",
+            f"type        → {type_name}   [Solidity type]",
+            f"storage     → slot {slot}   [numbered storage box]",
         ]
         if technical and raw:
             lines.append(f"raw word    → {raw}   [32-byte EVM storage word]")
