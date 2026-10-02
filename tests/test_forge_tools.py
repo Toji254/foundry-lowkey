@@ -4,7 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "forge_tools.py"
@@ -163,7 +163,15 @@ class LowkeyForgeTests(unittest.TestCase):
             "stacks": ["foundry", "hardhat"],
             "languages": {"solidity": 10},
         }
-        with patch.object(forge_tools, "_project_root", return_value=root),              patch.object(forge_tools.project_tools, "detect_project", return_value=profile),              patch.object(forge_tools, "run_forge", return_value=0),              patch.object(forge_tools, "run_coverage_audit", return_value=0),              patch.object(forge_tools, "_coverage_compatibility_flags", return_value=[]),              patch.object(forge_tools, "_supports_option", return_value=True):
+        with patch.object(forge_tools, "_project_root", return_value=root), \
+             patch.object(forge_tools.project_tools, "detect_project", return_value=profile), \
+             patch.object(forge_tools, "run_forge", return_value=0), \
+             patch.object(forge_tools, "run_forge_diagnostics", return_value=0), \
+             patch.object(forge_tools, "run_slither_preflight", return_value=0), \
+             patch.object(forge_tools, "_geiger_command", return_value=["lint", "--only-lint", "unsafe-cheatcode"]), \
+             patch.object(forge_tools, "run_coverage_audit", return_value=0), \
+             patch.object(forge_tools, "_coverage_compatibility_flags", return_value=[]), \
+             patch.object(forge_tools, "_supports_option", return_value=True):
             self.assertEqual(forge_tools.run_audit([]), 0)
 
     @patch("forge_tools.run_forge", return_value=0)
