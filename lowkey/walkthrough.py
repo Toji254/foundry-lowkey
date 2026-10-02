@@ -3228,7 +3228,7 @@ def _render_security_radar(
     if not ordered:
         lines.append("  No source security-pattern signals are recorded for this project.")
         lines.append("  Lowkey will add a signal when its source-pattern layer finds something worth verifying.")
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     lines.append(
         "  Shared signals from source analysis and prior live verification — not vulnerability verdicts."
@@ -3241,7 +3241,7 @@ def _render_security_radar(
         lines.append(f"  • {pattern_id:<14} [{verification:<9}] {function} — {title}")
     if len(ordered) > 6:
         lines.append(f"  • +{len(ordered) - 6} more signal(s) available via 'lk signals' or 'lk risk'.")
-    return "\\n".join(lines)
+    return "\n".join(lines)
 def _render_interaction_graph_full(
     root: Path,
     step: Step,
