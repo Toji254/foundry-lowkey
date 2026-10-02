@@ -3872,6 +3872,7 @@ def withdraw(amount: uint256):
     def test_risk_surface_includes_shared_security_pattern_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
             target = "0x" + "1" * 40
             artifact = root / "Demo.json"
             artifact.write_text(json.dumps({
