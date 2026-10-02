@@ -3575,11 +3575,16 @@ def _review_controls_hint(observed_count: int) -> str:
     count = max(0, int(observed_count))
     if count == 0:
         review = "no observed steps yet"
-    elif count <= 9:
-        review = f"1-{count} review observed"
-    else:
-        review = f"1-9 quick review | r review any (1-{count})"
-    return f"⏎ next  |  {review}  |  q stop"
+        return f"⏎ next  |  {review}   R = review any observed step  |  q stop"
+    if count <= 9:
+        return (
+            f"⏎ next  |  1-{count} review observed"
+            f"   R = review any observed step  |  q stop"
+        )
+    return (
+        f"⏎ next  |  1-9 quick review"
+        f"   R = review any observed step (1-{count})  |  q stop"
+    )
 
 
 def _wait_for_next_interaction(no_prompt: bool, observed_count: int = 0) -> str:
@@ -8415,6 +8420,21 @@ def _slither_status(root: Path) -> str:
     return f"Slither: {len(findings)} finding(s) recorded [static context evidence; not live execution proof]"
 
 
+def _walkthrough_board_controls(observed_count: int) -> str:
+    count = max(0, int(observed_count))
+    if count == 0:
+        return "ENTER = next live interaction   R = review any observed step   Q = stop"
+    if count <= 9:
+        return (
+            f"ENTER = next live interaction   1-{count} = review observed"
+            "   R = review any observed step   Q = stop"
+        )
+    return (
+        "ENTER = next live interaction   1-9 = quick review"
+        f"   R = review any observed step (1-{count})   Q = stop"
+    )
+
+
 def _render_board(
     root: Path,
     model: ContractModel,
@@ -8436,15 +8456,7 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  " + (
-            f"ENTER = next live interaction   no observed steps yet   R = review any observed step   Q = stop"
-            if not steps
-            else (
-                f"ENTER = next live interaction   1-{min(len(steps), 9)} = review observed"
-                + (f"   R = review any observed step (1-{len(steps)})" if len(steps) > 9 else "   R = review any observed step")
-                + "   Q = stop"
-            )
-        ),
+        "  " + _walkthrough_board_controls(len(steps)),
         "  REVIEW MODE: recorded evidence only; no transaction is re-run. Press ENTER to resume live execution." if reviewing else
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
