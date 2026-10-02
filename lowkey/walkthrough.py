@@ -2011,7 +2011,7 @@ KNOWN_TX_EXPLORERS = {
     56: "https://bscscan.com/tx/{tx}",
     97: "https://testnet.bscscan.com/tx/{tx}",
     43114: "https://explorer.avax.network/c-chain/tx/{tx}",
-    43113: "https://explorer.avax.network/c-chain/tx/{tx}",
+    43113: "https://explorer-test.avax.network/c-chain/tx/{tx}",
 }
 
 
@@ -2162,6 +2162,16 @@ def _write_transaction_evidence(
             event_rows.append(f"<li>{escape(str(event))}</li>")
     events_html = "".join(event_rows) or "<li>No decoded events recorded by Lowkey.</li>"
 
+    explorer_url, explorer_source = _transaction_explorer_url(root, rpc, tx_hash)
+    explorer_html = (
+        f'<p><a href="{escape(explorer_url, quote=True)}">Open this transaction in the block explorer</a>'
+        f' <small>({escape(str(explorer_source))})</small></p>'
+        if explorer_url
+        else "<p><small>No public explorer was selected for this network. "
+             "For a local Anvil/Hardhat node, use LOWKEY_TX_EXPLORER_URL to point "
+             "Lowkey at a local Blockscout or other explorer.</small></p>"
+    )
+
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2178,7 +2188,8 @@ a{{color:#79c0ff}} pre{{white-space:pre-wrap;word-break:break-word}}
 <body>
 <h1>LOWKEY // TRANSACTION CONFIRMATION</h1>
 <div class="card"><div class="{'ok' if success else 'bad'}"><b>{escape(status_text)}</b></div>
-<div><b>Tx:</b> <code>{tx_line}</code></div>
+<div><b>Tx:</b> <code>{tx_line}</code></div><div><b>Tx:</b> <code>{tx_line}</code></div>
+{explorer_html}
 <div><b>Function:</b> {escape(str(step.function))}</div>
 <div><b>Actor:</b> {escape(str(step.actor))}</div>
 <div><b>Contract:</b> {escape(str(step.contract))} @ <code>{escape(str(step.address))}</code></div></div>
