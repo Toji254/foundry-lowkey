@@ -1263,13 +1263,30 @@ def _question_state(q: Question, state: dict[str, Any], features: dict[str, Any]
         ):
             return "CONTRADICTED"
 
+    evidence_ready = any(_evidence_present(key, features=features, observed=observed) for key in q.evidence_keys)
+    # A concrete live observation can legitimately open the proof frontier before
+    # every broader context question has been manually marked complete. This keeps
+    # the engine evidence-driven without declaring a finding.
+    proof_evidence_ready = (
+        q.phase == "prove"
+        and evidence_ready
+        and (
+            observed.get("has_live_evidence")
+            or any(
+                str(command).lower() in {
+                    "trace", "changes", "state-diff", "walkthrough", "probe", "proof"
+                }
+                for command in observed.get("command_names") or []
+            )
+        )
+    )
+    if proof_evidence_ready:
+        return "NEEDS PROOF"
+
     prereqs = _prereqs_met(q, state, set(QUESTION_CATALOG))
     if not prereqs:
         return "UNKNOWN"
 
-    evidence_ready = any(_evidence_present(key, features=features, observed=observed) for key in q.evidence_keys)
-    if evidence_ready and q.phase == "prove":
-        return "NEEDS PROOF"
     if evidence_ready:
         return "ANSWERABLE"
     return "ANSWERABLE"
