@@ -2448,7 +2448,9 @@ def _friendly_storage_value(
             eth_text = _friendly_eth(amount)
             if technical:
                 return f"{eth_text} [stored as {type_text}; msg.value is measured in wei]"
-            return eth_text
+            # Human-first storage output should not repeat the full raw
+            # wei amount; technical mode below preserves exact EVM units.
+            return eth_text.split(" [", 1)[0]
         except (TypeError, ValueError):
             pass
     if isinstance(value, bool):
@@ -3412,8 +3414,8 @@ def _render_interaction_graph_full(
             )
             if runtime_value and not balance_lines:
                 lines.append(
-                    f"  │   ⚠ runtime call trace carried {_friendly_eth(runtime_value)} "
-                    "in ETH, but no tracked native-balance delta was recorded"
+                    f"  │   ⚠ runtime call trace carried {_friendly_eth(runtime_value)}, "
+                    "but no tracked native-balance delta was recorded"
                 )
     elif step.status in {"blocked", "reverted"}:
         reason = step.error_reason or _explain_failure(step, step.error, actor)
@@ -5651,8 +5653,12 @@ def _render_adversarial_probe_human(
     function_name = str(step.function).split("(", 1)[0]
     args = ", ".join(_friendly_arg(value, actors) for value in step.args)
     call_expr = f"{function_name}({args})" if args else f"{function_name}()"
-    function = _function_link(root, model, call_expr)
-    call = f"{model.name}.{function}"
+    call_target = (
+        _source_target(root, model.source, model.function_locations.get(function_name))
+        if model.function_locations.get(function_name)
+        else None
+    )
+    call = _osc8(f"{model.name}.{call_expr}", call_target) if call_target else f"{model.name}.{call_expr}"
     why, lesson, quality = _adversarial_probe_why(step, model, actors)
 
     lines = [
@@ -5837,8 +5843,12 @@ def _render_adversarial_probe_technical(
     function_name = str(step.function).split("(", 1)[0]
     args = ", ".join(_friendly_arg(value, actors) for value in step.args)
     call_expr = f"{function_name}({args})" if args else f"{function_name}()"
-    function = _function_link(root, model, call_expr)
-    call = f"{model.name}.{function}"
+    call_target = (
+        _source_target(root, model.source, model.function_locations.get(function_name))
+        if model.function_locations.get(function_name)
+        else None
+    )
+    call = _osc8(f"{model.name}.{call_expr}", call_target) if call_target else f"{model.name}.{call_expr}"
     why, lesson, quality = _adversarial_probe_why(step, model, actors)
 
     lines = [
