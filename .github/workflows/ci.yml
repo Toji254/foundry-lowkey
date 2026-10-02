@@ -176,6 +176,9 @@ jobs:
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-checks.txt
           lk audit--checks | tee /tmp/lowkey-audit-compact-checks.txt
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
+          lk lint | tee /tmp/lowkey-lint.txt
+          lk geiger | tee /tmp/lowkey-geiger.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
           lk audit check | tee /tmp/lowkey-audit-check-alias.txt
           grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-check-alias.txt
           lk audit run --poc | tee /tmp/lowkey-audit-run.txt
