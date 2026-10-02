@@ -7182,6 +7182,56 @@ def _target_from_host(
         except Exception:
             target = config.get("target")
 
+        # A remembered address is not necessarily a live contract. This matters
+        # especially after an EVM reset, where an old EOA/zero-code address can
+        # still be present in Lowkey's project context. Before the walkthrough
+        # trusts it, try to recover a matching live application from aliases or
+        # committed Foundry broadcast deployments.
+        rpc = (
+            host.effective_rpc(config)
+            if hasattr(host, "effective_rpc")
+            else config.get("rpc")
+        )
+        if target and rpc and _normalize_code(_runtime_code(rpc, target)) in {"", "0x"}:
+            requested_contract = contract or config.get("target_contract")
+            replacement = _live_target_candidate(config, root, requested_contract)
+            if replacement:
+                target = replacement["address"]
+                config["target"] = target
+                config["target_contract"] = replacement["contract"]
+                if hasattr(host, "save_config"):
+                    try:
+                        host.save_config(config)
+                    except Exception:
+                        pass
+            elif hasattr(host, "run_auto_target") and hasattr(host, "discover_deployments"):
+                # Reuse an existing deterministic broadcast deployment when one
+                # matches the requested contract; do not deploy merely to repair
+                # a stale target in ordinary live walkthrough mode.
+                try:
+                    records = host.discover_deployments(root)
+                except Exception:
+                    records = []
+                if records:
+                    requested = str(requested_contract or "").strip().lower()
+                    record = next(
+                        (
+                            item for item in records
+                            if not requested
+                            or str(item.get("contract") or "").strip().lower() == requested
+                        ),
+                        None,
+                    )
+                    if record and is_address(record.get("address")):
+                        target = str(record["address"])
+                        config["target"] = target
+                        config["target_contract"] = str(record.get("contract") or requested_contract or "")
+                        if hasattr(host, "save_config"):
+                            try:
+                                host.save_config(config)
+                            except Exception:
+                                pass
+
     if target and contract:
         aliases = getattr(host, "target_aliases", lambda c: {})(config)
         selected = aliases.get(contract)
