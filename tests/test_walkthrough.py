@@ -296,13 +296,14 @@ class WalkthroughTests(unittest.TestCase):
         ]
         actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
         rendered = walkthrough._render_storage(storage, False, actors)
-        self.assertIn("meaning     → tracks how much native ETH is associated with each address", rendered)
-        self.assertIn("base slot   → 0   [the mapping's numbered storage position]", rendered)
-        self.assertIn("key type    → address", rendered)
-        self.assertIn("value type  → uint256", rendered)
-        self.assertIn("Alice → 1,000 ETH + 3 wei [1,000,000,000,000,000,000,003 wei]", rendered)
+        self.assertIn("purpose     → keeps track of how much ETH each address has contributed", rendered)
+        self.assertIn("storage     → slot 0", rendered)
+        self.assertIn("key         → address   [what identifies an entry]", rendered)
+        self.assertIn("value       → uint256   [what is stored for that key]", rendered)
+        self.assertIn("Alice → 1,000 ETH + 3 wei", rendered)
+        self.assertNotIn("1,000,000,000,000,000,000,003 wei", rendered)
         self.assertIn("SLOT 1 • owner", rendered)
-        self.assertIn("meaning     → stores the current owner", rendered)
+        self.assertIn("purpose     → remembers the current owner", rendered)
         self.assertIn("value       → 0x33333333…33333333", rendered)
         self.assertNotIn("raw word", rendered)
         self.assertNotIn("keccak256(pad(key)", rendered)
@@ -327,7 +328,7 @@ class WalkthroughTests(unittest.TestCase):
         rendered = walkthrough._render_storage(storage, False, [], technical=True)
         self.assertIn("technical storage:", rendered)
         self.assertIn("mapping base slot = 0", rendered)
-        self.assertIn("entry location    = keccak256(pad(key) || pad(0))", rendered)
+        self.assertIn("row location        = keccak256(pad(key) || pad(0))", rendered)
         self.assertIn("row slot 0x" + "2" * 64, rendered)
 
     def test_security_radar_uses_real_newlines(self):
