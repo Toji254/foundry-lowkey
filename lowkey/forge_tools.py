@@ -20,7 +20,7 @@ except ImportError:
 
 NATIVE_COMMANDS = {
     "build", "test", "script", "create", "inspect", "snapshot", "coverage",
-    "fmt", "lint", "geiger", "flatten", "verify-contract",
+    "fmt", "lint", "flatten", "verify-contract",
     "verify-check", "verify-bytecode", "tree", "install", "remove", "update",
     "init", "clean", "cache", "config", "remappings", "bind",
     "bind-json", "doc", "compiler", "eip712", "soldeer",
@@ -251,7 +251,7 @@ LOWKEY_GENERATED_PATH_MARKERS = (
 
 
 def _filter_generated_diagnostics(output: str) -> tuple[str, int]:
-    """Hide lint diagnostics emitted only by Lowkey-generated helper artifacts."""
+    """Hide diagnostics emitted only by Lowkey-generated helper artifacts."""
     text = str(output or "")
     if not text.strip():
         return "", 0
@@ -260,68 +260,105 @@ def _filter_generated_diagnostics(output: str) -> tuple[str, int]:
     filtered = 0
     for block in blocks:
         if any(marker in block for marker in LOWKEY_GENERATED_PATH_MARKERS):
-            filtered += len(re.findall(r"(?m)^\s*note\[", block)) or 1
+            filtered += len(re.findall(r"(?m)^\s*(?:warning|note|error)\[", block)) or 1
             continue
         kept.append(block)
     return "\n\n".join(kept).strip(), filtered
 
 
+def _strip_generated_lint_abort(blocks: Sequence[str]) -> list[str]:
+    """Remove Forge's generic lint-abort footer when only generated files warned."""
+    cleaned = []
+    for block in blocks:
+        if re.fullmatch(r"\s*Error: aborting due to \d+ linter warning\(s\)\.?\s*", block):
+            continue
+        cleaned.append(block)
+    return cleaned
+
+
 def run_forge_diagnostics(args: Sequence[str], label: str, quiet: bool = False) -> int:
-    """Run Forge diagnostics and optionally hide successful raw output."""
+    """Run Forge diagnostics, persist evidence, and isolate Lowkey-generated diagnostics."""
     binary = forge_path()
     root = audit_context.foundry_project_root()
     if not binary:
         return die("forge was not found on PATH. Install Foundry first.")
+
     try:
-        result = subprocess.run([binary, *args], cwd=root, capture_output=True, text=True)
+        result = subprocess.run(
+            [binary, *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
     except OSError as exc:
         return die(f"could not execute forge: {exc}", 1)
-    combined = "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+    combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+
+    evidence_dir = root / ".audit" / "forge"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    evidence_path = evidence_dir / f"{label}.latest.txt"
+    evidence_path.write_text(
+        combined + ("\n" if combined else ""),
+        encoding="utf-8",
+    )
+
+    blocks = re.split(r"\n\s*\n", combined) if combined else []
+    non_generated_blocks = [
+        block
+        for block in blocks
+        if block.strip()
+        and not any(marker in block for marker in LOWKEY_GENERATED_PATH_MARKERS)
+    ]
+    project_blocks = _strip_generated_lint_abort(non_generated_blocks)
+
     visible, filtered = _filter_generated_diagnostics(combined)
-    if visible and (not quiet or result.returncode != 0):
-        print(visible, file=sys.stderr if result.returncode != 0 else sys.stdout)
-    if filtered and not quiet:
-        print(f"LowkeyForge: filtered {filtered} diagnostic(s) from Lowkey-generated helper files; use 'lk forge {label}' to see them.")
-    status = "completed" if result.returncode == 0 else "failed"
-    audit_context.emit("forge-command", root, tool="forge", status=status, summary=f"forge {label}", data={"command":label,"exit_code":result.returncode,"filtered":filtered})
-    audit_context.record_tool(f"forge-{label}", root, status=status, summary=f"forge {label}", data={"exit_code":result.returncode,"filtered":filtered})
-    return result.returncode
-def run_slither_preflight(root: Path, quiet: bool = False) -> int:
-    helper = Path(__file__).with_name("slither_tools.py")
-    binary = shutil.which("slither")
+    effective_code = result.returncode
 
-    if not binary:
-        if not quiet:
-            print("LowkeyForge: skipping Slither (not found on PATH).")
-        audit_context.record_tool(
-            "slither", root, status="skipped",
-            summary="Slither is not installed", data={"available": False},
+    # A generated Lowkey helper is outside the user's audit scope. If Forge
+    # rejected only that generated file's lint warning, do not turn the helper
+    # into a project-audit failure.
+    if result.returncode != 0 and filtered and not project_blocks:
+        effective_code = 0
+
+    if visible and (not quiet or effective_code != 0):
+        print(
+            visible,
+            file=sys.stderr if effective_code != 0 else sys.stdout,
         )
-        return 0
+    if filtered and not quiet:
+        print(
+            f"LowkeyForge: filtered {filtered} diagnostic(s) from Lowkey-generated helper files; "
+            f"evidence: {evidence_path}"
+        )
 
-    if helper.is_file():
-        try:
-            command = [sys.executable, str(helper)]
-            if quiet:
-                command.append("--quiet")
-            return subprocess.run(command, cwd=root).returncode
-        except OSError as exc:
-            print(f"LowkeyForge: could not execute Lowkey Slither reporter: {exc}", file=sys.stderr)
-            return 1
+    status = "completed" if effective_code == 0 else "failed"
+    command_text = " ".join(str(item) for item in args)
+    evidence_data = {
+        "command": list(args),
+        "command_text": command_text,
+        "exit_code": effective_code,
+        "raw_exit_code": result.returncode,
+        "filtered": filtered,
+        "evidence": str(evidence_path),
+    }
+    audit_context.emit(
+        "forge-command",
+        root,
+        tool="forge",
+        status=status,
+        summary=f"forge {label}",
+        data=evidence_data,
+    )
+    audit_context.record_tool(
+        f"forge-{label}",
+        root,
+        status=status,
+        summary=f"forge {label}",
+        data=evidence_data,
+    )
+    return effective_code
 
-    # Fallback for unusual installations where the companion reporter is absent.
-    command = [binary, str(root), "--exclude-dependencies", "--disable-color", "--fail-none"]
-    try:
-        if quiet:
-            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
-            if result.returncode != 0 and result.stderr:
-                print(result.stderr.rstrip(), file=sys.stderr)
-            return result.returncode
-        print("\n=== LOWKEY STATIC: SLITHER ===")
-        return subprocess.run(command, cwd=root).returncode
-    except OSError as exc:
-        print(f"LowkeyForge: could not execute Slither: {exc}", file=sys.stderr)
-        return 1
 
 def _has_path_filter(args: Sequence[str]) -> bool:
     return any(arg in {"--match-path", "--no-match-path"} for arg in args)
@@ -337,6 +374,16 @@ def _supports_option(command: str, option: str) -> bool:
         return False
     return option in ((result.stdout or "") + (result.stderr or ""))
 
+
+
+def _geiger_command(extra: Sequence[str] = ()) -> list[str] | None:
+    """Return the current unsafe-cheatcode lint command, with legacy fallback."""
+    extra = list(extra)
+    if command_available("lint") and _supports_option("lint", "--only-lint"):
+        return ["lint", "--only-lint", "unsafe-cheatcode", *extra]
+    if command_available("geiger"):
+        return ["geiger", *extra]
+    return None
 
 
 def _profile_from_args(args: Sequence[str]) -> str | None:
@@ -819,7 +866,7 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
 
 
 def run_audit(args: Sequence[str]) -> int:
-    """Run the complete audit pipeline using the detected native project toolchain."""
+    """Run the complete Foundry audit baseline, including static checks by default."""
     root = _project_root()
     profile = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(profile.get("kind") or "foundry")
@@ -829,34 +876,53 @@ def run_audit(args: Sequence[str]) -> int:
     if not foundry_kind:
         return die(f"no Foundry project is available at {root} (detected {kind}).", 1)
 
-    checks = "--checks" in args
+    checks = "--no-checks" not in args
     verbose = "--verbose" in args
     quiet = not verbose
-    forwarded = [a for a in args if a not in {"--checks", "--verbose", "--quiet"}]
+    forwarded = [
+        a for a in args
+        if a not in {"--checks", "--no-checks", "--verbose", "--quiet"}
+    ]
+
     test_cmd = ["test", *forwarded]
     if not has_verbosity(forwarded):
         test_cmd.insert(1, "-vvv")
     if not _has_path_filter(forwarded):
         test_cmd.extend(["--no-match-path", "test/Lowkey_*"])
+
     coverage_cmd = ["coverage", *forwarded]
     coverage_cmd.extend(_coverage_compatibility_flags(root, forwarded, quiet=quiet))
+
     steps = [("build", ["build", "--skip", "test", "--skip", "script"])]
     if checks:
         steps.append(("slither", None))
-        for optional in ("lint", "geiger"):
-            if command_available(optional):
-                steps.append((optional, None))
+        steps.append(("lint", ["lint"]) if command_available("lint") else ("lint", None))
+        geiger = _geiger_command()
+        steps.append(("geiger", geiger) if geiger else ("geiger", None))
+    else:
+        for key, summary in (
+            ("slither", "static Slither check disabled"),
+            ("forge-lint", "static Forge lint disabled"),
+            ("forge-geiger", "unsafe-cheatcode check disabled"),
+        ):
+            audit_context.record_tool(
+                key,
+                root,
+                status="skipped",
+                summary=summary,
+                data={"enabled": False},
+            )
     steps.extend([("tests", test_cmd), ("coverage", coverage_cmd)])
 
     print("LOWKEY CONNECTED AUDIT")
     print("======================")
     print(f"Project : {root}")
     print(f"Mode    : {'verbose' if verbose else 'quiet'}")
-    print(
-        "Pipeline: build"
-        + (" -> Slither -> lint/geiger" if checks else "")
-        + " -> tests -> coverage"
-    )
+    pipeline_labels = ["build"]
+    if checks:
+        pipeline_labels.extend(["Slither", "lint", "unsafe-cheatcodes"])
+    pipeline_labels.extend(["tests", "coverage"])
+    print("Pipeline: " + " -> ".join(pipeline_labels))
     print()
 
     if not _project_owned_tests(root):
@@ -865,8 +931,30 @@ def run_audit(args: Sequence[str]) -> int:
     for label, command in steps:
         if label == "slither":
             code = run_slither_preflight(root, quiet=quiet)
-        elif label in {"lint", "geiger"}:
-            code = run_forge_diagnostics([label], label, quiet=quiet)
+        elif label == "lint":
+            if command is None:
+                audit_context.record_tool(
+                    "forge-lint",
+                    root,
+                    status="skipped",
+                    summary="Forge lint is unavailable in this Forge version",
+                    data={"available": False},
+                )
+                code = 0
+            else:
+                code = run_forge_diagnostics(command, label, quiet=quiet)
+        elif label == "geiger":
+            if command is None:
+                audit_context.record_tool(
+                    "forge-geiger",
+                    root,
+                    status="skipped",
+                    summary="unsafe-cheatcode lint is unavailable in this Forge version",
+                    data={"available": False},
+                )
+                code = 0
+            else:
+                code = run_forge_diagnostics(command, label, quiet=quiet)
         elif label == "coverage":
             code = run_coverage_audit(command, root, quiet=quiet)
         else:
@@ -876,25 +964,19 @@ def run_audit(args: Sequence[str]) -> int:
         detail = ""
         if label == "slither":
             state = context.get("tools", {}).get("slither", {})
-            if isinstance(state, dict) and state.get("finding_count") is not None:
-                detail = f" — {state['finding_count']} finding(s)"
-        print(f"{'PASS' if code == 0 else 'FAIL':<5} {label:<9}{detail}")
+            if isinstance(state, dict):
+                count = state.get("finding_count")
+                if count is not None:
+                    detail = f" — {count} finding(s)"
+        elif label in {"lint", "geiger"}:
+            key = "forge-lint" if label == "lint" else "forge-geiger"
+            state = context.get("tools", {}).get(key, {})
+            if isinstance(state, dict):
+                filtered = state.get("filtered")
+                if filtered:
+                    detail = f" — {filtered} Lowkey diagnostic(s) filtered"
 
-        stable_key = {
-            "build": "forge-build",
-            "tests": "forge-tests",
-            "coverage": "forge-coverage",
-            "lint": "forge-lint",
-            "geiger": "forge-geiger",
-        }.get(label)
-        if stable_key:
-            audit_context.record_tool(
-                stable_key,
-                root,
-                status="completed" if code == 0 else "failed",
-                summary=f"{label} audit step",
-                data={"exit_code": code},
-            )
+        print(f"{'PASS' if code == 0 else 'FAIL':<5} {label:<9}{detail}")
 
         if code != 0:
             print(f"\nLowkeyForge: audit stopped at {label}.", file=sys.stderr)
@@ -922,7 +1004,6 @@ def run_audit(args: Sequence[str]) -> int:
     target_data = context.get("target") if isinstance(context.get("target"), dict) else {}
     has_target = bool(target_data.get("address"))
     tool_states = context.get("tools", {}) if isinstance(context.get("tools"), dict) else {}
-
     open_signals = sum(
         1
         for item in (context.get("signals") or [])
@@ -954,3 +1035,30 @@ def run_audit(args: Sequence[str]) -> int:
     print("Artifacts: .audit/context.json + tool evidence")
     print("Next    : lk findings | lk context")
     return 0
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in {"-h", "--help", "help"}:
+        print_help()
+        return 0
+
+    command, rest = args[0], args[1:]
+    if command == "audit":
+        return run_audit(rest)
+    if command == "lint":
+        return run_forge_diagnostics(["lint", *rest], "lint")
+    if command == "geiger":
+        command_args = _geiger_command(rest)
+        if command_args is None:
+            return die("unsafe-cheatcode lint is unavailable in the installed Forge.")
+        return run_forge_diagnostics(command_args, "geiger")
+    if command in NATIVE_COMMANDS:
+        if not command_available(command):
+            return die(f"Forge command '{command}' is not supported by the installed Forge.")
+        return run_forge(args)
+    return die(f"unknown Forge command '{command}'. Use 'lk forge --help'.")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
