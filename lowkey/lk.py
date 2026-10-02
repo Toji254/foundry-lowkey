@@ -5219,6 +5219,76 @@ def _lab_prompt_value(config, accounts, contract, param, path="root", nested=Fal
     )
 
 
+def _deployment_tx_hash(output):
+    """Extract a deployment transaction hash from Cast output."""
+    patterns = [
+        r'(?i)\btransaction(?:\s+hash|hash)\s*[:=]\s*(0x[0-9a-fA-F]{64})',
+        r'(?i)\btx\s+hash\s*[:=]\s*(0x[0-9a-fA-F]{64})',
+        r'(?i)"(?:transactionHash|transaction_hash|hash)"\s*:\s*"(0x[0-9a-fA-F]{64})"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, str(output or ""))
+        if match:
+            return match.group(1)
+    return None
+
+
+def _deployment_receipt_address(rpc, tx_hash):
+    """Read the mined CREATE receipt and return only its contract address."""
+    if not rpc or not is_tx_hash(tx_hash):
+        return None
+
+    commands = [
+        ["cast", "receipt", tx_hash, "--rpc-url", rpc, "--json"],
+        ["cast", "receipt", tx_hash, "--rpc-url", rpc],
+    ]
+    for command in commands:
+        code, output, error = cast_output(command)
+        if code != 0 and not output:
+            continue
+
+        raw = str(output or "").strip()
+        payloads = [raw]
+        try:
+            payload = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            payload = None
+
+        if isinstance(payload, dict):
+            payloads.insert(0, json.dumps(payload))
+            for wrapper in ("receipt", "result"):
+                nested = payload.get(wrapper)
+                if isinstance(nested, dict):
+                    payloads.insert(0, json.dumps(nested))
+
+        combined = "\n".join(payloads + [str(error or "")])
+        patterns = [
+            r'(?i)"contractAddress"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+            r'(?i)"contract_address"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+            r'(?i)\bcontractAddress\s*[:=]\s*(0x[0-9a-fA-F]{40})',
+            r'(?i)\bcontract address\s*[:=]\s*(0x[0-9a-fA-F]{40})',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, combined)
+            if match:
+                return match.group(1)
+    return None
+
+
+def _live_deployed_address(rpc, candidates):
+    """Return the first candidate proven to contain runtime bytecode."""
+    for candidate in candidates:
+        if not is_address(candidate):
+            continue
+        try:
+            code, runtime, _ = cast_output(["cast", "code", candidate, "--rpc-url", rpc])
+        except Exception:
+            continue
+        if code == 0 and str(runtime or "").strip().lower() not in {"", "0x", "0x0"}:
+            return candidate
+    return None
+
+
 def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_inputs):
     """Deploy an ABI-bearing artifact directly with cast on local EVM nodes."""
     if not artifact_is_deployable(artifact):
@@ -5288,23 +5358,40 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
         if part.strip()
     )
 
-    patterns = [
-        r"(?i)\bcontractAddress:\s*(0x[0-9a-fA-F]{40})",
-        r"(?i)\bcontract address:\s*(0x[0-9a-fA-F]{40})",
-        r"(?i)\bdeployed to:\s*(0x[0-9a-fA-F]{40})",
-        r"(?i)\bcontract address\s*=\s*(0x[0-9a-fA-F]{40})",
-    ]
+    # Never treat arbitrary address-shaped text as the deployed contract.
+    # Cast output can contain the sender address, which is commonly an Anvil EOA.
+    tx_hash = _deployment_tx_hash(output)
+    receipt_target = _deployment_receipt_address(rpc, tx_hash) if tx_hash else None
 
-    for pattern in patterns:
-        match = re.search(pattern, output)
-        if match:
-            return match.group(1), None
+    labeled_targets = []
+    for pattern in (
+        r"(?i)\bcontractAddress\s*[:=]\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bcontract address\s*[:=]\s*(0x[0-9a-fA-F]{40})",
+        r"(?i)\bdeployed to\s*[:=]\s*(0x[0-9a-fA-F]{40})",
+        r'(?i)"(?:contractAddress|contract_address)"\s*:\s*"(0x[0-9a-fA-F]{40})"',
+    ):
+        labeled_targets.extend(match.group(1) for match in re.finditer(pattern, output))
 
-    addresses = re.findall(r"\b0x[0-9a-fA-F]{40}\b", output)
-    if addresses:
-        return addresses[-1], None
+    candidates = []
+    if receipt_target:
+        candidates.append(receipt_target)
+    candidates.extend(labeled_targets)
 
-    return None, "deployment succeeded but no contract address was found in cast output"
+    # As a compatibility fallback for Cast versions with unusual receipt output,
+    # only accept an address after proving it has runtime bytecode on this exact RPC.
+    if not candidates:
+        candidates = re.findall(r"\b0x[0-9a-fA-F]{40}\b", output)
+
+    target = _live_deployed_address(rpc, candidates)
+    if target:
+        return target, None
+
+    if tx_hash:
+        return None, (
+            "deployment transaction succeeded, but Lowkey could not identify a live "
+            f"contract from receipt {tx_hash}. The sender address will never be accepted as the target."
+        )
+    return None, "deployment succeeded, but Lowkey could not identify a live deployed contract address"
 
 
 def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic"):
