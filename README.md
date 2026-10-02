@@ -341,6 +341,54 @@ lk focus SLITHER-XXXXXXXXXX
 
 Stored state-diff evidence includes the function, caller, result, gas, calldata, and every decoded storage change with its raw 32-byte slot and before/after values. Re-running the same evidence updates the existing evidence record instead of creating duplicates.
 
+## Auditor-mindset question frontier
+Lowkey now has a deterministic, project-agnostic question layer that turns the evidence produced by your audit into the next useful question. It is designed to teach the reasoning process without replacing it.
+~~~bash
+lk q
+lk q why
+lk q evidence
+lk q path
+lk q note "the owner check is enforced in withdraw()"
+lk q done
+lk q skip "feature is not present"
+lk q source ARCH-001
+
+lk questions
+lk questions --all
+~~~
+The question state lives beside the audit ledger:
+
+~~~text
+.audit/
+├── context.json
+├── events.jsonl
+└── questions/
+    ├── state.json
+    └── history.jsonl
+~~~
+
+The underlying question universe is stable. Lowkey does not randomly swap the checklist on every run. Instead, project type, source structure, previous answers, recent commands, traces, state changes, tests, findings, and other audit evidence move the frontier so the current question becomes progressively narrower.
+
+The core layer applies to ordinary software projects: purpose, assets/data, trust boundaries, entry points, state machines, invariants, external dependencies, input validation, failure handling, resource exhaustion, concurrency/order, secrets, lifecycle, testing, observability, and proof. Contextual packs add narrower questions when relevant behavior is detected, including blockchain/EVM, web/API, native/runtime, and data/database concerns.
+
+This means the question system can guide a Rust service, FastAPI application, database-backed project, CLI/tool, or smart-contract protocol without pretending those projects have the same attack surface. The existing Lowkey adapters remain stack-aware where a command genuinely depends on Foundry, EVM, Anvil, Forge, Cairo, Vyper, Solana, or another toolchain.
+
+Every major Lowkey command contributes through the shared evidence bus. For example, project and system mapping build architecture context; read, changes, and trace add behavior/state evidence; findings and focus open validation threads; walkthrough test, fuzz, invariant, and generated tests move questions toward reproducible proof.
+
+The teaching boundary is deliberate:
+
+~~~text
+intended rule  !=  proof of enforcement
+successful call !=  vulnerability
+static warning  !=  vulnerability
+revert          !=  property proved
+test pass       !=  invariant proved
+~~~
+
+The goal is for Lowkey to feel like an experienced reviewer asking the next useful question: establish the rule, identify the exact enforcement or state evidence, look for alternate paths, test the assumption, and only then decide what the observation means.
+
+For the question model, command-to-evidence mapping, question states, provenance, and extension model, see docs/auditor-question-engine.md.
+
 ## Slither static analysis
 
 Lowkey treats Slither as the static-analysis layer of the audit workflow. It runs the current project through Slither's detectors, excludes dependency-only findings by default, and saves machine-readable evidence under `.audit/slither/`.
