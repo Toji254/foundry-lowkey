@@ -24,6 +24,25 @@ pattern_spec.loader.exec_module(walkthrough_finding_patterns)
 
 
 class WalkthroughTests(unittest.TestCase):
+
+    def test_evidence_labels_explain_meaning_and_trust(self):
+        expected = {
+            "HEURISTIC": "trust: LOW",
+            "INFERRED": "trust: MEDIUM",
+            "DIAGNOSED": "trust: MEDIUM-HIGH",
+            "OBSERVED": "trust: HIGH",
+            "OBSERVED + SOURCE": "trust: HIGH",
+            "SOURCE-CORRELATED": "trust: HIGH",
+            "SOURCE + ACTUAL CALL": "trust: HIGH",
+            "UNPROVEN": "trust: LOW",
+            "LAB CONTROL": "trust: HIGH",
+        }
+        for level, trust in expected.items():
+            rendered = walkthrough._evidence_label(level)
+            self.assertIn(level, rendered)
+            self.assertIn("meaning:", rendered)
+            self.assertIn(trust, rendered)
+
     def test_review_control_hint_tracks_observed_history(self):
         self.assertEqual(
             walkthrough._review_controls_hint(0),
