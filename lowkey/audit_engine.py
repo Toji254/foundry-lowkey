@@ -658,6 +658,18 @@ def _strip_source_comments(text: str, language: str) -> str:
 
 def run_source_triage(root: str = ".") -> int:
     """Run language-aware source heuristics without assuming a src/ tree."""
+    # Publish the shared source security-pattern layer whenever source triage runs,
+    # so audit, walkthrough, findings, and system state see the same signals.
+    try:
+        from walkthrough import _artifact_models
+        from walkthrough_finding_patterns import scan_project, persist_security_patterns
+        models = _artifact_models(Path(root).resolve())
+        if models:
+            persist_security_patterns(Path(root).resolve(), scan_project(Path(root).resolve(), models))
+    except Exception:
+        # Source triage remains useful even when the optional pattern layer cannot load.
+        pass
+
     root_path = Path(root).resolve()
     project = detect_project(root) if detect_project else {"kind": "generic", "languages": []}
     files = project_source_files(root_path) if project_source_files else list(root_path.rglob("*.sol"))
@@ -787,6 +799,17 @@ def test_poc_candidate():
         "generated_at": now_stamp(),
         "project_type": "vyper",
         "target": _project_config(root).get("target"),
+        "security_patterns": [
+            {
+                "id": item.get("pattern_id") or item.get("check"),
+                "contract": item.get("contract"),
+                "function": item.get("function"),
+                "verification_status": item.get("verification_status") or "CANDIDATE",
+                "description": item.get("description"),
+            }
+            for item in security_patterns[:16]
+            if isinstance(item, dict)
+        ],
         "candidate": {
             "check": check,
             "impact": impact,
@@ -842,6 +865,12 @@ def generate_poc(root: str = ".", finding_index: int | None = None, name: str | 
     triage_markers = triage_payload.get("markers", []) if isinstance(triage_payload, dict) else []
     trace_payload = read_json(evidence_dir(root) / "trace.json", {}).get("data", {})
     storage_payload = read_json(evidence_dir(root) / "storage_diff.json", {}).get("data", {})
+    security_patterns = []
+    if audit_context is not None:
+        try:
+            security_patterns = audit_context.security_patterns(Path(root).resolve())
+        except Exception:
+            security_patterns = []
     risk_payload = read_json(evidence_dir(root) / "risk.json", {}).get("data", {})
     evidence_records = sorted(
         p.stem for p in evidence_dir(root).glob("*.json") if p.name != "manifest.json"
@@ -1864,6 +1893,17 @@ def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]
 
 def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
+    # Keep direct pipeline callers consistent with the CLI orchestration path:
+    # security-pattern signals are project-scoped shared evidence, not walkthrough-only data.
+    try:
+        from walkthrough import _artifact_models
+        from walkthrough_finding_patterns import scan_project, persist_security_patterns
+        project_root = Path(root).resolve()
+        models = _artifact_models(project_root)
+        if models:
+            persist_security_patterns(project_root, scan_project(project_root, models))
+    except Exception:
+        pass
     _refresh_system_model(root, "audit:start")
     results: list[dict[str, Any]] = []
     outcomes: dict[str, list[dict[str, Any]]] = {
