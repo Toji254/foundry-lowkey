@@ -89,6 +89,11 @@ Question state is separate from finding severity or impact.
 
 ## Auditor mindset encoded in the catalog
 
+Threat modeling and assumptions are first-class questions, not background notes. Lowkey asks who the realistic attacker is, what they can control, which assumptions are trusted rather than enforced, whether important assumptions remain unproven, and whether different parts of the evidence disagree about the same fact.
+
+That gives the frontier a useful progression after basic architecture: establish the threat model, identify assumptions, locate exact enforcement, search alternative paths, then move the surviving hypothesis into proof and reproduction.
+
+
 The catalog repeatedly enforces these distinctions:
 
 - An intended rule is not the same as proof of enforcement.
