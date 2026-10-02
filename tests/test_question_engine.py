@@ -217,5 +217,36 @@ class QuestionEngineTests(unittest.TestCase):
         self.assertNotIn("BC-001", enabled)
 
 
+    def test_safe_nested_command_path_is_used(self):
+        events = [
+            {"tool": "lk", "type": "lk-command", "data": {"command": "walkthrough", "command_path": "walkthrough test"}}
+        ]
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        (root / ".audit").mkdir()
+        (root / ".audit" / "events.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in events) + "\n", encoding="utf-8"
+        )
+        context = {"project": {"root": str(root)}, "target": {}, "latest": {}, "signals": [], "tools": {}}
+        (root / ".audit" / "context.json").write_text(json.dumps(context), encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            features = questions.detect_features(root)
+            observed = questions._event_signals(features)
+        self.assertIn("walkthrough test", observed["command_names"])
+
+    def test_skip_and_not_applicable_are_distinct_states(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(questions.audit_context, "is_audit_project", return_value=True), \
+             patch.object(questions.audit_context, "audit_dir", return_value=root / ".audit"), \
+             patch.object(questions.audit_context, "events_path", return_value=root / ".audit" / "events.jsonl"), \
+             patch.object(questions.audit_context, "emit"):
+            current = questions.current_question(root)
+            self.assertEqual(questions.answer_current("SKIPPED", note="defer", root=root), 0)
+            state = questions.load_state(root)
+            self.assertEqual(state["answers"][current["question"].id]["status"], "SKIPPED")
+
+
 if __name__ == "__main__":
     unittest.main()
