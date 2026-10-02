@@ -255,6 +255,37 @@ class WalkthroughTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no contract bytecode", reason)
 
+    def test_friendly_eth_shows_compact_eth_and_exact_wei(self):
+        self.assertEqual(walkthrough._friendly_eth(1), "1e-18 ETH [1 wei]")
+        self.assertEqual(
+            walkthrough._friendly_eth(10**18),
+            "1 ETH [1,000,000,000,000,000,000 wei]",
+        )
+
+    def test_storage_renderer_explains_mapping_rows_and_native_units(self):
+        storage = [{
+            "label": "contributions",
+            "slot": "0",
+            "type": "mapping(address => uint256)",
+            "encoding": "mapping",
+            "mapping": {
+                "key_type": "address",
+                "value_type": "uint256",
+                "native_value": True,
+                "rows": [{
+                    "key": "0x" + "1" * 40,
+                    "value": 1,
+                    "slot": "0x" + "2" * 64,
+                }],
+            },
+        }]
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        rendered = walkthrough._render_storage(storage, False, actors)
+        self.assertIn("meaning     → one uint256 value is stored for each address key", rendered)
+        self.assertIn("key         → address   [what identifies a row]", rendered)
+        self.assertIn("Alice → 1e-18 ETH [1 wei] [stored as uint256; msg.value is measured in wei]", rendered)
+        self.assertIn("[calculated storage slot]", rendered)
+
     def test_storage_renderer_explains_mapping_anchor_and_raw_slot_word(self):
         storage = [
             {
@@ -2411,6 +2442,34 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("source relationships: none resolved", rendered)
         self.assertIn("live execution: observed in the protocol story", rendered)
         self.assertNotIn("source relationship   ● observed live", rendered)
+
+    def test_review_mode_marks_latest_step_as_review_and_not_live(self):
+        model = walkthrough.ContractModel(
+            name="Escrow",
+            source="src/EthEscrow.sol",
+            artifact="out/EthEscrow.sol/Escrow.json",
+        )
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "release()",
+            [],
+            status="success",
+        )
+        rendered = walkthrough._render_protocol_story_full(
+            pathlib.Path("/tmp/project"),
+            [step],
+            step,
+            [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)],
+            [model],
+            False,
+            review_mode=True,
+        )
+        self.assertIn("REVIEWING  •  FUNCTION 01  •  OBSERVED", rendered)
+        self.assertIn("ENTER = return to the next live interaction", rendered)
+        self.assertNotIn("NOW  •  LIVE", rendered)
 
     def test_success_step_exposes_evidence_basis(self):
         step = walkthrough.Step(
