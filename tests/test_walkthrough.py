@@ -170,6 +170,68 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("setValue(7)", rendered)
         self.assertIn("file:///tmp/project/src/Demo.sol#L17", rendered)
 
+    def test_transaction_link_uses_configured_explorer(self):
+        tx = "0x" + "1" * 64
+        with patch.dict(
+            walkthrough.os.environ,
+            {"LOWKEY_TX_EXPLORER_URL": "https://example.explorer/tx/{tx}"},
+            clear=True,
+        ):
+            rendered = walkthrough._transaction_link(pathlib.Path("/tmp/project"), tx, rpc="https://rpc.example")
+        self.assertIn("https://example.explorer/tx/" + tx, rendered)
+        self.assertNotIn("file://", rendered)
+
+    def test_transaction_link_auto_detects_known_public_chain(self):
+        tx = "0x" + "2" * 64
+        with patch.dict(walkthrough.os.environ, {}, clear=True):
+            with patch.object(walkthrough, "_rpc_call", return_value="0x14a34"):
+                rendered = walkthrough._transaction_link(
+                    pathlib.Path("/tmp/project"), tx, rpc="https://sepolia.base.org"
+                )
+        self.assertIn("https://sepolia.basescan.org/tx/" + tx, rendered)
+        self.assertNotIn("file://", rendered)
+
+    def test_transaction_link_keeps_local_anvil_transactions_local(self):
+        tx = "0x" + "3" * 64
+        with patch.dict(walkthrough.os.environ, {}, clear=True):
+            rendered = walkthrough._transaction_link(
+                pathlib.Path("/tmp/project"), tx, rpc="http://127.0.0.1:8545"
+            )
+        self.assertIn("file:///tmp/project/.audit/walkthrough/transactions/" + tx.lower() + ".html", rendered)
+
+    def test_transaction_evidence_uses_confirmed_on_chain_observation(self):
+        tx_hash = "0x" + "4" * 64
+        root = pathlib.Path(tempfile.mkdtemp())
+        step = walkthrough.Step(
+            1, "Alice", "Demo", "0x" + "5" * 40, "setValue(uint256)", [7], status="checking"
+        )
+
+        def rpc(method, params=None):
+            if method == "eth_getTransactionByHash":
+                return {
+                    "hash": tx_hash,
+                    "from": "0x" + "6" * 40,
+                    "to": "0x" + "5" * 40,
+                    "value": "0x0",
+                    "nonce": "0x1",
+                    "blockNumber": "0x2a",
+                    "gas": "0x5208",
+                    "input": "0x552410770000000000000000000000000000000000000000000000000000000000000007",
+                }
+            return None
+
+        receipt = {"status": "0x1", "blockNumber": "0x2a", "gasUsed": "0x5208"}
+        with patch.object(walkthrough, "_rpc_call", side_effect=rpc):
+            path = walkthrough._write_transaction_evidence(
+                root, "http://127.0.0.1:8545", step, receipt
+            )
+        self.assertIsNotNone(path)
+        html = path.read_text(encoding="utf-8")
+        self.assertIn('"lowkey_status_at_render": "checking"', html)
+        self.assertIn('"on_chain_status": "CONFIRMED / SUCCESS"', html)
+        self.assertIn('"gas_used": "21000"', html)
+        self.assertIn("0x552410770000000000000000000000000000000000000000000000000000000000000007", html)
+
     def test_cli_arg_lowercases_booleans(self):
         self.assertEqual(walkthrough._cli_arg(True), "true")
         self.assertEqual(walkthrough._cli_arg(False), "false")
