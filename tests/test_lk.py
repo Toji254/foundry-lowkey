@@ -3840,6 +3840,73 @@ def withdraw(amount: uint256):
             self.assertEqual(summary["total"], 1)
             self.assertEqual(summary["candidates"], 1)
 
+    def test_security_pattern_rescan_preserves_live_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            first = lk.audit_context.add_security_pattern(
+                root,
+                pattern_id="REPLAY-001",
+                title="Replay path",
+                contract="Demo",
+                function="withdraw()",
+                file="src/Demo.sol",
+                verification_status="REVIEW",
+                verification_evidence=["persistent story result"],
+                evidence_mode="source+stateful",
+            )
+            second = lk.audit_context.add_security_pattern(
+                root,
+                pattern_id="REPLAY-001",
+                title="Replay path",
+                contract="Demo",
+                function="withdraw()",
+                file="src/Demo.sol",
+                verification_status="CANDIDATE",
+                verification_evidence=[],
+                evidence_mode="source",
+            )
+            self.assertEqual(second["verification_status"], "REVIEW")
+            self.assertIn("persistent story result", second["verification"]["evidence"])
+
+    def test_risk_surface_includes_shared_security_pattern_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target = "0x" + "1" * 40
+            artifact = root / "Demo.json"
+            artifact.write_text(json.dumps({
+                "contractName": "Demo",
+                "abi": [{
+                    "type": "function",
+                    "name": "withdraw",
+                    "inputs": [],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                }],
+            }), encoding="utf-8")
+            config = {
+                "target": target,
+                "target_contract": "Demo",
+                "abi_paths": {target: str(artifact)},
+            }
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                lk.audit_context.add_security_pattern(
+                    root,
+                    pattern_id="REPLAY-001",
+                    title="Replay path",
+                    contract="Demo",
+                    function="withdraw()",
+                    file="src/Demo.sol",
+                    verification_status="REVIEW",
+                )
+                with patch("sys.stdout", new_callable=io.StringIO) as stream:
+                    with patch.object(lk, "load_abi", return_value=json.loads(artifact.read_text())["abi"]):
+                        lk.run_risk(config)
+                rendered = stream.getvalue()
+            self.assertIn("SECURITY PATTERN SIGNALS", rendered)
+            self.assertIn("REPLAY-001", rendered)
+            self.assertIn("REVIEW", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
