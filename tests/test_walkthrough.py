@@ -530,6 +530,43 @@ class WalkthroughTests(unittest.TestCase):
                 1,
             )
 
+    def test_value_solver_uses_minimal_probe_for_raw_payable_entry_without_source(self):
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+        )
+        for entry_type in ("receive", "fallback"):
+            entry = {"type": entry_type, "stateMutability": "payable"}
+            self.assertEqual(
+                walkthrough._value_for(entry, model=model, root=pathlib.Path("/tmp/nonexistent")),
+                1,
+            )
+
+    def test_value_solver_reads_receive_msg_value_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir(parents=True)
+            source = src / "Demo.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20;\n"
+                "contract Demo {\n"
+                "    mapping(address => uint256) public contributions;\n"
+                "    receive() external payable {\n"
+                "        require(msg.value > 0 && contributions[msg.sender] > 0);\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            model = walkthrough.ContractModel(
+                name="Demo",
+                source="src/Demo.sol",
+                artifact="out/Demo.sol/Demo.json",
+            )
+            entry = {"type": "receive", "name": "receive", "inputs": [], "stateMutability": "payable"}
+            self.assertEqual(walkthrough._value_for(entry, model=model, root=root), 1)
+
     def test_plan_workflow_includes_payable_fallback_entry(self):
         model = walkthrough.ContractModel(
             name="Fallback",
