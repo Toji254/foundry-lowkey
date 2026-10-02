@@ -9275,9 +9275,6 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     print("  evidence : .audit/walkthrough/latest.json")
     print(f"  replay   : {replay.relative_to(root)}")
     print(f"  {_slither_status(root)}")
-    print(f"  seed     : {actual_seed}")
-    print(f"  replay   : lk walkthrough test --seed {actual_seed} --cases {total_cases}")
-    print("  history  : lk walkthrough seed")
     if sys.stdout.isatty():
         sys.stdout.write("\033[?25h\033[0m")
         sys.stdout.flush()
