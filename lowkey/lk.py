@@ -4148,6 +4148,7 @@ def discover_artifact_lab_contract(root, query):
 
 
 def set_lab_target(config, root, target, contract, artifact):
+    _sync_security_patterns(root)
     config["target"] = target
     config["target_contract"] = contract
     if artifact:
@@ -7816,12 +7817,47 @@ def run_risk(config):
             print(f"          {question}")
 
     root = audit_context.foundry_project_root()
+    _sync_security_patterns(root)
+    pattern_by_function = {}
+    for signal in audit_context.security_patterns(root):
+        function_name = str(signal.get("function") or "").split("(", 1)[0].lower()
+        if not function_name:
+            continue
+        pattern_by_function.setdefault(function_name, []).append(signal)
+
+    print("\nSECURITY PATTERN SIGNALS")
+    print("========================")
+    shared_patterns = audit_context.security_patterns(root)
+    if not shared_patterns:
+        print("No source security-pattern signals recorded for this project.")
+    else:
+        for signal in shared_patterns:
+            pattern_id = str(signal.get("pattern_id") or signal.get("check") or "SECURITY")
+            verification = str(signal.get("verification_status") or "CANDIDATE")
+            location = f"{signal.get('file') or 'unknown'}:{signal.get('line') or '?'}"
+            function = signal.get("function") or "contract-level"
+            print(f"  {pattern_id:<14} {verification:<10} {function:<24} {location}")
+            if signal.get("description"):
+                print(f"    {signal.get('description')}")
+
+        for row in rows:
+            function_name = str(row.get("signature") or "").split("(", 1)[0].lower()
+            shared = pattern_by_function.get(function_name, [])
+            if shared:
+                row["security_patterns"] = [
+                    {
+                        "id": signal.get("pattern_id") or signal.get("check"),
+                        "verification_status": signal.get("verification_status") or "CANDIDATE",
+                    }
+                    for signal in shared
+                ]
+
     audit_context.record_tool(
         "risk",
         root,
         status="completed",
         summary=f"{len(rows)} ABI function(s) reviewed",
-        data={"target": target, "functions": rows},
+        data={"target": target, "functions": rows, "security_patterns": _security_pattern_summary(root)},
     )
 
 def run_gas(config,args):
