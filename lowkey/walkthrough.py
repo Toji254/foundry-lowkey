@@ -5997,6 +5997,7 @@ def _execute_stateful_story_action(
         value_wei=value,
         reason=str(action.get("reason") or "stateful benchmark"),
         inferred=False,
+        observation_scope="stateful_story",
     )
 
     actor_addresses = [a.address for a in actors if is_address(a.address)]
