@@ -3129,7 +3129,12 @@ def _security_signals_for_step(
     """Read security-pattern signals from the shared project audit context."""
     try:
         context_api = getattr(host, "audit_context", None)
-        if context_api is None or not hasattr(context_api, "security_patterns"):
+        if context_api is None:
+            try:
+                import audit_context as context_api
+            except ImportError:
+                return []
+        if not hasattr(context_api, "security_patterns"):
             return []
         return [
             dict(item)
@@ -3143,6 +3148,45 @@ def _security_signals_for_step(
     except Exception:
         return []
 
+
+def _render_security_radar(
+    root: Path,
+    model: ContractModel | None,
+    enabled: bool = False,
+) -> str:
+    """Show project security-pattern signals before the user reaches each function."""
+    try:
+        import audit_context
+        patterns = audit_context.security_patterns(root)
+    except (ImportError, Exception):
+        patterns = []
+
+    if model:
+        related = [
+            item for item in patterns
+            if str(item.get("contract") or "").lower() == model.name.lower()
+        ]
+    else:
+        related = []
+    ordered = related or patterns
+    lines = [_paint("SECURITY RADAR", BOLD + MAGENTA, enabled)]
+    if not ordered:
+        lines.append("  No source security-pattern signals are recorded for this project.")
+        lines.append("  Lowkey will add a signal when its source-pattern layer finds something worth verifying.")
+        return "\\n".join(lines)
+
+    lines.append(
+        "  Shared signals from source analysis and prior live verification — not vulnerability verdicts."
+    )
+    for signal in ordered[:6]:
+        pattern_id = str(signal.get("pattern_id") or signal.get("check") or "SECURITY")
+        verification = str(signal.get("verification_status") or "CANDIDATE").upper()
+        function = str(signal.get("function") or "contract-level")
+        title = str(signal.get("title") or "security-pattern")
+        lines.append(f"  • {pattern_id:<14} [{verification:<9}] {function} — {title}")
+    if len(ordered) > 6:
+        lines.append(f"  • +{len(ordered) - 6} more signal(s) available via 'lk signals' or 'lk risk'.")
+    return "\\n".join(lines)
 def _render_interaction_graph_full(
     root: Path,
     step: Step,
@@ -8243,6 +8287,8 @@ def _render_board(
             model,
             enabled,
         ),
+        "",
+        _render_security_radar(root, model, enabled),
         "",
         _render_protocol_story_full(
             root,
