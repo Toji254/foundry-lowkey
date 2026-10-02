@@ -3429,7 +3429,7 @@ def _render_interaction_graph_full(
             lines.append(f"  │   ├─ decoded error: {decoded}")
         lines.append(f"  │   └─ raw node result: {_short_error(step.error)}")
 
-    marker = "INFERRED" if step.inferred else "LAB CONTROL"
+    marker = _evidence_label("INFERRED") if step.inferred else _evidence_label("LAB CONTROL")
     if step.status == "success":
         lines += ["  │", f"  │   RESULT  ✓  {actor} completed {contract}.{function}()"]
     elif step.status in {"blocked", "reverted"}:
@@ -5672,7 +5672,7 @@ def _render_adversarial_probe_human(
         f"  WHY TECH {why}",
         f"  NEXT     {_human_next_step(step, model)}",
         f"  LESSON   {lesson}",
-        f"  EVIDENCE {quality}",
+        f"  EVIDENCE {_evidence_label(quality)}",
         f"  CODE     {language} {subject} • {model.source}",
     ]
     for signal in list(getattr(step, "security_signals", []) or [])[:4]:
@@ -5693,6 +5693,25 @@ def _render_adversarial_probe_human(
     if step.tx_hash:
         lines.append(f"  TX       {step.tx_hash[:10]}…{step.tx_hash[-8:]}")
     return lines
+
+EVIDENCE_LEVEL_EXPLANATIONS = {
+    "HEURISTIC": "meaning: pattern-based guess from source/metadata; trust: LOW — use it to choose what to inspect, not to conclude a bug",
+    "INFERRED": "meaning: Lowkey derived an interpretation from available evidence; trust: MEDIUM — verify it against source/runtime evidence",
+    "DIAGNOSED": "meaning: Lowkey identified a concrete failure boundary from diagnostics; trust: MEDIUM-HIGH — verify the exact runtime instruction when possible",
+    "OBSERVED": "meaning: this behavior actually occurred in a live/test execution; trust: HIGH for what happened, not for its security impact",
+    "OBSERVED + SOURCE": "meaning: live behavior was also matched to a source rule; trust: HIGH for the correlation, but impact still needs proof",
+    "SOURCE-CORRELATED": "meaning: a runtime result was matched to a specific source rule/check; trust: HIGH for that match, but it does not by itself prove exploitability or impact",
+    "SOURCE + ACTUAL CALL": "meaning: the actual arguments/call were matched to a source rule; trust: HIGH for that match, but not for the broader security conclusion",
+    "UNPROVEN": "meaning: Lowkey has an explanation or hypothesis without enough evidence to prove the exact cause; trust: LOW — investigate further",
+    "LAB CONTROL": "meaning: Lowkey intentionally used this step to prepare/control the local lab; trust: HIGH that it was deliberate, not evidence of a vulnerability",
+}
+
+def _evidence_label(level: str) -> str:
+    raw = str(level or "UNPROVEN").strip()
+    explanation = EVIDENCE_LEVEL_EXPLANATIONS.get(raw)
+    if explanation:
+        return f"{raw} [{explanation}]"
+    return raw + " [meaning: evidence level is not classified; trust: UNKNOWN — verify manually]"
 
 def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]) -> tuple[str, str, str]:
     """Explain randomized probes without overstating what the evidence proves."""
@@ -5869,7 +5888,7 @@ def _render_adversarial_probe_technical(
         ),
         f"     WHY      {why}",
         f"     LESSON   {lesson}",
-        f"     EVIDENCE {quality}",
+        f"     EVIDENCE {_evidence_label(quality)}",
     ]
 
     source_lines = [line for line in (step.diagnostics or []) if str(line).lower().startswith("source guard:")]
