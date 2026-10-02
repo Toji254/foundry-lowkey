@@ -357,12 +357,9 @@ def add_security_pattern(
     verification_evidence: list[str] | None = None,
     evidence_mode: str = "source",
 ) -> dict[str, Any]:
-    """Persist a security-pattern observation as a first-class Lowkey signal.
-
-    Pattern identity stays separate from manual finding status. The signal
-    status remains the user's investigation lifecycle; verification_status
-    records what Lowkey actually reproduced.
-    """
+    """Persist a security-pattern observation as a first-class Lowkey signal."""
+    incoming_status = str(verification_status or "CANDIDATE").upper()
+    incoming_evidence = list(verification_evidence or [])
     signal = {
         "category": "security-pattern",
         "tool": "security-patterns",
@@ -370,11 +367,7 @@ def add_security_pattern(
         "pattern_id": pattern_id,
         "title": title,
         "impact": "Unknown",
-        "confidence": (
-            "Live reproduced" if verification_status == "CONFIRMED"
-            else "Live review" if verification_status == "REVIEW"
-            else "Source pattern"
-        ),
+        "confidence": "Source pattern",
         "file": file,
         "line": line,
         "function": function,
@@ -383,51 +376,47 @@ def add_security_pattern(
         "why": "Source pattern matched; runtime evidence determines whether the security condition exists.",
         "next": next_step,
         "provenance": list(provenance or []),
-        "verification_status": verification_status,
-        "verification": {
-            "status": verification_status,
-            "mode": evidence_mode,
-            "evidence": list(verification_evidence or []),
-        },
+        "verification_status": incoming_status,
+        "verification": {"status": incoming_status, "mode": evidence_mode, "evidence": incoming_evidence},
         "status": "open",
     }
     result = add_signal(signal, root)
-    result["category"] = "security-pattern"
-    result["pattern_id"] = pattern_id
 
-    # A source-only rescan must never erase stronger live verification already
-    # captured by a stateful probe. CONFIRMED outranks REVIEW, which outranks
-    # CANDIDATE. A fresh stateful run can still upgrade the existing signal.
+    context = load(root)
+    stored = next(
+        (item for item in context.setdefault("signals", []) if item.get("id") == result.get("id")),
+        result,
+    )
     rank = {"CANDIDATE": 0, "REVIEW": 1, "CONFIRMED": 2}
-    existing_status = str(result.get("verification_status") or "").upper()
-    incoming_status = str(verification_status or "CANDIDATE").upper()
+    stored_status = str(stored.get("verification_status") or "CANDIDATE").upper()
     effective_status = (
-        existing_status if rank.get(existing_status, -1) > rank.get(incoming_status, -1)
+        stored_status if rank.get(stored_status, -1) > rank.get(incoming_status, -1)
         else incoming_status
     )
-    previous = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    previous = stored.get("verification") if isinstance(stored.get("verification"), dict) else {}
     previous_evidence = previous.get("evidence") if isinstance(previous, dict) else []
     if not isinstance(previous_evidence, list):
         previous_evidence = []
     combined_evidence = list(previous_evidence)
-    for item in list(verification_evidence or []):
+    for item in incoming_evidence:
         if item not in combined_evidence:
             combined_evidence.append(item)
-
-    result["verification_status"] = effective_status
-    result["verification"] = {
+    stored["category"] = "security-pattern"
+    stored["pattern_id"] = pattern_id
+    stored["verification_status"] = effective_status
+    stored["verification"] = {
         "status": effective_status,
         "mode": evidence_mode if effective_status == incoming_status else str(previous.get("mode") or "source+stateful"),
         "evidence": combined_evidence,
     }
-    result["confidence"] = (
+    stored["confidence"] = (
         "Live reproduced" if effective_status == "CONFIRMED"
         else "Live review" if effective_status == "REVIEW"
         else "Source pattern"
     )
-    save(result and load(root), root)
-    return result
-
+    stored["updated_at"] = _now()
+    save(context, root)
+    return stored
 
 def security_patterns(
     root: Path | None = None,
