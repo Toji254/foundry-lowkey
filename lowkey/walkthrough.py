@@ -5371,23 +5371,27 @@ def _human_probe_status(step: Step) -> tuple[str, str, str]:
             "A successful probe is not automatically a bug; inspect who can reach it and what state it changes.",
         )
 
-    if any(token in haystack for token in (
-        "not the contract owner",
-        "not authorized",
-        "zero address",
-        "mapping gate blocks",
-        "returned false",
-        "source guard:",
-        "expirytoo",
-        "invalidamount",
-        "outcomealreadyset",
-        "withdrawsdisabled",
-        "stakingclosed",
-        "invalidoutcome",
-        "notattacker",
-        "claimwindowexpired",
-        "claimnot",
-    )):
+    if (
+        "owner() does not match" in haystack
+        or "owner() =" in haystack and "caller is" in haystack
+        or any(token in haystack for token in (
+            "not the contract owner",
+            "not authorized",
+            "zero address",
+            "mapping gate blocks",
+            "returned false",
+            "source guard:",
+            "expirytoo",
+            "invalidamount",
+            "outcomealreadyset",
+            "withdrawsdisabled",
+            "stakingclosed",
+            "invalidoutcome",
+            "notattacker",
+            "claimwindowexpired",
+            "claimnot",
+        ))
+    ):
         return (
             "✅ NORMAL",
             "The call was rejected by a rule or precondition Lowkey can explain from the available evidence.",
@@ -5688,10 +5692,24 @@ def _render_adversarial_summary(
     unknown = sum(_human_probe_status(item)[0] == "❓ UNKNOWN" for item in results)
     lab = sum(_human_probe_status(item)[0] == "🔧 LAB ISSUE" for item in results)
 
+    unique_keys: dict[tuple[Any, ...], list[int]] = {}
+    for item in results:
+        key = (
+            item.actor,
+            item.contract,
+            item.address.lower(),
+            item.function,
+            json.dumps(item.args, sort_keys=True, default=str),
+            int(item.value_wei or 0),
+            item.status,
+        )
+        unique_keys.setdefault(key, []).append(item.index)
+
     lines = [
         "",
         _paint("WHAT MATTERS", BOLD + CYAN, _ansi_enabled(False)),
         f"  {len(results)} probes finished",
+        f"  {len(unique_keys)} unique probe outcomes",
         f"  ✅ NORMAL       {normal}",
         f"  🟦 EXPECTED ADMIN {admin}",
         f"  ⚠️ CHECK THIS   {review}",
@@ -5709,9 +5727,31 @@ def _render_adversarial_summary(
             lines.append(f"    🚨 {story.story_id} {story.title} — replay this story")
     elif review_items:
         lines.append("  START HERE")
-        for item in review_items[:5]:
+        shown_keys: set[tuple[Any, ...]] = set()
+        shown = 0
+        for item in review_items:
+            key = (
+                item.actor,
+                item.contract,
+                item.address.lower(),
+                item.function,
+                json.dumps(item.args, sort_keys=True, default=str),
+                int(item.value_wei or 0),
+                item.status,
+            )
+            if key in shown_keys:
+                continue
+            shown_keys.add(key)
             fn = str(item.function or "").split("(", 1)[0]
-            lines.append(f"    ⚠️ #{item.index} {fn} — the chain allowed this action")
+            repeats = unique_keys.get(key, [item.index])[1:]
+            suffix = (
+                " — repeated in probes " + ", ".join("#" + str(n) for n in repeats[:4])
+                if repeats else ""
+            )
+            lines.append(f"    ⚠️ #{item.index} {fn} — the chain allowed this action{suffix}")
+            shown += 1
+            if shown >= 5:
+                break
     elif unknown_items:
         lines.append("  START HERE")
         for item in unknown_items[:3]:
