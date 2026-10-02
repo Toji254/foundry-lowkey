@@ -8346,6 +8346,11 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 return code or 1
     models=_artifact_models(root)
     support_models=_artifact_models(root, include_aux=True)
+    if hasattr(host, "_sync_security_patterns"):
+        try:
+            host._sync_security_patterns(root)
+        except Exception:
+            pass
     if not models:
         print(
             "Error: Lowkey could not build a contract model.",
@@ -8443,6 +8448,8 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
 
     if static:
         plan=plan_workflow(model,actors,target or "0x"+"00"*20,int(time.time()),max_steps,root=root)
+        for planned_step in plan:
+            planned_step.security_signals = _security_signals_for_step(host, root, planned_step)
         runtime=[RuntimeContract(target or "0x"+"00"*20,model.name,model.name,"target")]
         print("\n"+_render_plan(model,plan,_ansi_enabled(static)))
         print("\n"+_render_board(root,model,models,runtime,actors,plan,None,[],_ansi_enabled(static),True))
