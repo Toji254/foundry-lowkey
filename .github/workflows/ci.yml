@@ -168,16 +168,16 @@ jobs:
           lk context
           lk signals
           lk audit | tee /tmp/lowkey-audit-baseline.txt
-          grep -q "Pipeline: build -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
-          ! grep -q "Pipeline: build -> Slither" /tmp/lowkey-audit-baseline.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
+          ! grep -q "Pipeline: build -> tests -> coverage" /tmp/lowkey-audit-baseline.txt
           test -f script/LowkeyPoC_Fixture.s.sol
           test -f .audit/poc/LowkeyPoc_Fixture.json
           lk audit --checks | tee /tmp/lowkey-audit-checks.txt
-          grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-checks.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-checks.txt
           lk audit--checks | tee /tmp/lowkey-audit-compact-checks.txt
-          grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-compact-checks.txt
           lk audit check | tee /tmp/lowkey-audit-check-alias.txt
-          grep -q "Pipeline: build -> Slither -> lint/geiger -> tests -> coverage" /tmp/lowkey-audit-check-alias.txt
+          grep -q "Pipeline: build -> Slither -> lint -> unsafe-cheatcodes -> tests -> coverage" /tmp/lowkey-audit-check-alias.txt
           lk audit run --poc | tee /tmp/lowkey-audit-run.txt
           grep -q "LOWKEY PROJECT DETECTION" /tmp/lowkey-audit-run.txt
           test -f .audit/poc/LowkeyPoc_Fixture.json
