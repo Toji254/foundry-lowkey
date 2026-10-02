@@ -2811,6 +2811,21 @@ def _select_project_target(config, entry, root):
     if not is_address(address):
         return fail("Error: selected target has an invalid address.")
 
+    # A remembered address is not a live protocol target merely because it has
+    # an ABI/source artifact. On local EVM labs, reject EOAs and stale addresses
+    # before they can become the active audit target.
+    rpc = effective_rpc(config)
+    if rpc:
+        try:
+            code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
+        except Exception:
+            code, runtime = 1, ""
+        if code == 0 and str(runtime or "").strip().lower() in {"", "0x", "0x0"}:
+            return fail(
+                f"Error: {address} has no contract bytecode on {rpc}. "
+                "Run 'lk lab' to deploy or refresh a live local target."
+            )
+
     contract = entry.get("contract") or entry.get("name") or "target"
     artifact = entry.get("artifact")
     if not artifact:
