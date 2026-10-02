@@ -865,6 +865,37 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
 
 
 
+def run_test_audit(args: Sequence[str]) -> int:
+    forwarded = list(args)
+    if not has_verbosity(forwarded):
+        forwarded.insert(0, "-vvvv")
+    return run_forge(["test", *forwarded])
+
+
+def run_inspect_audit(args: Sequence[str]) -> int:
+    if not args:
+        return die("usage: lk forge inspect-audit <ContractName> [forge options]")
+    contract, extra = args[0], list(args[1:])
+    code = run_forge(["build", *extra])
+    if code != 0:
+        return code
+    failures = 0
+    for title, field in [
+        ("ABI", "abi"), ("METHODS", "methods"), ("ERRORS", "errors"),
+        ("EVENTS", "events"), ("STORAGE", "storage-layout"),
+    ]:
+        print(f"\n=== {title} ===")
+        code = run_forge(["inspect", contract, field, *extra])
+        if code != 0:
+            print(
+                f"LowkeyForge: inspect field '{field}' failed; continuing.",
+                file=sys.stderr,
+            )
+            if failures == 0:
+                failures = code
+    return failures
+
+
 def run_audit(args: Sequence[str]) -> int:
     """Run the complete Foundry audit baseline, including static checks by default."""
     root = _project_root()
@@ -1050,6 +1081,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     command, rest = args[0], args[1:]
     if command == "audit":
         return run_audit(rest)
+    if command in {"test-audit", "audit-test"}:
+        return run_test_audit(rest)
+    if command in {"inspect-audit", "recon"}:
+        return run_inspect_audit(rest)
     if command == "lint":
         return run_forge_diagnostics(["lint", *rest], "lint")
     if command == "geiger":
