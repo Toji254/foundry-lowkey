@@ -796,6 +796,8 @@ def _build_replay_stories(
                 title=f"Replay probe: {model.name}.{name}",
                 goal="Does the same economic action pay again when repeated by the same actor?",
                 actions=actions,
+                execution_scope="persistent_story",
+                reset_between_actions=False,
             ))
             if len(stories) >= 4:
                 return stories
@@ -819,6 +821,20 @@ def assess_replay_story(
 ) -> None:
     if story.signal == "BLOCKED" and not story.actions:
         return
+
+    # Replay requires a persistent state sequence. Randomized probes restore
+    # state after each call and therefore cannot prove replay by repeatability.
+    if (
+        str(getattr(story, "execution_scope", "")) != "persistent_story"
+        or bool(getattr(story, "reset_between_actions", True))
+    ):
+        story.signal = "BLOCKED"
+        story.evidence = [
+            "Replay evidence requires one persistent state sequence; this execution restored state between actions.",
+            "Repeated success across isolated snapshots is repeatability, not replay evidence.",
+        ]
+        return
+
     if len(steps) < 2:
         story.signal = "BLOCKED"
         story.evidence = ["Replay probe did not produce the two repeated payout actions."]
@@ -835,6 +851,22 @@ def assess_replay_story(
         return
 
     first, second = steps[-2], steps[-1]
+
+    same_action = (
+        first.actor == second.actor
+        and first.contract == second.contract
+        and first.address.lower() == second.address.lower()
+        and first.function == second.function
+        and first.args == second.args
+        and int(first.value_wei or 0) == int(second.value_wei or 0)
+    )
+    if not same_action:
+        story.signal = "BLOCKED"
+        story.evidence = [
+            "The two final calls were not the same actor/action/value on the same target, so replay was not isolated.",
+        ]
+        return
+
     if first.status != "success":
         story.signal = "NOT_TRIGGERED"
         story.evidence = ["The first payout call was rejected, so a replay condition was not reached."]
@@ -847,10 +879,23 @@ def assess_replay_story(
     actor = next((a for a in actors if a.name == second.actor), None)
     token_gain = 0
     native_gain = 0
+    trace_native_gain = 0
     if actor:
         key = actor.address.lower()
         token_gain = second.token_balance_after.get(key, 0) - second.token_balance_before.get(key, 0)
-        native_gain = second.balance_after.get(key, 0) - second.balance_before.get(key, 0)
+        # Net EOA balance includes gas. Prefer the protocol's internal native
+        # value transfer when the trace identifies the actor as the recipient.
+        for edge in second.execution_edges or []:
+            if (
+                int(edge.get("depth", 0) or 0) > 0
+                and str(edge.get("to_address") or "").lower() == key
+                and int(edge.get("value_wei", 0) or 0) > 0
+            ):
+                trace_native_gain += int(edge.get("value_wei", 0) or 0)
+        native_gain = max(
+            second.balance_after.get(key, 0) - second.balance_before.get(key, 0),
+            trace_native_gain,
+        )
 
     if token_gain > 0 or native_gain > 0:
         story.signal = "CONFIRMED"
@@ -904,14 +949,17 @@ def render_summary(observations: list[PatternObservation]) -> list[str]:
         counts[item.status] = counts.get(item.status, 0) + 1
         groups.setdefault(item.pattern_id, []).append(item)
 
+    static_candidates = counts.get("CANDIDATE", 0)
+    live_upgraded = counts.get("CONFIRMED", 0) + counts.get("REVIEW", 0)
     lines = [
         "",
         "  SECURITY PATTERN REVIEW",
         f"    {len(observations)} source-pattern match(es) across {len({item.contract for item in observations})} contracts",
         "",
-        f"    🚨 CONFIRMED       {counts.get('CONFIRMED', 0)}  live behavior reproduced",
-        f"    🟨 NEEDS REVIEW    {counts.get('REVIEW', 0)}  live behavior needs manual verification",
-        f"    ⚠️ STATIC MATCHES  {counts.get('CANDIDATE', 0)}  code shape resembles a known bug pattern",
+        f"    🚨 CONFIRMED         {counts.get('CONFIRMED', 0)}  concrete security condition reproduced",
+        f"    🟨 NEEDS REVIEW      {counts.get('REVIEW', 0)}  live behavior needs manual verification",
+        f"    ⚠️ STATIC CANDIDATES  {static_candidates}  source patterns awaiting live verification",
+        f"    🟦 LIVE-UPGRADED     {live_upgraded}  source matches exercised by stateful probes",
         "",
     ]
 
@@ -938,7 +986,7 @@ def render_summary(observations: list[PatternObservation]) -> list[str]:
             "",
         ]
 
-    lines.append("  STATIC MATCHES")
+    lines.append("  SOURCE PATTERN MATCHES")
     for pattern_id, items in sorted(groups.items()):
         catalog = _pattern(pattern_id)
         title = str(catalog.get("title") or pattern_id)
