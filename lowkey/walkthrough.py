@@ -5918,6 +5918,7 @@ def _render_adversarial_summary(
     results: list[Step],
     evidence: Path,
     stories: list[WalkthroughStory] | None = None,
+    seed: int | None = None,
 ) -> list[str]:
     normal = sum(_human_probe_status(item)[0] == "✅ NORMAL" for item in results)
     admin = sum(_human_probe_status(item)[0] == "🟦 EXPECTED ADMIN" for item in results)
@@ -6005,8 +6006,8 @@ def _render_adversarial_summary(
     lines += [
         "",
         "  SEED",
-        f"    {getattr(results[0], 'seed', None) if results and hasattr(results[0], 'seed') else 'recorded in test.json'}",
-        "    Re-run this randomized probe sequence with the seed printed at the start of the run.",
+        f"    {seed if seed is not None else 'recorded in test.json'}",
+        f"    Re-run this randomized probe sequence with: lk walkthrough test --seed {seed}" if seed is not None else "    Re-run with the seed recorded in .audit/walkthrough/test.json.",
         "    See previous runs: lk walkthrough seed",
         "",
         "  REMEMBER",
@@ -6863,7 +6864,7 @@ def _run_adversarial_test(
         benchmark_results,
         pattern_observations,
     )
-    for line in _render_adversarial_summary(root, results, evidence, benchmark_results):
+    for line in _render_adversarial_summary(root, results, evidence, benchmark_results, seed=actual_seed):
         print(line)
     return 0
 
