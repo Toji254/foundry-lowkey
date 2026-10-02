@@ -100,6 +100,12 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk generate", output)
         self.assertIn("lk generate test", output)
 
+    def test_native_test_help_is_not_forwarded_to_forge(self):
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        self.assertIn("Friendly Lowkey help must be handled by the main router.", script)
+        self.assertIn('exec python3 "$HOME/.lowkey/lk.py" "$@"', script)
+        self.assertIn('exec python3 "$HOME/.lowkey/forge_tools.py" "$@"', script)
+
     def test_generate_help_is_forwarded_by_bin(self):
         script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
         block_start = script.index("    generate)")
