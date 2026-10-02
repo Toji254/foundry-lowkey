@@ -887,8 +887,8 @@ def assess_replay_story(
     if actor:
         key = actor.address.lower()
         token_gain = second.token_balance_after.get(key, 0) - second.token_balance_before.get(key, 0)
-        # Net wallet balance includes gas. Prefer the traced protocol-value
-        # transfer to the actor so gas cannot hide a real native-ETH payout.
+        # Net wallet balance includes gas. Prefer the protocol's traced native
+        # transfer to the actor so transaction fees cannot hide a real payout.
         for edge in second.execution_edges or []:
             if (
                 int(edge.get("depth", 0) or 0) > 0
@@ -896,6 +896,20 @@ def assess_replay_story(
                 and int(edge.get("value_wei", 0) or 0) > 0
             ):
                 trace_native_gain += int(edge.get("value_wei", 0) or 0)
+
+        # Some local nodes/tooling provide a textual cast-trace fallback even
+        # when the structured call tree cannot be decoded. Parse only the
+        # recipient + positive value needed for this replay classification.
+        if trace_native_gain == 0:
+            for line in second.trace_edges or []:
+                match = re.search(
+                    r"\b(?:CALL|CALLCODE|DELEGATECALL)\b[^\\n]*\bto=(0x[0-9a-fA-F]{40})\b[^\\n]*\bvalue=(\\d+)\\s+wei\\b",
+                    str(line),
+                    re.IGNORECASE,
+                )
+                if match and match.group(1).lower() == key:
+                    trace_native_gain += int(match.group(2))
+
         native_gain = max(
             second.balance_after.get(key, 0) - second.balance_before.get(key, 0),
             trace_native_gain,
@@ -905,7 +919,7 @@ def assess_replay_story(
         story.signal = "CONFIRMED"
         gain = f"{token_gain / 10**18:.4f} token units" if token_gain > 0 else f"{native_gain} wei"
         story.evidence = [
-            "the same payout call succeeded twice from the same actor after a valid setup",
+            "the same payout call succeeded twice after a valid setup",
             f"the second payout call produced a positive protocol-value delta: {gain}",
         ]
     else:
