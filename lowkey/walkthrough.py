@@ -6015,6 +6015,173 @@ def _render_adversarial_summary(
     return lines
 
 
+def _seed_history_path(root: Path) -> Path:
+    """Project-local history of walkthrough test seeds and their useful outcomes."""
+    return root / ".audit" / "walkthrough" / "seeds.json"
+
+def _seed_highlights(
+    results: list[Step],
+    stories: list[WalkthroughStory] | None,
+    observations: list[Any] | None,
+) -> list[str]:
+    """Turn one randomized run into a few human-readable seed-specific highlights."""
+    highlights: list[str] = []
+    stories = stories or []
+    observations = observations or []
+
+    confirmed = [story for story in stories if story.signal == "CONFIRMED"]
+    review_stories = [story for story in stories if story.signal == "REVIEW"]
+    review_steps = [item for item in results if _human_probe_status(item)[0] == "⚠️ CHECK THIS"]
+    unknown_steps = [item for item in results if _human_probe_status(item)[0] == "❓ UNKNOWN"]
+    lab_steps = [item for item in results if _human_probe_status(item)[0] == "🔧 LAB ISSUE"]
+
+    for story in confirmed[:2]:
+        highlights.append(f"confirmed story: {story.story_id} — {story.title}")
+    if not confirmed:
+        for story in review_stories[:2]:
+            highlights.append(f"review story: {story.story_id} — {story.title}")
+    if review_steps:
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in review_steps:
+            name = str(item.function or "").split("(", 1)[0] or "unknown"
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+            if len(names) >= 3:
+                break
+        highlights.append("chain accepted: " + ", ".join(names))
+    if unknown_steps:
+        names = []
+        seen = set()
+        for item in unknown_steps:
+            name = str(item.function or "").split("(", 1)[0] or "unknown"
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+            if len(names) >= 2:
+                break
+        highlights.append("unknown results: " + ", ".join(names))
+    if lab_steps:
+        highlights.append(f"lab setup issue(s): {len(lab_steps)} probe(s)")
+
+    pattern_review = [
+        item for item in observations
+        if str(getattr(item, "status", "")).upper() == "REVIEW"
+    ]
+    pattern_confirmed = [
+        item for item in observations
+        if str(getattr(item, "status", "")).upper() == "CONFIRMED"
+    ]
+    if pattern_confirmed:
+        ids = ", ".join(str(getattr(item, "pattern_id", "pattern")) for item in pattern_confirmed[:3])
+        highlights.append(f"finding patterns confirmed: {ids}")
+    elif pattern_review:
+        ids = ", ".join(str(getattr(item, "pattern_id", "pattern")) for item in pattern_review[:3])
+        highlights.append(f"finding patterns to review: {ids}")
+
+    accepted = sum(item.status == "success" for item in results)
+    reverted = len(results) - accepted
+    if not highlights:
+        if results:
+            highlights.append(f"{accepted} accepted probe(s), {reverted} reverted")
+        else:
+            highlights.append("no randomized probes completed")
+    return highlights[:5]
+
+def _record_seed_history(
+    root: Path,
+    seed: int,
+    cases: int,
+    target: str,
+    model: ContractModel,
+    results: list[Step],
+    stories: list[WalkthroughStory] | None,
+    observations: list[Any] | None,
+) -> Path:
+    """Append a compact summary for later walkthrough seed inspection."""
+    path = _seed_history_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = []
+    if not isinstance(existing, list):
+        existing = []
+
+    accepted = sum(item.status == "success" for item in results)
+    reverted = len(results) - accepted
+    record = {
+        "run_id": f"{time.strftime('%Y%m%dT%H%M%S', time.localtime())}-{seed}",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        "seed": int(seed),
+        "cases": int(cases),
+        "target": target,
+        "contract": model.name,
+        "accepted": accepted,
+        "reverted": reverted,
+        "stateful_stories": len(stories or []),
+        "stateful_confirmed": sum(1 for story in (stories or []) if story.signal == "CONFIRMED"),
+        "finding_patterns": len(observations or []),
+        "finding_pattern_confirmed": sum(
+            1 for item in (observations or [])
+            if str(getattr(item, "status", "")).upper() == "CONFIRMED"
+        ),
+        "highlights": _seed_highlights(results, stories, observations),
+    }
+    existing.append(record)
+    existing = existing[-40:]
+    path.write_text(json.dumps(existing, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    return path
+
+def _render_seed_history(root: Path, requested: str | None = None) -> int:
+    path = _seed_history_path(root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = []
+    if not isinstance(data, list) or not data:
+        print("LOWKEY WALKTHROUGH SEEDS")
+        print("=" * 72)
+        print("No walkthrough test seeds recorded for this project yet.")
+        print("Run 'lk walkthrough test' first. Lowkey will save the seed and a short run summary here.")
+        return 0
+
+    records = [item for item in data if isinstance(item, dict)]
+    if requested:
+        try:
+            wanted = int(requested)
+        except ValueError:
+            print(f"Unknown seed: {requested}", file=sys.stderr)
+            return 2
+        records = [item for item in records if int(item.get("seed", -1)) == wanted]
+        if not records:
+            print(f"No recorded walkthrough run uses seed {wanted}.", file=sys.stderr)
+            print("Run 'lk walkthrough seed' to see recorded seeds.")
+            return 1
+
+    print("LOWKEY WALKTHROUGH SEEDS")
+    print("=" * 72)
+    print("  Each seed identifies one randomized exploration of this project.")
+    print("  Reuse it to reproduce the randomized probe sequence when code and baseline state are unchanged.")
+    print("")
+    for index, item in enumerate(reversed(records), 1):
+        seed = item.get("seed")
+        timestamp = item.get("timestamp") or "unknown time"
+        cases = item.get("cases", 0)
+        accepted = item.get("accepted", 0)
+        reverted = item.get("reverted", 0)
+        contract = item.get("contract") or "unknown contract"
+        print(f"  [{index}] SEED {seed}  •  {timestamp}")
+        print(f"      {contract}  •  {cases} probes  •  {accepted} accepted  •  {reverted} reverted")
+        for highlight in (item.get("highlights") or [])[:3]:
+            print(f"      → {highlight}")
+        print(f"      Replay: lk walkthrough test --seed {seed} --cases {cases}")
+        if item.get("target"):
+            print(f"      Target: {item.get('target')}")
+        print("")
+    print(f"  History file: {path.relative_to(root)}")
+    return 0
 def _adversarial_functions(model: ContractModel) -> list[dict[str, Any]]:
     return [
         item for item in model.abi
