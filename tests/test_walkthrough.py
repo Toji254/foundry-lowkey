@@ -3145,5 +3145,72 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("REPLAY-001", rendered)
         self.assertIn("REVIEW", rendered)
 
+
+    def test_storage_renderer_is_human_first_for_mapping_rows_and_hides_evm_hash_by_default(self):
+        storage = [{
+            "label": "contributions",
+            "slot": "0",
+            "type": "mapping(address => uint256)",
+            "encoding": "mapping",
+            "mapping": {
+                "key_type": "address",
+                "value_type": "uint256",
+                "native_value": True,
+                "rows": [{
+                    "key": "0x" + "1" * 40,
+                    "value": 1000000000000000000,
+                    "slot": "0x" + "2" * 64,
+                }],
+            },
+        }]
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        rendered = walkthrough._render_storage(storage, False, actors)
+        self.assertIn("purpose     → keeps track of how much ETH each address has contributed", rendered)
+        self.assertIn("how to read → find a key (like Alice), then read the value stored for that key", rendered)
+        self.assertIn("storage    → slot 0", rendered)
+        self.assertIn("Alice → 1 ETH [1,000,000,000,000,000,000 wei]", rendered)
+        self.assertNotIn("keccak256(pad(key)", rendered)
+        self.assertNotIn("0x" + "2" * 64, rendered)
+
+    def test_storage_renderer_exposes_mapping_slot_math_only_in_technical_mode(self):
+        slot = "0x" + "2" * 64
+        storage = [{
+            "label": "contributions",
+            "slot": "0",
+            "type": "mapping(address => uint256)",
+            "encoding": "mapping",
+            "mapping": {
+                "key_type": "address",
+                "value_type": "uint256",
+                "rows": [{
+                    "key": "0x" + "1" * 40,
+                    "value": 1,
+                    "slot": slot,
+                }],
+            },
+        }]
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        rendered = walkthrough._render_storage(storage, False, actors, technical=True)
+        self.assertIn("technical storage:", rendered)
+        self.assertIn("row location        = keccak256(pad(key) || pad(0))", rendered)
+        self.assertIn(slot, rendered)
+
+    def test_storage_renderer_explains_plain_slot_as_numbered_storage_box(self):
+        storage = [{
+            "label": "owner",
+            "slot": "1",
+            "type": "address",
+            "encoding": "inplace",
+            "value": "0x" + "1" * 40,
+            "raw": "0x" + "0" * 24 + "1" * 40,
+        }]
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        rendered = walkthrough._render_storage(storage, False, actors)
+        self.assertIn("purpose    → owner is stored in one numbered storage box", rendered)
+        self.assertIn("value      → Alice (0x11111111…11111111)", rendered)
+        self.assertIn("storage    → slot 1   [numbered EVM storage box]", rendered)
+        self.assertNotIn("raw word", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()
