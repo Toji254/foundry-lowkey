@@ -268,5 +268,60 @@ class QuestionEngineTests(unittest.TestCase):
         self.assertEqual(state["answers"]["ARCH-001"]["status"], "ANSWERED")
 
 
+    def test_current_question_screen_explains_how_to_work_it(self):
+        temp, root = self.make_project(
+            source="pragma solidity ^0.8.20; contract Demo { function withdraw() external {} }\n",
+            readme="# Demo\n",
+        )
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        (root / ".audit").mkdir()
+        (root / ".audit" / "context.json").write_text(json.dumps({
+            "project": {"root": str(root), "name": "Demo"},
+            "target": {"contract": "Demo", "address": "0x" + "1" * 40},
+            "latest": {"function": "withdraw", "tx_hash": "0x" + "2" * 64, "trace": "trace"},
+            "signals": [{"title": "Replayable payout / claim path"}],
+            "tools": {"walkthrough": {"status": "completed"}},
+        }), encoding="utf-8")
+        output = questions.render_current(root)
+        self.assertIn("YOUR JOB", output)
+        self.assertIn("DO THIS NOW", output)
+        self.assertIn("HOW TO FINISH THE QUESTION", output)
+        self.assertIn("lk q note", output)
+        self.assertIn("Running a TRY command does NOT answer the question", output)
+        self.assertIn("trust:", output)
+
+    def test_current_question_labels_direct_and_heuristic_evidence(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        (root / ".audit").mkdir()
+        (root / ".audit" / "context.json").write_text(json.dumps({
+            "project": {"root": str(root)},
+            "target": {"contract": "Demo", "address": "0x" + "1" * 40},
+            "latest": {"function": "withdraw", "tx_hash": "0x" + "2" * 64, "trace": "trace"},
+            "signals": [{"title": "Replayable payout / claim path"}],
+            "tools": {},
+        }), encoding="utf-8")
+        output = questions.render_current(root)
+        self.assertIn("[CONTEXT", output)
+        self.assertIn("[OBSERVED", output)
+        self.assertIn("[HEURISTIC", output)
+        self.assertIn("trust: HIGH", output)
+        self.assertIn("trust: LOW", output)
+
+    def test_overview_explains_frontier_symbols_and_next_action(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        output = questions.overview(root)
+        self.assertIn("HOW TO READ THE FRONTIER", output)
+        self.assertIn("✓ settled", output)
+        self.assertIn("→ active", output)
+        self.assertIn("○ waiting", output)
+        self.assertIn("'live'      = worth investigating now; it does NOT mean 'vulnerable'.", output)
+        self.assertIn("'proof'     = evidence exists, but the security property still needs proof.", output)
+        self.assertIn("WHAT TO DO", output)
+        self.assertIn("lk q note", output)
+
 if __name__ == "__main__":
     unittest.main()
