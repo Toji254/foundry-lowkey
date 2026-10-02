@@ -845,6 +845,22 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         rows.append((label, status, detail))
 
     signals = context.get("signals", [])
+    security_patterns = [
+        item for item in signals
+        if isinstance(item, dict) and item.get("category") == "security-pattern"
+    ]
+    security_reviews = sum(
+        1 for item in security_patterns
+        if str(item.get("verification_status") or "CANDIDATE").upper() == "REVIEW"
+    )
+    security_confirmed = sum(
+        1 for item in security_patterns
+        if str(item.get("verification_status") or "CANDIDATE").upper() == "CONFIRMED"
+    )
+    security_candidates = sum(
+        1 for item in security_patterns
+        if str(item.get("verification_status") or "CANDIDATE").upper() == "CANDIDATE"
+    )
     open_signals = sum(
         1 for item in signals
         if isinstance(item, dict) and item.get("status") == "open"
@@ -887,6 +903,11 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
         print("         No live project target is connected; run 'lk lab' or 'lk audit auto' for local reproduction.")
     print(f"Actor  : {context.get('actor') or 'none'}")
     print(f"Signals: {open_signals} open")
+    print(
+        "Security patterns: "
+        f"{len(security_patterns)} total | "
+        f"{security_reviews} review | {security_confirmed} confirmed | {security_candidates} candidate"
+    )
     if focused:
         print(f"Focus  : {focused.get('signal_id') or focused.get('title') or 'active'}")
     print(f"Overall: {overall}")
