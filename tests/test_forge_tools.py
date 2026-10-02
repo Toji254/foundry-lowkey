@@ -113,8 +113,9 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertEqual(result, 0)
 
     def test_native_commands(self):
-        for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "geiger", "clone", "fuzz", "lsp"):
+        for command in ("build", "test", "inspect", "script", "coverage", "snapshot", "lint", "clone", "fuzz", "lsp"):
             self.assertIn(command, forge_tools.NATIVE_COMMANDS)
+        self.assertNotIn("geiger", forge_tools.NATIVE_COMMANDS)
         self.assertNotIn("debug", forge_tools.NATIVE_COMMANDS)
 
     def test_unsupported_debug_is_rejected(self):
@@ -123,6 +124,20 @@ class LowkeyForgeTests(unittest.TestCase):
                 run.return_value.returncode = 0
                 self.assertEqual(forge_tools.main(["debug"]), 2)
                 run.assert_not_called()
+
+    @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
+    @patch("forge_tools.subprocess.run")
+    def test_main_geiger_uses_unsafe_cheatcode_lint(self, run, _path):
+        run.return_value = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with patch.object(forge_tools, "_supports_option", return_value=True), patch.object(
+            forge_tools, "command_available", return_value=True
+        ):
+            self.assertEqual(forge_tools.main(["geiger"]), 0)
+        run.assert_called_once()
+        self.assertEqual(
+            run.call_args.args[0][1:4],
+            ["lint", "--only-lint", "unsafe-cheatcode"],
+        )
 
     @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
     @patch("forge_tools.subprocess.run")
