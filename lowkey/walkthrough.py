@@ -2188,7 +2188,7 @@ a{{color:#79c0ff}} pre{{white-space:pre-wrap;word-break:break-word}}
 <body>
 <h1>LOWKEY // TRANSACTION CONFIRMATION</h1>
 <div class="card"><div class="{'ok' if success else 'bad'}"><b>{escape(status_text)}</b></div>
-<div><b>Tx:</b> <code>{tx_line}</code></div><div><b>Tx:</b> <code>{tx_line}</code></div>
+<div><b>Tx:</b> <code>{tx_line}</code></div>
 {explorer_html}
 <div><b>Function:</b> {escape(str(step.function))}</div>
 <div><b>Actor:</b> {escape(str(step.actor))}</div>
