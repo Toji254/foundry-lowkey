@@ -2389,11 +2389,11 @@ def _friendly_eth(value_wei: int | None) -> str:
     if value == 0:
         return "0 ETH [0 wei]"
 
+    eth = Decimal(value) / Decimal(10**18)
+    shown = format(eth.normalize(), "g").replace("E", "e")
     if value % 10**18 == 0:
-        shown = f"{value // 10**18:g} ETH"
-    else:
-        shown = f"{value / 10**18:g} ETH"
-    return f"{shown} [{value:,} wei]"
+        shown = f"{value // 10**18:g}"
+    return f"{shown} ETH [{value:,} wei]"
 
 
 def _friendly_storage_value(
@@ -4811,7 +4811,7 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
             value_info = type_info(value_type)
             mapping = {
                 "key_type": type_label(key_type),
-                "value_type": value_type,
+                "value_type": type_label(value_type),
                 "rows": [],
                 "native_value": _mapping_tracks_msg_value(source_for_storage, label),
             }
@@ -7585,9 +7585,10 @@ def _render_storage(
 
             for row in mapping_info.get("rows", [])[:4]:
                 raw_key = str(row.get("key") or "")
-                key_text = _actor_for_address(raw_key, actors) or (
-                    f"{_actor_for_address(raw_key, actors)} ({_addr(raw_key)})"
-                    if _actor_for_address(raw_key, actors)
+                actor_name = _actor_for_address(raw_key, actors)
+                key_text = (
+                    f"{actor_name} ({_addr(raw_key)})"
+                    if actor_name
                     else _addr(raw_key) if is_address(raw_key) else raw_key
                 )
                 if row.get("struct"):
