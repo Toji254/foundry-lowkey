@@ -5700,6 +5700,8 @@ def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]
     lower = name.lower()
     diagnostics = [str(item) for item in (step.diagnostics or [])]
     source_lines = [line for line in diagnostics if line.lower().startswith("source guard:")]
+    if not source_lines:
+        source_lines = _source_guard_lines(model, step)
     source_text = " ".join(source_lines)
     actor = str(step.actor or "Caller")
 
