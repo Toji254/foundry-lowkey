@@ -1631,7 +1631,7 @@ def _source_msg_value_literal(value: str) -> int | None:
     """Parse a Solidity numeric literal used in a msg.value constraint."""
     raw = " ".join(str(value or "").strip().split())
     match = re.fullmatch(
-        r"([0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\\s*(wei|gwei|ether)?",
+        r"([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*(wei|gwei|ether)?",
         raw,
         re.I,
     )
@@ -1658,20 +1658,20 @@ def _source_msg_value_literal(value: str) -> int | None:
 
 def _source_msg_value_constraints(source_body: str) -> list[tuple[str, int]]:
     """Extract simple Solidity comparisons involving msg.value."""
-    literal = r"(?:[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\\s*(?:wei|gwei|ether)?)"
+    literal = r"(?:[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\s*(?:wei|gwei|ether)?)"
     constraints: list[tuple[str, int]] = []
 
     patterns = [
         (
             re.compile(
-                r"\\bmsg\\.value\\b\\s*(==|<=|>=|<|>)\\s*(" + literal + r")",
+                r"\bmsg\.value\b\s*(==|<=|>=|<|>)\s*(" + literal + r")",
                 re.I,
             ),
             False,
         ),
         (
             re.compile(
-                r"(" + literal + r")\\s*(==|<=|>=|<|>)\\s*\\bmsg\\.value\\b",
+                r"(" + literal + r")\s*(==|<=|>=|<|>)\s*\bmsg\.value\b",
                 re.I,
             ),
             True,
@@ -1715,13 +1715,13 @@ def _value_for(
             function_name = str(fn.get("name") or "")
             if str(fn.get("type") or "") in {"receive", "fallback"}:
                 pattern = (
-                    r"\\b" + re.escape(function_name)
-                    + r"\\s*\\(\\s*\\)\\s*(?:external\\s+)?(?:payable\\s*)?\\{"
+                    r"\b" + re.escape(function_name)
+                    + r"\s*\(\s*\)\s*(?:external\s+)?(?:payable\s*)?\{"
                 )
             else:
                 pattern = (
-                    r"\\bfunction\\s+" + re.escape(function_name)
-                    + r"\\s*\\([^)]*\\)[^{;]*\\{"
+                    r"\bfunction\s+" + re.escape(function_name)
+                    + r"\s*\([^)]*\)[^{;]*\{"
                 )
             match = re.search(pattern, source, re.S | re.I)
             if match:
@@ -1737,14 +1737,14 @@ def _value_for(
             continue
 
         exact_patterns = (
-            r"\\b" + re.escape(pname) + r"\\s*==\\s*msg\\.value\\b",
-            r"\\bmsg\\.value\\s*==\\s*" + re.escape(pname) + r"\\b",
+            r"\b" + re.escape(pname) + r"\s*==\s*msg\.value\b",
+            r"\bmsg\.value\s*==\s*" + re.escape(pname) + r"\b",
         )
         bound_patterns = (
-            r"\\b" + re.escape(pname) + r"\\s*>=\\s*msg\\.value\\b",
-            r"\\bmsg\\.value\\s*<=\\s*" + re.escape(pname) + r"\\b",
-            r"\\b" + re.escape(pname) + r"\\s*<=\\s*msg\\.value\\b",
-            r"\\bmsg\\.value\\s*>=\\s*" + re.escape(pname) + r"\\b",
+            r"\b" + re.escape(pname) + r"\s*>=\s*msg\.value\b",
+            r"\bmsg\.value\s*<=\s*" + re.escape(pname) + r"\b",
+            r"\b" + re.escape(pname) + r"\s*<=\s*msg\.value\b",
+            r"\bmsg\.value\s*>=\s*" + re.escape(pname) + r"\b",
         )
         if source_body and any(re.search(pattern, source_body, re.S) for pattern in exact_patterns):
             return int(value)
@@ -1777,7 +1777,7 @@ def _value_for(
 
         return max(0, lower)
 
-    if source_body and re.search(r"\\bmsg\\.value\\s*(?:>|>=)\\s*0\\b", source_body):
+    if source_body and re.search(r"\bmsg\.value\s*(?:>|>=)\s*0\b", source_body):
         return 1
 
     if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")):
