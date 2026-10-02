@@ -1040,7 +1040,11 @@ def run_audit(args: Sequence[str]) -> int:
 def main(argv: Iterable[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help", "help"}:
-        print_help()
+        print("LowkeyForge - native Forge bridge")
+        print("  lk forge <forge-command> [args...]")
+        print("  lk lint [args...]")
+        print("  lk geiger [args...]  (unsafe-cheatcode lint compatibility alias)")
+        print("  lk forge audit [--no-checks] [--verbose]")
         return 0
 
     command, rest = args[0], args[1:]
