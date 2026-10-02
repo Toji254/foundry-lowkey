@@ -22,6 +22,10 @@ if str(MODULE_DIR) not in sys.path:
 import audit_context
 import walkthrough
 try:
+    import question_engine
+except ImportError:
+    question_engine = None
+try:
     import bootstrap as bootstrap_engine
 except ImportError:
     bootstrap_engine = None
@@ -9419,6 +9423,32 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
     }
 
 COMMAND_HELP = {
+    "q": _help_entry(
+        "Drive a deterministic auditor-mindset question frontier from the current project's evidence.",
+        "lk q [current|why|evidence|path|done|note|skip|source|reset]",
+        "lk q",
+        "Use it when you want Lowkey to turn project evidence into the next useful auditing question without giving you the finding.",
+        children={
+            "current": _help_entry("Show the current best auditor question.", "lk q current", "lk q current", "Use it to return to the question without changing the investigation state."),
+            "why": _help_entry("Explain why the current question is on the frontier.", "lk q why", "lk q why", "Use it when you want to understand the reasoning inputs behind the question."),
+            "evidence": _help_entry("Show evidence Lowkey is using for the current question.", "lk q evidence", "lk q evidence", "Use it before answering so you can distinguish observed facts from assumptions."),
+            "path": _help_entry("Show the question thread recorded so far.", "lk q path", "lk q path", "Use it to see how your investigation has narrowed."),
+            "done": _help_entry("Mark the current question answered and move the frontier.", "lk q done", "lk q done", "Use it only after you have actually established the answer."),
+            "note": _help_entry("Record your answer/evidence for the current question.", "lk q note \"...\"", "lk q note \"owner check is enforced in X\"", "Use it when you want the learning state to retain the reasoning you established."),
+            "skip": _help_entry("Record that the current question is not being pursued.", "lk q skip \"...\"", "lk q skip \"feature is not present\"", "Use it when a question is irrelevant or intentionally deferred."),
+            "source": _help_entry("Show the research sources attached to a question.", "lk q source <QUESTION_ID>", "lk q source ARCH-001", "Use it to inspect the provenance behind a question."),
+            "reset": _help_entry("Reset question-learning state without deleting audit evidence.", "lk q reset", "lk q reset", "Use it when starting a fresh reasoning pass on the same project."),
+        },
+        related=["lk questions", "lk project", "lk system", "lk findings", "lk walkthrough"],
+    ),
+    "questions": _help_entry(
+        "Show the compact auditor-question frontier for the current project.",
+        "lk questions [--all]",
+        "lk questions",
+        "Use it when you want the project-wide map of what is settled, active, and still needs proof.",
+        options=[("--all", "Show every applicable question in the current project.", "lk questions --all")],
+        related=["lk q", "lk project", "lk system"],
+    ),
     "walkthrough": _help_entry(
         "Walk through the protocol as a live story: execute one interaction, observe what changed, then redraw the board.",
         "lk walkthrough [options]",
@@ -9991,6 +10021,8 @@ START HERE
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
   lk audit                           Run the interactive audit workflow.
+  lk q                              Get the next auditor-mindset question from current evidence.
+  lk questions                      See the compact question frontier across the project.
 
 FIRST 10 MINUTES
   1. Start Anvil:                  anvil
@@ -10455,6 +10487,14 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if args and args[0] in {"run","pipeline"}:
             return run_external_audit(config,args)
         return run_audit_mode(config,args)
+    elif cmd=="q":
+        if question_engine is None:
+            return fail("Question engine is not installed. Re-run install.sh from this checkout.")
+        return question_engine.run(config, args)
+    elif cmd=="questions":
+        if question_engine is None:
+            return fail("Question engine is not installed. Re-run install.sh from this checkout.")
+        return question_engine.run(config, args, mode="overview")
     elif cmd in {"walkthrough","walk"}: return walkthrough.run(config,args,host=sys.modules[__name__])
     elif cmd=="context": return run_context(config)
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
@@ -10585,7 +10625,7 @@ def main():
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
-        "audit","audit--checks","audit-checks","audit","walkthrough","walk","rg","poc","project","system"
+        "audit","audit--checks","audit-checks","audit","walkthrough","walk","rg","poc","project","system","q","questions"
     }
     if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks"}:
         try:
