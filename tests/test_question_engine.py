@@ -13,6 +13,8 @@ MODULE = ROOT / "lowkey" / "question_engine.py"
 
 spec = importlib.util.spec_from_file_location("lowkeycast_questions", MODULE)
 questions = importlib.util.module_from_spec(spec)
+import sys
+sys.modules[spec.name] = questions
 spec.loader.exec_module(questions)
 
 
