@@ -30,6 +30,15 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("When to use:", output)
         self.assertIn("Example", output)
 
+    def test_walkthrough_seed_help_lists_seed_history_command(self):
+        code, output = self.capture_dispatch("walkthrough", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk walkthrough seed", output)
+        code, output = self.capture_dispatch("walkthrough", "seed", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk walkthrough seed", output)
+        self.assertIn("previous walkthrough test seeds", output)
+
     def test_nested_walkthrough_test_help(self):
         code, output = self.capture_dispatch("walkthrough", "test", "--h")
         self.assertEqual(code, 0)
