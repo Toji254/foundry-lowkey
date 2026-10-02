@@ -8102,6 +8102,7 @@ def _render_board(
             models + [m for m in (support_models or []) if m.name not in {x.name for x in models}],
             enabled,
             runtime,
+            review_mode=review_mode,
         ),
     ]
     if current and current.storage_after:
