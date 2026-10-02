@@ -285,7 +285,7 @@ class WalkthroughTests(unittest.TestCase):
         rendered = walkthrough._render_storage(storage, False)
         self.assertIn("anchor slot → 0   (the mapping itself)", rendered)
         self.assertIn("value slots → keccak256(pad(key) || pad(0))", rendered)
-        self.assertIn("stored at 0x" + "2" * 64, rendered)
+        self.assertIn("1000  at 0x" + "2" * 8, rendered)
         self.assertIn("raw word: 0x" + "0" * 24 + "3" * 40, rendered)
         self.assertIn("SLOT 1", rendered)
 
