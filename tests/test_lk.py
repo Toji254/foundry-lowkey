@@ -864,6 +864,44 @@ contract Pool {
         self.assertLess(calls[0].index("--rpc-url"), calls[0].index("--create"))
         self.assertLess(calls[0].index("--create"), calls[0].index("0x60006000556000"))
 
+    def test_generic_lab_never_promotes_cast_sender_as_deployment_target(self):
+        sender = "0x" + "1" * 40
+        deployed = "0x" + "3" * 40
+        tx_hash = "0x" + "2" * 64
+
+        artifact = {
+            "contractName": "Fallback",
+            "abi": [],
+            "bytecode": {"object": "0x6000"},
+        }
+
+        completed = subprocess.CompletedProcess(
+            ["cast", "send"],
+            0,
+            stdout=f"transactionHash: {tx_hash}\nfrom: {sender}\n",
+            stderr="",
+        )
+
+        def fake_cast(args):
+            if args[:2] == ["cast", "receipt"]:
+                return 0, json.dumps({"contractAddress": deployed}), ""
+            if args[:2] == ["cast", "code"]:
+                address = args[2]
+                return (0, "0x6000", "") if address.lower() == deployed.lower() else (0, "0x", "")
+            return 1, "", "unexpected cast call"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(lk.subprocess, "run", return_value=completed), \
+                 patch.object(lk, "cast_output", side_effect=fake_cast):
+                address, reason = lk._deploy_artifact_locally(
+                    {}, root, "http://127.0.0.1:8545",
+                    [sender], artifact, [],
+                )
+
+        self.assertEqual(address, deployed)
+        self.assertIsNone(reason)
+
     def test_walkthrough_vyper_replay_is_not_solidity_script(self):
         model = lk.walkthrough.ContractModel(
             name="Counter",
