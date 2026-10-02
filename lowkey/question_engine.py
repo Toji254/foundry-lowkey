@@ -924,10 +924,18 @@ def detect_features(root: Path | None = None) -> dict[str, Any]:
     kind = str(info.get("kind") or "").lower()
 
     ext_presence = {p.suffix.lower() for p in _source_files(root_path)}
-    blockchain = any(
-        token in kind or token in stacks
-        for token in ("foundry","hardhat","vyper","cairo","move","anchor","solana")
-    ) or bool(ext_presence & {".sol",".vy",".vyi",".cairo",".move"})
+    blockchain = (
+        (root_path / "foundry.toml").is_file()
+        or (root_path / "hardhat.config.js").is_file()
+        or (root_path / "hardhat.config.cjs").is_file()
+        or (root_path / "hardhat.config.mjs").is_file()
+        or (root_path / "hardhat.config.ts").is_file()
+        or any(
+            token in kind or token in stacks
+            for token in ("foundry","hardhat","vyper","cairo","move","anchor","solana")
+        )
+        or bool(ext_presence & {".sol",".vy",".vyi",".cairo",".move"})
+    )
     web = (
         bool(Path(root_path / "package.json").is_file() and re.search(r'"(?:express|fastify|koa|hapi|nest|next|nuxt|react|remix)"', manifest))
         or bool(re.search(r"\b(?:fastapi|flask|django|starlette)\b", manifest))
@@ -1146,7 +1154,12 @@ def _evidence_present(key: str, *, features: dict[str, Any], observed: dict[str,
         "migrations": bool(features.get("features", {}).get("data") and re.search(r"\b(?:migration|migrate|alembic|prisma|schema)\b", manifest + source)),
         "tenancy": bool(re.search(r"\b(?:tenant|organization|workspace|namespace|account_id|user_id)\b", source)),
         "permission": bool(re.search(r"\b(?:permission|acl|rbac|role|capability)\b", source)),
-        "proof": bool(latest.get("trace") or latest.get("state_diff") or signals),
+        "proof": bool(
+            latest.get("trace")
+            or latest.get("state_diff")
+            or signals
+            or any(key in commands for key in ("trace", "changes", "state-diff", "proof", "walkthrough", "probe"))
+        ),
     }
 
     if latest.get("tx_hash"):
@@ -1353,6 +1366,17 @@ def _score(
     if observed.get("has_live_evidence") and any(key in q.evidence_keys for key in ("trace","state_diff","proof")):
         score += 18
         reasons.append("a live execution observation is available")
+    if (
+        q.phase == "prove"
+        and (
+            "proof" in q.evidence_keys
+            or any(key in q.evidence_keys for key in ("trace", "state_diff"))
+        )
+        and any(key in (q.evidence_keys or ()) for key in ("trace", "state_diff", "proof"))
+        and any(str(command).lower() in {"trace", "changes", "state-diff", "walkthrough", "probe"} for command in observed.get("command_names") or [])
+    ):
+        score += 18
+        reasons.append("recent execution evidence opened a proof question")
 
     if observed.get("signals") and any(key in q.evidence_keys for key in ("signals","findings","proof")):
         score += 16
