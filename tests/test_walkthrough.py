@@ -253,7 +253,8 @@ class WalkthroughTests(unittest.TestCase):
         tx_hash = "0x" + "4" * 64
         root = pathlib.Path(tempfile.mkdtemp())
         step = walkthrough.Step(
-            1, "Alice", "Demo", "0x" + "5" * 40, "setValue(uint256)", [7], status="checking"
+            1, "Alice", "Demo", "0x" + "5" * 40, "setValue(uint256)", [7],
+            status="checking", tx_hash=tx_hash,
         )
 
         def rpc(method, params=None):
@@ -275,7 +276,6 @@ class WalkthroughTests(unittest.TestCase):
             path = walkthrough._write_transaction_evidence(
                 root, "http://127.0.0.1:8545", step, receipt
             )
-        step.tx_hash = tx_hash
         self.assertIsNotNone(path)
         html = path.read_text(encoding="utf-8")
         self.assertIn('"lowkey_status_at_render": "checking"', html)
@@ -1420,28 +1420,28 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("agreement", reason)
         self.assertIn("IAgreement", reason)
 
-    def test_live_recipe_arguments_are_authoritative(self):
-        token = "0x" + "a" * 40
+    def test_generic_plan_uses_observed_dependency_argument(self):
         agreement = "0x" + "b" * 40
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
             walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
         ]
-        config = {
-            "target": "0x" + "3" * 40,
-            "lab_system": {
-                "factory": "0x" + "3" * 40,
-                "stake_token": token,
-                "agreement": agreement,
-                "moderator": "0x" + "4" * 40,
-            },
-        }
-        recipe = walkthrough._confidence_pool_factory_recipe(config, actors, 100)
-        create = next(step for step in recipe if step.function.startswith("createPool("))
-        self.assertFalse(create.inferred)
-        self.assertEqual(create.args[0], agreement)
-        self.assertEqual(create.args[1], token)
-        self.assertEqual(create.args[4], actors[1].address)
+        model = walkthrough.ContractModel(
+            name="Factory",
+            source="src/Factory.sol",
+            artifact="out/Factory.sol/Factory.json",
+            functions=["createPool(address)"],
+            abi=[{
+                "type":"function","name":"createPool",
+                "inputs":[{"name":"agreement","type":"address"}],
+                "stateMutability":"nonpayable",
+            }],
+        )
+        recipe = walkthrough.plan_workflow(
+            model, actors, "0x"+"3"*40, 100, 1, observed={"agreement": agreement}
+        )
+        self.assertEqual(recipe[0].args[0], agreement)
+        self.assertTrue(recipe[0].inferred)
 
     def test_auxiliary_project_models_are_available_for_runtime_decoding(self):
         with tempfile.TemporaryDirectory() as tmp:
