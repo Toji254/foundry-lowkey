@@ -10098,7 +10098,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         return _render_command_help([cmd, *(args or [])[:help_index]])
 
     activate_project_target(config)
-    elif cmd in {"--version","-V","version"}: return run_version()
+    if cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
         root=audit_context.foundry_project_root()
         current=active_project_target(config,root)
