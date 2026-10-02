@@ -2424,12 +2424,21 @@ def _friendly_storage_value(
     value: Any,
     type_name: Any,
     native_value: bool = False,
+    technical: bool = False,
 ) -> str:
-    """Render a storage value as meaning first, with its Solidity representation in brackets."""
+    """Render storage values for humans first; exact representation is optional forensic detail."""
     type_text = str(type_name or "value")
     if native_value:
         try:
-            return f"{_friendly_eth(int(value))} [stored as {type_text}; msg.value is measured in wei]"
+            amount = int(value)
+            eth_text = _friendly_eth(amount)
+            if technical:
+                return f"{eth_text} [stored as {type_text}; msg.value is measured in wei]"
+            # Avoid huge decimal wei strings in the normal teaching board.
+            if abs(amount) >= 10**6:
+                exponent = len(str(abs(amount))) - 1
+                return f"{_friendly_eth(amount).split(' [', 1)[0]} [10^{exponent} wei]"
+            return f"{eth_text}"
         except (TypeError, ValueError):
             pass
     return f"{_friendly_value(value)} [{type_text} value]"
@@ -7862,6 +7871,7 @@ def _render_storage(
                             row.get("value"),
                             value_type,
                             native_value=native_value,
+                            technical=technical,
                         )
                         lines.append(f"  {branch} {key_text} → {shown_value}")
 
@@ -7918,18 +7928,21 @@ def _render_storage(
         raw = item.get("raw")
         value = item.get("value")
         value_text = _friendly_value(value)
+        value_actor = None
         if is_address(value):
-            actor = _actor_for_address(value, actors)
-            value_text = f"{actor} ({_addr(value)})" if actor else _addr(value)
+            value_actor = _actor_for_address(value, actors)
+            value_text = value_actor or _addr(value)
 
         label = str(item.get("label") or "value")
         type_name = str(item.get("type") or "unknown")
         lines = [
-            f"purpose    → {label} is stored in one numbered storage box",
+            f"purpose    → remembers the current {label}",
             f"value      → {value_text}",
             f"type       → {type_name}",
-            f"storage    → slot {item.get('slot')}   [numbered EVM storage box]",
+            f"storage    → slot {item.get('slot')}   [numbered storage box]",
         ]
+        if value_actor and technical:
+            lines.insert(2, f"address    → {value_actor} ({_addr(value)})")
         if technical and raw:
             lines.append(f"raw word   → {raw}   [32-byte EVM storage word]")
         storage_box(f"{STORAGE} STORAGE {label}", lines)
