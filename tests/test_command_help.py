@@ -127,5 +127,20 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
 
 
+    def test_question_help_is_contextual(self):
+        code, output = self.capture_dispatch("q", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk q", output)
+        self.assertIn("lk q why", output)
+        self.assertIn("lk q source", output)
+
+    def test_questions_help_is_contextual(self):
+        code, output = self.capture_dispatch("questions", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk questions", output)
+        self.assertIn("lk questions --all", output)
+
+
+
 if __name__ == "__main__":
     unittest.main()
