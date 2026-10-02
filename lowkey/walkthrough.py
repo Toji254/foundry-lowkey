@@ -3419,6 +3419,7 @@ def _render_protocol_story_full(
     enabled: bool,
     runtime: list[RuntimeContract] | None = None,
     review_mode: bool = False,
+    technical_storage: bool = False,
 ) -> str:
     lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
 
@@ -7795,99 +7796,144 @@ def _render_storage(
     storage: list[dict[str, Any]],
     enabled: bool,
     actors: list[Actor] | None = None,
+    technical: bool = False,
 ) -> str:
+    """Render storage in teaching order; forensic slot words stay available in technical mode."""
     actors = actors or []
     out: list[str] = []
+
+    def storage_box(title: str, lines: list[str]) -> None:
+        out.append(_box(title, lines, width=92))
+
     for item in storage[:16]:
         encoding = item.get("encoding")
+
         if encoding == "mapping":
-            anchor_slot = item.get("slot")
-            mapping_info = item.get("mapping", {})
+            anchor_slot = str(item.get("slot") or "?")
+            mapping_info = item.get("mapping", {}) or {}
             key_type = str(mapping_info.get("key_type") or "key")
             value_type = str(mapping_info.get("value_type") or "value")
+            label = str(item.get("label") or "mapping")
             native_value = bool(mapping_info.get("native_value"))
+
+            if native_value:
+                purpose = (
+                    f"keeps track of how much ETH each {key_type} has contributed"
+                    if key_type == "address"
+                    else f"stores one ETH amount for each {key_type} key"
+                )
+                value_meaning = "the amount associated with that key"
+            else:
+                purpose = f"keeps one {value_type} value for each {key_type} key"
+                value_meaning = f"the {value_type} value associated with that key"
+
             lines = [
-                f"meaning     → one {value_type} value is stored for each {key_type} key",
-                f"anchor slot → {anchor_slot}   [the mapping's base storage position]",
-                f"key         → {key_type}   [what identifies a row]",
-                f"value       → {value_type}   [what is stored for that key]",
-                f"row slot    → keccak256(pad(key) || pad({anchor_slot}))",
-                f"              [hash the key with the mapping slot to find that row]",
+                f"purpose     → {purpose}",
+                f"how to read → find a key (like Alice), then read the value stored for that key",
+                f"key        → {key_type}   [what identifies one entry]",
+                f"value      → {value_meaning}",
+                f"storage    → slot {anchor_slot}   [the mapping's numbered storage box]",
             ]
             if native_value:
-                lines.append("unit        → ETH amounts are stored as wei here [1 ETH = 10^18 wei]")
+                lines.append("unit       → ETH is stored here as wei internally [1 ETH = 10^18 wei]")
 
-            for row in mapping_info.get("rows", [])[:4]:
-                raw_key = str(row.get("key") or "")
-                actor_name = _actor_for_address(raw_key, actors)
-                key_text = (
-                    f"{actor_name} ({_addr(raw_key)})"
-                    if actor_name
-                    else _addr(raw_key) if is_address(raw_key) else raw_key
-                )
-                if row.get("struct"):
-                    slot = str(row.get("slot") or "?")
-                    lines.append(f"{key_text}  [key]  → stored at {slot} [EVM storage slot for this key]")
-                    for field in row["struct"].get("fields", [])[:8]:
-                        lines.append(
-                            f"  ├─ {field['name']:<14} = {_friendly_value(field['value'])}  "
-                            f"[{field['type']}]"
+            rows = list(mapping_info.get("rows", []) or [])
+            shown_rows = rows[:4]
+            if shown_rows:
+                lines.append("entries:")
+                for index, row in enumerate(shown_rows):
+                    raw_key = str(row.get("key") or "")
+                    actor_name = _actor_for_address(raw_key, actors)
+                    key_text = (
+                        f"{actor_name}"
+                        if actor_name
+                        else _addr(raw_key) if is_address(raw_key) else raw_key
+                    )
+                    branch = "└─" if index == len(shown_rows) - 1 else "├─"
+                    if row.get("struct"):
+                        lines.append(f"  {branch} {key_text} → struct stored at this key")
+                        for field_index, field in enumerate(row["struct"].get("fields", [])[:8]):
+                            field_branch = "   └─" if field_index == len(row["struct"].get("fields", [])[:8]) - 1 else "   ├─"
+                            lines.append(
+                                f"{field_branch} {field['name']} = {_friendly_value(field['value'])}"
+                            )
+                    else:
+                        shown_value = _friendly_storage_value(
+                            row.get("value"),
+                            value_type,
+                            native_value=native_value,
                         )
-                else:
-                    shown_value = _friendly_storage_value(
-                        row.get("value"),
-                        value_type,
-                        native_value=native_value,
-                    )
-                    lines.append(
-                        f"{key_text} → {shown_value}  "
-                        f"at {row.get('slot')} [calculated storage slot]"
-                    )
-            out.append(_box(f"{MAPPING} MAPPING {item.get('label')}", lines, width=92))
-        elif item.get("struct"):
+                        lines.append(f"  {branch} {key_text} → {shown_value}")
+
+            if technical:
+                lines += [
+                    "",
+                    "technical storage:",
+                    f"  mapping anchor slot = {anchor_slot}",
+                    f"  row location        = keccak256(pad(key) || pad({anchor_slot}))",
+                    "  [the EVM hashes the key with the mapping slot to locate that entry]",
+                ]
+                for row in shown_rows[:4]:
+                    raw_slot = row.get("slot")
+                    if raw_slot:
+                        lines.append(f"  {row.get('key')} → row slot {raw_slot}")
+            storage_box(f"{MAPPING} MAPPING {label}", lines)
+            continue
+
+        if item.get("struct"):
             fields = item["struct"]["fields"]
-            out.append(_box(
-                f"{STRUCT} STRUCT {item['struct']['type']}",
-                [
-                    f"base slot: {item.get('slot')}   [where this struct starts]",
-                    *[
-                        f"{f['name']:<18} = {_friendly_value(f['value'])}   "
-                        f"[{f['type']}] @ {f['slot']} [storage slot]"
-                        for f in fields
-                    ],
-                ],
-                width=92,
-                left="╔",
-                right="╗",
-            ))
-        elif isinstance(item.get("type"), str) and "[" in str(item.get("type")):
-            out.append(_box(
-                f"{ARRAY} ARRAY {item.get('label')}",
-                [
-                    f"type: {item.get('type')}   [Solidity array type]",
-                    f"slot: {item.get('slot')}   [array's storage anchor]",
-                    f"anchor value: {item.get('value')}   [raw value stored at the anchor]",
-                ],
-                width=92,
-            ))
-        else:
-            raw = item.get("raw")
-            value = item.get("value")
-            value_text = _friendly_value(value)
-            if is_address(value):
-                actor = _actor_for_address(value, actors)
-                value_text = f"{actor} ({_addr(value)})" if actor else _addr(value)
-            slot_lines = [
-                f"{item.get('label')}: {value_text}   [{item.get('type')} value]",
-                f"type: {item.get('type')}   [Solidity type]",
+            lines = [
+                f"purpose    → one structured value begins at storage slot {item.get('slot')}",
+                f"type       → {item.get('struct', {}).get('type')}",
+                "fields:",
             ]
-            if raw:
-                slot_lines.append(f"raw word: {raw}   [32-byte EVM storage word]")
-            out.append(_box(
-                f"{STORAGE} SLOT {item.get('slot')}",
-                slot_lines,
-                width=92,
-            ))
+            for field in fields[:8]:
+                lines.append(f"  ├─ {field['name']} → {_friendly_value(field['value'])}")
+            if technical:
+                lines.append("")
+                lines.append("technical storage:")
+                lines.append(f"  base slot = {item.get('slot')}")
+                for field in fields[:8]:
+                    lines.append(
+                        f"  {field['name']} @ slot {field['slot']} [{field['type']}]"
+                    )
+            storage_box(f"{STRUCT} STRUCT {item['struct']['type']}", lines)
+            continue
+
+        if isinstance(item.get("type"), str) and "[" in str(item.get("type")):
+            lines = [
+                f"purpose    → array data for {item.get('label')}",
+                f"type       → {item.get('type')}",
+                f"storage    → slot {item.get('slot')}   [the array's numbered storage box]",
+            ]
+            if item.get("value") is not None:
+                lines.append(f"value      → {item.get('value')}")
+            if technical:
+                lines.append("technical: anchor slot stores the array length/location metadata according to Solidity's storage rules")
+                if item.get("raw"):
+                    lines.append(f"raw word   → {item.get('raw')}")
+            storage_box(f"{ARRAY} ARRAY {item.get('label')}", lines)
+            continue
+
+        raw = item.get("raw")
+        value = item.get("value")
+        value_text = _friendly_value(value)
+        if is_address(value):
+            actor = _actor_for_address(value, actors)
+            value_text = f"{actor} ({_addr(value)})" if actor else _addr(value)
+
+        label = str(item.get("label") or "value")
+        type_name = str(item.get("type") or "unknown")
+        lines = [
+            f"purpose    → {label} is stored in one numbered storage box",
+            f"value      → {value_text}",
+            f"type       → {type_name}",
+            f"storage    → slot {item.get('slot')}   [numbered EVM storage box]",
+        ]
+        if technical and raw:
+            lines.append(f"raw word   → {raw}   [32-byte EVM storage word]")
+        storage_box(f"{STORAGE} STORAGE {label}", lines)
+
     return "\n\n".join(out) if out else "  <storage layout unavailable>"
 
 
@@ -8343,7 +8389,7 @@ def _render_board(
         ),
     ]
     if current and current.storage_after:
-        board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled, actors)]
+        board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled, actors, technical=technical_storage)]
     board += ["", "  " + _slither_status(root)]
     if static:
         board.append(_paint("STATIC MODEL ONLY", YELLOW, enabled))
@@ -8599,6 +8645,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             _ansi_enabled(False),
             support_models=model_catalog,
             review_mode=review_mode,
+            technical_storage=technical_mode,
         ))
         sys.stdout.flush()
 
