@@ -2425,6 +2425,35 @@ class WalkthroughTests(unittest.TestCase):
         self.assertNotIn("not live", rendered)
         self.assertIn("source relationships: none resolved", rendered)
 
+    def test_withdraw_flow_is_labeled_native_eth_when_trace_carries_eth(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Fallback",
+            "0x" + "3" * 40,
+            "withdraw()",
+            [],
+            status="success",
+        )
+        step.execution_edges = [{
+            "depth": 1,
+            "to_contract": "Alice",
+            "to_address": "0x" + "1" * 40,
+            "function": "CALL",
+            "value_wei": 2,
+        }]
+        rendered = walkthrough._render_interaction_graph_full(
+            pathlib.Path("/tmp/project"),
+            step,
+            [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)],
+            walkthrough.ContractModel(name="Fallback", source="src/Fallback.sol", artifact="out/Fallback.sol/Fallback.json"),
+            [],
+            False,
+            [],
+        )
+        self.assertIn("native ETH flow: Fallback ──▶ Alice", rendered)
+        self.assertNotIn("token flow: Fallback ──▶ Alice", rendered)
+
     def test_native_value_flow_separates_gas_from_protocol_value(self):
         step = walkthrough.Step(
             1,
@@ -2479,6 +2508,32 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("source relationships: none resolved", rendered)
         self.assertIn("live execution: observed in the protocol story", rendered)
         self.assertNotIn("source relationship   ● observed live", rendered)
+
+    def test_live_latest_step_is_not_marked_as_review(self):
+        model = walkthrough.ContractModel(
+            name="Escrow",
+            source="src/EthEscrow.sol",
+            artifact="out/EthEscrow.sol/Escrow.json",
+        )
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Escrow",
+            "0x" + "3" * 40,
+            "release()",
+            [],
+            status="success",
+        )
+        rendered = walkthrough._render_protocol_story_full(
+            pathlib.Path("/tmp/project"),
+            [step],
+            step,
+            [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)],
+            [model],
+            False,
+        )
+        self.assertIn("NOW  •  LIVE", rendered)
+        self.assertNotIn("REVIEWING  •  FUNCTION 01", rendered)
 
     def test_review_mode_marks_latest_step_as_review_and_not_live(self):
         model = walkthrough.ContractModel(
