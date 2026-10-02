@@ -18,7 +18,15 @@ class LowkeyForgeTests(unittest.TestCase):
         context = {
             "target": {"address": "0x" + "1" * 40, "contract": "Fixture"},
             "actor": "attacker",
-            "signals": [{"status": "open"}],
+            "signals": [
+                {"status": "open"},
+                {
+                    "status": "open",
+                    "category": "security-pattern",
+                    "pattern_id": "REPLAY-001",
+                    "verification_status": "REVIEW",
+                },
+            ],
             "focus": {"signal_id": "SLITHER-ABC", "title": "raw call"},
             "tools": {
                 "forge-build": {"status": "completed", "summary": "build audit step"},
@@ -41,6 +49,9 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("PoC scaffold", rendered)
         self.assertIn("scaffold generated (placeholder)", rendered)
         self.assertIn("SLITHER-ABC", rendered)
+        self.assertIn("Security patterns:", rendered)
+        self.assertIn("1 review", rendered)
+        self.assertIn("REPLAY-001", rendered)
 
     def test_dashboard_marks_baseline_and_missing_target(self):
         context = {
