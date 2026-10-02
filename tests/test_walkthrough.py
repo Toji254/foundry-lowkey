@@ -252,7 +252,7 @@ class WalkthroughTests(unittest.TestCase):
             status="checking", tx_hash=tx_hash,
         )
 
-        def rpc(method, params=None):
+        def rpc(_rpc_url, method, params=None):
             if method == "eth_getTransactionByHash":
                 return {
                     "hash": tx_hash,
