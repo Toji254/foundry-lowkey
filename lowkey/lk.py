@@ -9794,10 +9794,10 @@ def _render_command_help(path):
         print(f"Native help  : lk {command} --help")
         return 0
 
-    print(f"What it does : {entry['summary']}")
-    print(f"When to use  : {entry['use']}")
-    print(f"Usage        : {entry['usage']}")
-    print(f"Example      : {entry['example']}")
+    print(f"What it does: {entry['summary']}")
+    print(f"When to use: {entry['use']}")
+    print(f"Usage: {entry['usage']}")
+    print(f"Example: {entry['example']}")
 
     children = entry.get("children") or {}
     if children:
@@ -9807,8 +9807,8 @@ def _render_command_help(path):
         for name, child in children.items():
             print(f"  lk {shown_path} {name}")
             print(f"      What it does: {child['summary']}")
-            print(f"      When to use : {child['use']}")
-            print(f"      Example     : {child['example']}")
+            print(f"      When to use: {child['use']}")
+            print(f"      Example: {child['example']}")
 
     options = entry.get("options") or []
     if options:
