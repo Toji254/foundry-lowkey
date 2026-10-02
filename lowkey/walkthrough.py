@@ -4068,7 +4068,22 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
         target_name = str(edge.get("interface") or edge.get("to_contract") or "External")
         dep_fn_name = str(edge.get("to_function") or "")
         if code in {"", "0x"}:
-            diagnostics.append("LAB ISSUE: " + _pretty_identifier(via) + " = " + _addr(dependency) + " has no contract code for the source-required " + target_name + "." + dep_fn_name + "() dependency")
+            # An EOA is a valid destination when the source operation is a native
+            # ETH transfer such as payable(recipient).transfer(...) or send(...).
+            # Keep this consistent with _diagnose_argument_contracts: no-code is
+            # only a lab problem when the source actually requires a contract.
+            if dep_fn_name.lower() in {"transfer", "send"}:
+                diagnostics.append(
+                    "✓ " + _pretty_identifier(via) + " = " + _addr(dependency)
+                    + " is an EOA (wallet address); "
+                    + dep_fn_name.lower() + "() can send native ETH without contract code"
+                )
+                continue
+            diagnostics.append(
+                "LAB ISSUE: " + _pretty_identifier(via) + " = " + _addr(dependency)
+                + " has no contract code for the source-required " + target_name
+                + "." + dep_fn_name + "() dependency"
+            )
             origin = origin or (model.name + " → " + target_name + "." + dep_fn_name + " has no runtime code")
             continue
         dep_model = next((item for item in models if item.name.lower() == target_name.lower()), None)
