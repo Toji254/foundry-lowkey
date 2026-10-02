@@ -9431,13 +9431,7 @@ COMMAND_HELP = {
                 "lk walkthrough test --auto --cases 50",
                 "Use it when you want to stress assumptions and collect reproducible behavior without permanently mutating the lab state. The seed is the run's reproducibility key: it changes the randomized probe order, actors, arguments, and inputs.",
                 children={
-                    "seed": _help_entry(
-                        "Show previous walkthrough test seeds and the short findings recorded for each run.",
-                        "lk walkthrough seed [SEED]",
-                        "lk walkthrough seed 12345",
-                        "Use it after a test run to see which seeds you have used, what each run found, and the exact command needed to replay one.",
-                    ),
-                },
+                        },
                 options=[
                     ("--auto", "Automatically build/provision a local target when possible.", "lk walkthrough test --auto"),
                     ("--cases N", "Run N randomized cases; Lowkey caps this at 200.", "lk walkthrough test --cases 50"),
@@ -9446,6 +9440,12 @@ COMMAND_HELP = {
                     ("--yes", "Run without interactive pauses.", "lk walkthrough test --yes"),
                 ],
                 related=["lk walkthrough", "lk trace", "lk findings"],
+            ),
+            "seed": _help_entry(
+                "Show previous walkthrough test seeds and the short findings recorded for each run.",
+                "lk walkthrough seed [SEED]",
+                "lk walkthrough seed 12345",
+                "Use it after a test run to see which seeds you have used, what each run found, and the exact command needed to replay one.",
             ),
         },
         options=[
