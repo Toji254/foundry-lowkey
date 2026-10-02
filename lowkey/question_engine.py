@@ -1907,7 +1907,7 @@ def overview(root: Path | None = None, *, show_all: bool = False) -> str:
         "  → active    = Lowkey has enough evidence/prerequisites to make this branch actionable now.",
         "  ○ waiting   = relevant, but another branch is currently more actionable first.",
         "  'live'      = worth investigating now; it does NOT mean 'vulnerable'.",
-        "  'proof'     = Lowkey has useful evidence, but you still need to prove the security property.",
+        "  'proof'     = evidence exists, but the security property still needs proof.",
         "",
         f"QUESTION UNIVERSE  •  {len(enabled)} applicable / {len(QUESTION_CATALOG)} total",
         "  applicable = detected project features make these questions relevant.",
