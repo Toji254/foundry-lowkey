@@ -3434,7 +3434,7 @@ def _render_interaction_graph_full(
         lines += ["  │", f"  │   RESULT  ✓  {actor} completed {contract}.{function}()"]
     elif step.status in {"blocked", "reverted"}:
         lines += ["  │", f"  │   RESULT  ✕  {actor} could not complete {contract}.{function}()"]
-    lines += ["  │", f"  │   WHY THIS STEP: {step.reason} [{marker}]"]
+    lines += ["  │", f"  │   WHY THIS STEP: {step.reason} {marker}"]
     if step.status == "success":
         lines.append("  │   BASIS: source-guided candidate passed live preflight and was confirmed on-chain")
     elif step.status in {"blocked", "reverted"}:
@@ -5707,11 +5707,12 @@ EVIDENCE_LEVEL_EXPLANATIONS = {
 }
 
 def _evidence_label(level: str) -> str:
+    """Render one compact evidence tag with meaning and an explicit trust level."""
     raw = str(level or "UNPROVEN").strip()
     explanation = EVIDENCE_LEVEL_EXPLANATIONS.get(raw)
     if explanation:
-        return f"{raw} [{explanation}]"
-    return raw + " [meaning: evidence level is not classified; trust: UNKNOWN — verify manually]"
+        return f"[{raw} — {explanation}]"
+    return f"[{raw} — meaning: evidence level is not classified; trust: UNKNOWN — verify manually]"
 
 def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]) -> tuple[str, str, str]:
     """Explain randomized probes without overstating what the evidence proves."""
