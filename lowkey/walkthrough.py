@@ -7886,12 +7886,12 @@ def _render_storage(
                 f"purpose       → {purpose}",
                 "how to read   → find a key (like Alice), then read the value stored for that key",
                 f"mapping slot  → {anchor_slot}   [the mapping's anchor; this slot identifies the mapping itself]",
-                "important     → slot 0 is not Alice's value; each key gets its own storage location",
+                f"important     → slot {anchor_slot} is not Alice's value; it helps the EVM find Alice's entry",
                 f"key type      → {key_type}   [what identifies an entry]",
                 f"value type    → {value_type}   [what is stored for that key]",
                 f"stored value  → {value_meaning}",
-                f"entry location→ the EVM calculates a separate storage location from the key + mapping slot {anchor_slot}",
-                "               [think: hash(Alice's address + slot 0) → Alice's storage location]",
+                f"entry location→ each key gets its own storage location using the key + mapping slot {anchor_slot}",
+                f"               [think: hash(Alice's address + slot {anchor_slot}) → Alice's storage location]",
             ]
             if native_value:
                 lines.append("unit          → ETH is stored internally as wei [1 ETH = 10^18 wei]")
@@ -7993,8 +7993,8 @@ def _render_storage(
             f"purpose       → {purpose}",
             f"value         → {value_text}",
             f"type          → {type_name}   [Solidity type]",
-            f"storage box   → slot {slot}   [a numbered 32-byte storage box; slots start at 0]",
-            "where it lives → this value is stored directly in this slot; it is not a mapping row",
+            f"storage box   → slot {slot}   [the value's numbered storage box; Solidity starts counting at 0]",
+            "where it lives → stored directly here because this is a single value, not a mapping entry",
         ]
         if technical and raw:
             lines.append(f"raw word    → {raw}   [32-byte EVM storage word]")
