@@ -139,6 +139,9 @@ class Step:
     execution_edges: list[dict[str, Any]] = field(default_factory=list)
     failure_origin: str | None = None
     diagnostics: list[str] = field(default_factory=list)
+    # Isolated randomized probes are restored after each observation; consumers
+    # must not interpret repeated success across that boundary as replay evidence.
+    observation_scope: str = "live"
 
 
 @dataclass
@@ -150,6 +153,9 @@ class WalkthroughStory:
     actions: list[dict[str, Any]] = field(default_factory=list)
     signal: str = "NOT_RUN"
     evidence: list[str] = field(default_factory=list)
+    # Actions inside a story persist state until the story finishes.
+    execution_scope: str = "persistent_story"
+    reset_between_actions: bool = False
 
 
 def _box(title: str, lines: Iterable[str], width: int = 72, left: str = "╭", right: str = "╮") -> str:
