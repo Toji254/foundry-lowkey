@@ -1895,7 +1895,7 @@ def overview(root: Path | None = None, *, show_all: bool = False) -> str:
     ranked = rank_questions(root_path, limit=3)
     lines = [
         "",
-        "LOWKEY // AUDITOR QUESTION FRONTIER",
+        "LOWKEY // AUDITOR QUESTION MAP",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"PROJECT  •  {root_path.name}",
         f"TYPE     •  {features.get('kind') or 'generic'}",
