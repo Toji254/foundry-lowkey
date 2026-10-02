@@ -330,6 +330,46 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("entry location    = keccak256(pad(key) || pad(0))", rendered)
         self.assertIn("row slot 0x" + "2" * 64, rendered)
 
+    def test_security_radar_uses_real_newlines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            patterns = root / ".audit" / "security_patterns.json"
+            patterns.parent.mkdir(parents=True)
+            patterns.write_text(json.dumps({
+                "patterns": [{
+                    "pattern_id": "REPLAY-001",
+                    "verification_status": "CANDIDATE",
+                    "contract": "Fallback",
+                    "function": "withdraw",
+                    "title": "Replayable payout / claim path",
+                }]
+            }), encoding="utf-8")
+            with patch.object(
+                walkthrough,
+                "audit_context",
+                None,
+                create=True,
+            ):
+                # The renderer imports audit_context itself; verify the rendering
+                # contract directly by patching the imported module.
+                fake = type("Context", (), {
+                    "security_patterns": lambda self, _root: [{
+                        "pattern_id": "REPLAY-001",
+                        "verification_status": "CANDIDATE",
+                        "contract": "Fallback",
+                        "function": "withdraw",
+                        "title": "Replayable payout / claim path",
+                    }]
+                })()
+                with patch.dict(sys.modules, {"audit_context": fake}):
+                    rendered = walkthrough._render_security_radar(root, walkthrough.ContractModel(
+                        name="Fallback",
+                        source="src/Fallback.sol",
+                        artifact="out/Fallback.sol/Fallback.json",
+                    ), False)
+        self.assertIn("SECURITY RADAR\n  Shared signals", rendered)
+        self.assertNotIn("\\n", rendered)
+
     def test_render_board_accepts_technical_storage_flag(self):
         model = walkthrough.ContractModel(
             name="Demo",
