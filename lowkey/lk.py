@@ -9837,11 +9837,11 @@ def _canonical_help_command(command):
     return HELP_ALIASES.get(str(command or "").strip().lower(), str(command or "").strip().lower())
 
 def _help_alias_for(command):
-    canonical = _canonical_help_command(command)
-    return next(
-        (alias for alias, target in HELP_ALIASES.items() if target == canonical and alias != canonical),
-        None,
-    )
+    raw = str(command or "").strip().lower()
+    canonical = _canonical_help_command(raw)
+    if not raw or raw == canonical:
+        return None
+    return raw
 
 def _help_entry_for_path(path):
     if not path:
@@ -9903,7 +9903,7 @@ def _render_command_help(path):
         return 0
 
     if alias:
-        print(f"Alias: 'lk {path[0]}' is another way to run 'lk {shown_path.split()[0]}'.")
+        print(f"Alias: 'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'.")
     print(f"What it does: {entry['summary']}")
     print(f"When to use: {entry['use']}")
     print(f"Usage: {entry['usage']}")
@@ -9959,8 +9959,10 @@ def _render_command_help(path):
         print(f"  Next: lk {shown_path} {first_child} --h")
     elif related:
         print(f"  Related: {related[0]}")
+    elif parent:
+        print(f"  Parent: lk {' '.join(parent)} --h")
     else:
-        print("  Parent: lk --h")
+        print("  Start: lk --h")
     return 0
 
 def print_help():
