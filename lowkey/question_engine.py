@@ -1514,6 +1514,77 @@ def _progress_marker(row: dict[str, Any]) -> str:
     return "○"
 
 
+EVIDENCE_TRUST = {
+    "OBSERVED": (
+        "observed in a live/test execution",
+        "HIGH for what happened; it does not prove the behavior is a vulnerability",
+    ),
+    "SOURCE": (
+        "read directly from project source",
+        "HIGH for what the code says; not proof that the rule is correct or complete",
+    ),
+    "DERIVED": (
+        "computed or correlated deterministically from other evidence",
+        "MEDIUM — verify the underlying observations",
+    ),
+    "INFERRED": (
+        "Lowkey combined multiple clues into an interpretation",
+        "MEDIUM-LOW — use as a lead and verify manually",
+    ),
+    "HEURISTIC": (
+        "pattern-based signal from source/metadata",
+        "LOW — false positives and false negatives are possible",
+    ),
+    "DOCUMENTED": (
+        "stated by README/docs/project metadata",
+        "MEDIUM — documentation describes intent, not enforcement",
+    ),
+    "CONTEXT": (
+        "target/project configuration or metadata",
+        "MEDIUM — useful orientation, not proof of runtime behavior",
+    ),
+}
+
+def _classify_question_evidence(item: str) -> tuple[str, str, str]:
+    text = str(item or "")
+    lower = text.lower()
+    if "latest tx:" in lower or "trace evidence" in lower or "state-diff evidence" in lower:
+        level = "OBSERVED"
+    elif "signals:" in lower:
+        level = "HEURISTIC"
+    elif "target contract:" in lower or "target address:" in lower or "source root:" in lower:
+        level = "CONTEXT"
+    elif "readme" in lower or "project metadata" in lower:
+        level = "DOCUMENTED"
+    elif "derived" in lower or "correlat" in lower:
+        level = "DERIVED"
+    else:
+        level = "CONTEXT"
+    meaning, trust = EVIDENCE_TRUST[level]
+    return level, meaning, trust
+
+def _question_workflow(q: Question) -> list[str]:
+    return [
+        "YOUR JOB",
+        "  Answer this question yourself. Lowkey is choosing the investigation path; it is not answering the audit for you.",
+        "",
+        "DO THIS NOW",
+        "  1. State what you believe the intended rule is.",
+        f"  2. Use one or two commands from TRY: {q.commands[0] if q.commands else 'lk project'}",
+        "  3. Compare the code/state evidence with that rule.",
+        '  4. When you can explain the answer with evidence, run: lk q note "your answer + evidence"',
+        "",
+        "HOW TO FINISH THE QUESTION",
+        "  lk q note \"...\"   records your answer and moves the frontier.",
+        "  lk q done           records 'answered' without saving a note.",
+        "  lk q skip \"...\"   means 'I am not pursuing this now' — it is not a finding.",
+        "  lk q na \"...\"     means 'this branch genuinely does not apply to this project'.",
+        "",
+        "IMPORTANT",
+        "  Running a TRY command does NOT answer the question. You still decide what the evidence means.",
+        "  A heuristic signal or surprising behavior is a lead, not a confirmed vulnerability.",
+    ]
+
 def render_current(root: Path | None = None) -> str:
     chosen = current_question(root, record=True)
     if not chosen:
@@ -1533,8 +1604,13 @@ def render_current(root: Path | None = None) -> str:
         "WHAT LOWKEY KNOWS",
     ]
     for item in chosen["evidence"][:6]:
+        level, meaning, trust = _classify_question_evidence(item)
         lines.append(f"  • {item}")
+        lines.append(f"    [{level} — trust: {trust}. {meaning}.]")
     lines += [
+        "",
+        "WHAT THE QUESTION MEANS",
+        "  In plain English: identify the rule, inspect the relevant code/state paths, then decide whether the evidence supports or breaks the rule.",
         "",
         "WHY THIS MATTERS",
         f"  {q.why}",
@@ -1555,7 +1631,7 @@ def render_current(root: Path | None = None) -> str:
             lines += ["", "WHEN THIS IS SETTLED"]
             for child in visible_children:
                 lines.append(f"  → {child.text}")
-    lines += [
+    lines += [""] + _question_workflow(q) + [
         "",
         "MINDSET",
         "  Establish the rule first. Then find the exact code/state evidence that proves or breaks it.",
@@ -1772,13 +1848,29 @@ def overview(root: Path | None = None, *, show_all: bool = False) -> str:
             lines.append(f"  → {q.id}  {q.text}")
     lines += [
         "",
+        "HOW TO READ THE FRONTIER",
+        "  ✓ settled   = you recorded an answer, marked N/A, or explicitly skipped it.",
+        "  → active    = Lowkey has useful evidence/prerequisites for this branch right now.",
+        "  ○ waiting   = keep it in the universe; another branch is more actionable first.",
+        "  'live'      = worth investigating now; it does NOT mean 'vulnerable'.",
+        "  'proof'     = evidence exists, but the security property still needs proof.",
+        "",
         f"QUESTION UNIVERSE  •  {len(enabled)} applicable / {len(QUESTION_CATALOG)} total",
-        "The universe stays stable. Evidence changes the frontier.",
+        "  applicable = detected project features make these questions relevant.",
+        "  total      = the full built-in universe, including specialized packs that may not apply here.",
+        "",
+        "WHAT TO DO",
+        "  1. Run 'lk q' and answer the current question.",
+        "  2. Use the TRY commands shown there to gather evidence.",
+        "  3. Record your conclusion with 'lk q note \"...\"'.",
+        "  4. Run 'lk q' again; your new evidence can change the frontier.",
         "",
         "NEXT",
-        "  lk q                       take the current best question",
-        "  lk q why                   see why it was selected",
-        "  lk q path                  see the investigation path",
+        "  lk q                       open the next active question",
+        "  lk q why                   see why this question is prioritized",
+        "  lk q evidence              inspect the evidence attached to it",
+        "  lk q path                  see your investigation path",
+        "  lk questions --all         inspect every applicable question",
     ]
     if show_all:
         lines += ["", "FULL APPLICABLE CATALOG"]
