@@ -647,6 +647,9 @@ def human_snapshot(root: Path | None = None) -> str:
     latest = data.get("latest", {})
     tools = data.get("tools", {})
     open_signals = len(signals(root, "open"))
+    security_signal_count = len(security_patterns(root))
+    security_reviews = len([item for item in security_patterns(root) if item.get("verification_status") == "REVIEW"])
+    security_confirmed = len([item for item in security_patterns(root) if item.get("verification_status") == "CONFIRMED"])
 
     lines = [
         f"Project : {data['project']['root']}",
@@ -658,6 +661,7 @@ def human_snapshot(root: Path | None = None) -> str:
         f"Latest  : {latest.get('function') or 'none'}"
         + (f" [{latest.get('tx_hash')}]" if latest.get("tx_hash") else ""),
         f"Signals : {open_signals} open",
+        f"Security: {security_signal_count} pattern(s) ({security_reviews} review, {security_confirmed} confirmed)",
     ]
 
     for name, state in sorted(tools.items()):
