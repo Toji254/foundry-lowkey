@@ -14,8 +14,13 @@ from typing import Any
 
 try:
     from . import walkthrough as core
+    from . import audit_context
 except ImportError:
     import walkthrough as core
+    try:
+        import audit_context
+    except ImportError:
+        audit_context = None
 
 
 @dataclass
@@ -1037,6 +1042,34 @@ def render_summary(observations: list[PatternObservation]) -> list[str]:
 
 
 
+def persist_security_patterns(
+    root: Path,
+    observations: list[PatternObservation],
+) -> None:
+    """Publish source/runtime pattern observations into the shared audit ledger."""
+    if audit_context is None:
+        return
+    for obs in observations:
+        verification = str(obs.status or "CANDIDATE").upper()
+        mode = "source+stateful" if verification in {"CONFIRMED", "REVIEW"} else "source"
+        audit_context.add_security_pattern(
+            root,
+            pattern_id=str(obs.pattern_id),
+            title=str(obs.title),
+            contract=str(obs.contract),
+            function=str(obs.function or ""),
+            file=str(obs.source or ""),
+            line=obs.line,
+            logic=str(obs.logic or ""),
+            description=(obs.evidence[0] if obs.evidence else "Source pattern matched."),
+            next_step=str(obs.next_step or ""),
+            provenance=list(obs.provenance or []),
+            verification_status=verification,
+            verification_evidence=list(obs.evidence or []),
+            evidence_mode=mode,
+        )
+
+
 def _cast_read_simple(rpc: str, address: str, signature: str, args: list[Any] | None = None) -> Any:
     if not core.is_address(address):
         return None
@@ -1293,4 +1326,5 @@ def run(
             story.signal = "BLOCKED"
             story.evidence = ["Anvil could not restore the pattern snapshot."]
             break
+    persist_security_patterns(root, observations)
     return observations, stories, live_steps
