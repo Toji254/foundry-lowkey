@@ -435,6 +435,44 @@ def _extract_audit_targets(audit_evidence: list[dict[str, Any]]) -> list[dict[st
     return result
 
 
+def _extract_security_patterns(root: Path) -> list[dict[str, Any]]:
+    """Read first-class Lowkey security-pattern signals without duplicating their analysis."""
+    path = root / ".audit" / "context.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    signals = payload.get("signals", []) if isinstance(payload, dict) else []
+    result = []
+    for signal in signals:
+        if not isinstance(signal, dict) or signal.get("category") != "security-pattern":
+            continue
+        verification = str(signal.get("verification_status") or "CANDIDATE").upper()
+        result.append({
+            "id": signal.get("pattern_id") or signal.get("check"),
+            "title": signal.get("title"),
+            "contract": signal.get("contract"),
+            "function": signal.get("function"),
+            "file": signal.get("file"),
+            "line": signal.get("line"),
+            "verification_status": verification,
+            "confidence": signal.get("confidence"),
+            "description": signal.get("description"),
+            "next": signal.get("next"),
+            "evidence": signal.get("verification", {}).get("evidence", []) if isinstance(signal.get("verification"), dict) else [],
+        })
+    return result
+
+
+def _security_pattern_summary(patterns: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(patterns),
+        "reviews": sum(1 for item in patterns if str(item.get("verification_status") or "CANDIDATE").upper() == "REVIEW"),
+        "confirmed": sum(1 for item in patterns if str(item.get("verification_status") or "CANDIDATE").upper() == "CONFIRMED"),
+        "candidates": sum(1 for item in patterns if str(item.get("verification_status") or "CANDIDATE").upper() == "CANDIDATE"),
+    }
+
+
 def _extract_actor_roles(config: dict[str, Any] | None) -> dict[str, Any]:
     config = config or {}
     actors: list[dict[str, Any]] = []
@@ -553,6 +591,7 @@ def build_manifest(
     evidence = _extract_test_and_poc_evidence(root_path)
     roles = _extract_roles_from_sources(scripts)
     actors = _extract_actor_roles(config)
+    security_patterns = _extract_security_patterns(root_path)
 
     initialization: list[dict[str, Any]] = []
     for source in scripts:
@@ -625,6 +664,8 @@ def build_manifest(
         "adversarial_evidence": evidence["adversarial"],
         "audit_evidence": evidence["audit_evidence"],
         "audit_targets": audit_targets,
+        "security_patterns": security_patterns,
+        "security_pattern_summary": _security_pattern_summary(security_patterns),
         "known_addresses": known_addresses,
         "deployed_contract_names": sorted(deployment_names),
         "confidence": {
@@ -745,5 +786,8 @@ def summarize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "tests": len(manifest.get("tests") or []),
         "adversarial_evidence": len(manifest.get("adversarial_evidence") or []),
         "audit_targets": len(manifest.get("audit_targets") or []),
+        "security_patterns": len(manifest.get("security_patterns") or []),
+        "security_reviews": int((manifest.get("security_pattern_summary") or {}).get("reviews", 0)),
+        "security_confirmed": int((manifest.get("security_pattern_summary") or {}).get("confirmed", 0)),
         "updated_reason": manifest.get("updated_reason"),
     }
