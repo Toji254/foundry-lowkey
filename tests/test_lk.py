@@ -3907,6 +3907,16 @@ def withdraw(amount: uint256):
             self.assertIn("REPLAY-001", rendered)
             self.assertIn("REVIEW", rendered)
 
+    def test_lab_target_refreshes_shared_security_signals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text('[profile.default]\nsrc = "src"\n', encoding="utf-8")
+            address = "0x" + "1" * 40
+            with patch.object(lk, "_sync_security_patterns") as sync:
+                lk.set_lab_target({}, root, address, "Demo", "out/Demo.json")
+            sync.assert_called_once_with(root)
+
+
 
 if __name__ == "__main__":
     unittest.main()
