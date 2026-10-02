@@ -1667,6 +1667,10 @@ def render_why(root: Path | None = None) -> str:
             lines.append(f"  • {reason}")
     lines += [
         "",
+        "HOW TO USE THIS",
+        "  This is an explanation of the ranking inputs, not a verdict about the contract.",
+        "  You can challenge Lowkey's choice: inspect the evidence, work a different applicable question, and record your own answer.",
+        "",
         "LOWKEY'S RULE",
         "  Evidence changes which question is next; it does not rewrite the underlying question universe.",
     ]
@@ -1686,8 +1690,18 @@ def render_evidence(root: Path | None = None) -> str:
         "--------------------",
     ]
     for item in question_evidence(q, features=features, observed=observed):
+        level, meaning, trust = _classify_question_evidence(item)
         lines.append(f"  • {item}")
-    lines += ["", "STATUS", f"  {chosen['status']}"]
+        lines.append(f"    [{level} — trust: {trust}. {meaning}.]")
+    lines += [
+        "",
+        "TRUST RULE",
+        "  High trust means Lowkey is confident that the evidence itself is real; it does NOT mean the security conclusion is proven.",
+        "  Low trust means treat the item as a lead and verify it against source/runtime evidence.",
+        "",
+        "STATUS",
+        f"  {chosen['status']}",
+    ]
     if observed.get("latest_event"):
         event = observed["latest_event"]
         lines.append(f"  latest event: {event.get('tool')} / {event.get('type')}")
@@ -1719,7 +1733,16 @@ def render_path(root: Path | None = None) -> str:
             f"{item.get('status','').upper()} "
             f"{item.get('note','')}".rstrip()
         )
-    lines += ["", f"Current: {state.get('current_id') or 'none'}"]
+    lines += [
+        "",
+        "LEGEND",
+        "  → shown   = Lowkey put this question on the active path.",
+        "  ✓ answered = you recorded an answer.",
+        "  — N/A     = you established that the branch does not apply.",
+        "  ↷ skipped = you intentionally deferred it.",
+        "",
+        f"Current: {state.get('current_id') or 'none'}",
+    ]
     return "\n".join(lines)
 
 
