@@ -7753,7 +7753,7 @@ def run_seams(config):
 
     print("AUDIT SEAMS / HOTSPOTS")
     print("======================")
-    print("Heuristic cross-surface leads. Treat these as places to investigate, not findings.")
+    print("HEURISTIC [meaning: pattern-based review lead; trust: LOW — investigate, do not treat as a finding]")
 
     for item in funcs:
         name=item.get("name","<anonymous>")
@@ -7808,7 +7808,7 @@ def run_risk(config):
 
     print("LOWKEY REVIEW HINTS")
     print("===================")
-    print("These are rule-based review hints from ABI metadata and function names.")
+    print("HEURISTIC [meaning: rule-based hints from ABI metadata/function names; trust: LOW — useful for triage, not proof]")
     print("They are NOT vulnerability findings. Use them to decide what to inspect.")
     rows = []
     for item in funcs:
