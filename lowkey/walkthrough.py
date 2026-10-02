@@ -1993,17 +1993,86 @@ def _transaction_evidence_path(root: Path, tx_hash: str) -> Path:
     return root / ".audit" / "walkthrough" / "transactions" / f"{safe_hash}.html"
 
 
-def _transaction_link(root: Path, tx_hash: str, label: str | None = None) -> str:
-    """Render a Ctrl+Click transaction link to local evidence or a configured explorer."""
+# Chain IDs and explorer roots for common EVM networks. The map is deliberately
+# small and explicit: unknown chains must use LOWKEY_TX_EXPLORER_URL rather than
+# guessing an explorer domain. EIP-3091 standardizes the /tx/<hash> route shape,
+# while network-specific explorer roots still need to be supplied by the chain.
+KNOWN_TX_EXPLORERS = {
+    1: "https://etherscan.io/tx/{tx}",
+    11155111: "https://sepolia.etherscan.io/tx/{tx}",
+    10: "https://optimistic.etherscan.io/tx/{tx}",
+    11155420: "https://sepolia-optimism.etherscan.io/tx/{tx}",
+    137: "https://polygonscan.com/tx/{tx}",
+    80002: "https://amoy.polygonscan.com/tx/{tx}",
+    42161: "https://arbiscan.io/tx/{tx}",
+    421614: "https://sepolia.arbiscan.io/tx/{tx}",
+    8453: "https://basescan.org/tx/{tx}",
+    84532: "https://sepolia.basescan.org/tx/{tx}",
+    56: "https://bscscan.com/tx/{tx}",
+    97: "https://testnet.bscscan.com/tx/{tx}",
+    43114: "https://explorer.avax.network/c-chain/tx/{tx}",
+    43113: "https://explorer.avax.network/c-chain/tx/{tx}",
+}
+
+
+def _chain_id(rpc: str | None) -> int | None:
+    if not rpc:
+        return None
+    raw = _rpc_call(str(rpc), "eth_chainId")
+    if raw is None:
+        return None
+    try:
+        return int(str(raw), 16)
+    except (TypeError, ValueError):
+        try:
+            return int(str(raw))
+        except (TypeError, ValueError):
+            return None
+
+
+def _transaction_explorer_url(root: Path, rpc: str | None, tx_hash: str) -> tuple[str | None, str | None]:
+    """Resolve an explorer URL without sending local/private transactions to public sites."""
+    tx_hash = str(tx_hash or "").strip()
+    if not tx_hash:
+        return None, None
+
+    configured = str(os.environ.get("LOWKEY_TX_EXPLORER_URL") or "").strip()
+    if configured:
+        return configured.replace("{tx}", tx_hash).replace("{hash}", tx_hash), "configured"
+
+    if not rpc or _is_local_rpc(str(rpc)):
+        return None, None
+
+    chain_id = _chain_id(str(rpc))
+    template = KNOWN_TX_EXPLORERS.get(chain_id or -1)
+    if not template:
+        return None, None
+    return template.replace("{tx}", tx_hash).replace("{hash}", tx_hash), f"chain-{chain_id}"
+
+
+def _transaction_link(
+    root: Path,
+    tx_hash: str,
+    label: str | None = None,
+    rpc: str | None = None,
+) -> str:
+    """Render a Ctrl+Click transaction link, preferring a real explorer when known."""
     tx_hash = str(tx_hash or "").strip()
     if not tx_hash:
         return label or "tx"
-    target = os.environ.get("LOWKEY_TX_EXPLORER_URL", "").strip()
-    if target:
-        target = target.replace("{tx}", tx_hash).replace("{hash}", tx_hash)
-    else:
+
+    if rpc is None:
+        try:
+            context = audit_context.load(root)
+            rpc = str(context.get("rpc") or "").strip() or None
+        except Exception:
+            rpc = None
+
+    target, _ = _transaction_explorer_url(root, rpc, tx_hash)
+    if not target:
         evidence = _transaction_evidence_path(root, tx_hash)
         target = f"file://{quote(str(evidence.resolve()), safe='/')}"
+
     visible = label or _addr(tx_hash)
     return _osc8(visible, target)
 
@@ -2057,6 +2126,22 @@ def _write_transaction_evidence(
         except ValueError:
             pass
 
+    calldata = tx.get("input")
+    if calldata is None:
+        calldata = tx.get("data")
+    if calldata in ("", None):
+        calldata = None
+
+    lowkey_observation = {
+        "args": step.args,
+        "value_wei": step.value_wei,
+        "lowkey_status_at_render": step.status,
+        "on_chain_status": status_text,
+        "block": block_number if block_number != "-" else None,
+        "gas_used": None if gas_used == "-" else gas_used,
+        "calldata": calldata,
+    }
+
     value = tx.get("value", "-")
     if isinstance(value, str) and value.startswith("0x"):
         try:
@@ -2107,11 +2192,11 @@ a{{color:#79c0ff}} pre{{white-space:pre-wrap;word-break:break-word}}
 <div>nonce</div><div>{escape(shown(tx.get('nonce')))}</div>
 <div>gas used</div><div>{escape(str(gas_used))}</div>
 <div>gas limit</div><div>{escape(shown(tx.get('gas')))}</div>
-<div>input</div><div><code>{escape(shown(tx.get('input')))}</code></div>
+<div>input</div><div><code>{escape(shown(calldata))}</code></div>
 </div></div>
 
 <h2>LOWKEY OBSERVATION</h2>
-<div class="card"><pre>{escape(json.dumps({'args': step.args, 'value_wei': step.value_wei, 'status': step.status, 'gas_used': step.gas_used, 'calldata': step.calldata}, indent=2, default=str))}</pre></div>
+<div class="card"><pre>{escape(json.dumps(lowkey_observation, indent=2, default=str))}</pre></div>
 
 <h2>EVENTS</h2><div class="card"><ul>{events_html}</ul></div>
 
@@ -2898,7 +2983,7 @@ def _render_interaction_graph_full(
         f"  │       ↳ CALL: {actor} ──▶ {contract}",
     ]
     if step.tx_hash:
-        lines.append(f"  │       ↳ TX: {_transaction_link(root, step.tx_hash)}  [open confirmation]")
+        lines.append(f"  │       ↳ TX: {_transaction_link(root, step.tx_hash)}  [open transaction]")
 
     input_lines = _human_argument_rows(model, step, actors, runtime)
     if input_lines:
