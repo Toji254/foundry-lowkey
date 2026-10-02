@@ -213,7 +213,11 @@ class WalkthroughTests(unittest.TestCase):
             pathlib.Path("/tmp/project"), step, actors, model, [model], False
         )
         self.assertIn("setValue(7)", rendered)
-        self.assertIn("file:///tmp/project/src/Demo.sol", rendered)
+        self.assertTrue(
+            "vscode://file//tmp/project/src/Demo.sol:17" in rendered
+            or "cursor://file//tmp/project/src/Demo.sol:17" in rendered
+            or "file:///tmp/project/src/Demo.sol" in rendered
+        )
 
     def test_transaction_link_uses_configured_explorer(self):
         tx = "0x" + "1" * 64
