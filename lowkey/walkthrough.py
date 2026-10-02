@@ -3198,9 +3198,15 @@ def _render_protocol_story_full(
         )
         lines.append("                 │")
         lines.append("                 ▼")
-        lines.append("  ◀ NOW  •  LIVE")
-        lines.append("  ◀ LIVE")
-        lines.append("             next live interaction")
+        is_latest = bool(history and current is history[-1])
+        if is_latest:
+            lines.append("  ◀ NOW  •  LIVE")
+            lines.append("  ◀ LIVE")
+            lines.append("             next live interaction")
+        else:
+            lines.append(f"  ◀ REVIEWING  •  FUNCTION {current.index:02d}  •  OBSERVED")
+            lines.append("  ◀ REVIEW")
+            lines.append("             ENTER = return to the next live interaction")
 
     return "\n".join(lines)
 
@@ -3250,7 +3256,7 @@ def _wait_for_next_interaction(no_prompt: bool) -> str:
         return ""
     if not sys.stdin.isatty():
         try:
-            return input("\n  ⏎ next  |  q stop  ").strip().lower()
+            return input("\n  ⏎ next  |  1-9 review  |  r review any  |  q stop  ").strip().lower()
         except EOFError:
             return ""
     fd=None
@@ -3264,7 +3270,7 @@ def _wait_for_next_interaction(no_prompt: bool) -> str:
         new[6][termios.VMIN]=1
         new[6][termios.VTIME]=0
         termios.tcsetattr(fd,termios.TCSADRAIN,new)
-        sys.stdout.write("\n  ⏎ next  |  q stop  ")
+        sys.stdout.write("\n  ⏎ next  |  1-9 review  |  r review any  |  q stop  ")
         sys.stdout.flush()
         return os.read(fd,1).decode(errors="ignore").lower()
     except Exception:
@@ -7838,10 +7844,12 @@ def _render_board(
 ) -> str:
     success = sum(1 for x in steps if x.status == "success")
     blocked = sum(1 for x in steps if x.status in {"blocked", "reverted"})
+    reviewing = bool(current and steps and current is not steps[-1])
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = next live interaction   Q = stop   |   RANDOM TEST: lk walkthrough test",
+        "  ENTER = next live interaction   1-9 = review observed step   R = review any step   Q = stop",
+        "  REVIEW mode never re-runs a transaction; it only reopens recorded evidence." if reviewing else
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
         "",
@@ -8118,6 +8126,44 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             support_models=model_catalog,
         ))
         sys.stdout.flush()
+
+    def wait_for_action() -> str:
+        """Pause after an observed step, allowing history review without re-running it."""
+        while True:
+            choice = wait_for_action()
+            if choice == "q":
+                return "q"
+            if choice in {"\n", "\r"}:
+                return ""
+            if choice in "123456789":
+                index = int(choice)
+                if index <= len(steps):
+                    selected = steps[index - 1]
+                    draw(selected, selected.storage_after)
+                    continue
+                print(f"\n  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
+                continue
+            if choice == "r":
+                try:
+                    raw = input(f"\n  review observed step [1-{len(steps)}]: ").strip()
+                except EOFError:
+                    return ""
+                if not raw.isdigit():
+                    print("  Review cancelled: enter an observed step number.")
+                    continue
+                index = int(raw)
+                if 1 <= index <= len(steps):
+                    selected = steps[index - 1]
+                    draw(selected, selected.storage_after)
+                else:
+                    print(f"  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
+                continue
+            if choice in {"[", "]"} and steps:
+                # Simple history navigation for terminals where number keys are awkward.
+                selected = steps[-1]
+                draw(selected, selected.storage_after)
+                continue
+            return ""
 
     draw()
 
