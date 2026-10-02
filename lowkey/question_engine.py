@@ -896,7 +896,8 @@ def _event_signals(features: dict[str, Any]) -> dict[str, Any]:
         typ = str(event.get("type") or "")
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         if typ == "lk-command":
-            command = data.get("command")
+            command_path = data.get("command_path")
+            command = command_path or data.get("command")
             if command:
                 command_names.append(str(command).lower())
         if tool:
@@ -1626,7 +1627,10 @@ def run(config: dict[str, Any] | None = None, args: list[str] | None = None, *, 
             print('Usage: lk q note "your answer/evidence"')
             return 2
         return answer_current("ANSWERED", note=note, root=root_path)
-    if action in {"skip","na","not-applicable","not_applicable"}:
+    if action in {"skip","defer"}:
+        note = " ".join(argv[1:]).strip()
+        return answer_current("SKIPPED", note=note or None, root=root_path)
+    if action in {"na","not-applicable","not_applicable"}:
         note = " ".join(argv[1:]).strip()
         return answer_current("NOT_APPLICABLE", note=note or None, root=root_path)
     if action == "source":
@@ -1643,7 +1647,7 @@ def run(config: dict[str, Any] | None = None, args: list[str] | None = None, *, 
         return 0
     return (
         print(
-            "Usage: lk q [current|why|evidence|path|done|note|skip|source|reset]"
+            "Usage: lk q [current|why|evidence|path|done|note|skip|na|source|reset]"
         ) or 2
     )
 
