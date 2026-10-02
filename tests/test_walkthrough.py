@@ -3168,7 +3168,8 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("purpose     → keeps track of how much ETH each address has contributed", rendered)
         self.assertIn("how to read → find a key (like Alice), then read the value stored for that key", rendered)
         self.assertIn("storage    → slot 0", rendered)
-        self.assertIn("Alice → 1 ETH [1,000,000,000,000,000,000 wei]", rendered)
+        self.assertIn("Alice → 1 ETH", rendered)
+        self.assertNotIn("1,000,000,000,000,000,000 wei", rendered)
         self.assertNotIn("keccak256(pad(key)", rendered)
         self.assertNotIn("0x" + "2" * 64, rendered)
 
@@ -3194,6 +3195,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("technical storage:", rendered)
         self.assertIn("row location        = keccak256(pad(key) || pad(0))", rendered)
         self.assertIn(slot, rendered)
+        self.assertIn("1 ETH [1,000,000,000,000,000,000 wei]", rendered)
 
     def test_storage_renderer_explains_plain_slot_as_numbered_storage_box(self):
         storage = [{
@@ -3206,9 +3208,9 @@ class WalkthroughTests(unittest.TestCase):
         }]
         actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
         rendered = walkthrough._render_storage(storage, False, actors)
-        self.assertIn("purpose    → owner is stored in one numbered storage box", rendered)
-        self.assertIn("value      → Alice (0x11111111…11111111)", rendered)
-        self.assertIn("storage    → slot 1   [numbered EVM storage box]", rendered)
+        self.assertIn("purpose    → remembers the current owner", rendered)
+        self.assertIn("value      → Alice", rendered)
+        self.assertIn("storage    → slot 1   [numbered storage box]", rendered)
         self.assertNotIn("raw word", rendered)
 
 
