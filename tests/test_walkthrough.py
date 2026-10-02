@@ -3050,5 +3050,33 @@ class WalkthroughTests(unittest.TestCase):
         self.assertNotEqual(step.observation_scope, "persistent_story")
 
 
+    def test_security_radar_surfaces_project_patterns_before_function_is_observed(self):
+        class Context:
+            def security_patterns(self, _root, **kwargs):
+                return [{
+                    "pattern_id": "REPLAY-001",
+                    "title": "Replayable payout / claim path",
+                    "contract": "Fallback",
+                    "function": "withdraw()",
+                    "verification_status": "REVIEW",
+                    "description": "Repeated payout needs state-consumption review.",
+                    "next": "Compare the first and second payout state delta.",
+                }]
+        class Host:
+            audit_context = Context()
+
+        # The radar reads the same shared context used by the per-step SECURITY LENS.
+        with patch.dict(sys.modules, {"audit_context": Context()}, clear=False):
+            rendered = walkthrough._render_security_radar(
+                pathlib.Path("/tmp/project"),
+                walkthrough.ContractModel(
+                    name="Fallback", source="src/Fallback.sol", artifact="out/Fallback.sol/Fallback.json"
+                ),
+                False,
+            )
+        self.assertIn("SECURITY RADAR", rendered)
+        self.assertIn("REPLAY-001", rendered)
+        self.assertIn("REVIEW", rendered)
+
 if __name__ == "__main__":
     unittest.main()
