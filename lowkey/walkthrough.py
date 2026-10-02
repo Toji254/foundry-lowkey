@@ -2404,7 +2404,7 @@ def _friendly_value(value: Any) -> str:
 
 
 def _friendly_eth(value_wei: int | None) -> str:
-    """Show ETH in compact decimal/scientific notation with the exact wei value beside it."""
+    """Show native ETH amounts in a compact human-first form, with exact wei available."""
     try:
         value = int(value_wei or 0)
     except (TypeError, ValueError):
@@ -2413,11 +2413,25 @@ def _friendly_eth(value_wei: int | None) -> str:
     if value == 0:
         return "0 ETH [0 wei]"
 
-    eth = Decimal(value) / Decimal(10**18)
+    sign = "-" if value < 0 else ""
+    absolute = abs(value)
+    whole, remainder = divmod(absolute, 10**18)
+
+    if remainder == 0:
+        shown = f"{whole:,}"
+        return f"{sign}{shown} ETH [{value:,} wei]"
+
+    if whole:
+        # Prefer "1,000 ETH + 3 wei" over a 21-digit decimal that is hard to scan.
+        parts = [f"{whole:,} ETH"]
+        if remainder:
+            parts.append(f"{remainder:,} wei")
+        return f"{sign}{' + '.join(parts)} [{value:,} wei]"
+
+    # Sub-ETH values are common in local labs; scientific notation stays readable.
+    eth = Decimal(absolute) / Decimal(10**18)
     shown = format(eth.normalize(), "g").replace("E", "e")
-    if value % 10**18 == 0:
-        shown = f"{value // 10**18:g}"
-    return f"{shown} ETH [{value:,} wei]"
+    return f"{sign}{shown} ETH [{value:,} wei]"
 
 
 def _friendly_storage_value(
@@ -2426,7 +2440,7 @@ def _friendly_storage_value(
     native_value: bool = False,
     technical: bool = False,
 ) -> str:
-    """Render storage values for humans first; exact representation is optional forensic detail."""
+    """Render a storage value as a meaning-first teaching value."""
     type_text = str(type_name or "value")
     if native_value:
         try:
@@ -2434,15 +2448,36 @@ def _friendly_storage_value(
             eth_text = _friendly_eth(amount)
             if technical:
                 return f"{eth_text} [stored as {type_text}; msg.value is measured in wei]"
-            # Avoid huge decimal wei strings in the normal teaching board.
-            if abs(amount) >= 10**6:
-                exponent = len(str(abs(amount))) - 1
-                return f"{_friendly_eth(amount).split(' [', 1)[0]} [10^{exponent} wei]"
-            return f"{eth_text}"
+            return eth_text
         except (TypeError, ValueError):
             pass
-    return f"{_friendly_value(value)} [{type_text} value]"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return f"{_friendly_value(value)} [{type_text}]"
 
+
+def _storage_address_label(value: Any, actors: list[Actor]) -> str:
+    if not is_address(value):
+        return str(value or "?")
+    actor = _actor_for_address(str(value), actors)
+    return actor or _addr(str(value))
+
+
+def _mapping_teaching_purpose(label: str, key_type: str, value_type: str, native_value: bool) -> tuple[str, str]:
+    if native_value:
+        if key_type == "address":
+            return (
+                f"tracks how much native ETH is associated with each {key_type}",
+                "the ETH amount associated with that key",
+            )
+        return (
+            f"stores one native ETH amount for each {key_type} key",
+            "the ETH amount associated with that key",
+        )
+    return (
+        f"stores one {value_type} value for each {key_type} key",
+        f"the {value_type} value associated with that key",
+    )
 
 def _friendly_arg(
     value: Any,
@@ -7807,7 +7842,7 @@ def _render_storage(
     actors: list[Actor] | None = None,
     technical: bool = False,
 ) -> str:
-    """Render storage in teaching order; forensic slot words stay available in technical mode."""
+    """Render storage for learning first; expose raw slot evidence only in technical mode."""
     actors = actors or []
     out: list[str] = []
 
@@ -7818,53 +7853,42 @@ def _render_storage(
         encoding = item.get("encoding")
 
         if encoding == "mapping":
-            anchor_slot = str(item.get("slot") or "?")
+            anchor_slot = str(item.get("slot") if item.get("slot") is not None else "?")
             mapping_info = item.get("mapping", {}) or {}
             key_type = str(mapping_info.get("key_type") or "key")
             value_type = str(mapping_info.get("value_type") or "value")
             label = str(item.get("label") or "mapping")
             native_value = bool(mapping_info.get("native_value"))
-
-            if native_value:
-                purpose = (
-                    f"keeps track of how much ETH each {key_type} has contributed"
-                    if key_type == "address"
-                    else f"stores one ETH amount for each {key_type} key"
-                )
-                value_meaning = "the amount associated with that key"
-            else:
-                purpose = f"keeps one {value_type} value for each {key_type} key"
-                value_meaning = f"the {value_type} value associated with that key"
+            purpose, value_meaning = _mapping_teaching_purpose(
+                label, key_type, value_type, native_value
+            )
 
             lines = [
-                f"purpose     → {purpose}",
-                f"how to read → find a key (like Alice), then read the value stored for that key",
-                f"key        → {key_type}   [what identifies one entry]",
-                f"value      → {value_meaning}",
-                f"storage    → slot {anchor_slot}   [the mapping's numbered storage box]",
+                f"meaning     → {purpose}",
+                "how to read → each key has its own stored value; the key identifies the entry",
+                f"base slot   → {anchor_slot}   [the mapping's numbered storage position]",
+                f"key type    → {key_type}",
+                f"value type  → {value_type}",
+                f"stored value→ {value_meaning}",
             ]
             if native_value:
-                lines.append("unit       → ETH is stored here as wei internally [1 ETH = 10^18 wei]")
+                lines.append("unit        → native ETH is stored as wei [1 ETH = 10^18 wei]")
 
             rows = list(mapping_info.get("rows", []) or [])
-            shown_rows = rows[:4]
+            shown_rows = rows[:6]
             if shown_rows:
                 lines.append("entries:")
                 for index, row in enumerate(shown_rows):
-                    raw_key = str(row.get("key") or "")
-                    actor_name = _actor_for_address(raw_key, actors)
-                    key_text = (
-                        f"{actor_name}"
-                        if actor_name
-                        else _addr(raw_key) if is_address(raw_key) else raw_key
-                    )
+                    key_text = _storage_address_label(row.get("key"), actors)
                     branch = "└─" if index == len(shown_rows) - 1 else "├─"
                     if row.get("struct"):
-                        lines.append(f"  {branch} {key_text} → struct stored at this key")
-                        for field_index, field in enumerate(row["struct"].get("fields", [])[:8]):
-                            field_branch = "   └─" if field_index == len(row["struct"].get("fields", [])[:8]) - 1 else "   ├─"
+                        lines.append(f"  {branch} {key_text} → structured value")
+                        fields = list(row["struct"].get("fields", []) or [])
+                        for field_index, field in enumerate(fields[:8]):
+                            field_branch = "   └─" if field_index == len(fields[:8]) - 1 else "   ├─"
                             lines.append(
-                                f"{field_branch} {field['name']} = {_friendly_value(field['value'])}"
+                                f"{field_branch} {field.get('name') or 'field'} → "
+                                f"{_friendly_storage_value(field.get('value'), field.get('type'))}"
                             )
                     else:
                         shown_value = _friendly_storage_value(
@@ -7879,76 +7903,75 @@ def _render_storage(
                 lines += [
                     "",
                     "technical storage:",
-                    f"  mapping anchor slot = {anchor_slot}",
-                    f"  row location        = keccak256(pad(key) || pad({anchor_slot}))",
-                    "  [the EVM hashes the key with the mapping slot to locate that entry]",
+                    f"  mapping base slot = {anchor_slot}",
+                    f"  entry location    = keccak256(pad(key) || pad({anchor_slot}))",
+                    "  [the EVM hashes the key with the mapping slot to find that entry]",
                 ]
-                for row in shown_rows[:4]:
+                for row in shown_rows:
                     raw_slot = row.get("slot")
                     if raw_slot:
-                        lines.append(f"  {row.get('key')} → row slot {raw_slot}")
+                        lines.append(
+                            f"  {_storage_address_label(row.get('key'), actors)} → row slot {raw_slot}"
+                        )
+
             storage_box(f"{MAPPING} MAPPING {label}", lines)
             continue
 
         if item.get("struct"):
-            fields = item["struct"]["fields"]
+            fields = list(item["struct"].get("fields", []) or [])
             lines = [
-                f"purpose    → one structured value begins at storage slot {item.get('slot')}",
-                f"type       → {item.get('struct', {}).get('type')}",
+                f"meaning     → {item.get('struct', {}).get('type') or 'structured data'} is stored as named fields",
+                f"base slot   → {item.get('slot') if item.get('slot') is not None else '?'}",
                 "fields:",
             ]
-            for field in fields[:8]:
-                lines.append(f"  ├─ {field['name']} → {_friendly_value(field['value'])}")
+            for index, field in enumerate(fields[:8]):
+                branch = "└─" if index == len(fields[:8]) - 1 else "├─"
+                lines.append(
+                    f"  {branch} {field.get('name') or 'field'} → "
+                    f"{_friendly_storage_value(field.get('value'), field.get('type'))}"
+                )
             if technical:
-                lines.append("")
-                lines.append("technical storage:")
-                lines.append(f"  base slot = {item.get('slot')}")
+                lines += ["", "technical storage:"]
                 for field in fields[:8]:
                     lines.append(
-                        f"  {field['name']} @ slot {field['slot']} [{field['type']}]"
+                        f"  {field.get('name') or 'field'} @ slot {field.get('slot')} "
+                        f"[{field.get('type')}]"
                     )
-            storage_box(f"{STRUCT} STRUCT {item['struct']['type']}", lines)
+            storage_box(f"{STRUCT} STRUCT {item['struct'].get('type') or 'value'}", lines)
             continue
 
         if isinstance(item.get("type"), str) and "[" in str(item.get("type")):
+            slot = item.get("slot") if item.get("slot") is not None else "?"
             lines = [
-                f"purpose    → array data for {item.get('label')}",
-                f"type       → {item.get('type')}",
-                f"storage    → slot {item.get('slot')}   [the array's numbered storage box]",
+                f"meaning     → {item.get('label') or 'array'} keeps an ordered collection of values",
+                f"slot        → {slot}   [the array's numbered storage position]",
+                f"type        → {item.get('type')}",
             ]
             if item.get("value") is not None:
-                lines.append(f"value      → {item.get('value')}")
+                lines.append(f"value       → {_friendly_value(item.get('value'))}")
             if technical:
-                lines.append("technical: anchor slot stores the array length/location metadata according to Solidity's storage rules")
+                lines.append("technical: Solidity derives element locations from the array's storage rules")
                 if item.get("raw"):
-                    lines.append(f"raw word   → {item.get('raw')}")
-            storage_box(f"{ARRAY} ARRAY {item.get('label')}", lines)
+                    lines.append(f"raw word    → {item.get('raw')}   [32-byte EVM storage word]")
+            storage_box(f"{ARRAY} ARRAY {item.get('label') or 'array'}", lines)
             continue
 
         raw = item.get("raw")
         value = item.get("value")
-        value_text = _friendly_value(value)
-        value_actor = None
-        if is_address(value):
-            value_actor = _actor_for_address(value, actors)
-            value_text = value_actor or _addr(value)
-
         label = str(item.get("label") or "value")
         type_name = str(item.get("type") or "unknown")
+        value_text = _storage_address_label(value, actors) if is_address(value) else _friendly_value(value)
         lines = [
-            f"purpose    → remembers the current {label}",
-            f"value      → {value_text}",
-            f"type       → {type_name}",
-            f"storage    → slot {item.get('slot')}   [numbered storage box]",
+            f"meaning     → stores the current {label}",
+            f"value       → {value_text}",
+            f"type        → {type_name}",
+            f"slot        → {item.get('slot') if item.get('slot') is not None else '?'}   [the variable's numbered storage position]",
         ]
-        if value_actor and technical:
-            lines.insert(2, f"address    → {value_actor} ({_addr(value)})")
         if technical and raw:
-            lines.append(f"raw word   → {raw}   [32-byte EVM storage word]")
-        storage_box(f"{STORAGE} STORAGE {label}", lines)
+            lines.append(f"raw word    → {raw}   [32-byte EVM storage word]")
+        storage_box(f"{STORAGE} SLOT {item.get('slot') if item.get('slot') is not None else '?'} • {label}", lines)
 
     return "\n\n".join(out) if out else "  <storage layout unavailable>"
-
 
 def _render_step(step: Step, storage: list[dict[str, Any]], enabled: bool) -> str:
     status_color = GREEN if step.status == "success" else (RED if step.status == "reverted" else YELLOW)
@@ -8364,6 +8387,7 @@ def _render_board(
     static: bool = False,
     support_models: list[ContractModel] | None = None,
     review_mode: bool = False,
+    technical_storage: bool = False,
 ) -> str:
     success = sum(1 for x in steps if x.status == "success")
     blocked = sum(1 for x in steps if x.status in {"blocked", "reverted"})
