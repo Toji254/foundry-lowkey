@@ -859,8 +859,16 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
     print()
     print("3. WHERE ARE THE SECURITY-RELEVANT CALLS?")
     print("-" * 72)
-    print(f"  Low-level calls (.call/.delegatecall/.staticcall): {len(low_level)}")
-    print(f"  Other call sites detected by the heuristic:        {len(external_calls)}")
+    print(
+        f"  Low-level calls (.call/.delegatecall/.staticcall): {len(low_level)} "
+        "(meaning: exact source syntax matched; trust: HIGH for the presence of that syntax, "
+        "LOW for whether it is actually unsafe)"
+    )
+    print(
+        f"  Other call sites detected by the heuristic:        {len(external_calls)} "
+        "(meaning: the source-pattern scanner found possible call sites outside low-level calls; "
+        "trust: LOW — false positives/negatives are possible, inspect the listed source)"
+    )
     if low_level:
         for call in low_level[:12]:
             print(f"    line {call['line']}: {call['text']}")
