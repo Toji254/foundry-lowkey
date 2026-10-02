@@ -582,11 +582,33 @@ def _now() -> str:
 
 
 def _project_root(root: Path | None = None) -> Path:
-    return audit_context.foundry_project_root(root)
+    if root is not None:
+        return Path(root).expanduser().resolve()
+    try:
+        return audit_context.foundry_project_root()
+    except Exception:
+        return Path.cwd().expanduser().resolve()
+
+
+def _audit_state_allowed(root: Path) -> bool:
+    root = root.expanduser().resolve()
+    if (root / "lowkey" / "lk.py").is_file() and (root / "install.sh").is_file():
+        return False
+    if any((root / name).is_file() for name in (
+        "foundry.toml", "package.json", "pyproject.toml", "Cargo.toml", "go.mod",
+        "pom.xml", "build.gradle", "Makefile", "Scarb.toml", "Move.toml", "Anchor.toml",
+    )):
+        return True
+    try:
+        return any(path.is_file() for path in root.rglob("*")
+                   if ".git" not in path.parts and ".audit" not in path.parts
+                   and path.suffix.lower() in SOURCE_SUFFIXES)
+    except OSError:
+        return False
 
 
 def _state_dir(root: Path | None = None) -> Path:
-    return audit_context.audit_dir(_project_root(root)) / QUESTION_DIR_NAME
+    return _project_root(root) / ".audit" / QUESTION_DIR_NAME
 
 
 def _state_path(root: Path | None = None) -> Path:
@@ -636,7 +658,7 @@ def load_state(root: Path | None = None) -> dict[str, Any]:
 
 def save_state(state: dict[str, Any], root: Path | None = None) -> Path:
     root_path = _project_root(root)
-    if not audit_context.is_audit_project(root_path):
+    if not _audit_state_allowed(root_path):
         return _state_path(root_path)
     target = _state_path(root_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -652,7 +674,7 @@ def save_state(state: dict[str, Any], root: Path | None = None) -> Path:
 
 def _append_history(event: dict[str, Any], root: Path | None = None) -> None:
     root_path = _project_root(root)
-    if not audit_context.is_audit_project(root_path):
+    if not _audit_state_allowed(root_path):
         return
     path = _history_path(root_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -686,7 +708,7 @@ def _read_history(root: Path | None = None, limit: int = 30) -> list[dict[str, A
 
 
 def _read_events(root: Path | None = None, limit: int = 120) -> list[dict[str, Any]]:
-    path = audit_context.events_path(_project_root(root))
+    path = _project_root(root) / ".audit" / "events.jsonl"
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -774,7 +796,34 @@ def _manifest_text(root: Path) -> str:
 
 def detect_features(root: Path | None = None) -> dict[str, Any]:
     root_path = _project_root(root)
-    context = audit_context.load(root_path)
+    try:
+        context = audit_context.load(root_path)
+    except Exception:
+        context = {}
+    if not context.get("project"):
+        context = {
+            "project": {"root": str(root_path), "name": root_path.name},
+            "target": {}, "latest": {}, "signals": [], "tools": {}, "focus": None,
+        }
+    else:
+        # When the shared context reader declines a generic project because a
+        # specialized detector is unavailable, q can still consume its own
+        # project-owned context file without inventing any evidence.
+        context_file = root_path / ".audit" / "context.json"
+        try:
+            raw_context = json.loads(context_file.read_text(encoding="utf-8"))
+            if isinstance(raw_context, dict):
+                stored_root = str((raw_context.get("project") or {}).get("root") or "")
+                if not stored_root or Path(stored_root).expanduser().resolve() == root_path.resolve():
+                    merged = dict(context)
+                    for key, value in raw_context.items():
+                        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                            merged[key] = {**merged[key], **value}
+                        else:
+                            merged[key] = value
+                    context = merged
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
     info: dict[str, Any] = {}
     if detect_project is not None:
         try:
@@ -1210,7 +1259,11 @@ def _score(
              if isinstance(item, dict) and str(item.get("id") or "") == str(focused)),
             None,
         )
-        if isinstance(focused_signal, dict) and _signal_mentions(focused_signal, q.concept):
+        if isinstance(focused_signal, dict) and (
+            _signal_mentions(focused_signal, q.concept)
+            or _signal_mentions(focused_signal, q.family)
+            or any(_signal_mentions(focused_signal, tag) for tag in q.tags if tag not in {"all","blockchain","evm"})
+        ):
             score += 24
             reasons.append("this question directly overlaps the focused signal")
 
@@ -1522,13 +1575,16 @@ def answer_current(
         "status": normalized,
         "note": str(note or "").strip(),
     }, root_path)
-    audit_context.emit(
-        "question-state",
-        root_path,
-        tool="questions",
-        summary=f"{q.id}: {normalized}",
-        data={"question_id": q.id, "status": normalized, "note": str(note or "").strip()},
-    )
+    try:
+        audit_context.emit(
+            "question-state",
+            root_path,
+            tool="questions",
+            summary=f"{q.id}: {normalized}",
+            data={"question_id": q.id, "status": normalized, "note": str(note or "").strip()},
+        )
+    except Exception:
+        pass
     if normalized == "ANSWERED":
         print(f"Recorded {q.id} as answered.")
     elif normalized == "NOT_APPLICABLE":
@@ -1545,7 +1601,10 @@ def reset(root: Path | None = None) -> int:
     state = _default_state(root_path)
     save_state(state, root_path)
     _append_history({"event": "reset"}, root_path)
-    audit_context.emit("question-reset", root_path, tool="questions", summary="question state reset")
+    try:
+        audit_context.emit("question-reset", root_path, tool="questions", summary="question state reset")
+    except Exception:
+        pass
     print("Question learning state reset. Audit evidence was left intact.")
     return 0
 
