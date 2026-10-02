@@ -766,7 +766,7 @@ def _forge_storage_layout(root: Path, contract_name: str) -> dict[str, Any]:
     """Recover a Foundry storage layout when the artifact omitted storageLayout."""
     key = (str(root.resolve()), str(contract_name).lower())
     cached = _STORAGE_LAYOUT_CACHE.get(key)
-    if cached is not None:
+    if cached is not None and isinstance(cached, dict) and cached.get("storage"):
         return cached
 
     result: dict[str, Any] = {}
@@ -780,7 +780,18 @@ def _forge_storage_layout(root: Path, contract_name: str) -> dict[str, Any]:
             try:
                 payload = json.loads((out or "").strip())
                 if isinstance(payload, dict):
-                    result = payload
+                    # Foundry versions can wrap inspection data under either
+                    # storageLayout or storage-layout; normalize both into the
+                    # shape consumed by the rest of Lowkey.
+                    candidate = (
+                        payload.get("storageLayout")
+                        if isinstance(payload.get("storageLayout"), dict)
+                        else payload.get("storage-layout")
+                        if isinstance(payload.get("storage-layout"), dict)
+                        else payload
+                    )
+                    if isinstance(candidate, dict):
+                        result = candidate
             except json.JSONDecodeError:
                 result = {}
 
@@ -4888,8 +4899,23 @@ def _mapping_tracks_msg_value(source_text: str, label: str) -> bool:
     return False
 
 
-def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addresses: list[str], observed_keys: list[Any] | None = None) -> list[dict[str, Any]]:
+def _snapshot_storage(
+    model: ContractModel,
+    rpc: str,
+    address: str,
+    actor_addresses: list[str],
+    observed_keys: list[Any] | None = None,
+    root: Path | None = None,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    # Storage layout is evidence, not a presentation-only decoration. Recover it
+    # at the point of observation when an artifact omitted it so every caller of
+    # the live storage snapshot sees the same canonical layout.
+    if not isinstance(model.storage, dict) or not (model.storage.get("storage") or []):
+        resolved_root = (root or Path.cwd()).resolve()
+        recovered = _forge_storage_layout(resolved_root, model.name)
+        if isinstance(recovered, dict) and recovered.get("storage"):
+            model.storage = recovered
     entries = model.storage.get("storage") or []
     observed_keys = list(observed_keys or [])
     observed_addresses = [x for x in observed_keys if isinstance(x, str) and is_address(x)]
@@ -4900,9 +4926,16 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
     observed_numbers = [str(x) for x in observed_keys if isinstance(x, int) or (isinstance(x, str) and x.isdigit())]
     types = model.storage.get("types") or {}
     try:
-        source_for_storage = (Path(model.source).read_text(encoding="utf-8", errors="replace")
-                              if Path(model.source).is_file()
-                              else "")
+        source_path = (
+            (root / model.source).resolve()
+            if root is not None
+            else Path(model.source).resolve()
+        )
+        source_for_storage = (
+            source_path.read_text(encoding="utf-8", errors="replace")
+            if source_path.is_file()
+            else ""
+        )
     except OSError:
         source_for_storage = ""
 
@@ -5027,14 +5060,22 @@ def _snapshot_runtime(
     rpc: str,
     actor_addresses: list[str],
     observed_keys: list[Any] | None = None,
+    root: Path | None = None,
 ) -> list[dict[str, Any]]:
-    by_name = {model.name: model for model in models}
+    by_name = {model.name.lower(): model for model in models}
     result: list[dict[str, Any]] = []
     for node in runtime:
-        model = by_name.get(node.model)
+        model = by_name.get(str(node.model).lower())
         if not model:
             continue
-        for item in _snapshot_storage(model, rpc, node.address, actor_addresses, observed_keys):
+        for item in _snapshot_storage(
+            model,
+            rpc,
+            node.address,
+            actor_addresses,
+            observed_keys,
+            root=root,
+        ):
             item["contract"] = node.model
             item["address"] = node.address
             result.append(item)
@@ -8736,7 +8777,14 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 rpc, observed.get("staketoken"),
                 [a.address for a in actors] + [node.address for node in runtime],
             )
-            before=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors], step.args + list(system.values()))
+            before=_snapshot_runtime(
+                    runtime,
+                    model_catalog,
+                    rpc,
+                    [a.address for a in actors],
+                    step.args + list(system.values()),
+                    root=root,
+                )
             tx,output=_send(host,config,actor,step.address,step.function,step.args,step.value_wei)
             if not tx:
                 step.status="reverted"
@@ -8793,7 +8841,14 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 # Snapshot the main transaction immediately. Environment-preparation
                 # transactions that follow are separate live interactions and must not
                 # contaminate this step's before/after evidence.
-                after=_snapshot_runtime(runtime,models,rpc,[a.address for a in actors], step.args + list(system.values()))
+                after=_snapshot_runtime(
+                    runtime,
+                    model_catalog,
+                    rpc,
+                    [a.address for a in actors],
+                    step.args + list(system.values()),
+                    root=root,
+                )
                 step.balance_after = _snapshot_balances(rpc, balance_addresses)
                 step.token_balance_after = _snapshot_token_balances(
                     rpc, observed.get("staketoken"),
