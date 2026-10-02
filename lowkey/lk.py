@@ -2976,6 +2976,16 @@ def run_targets(config, interactive=False, include_support=False):
         print(f"Lab/test support hidden: {len(support_entries)}")
         print("Use 'lk targets --all' when you need to inspect those addresses.")
 
+    pattern_summary = _security_pattern_summary(root)
+    print()
+    print(
+        "SECURITY SCOPE : "
+        f"{pattern_summary['total']} pattern(s) — "
+        f"{pattern_summary['reviews']} review, "
+        f"{pattern_summary['confirmed']} confirmed, "
+        f"{pattern_summary['candidates']} candidate"
+    )
+
     if not interactive:
         return 0
 
@@ -8686,13 +8696,7 @@ def _sync_security_patterns(root, *, announce: bool = False):
 
 
 def _security_pattern_summary(root):
-    patterns = audit_context.security_patterns(root)
-    return {
-        "total": len(patterns),
-        "reviews": sum(1 for item in patterns if item.get("verification_status") == "REVIEW"),
-        "confirmed": sum(1 for item in patterns if item.get("verification_status") == "CONFIRMED"),
-        "candidates": sum(1 for item in patterns if item.get("verification_status") == "CANDIDATE"),
-    }
+    return audit_context.security_pattern_summary(root)
 
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
@@ -8873,6 +8877,7 @@ def run_status(config):
     print(f"Contract: {contract}")
     print(f"Last tx: {config.get('last_tx') or 'none'}")
     root = audit_context.foundry_project_root()
+    _sync_security_patterns(root)
     context = audit_context.load(root)
     open_signals = len(audit_context.signals(root, "open"))
     print(f"Signals: {open_signals} open")
@@ -9284,6 +9289,7 @@ def run_system_model(config, args):
     root = audit_context.foundry_project_root()
     rpc = effective_rpc(config)
     try:
+        _sync_security_patterns(root)
         manifest, path = system_model.refresh_manifest(
             root,
             rpc=rpc,
@@ -9291,8 +9297,7 @@ def run_system_model(config, args):
             reason="lk system",
         )
         summary = system_model.summarize_manifest(manifest)
-        _sync_security_patterns(root)
-        pattern_summary = _security_pattern_summary(root)
+        pattern_summary = manifest.get("security_pattern_summary") or _security_pattern_summary(root)
         print("LOWKEY SYSTEM MODEL")
         print("=" * 72)
         print(f"Manifest      : {path}")
