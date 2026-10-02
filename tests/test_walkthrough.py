@@ -2928,6 +2928,61 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("SOURCE PATTERN MATCHES", rendered)
         self.assertNotIn("STATIC MATCHES", rendered)
 
+    def test_seed_history_renders_recorded_runs_and_replay_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = walkthrough._seed_history_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps([
+                {
+                    "run_id": "demo-12345",
+                    "timestamp": "2026-10-02 14:00:00",
+                    "seed": 12345,
+                    "cases": 24,
+                    "target": "0x" + "1" * 40,
+                    "contract": "Demo",
+                    "accepted": 18,
+                    "reverted": 6,
+                    "highlights": [
+                        "chain accepted: withdraw, transfer",
+                        "finding patterns to review: REPLAY-001",
+                    ],
+                }
+            ]), encoding="utf-8")
+            rendered = io.StringIO()
+            with patch("sys.stdout", rendered):
+                code = walkthrough._render_seed_history(root)
+            output = rendered.getvalue()
+            self.assertEqual(code, 0)
+            self.assertIn("SEED 12345", output)
+            self.assertIn("24 probes", output)
+            self.assertIn("chain accepted: withdraw, transfer", output)
+            self.assertIn("REPLAY-001", output)
+            self.assertIn("lk walkthrough test --seed 12345 --cases 24", output)
+
+    def test_seed_history_can_filter_one_seed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            path = walkthrough._seed_history_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps([
+                {"seed": 111, "cases": 10, "timestamp": "t1", "contract": "Demo", "accepted": 10, "reverted": 0, "highlights": ["all normal"]},
+                {"seed": 222, "cases": 20, "timestamp": "t2", "contract": "Demo", "accepted": 15, "reverted": 5, "highlights": ["chain accepted: withdraw"]},
+            ]), encoding="utf-8")
+            rendered = io.StringIO()
+            with patch("sys.stdout", rendered):
+                code = walkthrough._render_seed_history(root, "222")
+            output = rendered.getvalue()
+            self.assertEqual(code, 0)
+            self.assertIn("SEED 222", output)
+            self.assertNotIn("SEED 111", output)
+
+    def test_adversarial_intro_explains_seed_reproducibility(self):
+        intro = "\n".join(walkthrough._render_adversarial_intro(24, []))
+        self.assertIn("seed", intro.lower())
+        self.assertIn("randomized order, actors, arguments, and test inputs", intro)
+        self.assertIn("reuse it with --seed", intro)
+
     def test_adversarial_output_calls_randomized_executions_probes(self):
         intro = "\n".join(
             walkthrough._render_adversarial_intro(24, [])
