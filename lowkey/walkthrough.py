@@ -1780,6 +1780,12 @@ def _value_for(
     if source_body and re.search(r"\bmsg\.value\s*(?:>|>=)\s*0\b", source_body):
         return 1
 
+    # A receive()/fallback() entry point accepts raw ETH with no ABI arguments.
+    # When its body could not be recovered, 1 wei is the smallest useful generic
+    # probe; zero would bypass the behavior a payable raw-value entry is meant to test.
+    if str(fn.get("type") or "") in {"receive", "fallback"}:
+        return 1
+
     if any(x in name for x in ("deposit", "fund", "pay", "contribute", "stake")):
         return 10**15
 
@@ -8504,6 +8510,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             step.error_reason=_explain_failure(step, preflight, step.actor)
             step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, model_catalog, actor.address)
             steps.append(step)
+            completed.add(key)
             draw(step)
         else:
             actor=next((a for a in actors if a.name==step.actor),actors[0])
@@ -8540,6 +8547,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 step.error_reason=_explain_failure(step, step.error, step.actor)
                 step.failure_origin, step.diagnostics = _diagnose_failed_call(root, rpc, step, current_model, model_catalog, actor.address)
                 steps.append(step)
+                completed.add(key)
                 draw(step, before)
             else:
                 receipt=_receipt(rpc,tx)
