@@ -5337,16 +5337,21 @@ def _human_probe_status(step: Step) -> tuple[str, str, str]:
         " ".join(str(x) for x in (step.diagnostics or [])),
     ]).lower()
 
-    if any(token in haystack for token in (
-        "no contract code",
-        "fixture",
-        "bootstrap probe",
-        "lab issue",
-        "test environment",
-    )):
+    # "no contract code" is not automatically a lab failure: an EOA can be a
+    # legitimate native-ETH recipient. Require an explicit Lowkey lab marker.
+    if (
+        any(
+            str(item).strip().lower().startswith(("lab issue:", "lab setup:", "target validation:"))
+            for item in (step.diagnostics or [])
+        )
+        or any(
+            marker in haystack
+            for marker in ("lowkey lab issue", "invalid lab target", "lab setup failed")
+        )
+    ):
         return (
             "🔧 LAB ISSUE",
-            "The test setup appears to be pointing at something that is not a usable contract.",
+            "The local test setup could not provide a usable protocol target or dependency.",
             "Fix the lab setup before treating this result as protocol behavior.",
         )
 
