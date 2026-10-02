@@ -1529,7 +1529,7 @@ def render_why(root: Path | None = None) -> str:
         f"WHY THIS QUESTION  •  {q.id}",
         "--------------------------------",
         f"Question: {q.text}",
-        f"Score   : {chosen['score']} (deterministic, not a vulnerability score)",
+        "Selection basis: concrete project evidence, learner state, recent Lowkey activity, and applicable rule-pack context.",
     ]
     if reasons:
         lines.append("")
