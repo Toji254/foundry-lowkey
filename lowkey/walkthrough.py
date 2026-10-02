@@ -7200,7 +7200,16 @@ def _target_from_host(
         )
         if target and rpc and _normalize_code(_runtime_code(rpc, target)) in {"", "0x"}:
             requested_contract = contract or config.get("target_contract")
-            replacement = _live_target_candidate(config, root, requested_contract)
+            # Target candidate discovery belongs to the CLI host (lk.py), while
+            # the walkthrough remains independently importable. Never call a
+            # host-private resolver as a walkthrough-local global.
+            replacement = None
+            resolver = getattr(host, "_live_target_candidate", None)
+            if callable(resolver):
+                try:
+                    replacement = resolver(config, root, requested_contract)
+                except Exception:
+                    replacement = None
             if replacement:
                 target = replacement["address"]
                 config["target"] = target
