@@ -2,6 +2,7 @@ import importlib.util
 import io
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -152,9 +153,13 @@ class LowkeyForgeTests(unittest.TestCase):
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_coverage_audit", return_value=0)
+    @patch("forge_tools.run_forge_diagnostics", return_value=0)
+    @patch("forge_tools.run_slither_preflight", return_value=0)
+    @patch("forge_tools._geiger_command", return_value=["lint", "--only-lint", "unsafe-cheatcode"])
+    @patch("forge_tools.command_available", return_value=True)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_run_audit_is_quiet_by_default(self, _supports, _compat, coverage, run):
+    def test_run_audit_is_quiet_by_default(self, _supports, _compat, available, geiger, slither, diagnostics, coverage, run):
         output = io.StringIO()
         with patch("sys.stdout", output):
             self.assertEqual(forge_tools.run_audit([]), 0)
@@ -162,6 +167,8 @@ class LowkeyForgeTests(unittest.TestCase):
         self.assertIn("Mode    : quiet", rendered)
         self.assertNotIn("=== LOWKEY FORGE", rendered)
         self.assertTrue(all(call.kwargs.get("quiet") is True for call in run.call_args_list))
+        self.assertTrue(all(call.kwargs.get("quiet") is True for call in diagnostics.call_args_list))
+        self.assertTrue(slither.call_args.kwargs.get("quiet") is True)
         self.assertTrue(coverage.call_args.kwargs.get("quiet") is True)
     @patch("forge_tools.forge_path", return_value=None)
     def test_missing_forge(self, _path):
@@ -174,13 +181,26 @@ class LowkeyForgeTests(unittest.TestCase):
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_coverage_audit", return_value=0)
+    @patch("forge_tools.run_forge_diagnostics", return_value=0)
+    @patch("forge_tools.run_slither_preflight", return_value=0)
+    @patch("forge_tools._geiger_command", return_value=["lint", "--only-lint", "unsafe-cheatcode"])
+    @patch("forge_tools.command_available", return_value=True)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_sequence(self, _supports, _compat, coverage, run):
+    def test_audit_sequence(self, _supports, _compat, available, geiger, slither, diagnostics, coverage, run):
         self.assertEqual(forge_tools.run_audit([]), 0)
         self.assertEqual([call.args[0] for call in run.call_args_list],
                          [["build", "--skip", "test", "--skip", "script"],
                           ["test", "-vvv", "--no-match-path", "test/Lowkey_*"]])
+        slither.assert_called_once()
+        self.assertEqual(
+            diagnostics.call_args_list[0].args[0],
+            ["lint"],
+        )
+        self.assertEqual(
+            diagnostics.call_args_list[1].args[0],
+            ["lint", "--only-lint", "unsafe-cheatcode"],
+        )
         self.assertEqual(
             coverage.call_args.args[0],
             ["coverage"],
@@ -203,6 +223,64 @@ class LowkeyForgeTests(unittest.TestCase):
         )
         self.assertEqual(run.call_count, 2)
         self.assertEqual(available.call_count, 2)
+
+    @patch("forge_tools.run_slither_preflight", return_value=0)
+    @patch("forge_tools.run_forge_diagnostics", return_value=0)
+    @patch("forge_tools.run_forge", return_value=0)
+    @patch("forge_tools.run_coverage_audit", return_value=0)
+    @patch("forge_tools._geiger_command", return_value=["lint", "--only-lint", "unsafe-cheatcode"])
+    @patch("forge_tools.command_available", return_value=True)
+    @patch("forge_tools._coverage_compatibility_flags", return_value=[])
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_audit_runs_static_checks_by_default(self, _supports, _compat, available, geiger, coverage, run, diagnostics, slither):
+        self.assertEqual(forge_tools.run_audit([]), 0)
+        slither.assert_called_once()
+        self.assertEqual(
+            [call.args[0] for call in diagnostics.call_args_list],
+            [["lint"], ["lint", "--only-lint", "unsafe-cheatcode"]],
+        )
+        geiger.assert_called_once()
+
+    @patch("forge_tools.command_available", return_value=True)
+    @patch("forge_tools._supports_option", return_value=True)
+    def test_geiger_uses_modern_unsafe_cheatcode_lint(self, supports, available):
+        self.assertEqual(
+            forge_tools._geiger_command(),
+            ["lint", "--only-lint", "unsafe-cheatcode"],
+        )
+        supports.assert_called_once_with("lint", "--only-lint")
+
+    @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
+    @patch("forge_tools.audit_context.foundry_project_root")
+    @patch("forge_tools.subprocess.run")
+    @patch("forge_tools.audit_context.emit")
+    @patch("forge_tools.audit_context.record_tool")
+    def test_generated_only_lint_failure_does_not_fail_diagnostic(
+        self, record_tool, emit, run, root_getter, _forge
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            root_getter.return_value = root
+            run.return_value = type(
+                "Result",
+                (),
+                {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        "warning: invalid inline config item: disable-next-line low-level-calls\n"
+                        "  ╭▸ script/LowkeyPoC_Fallback.s.sol:50:9\n\n"
+                        "Error: aborting due to 1 linter warning(s)\n"
+                    ),
+                },
+            )()
+            code = forge_tools.run_forge_diagnostics(["lint"], "lint")
+            self.assertEqual(code, 0)
+            self.assertTrue((root / ".audit" / "forge" / "lint.latest.txt").exists())
+            data = record_tool.call_args.kwargs["data"]
+            self.assertEqual(data["raw_exit_code"], 1)
+            self.assertEqual(data["exit_code"], 0)
+            self.assertEqual(data["filtered"], 1)
 
     def test_filter_generated_diagnostics(self):
         output = """note[custom-errors]: use custom errors
