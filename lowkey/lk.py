@@ -9518,7 +9518,6 @@ COMMAND_HELP = {
     "lab": _help_entry(
         "Create a disposable local EVM lab for safe contract interaction and audit experiments.",
         "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop",
-        "lk lab QuantAMMWeightedPool",
         "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
         children={
             "stop": _help_entry("Stop the project-local Anvil that Lowkey started.", "lk lab stop", "lk lab stop", "Use it when the disposable lab is no longer needed."),
