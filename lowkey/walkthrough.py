@@ -5696,7 +5696,7 @@ def _render_adversarial_probe_human(
 
 EVIDENCE_LEVEL_EXPLANATIONS = {
     "HEURISTIC": "meaning: pattern-based guess from source/metadata; trust: LOW — use it to choose what to inspect, not to conclude a bug",
-    "INFERRED": "meaning: Lowkey derived an interpretation from available evidence; trust: MEDIUM — verify it against source/runtime evidence",
+    "INFERRED": "meaning: Lowkey combined multiple clues into an interpretation; trust: MEDIUM-LOW — use it as a lead and verify it against source/runtime evidence",
     "DIAGNOSED": "meaning: Lowkey identified a concrete failure boundary from diagnostics; trust: MEDIUM-HIGH — verify the exact runtime instruction when possible",
     "OBSERVED": "meaning: this behavior actually occurred in a live/test execution; trust: HIGH for what happened, not for its security impact",
     "OBSERVED + SOURCE": "meaning: live behavior was also matched to a source rule; trust: HIGH for the correlation, but impact still needs proof",
