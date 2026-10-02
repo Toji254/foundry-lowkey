@@ -309,6 +309,29 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("storage box   → slot 1   [the value's numbered storage box; Solidity starts counting at 0]", rendered)
         self.assertNotIn("raw word", rendered)
 
+    def test_storage_renderer_uses_nonzero_mapping_slot_in_human_explanation(self):
+        storage = [{
+            "label": "balances",
+            "slot": "7",
+            "type": "mapping(address => uint256)",
+            "encoding": "mapping",
+            "mapping": {
+                "key_type": "address",
+                "value_type": "uint256",
+                "rows": [{
+                    "key": "0x" + "1" * 40,
+                    "value": 1,
+                }],
+            },
+        }]
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        rendered = walkthrough._render_storage(storage, False, actors)
+        self.assertIn("mapping slot  → 7", rendered)
+        self.assertIn("important     → slot 7 is not Alice's value; it helps the EVM find Alice's entry", rendered)
+        self.assertIn("entry location→ each key gets its own storage location using the key + mapping slot 7", rendered)
+        self.assertIn("hash(Alice's address + slot 7) → Alice's storage location", rendered)
+        self.assertNotIn("Alice's address + slot 0", rendered)
+
     def test_storage_renderer_keeps_mapping_slot_evidence_in_technical_mode(self):
         storage = [{
             "label": "contributions",
