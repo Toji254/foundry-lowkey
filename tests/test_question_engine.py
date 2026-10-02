@@ -291,6 +291,27 @@ class QuestionEngineTests(unittest.TestCase):
         self.assertIn("Running a TRY command does NOT answer the question", output)
         self.assertIn("trust:", output)
 
+    def test_current_question_explains_start_command_and_answer_shape(self):
+        temp, root = self.make_project(
+            source="pragma solidity ^0.8.20; contract Demo { function withdraw() external {} }\n",
+            readme="# Demo\n",
+        )
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        output = questions.render_current(root)
+        self.assertIn("START HERE →", output)
+        self.assertIn("[map the application scope", output)
+        self.assertIn("WHAT A GOOD ANSWER LOOKS LIKE", output)
+        self.assertIn("RULE        = what should be true", output)
+        self.assertIn("EVIDENCE    = exact code/state/trace/test", output)
+        self.assertIn("CONCLUSION  = what you can currently prove", output)
+
+    def test_observed_evidence_warns_that_local_chain_resets_can_make_it_stale(self):
+        level, meaning, trust = questions._classify_question_evidence("latest tx: 0x123")
+        self.assertEqual(level, "OBSERVED")
+        self.assertIn("recorded from a live/test execution", meaning)
+        self.assertIn("local-chain reset", trust)
+
     def test_current_question_labels_direct_and_heuristic_evidence(self):
         temp, root = self.make_project()
         self.addCleanup(temp.cleanup)
