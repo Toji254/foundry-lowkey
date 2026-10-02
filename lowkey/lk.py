@@ -9450,8 +9450,9 @@ COMMAND_HELP = {
         options=[
             ("--all", "Show every applicable question in the current project.", "lk questions --all"),
             ("q controls", "Navigate and record question answers/proof with lk q done, note, skip, and na.", "lk q skip"),
+            ("reset", "Reset question-learning state without deleting audit evidence.", "lk q reset"),
         ],
-        related=["lk q", "lk q current", "lk q skip", "lk project", "lk system"],
+        related=["lk q", "lk q current", "lk q skip", "lk q reset", "lk project", "lk system"],
     ),
     "walkthrough": _help_entry(
         "Walk through the protocol as a live story: execute one interaction, observe what changed, then redraw the board.",
