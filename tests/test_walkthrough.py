@@ -2142,7 +2142,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("NATIVE VALUE Alice → Bob: 1 ETH", rendered)
         self.assertIn("Alice sends 1 ETH", rendered)
         self.assertIn("fund the escrow for Bob", rendered)
-        self.assertIn("WHY THIS STEP: Alice funds the escrow for Bob [LAB CONTROL]", rendered)
+        self.assertIn("WHY THIS STEP: Alice funds the escrow for Bob [LAB CONTROL — meaning: Lowkey intentionally used this step to prepare/control the local lab; trust: HIGH that it was deliberate, not evidence of a vulnerability]", rendered)
 
 
 
