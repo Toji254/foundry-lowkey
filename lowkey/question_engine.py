@@ -1516,8 +1516,8 @@ def _progress_marker(row: dict[str, Any]) -> str:
 
 EVIDENCE_TRUST = {
     "OBSERVED": (
-        "observed in a live/test execution",
-        "HIGH for what happened; it does not prove the behavior is a vulnerability",
+        "recorded from a live/test execution",
+        "HIGH for what happened in that recorded execution; a local-chain reset can make the transaction unavailable now",
     ),
     "SOURCE": (
         "read directly from project source",
@@ -1563,26 +1563,54 @@ def _classify_question_evidence(item: str) -> tuple[str, str, str]:
     meaning, trust = EVIDENCE_TRUST[level]
     return level, meaning, trust
 
+COMMAND_PURPOSES = {
+    "lk project": "map the application scope, contracts, tests, and dependencies",
+    "lk system": "build the system and contract relationship map",
+    "lk functions": "list callable entry points and their arguments",
+    "lk deps": "see what code and components the project trusts or imports",
+    "lk read": "observe current state without intentionally changing it",
+    "lk trace": "see the actual call chain of a recorded transaction",
+    "lk last trace": "trace the latest recorded transaction",
+    "lk changes": "show concrete state changes caused by a call",
+    "lk state-diff": "show concrete state changes caused by a call",
+    "lk findings": "inspect stored security signals and what still needs manual verification",
+    "lk test": "run repeatable test evidence for the property you are checking",
+    "lk fuzz": "try many inputs instead of one hand-picked value",
+    "lk invariant": "test a property across many state transitions",
+    "lk probe": "try one concrete behavior without declaring it a bug",
+    "lk generate test": "turn an observation into a reusable regression test",
+}
+
+def _command_purpose(command: str) -> str:
+    return COMMAND_PURPOSES.get(str(command or "").strip(), "gather concrete evidence relevant to this question")
+
 def _question_workflow(q: Question) -> list[str]:
+    first = q.commands[0] if q.commands else "lk project"
+    first_purpose = _command_purpose(first)
     return [
         "YOUR JOB",
-        "  Answer this question yourself. Lowkey is choosing the investigation path; it is not answering the audit for you.",
+        "  You are the auditor. Lowkey chooses a useful question; you decide what the evidence means.",
         "",
         "DO THIS NOW",
-        "  1. State what you believe the intended rule is.",
-        f"  2. Use one or two commands from TRY: {q.commands[0] if q.commands else 'lk project'}",
-        "  3. Compare the code/state evidence with that rule.",
-        '  4. When you can explain the answer with evidence, run: lk q note "your answer + evidence"',
+        "  1. Write the intended rule in your own words.",
+        f"  2. START HERE → {first}   [{first_purpose}]",
+        "  3. Read that result and compare it with the rule. Use another TRY command only when needed.",
+        '  4. When you can explain the answer, save it with: lk q note "your answer + evidence"',
+        "",
+        "WHAT A GOOD ANSWER LOOKS LIKE",
+        "  RULE        = what should be true",
+        "  EVIDENCE    = exact code/state/trace/test that supports or breaks it",
+        "  CONCLUSION  = what you can currently prove (or what is still unproven)",
         "",
         "HOW TO FINISH THE QUESTION",
-        "  lk q note \"...\"   records your answer and moves the frontier.",
-        "  lk q done           records 'answered' without saving a note.",
-        "  lk q skip \"...\"   means 'I am not pursuing this now' — it is not a finding.",
-        "  lk q na \"...\"     means 'this branch genuinely does not apply to this project'.",
+        '  lk q note "..."   save your answer + evidence and move the frontier.',
+        "  lk q done         mark it answered without saving a note.",
+        '  lk q skip "..."   intentionally defer it; this is not a finding.',
+        '  lk q na "..."     record that the branch genuinely does not apply.',
         "",
         "IMPORTANT",
-        "  Running a TRY command does NOT answer the question. You still decide what the evidence means.",
-        "  A heuristic signal or surprising behavior is a lead, not a confirmed vulnerability.",
+        "  Running a TRY command does NOT answer the question. You still make the audit judgment.",
+        "  A heuristic signal, surprising behavior, or successful call is a lead/observation, not proof of a vulnerability.",
     ]
 
 def render_current(root: Path | None = None) -> str:
@@ -1610,15 +1638,18 @@ def render_current(root: Path | None = None) -> str:
     lines += [
         "",
         "WHAT THE QUESTION MEANS",
-        "  In plain English: identify the rule, inspect the relevant code/state paths, then decide whether the evidence supports or breaks the rule.",
+        f"  Your task is to answer: {q.text}",
+        "  Start from the intended security rule, then use evidence to confirm it, break it, or show that more proof is needed.",
         "",
         "WHY THIS MATTERS",
         f"  {q.why}",
         "",
         "TRY",
     ]
-    for command in q.commands[:4]:
-        lines.append(f"  {command}")
+    for index, command in enumerate(q.commands[:4]):
+        purpose = _command_purpose(command)
+        prefix = "START" if index == 0 else "THEN"
+        lines.append(f"  {prefix:<5} {command}   [{purpose}]")
     if q.proof_questions:
         lines += ["", "NEXT PROOF QUESTIONS"]
         for item in q.proof_questions[:3]:
@@ -1873,20 +1904,21 @@ def overview(root: Path | None = None, *, show_all: bool = False) -> str:
         "",
         "HOW TO READ THE FRONTIER",
         "  ✓ settled   = you recorded an answer, marked N/A, or explicitly skipped it.",
-        "  → active    = Lowkey has useful evidence/prerequisites for this branch right now.",
-        "  ○ waiting   = keep it in the universe; another branch is more actionable first.",
-        "  'live'      = worth investigating now; it does NOT mean 'vulnerable'.",
-        "  'proof'     = evidence exists, but the security property still needs proof.",
+        "  → active    = Lowkey has enough evidence/prerequisites to make this branch actionable now.",
+        "  ○ waiting   = relevant, but another branch is currently more actionable first.",
+        "  'live'      = actionable now; it does NOT mean 'vulnerable' or 'confirmed'.",
+        "  'proof'     = Lowkey has useful evidence, but you still need to prove the security property."
         "",
         f"QUESTION UNIVERSE  •  {len(enabled)} applicable / {len(QUESTION_CATALOG)} total",
         "  applicable = detected project features make these questions relevant.",
         "  total      = the full built-in universe, including specialized packs that may not apply here.",
         "",
         "WHAT TO DO",
-        "  1. Run 'lk q' and answer the current question.",
-        "  2. Use the TRY commands shown there to gather evidence.",
-        "  3. Record your conclusion with 'lk q note \"...\"'.",
-        "  4. Run 'lk q' again; your new evidence can change the frontier.",
+        "  1. 'lk q' = open the current question.",
+        "  2. Run the START command shown there; use THEN commands only as needed.",
+        "  3. Compare the result with the intended rule and decide what is actually proven.",
+        "  4. 'lk q note \"...\"' = save your conclusion; then 'lk q' opens the next frontier.",
+        "  5. 'lk q why' = challenge Lowkey's prioritization; 'lk q evidence' = inspect the clues behind it.",
         "",
         "NEXT",
         "  lk q                       open the next active question",
