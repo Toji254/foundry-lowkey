@@ -298,7 +298,7 @@ class WalkthroughTests(unittest.TestCase):
         rendered = walkthrough._render_storage(storage, False, actors)
         self.assertIn("purpose       → keeps track of how much ETH each address has contributed", rendered)
         self.assertIn("mapping slot  → 0   [the mapping's anchor; this slot identifies the mapping itself]", rendered)
-        self.assertIn("important     → slot 0 is not Alice's value; each key gets its own storage location", rendered)
+        self.assertIn("important     → slot 0 is not Alice's value; it helps the EVM find Alice's entry", rendered)
         self.assertIn("key type      → address   [what identifies an entry]", rendered)
         self.assertIn("value type    → uint256   [what is stored for that key]", rendered)
         self.assertIn("Alice → 1,000 ETH + 3 wei", rendered)
@@ -306,7 +306,7 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("SLOT 1 • owner", rendered)
         self.assertIn("purpose       → remembers the current owner", rendered)
         self.assertIn("value         → 0x33333333…33333333", rendered)
-        self.assertIn("storage box   → slot 1   [a numbered 32-byte storage box; slots start at 0]", rendered)
+        self.assertIn("storage box   → slot 1   [the value's numbered storage box; Solidity starts counting at 0]", rendered)
         self.assertNotIn("raw word", rendered)
 
     def test_storage_renderer_keeps_mapping_slot_evidence_in_technical_mode(self):
