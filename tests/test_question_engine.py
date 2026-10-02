@@ -171,10 +171,10 @@ class QuestionEngineTests(unittest.TestCase):
         (root / ".audit" / "context.json").write_text(json.dumps(context), encoding="utf-8")
         with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
             rows = questions.rank_questions(root, limit=12)
-        auth_rows = [row for row in rows if row["question"].id in {"AUTH-002", "AUTH-003"}]
+        auth_rows = [row for row in rows if row["question"].family == "authorization"]
         self.assertTrue(auth_rows)
-        self.assertTrue(any("overlaps the focused signal" in " ".join(row["reasons"]) for row in auth_rows))
-        self.assertNotIn("VULNERABLE", " ".join(row["reasons"]).upper())
+        self.assertTrue(any("overlaps the focused signal" in " ".join(item["reasons"]) for item in auth_rows))
+        self.assertNotIn("VULNERABLE", " ".join(item["reasons"]).upper())
 
     def test_source_command_uses_current_question_without_changing_history(self):
         temp, root = self.make_project()
@@ -246,6 +246,23 @@ class QuestionEngineTests(unittest.TestCase):
             self.assertEqual(questions.answer_current("SKIPPED", note="defer", root=root), 0)
             state = questions.load_state(root)
             self.assertEqual(state["answers"][current["question"].id]["status"], "SKIPPED")
+
+
+    def test_answer_current_uses_stored_current_id(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(questions.audit_context, "is_audit_project", return_value=True), \
+             patch.object(questions.audit_context, "audit_dir", return_value=root / ".audit"), \
+             patch.object(questions.audit_context, "events_path", return_value=root / ".audit" / "events.jsonl"), \
+             patch.object(questions.audit_context, "load", return_value={"project": {"root": str(root)}, "target": {}, "latest": {}, "signals": [], "tools": {}}), \
+             patch.object(questions.audit_context, "emit"):
+            first = questions.current_question(root)
+            questions.answer_current("ANSWERED", note="answering exactly the displayed question", root=root)
+            state = questions.load_state(root)
+        self.assertEqual(first["question"].id, "ARCH-001")
+        self.assertIn("ARCH-001", state["answers"])
+        self.assertEqual(state["answers"]["ARCH-001"]["status"], "ANSWERED")
 
 
 if __name__ == "__main__":
