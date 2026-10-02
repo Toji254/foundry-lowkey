@@ -3002,6 +3002,53 @@ class WalkthroughTests(unittest.TestCase):
 
         self.assertEqual(story.signal, "CONFIRMED")
         self.assertIn("1 wei", " ".join(story.evidence))
+    def test_walkthrough_security_lens_uses_shared_pattern_signal(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Fallback",
+            "0x" + "3" * 40,
+            "withdraw()",
+            [],
+            status="success",
+        )
+        step.security_signals = [{
+            "pattern_id": "REPLAY-001",
+            "verification_status": "REVIEW",
+            "description": "payout path needs state-consumption review",
+            "next": "Compare the entitlement before and after the repeated call.",
+        }]
+        model = walkthrough.ContractModel(
+            name="Fallback",
+            source="src/Fallback.sol",
+            artifact="out/Fallback.sol/Fallback.json",
+            function_locations={"withdraw": 30},
+        )
+        rendered = walkthrough._render_interaction_graph_full(
+            pathlib.Path("/tmp/project"),
+            step,
+            [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)],
+            model,
+            [model],
+            False,
+        )
+        self.assertIn("SECURITY LENS", rendered)
+        self.assertIn("REPLAY-001 [REVIEW]", rendered)
+        self.assertIn("payout path needs state-consumption review", rendered)
+
+    def test_isolated_probe_scope_is_explicit(self):
+        step = walkthrough.Step(
+            1,
+            "Alice",
+            "Demo",
+            "0x" + "2" * 40,
+            "release()",
+            [],
+            observation_scope="isolated_probe",
+        )
+        self.assertEqual(step.observation_scope, "isolated_probe")
+        self.assertNotEqual(step.observation_scope, "persistent_story")
+
 
 if __name__ == "__main__":
     unittest.main()
