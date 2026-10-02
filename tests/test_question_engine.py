@@ -174,7 +174,10 @@ class QuestionEngineTests(unittest.TestCase):
         auth_rows = [row for row in rows if row["question"].family == "authorization"]
         self.assertTrue(auth_rows)
         self.assertTrue(any("overlaps the focused signal" in " ".join(item["reasons"]) for item in auth_rows))
-        self.assertNotIn("VULNERABLE", " ".join(item["reasons"]).upper())
+        self.assertNotIn(
+            "VULNERABLE",
+            " ".join(reason for row in auth_rows for reason in row["reasons"]).upper(),
+        )
 
     def test_source_command_uses_current_question_without_changing_history(self):
         temp, root = self.make_project()
