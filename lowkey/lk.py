@@ -10005,7 +10005,7 @@ def _render_command_help(path):
 
 def print_help():
     print(r"""
-LOWKEY — SMART CONTRACT AUDITOR CONSOLE
+LOWKEY — SECURITY & AUDIT CONSOLE
 =======================================
 
 START HERE
@@ -10636,13 +10636,41 @@ def main():
         save_config(config)
     final_root = audit_context.foundry_project_root()
     _sync_audit_context(config, final_root)
+    command_name = str(sys.argv[1] or "").strip().lower()
+    first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
+    nested_commands = {
+        "audit": {"run", "pipeline"},
+        "walkthrough": {"test", "seed"},
+        "walk": {"test", "seed"},
+        "generate": {"test", "script", "contract"},
+        "project": {"--workspace"},
+        "projects": {"reset"},
+        "target": {"list", "auto", "reset"},
+        "rpc": {"set", "use", "reset"},
+        "wallet": {"list", "set", "set-env", "use", "remove"},
+        "session": {"start", "resume", "end"},
+        "fork": {"status", "stop", "dump", "load"},
+        "matrix": {"init", "actor", "state", "add", "list", "test"},
+        "finding": {"add", "list", "ls"},
+        "checklist": {"done", "reset"},
+        "actor": {"reset"},
+        "q": {"current", "next", "why", "evidence", "path", "done", "note", "skip", "na", "not-applicable", "source", "reset"},
+    }
+    command_path = command_name
+    if first_arg and first_arg in nested_commands.get(command_name, set()):
+        command_path = f"{command_name} {first_arg}"
     audit_context.emit(
         "lk-command",
         final_root,
         tool="lk",
         status="completed" if (not isinstance(result,int) or result == 0) else "failed",
-        summary=sys.argv[1],
-        data={"command": sys.argv[1], "exit_code": result if isinstance(result,int) else 0},
+        summary=command_path,
+        data={
+            "command": command_name,
+            "command_path": command_path,
+            "subcommand": first_arg if command_path != command_name else None,
+            "exit_code": result if isinstance(result,int) else 0,
+        },
     )
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
