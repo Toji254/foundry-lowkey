@@ -197,6 +197,10 @@ def _default_context(root: Path) -> dict[str, Any]:
         },
         "tools": {},
         "signals": [],
+        "security": {
+            "patterns": [],
+            "last_updated": None,
+        },
         "updated_at": _now(),
     }
 
@@ -339,6 +343,96 @@ def _signal_id(signal: dict[str, Any]) -> str:
     digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10].upper()
     return f"{str(signal.get('tool') or 'LOWKEY').upper()}-{digest}"
 
+
+def add_security_pattern(
+    root: Path | None,
+    *,
+    pattern_id: str,
+    title: str,
+    contract: str,
+    function: str = "",
+    file: str = "",
+    line: int | None = None,
+    logic: str = "",
+    description: str = "",
+    next_step: str = "",
+    provenance: list[str] | None = None,
+    verification_status: str = "CANDIDATE",
+    verification_evidence: list[str] | None = None,
+    evidence_mode: str = "source",
+) -> dict[str, Any]:
+    """Persist a security-pattern observation as a first-class Lowkey signal.
+
+    Pattern identity stays separate from manual finding status. The signal
+    status remains the user's investigation lifecycle; verification_status
+    records what Lowkey actually reproduced.
+    """
+    signal = {
+        "category": "security-pattern",
+        "tool": "security-patterns",
+        "check": pattern_id,
+        "pattern_id": pattern_id,
+        "title": title,
+        "impact": "Unknown",
+        "confidence": (
+            "Live reproduced" if verification_status == "CONFIRMED"
+            else "Live review" if verification_status == "REVIEW"
+            else "Source pattern"
+        ),
+        "file": file,
+        "line": line,
+        "function": function,
+        "description": description,
+        "meaning": logic,
+        "why": "Source pattern matched; runtime evidence determines whether the security condition exists.",
+        "next": next_step,
+        "provenance": list(provenance or []),
+        "verification_status": verification_status,
+        "verification": {
+            "status": verification_status,
+            "mode": evidence_mode,
+            "evidence": list(verification_evidence or []),
+        },
+        "status": "open",
+    }
+    result = add_signal(signal, root)
+    result["category"] = "security-pattern"
+    result["pattern_id"] = pattern_id
+    result["verification_status"] = verification_status
+    result["verification"] = {
+        "status": verification_status,
+        "mode": evidence_mode,
+        "evidence": list(verification_evidence or []),
+    }
+    save(load(root), root)
+    return result
+
+
+def security_patterns(
+    root: Path | None = None,
+    *,
+    pattern_id: str | None = None,
+    contract: str | None = None,
+    function: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return persisted security-pattern signals using shared project context."""
+    items = [
+        item for item in signals(root, None)
+        if isinstance(item, dict) and item.get("category") == "security-pattern"
+    ]
+    if pattern_id:
+        items = [item for item in items if str(item.get("pattern_id") or item.get("check")) == str(pattern_id)]
+    if contract:
+        compact_contract = str(contract).rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+        items = [
+            item for item in items
+            if str(item.get("contract") or "").lower() == str(contract).lower()
+            or str(item.get("file") or "").rsplit("/", 1)[-1].rsplit(".", 1)[0].lower() == compact_contract
+        ]
+    if function:
+        wanted = str(function).split("(", 1)[0].lower()
+        items = [item for item in items if str(item.get("function") or "").split("(", 1)[0].lower() == wanted]
+    return items
 
 def add_signal(signal: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
     context = load(root)
