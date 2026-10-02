@@ -2159,7 +2159,21 @@ def run_export(config):
     paths=workspace_paths(root)
     export_dir=os.path.join(str(root),"audit-report")
     os.makedirs(export_dir,exist_ok=True)
-    lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(effective_rpc(config)) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Auto-discovered when needed'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Findings",""]
+    _sync_security_patterns(root)
+    lines=["# LowkeyCast Audit Report","",f"- Target: {config.get('target') or 'Not set'}",f"- RPC: {rpc_display(effective_rpc(config)) or 'Not set'}",f"- ABI: {config.get('abi_paths',{}).get(config.get('target')) or 'Auto-discovered when needed'}",f"- Last transaction: {config.get('last_tx') or 'None'}",f"- Generated: {datetime.now().isoformat(timespec='seconds')}","","## Security Pattern Signals",""]
+    patterns = audit_context.security_patterns(root)
+    if patterns:
+        for item in patterns:
+            verification = str(item.get("verification_status") or "CANDIDATE")
+            lines.append(
+                f"- {item.get('pattern_id') or item.get('check')}: {item.get('title')} "
+                f"({verification}) — {item.get('file') or 'unknown'}:{item.get('line') or '?'}"
+            )
+            if item.get("description"):
+                lines.append(f"  - Observation: {item.get('description')}")
+    else:
+        lines.append("No security-pattern signals recorded.")
+    lines += ["", "## Findings", ""]
     finding_path=paths["findings"] if os.path.exists(paths["findings"]) else os.path.join(AUDIT_DIR,"findings.md")
     lines.append(Path(finding_path).read_text(encoding="utf-8") if os.path.exists(finding_path) else "No findings recorded.")
     lines += ["","## Checklist",""]
@@ -8473,6 +8487,10 @@ def run_investigate(config, args):
     print(f"Issue      : {signal.get('title')}")
     print(f"Impact     : {signal.get('impact', 'Unknown')}")
     print(f"Confidence : {signal.get('confidence', 'Unknown')}")
+    if signal.get("category") == "security-pattern":
+        verification = signal.get("verification_status") or ((signal.get("verification") or {}).get("status") if isinstance(signal.get("verification"), dict) else None) or "CANDIDATE"
+        print(f"Pattern    : {signal.get('pattern_id') or signal.get('check')}")
+        print(f"Verification: {verification}")
     print(f"Location   : {audit_context.source_link(signal.get('file'), signal.get('line'), signal.get('column'), root)}")
     if signal.get("function"):
         print(f"Function   : {signal.get('function')}")
@@ -8822,6 +8840,12 @@ def run_status(config):
     context = audit_context.load(root)
     open_signals = len(audit_context.signals(root, "open"))
     print(f"Signals: {open_signals} open")
+    security_summary = _security_pattern_summary(root)
+    print(
+        "Security patterns: "
+        f"{security_summary['total']} "
+        f"(review {security_summary['reviews']}, confirmed {security_summary['confirmed']}, candidate {security_summary['candidates']})"
+    )
     focus = context.get("focus")
     if isinstance(focus, dict) and focus.get("signal_id"):
         print(f"Focus  : {focus.get('signal_id')} — {focus.get('title') or 'audit signal'}")
