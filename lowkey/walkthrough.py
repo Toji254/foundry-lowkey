@@ -8130,10 +8130,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     def wait_for_action() -> str:
         """Pause after an observed step, allowing history review without re-running it."""
         while True:
-            choice = wait_for_action()
+            choice = _wait_for_next_interaction(no_prompt)
             if choice == "q":
                 return "q"
-            if choice in {"\n", "\r"}:
+            if choice in {"", "\n", "\r"}:
                 return ""
             if choice in "123456789":
                 index = int(choice)
@@ -8144,6 +8144,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 print(f"\n  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
                 continue
             if choice == "r":
+                if not steps:
+                    print("\n  No observed steps yet.")
+                    continue
                 try:
                     raw = input(f"\n  review observed step [1-{len(steps)}]: ").strip()
                 except EOFError:
@@ -8157,11 +8160,6 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     draw(selected, selected.storage_after)
                 else:
                     print(f"  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
-                continue
-            if choice in {"[", "]"} and steps:
-                # Simple history navigation for terminals where number keys are awkward.
-                selected = steps[-1]
-                draw(selected, selected.storage_after)
                 continue
             return ""
 
