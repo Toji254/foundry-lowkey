@@ -2377,14 +2377,38 @@ def _friendly_value(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_friendly_value(item) for item in list(value)[:4]) + (", …" if len(value) > 4 else "") + "]"
     return str(value)
+
+
 def _friendly_eth(value_wei: int | None) -> str:
+    """Show ETH in compact decimal/scientific notation with the exact wei value beside it."""
     try:
         value = int(value_wei or 0)
     except (TypeError, ValueError):
         return str(value_wei)
+
+    if value == 0:
+        return "0 ETH [0 wei]"
+
     if value % 10**18 == 0:
-        return f"{value // 10**18:g} ETH"
-    return f"{value / 10**18:g} ETH"
+        shown = f"{value // 10**18:g} ETH"
+    else:
+        shown = f"{value / 10**18:g} ETH"
+    return f"{shown} [{value:,} wei]"
+
+
+def _friendly_storage_value(
+    value: Any,
+    type_name: Any,
+    native_value: bool = False,
+) -> str:
+    """Render a storage value as meaning first, with its Solidity representation in brackets."""
+    type_text = str(type_name or "value")
+    if native_value:
+        try:
+            return f"{_friendly_eth(int(value))} [stored as {type_text}; msg.value is measured in wei]"
+        except (TypeError, ValueError):
+            pass
+    return f"{_friendly_value(value)} [{type_text} value]"
 
 
 def _friendly_arg(
@@ -3286,6 +3310,7 @@ def _render_protocol_story_full(
     models: list[ContractModel],
     enabled: bool,
     runtime: list[RuntimeContract] | None = None,
+    review_mode: bool = False,
 ) -> str:
     lines = [_paint("PROTOCOL STORY", BOLD + CYAN, enabled)]
 
@@ -3320,7 +3345,7 @@ def _render_protocol_story_full(
         )
         lines.append("                 │")
         lines.append("                 ▼")
-        is_latest = bool(history and current is history[-1])
+        is_latest = bool(history and current is history[-1]) and not review_mode
         if is_latest:
             lines.append("  ◀ NOW  •  LIVE")
             lines.append("  ◀ LIVE")
@@ -3367,7 +3392,8 @@ def _render_protocol_story(
         root = Path.cwd()
         models = []
         runtime = kwargs.get("runtime")
-    return _render_protocol_story_full(root, steps, current, actors, models, enabled, runtime)
+        review_mode = kwargs.get("review_mode", False)
+    return _render_protocol_story_full(root, steps, current, actors, models, enabled, runtime, kwargs.get("review_mode", False))
 
 
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
@@ -4728,6 +4754,18 @@ def _decode_word(word: str, typ: str, offset: int = 0, size: int = 32) -> Any:
         return "0x" + raw
 
 
+def _mapping_tracks_msg_value(source_text: str, label: str) -> bool:
+    """Detect a generic mapping whose stored value is directly derived from msg.value."""
+    if not source_text or not label:
+        return False
+    clean = _strip_source_comments(source_text, "solidity")
+    mapping_ref = re.compile(r"\b" + re.escape(label) + r"\s*\[[^\]]+\]")
+    for statement in re.split(r"[;{}]", clean):
+        if mapping_ref.search(statement) and re.search(r"\bmsg\.value\b", statement):
+            return True
+    return False
+
+
 def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addresses: list[str], observed_keys: list[Any] | None = None) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     entries = model.storage.get("storage") or []
@@ -4739,6 +4777,12 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
     ]
     observed_numbers = [str(x) for x in observed_keys if isinstance(x, int) or (isinstance(x, str) and x.isdigit())]
     types = model.storage.get("types") or {}
+    try:
+        source_for_storage = (Path(model.source).read_text(encoding="utf-8", errors="replace")
+                              if Path(model.source).is_file()
+                              else "")
+    except OSError:
+        source_for_storage = ""
 
     def type_info(type_id: str) -> dict[str, Any]:
         return types.get(type_id, {}) if type_id else {}
@@ -4767,8 +4811,9 @@ def _snapshot_storage(model: ContractModel, rpc: str, address: str, actor_addres
             value_info = type_info(value_type)
             mapping = {
                 "key_type": type_label(key_type),
-                "value_type": type_label(value_type),
+                "value_type": value_type,
                 "rows": [],
+                "native_value": _mapping_tracks_msg_value(source_for_storage, label),
             }
             keys: list[str] = []
             key_label = type_label(key_type)
@@ -7512,63 +7557,101 @@ def _render_system_graph(models: list[ContractModel], enabled: bool) -> str:
     return "\n".join(lines)
 
 
-def _render_storage(storage: list[dict[str, Any]], enabled: bool) -> str:
+def _render_storage(
+    storage: list[dict[str, Any]],
+    enabled: bool,
+    actors: list[Actor] | None = None,
+) -> str:
+    actors = actors or []
     out: list[str] = []
     for item in storage[:16]:
         encoding = item.get("encoding")
         if encoding == "mapping":
             anchor_slot = item.get("slot")
             mapping_info = item.get("mapping", {})
+            key_type = str(mapping_info.get("key_type") or "key")
+            value_type = str(mapping_info.get("value_type") or "value")
+            native_value = bool(mapping_info.get("native_value"))
             lines = [
-                f"anchor slot → {anchor_slot}   (the mapping itself)",
-                f"key         → {mapping_info.get('key_type')}",
-                f"value       → {mapping_info.get('value_type')}",
-                f"value slots → keccak256(pad(key) || pad({anchor_slot}))",
+                f"meaning     → one {value_type} value is stored for each {key_type} key",
+                f"anchor slot → {anchor_slot}   [the mapping's base storage position]",
+                f"key         → {key_type}   [what identifies a row]",
+                f"value       → {value_type}   [what is stored for that key]",
+                f"row slot    → keccak256(pad(key) || pad({anchor_slot}))",
+                f"              [hash the key with the mapping slot to find that row]",
             ]
+            if native_value:
+                lines.append("unit        → ETH amounts are stored as wei here [1 ETH = 10^18 wei]")
+
             for row in mapping_info.get("rows", [])[:4]:
+                raw_key = str(row.get("key") or "")
+                key_text = _actor_for_address(raw_key, actors) or (
+                    f"{_actor_for_address(raw_key, actors)} ({_addr(raw_key)})"
+                    if _actor_for_address(raw_key, actors)
+                    else _addr(raw_key) if is_address(raw_key) else raw_key
+                )
                 if row.get("struct"):
-                    lines.append(f"{_addr(row.get('key'))}  stored at {row.get('slot')}")
+                    slot = str(row.get("slot") or "?")
+                    lines.append(f"{key_text}  [key]  → stored at {slot} [EVM storage slot for this key]")
                     for field in row["struct"].get("fields", [])[:8]:
-                        lines.append(f"  ├─ {field['name']:<14} = {field['value']}  [{field['type']}]")
+                        lines.append(
+                            f"  ├─ {field['name']:<14} = {_friendly_value(field['value'])}  "
+                            f"[{field['type']}]"
+                        )
                 else:
-                    lines.append(
-                        f"{_addr(row.get('key'))} → {row.get('value')}  "
-                        f"at {row.get('slot')}"
+                    shown_value = _friendly_storage_value(
+                        row.get("value"),
+                        value_type,
+                        native_value=native_value,
                     )
-            out.append(_box(f"{MAPPING} MAPPING {item.get('label')}", lines, width=82))
+                    lines.append(
+                        f"{key_text} → {shown_value}  "
+                        f"at {row.get('slot')} [calculated storage slot]"
+                    )
+            out.append(_box(f"{MAPPING} MAPPING {item.get('label')}", lines, width=92))
         elif item.get("struct"):
             fields = item["struct"]["fields"]
             out.append(_box(
                 f"{STRUCT} STRUCT {item['struct']['type']}",
                 [
-                    f"base slot: {item.get('slot')}",
+                    f"base slot: {item.get('slot')}   [where this struct starts]",
                     *[
-                        f"{f['name']:<18} = {f['value']}   [{f['type']}] @ {f['slot']}"
+                        f"{f['name']:<18} = {_friendly_value(f['value'])}   "
+                        f"[{f['type']}] @ {f['slot']} [storage slot]"
                         for f in fields
                     ],
                 ],
-                width=82,
+                width=92,
                 left="╔",
                 right="╗",
             ))
         elif isinstance(item.get("type"), str) and "[" in str(item.get("type")):
             out.append(_box(
                 f"{ARRAY} ARRAY {item.get('label')}",
-                [f"type: {item.get('type')}", f"slot: {item.get('slot')}", f"anchor: {item.get('value')}"],
-                width=82,
+                [
+                    f"type: {item.get('type')}   [Solidity array type]",
+                    f"slot: {item.get('slot')}   [array's storage anchor]",
+                    f"anchor value: {item.get('value')}   [raw value stored at the anchor]",
+                ],
+                width=92,
             ))
         else:
             raw = item.get("raw")
+            value = item.get("value")
+            value_text = _friendly_value(value)
+            if is_address(value):
+                actor = _actor_for_address(value, actors)
+                value_text = f"{actor} ({_addr(value)})" if actor else _addr(value)
             slot_lines = [
-                f"{item.get('label')}: {item.get('value')}",
-                f"type: {item.get('type')}",
+                f"{item.get('label')}: {value_text}   [{item.get('type')} value]",
+                f"type: {item.get('type')}   [Solidity type]",
             ]
             if raw:
-                slot_lines.append(f"raw word: {raw}")
+                slot_lines.append(f"raw word: {raw}   [32-byte EVM storage word]")
             out.append(_box(
                 f"{STORAGE} SLOT {item.get('slot')}",
                 slot_lines,
-                width=82,
+                width=92,
             ))
     return "\n\n".join(out) if out else "  <storage layout unavailable>"
 
@@ -7986,15 +8069,16 @@ def _render_board(
     enabled: bool,
     static: bool = False,
     support_models: list[ContractModel] | None = None,
+    review_mode: bool = False,
 ) -> str:
     success = sum(1 for x in steps if x.status == "success")
     blocked = sum(1 for x in steps if x.status in {"blocked", "reverted"})
-    reviewing = bool(current and steps and current is not steps[-1])
+    reviewing = review_mode or bool(current and steps and current is not steps[-1])
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = next live interaction   1-9 = review observed step   R = review any step   Q = stop",
-        "  REVIEW mode never re-runs a transaction; it only reopens recorded evidence." if reviewing else
+        "  ENTER = next live interaction   1-9 = quick-review observed step   R = choose any observed step   Q = stop",
+        "  REVIEW MODE: recorded evidence only; no transaction is re-run. Press ENTER to resume live execution." if reviewing else
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
         "",
@@ -8021,7 +8105,7 @@ def _render_board(
         ),
     ]
     if current and current.storage_after:
-        board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled)]
+        board += ["", _paint("CURRENT STATE", BOLD + GREEN, enabled), _render_storage(current.storage_after[:4], enabled, actors)]
     board += ["", "  " + _slither_status(root)]
     if static:
         board.append(_paint("STATIC MODEL ONLY", YELLOW, enabled))
@@ -8259,7 +8343,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         else plan_workflow(model, actors, target, _block_timestamp(rpc), max_steps, observed, root=root)
     )
 
-    def draw(current=None, storage=None):
+    def draw(current=None, storage=None, review_mode=False):
         if sys.stdout.isatty():
             # Fixed terminal canvas: each live observation replaces the previous
             # frame instead of scrolling the workflow downward.
@@ -8269,6 +8353,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             root, model, models, runtime, actors, steps, current, storage or [],
             _ansi_enabled(False),
             support_models=model_catalog,
+            review_mode=review_mode,
         ))
         sys.stdout.flush()
 
@@ -8284,7 +8369,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 index = int(choice)
                 if index <= len(steps):
                     selected = steps[index - 1]
-                    draw(selected, selected.storage_after)
+                    draw(selected, selected.storage_after, review_mode=True)
                     continue
                 print(f"\n  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
                 continue
@@ -8292,17 +8377,27 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                 if not steps:
                     print("\n  No observed steps yet.")
                     continue
+                print("\n  REVIEW PICKER  •  recorded evidence only")
+                for observed_step in steps:
+                    status = "✓" if observed_step.status == "success" else "✕" if observed_step.status in {"blocked", "reverted"} else "•"
+                    print(
+                        f"    {observed_step.index:02d} {status} "
+                        f"{observed_step.actor} → {observed_step.contract}.{observed_step.function}"
+                    )
+                print("  Enter a number to reopen that step. ENTER here resumes live execution.")
                 try:
-                    raw = input(f"\n  review observed step [1-{len(steps)}]: ").strip()
+                    raw = input(f"  review observed step [1-{len(steps)}]: ").strip()
                 except EOFError:
                     return ""
+                if not raw:
+                    continue
                 if not raw.isdigit():
                     print("  Review cancelled: enter an observed step number.")
                     continue
                 index = int(raw)
                 if 1 <= index <= len(steps):
                     selected = steps[index - 1]
-                    draw(selected, selected.storage_after)
+                    draw(selected, selected.storage_after, review_mode=True)
                 else:
                     print(f"  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
                 continue
