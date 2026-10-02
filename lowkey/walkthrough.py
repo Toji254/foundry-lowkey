@@ -3571,12 +3571,24 @@ def _render_protocol_story(
 def _render_pseudocode_flow(steps: list[Step], current: Step | None, enabled: bool) -> str:
     return _render_protocol_story(steps, current, [], enabled)
 
-def _wait_for_next_interaction(no_prompt: bool) -> str:
+def _review_controls_hint(observed_count: int) -> str:
+    count = max(0, int(observed_count))
+    if count == 0:
+        review = "no observed steps yet"
+    elif count <= 9:
+        review = f"1-{count} review observed"
+    else:
+        review = f"1-9 quick review | r review any (1-{count})"
+    return f"⏎ next  |  {review}  |  q stop" if count <= 9 else f"⏎ next  |  {review}  |  q stop"
+
+
+def _wait_for_next_interaction(no_prompt: bool, observed_count: int = 0) -> str:
     if no_prompt:
         return ""
+    prompt = "\n  " + _review_controls_hint(observed_count) + "  "
     if not sys.stdin.isatty():
         try:
-            return input("\n  ⏎ next  |  1-9 review observed  |  r review any  |  q stop  ").strip().lower()
+            return input(prompt).strip().lower()
         except EOFError:
             return ""
     fd=None
@@ -3590,7 +3602,7 @@ def _wait_for_next_interaction(no_prompt: bool) -> str:
         new[6][termios.VMIN]=1
         new[6][termios.VTIME]=0
         termios.tcsetattr(fd,termios.TCSADRAIN,new)
-        sys.stdout.write("\n  ⏎ next  |  1-9 review observed  |  r review any  |  q stop  ")
+        sys.stdout.write(prompt)
         sys.stdout.flush()
         return os.read(fd,1).decode(errors="ignore").lower()
     except Exception:
@@ -8424,7 +8436,15 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = next live interaction   1-9 = review observed steps 1-9   R = review any observed step   Q = stop",
+        "  " + (
+            f"ENTER = next live interaction   no observed steps yet   R = review any observed step   Q = stop"
+            if not steps
+            else (
+                f"ENTER = next live interaction   1-{min(len(steps), 9)} = review observed"
+                + (f"   R = review any observed step (1-{len(steps)})" if len(steps) > 9 else "   R = review any observed step")
+                + "   Q = stop"
+            )
+        ),
         "  REVIEW MODE: recorded evidence only; no transaction is re-run. Press ENTER to resume live execution." if reviewing else
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
@@ -8719,7 +8739,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     def wait_for_action() -> str:
         """Pause after an observed step, allowing history review without re-running it."""
         while True:
-            choice = _wait_for_next_interaction(no_prompt)
+            choice = _wait_for_next_interaction(no_prompt, len(steps))
             if choice == "q":
                 return "q"
             if choice in {"", "\n", "\r"}:
