@@ -197,10 +197,6 @@ def _default_context(root: Path) -> dict[str, Any]:
         },
         "tools": {},
         "signals": [],
-        "security": {
-            "patterns": [],
-            "last_updated": None,
-        },
         "updated_at": _now(),
     }
 
@@ -404,7 +400,6 @@ def add_security_pattern(
         "mode": evidence_mode,
         "evidence": list(verification_evidence or []),
     }
-    save(load(root), root)
     return result
 
 
