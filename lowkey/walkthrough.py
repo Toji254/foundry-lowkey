@@ -3576,7 +3576,7 @@ def _wait_for_next_interaction(no_prompt: bool) -> str:
         return ""
     if not sys.stdin.isatty():
         try:
-            return input("\n  ⏎ next  |  1-9 review  |  r review any  |  q stop  ").strip().lower()
+            return input("\n  ⏎ next  |  1-9 review observed  |  r review any  |  q stop  ").strip().lower()
         except EOFError:
             return ""
     fd=None
@@ -3590,7 +3590,7 @@ def _wait_for_next_interaction(no_prompt: bool) -> str:
         new[6][termios.VMIN]=1
         new[6][termios.VTIME]=0
         termios.tcsetattr(fd,termios.TCSADRAIN,new)
-        sys.stdout.write("\n  ⏎ next  |  1-9 review  |  r review any  |  q stop  ")
+        sys.stdout.write("\n  ⏎ next  |  1-9 review observed  |  r review any  |  q stop  ")
         sys.stdout.flush()
         return os.read(fd,1).decode(errors="ignore").lower()
     except Exception:
@@ -8424,7 +8424,7 @@ def _render_board(
     board = [
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
-        "  ENTER = next live interaction   1-9 = quick-review observed step   R = choose any observed step   Q = stop",
+        "  ENTER = next live interaction   1-9 = review observed steps 1-9   R = review any observed step   Q = stop",
         "  REVIEW MODE: recorded evidence only; no transaction is re-run. Press ENTER to resume live execution." if reviewing else
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
@@ -8743,7 +8743,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                         f"    {observed_step.index:02d} {status} "
                         f"{observed_step.actor} → {observed_step.contract}.{observed_step.function}"
                     )
-                print("  Enter a number to reopen that step. ENTER here resumes live execution.")
+                print("  Enter an observed step number to reopen it. ENTER here resumes live execution.")
                 try:
                     raw = input(f"  review observed step [1-{len(steps)}]: ").strip()
                 except EOFError:
@@ -8754,13 +8754,13 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     print("  Review cancelled: enter an observed step number.")
                     continue
                 index = int(raw)
-                if 1 <= index <= len(steps):
-                    selected = steps[index - 1]
+                selected = next((item for item in steps if item.index == index), None)
+                if selected is not None:
                     draw(selected, selected.storage_after, review_mode=True)
                 else:
                     print(f"  No observed step {index}. Observed steps: 1-{len(steps) or 0}.")
                 continue
-            return ""
+            print("  Unknown key. ENTER = next live interaction | 1-9 = review | R = review any | Q = stop")
 
     draw()
 
@@ -8831,7 +8831,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
             steps.append(step)
             draw(step)
             if not no_prompt:
-                choice = _wait_for_next_interaction(no_prompt)
+                choice = wait_for_action()
                 if choice == "q":
                     stop_reason = "user"
                     break
@@ -9030,13 +9030,10 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         },steps)
 
         if not no_prompt and pending and len(steps) < max_steps:
-            try:
-                choice = _wait_for_next_interaction(no_prompt)
-                if choice == "q":
-                    stop_reason = "user"
-                    break
-            except EOFError:
-                no_prompt=True
+            choice = wait_for_action()
+            if choice == "q":
+                stop_reason = "user"
+                break
 
     replay=_generate_replay_script(root,model,target,steps)
     if stop_reason == "user" and pending:
