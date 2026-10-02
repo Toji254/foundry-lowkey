@@ -467,6 +467,70 @@ class WalkthroughTests(unittest.TestCase):
             "IAgreement",
         )
 
+    def test_value_solver_respects_strict_msg_value_upper_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            src = root / "src"
+            src.mkdir(parents=True)
+            source = src / "Fallback.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20;\n"
+                "contract Fallback {\n"
+                "    function contribute() external payable {\n"
+                "        require(msg.value < 0.001 ether);\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            model = walkthrough.ContractModel(
+                name="Fallback",
+                source="src/Fallback.sol",
+                artifact="out/Fallback.sol/Fallback.json",
+                abi=[{
+                    "type": "function",
+                    "name": "contribute",
+                    "inputs": [],
+                    "outputs": [],
+                    "stateMutability": "payable",
+                }],
+            )
+            self.assertEqual(
+                walkthrough._value_for(model.abi[0], model=model, root=root),
+                1,
+            )
+
+    def test_plan_workflow_includes_payable_fallback_entry(self):
+        model = walkthrough.ContractModel(
+            name="Fallback",
+            source="src/Fallback.sol",
+            artifact="out/Fallback.sol/Fallback.json",
+            abi=[
+                {
+                    "type": "function",
+                    "name": "contribute",
+                    "inputs": [],
+                    "outputs": [],
+                    "stateMutability": "payable",
+                },
+                {"type": "fallback", "stateMutability": "payable"},
+                {
+                    "type": "function",
+                    "name": "withdraw",
+                    "inputs": [],
+                    "outputs": [],
+                    "stateMutability": "nonpayable",
+                },
+            ],
+        )
+        actors = [
+            walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
+            walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
+        ]
+        steps = walkthrough.plan_workflow(
+            model, actors, "0x" + "3" * 40, 100, 5
+        )
+        self.assertTrue(any(step.function == "fallback()" for step in steps))
+
     def test_empty_revert_explanation_points_to_dependency_layer(self):
         step = walkthrough.Step(
             1,
@@ -479,7 +543,7 @@ class WalkthroughTests(unittest.TestCase):
             error='server returned an error response: error code 3: execution reverted, data: "0x"',
         )
         text = walkthrough._explain_failure(step, step.error, "Alice")
-        self.assertIn("dependency call", text)
+        self.assertIn("Lowkey could not decode the exact failing instruction", text)
         self.assertIn("empty revert payload", text)
 
     def test_render_board_marks_a_reopened_observed_step_as_review(self):
