@@ -1191,6 +1191,24 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
             )
         rows.append(("Slither", status, detail))
 
+    security_patterns = []
+    if audit_context is not None:
+        try:
+            security_patterns = audit_context.security_patterns(Path(root).resolve())
+        except Exception:
+            security_patterns = []
+    security_summary = {
+        "total": len(security_patterns),
+        "reviews": sum(1 for item in security_patterns if str(item.get("verification_status") or "CANDIDATE").upper() == "REVIEW"),
+        "confirmed": sum(1 for item in security_patterns if str(item.get("verification_status") or "CANDIDATE").upper() == "CONFIRMED"),
+        "candidates": sum(1 for item in security_patterns if str(item.get("verification_status") or "CANDIDATE").upper() == "CANDIDATE"),
+    }
+    rows.append((
+        "Security patterns",
+        "REVIEW" if security_summary["reviews"] else "INFO",
+        f"{security_summary['total']} signals | {security_summary['reviews']} review | {security_summary['confirmed']} confirmed | {security_summary['candidates']} candidate",
+    ))
+
     triage = _evidence_data(root, "source_triage")
     rows.append((
         "Source triage",
