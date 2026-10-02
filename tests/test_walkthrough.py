@@ -273,9 +273,9 @@ class WalkthroughTests(unittest.TestCase):
             )
         self.assertIsNotNone(path)
         html = path.read_text(encoding="utf-8")
-        self.assertIn('"lowkey_status_at_render": "checking"', html)
-        self.assertIn('"on_chain_status": "CONFIRMED / SUCCESS"', html)
-        self.assertIn('"gas_used": "21000"', html)
+        self.assertIn('"lowkey_status_at_render": &quot;checking&quot;', html)
+        self.assertIn('"on_chain_status": &quot;CONFIRMED / SUCCESS&quot;', html)
+        self.assertIn('"gas_used": &quot;21000&quot;', html)
         self.assertIn("0x552410770000000000000000000000000000000000000000000000000000000000000007", html)
 
     def test_live_target_rejects_eoa_even_for_non_initializer_contract(self):
