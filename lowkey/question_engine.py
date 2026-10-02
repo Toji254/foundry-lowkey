@@ -23,7 +23,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-import audit_context
+try:
+    import audit_context
+except ModuleNotFoundError:
+    # Unit tests may load this file directly from lowkey/ rather than through
+    # the installed launcher, so resolve sibling runtime modules explicitly.
+    import importlib.util
+    _audit_context_path = Path(__file__).with_name("audit_context.py")
+    _audit_context_spec = importlib.util.spec_from_file_location("audit_context", _audit_context_path)
+    audit_context = importlib.util.module_from_spec(_audit_context_spec)
+    import sys as _sys
+    _sys.modules["audit_context"] = audit_context
+    assert _audit_context_spec.loader is not None
+    _audit_context_spec.loader.exec_module(audit_context)
 
 try:
     from project_detection import detect_project
