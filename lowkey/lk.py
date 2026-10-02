@@ -9836,32 +9836,65 @@ for _alias, _canonical in HELP_ALIASES.items():
 def _canonical_help_command(command):
     return HELP_ALIASES.get(str(command or "").strip().lower(), str(command or "").strip().lower())
 
+def _help_alias_for(command):
+    canonical = _canonical_help_command(command)
+    return next(
+        (alias for alias, target in HELP_ALIASES.items() if target == canonical and alias != canonical),
+        None,
+    )
+
 def _help_entry_for_path(path):
     if not path:
-        return None, []
-    root = _canonical_help_command(path[0])
+        return None, [], None
+    root_token = str(path[0] or "").strip().lower()
+    root = _canonical_help_command(root_token)
     entry = COMMAND_HELP.get(root)
     if not entry:
-        return None, []
+        return None, [], None
     consumed = [root]
     current = entry
+    unknown = None
     for token in path[1:]:
-        key = str(token or "").strip().lower()
+        raw_key = str(token or "").strip().lower()
         children = current.get("children", {})
-        key = HELP_ALIASES.get(key, key)
+        key = HELP_ALIASES.get(raw_key, raw_key)
         if key in children:
             current = children[key]
             consumed.append(key)
         else:
+            unknown = raw_key
             break
-    return current, consumed
+    return current, consumed, unknown
+
+def _help_parent_path(path):
+    if len(path) < 2:
+        return None
+    child = str(path[-1] or "").strip().lower()
+    parent_root = _canonical_help_command(path[0])
+    parent = COMMAND_HELP.get(parent_root)
+    if not parent:
+        return None
+    if child in parent.get("children", {}):
+        return [parent_root]
+    return None
 
 def _render_command_help(path):
-    entry, resolved = _help_entry_for_path(path)
+    entry, resolved, unknown = _help_entry_for_path(path)
     shown_path = " ".join(resolved or [str(item) for item in path])
+    alias = _help_alias_for(path[0]) if path else None
+
     print()
     print(f"LOWKEY HELP  •  lk {shown_path}")
     print("=" * 72)
+
+    if unknown:
+        print(f"Unknown subcommand: '{unknown}' under 'lk {shown_path}'.")
+        available = list((entry or {}).get("children", {}).keys())
+        if available:
+            print("Available next commands: " + ", ".join(available))
+        print(f"Run 'lk {shown_path} --h' to see the parent help.")
+        return 2
+
     if not entry:
         command = _canonical_help_command(path[0] if path else "")
         print(f"What it does : Lowkey has no dedicated help page for '{command}' yet.")
@@ -9869,6 +9902,8 @@ def _render_command_help(path):
         print(f"Native help  : lk {command} --help")
         return 0
 
+    if alias:
+        print(f"Alias: 'lk {path[0]}' is another way to run 'lk {shown_path.split()[0]}'.")
     print(f"What it does: {entry['summary']}")
     print(f"When to use: {entry['use']}")
     print(f"Usage: {entry['usage']}")
@@ -9884,6 +9919,18 @@ def _render_command_help(path):
             print(f"      What it does: {child['summary']}")
             print(f"      When to use: {child['use']}")
             print(f"      Example: {child['example']}")
+        print("")
+        print("TIP")
+        print("  Pick a next command above and add --h for its detailed help.")
+    else:
+        parent = _help_parent_path(path)
+        if parent:
+            parent_shown = " ".join(parent)
+            print("")
+            print("NAVIGATION")
+            print("----------")
+            print(f"  lk {parent_shown} --h")
+            print("      Go back to the parent command and see its available subcommands.")
 
     options = entry.get("options") or []
     if options:
@@ -9905,9 +9952,15 @@ def _render_command_help(path):
 
     print("")
     print("HELP TIP")
-    print("  Every Lowkey command accepts --h, --help, -h, or help.")
-    print("  Example: lk walkthrough --h")
-    print("  Drill down: lk walkthrough test --h")
+    print("  Help is always safe: it does not select targets, send transactions, or change project state.")
+    print("  Accepted forms: --h, --help, -h, help.")
+    if children:
+        first_child = next(iter(children))
+        print(f"  Next: lk {shown_path} {first_child} --h")
+    elif related:
+        print(f"  Related: {related[0]}")
+    else:
+        print("  Parent: lk --h")
     return 0
 
 def print_help():
