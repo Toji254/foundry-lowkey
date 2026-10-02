@@ -482,6 +482,36 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("dependency call", text)
         self.assertIn("empty revert payload", text)
 
+    def test_render_board_marks_a_reopened_observed_step_as_review(self):
+        actors = [walkthrough.Actor("Alice", "0x" + "1" * 40, 0)]
+        model = walkthrough.ContractModel(
+            name="Demo",
+            source="src/Demo.sol",
+            artifact="out/Demo.sol/Demo.json",
+            functions=["deposit()", "withdraw()"],
+        )
+        first = walkthrough.Step(
+            1, "Alice", "Demo", "0x" + "2" * 40,
+            "deposit()", [], status="success",
+        )
+        second = walkthrough.Step(
+            2, "Alice", "Demo", "0x" + "2" * 40,
+            "withdraw()", [], status="success",
+        )
+        rendered = walkthrough._render_board(
+            pathlib.Path("/tmp/project"),
+            model,
+            [model],
+            [walkthrough.RuntimeContract("0x" + "2" * 40, "Demo", "Demo", "target")],
+            actors,
+            [first, second],
+            first,
+            first.storage_after,
+            False,
+        )
+        self.assertIn("REVIEW mode never re-runs a transaction", rendered)
+        self.assertIn("REVIEWING  •  FUNCTION 01  •  OBSERVED", rendered)
+
     def test_live_story_keeps_previous_steps_compact_and_current_step_expanded(self):
         actors = [
             walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
