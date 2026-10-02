@@ -394,12 +394,38 @@ def add_security_pattern(
     result = add_signal(signal, root)
     result["category"] = "security-pattern"
     result["pattern_id"] = pattern_id
-    result["verification_status"] = verification_status
+
+    # A source-only rescan must never erase stronger live verification already
+    # captured by a stateful probe. CONFIRMED outranks REVIEW, which outranks
+    # CANDIDATE. A fresh stateful run can still upgrade the existing signal.
+    rank = {"CANDIDATE": 0, "REVIEW": 1, "CONFIRMED": 2}
+    existing_status = str(result.get("verification_status") or "").upper()
+    incoming_status = str(verification_status or "CANDIDATE").upper()
+    effective_status = (
+        existing_status if rank.get(existing_status, -1) > rank.get(incoming_status, -1)
+        else incoming_status
+    )
+    previous = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    previous_evidence = previous.get("evidence") if isinstance(previous, dict) else []
+    if not isinstance(previous_evidence, list):
+        previous_evidence = []
+    combined_evidence = list(previous_evidence)
+    for item in list(verification_evidence or []):
+        if item not in combined_evidence:
+            combined_evidence.append(item)
+
+    result["verification_status"] = effective_status
     result["verification"] = {
-        "status": verification_status,
-        "mode": evidence_mode,
-        "evidence": list(verification_evidence or []),
+        "status": effective_status,
+        "mode": evidence_mode if effective_status == incoming_status else str(previous.get("mode") or "source+stateful"),
+        "evidence": combined_evidence,
     }
+    result["confidence"] = (
+        "Live reproduced" if effective_status == "CONFIRMED"
+        else "Live review" if effective_status == "REVIEW"
+        else "Source pattern"
+    )
+    save(result and load(root), root)
     return result
 
 
