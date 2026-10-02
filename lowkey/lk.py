@@ -8030,13 +8030,20 @@ def run_audit_mode(config, args=None, interactive=None):
     """Run the connected audit session with project-aware backend routing."""
     args = list(args or [])
     auto_mode = any(str(item).lower() == "auto" for item in args)
-    normalized_args = ["--checks" if str(item).lower() in {"check", "checks", "--check"} else item for item in args]
-    checks = "--checks" in normalized_args
+    normalized_args = [
+        "--checks" if str(item).lower() in {"check", "checks", "--check"} else item
+        for item in args
+    ]
+    no_checks = "--no-checks" in normalized_args
+    checks = "--checks" in normalized_args or not no_checks
+    normalized_args = [item for item in normalized_args if item != "--no-checks"]
+    if checks and "--checks" not in normalized_args:
+        normalized_args.append("--checks")
     args = normalized_args
     walkthrough_mode = "--walkthrough" in args
     force_noninteractive = "--non-interactive" in args
     force_interactive = "--interactive" in args
-    mode_args = ["--checks"] if checks else []
+    mode_args = ["--checks"] if checks else ["--no-checks"]
 
     root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
 
@@ -8492,8 +8499,8 @@ def _sync_audit_context(config, root=None):
 
 def run_audit(config, args):
     if args and args[0].lower() in {"help", "-h", "--help"}:
-        print("Usage: lk audit [--checks] [--verbose]")
-        print("Detect the project/toolchain first, then run the matching audit backend.")
+        print("Usage: lk audit [--no-checks] [--verbose]")
+        print("Detect the project/toolchain first, then run the matching audit backend. Static checks run by default.")
         print("Foundry projects use Forge; Cairo/Vyper/Hardhat/Anchor/Move use native checks.")
         return 0
 
@@ -9305,8 +9312,9 @@ REPRODUCE / ATTACK / TEST
 AUDIT WORKFLOW / EVIDENCE
   lk audit                          Interactive audit dashboard.
   lk audit auto                    Local autonomous audit; may provision Anvil.
-  lk audit --checks                Audit plus Slither and optional lint/geiger checks.
-  lk audit auto --checks           Autonomous audit with checks.
+  lk audit --checks                Explicitly run the default static-check baseline (compatibility alias).
+  lk audit --no-checks              Skip Slither/lint/unsafe-cheatcode checks; keep build/tests/coverage.
+  lk audit auto --checks           Autonomous audit with the default static-check baseline.
   lk audit run                     Full evidence pipeline: build -> tests -> coverage -> Slither -> triage.
   lk audit run --poc               Same pipeline, then generate a PoC scaffold.
   lk audit--checks                 Legacy compact alias for audit --checks.
