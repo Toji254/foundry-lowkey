@@ -27,6 +27,8 @@ class InstallSmokeTests(unittest.TestCase):
             manifest = pathlib.Path(home) / ".lowkey" / "install-manifest.json"
             self.assertTrue(installed_lk.exists())
             self.assertTrue(manifest.exists())
+            question_engine = pathlib.Path(home) / ".lowkey" / "question_engine.py"
+            self.assertTrue(question_engine.exists())
 
             version = subprocess.run(
                 [str(installed_lk), "--version"],
@@ -49,6 +51,8 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertEqual(help_result.returncode, 0, help_result.stderr)
             self.assertIn("lk slither", help_result.stdout)
             self.assertIn("lk audit --checks", help_result.stdout)
+            self.assertIn("lk q", help_result.stdout)
+            self.assertIn("lk questions", help_result.stdout)
 
 
 if __name__ == "__main__":
