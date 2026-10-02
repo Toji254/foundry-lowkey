@@ -5669,6 +5669,7 @@ def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> li
         "  ❓ UNKNOWN         = Lowkey could not prove why it failed.",
         "  🔧 LAB ISSUE       = the test setup looks broken; do not blame the contract yet.",
         "",
+        "  Every probe starts from the same prepared baseline and is restored after the call.",
         "  Random probes reset after each call. Stateful stories reset after the whole attack sequence.",
         "  These are randomized transaction probes — not 24 vulnerability checks.",
         "  Finding patterns and stateful attack stories are reported separately below.",
