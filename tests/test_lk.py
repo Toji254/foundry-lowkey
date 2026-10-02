@@ -20,6 +20,26 @@ spec.loader.exec_module(lk)
 
 
 class LowkeyCastTests(unittest.TestCase):
+    def test_select_project_target_rejects_stale_no_code_address(self):
+        address = "0x" + "1" * 40
+        config = {"rpc": "http://127.0.0.1:8545"}
+        entry = {
+            "name": "Fallback",
+            "contract": "Fallback",
+            "address": address,
+            "artifact": "out/Fallback.sol/Fallback.json",
+        }
+
+        with patch.object(
+            lk,
+            "cast_output",
+            return_value=(0, "0x", ""),
+        ):
+            code = lk._select_project_target(config, entry, pathlib.Path("/tmp/testi"))
+
+        self.assertEqual(code, 1)
+        self.assertNotIn("target", config)
+
     def test_parse_lab_marker_preserves_default_and_custom_marker_contract(self):
         target = "0x" + "4" * 40
         created = "0x" + "5" * 40
