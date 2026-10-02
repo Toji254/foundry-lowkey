@@ -57,6 +57,16 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("lk generate --h", output)
         self.assertNotIn("Drill down: lk walkthrough test --h", output)
 
+    def test_leaf_help_footer_points_to_actual_parent(self):
+        code, output = self.capture_dispatch("generate", "test", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Parent: lk generate --h", output)
+
+    def test_canonical_command_is_not_mislabeled_as_alias(self):
+        code, output = self.capture_dispatch("project", "--workspace", "--h")
+        self.assertEqual(code, 0)
+        self.assertNotIn("Alias:", output)
+
     def test_alias_help_explains_alias(self):
         code, output = self.capture_dispatch("walk", "--h")
         self.assertEqual(code, 0)
