@@ -183,5 +183,35 @@ class SystemModelTests(unittest.TestCase):
             self.assertEqual(loaded["schema"], "lowkey.system-bootstrap.v1")
 
 
+    def test_manifest_carries_security_pattern_signals_from_audit_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            context_dir = root / ".audit"
+            context_dir.mkdir(parents=True)
+            context = {
+                "project": {"root": str(root)},
+                "signals": [{
+                    "id": "SECURITY-1",
+                    "category": "security-pattern",
+                    "pattern_id": "REPLAY-001",
+                    "title": "Replayable payout / claim path",
+                    "contract": "Demo",
+                    "function": "release()",
+                    "file": "src/Demo.sol",
+                    "line": 12,
+                    "verification_status": "REVIEW",
+                    "verification": {"status": "REVIEW", "evidence": ["second call remained accepted"]},
+                    "description": "Repeated payout needs review.",
+                }],
+            }
+            (context_dir / "context.json").write_text(json.dumps(context), encoding="utf-8")
+            manifest = system_model.build_manifest(root)
+
+        self.assertEqual(manifest["security_pattern_summary"]["total"], 1)
+        self.assertEqual(manifest["security_pattern_summary"]["reviews"], 1)
+        self.assertEqual(manifest["security_patterns"][0]["id"], "REPLAY-001")
+        self.assertEqual(manifest["security_patterns"][0]["verification_status"], "REVIEW")
+        self.assertIn("second call remained accepted", manifest["security_patterns"][0]["evidence"])
+
 if __name__ == "__main__":
     unittest.main()
