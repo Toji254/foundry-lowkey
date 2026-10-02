@@ -3899,10 +3899,11 @@ def withdraw(amount: uint256):
                     file="src/Demo.sol",
                     verification_status="REVIEW",
                 )
-                with patch("sys.stdout", new_callable=io.StringIO) as stream:
-                    with patch.object(lk, "load_abi", return_value=json.loads(artifact.read_text())["abi"]):
-                        lk.run_risk(config)
-                rendered = stream.getvalue()
+                with patch.object(lk, "_sync_security_patterns"):
+                    with patch("sys.stdout", new_callable=io.StringIO) as stream:
+                        with patch.object(lk, "load_abi", return_value=json.loads(artifact.read_text())["abi"]):
+                            lk.run_risk(config)
+                    rendered = stream.getvalue()
             self.assertIn("SECURITY PATTERN SIGNALS", rendered)
             self.assertIn("REPLAY-001", rendered)
             self.assertIn("REVIEW", rendered)
