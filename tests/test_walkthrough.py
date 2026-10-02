@@ -26,23 +26,31 @@ class WalkthroughTests(unittest.TestCase):
     def test_review_control_hint_tracks_observed_history(self):
         self.assertEqual(
             walkthrough._review_controls_hint(0),
-            "⏎ next  |  no observed steps yet  |  q stop",
+            "⏎ next  |  no observed steps yet   R = review any observed step  |  q stop",
         )
         self.assertEqual(
             walkthrough._review_controls_hint(2),
-            "⏎ next  |  1-2 review observed  |  q stop",
+            "⏎ next  |  1-2 review observed   R = review any observed step  |  q stop",
         )
         self.assertEqual(
             walkthrough._review_controls_hint(9),
-            "⏎ next  |  1-9 review observed  |  q stop",
+            "⏎ next  |  1-9 review observed   R = review any observed step  |  q stop",
         )
         self.assertEqual(
             walkthrough._review_controls_hint(10),
-            "⏎ next  |  1-9 quick review | r review any (1-10)  |  q stop",
+            "⏎ next  |  1-9 quick review   R = review any observed step (1-10)  |  q stop",
         )
         self.assertEqual(
             walkthrough._review_controls_hint(17),
-            "⏎ next  |  1-9 quick review | r review any (1-17)  |  q stop",
+            "⏎ next  |  1-9 quick review   R = review any observed step (1-17)  |  q stop",
+        )
+        self.assertEqual(
+            walkthrough._walkthrough_board_controls(3),
+            "ENTER = next live interaction   1-3 = review observed   R = review any observed step   Q = stop",
+        )
+        self.assertEqual(
+            walkthrough._walkthrough_board_controls(17),
+            "ENTER = next live interaction   1-9 = quick review   R = review any observed step (1-17)   Q = stop",
         )
 
     def test_live_loop_uses_review_state_machine_for_every_pause_point(self):
