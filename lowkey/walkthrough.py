@@ -4068,7 +4068,7 @@ def _probe_source_guards(root: Path, rpc: str, step: Step, model: ContractModel,
         target_name = str(edge.get("interface") or edge.get("to_contract") or "External")
         dep_fn_name = str(edge.get("to_function") or "")
         if code in {"", "0x"}:
-            diagnostics.append("✕ " + _pretty_identifier(via) + " = " + _addr(dependency) + " has no contract code")
+            diagnostics.append("LAB ISSUE: " + _pretty_identifier(via) + " = " + _addr(dependency) + " has no contract code for the source-required " + target_name + "." + dep_fn_name + "() dependency")
             origin = origin or (model.name + " → " + target_name + "." + dep_fn_name + " has no runtime code")
             continue
         dep_model = next((item for item in models if item.name.lower() == target_name.lower()), None)
@@ -5672,7 +5672,7 @@ def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> li
     if baseline_notes:
         lines += ["", "  BASELINE"]
         lines += [f"    ✓ {note}" for note in baseline_notes]
-    lines += ["", f"  Running {total_cases} checks…", ""]
+    lines += ["", f"  Running {total_cases} probes…", ""]
     return lines
 
 
@@ -5691,7 +5691,7 @@ def _render_adversarial_summary(
     lines = [
         "",
         _paint("WHAT MATTERS", BOLD + CYAN, _ansi_enabled(False)),
-        f"  {len(results)} checks finished",
+        f"  {len(results)} probes finished",
         f"  ✅ NORMAL       {normal}",
         f"  🟦 EXPECTED ADMIN {admin}",
         f"  ⚠️ CHECK THIS   {review}",
@@ -6324,6 +6324,7 @@ def _run_adversarial_test(
             value_wei=value,
             reason="randomized adversarial probe: role swaps, boundary values, and random calldata",
             inferred=False,
+            observation_scope="isolated_probe",
         )
 
         snapshot = _rpc_snapshot(rpc)
