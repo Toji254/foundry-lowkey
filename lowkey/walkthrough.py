@@ -3186,7 +3186,13 @@ def _render_interaction_graph_full(
     if lower in {"stake", "deposit", "contributebonus", "fund", "contribute"} and step.args:
         lines.append(f"  │   token flow: {actor} ── {_friendly_value(step.args[0])} ──▶ {contract}")
     elif lower in {"withdraw", "redeem", "refund", "collect", "claimsurvived", "claimcorrupted", "claimattackerbounty", "claimexpired"}:
-        lines.append(f"  │   token flow: {contract} ──▶ {actor}")
+        nested_native = any(
+            isinstance(edge, dict) and int(edge.get("value_wei") or 0) > 0
+            for edge in step.execution_edges
+            if int(edge.get("depth") or 0) > 0
+        )
+        label = "native ETH flow" if nested_native else "asset flow"
+        lines.append(f"  │   {label}: {contract} ──▶ {actor}")
 
     if step.discovered_contracts:
         lines += ["  │", "  │   NEW CONTRACTS DISCOVERED"]
@@ -3351,7 +3357,7 @@ def _render_protocol_story_full(
         )
         lines.append("                 │")
         lines.append("                 ▼")
-        is_latest = bool(history and current is history[-1]) and not review_mode
+        is_latest = bool(steps and current is steps[-1]) and not review_mode
         if is_latest:
             lines.append("  ◀ NOW  •  LIVE")
             lines.append("  ◀ LIVE")
@@ -3689,11 +3695,14 @@ def _source_guard_lines(model: ContractModel, step: Step) -> list[str]:
     for guard in semantics.get("guards", [])[:8]:
         lines.append("source guard: " + str(guard))
     for edge in semantics.get("external_calls", [])[:8]:
-        target = edge.get("interface") or edge.get("to_contract") or "dependency"
+        target = edge.get("interface") or edge.get("to_contract") or "external address"
         fn = edge.get("to_function") or "unknown"
         via = edge.get("via")
         suffix = " via " + str(via) if via else ""
-        lines.append(f"source dependency: {target}.{fn}(){suffix}")
+        if str(fn).lower() in {"transfer", "send"}:
+            lines.append(f"ETH send: {fn}(){suffix} [native ETH is sent to that address]")
+        else:
+            lines.append(f"source dependency: {target}.{fn}(){suffix}")
     for item in semantics.get("writes", [])[:8]:
         lines.append("state write candidate: " + str(item))
     return list(dict.fromkeys(lines))
@@ -3888,11 +3897,18 @@ def _diagnose_argument_contracts(
         code = _runtime_code(rpc, candidate)
         target_desc = f"{edge.get('interface') or edge.get('to_contract')}.{edge.get('to_function')}()"
         if code in {"", "0x"}:
-            origin = origin or f"{model.name}.{step.function.split('(', 1)[0]} -> {target_desc}"
-            diagnostics.append(
-                f"{_pretty_identifier(label)} = {_addr(candidate)} has no contract code; "
-                f"the source expects {target_desc}"
-            )
+            low_target_fn = str(edge.get("to_function") or "").lower()
+            if low_target_fn in {"transfer", "send"}:
+                diagnostics.append(
+                    f"{_pretty_identifier(label)} = {_addr(candidate)} is an EOA (wallet address); "
+                    f"{low_target_fn}() can send native ETH to wallets without contract code"
+                )
+            else:
+                origin = origin or f"{model.name}.{step.function.split('(', 1)[0]} -> {target_desc}"
+                diagnostics.append(
+                    f"{_pretty_identifier(label)} = {_addr(candidate)} has no contract code; "
+                    f"the source expects {target_desc}"
+                )
             continue
 
         diagnostics.append(
