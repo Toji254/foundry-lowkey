@@ -9184,6 +9184,8 @@ def run_project_map(config, args):
 
     try:
         result = project_tools.render_project_map(root)
+        _sync_security_patterns(root)
+        result["security_patterns"] = _security_pattern_summary(root)
         if workspace_container and len(candidates) > 1:
             result["workspace"] = {
                 "root": str(workspace_container),
@@ -9196,6 +9198,15 @@ def run_project_map(config, args):
             print(json.dumps(result, indent=2, default=str))
             return 0
 
+        pattern_summary = result.get("security_patterns", {})
+        print("")
+        print(
+            "SECURITY SIGNALS : "
+            f"{pattern_summary.get('total', 0)} pattern(s) — "
+            f"{pattern_summary.get('reviews', 0)} review, "
+            f"{pattern_summary.get('confirmed', 0)} confirmed, "
+            f"{pattern_summary.get('candidates', 0)} candidate"
+        )
         if workspace_container and len(candidates) > 1:
             selected_rel = root.relative_to(workspace_container).as_posix() if path_is_within(root, workspace_container) else str(root)
             print("")
@@ -9220,6 +9231,8 @@ def run_system_model(config, args):
             reason="lk system",
         )
         summary = system_model.summarize_manifest(manifest)
+        _sync_security_patterns(root)
+        pattern_summary = _security_pattern_summary(root)
         print("LOWKEY SYSTEM MODEL")
         print("=" * 72)
         print(f"Manifest      : {path}")
@@ -9231,7 +9244,16 @@ def run_system_model(config, args):
         print(f"Tests         : {summary['tests']}")
         print(f"Adversarial   : {summary['adversarial_evidence']}")
         print(f"Audit targets : {summary['audit_targets']}")
+        print(
+            "Security      : "
+            f"{pattern_summary['total']} pattern(s) — "
+            f"{pattern_summary['reviews']} review, "
+            f"{pattern_summary['confirmed']} confirmed, "
+            f"{pattern_summary['candidates']} candidate"
+        )
         if args and args[0] in {"json", "--json"}:
+            manifest = dict(manifest)
+            manifest["security_patterns"] = pattern_summary
             print("\n" + json.dumps(manifest, indent=2, default=str))
         return 0
     except Exception as error:
