@@ -887,8 +887,8 @@ def assess_replay_story(
     if actor:
         key = actor.address.lower()
         token_gain = second.token_balance_after.get(key, 0) - second.token_balance_before.get(key, 0)
-        # Net EOA balance includes gas. Prefer the protocol's internal native
-        # value transfer when the trace identifies the actor as the recipient.
+        # Net wallet balance includes gas. Prefer the traced protocol-value
+        # transfer to the actor so gas cannot hide a real native-ETH payout.
         for edge in second.execution_edges or []:
             if (
                 int(edge.get("depth", 0) or 0) > 0
@@ -906,7 +906,7 @@ def assess_replay_story(
         gain = f"{token_gain / 10**18:.4f} token units" if token_gain > 0 else f"{native_gain} wei"
         story.evidence = [
             "the same payout call succeeded twice from the same actor after a valid setup",
-            f"the second payout call produced a positive value delta: {gain}",
+            f"the second payout call produced a positive protocol-value delta: {gain}",
         ]
     else:
         story.signal = "REVIEW"
@@ -914,7 +914,6 @@ def assess_replay_story(
             "the same payout call succeeded twice after a valid setup, but this run did not prove a positive payout/state delta on the actor",
             "the function may intentionally support repeated partial withdrawals",
         ]
-
 
 def _render_observation(obs: PatternObservation) -> list[str]:
     icon = {
