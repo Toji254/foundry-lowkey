@@ -614,7 +614,9 @@ def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     patterns = (
         [
             ("low-level-call", re.compile(r'\.(?:call|delegatecall|staticcall)\b[^\n]*')),
-            ("external-call", re.compile(r'\.[A-Za-z_][A-Za-z0-9_]*\s*\(')),
+            # Deliberately exclude .call/.delegatecall/.staticcall here: the
+            # project map reports those separately as low-level calls.
+            ("external-call", re.compile(r'\.(?!(?:call|delegatecall|staticcall)\b)[A-Za-z_][A-Za-z0-9_]*\s*\(')),
         ]
         if language == "solidity"
         else [
