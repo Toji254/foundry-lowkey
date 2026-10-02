@@ -50,6 +50,25 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk target list", output)
         self.assertIn("List remembered targets", output)
 
+    def test_leaf_help_has_parent_navigation(self):
+        code, output = self.capture_dispatch("generate", "test", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("NAVIGATION", output)
+        self.assertIn("lk generate --h", output)
+        self.assertNotIn("Drill down: lk walkthrough test --h", output)
+
+    def test_alias_help_explains_alias(self):
+        code, output = self.capture_dispatch("walk", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Alias:", output)
+        self.assertIn("lk walkthrough", output)
+
+    def test_unknown_nested_help_does_not_silently_fall_back(self):
+        code, output = self.capture_dispatch("generate", "bogus", "--h")
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown subcommand: 'bogus'", output)
+        self.assertIn("Available next commands:", output)
+
     def test_nested_project_workspace_help(self):
         code, output = self.capture_dispatch("project", "--workspace", "--h")
         self.assertEqual(code, 0)
