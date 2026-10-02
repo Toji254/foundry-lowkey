@@ -16,6 +16,7 @@ only when project evidence makes them relevant.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -36,6 +37,70 @@ STATE_FILE_NAME = "state.json"
 HISTORY_FILE_NAME = "history.jsonl"
 MAX_HISTORY = 200
 MAX_VISIBLE_QUESTIONS = 8
+
+# Every major Lowkey command is treated as an evidence producer. The question
+# engine does not need to know how the command works internally; the shared
+# command history is enough to move the frontier.
+COMMAND_EVIDENCE_MAP = {
+    "project": {"project_map","project_identity","dependencies","package_manifests"},
+    "projects": {"project_map","dependencies"},
+    "system": {"system_graph","call_graph","state_model","dependencies","roles","initialization"},
+    "recon": {"value_flow","balances","configuration","network"},
+    "functions": {"entry_points","functions","auth"},
+    "fn": {"entry_points","functions"},
+    "ask": {"entry_points","parameters"},
+    "abi": {"entry_points","functions"},
+    "deps": {"dependencies","imports","call_graph"},
+    "layout": {"storage","state_model"},
+    "mapping": {"storage","state_diff","state_model"},
+    "namespace": {"storage","state_model"},
+    "proof": {"storage","state_diff"},
+    "read": {"source","state_model","configuration"},
+    "send": {"trace","state_diff","state_model"},
+    "probe": {"trace","state_diff","entry_points","proof"},
+    "changes": {"state_diff","storage","state_model","proof"},
+    "state-diff": {"state_diff","storage","state_model","proof"},
+    "statediff": {"state_diff","storage","state_model","proof"},
+    "trace": {"trace","call_graph","state_model","proof"},
+    "receipt": {"trace","state_model"},
+    "logs": {"logs","events","trace"},
+    "tx": {"trace","ordering","proof"},
+    "snapshot": {"state_model","state_diff"},
+    "diff": {"state_diff","storage"},
+    "findings": {"signals","findings","proof"},
+    "signals": {"signals","findings","proof"},
+    "focus": {"signals","findings","proof"},
+    "finding": {"signals","findings","proof"},
+    "slither": {"signals","source","proof"},
+    "scan": {"source","signals"},
+    "risk": {"source","signals","auth","entry_points"},
+    "seams": {"source","system_graph","trust"},
+    "rg": {"source","signals"},
+    "audit": {"project_map","entry_points","source","signals","proof"},
+    "walkthrough": {"walkthrough","trace","state_diff","system_graph","proof"},
+    "walk": {"walkthrough","trace","state_diff","system_graph","proof"},
+    "walkthrough test": {"walkthrough","trace","state_diff","signals","proof","tests"},
+    "matrix": {"tests","state_model","trace","proof"},
+    "test": {"tests","proof"},
+    "test-gen": {"tests","proof","trace"},
+    "generate": {"tests","proof","deployment"},
+    "fuzz": {"fuzz","tests","proof"},
+    "invariant": {"invariant","fuzz","tests","proof"},
+    "mutate": {"tests","proof"},
+    "symbolic": {"tests","proof"},
+    "brutalize": {"tests","fuzz","proof"},
+    "doctor": {"build","configuration","toolchain"},
+    "build": {"build","generated_code","artifacts"},
+    "forge": {"tests","build","proof"},
+    "script": {"deployment","initialization","configuration"},
+    "lab": {"deployment","initialization","state_model","actors"},
+    "fork": {"network","deployment","state_model"},
+    "rpc": {"network","configuration"},
+    "actor": {"actors","auth"},
+    "impersonate": {"actors","auth"},
+    "as": {"actors","auth"},
+    "target": {"project_map","deployment"},
+}
 
 
 @dataclass(frozen=True)
@@ -637,21 +702,29 @@ def _read_events(root: Path | None = None, limit: int = 120) -> list[dict[str, A
     return events
 
 
+SOURCE_SUFFIXES = {
+    ".sol",".vy",".vyi",".cairo",".move",".rs",".go",".py",".js",".jsx",".ts",".tsx",
+    ".java",".kt",".swift",".c",".cc",".cpp",".h",".hpp",".cs",".rb",".php",".ex",".exs",
+}
+SOURCE_EXCLUDED_DIRS = {
+    ".git",".audit","node_modules",".venv","venv","target","build","dist","out","artifacts",
+    "cache","coverage","vendor","third_party","__pycache__",".pytest_cache",".mypy_cache",
+}
+
+
 def _source_files(root: Path) -> list[Path]:
+    files: list[Path] = []
     try:
-        return sorted(
-            p for p in root.rglob("*")
-            if p.is_file()
-            and ".git" not in p.parts
-            and ".audit" not in p.parts
-            and "node_modules" not in p.parts
-            and p.suffix.lower() in {
-                ".sol",".vy",".vyi",".cairo",".move",".rs",".go",".py",".js",".jsx",".ts",".tsx",
-                ".java",".kt",".swift",".c",".cc",".cpp",".h",".hpp",".cs",".rb",".php",".ex",".exs",
-            }
-        )
+        for current, dirs, names in os.walk(root):
+            dirs[:] = sorted(name for name in dirs if name not in SOURCE_EXCLUDED_DIRS)
+            current_path = Path(current)
+            for name in names:
+                path = current_path / name
+                if path.suffix.lower() in SOURCE_SUFFIXES:
+                    files.append(path)
     except OSError:
         return []
+    return sorted(files)
 
 
 def _sample_source(root: Path, limit_files: int = 140, limit_chars: int = 700_000) -> str:
@@ -834,10 +907,20 @@ def _event_signals(features: dict[str, Any]) -> dict[str, Any]:
     signals = context.get("signals") if isinstance(context.get("signals"), list) else []
     focus = context.get("focus") if isinstance(context.get("focus"), dict) else {}
 
+    recent_commands = command_names[-40:]
+    contributions: set[str] = set()
+    for command in recent_commands:
+        contributions.update(COMMAND_EVIDENCE_MAP.get(command, set()))
+        if command.startswith("walkthrough "):
+            contributions.update(COMMAND_EVIDENCE_MAP.get(command.split()[0], set()))
+    for tool in recent_tools[-20:]:
+        contributions.update(COMMAND_EVIDENCE_MAP.get(tool, set()))
+
     return {
         "events": events,
-        "command_names": command_names[-40:],
+        "command_names": recent_commands,
         "recent_tools": recent_tools[-40:],
+        "command_contributions": contributions,
         "latest_event": latest_event,
         "latest": latest,
         "signals": signals,
@@ -1102,9 +1185,16 @@ def _score(
 
     commands = " ".join(observed.get("command_names") or [])
     latest_function = str((observed.get("latest") or {}).get("function") or "")
-    if any(token in commands for token in ("trace","changes","probe","walkthrough","findings","audit","project","system")):
-        if any(key in q.evidence_keys for key in ("trace","state_diff","signals","project_map","system_graph")):
-            score += 15
+    contributions = set(observed.get("command_contributions") or [])
+    relevant_contributions = contributions.intersection(set(q.evidence_keys))
+    if relevant_contributions:
+        score += min(28, 7 * len(relevant_contributions))
+        reasons.append(
+            "recent Lowkey evidence contributes: " + ", ".join(sorted(relevant_contributions)[:4])
+        )
+    if any(token in commands for token in ("trace","changes","probe","walkthrough","findings","audit","project","system","read","layout","mapping","generate","fuzz","invariant","matrix")):
+        if any(key in q.evidence_keys for key in ("trace","state_diff","signals","project_map","system_graph","tests","proof")):
+            score += 12
             reasons.append("your recent Lowkey work opened this branch")
     if latest_function and any(token in q.tags for token in ("state","auth","replay","accounting","entry","proof")):
         score += 5
@@ -1113,6 +1203,14 @@ def _score(
     if focused:
         score += 12
         reasons.append(f"an investigation focus is active ({focused})")
+        focused_signal = next(
+            (item for item in observed.get("signals") or []
+             if isinstance(item, dict) and str(item.get("id") or "") == str(focused)),
+            None,
+        )
+        if isinstance(focused_signal, dict) and _signal_mentions(focused_signal, q.concept):
+            score += 24
+            reasons.append("this question directly overlaps the focused signal")
 
     if observed.get("has_live_evidence") and any(key in q.evidence_keys for key in ("trace","state_diff","proof")):
         score += 18
@@ -1160,20 +1258,22 @@ def rank_questions(root: Path | None = None, *, limit: int = MAX_VISIBLE_QUESTIO
     return rows[:max(1, int(limit))]
 
 
-def current_question(root: Path | None = None) -> dict[str, Any] | None:
+def current_question(root: Path | None = None, *, record: bool = True) -> dict[str, Any] | None:
     rows = rank_questions(root, limit=12)
     if not rows:
         return None
     root_path = _project_root(root)
     state = load_state(root_path)
     chosen = rows[0]
+    previous_id = state.get("current_id")
     state["current_id"] = chosen["question"].id
     save_state(state, root_path)
-    _append_history({
-        "event": "shown",
-        "question_id": chosen["question"].id,
-        "status": chosen["status"],
-    }, root_path)
+    if record and chosen["question"].id != previous_id:
+        _append_history({
+            "event": "shown",
+            "question_id": chosen["question"].id,
+            "status": chosen["status"],
+        }, root_path)
     return chosen
 
 
@@ -1236,7 +1336,7 @@ def _progress_marker(row: dict[str, Any]) -> str:
 
 
 def render_current(root: Path | None = None) -> str:
-    chosen = current_question(root)
+    chosen = current_question(root, record=True)
     if not chosen:
         return "LOWKEY // AUDITOR QUESTIONS\n\nNo applicable questions remain in the current project."
     q: Question = chosen["question"]
@@ -1293,7 +1393,7 @@ def render_current(root: Path | None = None) -> str:
 
 
 def render_why(root: Path | None = None) -> str:
-    chosen = current_question(root)
+    chosen = current_question(root, record=False)
     if not chosen:
         return "No current auditor question."
     q: Question = chosen["question"]
@@ -1531,8 +1631,11 @@ def run(config: dict[str, Any] | None = None, args: list[str] | None = None, *, 
         return answer_current("NOT_APPLICABLE", note=note or None, root=root_path)
     if action == "source":
         if len(argv) < 2:
-            current = current_question(root_path)
-            return 0 if not current else print(render_source(current["question"].id, root_path))
+            current = current_question(root_path, record=False)
+            if not current:
+                return 0
+            print(render_source(current["question"].id, root_path))
+            return 0
         print(render_source(argv[1], root_path))
         return 0
     if action in {"all","catalog"}:
@@ -1544,9 +1647,9 @@ def run(config: dict[str, Any] | None = None, args: list[str] | None = None, *, 
         ) or 2
     )
 
-
 __all__ = [
     "QUESTION_CATALOG",
+    "COMMAND_EVIDENCE_MAP",
     "PACKS",
     "SOURCES",
     "Question",
