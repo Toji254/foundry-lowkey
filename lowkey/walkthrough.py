@@ -5902,6 +5902,8 @@ def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> li
         "  Every probe starts from the same prepared baseline and is restored after the call.",
         "  Random probes reset after each call. Stateful stories reset after the whole attack sequence.",
         "  These are randomized transaction probes — not 24 vulnerability checks.",
+        "  The seed chooses the randomized order, actors, arguments, and test inputs.",
+        "  Save the seed if you find something interesting; reuse it with --seed to reproduce the run.",
         "  Finding patterns and stateful attack stories are reported separately below.",
     ]
     if baseline_notes:
@@ -6001,6 +6003,11 @@ def _render_adversarial_summary(
                 lines.append(f"       {evidence_line}")
 
     lines += [
+        "",
+        "  SEED",
+        f"    {getattr(results[0], 'seed', None) if results and hasattr(results[0], 'seed') else 'recorded in test.json'}",
+        "    Re-run this randomized probe sequence with the seed printed at the start of the run.",
+        "    See previous runs: lk walkthrough seed",
         "",
         "  REMEMBER",
         "    A rejection is usually a guard working.",
@@ -6846,6 +6853,16 @@ def _run_adversarial_test(
         encoding="utf-8",
     )
 
+    _record_seed_history(
+        root,
+        actual_seed,
+        total_cases,
+        target,
+        model,
+        results,
+        benchmark_results,
+        pattern_observations,
+    )
     for line in _render_adversarial_summary(root, results, evidence, benchmark_results):
         print(line)
     return 0
@@ -8673,6 +8690,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     args=list(args or [])
     host=host or sys.modules.get("__main__")
     root=Path(getattr(host,"audit_context").foundry_project_root() if host and hasattr(host,"audit_context") else os.getcwd())
+    if args and str(args[0]).strip().lower() in {"seed", "seeds"}:
+        requested = args[1] if len(args) > 1 and not str(args[1]).startswith("-") else None
+        return _render_seed_history(root, requested)
     foundry = (root / "foundry.toml").is_file()
     source_files = []
     if root.is_dir():
@@ -9254,6 +9274,9 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
     print("  evidence : .audit/walkthrough/latest.json")
     print(f"  replay   : {replay.relative_to(root)}")
     print(f"  {_slither_status(root)}")
+    print(f"  seed     : {actual_seed}")
+    print(f"  replay   : lk walkthrough test --seed {actual_seed} --cases {total_cases}")
+    print("  history  : lk walkthrough seed")
     if sys.stdout.isatty():
         sys.stdout.write("\033[?25h\033[0m")
         sys.stdout.flush()
