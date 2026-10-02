@@ -8425,6 +8425,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
         return 2
     test_mode=any(str(x).lower() in {"test", "random"} for x in args) or "--test" in args or "--random" in args
     technical_test="--technical" in args
+    technical_mode="--technical" in args
     auto="--auto" in args or "auto" in args
     # Adversarial walkthroughs are local-only and may bootstrap the disposable
     # project fixture automatically when no live target exists.
