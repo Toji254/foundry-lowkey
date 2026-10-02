@@ -23,6 +23,28 @@ pattern_spec.loader.exec_module(walkthrough_finding_patterns)
 
 
 class WalkthroughTests(unittest.TestCase):
+    def test_review_control_hint_tracks_observed_history(self):
+        self.assertEqual(
+            walkthrough._review_controls_hint(0),
+            "⏎ next  |  no observed steps yet  |  q stop",
+        )
+        self.assertEqual(
+            walkthrough._review_controls_hint(2),
+            "⏎ next  |  1-2 review observed  |  q stop",
+        )
+        self.assertEqual(
+            walkthrough._review_controls_hint(9),
+            "⏎ next  |  1-9 review observed  |  q stop",
+        )
+        self.assertEqual(
+            walkthrough._review_controls_hint(10),
+            "⏎ next  |  1-9 quick review | r review any (1-10)  |  q stop",
+        )
+        self.assertEqual(
+            walkthrough._review_controls_hint(17),
+            "⏎ next  |  1-9 quick review | r review any (1-17)  |  q stop",
+        )
+
     def test_live_loop_uses_review_state_machine_for_every_pause_point(self):
         source = inspect.getsource(walkthrough.run)
         self.assertEqual(source.count("choice = wait_for_action()"), 2)
