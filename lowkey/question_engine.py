@@ -1906,8 +1906,8 @@ def overview(root: Path | None = None, *, show_all: bool = False) -> str:
         "  ✓ settled   = you recorded an answer, marked N/A, or explicitly skipped it.",
         "  → active    = Lowkey has enough evidence/prerequisites to make this branch actionable now.",
         "  ○ waiting   = relevant, but another branch is currently more actionable first.",
-        "  'live'      = actionable now; it does NOT mean 'vulnerable' or 'confirmed'.",
-        "  'proof'     = Lowkey has useful evidence, but you still need to prove the security property."
+        "  'live'      = worth investigating now; it does NOT mean 'vulnerable'.",
+        "  'proof'     = Lowkey has useful evidence, but you still need to prove the security property.",
         "",
         f"QUESTION UNIVERSE  •  {len(enabled)} applicable / {len(QUESTION_CATALOG)} total",
         "  applicable = detected project features make these questions relevant.",
