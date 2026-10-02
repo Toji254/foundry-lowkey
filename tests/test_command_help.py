@@ -50,6 +50,25 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk target list", output)
         self.assertIn("List remembered targets", output)
 
+    def test_nested_project_workspace_help(self):
+        code, output = self.capture_dispatch("project", "--workspace", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk project --workspace", output)
+        self.assertIn("larger workspace map", output)
+
+    def test_generate_help_is_contextual(self):
+        code, output = self.capture_dispatch("generate", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk generate", output)
+        self.assertIn("lk generate test", output)
+
+    def test_generate_help_is_forwarded_by_bin(self):
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        block_start = script.index("    generate)")
+        block_end = script.index("        ;;", block_start)
+        block = script[block_start:block_end]
+        self.assertIn('exec python3 "$HOME/.lowkey/lk.py" "$@"', block)
+
     def test_alias_help_resolves_to_canonical_command(self):
         code, output = self.capture_dispatch("walk", "--h")
         self.assertEqual(code, 0)
