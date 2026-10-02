@@ -2600,6 +2600,163 @@ class WalkthroughTests(unittest.TestCase):
             )
     
 
+    def test_replay_assessment_rejects_isolated_probe_repeatability(self):
+        story = walkthrough.WalkthroughStory(
+            story_id="RP-ISO",
+            title="Replay probe",
+            goal="repeat payout",
+            actions=[{"function": "release()"}, {"function": "release()"}],
+            execution_scope="isolated_probe",
+            reset_between_actions=True,
+        )
+        actor = walkthrough.Actor("Attacker", "0x" + "1" * 40, 2)
+        first = walkthrough.Step(
+            1, actor.name, "Escrow", "0x" + "2" * 40, "release()", [], status="success",
+        )
+        second = walkthrough.Step(
+            2, actor.name, "Escrow", "0x" + "2" * 40, "release()", [], status="success",
+        )
+        walkthrough_finding_patterns.assess_replay_story(story, [first, second], [actor])
+        self.assertEqual(story.signal, "BLOCKED")
+        self.assertIn("repeatability, not replay evidence", " ".join(story.evidence))
+
+    def test_replay_assessment_uses_internal_eth_transfer_not_net_eoa_balance(self):
+        story = walkthrough.WalkthroughStory(
+            story_id="RP-TRACE",
+            title="Replay probe",
+            goal="repeat payout",
+            actions=[{"function": "release()"}, {"function": "release()"}],
+            execution_scope="persistent_story",
+            reset_between_actions=False,
+        )
+        actor = walkthrough.Actor("Attacker", "0x" + "1" * 40, 2)
+        target = "0x" + "2" * 40
+        setup = walkthrough.Step(
+            1, actor.name, "Escrow", target, "createescrow(uint256,address)",
+            [1, actor.address], value_wei=1, status="success",
+        )
+        first = walkthrough.Step(
+            2, actor.name, "Escrow", target, "release()", [], status="success",
+        )
+        second = walkthrough.Step(
+            3, actor.name, "Escrow", target, "release()", [], status="success",
+        )
+        second.balance_before = {actor.address.lower(): 10**18}
+        second.balance_after = {actor.address.lower(): 10**18 - 200000}
+        second.execution_edges = [{
+            "depth": 1,
+            "to_address": actor.address,
+            "to_contract": actor.name,
+            "function": "CALL",
+            "value_wei": 1,
+        }]
+        walkthrough_finding_patterns.assess_replay_story(
+            story, [setup, first, second], [actor]
+        )
+        self.assertEqual(story.signal, "CONFIRMED")
+        self.assertIn("1 wei", " ".join(story.evidence))
+
+    def test_owner_mismatch_with_legitimate_eoa_recipient_is_normal(self):
+        step = walkthrough.Step(
+            1,
+            "Attacker",
+            "Fallback",
+            "0x" + "3" * 40,
+            "withdraw()",
+            [],
+            status="reverted",
+        )
+        step.failure_origin = "Fallback.owner() does not match Attacker"
+        step.diagnostics = [
+            "owner = 0x" + "1" * 40 + " is an EOA (wallet address); transfer() can send native ETH to wallets without contract code",
+            "✕ owner() = 0x" + "1" * 40 + "; caller is Attacker",
+        ]
+        status, _, _ = walkthrough._human_probe_status(step)
+        self.assertEqual(status, "✅ NORMAL")
+
+    def test_owner_mismatch_explanation_does_not_claim_target_argument_bypass(self):
+        step = walkthrough.Step(
+            1,
+            "Bob",
+            "Fallback",
+            "0x" + "3" * 40,
+            "withdraw()",
+            [],
+            status="reverted",
+        )
+        step.diagnostics = ["✕ owner() = 0x" + "1" * 40 + "; caller is Bob"]
+        why, lesson, quality = walkthrough._adversarial_probe_why(
+            step,
+            walkthrough.ContractModel(
+                name="Fallback",
+                source="src/Fallback.sol",
+                artifact="out/Fallback.sol/Fallback.json",
+            ),
+            [],
+        )
+        self.assertIn("owner-only authorization check", why)
+        self.assertIn("msg.sender", lesson)
+        self.assertNotIn("target argument", lesson)
+        self.assertEqual(quality, "SOURCE-CORRELATED")
+
+    def test_pattern_summary_distinguishes_static_candidates_from_live_upgrades(self):
+        obs = [
+            walkthrough_finding_patterns.PatternObservation(
+                pattern_id="REPLAY-001",
+                title="Replayable payout / claim path",
+                status="REVIEW",
+                contract="Fallback",
+                function="withdraw",
+                source="src/Fallback.sol",
+                line=30,
+            )
+        ]
+        rendered = "\n".join(walkthrough_finding_patterns.render_summary(obs))
+        self.assertIn("STATIC CANDIDATES  0", rendered)
+        self.assertIn("LIVE-UPGRADED     1", rendered)
+        self.assertIn("SOURCE PATTERN MATCHES", rendered)
+        self.assertNotIn("STATIC MATCHES", rendered)
+
+    def test_adversarial_output_calls_randomized_executions_probes(self):
+        intro = "\n".join(
+            walkthrough._render_adversarial_intro(24, [])
+        )
+        self.assertIn("Running 24 probes", intro)
+        summary = "\n".join(
+            walkthrough._render_adversarial_summary(
+                pathlib.Path("/tmp/project"),
+                [
+                    walkthrough.Step(
+                        1, "Alice", "Demo", "0x" + "2" * 40,
+                        "ping()", [], status="success"
+                    )
+                ],
+                pathlib.Path("/tmp/project/.audit/walkthrough/test.json"),
+                [],
+            )
+        )
+        self.assertIn("1 probes finished", summary)
+        self.assertNotIn("checks finished", summary)
+
+    def test_adversarial_summary_groups_identical_restored_probe_observations(self):
+        first = walkthrough.Step(
+            1, "Alice", "Fallback", "0x" + "2" * 40, "withdraw()", [], status="success"
+        )
+        second = walkthrough.Step(
+            2, "Alice", "Fallback", "0x" + "2" * 40, "withdraw()", [], status="success"
+        )
+        rendered = "\n".join(
+            walkthrough._render_adversarial_summary(
+                pathlib.Path("/tmp/project"),
+                [first, second],
+                pathlib.Path("/tmp/project/.audit/walkthrough/test.json"),
+                [],
+            )
+        )
+        self.assertIn("2 probes finished", rendered)
+        self.assertIn("1 unique probe outcomes", rendered)
+        self.assertIn("repeated in probes #2", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
