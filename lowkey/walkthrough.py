@@ -5548,10 +5548,18 @@ def _adversarial_probe_why(step: Step, model: ContractModel, actors: list[Actor]
             "SOURCE-CORRELATED",
         )
 
-    if any("owner() =" in item and "caller is" in item for item in diagnostics) or "not the contract owner" in str(step.error_reason or "").lower():
+    owner_mismatch = next(
+        (
+            item for item in diagnostics
+            if "owner() =" in item and "caller is" in item
+        ),
+        None,
+    )
+    if owner_mismatch or "not the contract owner" in str(step.error_reason or "").lower():
+        function_text = str(step.function or "").split("(", 1)[0] or "this function"
         return (
-            f"{actor} was not authorized for this ownership action.",
-            "Owner-protected functions are checked against the caller; changing the target argument does not bypass access control.",
+            f"{actor} does not match owner() for {function_text}(), so the owner-only authorization check rejects this call.",
+            "The authorization boundary compares msg.sender with owner(); calldata values do not change who msg.sender is.",
             "SOURCE-CORRELATED",
         )
 
