@@ -301,6 +301,26 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertNotIn("LowkeyPoC_BountyArena.s.sol", rendered.split("1. WHAT IS THE PROTOCOL?")[1].split("2. HOW")[0])
             self.assertEqual(result["human"]["contracts"][0][0], "BountyArena")
 
+    def test_graph_render_explains_call_evidence_trust(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", "[profile.default]\nsrc = 'src'\n")
+            self.write(
+                root,
+                "src/Vault.sol",
+                "pragma solidity ^0.8.20; contract Vault { function f(address target) external { target.call(''); target.foo(); } }",
+            )
+            output = __import__("io").StringIO()
+            from contextlib import redirect_stdout
+            with redirect_stdout(output):
+                project_tools.render_project_map(root)
+            rendered = output.getvalue()
+            self.assertIn("meaning: exact source syntax matched", rendered)
+            self.assertIn("trust: HIGH for the presence of that syntax", rendered)
+            self.assertIn("meaning: the source-pattern scanner found possible call sites", rendered)
+            self.assertIn("trust: LOW", rendered)
+            self.assertIn("false positives/negatives are possible", rendered)
+
     def test_source_inventory_excludes_audit_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
