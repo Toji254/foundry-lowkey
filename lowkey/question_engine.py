@@ -1617,7 +1617,16 @@ def answer_current(
     root: Path | None = None,
 ) -> int:
     root_path = _project_root(root)
-    chosen = current_question(root_path)
+    state = load_state(root_path)
+    chosen = None
+    current_id = str(state.get("current_id") or "")
+    if current_id:
+        for row in rank_questions(root_path, limit=max(12, len(enabled_questions(root_path)))):
+            if row["question"].id == current_id:
+                chosen = row
+                break
+    if chosen is None:
+        chosen = current_question(root_path, record=True)
     if not chosen:
         print("No current auditor question.")
         return 0
@@ -1626,7 +1635,6 @@ def answer_current(
     allowed = {"ANSWERED", "NOT_APPLICABLE", "SKIPPED"}
     if normalized not in allowed:
         return 2
-    state = load_state(root_path)
     answers = state.setdefault("answers", {})
     answers[q.id] = {
         "status": normalized,
