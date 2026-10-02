@@ -908,7 +908,7 @@ def assess_replay_story(
         if trace_native_gain == 0:
             for line in second.trace_edges or []:
                 match = re.search(
-                    r"\b(?:CALL|CALLCODE|DELEGATECALL)\b[^\\n]*\bto=(0x[0-9a-fA-F]{40})\b[^\\n]*\bvalue=(\\d+)\\s+wei\\b",
+                    r"\b(?:CALL|CALLCODE|DELEGATECALL)\b[^\n]*\bto=(0x[0-9a-fA-F]{40})\b[^\n]*\bvalue=(\d+)\s+wei\b",
                     str(line),
                     re.IGNORECASE,
                 )
