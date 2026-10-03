@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from lowkey.solidity_connect_data import CONNECTION_LABS
+from lowkey.solidity_connect_data import CONNECTION_LABS, UNIVERSAL_CONNECTION_LAB
 from lowkey import solidity_cheatsheet
 
 
@@ -141,6 +141,42 @@ class SolidityConnectTests(unittest.TestCase):
             result, output = self.render("connect", topic, "mapping")
             self.assertEqual(result, 0)
             self.assertIn("CONNECTION LAB", output)
+
+    def test_universal_connection_lab_compiles(self):
+        if shutil.which("forge") is None:
+            self.skipTest("Forge is required for connection-lab compiler coverage.")
+
+        with tempfile.TemporaryDirectory(prefix="lowkey-connect-universal-") as td:
+            root = Path(td)
+            src = root / "src"
+            src.mkdir()
+
+            (root / "foundry.toml").write_text(
+                """[profile.default]
+src = "src"
+solc_version = "0.8.20"
+""",
+                encoding="utf-8",
+            )
+            (src / "UniversalConnectionLab.sol").write_text(
+                UNIVERSAL_CONNECTION_LAB["source"], encoding="utf-8"
+            )
+            for filename, source in UNIVERSAL_CONNECTION_LAB.get(
+                "support_files", {}
+            ).items():
+                (src / filename).write_text(source, encoding="utf-8")
+
+            proc = subprocess.run(
+                ["forge", "build", "--root", str(root)],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"Universal connection lab failed to compile:\n"
+                f"{proc.stdout}\n{proc.stderr}",
+            )
 
     def test_every_connection_lab_compiles(self):
         if shutil.which("forge") is None:
