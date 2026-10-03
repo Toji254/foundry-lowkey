@@ -4105,3 +4105,192 @@ def register_topics(add):
         gotchas="Cheat remains read-only: it does not create files, start Anvil, or modify your project.",
     );
     
+
+
+    add(
+        "yul", ["yul-assembly", "assembly-language", "evm-assembly"], "YUL / ASSEMBLY",
+        "The low-level language used inside Solidity assembly blocks.",
+        "Solidity is the safer wrapper; Yul is the lower-level toolbox where you manipulate words, memory, storage, calldata, and EVM calls directly.",
+        """assembly {
+        let x := add(a, b)
+    }""",
+        """function addLowLevel(uint256 a, uint256 b)
+        external
+        pure
+        returns (uint256 result)
+    {
+        assembly {
+            result := add(a, b)
+        }
+    }""",
+        [
+            "Enter Yul with assembly { ... }.",
+            "Yul values are EVM words; let creates a Yul local.",
+            "Built-ins such as add, mload, sload, sstore, calldataload, call, and revert operate close to the EVM.",
+            "Use assembly when the lower-level control is intentional and understood.",
+        ],
+        audit="Assembly bypasses many Solidity checks. Verify memory pointers, storage slots, bounds, return data, and call results manually.",
+    )
+
+    add(
+        "yul-memory", ["assembly-memory", "mstore", "mload"], "YUL / ASSEMBLY",
+        "Reading and writing 32-byte words in EVM memory.",
+        "Memory is temporary scratch space; Yul mstore writes a word and mload reads one.",
+        """assembly {
+        mstore(0x00, value)
+        result := mload(0x00)
+    }""",
+        """function memoryRoundTrip(uint256 value)
+        external
+        pure
+        returns (uint256 result)
+    {
+        assembly {
+            mstore(0x00, value)
+            result := mload(0x00)
+        }
+    }""",
+        [
+            "Pick a memory offset such as 0x00.",
+            "mstore(offset, value) writes 32 bytes.",
+            "mload(offset) reads 32 bytes.",
+            "ABI return data is also ultimately represented in memory before returning.",
+        ],
+        audit="Overlapping or incorrectly managed memory can corrupt ABI data and return values.",
+    )
+
+    add(
+        "yul-storage", ["assembly-storage", "sload", "sstore"], "YUL / ASSEMBLY",
+        "Direct access to EVM storage slots.",
+        "Solidity names a state variable; Yul can address the slot directly.",
+        """assembly {
+        sstore(slot, value)
+        result := sload(slot)
+    }""",
+        """function storageRoundTrip(uint256 slot, uint256 value)
+        external
+        returns (uint256 result)
+    {
+        assembly {
+            sstore(slot, value)
+            result := sload(slot)
+        }
+    }""",
+        [
+            "Choose a slot deliberately.",
+            "sstore writes a 32-byte word to that slot.",
+            "sload reads the word back.",
+            "Mappings and dynamic arrays use derived slots, so their slot formulas matter.",
+        ],
+        audit="A wrong slot is not a local bug; it can overwrite unrelated protocol state.",
+    )
+
+    add(
+        "yul-calldata", ["assembly-calldata", "calldataload", "calldatacopy"], "YUL / ASSEMBLY",
+        "Reading raw external call input at the byte level.",
+        "The first four calldata bytes are normally the selector; later words contain ABI arguments.",
+        """assembly {
+        selector := shr(224, calldataload(0))
+        value := calldataload(4)
+    }""",
+        """function firstArgument() external pure returns (uint256 value) {
+        assembly {
+            value := calldataload(4)
+        }
+    }""",
+        [
+            "calldataload(offset) reads a 32-byte word from calldata.",
+            "Normal function calldata begins with a four-byte selector.",
+            "ABI arguments start after those four bytes.",
+            "calldatacopy can copy arbitrary calldata ranges into memory.",
+        ],
+        audit="Check offsets and lengths manually; malformed calldata can expose assumptions that typed Solidity parameters normally hide.",
+    )
+
+    add(
+        "yul-control-flow", ["assembly-if", "assembly-switch", "assembly-for", "yul-if", "yul-switch"], "YUL / ASSEMBLY",
+        "Yul's low-level control-flow constructs.",
+        "Yul has if, switch, and for constructs, but their semantics are lower-level than Solidity's syntax.",
+        """assembly {
+        switch x
+        case 0 { result := 0 }
+        default { result := 1 }
+    }""",
+        """function choose(uint256 x) external pure returns (uint256 result) {
+        assembly {
+            switch x
+            case 0 {
+                result := 10
+            }
+            default {
+                result := 20
+            }
+        }
+    }""",
+        [
+            "let declares a Yul local.",
+            "if executes a block when its condition is non-zero.",
+            "switch selects one case or default.",
+            "for combines initialization, condition, post-expression, and body at Yul level.",
+        ],
+        audit="Low-level loops and memory/storage operations still carry gas and correctness risks.",
+    )
+
+    add(
+        "yul-functions", ["assembly-functions", "yul-function"], "YUL / ASSEMBLY",
+        "Local reusable Yul functions inside an assembly block.",
+        "A Yul function is a local low-level helper; it is not a Solidity external/public function.",
+        """assembly {
+        function twice(x) -> y {
+            y := mul(x, 2)
+        }
+        result := twice(value)
+    }""",
+        """function doubleLowLevel(uint256 value)
+        external
+        pure
+        returns (uint256 result)
+    {
+        assembly {
+            function twice(x) -> y {
+                y := mul(x, 2)
+            }
+            result := twice(value)
+        }
+    }""",
+        [
+            "Define a Yul function inside the assembly block.",
+            "Its parameters and return values are Yul variables.",
+            "Call it like a local low-level function.",
+            "Do not confuse it with a Solidity function declaration.",
+        ],
+        audit="Track Yul function inputs/outputs and memory/storage side effects just like inline assembly code.",
+    )
+
+    add(
+        "yul-call", ["assembly-call", "yul-staticcall", "yul-delegatecall"], "YUL / ASSEMBLY",
+        "Low-level EVM call operations from Yul.",
+        "Yul exposes call, staticcall, delegatecall, returndatacopy, and returndatasize directly.",
+        """assembly {
+        ok := staticcall(gas(), target, ptr, 4, ptr, 32)
+    }""",
+        """function lowLevelStaticRead(address target, bytes4 selector)
+        external
+        view
+        returns (bool ok, uint256 value)
+    {
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, shl(224, selector))
+            ok := staticcall(gas(), target, ptr, 4, ptr, 32)
+            value := mload(ptr)
+        }
+    }""",
+        [
+            "Build input bytes in memory.",
+            "Pass gas, target, input pointer/length, and output pointer/length to the call opcode.",
+            "Check the success flag.",
+            "Read or copy return data explicitly.",
+        ],
+        audit="Verify target, calldata layout, gas assumptions, return-data size, and failure handling. Delegatecall additionally shares caller storage/context.",
+    )
