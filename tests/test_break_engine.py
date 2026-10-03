@@ -46,6 +46,12 @@ class BreakEngineTests(unittest.TestCase):
         }
         self.assertTrue(required.issubset(set(break_engine.ATTACK_FAMILIES)))
 
+    def test_access_probe_treats_asset_claim_paths_as_privileged_candidates(self):
+        self.assertRegex("withdraw", break_engine.PRIVILEGED_RE)
+        self.assertRegex("claim", break_engine.PRIVILEGED_RE)
+        self.assertRegex("redeem", break_engine.PRIVILEGED_RE)
+        self.assertRegex("release", break_engine.PRIVILEGED_RE)
+
     def test_sensitive_function_scoring_prioritizes_claim_paths(self):
         claim = {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"}
         ordinary = {"name": "setMetadata", "inputs": [], "stateMutability": "nonpayable"}
