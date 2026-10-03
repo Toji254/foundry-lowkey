@@ -72,6 +72,10 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("The target rejected the attempted call(s), so replay was not demonstrated.", rendered)
         self.assertIn("This does NOT prove withdraw/redeem is secure", rendered)
 
+    def test_parse_explain_without_path_uses_latest(self):
+        opts = break_engine._parse_args(["--explain"])
+        self.assertEqual(opts["explain"], "latest")
+
     def test_parse_supports_function_system_and_until_found(self):
         opts = break_engine._parse_args([
             "--function", "withdraw(address,uint256)",
