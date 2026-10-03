@@ -180,48 +180,77 @@ The project-local copy is pretty-printed JSON with an `abi` field. This makes th
 
 ## Import intelligence
 
-Lowkey’s import browser is a project-aware Solidity dependency and usage guide. It can resolve real symbols from `src/` and `lib/`, or fall back to a verified reference catalog for common components such as OpenZeppelin, Chainlink, and forge-std.
+Lowkey’s import browser is a project-aware Solidity dependency and learning navigator. It resolves real symbols from src/ and lib/, or falls back to a verified reference catalog for common OpenZeppelin, Chainlink, forge-std, and related components.
 
 ~~~bash
 # Interactive browser
 lk import
 
-# Look up one thing
+# Look up a component
 lk import ERC721
-lk import AggregatorV3Interface
+lk import IERC721
+lk import IERC721Receiver
 
-# Browse common reference entries
-lk import common
+# Browse the installed dependency tree
+lk import packages
+
+# Deterministic concept search — no AI required
+lk import search nft
+lk import search oracle
+lk import search access
+lk import search reentrancy
+
+# Jump straight to a view
+lk import explain ERC721
+lk import usage ERC721
+lk import related ERC721
+lk import audit ERC721
+
+# Safe install workflow
+lk import --install ERC721
+lk import --install --dry-run ERC721
+
+# Machine/copy-friendly output
+lk import --json ERC721
+lk import --copy-only ERC721
 ~~~
 
-A symbol lookup shows:
+A symbol card shows:
 
 ~~~text
-package
-install status
-Forge install command
-verified Solidity import
-why to use it
-when to use it
-practical use cases
-a small usage example
-audit lens / things to inspect
+TYPE / ROLE
+SOURCE + SOURCE KIND
+IMPORT PATH
+WHY / WHEN / USE CASES
+VERSION + COMMIT
+FORGE INSTALL COMMAND
+HOW TO USE IT
+INTERFACE SURFACE (when applicable)
+RELATED COMPONENTS / NEXT TO LEARN
+DIRECT DEPENDENCIES
+PROJECT USAGE
+COMPATIBILITY NOTES
+COMMON MISTAKES
+AUDIT LENS / AUDIT QUESTIONS
+COPY-READY IMPORT
 ~~~
 
-For symbols that are already installed, Lowkey prefers the actual source and remapping discovered in the current Foundry project. For symbols that are not installed but exist in the reference catalog, Lowkey still explains the dependency and gives the standard install/import recipe.
+The SOURCE line is an absolute path:line when Lowkey has real source. In terminals/editors that support file links, Ctrl+Click opens the file directly. Installed dependency sources are marked as INSTALLED DEPENDENCY; project sources are marked as VERIFIED PROJECT SOURCE; missing catalog dependencies are marked as REFERENCE ONLY.
 
-Installation is explicit and idempotent:
+Interfaces are treated as a learning topic, not just another symbol. Lowkey explains that an interface describes the callable surface while the implementation lives somewhere else, and shows important method shapes when they are known or can be extracted from source. For example, IERC20 exposes the standard token interaction surface such as balanceOf, transfer, allowance, approve, and transferFrom.
 
-~~~bash
-lk import --install ERC721
-lk import install AggregatorV3Interface
-~~~
+Contracts can also be labeled as abstract contract. An abstract contract is a base that cannot be deployed directly while it still has required unimplemented behavior. It can nevertheless contain real storage, modifiers, constructors, and implemented state-changing logic, so auditors should still inspect it as executable code.
 
-`--install` is the only import-helper mode that mutates the project. Lowkey runs only a verified `forge install ...` command, skips dependencies that are already installed, and leaves ordinary lookups read-only.
+Related components are deliberately connected. Starting at ERC721, the browser can point you to IERC721, IERC721Receiver, ERC721URIStorage, ERC721Enumerable, and ERC721Burnable, making the dependency folder a learning map rather than a pile of unfamiliar files.
 
-For unknown installed packages, Lowkey can inspect the package’s Git remote and derive a `forge install owner/repo` hint when the remote is a GitHub repository. It does not invent an install command when the source or remote cannot be verified.
+Installation is explicit and idempotent. --dry-run shows the exact verified Forge install command without changing the project. Lowkey does not invent a dependency install recipe when it cannot verify the source/package.
 
-The reference data is intentionally separated from project discovery: a local contract named `ERC721` or `Ownable` is not mislabeled as OpenZeppelin unless its source/import path matches the verified reference.
+For installed packages, Lowkey reads the package Git remote when possible and records a version/commit plus a source URL. Compatibility notes deliberately warn when examples may depend on a different package major version; the installed source remains the authority.
+
+The project-usage view connects dependency code back to your application. lk import usage ERC721 shows where the project imports or references that symbol, with clickable path:line locations.
+
+The import helper stays separate from audit target/RPC state. Ordinary lookup, search, explanation, graph/usage views, and JSON output are read-only; only explicit --install changes the project.
+
 
 ## Storage and state forensics
 
