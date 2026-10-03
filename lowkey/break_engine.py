@@ -1286,11 +1286,9 @@ def _basic_solidity_expr(ptype: str, value: str) -> str:
         # and avoids accidentally producing invalid Solidity string literals.
         import json as _json
         return _json.dumps(raw)
-    if lower == "bytes":
-        return raw if raw.startswith("0x") else "0x"
-    if lower.startswith(("uint", "int", "bytes")):
-        return raw
 
+    # Handle dynamic arrays before primitive numeric/bytes checks because ABI
+    # types such as uint256[] and bytes[] also start with those primitive names.
     if lower.endswith("[]"):
         base = lower[:-2]
         if base.startswith("tuple") or base.startswith("("):
@@ -1302,6 +1300,11 @@ def _basic_solidity_expr(ptype: str, value: str) -> str:
                 f"generic dynamic array '{ptype}' accepts only an empty array in this attack mode"
             )
         return f"new {base}[](0)"
+
+    if lower == "bytes":
+        return raw if raw.startswith("0x") else "0x"
+    if lower.startswith(("uint", "int", "bytes")):
+        return raw
 
     if re.fullmatch(r"(?:address|bool|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bytes(?:1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32))\[[0-9]+\]", lower):
         raise ValueError(f"fixed-size array '{ptype}' requires a specialized attack generator")
