@@ -214,6 +214,44 @@ The resulting target and actor are stored in the current project's `.audit/` con
 
 ## Attack lab
 
+### Break mode
+
+`lk break` is the adversarial side of the Lowkey workflow. Instead of stopping at a static warning, it builds disposable Forge attack harnesses and tries to make the target violate an observable security property.
+
+
+~~~bash
+# Attack the current target
+lk break
+
+# Attack one function only
+lk break --function 'withdraw(address,uint256)'
+
+# Run one attack family
+lk break --function withdraw --family reentrancy
+
+# Attack every live target Lowkey can resolve for the project
+lk break --system
+
+# Keep attacking until Lowkey records an explicit BREAK or you press Ctrl-C
+lk break --system --until-found
+
+# Make a campaign reproducible
+lk break --function withdraw --until-found --seed 42
+~~~
+
+The command separates:
+
+~~~text
+STATIC LEAD  ->  ATTACK EXPERIMENT  ->  OBSERVED BEHAVIOR  ->  BREAK CONDITION
+~~~
+
+A successful transaction is not itself a break. A Slither warning is not itself a break. For example, the reentrancy family deploys a hostile callback contract and checks whether nested calls actually produce attacker-controlled value movement. Repeat-claim experiments compare the first and second calls. Access-control experiments use an untrusted local caller. Other families record observations until Lowkey has enough protocol-specific evidence to assert a break condition.
+
+The default scope is the selected target. `--function` narrows the attack to one ABI function. `--system` broadens the scope to all live targets Lowkey can resolve from the project/system model. `--until-found` is intentionally open-ended and stops only on a concrete break or user interruption; every experiment is written under `.audit/break/` and also published to the project audit context.
+
+The attack library is based on recurring vulnerability classes documented in public Immunefi guidance and reports, CodeHawks contest findings, and public Solodit finding taxonomy. These sources are used as attack-family design references, not as claims that a generic harness can exploit every protocol automatically.
+
+Break mode requires Anvil and executes generated Forge tests against the local/forked execution environment. It does not deliberately send the attack campaign to a production contract. Complex protocol-specific classes such as oracle manipulation, economic/flash-loan interactions, unusual ERC-20 behavior, and proxy/storage abuse are represented explicitly and must earn a real invariant-based harness before Lowkey can call them BREAK.
 ### Probe
 
 Probe a real ABI call as the current actor:
