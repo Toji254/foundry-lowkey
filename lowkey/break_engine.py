@@ -766,11 +766,19 @@ def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str,
     forge = host.tool_path("forge") if hasattr(host, "tool_path") else "forge"
     if not forge:
         raise RuntimeError("forge was not found on PATH.")
+    try:
+        match_path = Path(source_path).resolve().relative_to(root).as_posix()
+    except ValueError:
+        match_path = Path(source_path).as_posix()
+
+    # Forge's --match-path is evaluated against project-relative paths. Passing
+    # the absolute temporary harness path can make Forge execute zero tests,
+    # which then gets misclassified as a generic BLOCKED result.
     cmd = [
         forge,
         "test",
         "--match-path",
-        str(Path(source_path).as_posix()),
+        match_path,
         "--fork-url",
         rpc,
         "-vvv",
