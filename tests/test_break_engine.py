@@ -120,8 +120,8 @@ class BreakEngineTests(unittest.TestCase):
         body = break_engine._render_reentrancy_test(
             target, fn, "withdraw()", [], 3
         )
-        self.assertIn("address(uint160(0x5fbdb2315678afecb367f032d93f642f64180aa3))", body)
-        self.assertIn("address(uint160(0xBEEF000000000000000000000000000000000042))", body)
+        self.assertIn("address(uint160(0x005fbdb2315678afecb367f032d93f642f64180aa3))", body)
+        self.assertIn("address(uint160(0x00BEEF000000000000000000000000000000000042))", body)
         self.assertNotIn("address(0x5fbdb2315678afecb367f032d93f642f64180aa3)", body)
 
     def test_result_parser_requires_explicit_break_marker(self):
