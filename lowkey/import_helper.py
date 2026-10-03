@@ -1966,7 +1966,7 @@ def run_category(category: str, root: Path, maps, install: bool = False, dry_run
         symbol = resolve_single_symbol(category, root, maps)
         if symbol:
             if not copy_only:
-                show_symbol(symbol, root, maps, json_mode=json_mode)
+                show_symbol(symbol, root, maps, json_mode=json_mode, verbose=verbose)
             else:
                 show_symbol(symbol, root, maps, copy_only=True)
             return install_symbols([symbol], root, dry_run=dry_run)
