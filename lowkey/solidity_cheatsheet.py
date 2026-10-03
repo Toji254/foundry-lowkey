@@ -1050,7 +1050,7 @@ add(
     "Think function name + parameter types -> four-byte fingerprint.",
     """keccak256(abi.encode(user, amount))
 bytes4(keccak256("transfer(address,uint256)"))""",
-    "bytes4 selector = bytes4(keccak256("withdraw(uint256)"));",
+    """bytes4 selector = bytes4(keccak256("withdraw(uint256)"));""",
     [
         "Write the canonical signature.",
         "Hash it with Keccak-256.",
@@ -1340,7 +1340,7 @@ add(
     "access-control", ["only-owner", "authorization", "permissions"], "SECURITY",
     "Restrict sensitive actions to the correct caller or role.",
     "Think only the treasury manager has the vault key.",
-    "require(msg.sender == owner, "not owner");",
+    """require(msg.sender == owner, "not owner");""",
     """modifier onlyOwner() {
     require(msg.sender == owner, "not owner");
     _;
@@ -1375,7 +1375,7 @@ add(
     "The current block timestamp.",
     "Think chain-reported time, not a perfect wall clock.",
     "block.timestamp",
-    "require(block.timestamp >= deadline, "too early");",
+    """require(block.timestamp >= deadline, "too early");""",
     [
         "Useful for broad deadlines and windows.",
         "Do not treat it as exact time or secure randomness.",
@@ -1508,7 +1508,7 @@ add(
     "imports", ["import", "import-alias"], "PROJECT",
     "Bring declarations from another Solidity source file into the current file.",
     "Think bring another toolbox into the room.",
-    "import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";",
+    """import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";""",
     """import {ERC721URIStorage} from
     "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";""",
     [
