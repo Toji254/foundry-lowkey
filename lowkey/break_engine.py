@@ -1412,6 +1412,9 @@ contract LowkeyBreakReentrancy is Test {{
         console2.log("TARGET_OUTER_SUCCESS", hostile.lastAttackSuccess());
         console2.log("TARGET_OUTER_RETURNDATA_LENGTH", hostile.lastAttackReturndata().length);
         console2.logBytes(hostile.lastAttackReturndata());
+        console2.log("TARGET_REJECTED_ATTACK", !hostile.lastAttackSuccess());
+        console2.log("TARGET_REVERT_DATA_PRESENT", hostile.lastAttackReturndata().length > 0);
+        console2.log("REENTRY_REACHED", hostile.attempts() > 0);
         console2.log("TARGET_CODE_LENGTH", TARGET.code.length);
         console2.log("TARGET_BALANCE_AFTER_SETUP", TARGET.balance);
         console2.log("REENTRY_ATTEMPTS", hostile.attempts());
@@ -1459,7 +1462,16 @@ def _result_from_output(
         "BLOCKED": "Attack harness did not produce a usable execution result.",
     }[status]
     raw_tail = "\n".join(text_output.splitlines()[-80:])
-    if not structured and raw_tail:
+    target_rejected = bool(re.search(r"TARGET_REJECTED_ATTACK\s+true", text_output, flags=re.I))
+    reentry_reached = bool(re.search(r"REENTRY_REACHED\s+true", text_output, flags=re.I))
+    target_revert_data = bool(re.search(r"TARGET_REVERT_DATA_PRESENT\s+true", text_output, flags=re.I))
+    if structured and target_rejected and not reentry_reached:
+        summary = (
+            "Target rejected the attack before the callback boundary. "
+            + ("Revert data was returned; inspect the ABI/reason." if target_revert_data
+               else "No revert data was returned; inspect withdraw's guards/preconditions.")
+        )
+    elif not structured and raw_tail:
         # A generated harness can fail to compile or execute before emitting
         # Lowkey markers. Preserve the real tool error instead of hiding it behind
         # a generic "BLOCKED" message.
