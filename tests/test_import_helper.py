@@ -51,7 +51,10 @@ class ImportHelperTests(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(helper.main(["--h"]), 0)
-        self.assertIn("LOWKEY // IMPORT HELPER", out.getvalue())
+        rendered = out.getvalue()
+        self.assertIn("LOWKEY // IMPORT HELPER", rendered)
+        self.assertIn("IMPORT SYNTAX CHEAT SHEET:", rendered)
+        self.assertIn("import {ERC20, IERC20}", rendered)
 
     def test_remapping(self):
         tmp, root = self.project()
