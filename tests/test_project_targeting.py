@@ -179,6 +179,31 @@ class ProjectTargetingTests(unittest.TestCase):
             )
             self.assertEqual(lk.discover_audit_target_contract(root), "Factory")
 
+    def test_auto_lab_skips_env_dependent_deployment_scripts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            script_dir = root / "script"
+            script_dir.mkdir()
+            (script_dir / "Deploy.s.sol").write_text(
+                "pragma solidity ^0.8.20;\n"
+                "import {Script} from \"forge-std/Script.sol\";\n"
+                "contract Deploy is Script {\n"
+                "    function run() external {\n"
+                "        address registry = vm.envAddress(\"SAFE_HARBOR_REGISTRY\");\n"
+                "        vm.startBroadcast();\n"
+                "        registry;\n"
+                "        vm.stopBroadcast();\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            with patch.object(lk.audit_context, "foundry_project_root", side_effect=lambda value: str(value)):
+                self.assertEqual(
+                    lk._lab_script_unresolved_env_names(script_dir / "Deploy.s.sol"),
+                    ["SAFE_HARBOR_REGISTRY"],
+                )
+                self.assertIsNone(lk.discover_local_lab_script(root))
+
     def test_lab_deployer_can_be_replaced_by_named_user_actor(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
