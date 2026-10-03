@@ -130,7 +130,7 @@ class ImportHelperTests(unittest.TestCase):
             self.assertIn("PACKAGE:    demo", rendered)
             self.assertIn("STATUS:     INSTALLED at lib/demo", rendered)
             self.assertNotIn("OpenZeppelin Contracts", rendered)
-            self.assertIn("FORGE:      forge install OpenZeppelin/openzeppelin-contracts", rendered)
+            self.assertIn("No verified upstream install command in Lowkey's registry", rendered)
             self.assertIn("HOW:", rendered)
             self.assertIn("USE CASES:", rendered)
             self.assertIn("AUDIT LENS:", rendered)
@@ -239,7 +239,7 @@ class ImportHelperTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIn("NAME:       ERC721", rendered)
             self.assertIn("SOURCE:     (reference only — dependency not installed)", rendered)
-            self.assertIn("FORGE:      forge install OpenZeppelin/openzeppelin-contracts", rendered)
+            self.assertIn("forge install OpenZeppelin/openzeppelin-contracts", rendered)
             self.assertIn('import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";', rendered)
         finally:
             tmp.cleanup()
