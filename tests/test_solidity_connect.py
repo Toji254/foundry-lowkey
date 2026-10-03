@@ -1,4 +1,5 @@
 import io
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -99,6 +100,8 @@ class SolidityConnectTests(unittest.TestCase):
         self.assertIn("lk connect --list", output)
 
     def test_every_connection_lab_compiles(self):
+        if shutil.which("forge") is None:
+            self.skipTest("Forge is required for connection-lab compiler coverage.")
         for lab in CONNECTION_LABS:
             with self.subTest(lab=lab["name"]), tempfile.TemporaryDirectory(
                 prefix=f"lowkey-connect-{lab['name']}-"
