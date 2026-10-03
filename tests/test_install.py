@@ -29,6 +29,8 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertTrue(manifest.exists())
             question_engine = pathlib.Path(home) / ".lowkey" / "question_engine.py"
             self.assertTrue(question_engine.exists())
+            cheatsheet = pathlib.Path(home) / ".lowkey" / "solidity_cheatsheet.py"
+            self.assertTrue(cheatsheet.exists())
 
             version = subprocess.run(
                 [str(installed_lk), "--version"],
@@ -53,6 +55,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk audit --checks", help_result.stdout)
             self.assertIn("lk q", help_result.stdout)
             self.assertIn("lk questions", help_result.stdout)
+            self.assertIn("lk cheat", help_result.stdout)
 
 
 if __name__ == "__main__":
