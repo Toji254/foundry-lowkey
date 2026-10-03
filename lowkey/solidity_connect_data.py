@@ -1945,6 +1945,13 @@ def _build_catalog_aliases():
 
 _CATALOG_ALIASES, _AMBIGUOUS_CATALOG_ALIASES = _build_catalog_aliases()
 
+_CATALOG_NAME_TO_MEANING = {}
+
+def _capture_catalog_meanings(name, aliases, category, meaning, *args, **kwargs):
+    _CATALOG_NAME_TO_MEANING[name] = meaning
+
+_register_catalog_topics(_capture_catalog_meanings)
+
 
 # Semantic names deliberately collapse spelling variants that describe one
 # underlying idea.  Catalog topics that are genuinely different stay distinct.
