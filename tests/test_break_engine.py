@@ -1,0 +1,78 @@
+import importlib.util
+import pathlib
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE = ROOT / "lowkey" / "break_engine.py"
+
+spec = importlib.util.spec_from_file_location("lowkey_break_engine", MODULE)
+break_engine = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(break_engine)
+
+
+class BreakEngineTests(unittest.TestCase):
+    def test_parse_supports_function_system_and_until_found(self):
+        opts = break_engine._parse_args([
+            "--function", "withdraw(address,uint256)",
+            "--system",
+            "--until-found",
+            "--rounds", "7",
+            "--depth", "8",
+            "--seed", "42",
+        ])
+        self.assertEqual(opts["function"], "withdraw(address,uint256)")
+        self.assertTrue(opts["system"])
+        self.assertTrue(opts["until_found"])
+        self.assertEqual(opts["max_rounds"], 7)
+        self.assertEqual(opts["depth"], 8)
+        self.assertEqual(opts["seed"], 42)
+
+    def test_function_scoped_shortcut(self):
+        opts = break_engine._parse_args(["withdraw", "replay"])
+        self.assertEqual(opts["function"], "withdraw")
+        self.assertEqual(opts["family"], "replay")
+
+    def test_attack_library_contains_core_public_audit_classes(self):
+        required = {
+            "reentrancy", "replay", "access", "accounting", "boundary",
+            "time", "upgrade", "signature", "oracle", "economic",
+            "erc20", "proxy", "storage", "dos",
+        }
+        self.assertTrue(required.issubset(set(break_engine.ATTACK_FAMILIES)))
+
+    def test_sensitive_function_scoring_prioritizes_claim_paths(self):
+        claim = {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"}
+        ordinary = {"name": "setMetadata", "inputs": [], "stateMutability": "nonpayable"}
+        self.assertLess(
+            break_engine._score_function(claim)[0],
+            break_engine._score_function(ordinary)[0],
+        )
+
+    def test_result_parser_requires_explicit_break_marker(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        observed = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="replay",
+            target=target,
+            function="withdraw()",
+            output='LOWKEY_BREAK_FAMILY replay\nLOWKEY_BREAK false',
+            evidence_path="/tmp/evidence.json",
+        )
+        self.assertEqual(observed.status, "OBSERVED")
+        self.assertFalse(observed.break_condition)
+
+        broken = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="replay",
+            target=target,
+            function="withdraw()",
+            output='LOWKEY_BREAK_FAMILY replay\nLOWKEY_BREAK true',
+            evidence_path="/tmp/evidence.json",
+        )
+        self.assertEqual(broken.status, "BREAK")
+        self.assertTrue(broken.break_condition)
+
+
+if __name__ == "__main__":
+    unittest.main()
