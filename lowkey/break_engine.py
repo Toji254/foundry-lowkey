@@ -989,7 +989,7 @@ import {console2} from "forge-std/console2.sol";
 
 
 def _render_repeat_test(target: Target, signature: str, calldata: str, value: str, label: str, seed_fund: str | None):
-    target_lit = f"address(0x{target.address[2:]})"
+    target_lit = f"address(uint160(0x{target.address[2:].lower()}))"
     value_lit = "0" if value in {"0", "0wei"} else "1"
     fund_line = ""
     if seed_fund:
@@ -997,7 +997,7 @@ def _render_repeat_test(target: Target, signature: str, calldata: str, value: st
     return _render_common_header() + f"""
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
-    address constant ATTACKER = address(0xBEEF000000000000000000000000000000000042);
+    address constant ATTACKER = address(uint160(0xBEEF000000000000000000000000000000000042));
 
     function test_break_repeat() public {{
 {fund_line}        bytes memory data = hex"{calldata[2:]}";
@@ -1042,12 +1042,12 @@ contract LowkeyBreakRepeat is Test {{
 
 
 def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
-    target_lit = f"address(0x{target.address[2:]})"
+    target_lit = f"address(uint160(0x{target.address[2:].lower()}))"
     value_lit = "0" if value in {"0", "0wei"} else "1"
     return _render_common_header() + f"""
 contract LowkeyBreakAccess is Test {{
     address constant TARGET = {target_lit};
-    address constant ATTACKER = address(0xBEEF000000000000000000000000000000000042);
+    address constant ATTACKER = address(uint160(0xBEEF000000000000000000000000000000000042));
 
     function test_break_access() public {{
         bytes memory data = hex"{calldata[2:]}";
@@ -1066,12 +1066,12 @@ contract LowkeyBreakAccess is Test {{
 
 
 def _render_boundary_test(target: Target, signature: str, call_zero: str, call_max: str, value: str):
-    target_lit = f"address(0x{target.address[2:]})"
+    target_lit = f"address(uint160(0x{target.address[2:].lower()}))"
     value_lit = "0" if value in {"0", "0wei"} else "1"
     return _render_common_header() + f"""
 contract LowkeyBreakBoundary is Test {{
     address constant TARGET = {target_lit};
-    address constant ATTACKER = address(0xBEEF000000000000000000000000000000000042);
+    address constant ATTACKER = address(uint160(0xBEEF000000000000000000000000000000000042));
 
     function test_break_boundary() public {{
         vm.deal(ATTACKER, 100 ether);
@@ -1098,12 +1098,12 @@ contract LowkeyBreakBoundary is Test {{
 
 
 def _render_time_test(target: Target, signature: str, calldata: str, value: str):
-    target_lit = f"address(0x{target.address[2:]})"
+    target_lit = f"address(uint160(0x{target.address[2:].lower()}))"
     value_lit = "0" if value in {"0", "0wei"} else "1"
     return _render_common_header() + f"""
 contract LowkeyBreakTime is Test {{
     address constant TARGET = {target_lit};
-    address constant ATTACKER = address(0xBEEF000000000000000000000000000000000042);
+    address constant ATTACKER = address(uint160(0xBEEF000000000000000000000000000000000042));
 
     function test_time_dependence() public {{
         bytes memory data = hex"{calldata[2:]}";
@@ -1170,7 +1170,7 @@ def _render_reentrancy_test(
     depth: int,
     setup_signature: str | None = None,
 ):
-    target_lit = f"address(0x{target.address[2:]})"
+    target_lit = f"address(uint160(0x{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
     expressions = [
         _basic_solidity_expr(str(item.get("type") or ""), str(value))
