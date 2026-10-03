@@ -9200,7 +9200,8 @@ _MORE_SCENE_PAIRS=[
 ("returndatacopy","returndata","Raw return copy"),
 ]
 
-for a,b in _MORE_SCENE_PAIRS:
+for row in _MORE_SCENE_PAIRS:
+    a,b=row[0],row[1]
     _EXTRA_SCENES.append(_scene([a,b],b+" ↔ "+a+" connection", "// Focused pair: %s ↔ %s"%(a,b)))
 
 COMPREHENSIVE_MICRO_SCENES=list(MICRO_SCENES)+_EXTRA_SCENES
