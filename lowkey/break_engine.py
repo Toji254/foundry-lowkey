@@ -1223,6 +1223,8 @@ contract LowkeyBreakReentrant {{
     bytes public payload;
     uint256 public attempts;
     uint256 public successes;
+    bool public lastSeedSuccess;
+    bool public lastAttackSuccess;
 
     constructor(address _target) {{
         target = _target;
@@ -1279,14 +1281,19 @@ contract LowkeyBreakReentrancy is Test {{
 
         uint256 afterHostile = address(hostile).balance;
         uint256 afterTarget = TARGET.balance;
-        uint256 received = afterHostile > beforeHostile ? afterHostile - beforeHostile : 0;
+        uint256 outerInput = 1 wei;
+        uint256 received = afterHostile > beforeHostile + outerInput
+            ? afterHostile - beforeHostile - outerInput
+            : 0;
         uint256 targetLoss = beforeTarget > afterTarget ? beforeTarget - afterTarget : 0;
 
         console2.log("LOWKEY_BREAK_FAMILY", "reentrancy");
-        console2.log("OUTER_SUCCESS", outer);
+        console2.log("HOSTILE_WRAPPER_SUCCESS", outer);
+        console2.log("TARGET_SETUP_SUCCESS", hostile.lastSeedSuccess());
+        console2.log("TARGET_OUTER_SUCCESS", hostile.lastAttackSuccess());
         console2.log("REENTRY_ATTEMPTS", hostile.attempts());
         console2.log("REENTRY_SUCCESSES", hostile.successes());
-        console2.log("ATTACKER_RECEIVED", received);
+        console2.log("ATTACKER_WITHDRAW_RECEIVED", received);
         console2.log("TARGET_LOSS", targetLoss);
 
         if (hostile.successes() > 0 && received > 1 wei && targetLoss > 1 wei) {{
