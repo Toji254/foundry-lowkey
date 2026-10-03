@@ -72,6 +72,11 @@ except ImportError:
     audit_run_rg = audit_run_slither = audit_run_pipeline = audit_generate_poc = None
 
 try:
+    import break_engine
+except ImportError:
+    break_engine = None
+
+try:
     from forge_tools import NATIVE_COMMANDS as FORGE_NATIVE_COMMANDS
 except ImportError:
     FORGE_NATIVE_COMMANDS = set()
@@ -9409,6 +9414,12 @@ def run_external_audit(config, args):
 
 
 
+def run_break(config, args):
+    if break_engine is None:
+        return fail("Break engine is not installed. Re-run install.sh from this checkout.")
+    return break_engine.run(config, args, host=sys.modules[__name__])
+
+
 HELP_FLAGS = {"--h", "--help", "-h", "help"}
 
 def _help_entry(summary, usage, example, use_case, *, children=None, options=None, related=None):
@@ -9493,6 +9504,22 @@ COMMAND_HELP = {
             ("--yes", "Run without interactive pauses.", "lk walkthrough --auto --yes"),
         ],
         related=["lk project", "lk system", "lk lab", "lk audit"],
+    ),
+    "break": _help_entry(
+        "Run an aggressive local adversarial campaign against one function, the current target, or every live project target. It escalates through attack families and only calls something a BREAK when its harness records an explicit behavioral condition.",
+        "lk break [function] [options] | lk break --system [options]",
+        "lk break --function withdraw --until-found",
+        "Use it when you want Lowkey to attack assumptions and collect reproducible evidence rather than just report static warnings.",
+        options=[
+            ("--system", "Attack every live project target Lowkey can resolve.", "lk break --system"),
+            ("--function <name|signature>", "Constrain the campaign to one state-changing function.", "lk break --function 'withdraw(address,uint256)'"),
+            ("--family <name>", "Run one attack family only.", "lk break --family reentrancy"),
+            ("--until-found", "Keep running rounds until a concrete BREAK is reached or you stop it with Ctrl-C.", "lk break --until-found"),
+            ("--rounds N", "Bound the number of campaign rounds.", "lk break --rounds 5"),
+            ("--depth N", "Set the callback/reentrancy depth for the hostile harness.", "lk break --depth 8"),
+            ("--seed N", "Make randomized probe selection reproducible.", "lk break --seed 42"),
+        ],
+        related=["lk audit", "lk probe", "lk fuzz", "lk invariant", "lk findings"],
     ),
     "targets": _help_entry(
         "Show saved targets in a compact switchboard.",
@@ -10027,6 +10054,7 @@ START HERE
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
   lk audit                           Run the interactive audit workflow.
+  lk break                           Aggressively attack the current target/function in a local Anvil/Forge lab.
   lk q                              Get the next auditor-mindset question from current evidence.
   lk questions                      See the compact question frontier across the project.
   lk import                         Browse importable packages, contracts, interfaces, types, source files, and Forge remappings.
@@ -10494,6 +10522,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if args and args[0] in {"run","pipeline"}:
             return run_external_audit(config,args)
         return run_audit_mode(config,args)
+    elif cmd=="break": return run_break(config,args)
     elif cmd=="q":
         if question_engine is None:
             return fail("Question engine is not installed. Re-run install.sh from this checkout.")
@@ -10632,9 +10661,9 @@ def main():
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
-        "audit","audit--checks","audit-checks","audit","walkthrough","walk","rg","poc","project","system","q","questions"
+        "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
-    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks"}:
+    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks","break"}:
         try:
             refresh_generated_poc(config)
         except Exception as error:
