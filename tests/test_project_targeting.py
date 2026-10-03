@@ -423,6 +423,81 @@ class ProjectTargetingTests(unittest.TestCase):
         )
         self.assertIsNone(lk.parse_lab_marker("LOWKEY_TARGET not-an-address"))
 
+
+    def test_project_lab_rejects_unmatched_broadcast_deployment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePool.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePool {}",
+                encoding="utf-8",
+            )
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.26; contract LocalAudit { function run() external {} }",
+                encoding="utf-8",
+            )
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+            result = lk.CommandResult("deployment complete", 0)
+            with patch.object(lk, "run_foundry", return_value=result), \
+                 patch.object(lk, "discover_deployments", return_value=[{
+                     "contract": "Escrow",
+                     "address": "0x" + "2" * 40,
+                 }]), \
+                 patch.object(lk, "parse_lab_marker", return_value=None):
+                code = lk.run_project_lab_script(
+                    config,
+                    root,
+                    script,
+                    "http://127.0.0.1:8545",
+                    ["0x" + "1" * 40],
+                    "0x" + "a" * 64,
+                    requested="ConfidencePool",
+                )
+            self.assertNotEqual(code, 0)
+            self.assertNotEqual(config.get("target"), "0x" + "2" * 40)
+
+
+    def test_project_lab_aborts_when_native_script_changes_first_party_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePool.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePool {}",
+                encoding="utf-8",
+            )
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.26; contract LocalAudit { function run() external {} }",
+                encoding="utf-8",
+            )
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+            original = source.read_text(encoding="utf-8")
+            result = lk.CommandResult("LOWKEY_TARGET: 0x" + "3" * 40, 0)
+
+            def mutate_source(*args, **kwargs):
+                source.write_text(original + "\n// mutated by bad lab script\n", encoding="utf-8")
+                return result
+
+            with patch.object(lk, "run_foundry", side_effect=mutate_source), \
+                 patch.object(lk, "parse_lab_marker", return_value="0x" + "3" * 40):
+                code = lk.run_project_lab_script(
+                    config,
+                    root,
+                    script,
+                    "http://127.0.0.1:8545",
+                    ["0x" + "1" * 40],
+                    "0x" + "a" * 64,
+                    requested="ConfidencePool",
+                )
+            self.assertNotEqual(code, 0)
+            self.assertIsNone(config.get("target"))
+
+
     def test_discover_local_lab_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
