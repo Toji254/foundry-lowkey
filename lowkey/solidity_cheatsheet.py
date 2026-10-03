@@ -379,6 +379,10 @@ def _render_connect(names):
     print()
     print("THE CONNECTION")
     print("--------------")
+    route_name = scene.get("route_name")
+    if route_name:
+        print(f"  PATH: {route_name}")
+        print()
     print(scene["title"])
     print()
     print(scene["story"])
