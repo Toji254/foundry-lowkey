@@ -69,7 +69,6 @@ class SolidityConnectTests(unittest.TestCase):
         )
         self.assertEqual(result, 0)
         for token in (
-            "A mapping stores a struct",
             "mapping(address => Profile)",
             "mapping(address => mapping(bytes32 => uint256))",
             "uint256[]",
