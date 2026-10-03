@@ -8582,3 +8582,683 @@ for _log_node in ("log1", "log2", "log3", "log4"):
 
 # Refresh the exported snapshot one last time.
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
+
+
+# COMPREHENSIVE CONNECT GRAPH
+# The first-generation labs above remain available. This layer makes the
+# navigator compositional: every known concept is a graph node, common paths
+# have focused scenes, and arbitrary combinations receive a compact route.
+
+from collections import defaultdict
+import heapq
+
+_CONNECT_ALIASES = {
+    "functions":"function","function-syntax":"function","function-call":"function",
+    "function-calls":"function","calls":"call","low-level-call":"call",
+    "abi":"abi","abi-encode":"abi.encode","abi-encodewithselector":"abi.encodeWithSelector",
+    "abi-encodewithsignature":"abi.encodeWithSignature","abi-encodecall":"abi.encodeCall",
+    "abi-decode":"abi.decode","selector":"function-selector",
+    "function-selectors":"function-selector","keccak":"keccak256","hash":"keccak256",
+    "error-selector":"error-selector","event-indexed":"event-indexed","log-topics":"log-topics",
+    "tuples":"tuples","struct-abi":"struct-abi","abi-types":"abi-types",
+    "public-getter":"public-getter","mapping-abi":"mapping-abi",
+    "address.code":"address.code","address.codehash":"address.codehash",
+    "extcodesize":"extcodesize","extcodecopy":"extcodecopy","extcodehash":"extcodehash",
+    "caller":"caller","callvalue":"callvalue","selfbalance":"selfbalance",
+    "mload":"mload","mstore":"mstore","mcopy":"mcopy","msize":"msize",
+    "memoryguard":"memoryguard","sload":"sload","sstore":"sstore",
+    "tload":"tload","tstore":"tstore","calldataload":"calldataload",
+    "calldatacopy":"calldatacopy","calldatasize":"calldatasize",
+    "returndatasize":"returndatasize","returndatacopy":"returndatacopy",
+    "log0":"log0","log1":"log1","log2":"log2","log3":"log3","log4":"log4",
+    "create":"create","create2":"create2","salt":"salt","init-code":"init-code",
+    "runtime-code":"runtime-code","codecopy":"codecopy","datasize":"datasize",
+    "dataoffset":"dataoffset","datacopy":"datacopy","linkersymbol":"linkersymbol",
+    "verbatim":"verbatim","pc":"pc","block.chainid":"block.chainid",
+    "block.basefee":"block.basefee","block.prevrandao":"block.prevrandao",
+    "blockhash":"blockhash","blobhash":"blobhash","gasleft":"gasleft",
+    "timestamp":"block.timestamp","tx.gasprice":"tx.gasprice",
+    "address(this).balance":"contract-balance","contract-balance":"contract-balance",
+    "storage-slot":"storage-slot","storage-slots":"storage-slot",
+    "transient":"transient-storage","transient-storage":"transient-storage",
+    "cheatcodes":"forge-cheatcodes","expectrevert":"vm-expect-revert",
+    "expectemit":"vm-expect-emit","vm-load":"vm-load","vm-store":"vm-store",
+    "erc20":"erc20-pattern","erc721":"erc721-pattern","erc1155":"erc1155-pattern",
+    "permit":"permit-pattern","permit2":"permit2","eip712":"eip712",
+    "erc1271":"erc1271","multisig":"multisig-pattern","timelock":"timelock-pattern",
+    "governor":"governor-pattern","uups":"uups","erc1967":"erc1967-storage",
+    "proxy-upgrade":"proxy-upgrade-pattern","receiver-hook":"receiver-hook",
+    "batch-transfer":"batch-transfer","token-approval":"token-approval",
+    "function-overloading":"function-overloading","named-arguments":"named-arguments",
+    "call-options":"call-options","parameter":"parameter-vs-argument",
+    "parameters":"parameter-vs-argument",
+}
+
+_CONNECT_MEANINGS = {
+    "keccak256":"Keccak-256 hashes bytes and returns bytes32; selectors, ids, commitments and storage coordinates are specific uses.",
+    "function-selector":"The first four bytes of the Keccak-256 hash of a canonical function signature.",
+    "function-signature":"Canonical function name plus parameter types used to derive a selector.",
+    "error-selector":"The first four bytes of the Keccak-256 hash of a canonical error signature.",
+    "abi.encodeWithSelector":"Build call data from an explicit selector and ABI-encoded arguments.",
+    "abi.encodeWithSignature":"Build call data from a signature string and ABI-encoded arguments.",
+    "abi.encodeCall":"Build call data from a typed function expression and arguments.",
+    "abi.encode":"Turn typed Solidity values into ABI bytes.",
+    "abi.decode":"Interpret ABI bytes as the exact requested types and order.",
+    "returndata":"Raw bytes returned by an external call.",
+    "struct-abi":"A Solidity struct crosses the ABI boundary as a tuple.",
+    "public-getter":"Compiler-generated external getter for public state.",
+    "mapping-abi":"The ABI boundary created by a public mapping getter.",
+    "address.code":"Runtime bytecode installed at an address.",
+    "address.codehash":"Code identity hash associated with an address.",
+    "extcodecopy":"Copies another address's code into memory.",
+    "extcodehash":"Returns another address's code hash.",
+    "extcodesize":"Returns the size of code installed at an address.",
+    "caller":"Yul/EVM immediate caller value.",
+    "callvalue":"Yul/EVM ETH attached to the current call.",
+    "selfbalance":"Yul/EVM balance of the current execution context.",
+    "mload":"Yul reads a 32-byte memory word.","mstore":"Yul writes a 32-byte memory word.",
+    "mcopy":"Yul copies a byte range in memory.","sload":"Yul reads a storage word.",
+    "sstore":"Yul writes a storage word.","tload":"Yul reads transient storage.",
+    "tstore":"Yul writes transient storage.","calldataload":"Yul reads a calldata word.",
+    "calldatacopy":"Yul copies calldata.","returndatacopy":"Yul copies return bytes.",
+    "create2":"Deterministic contract creation using deployer, salt and init-code hash.",
+    "init-code":"Creation bytecode executed during deployment.","runtime-code":"Installed post-deployment bytecode.",
+    "block.chainid":"Chain identity commonly used for domain separation and replay protection.",
+    "nonce":"A sequence value commonly consumed once to prevent replay.",
+    "transient-storage":"Transaction-scoped storage cleared at transaction end.",
+    "erc20-pattern":"Fungible token state: balances, allowances, events and transfer logic.",
+    "erc721-pattern":"NFT state keyed by tokenId, approvals, events and receiver callbacks.",
+    "erc1155-pattern":"Multi-token state keyed by tokenId/account, arrays, approvals and receiver callbacks.",
+    "permit-pattern":"Signature-authorized token approval using hashing, signer recovery and nonce state.",
+    "eip712-pattern":"Typed signing using domain separation, hashing, chain identity and nonces.",
+    "multisig-pattern":"Multiple-signature authorization using thresholds, nonces and execution calls.",
+    "timelock-pattern":"Delayed operation identified by hash and released by a time condition.",
+    "governor-pattern":"Proposal lifecycle combining state, arrays of calls, voting and execution.",
+    "proxy-upgrade-pattern":"Upgrade flow combining authorization, implementation storage and delegatecall.",
+    "erc1967-storage":"Deterministic storage locations used by upgradeable proxies.",
+    "receiver-hook":"Recipient callback interface for safe token transfers.",
+    "batch-transfer":"Parallel token id/value arrays with length and indexing invariants.",
+    "token-approval":"Permission state allowing another address to spend or transfer assets.",
+}
+
+_CONNECT_CATALOG=[]
+def _capture_connect_topic(name, aliases, category, meaning, *args, **kwargs):
+    _CONNECT_CATALOG.append((name, aliases or [], category, meaning))
+try:
+    from solidity_cheat_topics import register_topics
+except ImportError:
+    from lowkey.solidity_cheat_topics import register_topics
+register_topics(_capture_connect_topic)
+
+_CONNECT_TOPIC_BY_ALIAS={}
+_CONNECT_TOPIC_MEANING={}
+for _name,_aliases,_category,_meaning in _CONNECT_CATALOG:
+    _CONNECT_TOPIC_BY_ALIAS[_norm(_name)]=_name
+    _CONNECT_TOPIC_MEANING[_name]=_meaning
+    for _alias in _aliases:
+        _CONNECT_TOPIC_BY_ALIAS[_norm(_alias)]=_name
+
+def canonicalize(name:str)->str:
+    key=_norm(name)
+    if key in _COMPOSITE_ALIASES:
+        return key
+    if key in _CONNECT_ALIASES:
+        return _CONNECT_ALIASES[key]
+    if key in _CONCEPT_ALIASES:
+        mapped=_CONCEPT_ALIASES[key]
+        return _CONNECT_ALIASES.get(_norm(mapped),mapped)
+    topic=_CONNECT_TOPIC_BY_ALIAS.get(key)
+    if topic:
+        return {
+            "function-syntax":"function","functions":"function","calls":"call",
+            "abi-encode":"abi.encode","abi-decode":"abi.decode","bytesN":"bytesN",
+        }.get(topic,topic)
+    return key
+
+def expand_name(name:str):
+    key=_norm(name)
+    if key in _COMPOSITE_ALIASES:
+        return {canonicalize(x) for x in _COMPOSITE_ALIASES[key]}
+    return {canonicalize(key)}
+
+def connection_meaning(name:str)->str:
+    c=canonicalize(name)
+    if c in _CONNECT_MEANINGS:
+        return _CONNECT_MEANINGS[c]
+    for topic,meaning in _CONNECT_TOPIC_MEANING.items():
+        if c==canonicalize(topic):
+            return meaning
+    return "A recognized Solidity, Yul or Foundry concept."
+
+# These are deliberately direct relationships. The family graphs below add
+# broader navigation without claiming every member has direct syntax with
+# every other member.
+_SEEDS=[
+("mapping","keccak256","mapping ids and storage coordinates can be hash-derived"),
+("mapping","abi.decode","decoded values can become mapping keys"),
+("mapping","nested-mapping","a mapping value can be another mapping"),
+("mapping","arrays","a mapping value can be an array"),
+("mapping","structs","a mapping value can be a struct"),
+("mapping","msg.sender","caller identity is a common mapping key"),
+("mapping","access-control","permissions are commonly mapped by address"),
+("mapping","enum","role values are often enums"),
+("mapping","events","state changes are often mirrored in events"),
+("mapping","delete","delete can reset a mapped value"),
+("mapping","public-getter","public mappings generate key-aware getters"),
+("nested-mapping","nested-mapping-slots","nested keys repeat storage derivation"),
+("mapping-slots","keccak256","mapping locations are Keccak-derived"),
+("mapping-slots","storage-slot","slot derivation yields a storage coordinate"),
+("storage-layout","storage-packing","small values can share a slot"),
+("storage-layout","structs","struct fields have deterministic positions"),
+("storage-layout","mapping-slots","mapping anchors participate in layout"),
+("storage-layout","delegatecall","proxy code must agree with implementation layout"),
+("erc7201","keccak256","namespaced roots are hash-derived"),
+("erc7201","mapping","namespaced state can contain mappings"),
+("erc7201","structs","namespaced state commonly uses structs"),
+("transient-storage","reentrancy","transaction-local state can hold a guard"),
+("transient-storage","tload","tload reads transient state"),
+("transient-storage","tstore","tstore writes transient state"),
+("types","variables","variables have types"),
+("types","structs","structs are user-defined record types"),
+("types","enum","enums are user-defined finite states"),
+("types","arrays","arrays are indexed collections"),
+("types","address","address is a value type"),
+("types","uint256","uint256 is an integer type"),
+("types","bytes","bytes is dynamic byte data"),
+("types","bytesN","bytesN is fixed byte data"),
+("types","string","string is dynamic text"),
+("types","function-types","function values are typed values"),
+("types","contract-types","contracts/interfaces have contract types"),
+("structs","arrays","structs can contain arrays"),
+("structs","enum","structs can contain enum fields"),
+("structs","bytes","structs can contain dynamic bytes"),
+("struct-abi","tuples","structs cross ABI as tuples"),
+("struct-abi","abi.decode","tuple data can be decoded"),
+("function","visibility","functions declare access"),
+("function","mutability","functions declare state/ETH behavior"),
+("function","returns","functions declare outputs"),
+("function","calldata","external inputs arrive through calldata"),
+("function","function-signature","name plus parameter types form a signature"),
+("function-signature","function-selector","selector derives from signature"),
+("keccak256","function-selector","selector uses the first four hash bytes"),
+("keccak256","error-selector","error selectors are hash-derived"),
+("function-selector","msg.sig","msg.sig exposes the current selector"),
+("function-selector","msg.data","selector is at calldata offset zero"),
+("function-selector","calldata","selector is part of calldata"),
+("function-selector","abi.encodeWithSelector","selector plus arguments make call bytes"),
+("function-signature","abi.encodeWithSignature","signature determines selector"),
+("abi.encode","bytes","encoding produces bytes"),
+("abi.encode","keccak256","encoded values are common hash input"),
+("abi.encode","abi.decode","compatible encodings can be decoded"),
+("abi.encode","calldata","encoded args form call bytes"),
+("abi.decode","calldata","raw calldata can be decoded"),
+("abi.decode","returndata","return bytes can be decoded"),
+("abi.decode","errors","error data can be decoded"),
+("abi.decode","mapping","decoded values can select state"),
+("abi.encodeWithSelector","call","encoded bytes can feed call"),
+("abi.encodeWithSignature","call","encoded bytes can feed call"),
+("abi.encodeCall","interface","typed interface function anchors the encoding"),
+("abi.encodeCall","function","typed function expression adds type checking"),
+("abi.encodeCall","call","encoded bytes can feed call"),
+("call","returndata","low-level call returns success plus bytes"),
+("returndata","abi.decode","return bytes become typed values"),
+("call","try-catch","external failure can be handled"),
+("call","staticcall","staticcall is the read-only sibling"),
+("call","delegatecall","delegatecall uses caller context"),
+("delegatecall","storage","delegatecall uses caller storage"),
+("delegatecall","proxy-fallback","proxies commonly delegate from fallback"),
+("proxy-fallback","fallback","proxy dispatch uses fallback"),
+("proxy-fallback","calldata","proxy forwards calldata"),
+("proxy-fallback","returndata","proxy forwards return data"),
+("receive","payable","receive must be payable"),
+("receive","msg.value","receive exposes attached ETH"),
+("receive","msg.sender","receive can account sender"),
+("receive","fallback","fallback is the alternate special route"),
+("fallback","msg.data","fallback can inspect raw calldata"),
+("fallback","msg.sig","fallback can inspect selector"),
+("fallback","payable","payable fallback can receive ETH"),
+("msg.sender","access-control","authorization starts from immediate caller"),
+("msg.sender","tx.origin","they represent different call-chain positions"),
+("msg.value","contract-balance","attached ETH affects balance during execution"),
+("msg.value","ether-flow","ETH accounting starts from msg.value"),
+("contract-balance","ether-flow","contract balance is part of ETH accounting"),
+("address","payable","payable is the ETH-capable address form"),
+("block.timestamp","timestamp","timestamp is block time"),
+("block.timestamp","timelock-pattern","timelocks compare deadlines"),
+("block.chainid","eip712-pattern","chain identity can bind typed signatures"),
+("block.chainid","signature-verification","chain identity can bind signed actions"),
+("errors","custom-errors","custom errors structure failure data"),
+("custom-errors","revert","custom errors are emitted by revert"),
+("errors","returndata","revert data crosses external boundaries"),
+("require","revert","require is conditional revert"),
+("require","assert","they serve different failure intentions"),
+("assert","unchecked","invariants can justify unchecked arithmetic"),
+("reentrancy","call","reentrancy needs an external callback"),
+("reentrancy","checks-effects-interactions","CEI is a common defense"),
+("reentrancy","receiver-hook","callbacks can re-enter"),
+("signature-verification","keccak256","signed messages are hashed"),
+("signature-verification","ecrecover","signature recovery identifies a signer"),
+("signature-verification","nonce","nonces prevent replay"),
+("eip712","keccak256","typed data produces digests"),
+("eip712","nonce","typed authorizations commonly include nonces"),
+("permit-pattern","signature-verification","permit uses signed authorization"),
+("permit-pattern","nonce","permit consumes nonces"),
+("permit-pattern","token-approval","permit changes approval state"),
+("erc1271","signature-verification","contract wallets validate signatures"),
+("front-running","commit-reveal","commitments hide a value until reveal"),
+("oracle","interface","oracles commonly use interfaces"),
+("oracle","call","oracle reads cross contracts"),
+("oracle","try-catch","oracle failures can be handled"),
+("erc20-pattern","mapping","token balances use mappings"),
+("erc20-pattern","nested-mapping","allowances use two keys"),
+("erc20-pattern","events","token state is mirrored by events"),
+("erc20-pattern","token-approval","approval is permission state"),
+("erc721-pattern","mapping","token ownership is mapped"),
+("erc721-pattern","receiver-hook","safe transfer calls recipient hooks"),
+("erc721-pattern","events","transfers emit events"),
+("erc1155-pattern","nested-mapping","tokenId/account state uses two keys"),
+("erc1155-pattern","batch-transfer","batch operations use arrays"),
+("erc1155-pattern","receiver-hook","safe transfers call recipient hooks"),
+("batch-transfer","arrays","batch ids and values are arrays"),
+("batch-transfer","loops","batch processing iterates"),
+("batch-transfer","require","parallel arrays need matching lengths"),
+("token-approval","mapping","approval is mapped state"),
+("multisig-pattern","threshold","execution needs enough signer weight"),
+("multisig-pattern","nonce","multisig uses replay protection"),
+("multisig-pattern","signature-verification","signatures prove signers"),
+("multisig-pattern","call","approved payloads execute calls"),
+("timelock-pattern","keccak256","operations are commonly hash identified"),
+("timelock-pattern","mapping","scheduled operations are stored"),
+("timelock-pattern","block.timestamp","execution waits for time"),
+("timelock-pattern","call","execution calls the target"),
+("governor-pattern","arrays","proposals carry call arrays"),
+("governor-pattern","mapping","proposal state is mapped"),
+("governor-pattern","keccak256","proposal ids can be hash-derived"),
+("governor-pattern","call","proposal execution dispatches calls"),
+("proxy-upgrade-pattern","access-control","upgrades are privileged"),
+("proxy-upgrade-pattern","erc1967-storage","implementation uses deterministic storage"),
+("proxy-upgrade-pattern","delegatecall","execution delegates to implementation"),
+("uups","proxy-upgrade-pattern","UUPS puts upgrade logic in implementation"),
+("erc1967-storage","storage-slot","implementation lives at a deterministic slot"),
+("new","constructor","new invokes a constructor"),
+("new","address","successful creation yields an address"),
+("new","try-catch","creation failures can be caught"),
+("constructor","init-code","constructor runs during init code"),
+("init-code","runtime-code","init code installs runtime code"),
+("create","init-code","create consumes init code"),
+("create2","salt","salt affects CREATE2 address"),
+("create2","init-code","init-code hash affects CREATE2 address"),
+("create2","keccak256","CREATE2 address uses Keccak"),
+("create2","address","CREATE2 predicts an address"),
+("address.code","runtime-code","code property exposes runtime bytes"),
+("address.code","extcodecopy","external code can be copied"),
+("address.codehash","extcodehash","both identify code"),
+("extcodecopy","mload","copied code lands in memory"),
+("yul","memory","Yul exposes memory"),
+("yul","storage","Yul exposes storage"),
+("yul","calldata","Yul exposes calldata"),
+("yul","call","Yul exposes low-level calls"),
+("yul-memory","mload","mload reads memory"),
+("yul-memory","mstore","mstore writes memory"),
+("yul-memory","mcopy","mcopy copies memory"),
+("yul-storage","sload","sload reads storage"),
+("yul-storage","sstore","sstore writes storage"),
+("yul-storage","mapping-slots","mapping slots feed sload"),
+("yul-storage","tload","Yul can read transient storage"),
+("yul-storage","tstore","Yul can write transient storage"),
+("yul-calldata","calldataload","Yul reads calldata"),
+("yul-calldata","calldatacopy","Yul copies calldata"),
+("yul-call","returndatasize","Yul reads return size"),
+("yul-call","returndatacopy","Yul copies return bytes"),
+("yul-call","create","Yul can create contracts"),
+("yul-call","create2","Yul can create deterministically"),
+("caller","msg.sender","Yul caller corresponds to immediate sender"),
+("callvalue","msg.value","Yul callvalue corresponds to attached ETH"),
+("forge-cheatcodes","test","cheatcodes instrument tests"),
+("vm-prank","msg.sender","prank controls caller"),
+("vm-start-prank","msg.sender","startPrank controls caller across calls"),
+("vm-hoax","msg.sender","hoax controls caller and funding"),
+("vm-deal","contract-balance","deal changes test balances"),
+("vm-warp","block.timestamp","warp changes test time"),
+("vm-roll","block.number","roll changes test block number"),
+("vm-assume","fuzz-tests","assume constrains fuzz cases"),
+("vm-bound","bounded-fuzz","bound constrains fuzz values"),
+("vm-expect-revert","revert","tests can expect reverts"),
+("vm-expect-emit","events","tests can expect events"),
+("vm-recordlogs","events","tests can inspect logs"),
+("vm-expect-call","call","tests can assert external calls"),
+("vm-mockcall","call","tests can mock external calls"),
+("vm-load","mapping-slots","tests can inspect slots"),
+("vm-store","mapping-slots","tests can write slots"),
+("vm-etch","address.code","tests can replace code"),
+("vm-fork","fork-tests","tests can use forked state"),
+("script-deploy","new","scripts deploy contracts"),
+("script-interaction","call","scripts interact with contracts"),
+("poc-reentrancy","reentrancy","PoC targets reentrancy"),
+("poc-access-control","access-control","PoC targets authorization"),
+("poc-accounting","mapping","PoC targets accounting state"),
+("poc-oracle","oracle","PoC targets dependency assumptions"),
+("poc-signature","signature-verification","PoC targets signer/replay rules"),
+("poc-upgrade","proxy-upgrade-pattern","PoC targets proxy boundaries"),
+("poc-storage","storage-layout","PoC targets layout assumptions"),
+("poc-token","erc20-pattern","PoC targets token state"),
+("poc-cross-contract","external-call","PoC targets call boundaries"),
+]
+
+def _add_edge(edges, seen, a, b, label):
+    a,b=canonicalize(a),canonicalize(b)
+    if not a or not b or a==b:
+        return
+    key=tuple(sorted((a,b)))
+    if key in seen:
+        return
+    seen.add(key)
+    edges.append((a,b,label))
+
+def _nodes():
+    out=set()
+    for name,aliases,_cat,_meaning in _CONNECT_CATALOG:
+        out.add(canonicalize(name))
+        out.update(canonicalize(a) for a in aliases)
+    out.update(canonicalize(x) for x in _CONNECT_MEANINGS)
+    out.update(canonicalize(x) for x in _CONNECT_ALIASES.values())
+    return {x for x in out if x}
+
+def _build_edges():
+    edges=[]; seen=set()
+    for row in _SEEDS:
+        _add_edge(edges,seen,row[0],row[1],row[2])
+
+    families={
+        "data":"variables types structs enum arrays mapping nested-mapping mapping-struct mapping-array-value bytes bytes32 string address uint256 int256 bool storage memory calldata storage-memory-calldata storage-layout storage-packing mapping-slots nested-mapping-slots array-storage delete transient-storage erc7201 custom-storage-layout",
+        "abi":"function visibility mutability returns function-signature function-selector function-overloading calldata msg.data msg.sig calldatasize call-data-layout abi abi.encode abi.decode abi.encodeWithSelector abi.encodeWithSignature abi.encodeCall encodePacked returndata struct-abi abi-types tuples public-getter mapping-abi parameter-vs-argument named-arguments call-options",
+        "calls":"interface contract-types oracle external-call call low-level-call staticcall delegatecall try-catch returndata receiver-hook proxy-fallback fallback receive payable",
+        "crypto":"keccak256 keccak-selectors function-signature function-selector error-selector abi.encode abi.encodeWithSignature encodePacked ecrecover sha256 ripemd160 signature-verification eip712 eip712-pattern nonce permit-pattern erc1271",
+        "storage":"storage storage-layout storage-packing storage-slot mapping mapping-slots nested-mapping nested-mapping-slots array-storage structs delegatecall erc1967-storage custom-storage-layout erc7201 transient-storage tload tstore",
+        "entry":"receive fallback payable msg.sender msg.value msg.data msg.sig contract-balance ether-flow call proxy-fallback",
+        "security":"access-control modifier msg.sender tx.origin require revert assert custom-errors errors reentrancy checks-effects-interactions front-running timestamp block.timestamp block.chainid oracle signature-verification nonce unchecked loops arrays selfdestruct",
+        "tokens":"erc20-pattern erc721-pattern erc1155-pattern mapping nested-mapping token-approval receiver-hook batch-transfer arrays loops events event-indexed address call",
+        "governance":"multisig-pattern threshold nonce signature-verification timelock-pattern block.timestamp governor-pattern arrays keccak256 mapping call proxy-upgrade-pattern access-control",
+        "creation":"new constructor address create create2 salt init-code runtime-code address.code address.codehash extcodesize extcodecopy extcodehash codecopy datasize dataoffset datacopy linkersymbol",
+        "yul":"yul yul-memory yul-storage yul-calldata yul-control-flow yul-functions yul-call memory storage calldata mload mstore mcopy msize sload sstore tload tstore calldataload calldatacopy calldatasize returndatasize returndatacopy create create2 extcodecopy log0 log1 log2 log3 log4 caller callvalue selfbalance pc verbatim",
+        "errors-events":"errors custom-errors error-selector revert require assert try-catch returndata abi.decode events event-indexed log-topics keccak256 test-reverts test-events log0 log1 log2 log3 log4",
+        "foundry":"forge-cheatcodes test test-structure test-arrange-act-act test-arrange-act-assert test-assertions fuzz-tests bounded-fuzz invariant-tests invariant-handler fork-tests test-reverts test-events vm-prank vm-start-prank vm-deal vm-warp vm-roll vm-assume vm-bound vm-makeaddr vm-label vm-expect-revert vm-expect-emit vm-recordlogs vm-snapshots vm-storage vm-etch vm-fork vm-env vm-expect-call vm-mockcall vm-hoax script script-structure script-broadcast script-env script-deploy script-interaction poc test-poc-workflow poc-reentrancy poc-access-control poc-accounting poc-oracle poc-signature poc-upgrade poc-storage poc-token poc-cross-contract",
+    }
+    for family,raw in families.items():
+        members=list(dict.fromkeys(canonicalize(x) for x in raw.split() if canonicalize(x)))
+        for a,b in zip(members,members[1:]):
+            _add_edge(edges,seen,a,b,"adjacent concept in %s family"%family)
+        if len(members)>3:
+            anchor=members[0]
+            for b in members[2::2]:
+                _add_edge(edges,seen,anchor,b,"same %s family"%family)
+
+    cats=defaultdict(list)
+    for name,_aliases,category,_meaning in _CONNECT_CATALOG:
+        node=canonicalize(name)
+        if node:
+            cats[category].append(node)
+    anchors=[]
+    for category,members in cats.items():
+        members=list(dict.fromkeys(members))
+        if members:
+            anchors.append((category,members[0]))
+            for a,b in zip(members,members[1:]):
+                _add_edge(edges,seen,a,b,"same cheatsheet area (%s)"%category)
+    for (_ca,a),(_cb,b) in zip(anchors,anchors[1:]):
+        _add_edge(edges,seen,a,b,"cross-category learning bridge")
+
+    # Every graph node must be reachable even when a brand-new cheat topic is
+    # added before its detailed semantic edges are written.
+    ordered=sorted(_nodes())
+    for a,b in zip(ordered,ordered[1:]):
+        _add_edge(edges,seen,a,b,"navigation backstop; inspect the semantic bridge")
+
+    return edges
+
+_COMPREHENSIVE_CONNECTION_EDGES=_build_edges()
+CONNECTION_GRAPH=_COMPREHENSIVE_CONNECTION_EDGES
+
+def _adjacency():
+    g=defaultdict(list)
+    for a,b,label in _COMPREHENSIVE_CONNECTION_EDGES:
+        weight=6 if label.startswith("navigation backstop") or label.startswith("same cheatsheet") else 1
+        g[a].append((b,label,weight)); g[b].append((a,label,weight))
+    return g
+
+def _shortest(a,b):
+    a,b=canonicalize(a),canonicalize(b)
+    if a==b: return [a],[]
+    g=_adjacency()
+    heap=[(0,a,(a,),())]; best={a:0}
+    while heap:
+        cost,node,path,labels=heapq.heappop(heap)
+        if node==b: return list(path),list(labels)
+        if cost!=best.get(node): continue
+        for nxt,label,w in g[node]:
+            nc=cost+w
+            if nc>=best.get(nxt,10**18): continue
+            best[nxt]=nc
+            heapq.heappush(heap,(nc,nxt,path+(nxt,),labels+(label,)))
+    return [a,b],["shared contract context"]
+
+def connection_paths(names):
+    concepts=[]
+    for raw in names:
+        for c in expand_name(raw):
+            if c not in concepts: concepts.append(c)
+    if len(concepts)<2: return []
+    root=concepts[0]
+    return [(root,goal,*_shortest(root,goal)) for goal in concepts[1:]]
+
+def connection_route(names):
+    route=[]; seen=set()
+    concepts=[]
+    for raw in names:
+        for c in expand_name(raw):
+            if c not in concepts: concepts.append(c)
+    if not concepts: return route
+    current=concepts[0]
+    route.append(current); seen.add(current)
+    for goal in concepts[1:]:
+        path,_=_shortest(current,goal)
+        for node in path:
+            if node not in seen:
+                seen.add(node); route.append(node)
+        current=goal
+    return route
+
+def _route_scene(names):
+    requested=list(dict.fromkeys(c for n in names for c in expand_name(n)))
+    route=connection_route(requested)
+    return {
+        "keys":frozenset(requested),
+        "title":"Guided route: "+" → ".join(requested[:4]),
+        "story":"These concepts meet through one or more real Solidity/runtime boundaries. Lowkey shows the shortest route instead of a giant all-in-one contract.",
+        "code":"// Route: "+" → ".join(route)+"\\n// Inspect each step with: lk cheat <concept>",
+        "variables":[("requested","concept",c,"selected",connection_meaning(c)) for c in requested[:6]],
+        "flow":[
+            "Start with the first requested concept.",
+            "Follow the displayed route one boundary at a time.",
+            "Treat each intermediate node as a reason the two concepts can meet.",
+        ],
+        "call":"Follow the route; open an individual node with lk cheat.",
+        "generic":True,
+    }
+
+def _scene(keys,title,code):
+    return {
+        "keys":frozenset(canonicalize(k) for k in keys),
+        "title":title,
+        "story":"A small teaching pattern showing how these concepts cooperate.",
+        "code":code.strip(),
+        "variables":[("concept","Solidity/Yul",canonicalize(k),"-",connection_meaning(k)) for k in keys],
+        "flow":["Read the first concept.","Trace the value/control boundary into the next concept.","Continue until the state or return value is reached."],
+        "call":"Trace the example by hand before executing it.",
+    }
+
+_EXTRA_SCENES=[
+_scene(["mapping","abi.decode"],"Decode first, then use the decoded value as a key","mapping(address => uint256) public balances;\\n\\nfunction set(bytes calldata raw, uint256 amount_) external {\\n    address user_ = abi.decode(raw, (address));\\n    balances[user_] = amount_;\\n}"),
+_scene(["mapping","keccak256","abi.decode"],"Decode the bytes, hash the same bytes, use the hash as the key","mapping(bytes32 => address) public owners;\\n\\nfunction register(bytes calldata raw) external {\\n    address user_ = abi.decode(raw, (address));\\n    bytes32 id = keccak256(raw);\\n    owners[id] = user_;\\n}"),
+_scene(["mapping","keccak256"],"A hash becomes a mapping key","mapping(bytes32 => address) public owners;\\n\\nfunction register(bytes calldata raw) external {\\n    bytes32 id = keccak256(raw);\\n    owners[id] = msg.sender;\\n}"),
+_scene(["mapping","keccak256","abi.encode"],"Encode → hash → mapping key","mapping(bytes32 => address) public owners;\\n\\nbytes32 id = keccak256(abi.encode(user_, amount_));\\nowners[id] = user_;"),
+_scene(["abi.encode","abi.decode","keccak256"],"Encode ↔ decode with hashing on the wire bytes","bytes memory raw = abi.encode(user_, amount_);\\nbytes32 digest = keccak256(raw);\\n(address user2, uint256 amount2) = abi.decode(raw, (address, uint256));"),
+_scene(["function-selector","msg.sig","msg.data"],"Calldata → selector → current function","bytes4 selector = msg.sig;\\nbytes calldata raw = msg.data;"),
+_scene(["function-signature","function-selector","calldata","abi.decode"],"Signature → selector → calldata → parameters","// selector = bytes4(keccak256(\"set(uint256)\"))\\n// ABI dispatcher decodes amount_ from calldata."),
+_scene(["function-selector","abi.encodeWithSelector","calldata","call","returndata"],"Selector + ABI tail → raw call → return bytes","bytes memory data = abi.encodeWithSelector(bytes4(keccak256(\"quote(uint256)\")), 100);\\n(bool ok, bytes memory out) = target.call(data);"),
+_scene(["function-signature","abi.encodeWithSignature","call"],"Signature string → selector → call","bytes memory data = abi.encodeWithSignature(\"set(uint256)\", 100);\\ntarget.call(data);"),
+_scene(["function-selector","abi.encodeWithSelector","function-types","abi.encodeCall"],"Selector vs typed call encoding","bytes memory raw = abi.encodeCall(ITarget.set, (100));"),
+_scene(["abi.encodeCall","interface","function","call","returndata","abi.decode"],"Typed interface → call bytes → decoded result","bytes memory data = abi.encodeCall(IOracle.quote, (100));\\n(bool ok, bytes memory out) = target.call(data);\\nuint256 value_ = abi.decode(out, (uint256));"),
+_scene(["call","staticcall","delegatecall"],"Three low-level call modes","target.call(data);\\ntarget.staticcall(data);\\ntarget.delegatecall(data);"),
+_scene(["events","event-indexed","log-topics","keccak256"],"State change → event topic → filterable log","event Deposit(address indexed user, uint256 amount, bytes indexed memo);"),
+_scene(["errors","custom-errors","error-selector","revert","returndata","abi.decode"],"Revert → error selector → encoded error data","error TooSmall(uint256 actual, uint256 minimum);\\n// revert data = selector + ABI args"),
+_scene(["require","revert","assert","custom-errors","try-catch"],"Expected failure vs explicit revert vs invariant","require(ok);\\nif (bad) revert Bad(value);\\nassert(invariant);"),
+_scene(["storage-memory-calldata","structs","arrays","bytes"],"Reference types → storage / memory / calldata","struct User { string name; uint256[] scores; bytes note; }"),
+_scene(["mapping","nested-mapping","keccak256","mapping-slots","nested-mapping-slots","storage"],"Logical lookup → physical storage slots","// outer = keccak256(abi.encode(key, mapping.slot))\\n// inner = keccak256(abi.encode(key2, outer))"),
+_scene(["mapping","structs","storage-layout","storage-packing"],"Mapping key → struct root → packed fields","struct Account { uint128 score; uint128 debt; uint256 nonce; }"),
+_scene(["arrays","mapping","loops","array-storage"],"Mapping → dynamic array → loop","mapping(address => uint256[]) scores;\\nfor (uint256 i; i < scores[user].length; ++i) total += scores[user][i];"),
+_scene(["receive","fallback","payable","msg.sender","msg.value","mapping","call"],"ETH entry → caller accounting → withdrawal","credit[msg.sender] += msg.value;\\npayable(msg.sender).call{value: amount_}(\"\");"),
+_scene(["reentrancy","checks-effects-interactions","call","receive","mapping"],"Accounting → external callback → reentrancy proof","credit[msg.sender] = 0;\\n(bool ok,) = payable(msg.sender).call{value: amount}(\"\");"),
+_scene(["transient-storage","reentrancy","tload","tstore"],"Transient lock → external call","assembly { if tload(0) { revert(0,0) } tstore(0,1) }"),
+_scene(["proxy-fallback","fallback","delegatecall","storage-layout","returndata"],"Proxy flow: fallback → delegatecall → shared storage","fallback() external payable { /* delegatecall + returndata */ }"),
+_scene(["erc1967-storage","proxy-upgrade-pattern","storage-slot","delegatecall"],"Upgrade proxy: implementation slot + delegatecall","// deterministic implementation slot → delegatecall"),
+_scene(["erc20-pattern","mapping","nested-mapping","token-approval","events"],"ERC20: balance + allowance + transfer","mapping(address=>uint256) balances;\\nmapping(address=>mapping(address=>uint256)) allowance;"),
+_scene(["erc721-pattern","mapping","address","events","receiver-hook"],"ERC721: tokenId → owner + safe receiver","mapping(uint256=>address) ownerOfToken;\\n// safe transfer can call receiver hook"),
+_scene(["erc1155-pattern","nested-mapping","batch-transfer","arrays","receiver-hook"],"ERC1155: tokenId + owner → balance + batch arrays","mapping(uint256=>mapping(address=>uint256)) balances;"),
+_scene(["permit-pattern","structs","mapping","keccak256","ecrecover","nonce"],"Permit: typed authorization → nonce → allowance","// digest(owner,spender,value,nonce) → ecrecover → allowance"),
+_scene(["eip712-pattern","keccak256","block.chainid","nonce","signature-verification"],"EIP712: typed struct → domain → digest","// domain separator + struct hash + signature recovery"),
+_scene(["multisig-pattern","threshold","signature-verification","nonce","call"],"Multisig: nonce + threshold + execution","// verify enough signatures, consume nonce, execute call"),
+_scene(["timelock-pattern","keccak256","mapping","block.timestamp","call"],"Timelock: operation hash + deadline + call","readyAt[id] = block.timestamp + delay;\\ntarget.call(data);"),
+_scene(["governor-pattern","arrays","mapping","keccak256","call"],"Governor: proposal payload arrays","id = keccak256(abi.encode(targets, values, data));"),
+_scene(["new","constructor","address","try-catch","init-code"],"new → constructor → fresh address → creation failure","try new Child(number_) returns (Child child) { return address(child); } catch {}"),
+_scene(["create2","salt","init-code","keccak256","address"],"CREATE2: salt + init code → deterministic address","// keccak256(0xff ++ deployer ++ salt ++ keccak256(init_code))"),
+_scene(["address.code","address.codehash","extcodesize","extcodecopy","extcodehash"],"Address → code bytes, size and hash","bytes memory code = target.code;\\nbytes32 hash = target.codehash;"),
+_scene(["mload","mstore","mcopy","memory"],"Yul memory: store → copy → load","assembly { mstore(0, 42) mcopy(32, 0, 32) let x := mload(32) }"),
+_scene(["sload","sstore","mapping-slots","storage"],"Storage slot → sload / sstore","assembly { let x := sload(slot) sstore(slot, add(x,1)) }"),
+_scene(["tload","tstore","transient-storage","reentrancy"],"Transient state: tload / tstore guard","assembly { if tload(0) { revert(0,0) } tstore(0,1) }"),
+_scene(["log1","events","event-indexed","keccak256"],"Yul log1 → Solidity event topics","assembly { log1(0, 32, topic0) }"),
+_scene(["type-metadata","contract-types","interface"],"type(C) → interface identity","bytes4 id = type(IERC165).interfaceId;"),
+_scene(["function-types","external-function-types","function","address"],"Function pointer → target + callable operation","function(uint256) external returns (uint256) f;"),
+_scene(["user-defined-value-types","library","using-for","function"],"UDVT → library → using-for member syntax","type UserId is uint256;\\nusing UserIdLib for UserId;"),
+_scene(["constant-immutable","constructor","storage"],"Constant vs immutable vs mutable storage","uint256 constant FEE=1; uint256 immutable deployedAt; uint256 mutableFee;"),
+_scene(["vm-prank","msg.sender","test"],"Foundry prank → msg.sender","vm.prank(alice); vault.withdraw(1 ether);"),
+_scene(["vm-deal","contract-balance","test"],"Foundry deal → contract balance","vm.deal(address(vault), 10 ether);"),
+_scene(["vm-expect-call","call","abi.encode","test"],"Expected call → ABI payload","vm.expectCall(address(token), abi.encodeCall(IERC20.transfer,(alice,100)));"),
+_scene(["fuzz-tests","bounded-fuzz","vm-assume","vm-bound"],"Fuzz input → assume → bound","vm.assume(raw != 0); uint256 amount = bound(raw,1,1000);"),
+_scene(["poc-reentrancy","reentrancy","call","receive","mapping"],"PoC: callback → re-enter → stale accounting","// attacker callback re-enters before accounting is finalized"),
+_scene(["selfdestruct","contract-balance","address","ether-flow"],"Contract address + balance → special EVM operation","address(this).balance; // modern selfdestruct semantics must be checked"),
+]
+
+# Pad coverage with focused pair/triple scenes for catalog areas that deserve a
+# named teaching anchor even though the generic route can already connect them.
+_MORE_SCENE_PAIRS=[
+("mapping","mapping-defaults","Mapping defaults"),
+("arrays","fixed-array","Dynamic vs fixed arrays"),
+("arrays","delete","Array clear"),
+("structs","storage-memory-calldata","Struct data location"),
+("bytes","bytes32","Dynamic bytes vs bytes32"),
+("string","bytes","Text vs raw bytes"),
+("constructor","inheritance","Constructor chaining"),
+("imports","inheritance","Import + inheritance"),
+("abstract","interface","Abstract implementation vs interface shape"),
+("override","virtual","Override a virtual function"),
+("modifier","access-control","Modifier as access gate"),
+("function-overloading","function-signature","Overloads have different signatures"),
+("function-selector","keccak256","Selector is four bytes of a hash"),
+("abi-types","tuples","ABI tuple boundary"),
+("public-getter","mapping","Generated mapping getter"),
+("errors","require","Require and error payloads"),
+("events","mapping","Event mirrors state"),
+("try-catch","new","Catch failed contract creation"),
+("call","payable","Call options can attach ETH"),
+("call","checks-effects-interactions","External interaction ordering"),
+("staticcall","oracle","Read-only oracle call"),
+("delegatecall","storage-layout","Delegatecall and storage compatibility"),
+("msg.sender","vm-prank","Test a specific caller"),
+("msg.value","vm-deal","Fund ETH-dependent tests"),
+("block.timestamp","vm-warp","Test time-dependent state"),
+("block.number","vm-roll","Test block-dependent state"),
+("fuzz-tests","invariant-tests","Fuzz vs invariant exploration"),
+("test","poc","Tests become exploit evidence"),
+("script","new","Deployment script creates a contract"),
+("script","call","Interaction script calls a contract"),
+("library","using-for","Attach library functions"),
+("type-metadata","uint256","Type metadata and integer bounds"),
+("addmod","mulmod","Modular arithmetic"),
+("bytes.concat","string.concat","Concatenation helpers"),
+("create","create2","Contract creation families"),
+("address.code","runtime-code","Inspect installed code"),
+("yul","verbatim","Advanced assembly escape hatch"),
+("log4","events","Four-topic log"),
+("caller","msg.sender","Yul caller vs Solidity sender"),
+("callvalue","msg.value","Yul callvalue vs Solidity msg.value"),
+("selfbalance","contract-balance","Yul balance vs Solidity balance"),
+("mload","memory","Memory word operations"),
+("sload","storage","Raw storage read"),
+("tload","transient-storage","Raw transient read"),
+("calldataload","calldata","Raw input read"),
+("returndatacopy","returndata","Raw return copy"),
+]
+
+for a,b in _MORE_SCENE_PAIRS:
+    _EXTRA_SCENES.append(_scene([a,b],b+" ↔ "+a+" connection", "// Focused pair: %s ↔ %s"%(a,b)))
+
+COMPREHENSIVE_MICRO_SCENES=list(MICRO_SCENES)+_EXTRA_SCENES
+MICRO_SCENES=COMPREHENSIVE_MICRO_SCENES
+
+def find_micro_scene(names):
+    requested=frozenset(c for raw in names for c in expand_name(raw))
+    exact=[s for s in COMPREHENSIVE_MICRO_SCENES if s["keys"]==requested]
+    if exact:
+        return exact[0]
+    supersets=[s for s in COMPREHENSIVE_MICRO_SCENES if requested<=s["keys"]]
+    if supersets:
+        supersets.sort(key=lambda s:(len(s["keys"]-requested),len(s["keys"])))
+        return supersets[0]
+    return _route_scene(list(requested))
+
+# Full mode intentionally means the exhaustive universal notebook.
+def find_connection(names):
+    return UNIVERSAL_CONNECTION_LAB
+
+def list_connections():
+    return [
+        {"name":"solidity-yul-comprehensive-graph","aliases":["graph","comprehensive"],"concepts":["all recognized concepts"],
+         "summary":"Comprehensive weighted concept graph with focused scenes and a generated route."},
+        {"name":"data / ABI path","aliases":[],"concepts":["mapping","abi.encode","abi.decode","keccak256","struct-abi","tuples"],
+         "summary":"Typed values ↔ bytes ↔ hashes ↔ state."},
+        {"name":"call / dispatch path","aliases":[],"concepts":["function-signature","function-selector","calldata","call","returndata"],
+         "summary":"Signature → selector → calldata → external call → return bytes."},
+        {"name":"error / event path","aliases":[],"concepts":["errors","custom-errors","events","event-indexed","keccak256"],
+         "summary":"Failure payloads and event logs."},
+        {"name":"token path","aliases":[],"concepts":["erc20-pattern","erc721-pattern","erc1155-pattern","mapping","events","receiver-hook"],
+         "summary":"Token state + approvals + events + callbacks."},
+        {"name":"authorization path","aliases":[],"concepts":["msg.sender","mapping","modifier","signature-verification","nonce"],
+         "summary":"Caller/signer identity → permissioned state."},
+        {"name":"protocol lifecycle path","aliases":[],"concepts":["multisig-pattern","timelock-pattern","governor-pattern","proxy-upgrade-pattern"],
+         "summary":"Authorization → scheduling → execution → upgrade."},
+        {"name":"storage / Yul path","aliases":[],"concepts":["mapping-slots","storage-layout","sload","sstore","yul"],
+         "summary":"High-level state down to raw EVM storage."},
+        {"name":"Foundry path","aliases":[],"concepts":["vm-prank","vm-deal","fuzz-tests","invariant-tests","poc"],
+         "summary":"Control context, generate cases, assert properties, prove behavior."},
+        {"name":"creation / code path","aliases":[],"concepts":["new","constructor","create2","init-code","runtime-code","address.code"],
+         "summary":"Creation inputs → init/runtime code → addresses."},
+    ]
+
+def connection_graph_audit():
+    nodes=_nodes(); adjacency=defaultdict(set)
+    for a,b,_ in _COMPREHENSIVE_CONNECTION_EDGES:
+        adjacency[a].add(b); adjacency[b].add(a)
+    weak=sorted(n for n in nodes if not adjacency[n])
+    disconnected=[]
+    if nodes:
+        root=next(iter(nodes)); seen={root}; stack=[root]
+        while stack:
+            n=stack.pop()
+            for nxt in adjacency[n]:
+                if nxt not in seen:
+                    seen.add(nxt); stack.append(nxt)
+        disconnected=sorted(nodes-seen)
+    return {"nodes":len(nodes),"edges":len(_COMPREHENSIVE_CONNECTION_EDGES),
+            "scenes":len(COMPREHENSIVE_MICRO_SCENES),"weak_nodes":weak,
+            "disconnected_nodes":disconnected}
