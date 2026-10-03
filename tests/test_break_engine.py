@@ -130,8 +130,10 @@ class BreakEngineTests(unittest.TestCase):
             target, fn, "withdraw()", [], 3
         )
         self.assertIn("address(uint160(0x005fbdb2315678afecb367f032d93f642f64180aa3))", body)
-        self.assertIn("address(uint160(0x00BEEF000000000000000000000000000000000042))", body)
         self.assertNotIn("address(0x5fbdb2315678afecb367f032d93f642f64180aa3)", body)
+        # Reentrancy uses the generated hostile wrapper as the caller; it does
+        # not need the repeat/accounting harness's ATTACKER constant.
+        self.assertIn("LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET);", body)
         funded = break_engine._render_reentrancy_test(
             target, fn, "withdraw()", [], 3, seed_fund="10 ether"
         )
