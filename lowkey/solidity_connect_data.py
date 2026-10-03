@@ -5681,3 +5681,244 @@ def find_micro_scene(names):
         return candidates[0]
 
     return _generic_connect_scene(ordered)
+
+# ---------------------------------------------------------------------------
+# Final language/reference coverage: globals, address members, and Yul atoms.
+# ---------------------------------------------------------------------------
+#
+# These are useful connect nodes even when they are not standalone cheatsheet
+# pages yet. They come directly from the Solidity reference's global variables,
+# address members, and Yul vocabulary.
+
+_SEMANTIC_ALIASES.update({
+    "chainid": "block.chainid",
+    "block.chainid": "block.chainid",
+    "basefee": "block.basefee",
+    "block.basefee": "block.basefee",
+    "prevrandao": "block.prevrandao",
+    "block.prevrandao": "block.prevrandao",
+    "blobbasefee": "block.blobbasefee",
+    "block.blobbasefee": "block.blobbasefee",
+    "blobhash": "blobhash",
+    "blockhash": "blockhash",
+    "coinbase": "block.coinbase",
+    "block.coinbase": "block.coinbase",
+    "gaslimit": "block.gaslimit",
+    "block.gaslimit": "block.gaslimit",
+    "gasprice": "tx.gasprice",
+    "tx.gasprice": "tx.gasprice",
+    "address.balance": "address.balance",
+    "balance": "address.balance",
+    "address.code": "address.code",
+    "code": "address.code",
+    "address.codehash": "address.codehash",
+    "codehash": "address.codehash",
+    "transfer": "transfer",
+    "send": "send",
+    "this": "this",
+    "super": "super",
+    "type": "type-metadata",
+
+    "mload": "mload",
+    "mstore": "mstore",
+    "mstore8": "mstore8",
+    "sload": "sload",
+    "sstore": "sstore",
+    "tload": "tload",
+    "tstore": "tstore",
+    "calldataload": "calldataload",
+    "calldatacopy": "calldatacopy",
+    "calldatasize": "calldatasize",
+    "returndatasize": "returndatasize",
+    "returndatacopy": "returndatacopy",
+    "codesize": "codesize",
+    "codecopy": "codecopy",
+    "extcodesize": "extcodesize",
+    "extcodehash": "extcodehash",
+    "log0": "log0",
+    "log1": "log1",
+    "log2": "log2",
+    "log3": "log3",
+    "log4": "log4",
+    "chainid-opcode": "chainid",
+    "basefee-opcode": "basefee",
+    "origin-opcode": "origin",
+    "gasprice-opcode": "gasprice",
+    "timestamp-opcode": "timestamp",
+    "number-opcode": "number",
+    "prevrandao-opcode": "prevrandao",
+})
+
+_EXTRA_MEANINGS.update({
+    "block.chainid": "The chain ID of the current execution environment.",
+    "block.basefee": "The current block's base fee.",
+    "block.prevrandao": "The block randomness value exposed in post-Merge EVMs.",
+    "block.blobbasefee": "The current block's blob base fee on blob-enabled EVMs.",
+    "blobhash": "A versioned hash for a transaction blob, when present.",
+    "blockhash": "The hash of a recent block within the EVM-supported range.",
+    "block.coinbase": "The current block's beneficiary address.",
+    "block.gaslimit": "The current block gas limit.",
+    "tx.gasprice": "The gas price associated with the transaction.",
+    "address.balance": "The Wei balance held by an address.",
+    "address.code": "The runtime bytecode at an address, returned as bytes.",
+    "address.codehash": "The code hash of an address.",
+    "transfer": "A payable-address Ether transfer operation that reverts on failure.",
+    "send": "A payable-address Ether transfer operation that reports failure as a boolean.",
+    "this": "The current contract instance/type; it can be used for an external self-call.",
+    "super": "The next base-contract implementation in the inheritance hierarchy.",
+    "mload": "Yul loads 32 bytes from memory.",
+    "mstore": "Yul stores 32 bytes into memory.",
+    "mstore8": "Yul stores the low byte of a value into memory.",
+    "sload": "Yul reads a 32-byte word from persistent storage.",
+    "sstore": "Yul writes a 32-byte word to persistent storage.",
+    "tload": "Yul reads a word from transient storage.",
+    "tstore": "Yul writes a word to transient storage.",
+    "calldataload": "Yul reads a 32-byte word from calldata.",
+    "calldatacopy": "Yul copies a calldata region into memory.",
+    "calldatasize": "Yul returns the size of the current calldata.",
+    "returndatasize": "Yul returns the size of the latest external-call return data.",
+    "returndatacopy": "Yul copies external-call return data into memory.",
+    "codesize": "Yul returns the current contract runtime-code size.",
+    "codecopy": "Yul copies the current contract's runtime code into memory.",
+    "extcodesize": "Yul returns the runtime-code size at an external address.",
+    "extcodehash": "Yul returns the code hash at an external address.",
+    "log0": "Yul emits a log with no topics.",
+    "log1": "Yul emits a log with one topic.",
+    "log2": "Yul emits a log with two topics.",
+    "log3": "Yul emits a log with three topics.",
+    "log4": "Yul emits a log with four topics.",
+    "chainid": "Yul reads the executing chain ID.",
+    "basefee": "Yul reads the current block base fee.",
+    "origin": "Yul reads the transaction origin.",
+    "gasprice": "Yul reads the transaction gas price.",
+    "timestamp": "Yul reads the current block timestamp.",
+    "number": "Yul reads the current block number.",
+    "prevrandao": "Yul reads the block randomness value.",
+})
+
+_EXTRA_CONCEPTS.update({
+    "block.chainid", "block.basefee", "block.prevrandao", "block.blobbasefee",
+    "blobhash", "blockhash", "block.coinbase", "block.gaslimit", "tx.gasprice",
+    "address.balance", "address.code", "address.codehash", "transfer", "send",
+    "this", "super", "mload", "mstore", "mstore8", "sload", "sstore", "tload",
+    "tstore", "calldataload", "calldatacopy", "calldatasize", "returndatasize",
+    "returndatacopy", "codesize", "codecopy", "extcodesize", "extcodehash",
+    "log0", "log1", "log2", "log3", "log4", "chainid", "basefee", "origin",
+    "gasprice", "timestamp", "number", "prevrandao",
+})
+
+_FINAL_REFERENCE_EDGES = [
+    ("block.chainid", "eip712", "domain separation commonly binds signatures to a chain ID"),
+    ("block.chainid", "signature-verification", "signed authorizations can bind to a chain ID"),
+    ("block.basefee", "gas", "base fee contributes to transaction gas economics"),
+    ("block.blobbasefee", "gas", "blob base fee is part of blob transaction fee context"),
+    ("block.prevrandao", "front-running", "block randomness is execution context rather than secret user input"),
+    ("blockhash", "keccak256", "both are bytes32 hash-valued primitives with different trust/availability semantics"),
+    ("block.coinbase", "ether-flow", "the block beneficiary is an address in the EVM context"),
+    ("block.gaslimit", "gas", "the block limit bounds aggregate transaction execution"),
+    ("tx.gasprice", "gas", "transaction gas price is distinct from the remaining gas budget"),
+    ("address.balance", "ether-flow", "balance is the held ETH total"),
+    ("address.balance", "contract-balance", "address(this).balance is the contract's address balance"),
+    ("address.code", "address.codehash", "runtime code and its code hash describe deployed code"),
+    ("address.code", "contract-types", "code presence helps distinguish deployed contracts from plain accounts"),
+    ("address.code", "extcodesize", "Solidity address.code and EVM code-size inspection expose runtime code"),
+    ("address.codehash", "extcodehash", "Solidity codehash corresponds to the EVM's code-hash view"),
+    ("transfer", "payable", "transfer requires a payable recipient address"),
+    ("send", "payable", "send requires a payable recipient address"),
+    ("transfer", "msg.value", "Ether transfer moves Wei rather than changing the current msg.value"),
+    ("send", "call", "send is a restricted Ether-call mechanism; low-level call exposes more control"),
+    ("this", "call", "external self-calls cross the message boundary"),
+    ("this", "msg.sender", "an external self-call changes the immediate caller to this contract"),
+    ("super", "inheritance", "super resolves the next base implementation"),
+    ("super", "override", "super is used to reach inherited implementations"),
+    ("mload", "memory", "Yul reads memory with mload"),
+    ("mstore", "memory", "Yul writes memory with mstore"),
+    ("mstore8", "memory", "Yul writes one byte into memory"),
+    ("mstore", "abi.encode", "ABI call payloads are assembled in memory"),
+    ("mstore", "function-selector", "raw calldata construction commonly places selectors in memory"),
+    ("sload", "storage", "Yul reads persistent storage"),
+    ("sstore", "storage", "Yul writes persistent storage"),
+    ("sload", "mapping-slots", "mapping slot derivation feeds sload"),
+    ("sstore", "mapping-slots", "mapping slot derivation feeds sstore"),
+    ("tload", "transient-storage", "Yul tload reads transaction-scoped state"),
+    ("tstore", "transient-storage", "Yul tstore writes transaction-scoped state"),
+    ("tload", "reentrancy", "transient guards are commonly read before external boundaries"),
+    ("tstore", "reentrancy", "transient guards are commonly written before external boundaries"),
+    ("calldataload", "calldata", "Yul reads raw calldata words"),
+    ("calldatacopy", "calldata", "Yul copies call input into memory"),
+    ("calldatasize", "calldata", "the size of msg.data is available at the EVM level"),
+    ("calldataload", "function-selector", "the first calldata word contains the selector in its leading bytes"),
+    ("returndatasize", "returndata", "Yul reads the latest return-data length"),
+    ("returndatacopy", "returndata", "Yul copies returned bytes into memory"),
+    ("returndatacopy", "revert", "revert data can be copied and bubbled unchanged"),
+    ("codesize", "yul", "Yul can inspect the current runtime code size"),
+    ("codecopy", "yul-memory", "runtime bytecode can be copied into memory"),
+    ("extcodesize", "address.code", "code-size checks inspect whether an address has runtime code"),
+    ("extcodehash", "address.codehash", "both expose deployed-code identity"),
+    ("log0", "events", "Yul logs are the low-level basis for event emission"),
+    ("log1", "event-indexed", "one log topic can represent an indexed event field"),
+    ("log2", "event-indexed", "multiple indexed event fields become multiple topics"),
+    ("log3", "event-indexed", "three topics can represent multiple indexed fields"),
+    ("log4", "event-indexed", "four topics are the maximum topic count for a LOG opcode"),
+    ("log1", "keccak256", "event signature hashes and dynamic indexed values can become topics"),
+    ("chainid", "block.chainid", "Yul chainid reads the same chain identity exposed by Solidity"),
+    ("basefee", "block.basefee", "Yul basefee reads the Solidity block base fee"),
+    ("origin", "tx.origin", "Yul origin reads the transaction origin"),
+    ("gasprice", "tx.gasprice", "Yul gasprice reads the transaction gas price"),
+    ("timestamp", "block.timestamp", "Yul timestamp reads the Solidity block timestamp"),
+    ("number", "block.number", "Yul number reads the Solidity block number"),
+    ("prevrandao", "block.prevrandao", "Yul prevrandao reads the Solidity randomness context"),
+]
+
+
+def _append_reference_edges(edges):
+    existing = {
+        tuple(sorted((canonicalize(left), canonicalize(right))))
+        for left, right, _label in edges
+    }
+    for left, right, label in _FINAL_REFERENCE_EDGES:
+        a, b = canonicalize(left), canonicalize(right)
+        if a == b:
+            continue
+        key = tuple(sorted((a, b)))
+        if key not in existing:
+            edges.append((a, b, label))
+            existing.add(key)
+
+
+_append_reference_edges(_COMPREHENSIVE_CONNECTION_EDGES)
+
+
+def _ensure_final_connect_coverage(edges):
+    graph_nodes = set()
+    for left, right, _label in edges:
+        graph_nodes.add(canonicalize(left))
+        graph_nodes.add(canonicalize(right))
+
+    required = set(_EXTRA_CONCEPTS)
+    required.update(
+        canonicalize(name)
+        for name in _CATALOG_ALIASES.values()
+    )
+
+    anchor_order = [
+        "function", "variables", "storage", "calldata", "yul",
+        "test", "poc",
+    ]
+    anchors = [canonicalize(a) for a in anchor_order]
+    anchor = next((a for a in anchors if a in graph_nodes), "function")
+
+    for node in sorted(required):
+        if node in graph_nodes:
+            continue
+        edges.append(
+            (
+                node,
+                anchor,
+                "catalog coverage bridge; use the concept-specific edge/path next",
+            )
+        )
+        graph_nodes.add(node)
+
+
+_ensure_final_connect_coverage(_COMPREHENSIVE_CONNECTION_EDGES)
