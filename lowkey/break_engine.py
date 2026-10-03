@@ -1015,6 +1015,7 @@ contract LowkeyBreakReentrancy is Test {{
         }}
     }}
 }}
+"""
 
 def _result_from_output(
     host,
@@ -1256,7 +1257,10 @@ def _families_for_function(
         wanted = [item for item in FINDING_PATTERNS if str(item.id).upper() == str(pattern_hint).upper()]
         if not wanted:
             raise ValueError(f"Unknown finding pattern '{pattern_hint}'.")
-        patterns = wanted + [item for item in patterns if item.id != wanted[0].id]
+        mapped = family_names(wanted)
+        if mapped and mapped[0] in ATTACK_FAMILIES:
+            return [mapped[0]]
+        raise ValueError(f"Finding pattern '{pattern_hint}' has no executable attack family.")
 
     families = ["reentrancy", "replay", "accounting", "boundary"]
     if PRIVILEGED_RE.search(name):
