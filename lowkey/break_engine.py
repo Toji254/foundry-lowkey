@@ -2038,6 +2038,26 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     return result
 
 
+def _safe_run_family(host, config, rpc, target, fn, family, opts, rng, project_info=None) -> AttackResult:
+    """Run one attack family without allowing a generator failure to abort the campaign."""
+    try:
+        return _run_family(host, config, rpc, target, fn, family, opts, rng, project_info)
+    except Exception as exc:
+        signature = _format_signature(fn, host)
+        return AttackResult(
+            family=family,
+            contract=target.contract,
+            address=target.address,
+            function=signature,
+            status="BLOCKED",
+            summary=f"Attack generator failed safely: {exc}",
+            detail={
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+
+
 def _families_for_function(
     fn: dict[str, Any],
     requested: str | None,
@@ -2263,7 +2283,7 @@ def run(config, args=None, host=None):
                     )
                     for family in families:
                         made_progress = True
-                        result = _run_family(
+                        result = _safe_run_family(
                             host, config, rpc, target, fn, family, opts, rng, project_info
                         )
                         campaign_results.append(result)
