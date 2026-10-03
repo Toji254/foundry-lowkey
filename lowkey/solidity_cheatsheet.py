@@ -534,8 +534,8 @@ add(
     "strings-bytes", ["string", "bytes", "dynamic-bytes"], "DATA TYPES",
     "Dynamic text or byte sequences.",
     "Think a note or binary blob whose size can vary.",
-    "string name;
-bytes payload;",
+    """string name;
+bytes payload;""",
     """function setName(string calldata name_) external {
     name = name_;
 }""",
