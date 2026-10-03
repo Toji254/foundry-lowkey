@@ -640,8 +640,7 @@ def _render_repeat_test(target: Target, signature: str, calldata: str, value: st
     value_lit = "0" if value in {"0", "0wei"} else "1"
     fund_line = ""
     if seed_fund:
-        fund_line = f'        vm.deal(TARGET, {seed_fund});
-'
+        fund_line = f'        vm.deal(TARGET, {seed_fund});\n'
     return _render_common_header() + f"""
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
