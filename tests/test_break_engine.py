@@ -373,6 +373,130 @@ class BreakEngineTests(unittest.TestCase):
         setup_pos = body.index("abi.encodeWithSignature(\"deposit()\")")
         self.assertLess(deal_pos, setup_pos)
 
+    def test_repeat_renderer_logs_raw_revert_data_for_generic_diagnostics(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        fn = {
+            "name": "claim",
+            "inputs": [{"name": "amount", "type": "uint256"}],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_repeat_test(
+            target,
+            fn,
+            "claim(uint256)",
+            ["1"],
+            "0",
+            "replay",
+            "10ether",
+            setup_signature="deposit()",
+            entitlement_signature="credit(address)",
+        )
+        self.assertIn("console2.logBytes(setupReturndata);", body)
+        self.assertIn("console2.logBytes(firstReturndata);", body)
+        self.assertIn("console2.logBytes(secondReturndata);", body)
+
+    def test_repeat_renderer_declares_entitlement_telemetry_without_getter(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        fn = {
+            "name": "claim",
+            "inputs": [{"name": "amount", "type": "uint256"}],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_repeat_test(
+            target,
+            fn,
+            "claim(uint256)",
+            ["1"],
+            "0",
+            "accounting",
+            None,
+            setup_signature=None,
+            entitlement_signature=None,
+        )
+        self.assertIn("uint256 entitlementBefore = 0;", body)
+        self.assertIn("bool entitlementReadOk = false;", body)
+        self.assertIn("uint256 entitlementAfterFirst = 0;", body)
+        self.assertIn("uint256 entitlementAfterSecond = 0;", body)
+
+    def test_result_parser_decodes_custom_error_from_target_abi(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        error_abi = {
+            "type": "error",
+            "name": "Unauthorized",
+            "inputs": [{"name": "caller", "type": "address"}],
+        }
+        selector = break_engine._keccak256(b"Unauthorized(address)")[:4].hex()
+        caller = "0000000000000000000000002222222222222222222222222222222222222222"
+        raw = "0x" + selector + caller
+
+        class Host:
+            def load_abi(self, address, config):
+                return [error_abi]
+
+        output = (
+            "LOWKEY_BREAK_FAMILY accounting\n"
+            "SETUP_SUCCESS true\n"
+            "FIRST_SUCCESS false\n"
+            "SECOND_SUCCESS false\n"
+            "FIRST_RETURNDATA_LENGTH 36\n"
+            f"{raw}\n"
+            "SECOND_RETURNDATA_LENGTH 36\n"
+            f"{raw}\n"
+            "TOTAL_TARGET_OUTFLOW 0\n"
+            "LOWKEY_BREAK false\n"
+        )
+        result = break_engine._result_from_output(
+            Host(),
+            family="accounting",
+            target=target,
+            function="claim(uint256)",
+            output=output,
+            evidence_path="/tmp/evidence.json",
+            config={"target": target.address},
+        )
+        self.assertEqual(result.status, "OBSERVED")
+        self.assertIn("Unauthorized(address)", result.summary)
+        self.assertIn("0x" + selector, result.detail["first_revert"])
+
+    def test_result_parser_decodes_standard_error_string_without_abi(self):
+        target = break_engine.Target("Vault", "0x" + "1" * 40)
+        # ABI encoding of Error("not authorized").
+        message = b"not authorized"
+        payload = (
+            (32).to_bytes(32, "big")
+            + len(message).to_bytes(32, "big")
+            + message
+            + b"\x00" * (32 - len(message) % 32)
+        )
+        raw = "0x08c379a0" + payload.hex()
+
+        class Host:
+            def load_abi(self, address, config):
+                return []
+
+        output = (
+            "LOWKEY_BREAK_FAMILY replay\n"
+            "SETUP_SUCCESS true\n"
+            "FIRST_SUCCESS false\n"
+            "FIRST_RETURNDATA_LENGTH 100\n"
+            f"{raw}\n"
+            "SECOND_SUCCESS false\n"
+            "SECOND_RETURNDATA_LENGTH 100\n"
+            f"{raw}\n"
+            "TOTAL_TARGET_OUTFLOW 0\n"
+            "LOWKEY_BREAK false\n"
+        )
+        result = break_engine._result_from_output(
+            Host(),
+            family="replay",
+            target=target,
+            function="claim()",
+            output=output,
+            evidence_path="/tmp/evidence.json",
+            config={"target": target.address},
+        )
+        self.assertIn("Error(string): not authorized", result.summary)
+
     def test_accounting_break_requires_entitlement_baseline(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         fn = {
