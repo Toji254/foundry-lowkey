@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "import_helper.py"
 spec = importlib.util.spec_from_file_location("lowkey_import_helper", MODULE)
 helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
 spec.loader.exec_module(helper)
 
 
