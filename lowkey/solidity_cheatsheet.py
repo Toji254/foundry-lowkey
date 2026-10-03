@@ -60,9 +60,24 @@ if str(MODULE_DIR) not in sys.path:
 
 from solidity_cheat_topics import register_topics
 from solidity_cheat_data import CONTRACT_LABS as _CONTRACT_LABS, TERM_DEFINITIONS as _TERM_DEFINITIONS
-from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept, connection_paths, find_micro_scene, connection_meaning, connection_route
+from solidity_connect_data import (
+    CONNECTION_LABS,
+    find_connection,
+    list_connections,
+    canonicalize,
+    expand_name,
+    is_known_concept,
+    connection_paths,
+    find_micro_scene,
+    connection_meaning,
+    connection_route,
+    _FINAL_GRAPH_AUDIT_RESULT,
+)
 
 TOPICS = []
+
+# Frozen connection-graph health snapshot used by regression tests and doctoring.
+_FINAL_GRAPH_AUDIT_RESULT = _FINAL_GRAPH_AUDIT_RESULT
 
 
 def add(name, aliases, category, meaning, mental, syntax, example, steps,
@@ -304,8 +319,6 @@ def _render_connect(names):
 
     topics = []
     invalid = []
-    resolved_display = []
-
     for raw in cleaned:
         topic = find_topic(raw)
         if is_known_concept(raw):
@@ -379,15 +392,28 @@ def _render_connect(names):
     print()
     print("THE CONNECTION")
     print("--------------")
-    if micro:
+    route = connection_route(topics)
+    if micro and micro.get("route_name"):
         print(micro["title"])
         print()
         print(micro["story"])
-        if micro.get("route"):
-            print()
-            print("CONNECTION ROUTE")
-            print("----------------")
-            print("  " + " → ".join(micro["route"]))
+        print()
+        print("CONNECTION ROUTE")
+        print("----------------")
+        print("  " + micro["route_name"])
+        if route:
+            shown = route if len(route) <= 14 else route[:14] + ["…"]
+            print("  path: " + " → ".join(shown))
+    elif micro:
+        print(micro["title"])
+        print()
+        print(micro["story"])
+        print()
+        print("CONNECTION ROUTE")
+        print("----------------")
+        if route:
+            shown = route if len(route) <= 14 else route[:14] + ["…"]
+            print("  " + " → ".join(shown))
     else:
         paths = connection_paths(topics)
         print("Follow one bridge at a time:")
@@ -396,14 +422,12 @@ def _render_connect(names):
             print(f"    {' → '.join(path_nodes)}")
             for relation in edge_text:
                 print(f"    {relation}")
-
-    print()
-    print("CONNECTION ROUTE")
-    print("----------------")
-    route = connection_route(topics)
-    if route:
-        shown = route if len(route) <= 14 else route[:14] + ["…"]
-        print("  " + " → ".join(shown))
+        if route:
+            print()
+            print("CONNECTION ROUTE")
+            print("----------------")
+            shown = route if len(route) <= 14 else route[:14] + ["…"]
+            print("  " + " → ".join(shown))
 
     print()
     print("1. WHAT EACH PIECE IS")
