@@ -162,6 +162,10 @@ class BreakEngineTests(unittest.TestCase):
 
         self.assertIn("console2.log(\"SETUP_VALUE_WEI\", uint256(10 ether));", body)
 
+        self.assertIn("lastSeedSuccess = ok;", body)
+        self.assertIn("lastAttackSuccess = ok;", body)
+        self.assertIn('console2.log("TARGET_OUTER_SUCCESS", hostile.lastAttackSuccess());', body)
+        self.assertIn('console2.log("ATTACKER_WITHDRAW_RECEIVED", received);', body)
     def test_result_parser_surfaces_missing_telemetry(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
