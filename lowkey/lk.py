@@ -5676,7 +5676,7 @@ def _validate_project_lab_target(
         "(" + " | ".join(details) + ")"
     )
 
-def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
+def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None, explicit_requested=False):
     relative = os.path.relpath(script, root)
     if not path_is_within(script, root):
         return fail("Error: selected lab script is outside the current project root.")
@@ -5821,7 +5821,6 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     # declared protocol root and must take precedence over Lowkey's heuristic
     # "most interesting contract" discovery. Otherwise a system harness that
     # deliberately exposes a factory proxy can be silently replaced by a pool.
-    explicit_requested = bool(args) and mode == "auto" and str(args[0]).strip().lower() not in {"", "auto"}
     if requested and system and explicit_requested:
         requested_lower = str(requested).strip().lower()
         system_candidates = []
@@ -6817,7 +6816,16 @@ def run_lab(config,args):
     config["_lab_rpc"] = rpc
 
     if script:
-        script_code = run_project_lab_script(config, root, script, rpc, accounts, key, requested)
+        script_code = run_project_lab_script(
+            config,
+            root,
+            script,
+            rpc,
+            accounts,
+            key,
+            requested,
+            explicit_requested=bool(args) and mode == "auto" and str(args[0]).strip().lower() not in {"", "auto"},
+        )
         if script_code == 0:
             return 0
         if fixture:
