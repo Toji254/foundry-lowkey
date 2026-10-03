@@ -16,7 +16,13 @@ Usage:
   lk cheat
   lk cheat <topic>
   lk cheat symbols
+  lk cheat keywords
   lk cheat search <word>
+  lk compare <topicA> <topicB> [topicC]
+  lk expression "<expression>"
+  lk practice [topic]
+  lk confused <term>
+  lk patterns
   lk cheat --help
 
 After opening a topic:
@@ -24,6 +30,7 @@ After opening a topic:
   lk cheat <topic> 2          plain-English walkthrough
   lk cheat <topic> 3          term decoder
   lk cheat <topic> 4          audit lens
+  lk cheat <topic> p          practice drill
 
 Examples:
   lk cheat mapping
