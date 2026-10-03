@@ -1051,7 +1051,7 @@ contract LowkeyBreakAccess is Test {{
         console2.log("LOWKEY_BREAK_FAMILY", "access");
         console2.log("SUCCESS", success);
         console2.log("RETURNDATA_LENGTH", returndata.length);
-        console2.log("LOWKEY_BREAK", break_on_success && success);
+        console2.log("LOWKEY_BREAK", true && success);
     }}
 }}
 """
