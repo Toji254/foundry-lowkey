@@ -3173,12 +3173,6 @@ function register(bytes calldata raw) external {
         call="register(abi.encode(alice));",
         audit="The encoder and decoder must agree on exact types/order. Hashing bytes and hashing re-encoded values are only equivalent when the byte representation is exactly the same.",
     ),
-
-_FINAL_DECODE_HASH_MAPPING_SCENE = next(
-    scene for scene in COMPREHENSIVE_MICRO_SCENES
-    if scene.get("title") == "Decode the bytes, hash the same bytes, use the hash as the key"
-)
-_FINAL_DECODE_HASH_MAPPING_SCENE["route_name"] = "decode/hash/mapping"
     _scene(
         keys={"mapping", "keccak256"},
         title="A hash becomes a mapping key",
@@ -8195,6 +8189,16 @@ function batchTransfer(
     "batchTransfer(bob, [1, 2], [10, 20], hex\"\");"
 )
 
+
+# Featured name for the subtle connection that must remain discoverable in the
+# CLI even though the actual route contains the underlying concepts.
+_FINAL_DECODE_HASH_MAPPING_SCENE = next(
+    scene for scene in COMPREHENSIVE_MICRO_SCENES
+    if scene.get("title") == "Decode the bytes, hash the same bytes, use the hash as the key"
+)
+_FINAL_DECODE_HASH_MAPPING_SCENE["route_name"] = "decode/hash/mapping"
+
+
 # Keep the most specific final scene for the formerly missed combinations.
 # This helper deliberately prefers an exact-key scene before a superset scene,
 # then leaves the generic route for everything else.
@@ -8213,31 +8217,41 @@ def _final_find_micro_scene(names):
         if frozenset(scene.get("keys", ())) == requested
     ]
     if exact:
-        exact.sort(key=lambda s: s.get("title", ""))
-        return exact[0]
+        exact.sort(
+            key=lambda scene: (
+                0 if scene.get("route_name") else 1,
+                scene.get("title", ""),
+            )
+        )
+        chosen = exact[0]
+        chosen["route"] = _covering_route(ordered)
+        return chosen
 
     candidates = [
         scene for scene in COMPREHENSIVE_MICRO_SCENES
         if requested <= frozenset(scene.get("keys", ()))
     ]
     if candidates:
-        # Prefer the smallest surplus. For ties, prefer scenes whose title says
-        # what the requested path is actually teaching.
         candidates.sort(
             key=lambda scene: (
                 len(frozenset(scene.get("keys", ())) - requested),
+                0 if scene.get("route_name") else 1,
+                0 if any(
+                    tag in scene.get("title", "").lower()
+                    for tag in (
+                        "erc20:", "erc721:", "erc1155:", "eip712:", "timelock:",
+                        "governor:", "multisig:", "upgrade proxy", "public getter",
+                    )
+                ) else 1,
                 len(frozenset(scene.get("keys", ()))),
-                "protocol" in scene.get("title", "").lower(),
                 scene.get("title", ""),
             )
         )
         chosen = candidates[0]
-        if "route" not in chosen:
-            chosen["route"] = _covering_route(ordered)
+        chosen["route"] = _covering_route(ordered)
         return chosen
 
     return _generic_connect_scene(ordered)
-
 
 find_micro_scene = _final_find_micro_scene
 
@@ -8489,10 +8503,22 @@ def list_connections():
             ),
         },
         {
+            "name": "decode/hash/mapping",
+            "aliases": [],
+            "concepts": ["mapping", "abi.decode", "keccak256"],
+            "summary": "Same raw bytes → abi.decode gives typed data; keccak256 gives a bytes32 key.",
+        },
+        {
+            "name": "ABI call path",
+            "aliases": [],
+            "concepts": ["function-signature", "function-selector", "calldata", "abi.encodeCall", "call", "returndata", "abi.decode"],
+            "summary": "Function shape → selector → calldata → external call → raw return bytes → decoded value.",
+        },
+        {
             "name": "data / ABI path",
             "aliases": [],
             "concepts": ["mapping", "structs", "arrays", "tuples", "abi.encode", "abi.decode", "keccak256"],
-            "summary": "Values → ABI bytes/tuples → hashing/decoding → storage selection.",
+            "summary": "Values → ABI tuples/bytes → hashing/decoding → storage selection.",
         },
         {
             "name": "call / dispatch path",
@@ -8525,6 +8551,12 @@ def list_connections():
             "summary": "Hashed protocol state + time/governance + upgrade boundaries + delegated execution.",
         },
         {
+            "name": "proxy flow",
+            "aliases": [],
+            "concepts": ["proxy-fallback", "fallback", "delegatecall", "storage-layout", "returndata"],
+            "summary": "Fallback → delegatecall → proxy storage/context → returndata.",
+        },
+        {
             "name": "storage / Yul path",
             "aliases": [],
             "concepts": ["storage-layout", "mapping-slots", "array-storage", "transient-storage", "yul-storage", "yul-memory", "yul-calldata"],
@@ -8537,7 +8569,6 @@ def list_connections():
             "summary": "Controlled execution context → state manipulation → assertions/PoCs.",
         },
     ]
-
 
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
 
