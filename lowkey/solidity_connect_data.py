@@ -59,8 +59,8 @@ _CONCEPT_ALIASES = {
     "function-call": "function",
     "function-calls": "function",
     "cheatcodes": "forge-cheatcodes",
-    "expectRevert": "vm-expect-revert",
-    "expectEmit": "vm-expect-emit",
+    "expectrevert": "vm-expect-revert",
+    "expectemit": "vm-expect-emit",
     "modifier": "modifier",
     "modifiers": "modifier",
     "event": "events",
@@ -4040,33 +4040,30 @@ do {
 
 def find_micro_scene(names):
     requested = frozenset(canonicalize(name) for name in names)
-
     candidates = []
-    for scene in COMPREHENSIVE_MICRO_SCENES:
-        keys = frozenset(canonicalize(x) for x in scene["keys"])
-        if requested <= keys:
-            candidates.append(scene)
 
-    # Keep the old small scenes as a compatibility fallback.
-    for scene in MICRO_SCENES:
-        keys = frozenset(canonicalize(x) for x in scene["keys"])
-        if requested <= keys:
-            candidates.append(scene)
+    # Comprehensive scenes are preferred because they were added from the
+    # full graph/coverage pass. Legacy MICRO_SCENES stay available as fallback.
+    for priority, scenes in enumerate((COMPREHENSIVE_MICRO_SCENES, MICRO_SCENES)):
+        for scene in scenes:
+            keys = frozenset(canonicalize(x) for x in scene["keys"])
+            if requested <= keys:
+                candidates.append(
+                    (
+                        priority,
+                        0 if keys == requested else 1,
+                        len(keys - requested),
+                        len(keys),
+                        scene.get("title", ""),
+                        scene,
+                    )
+                )
 
     if not candidates:
         return None
 
-    # Exact matches win. Otherwise prefer the scene with the fewest concepts
-    # that were not explicitly requested, then the smallest total scene.
-    candidates.sort(
-        key=lambda scene: (
-            0 if frozenset(canonicalize(x) for x in scene["keys"]) == requested else 1,
-            len(frozenset(canonicalize(x) for x in scene["keys"]) - requested),
-            len(scene["keys"]),
-            scene.get("title", ""),
-        )
-    )
-    return candidates[0]
+    candidates.sort(key=lambda item: item[:5])
+    return candidates[0][5]
 
 
 def expand_name(name: str):
@@ -4325,6 +4322,14 @@ _COMPREHENSIVE_CONNECTION_EDGES.extend([
     ("poc-dos", "front-running", "ordering/griefing attacks can be operationally related to denial of service"),
 ])
 
+
+# Exact catalog-to-catalog anchors make the coverage invariant independent of
+# non-catalog helper concepts such as block.number or memory.
+_COMPREHENSIVE_CONNECTION_EDGES.extend([
+    ("vm-start-prank", "vm-prank", "startPrank is the multi-call form of prank"),
+    ("vm-roll", "vm-warp", "roll and warp both manipulate block context in tests"),
+    ("yul-memory", "yul", "Yul memory operations are part of the Yul language surface"),
+])
 
 # Compound concepts that represent especially useful data-flow paths.
 _COMPREHENSIVE_COMPOSITES.update({
