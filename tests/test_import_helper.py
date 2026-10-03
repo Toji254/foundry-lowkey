@@ -386,6 +386,22 @@ class ImportHelperTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+
+    def test_concept_lessons_explain_interface_and_abstract_contract(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(helper.run_category("explain interface", Path.cwd(), []), 0)
+        rendered = out.getvalue()
+        self.assertIn("SOLIDITY CONCEPT • INTERFACE", rendered)
+        self.assertIn("implementation lives at another address", rendered)
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(helper.run_category("explain abstract", Path.cwd(), []), 0)
+        rendered = out.getvalue()
+        self.assertIn("SOLIDITY CONCEPT • ABSTRACT CONTRACT", rendered)
+        self.assertIn("not deployable", rendered)
+
     def test_common_reference_lists_install_metadata(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
