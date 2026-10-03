@@ -1273,26 +1273,42 @@ contract LowkeyBreakTime is Test {{
 
 
 def _basic_solidity_expr(ptype: str, value: str) -> str:
+    """Render a safe generic Solidity expression for generated attack calldata."""
     raw = str(value)
-    lower = ptype.lower()
+    lower = ptype.lower().strip()
+
     if lower == "address":
         return f"address({raw})"
     if lower == "bool":
         return "true" if raw.lower() == "true" else "false"
+    if lower == "string":
+        # _make_value only emits simple ASCII values, so repr via JSON is sufficient
+        # and avoids accidentally producing invalid Solidity string literals.
+        import json as _json
+        return _json.dumps(raw)
+    if lower == "bytes":
+        return raw if raw.startswith("0x") else "0x"
     if lower.startswith(("uint", "int", "bytes")):
         return raw
-    raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
 
+    if lower.endswith("[]"):
+        base = lower[:-2]
+        if base.startswith("tuple") or base.startswith("("):
+            raise ValueError(
+                f"dynamic array element type '{ptype}' requires a protocol-specific generator"
+            )
+        if raw.strip() != "[]":
+            raise ValueError(
+                f"generic dynamic array '{ptype}' accepts only an empty array in this attack mode"
+            )
+        return f"new {base}[](0)"
 
-def _basic_solidity_expr(ptype: str, value: str) -> str:
-    raw = str(value)
-    lower = ptype.lower()
-    if lower == "address":
-        return f"address({raw})"
-    if lower == "bool":
-        return "true" if raw.lower() == "true" else "false"
-    if lower.startswith(("uint", "int", "bytes")):
-        return raw
+    if re.fullmatch(r"(?:address|bool|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bytes(?:1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32))\[[0-9]+\]", lower):
+        raise ValueError(f"fixed-size array '{ptype}' requires a specialized attack generator")
+
+    if lower.startswith("tuple") or lower.startswith("("):
+        raise ValueError(f"tuple/struct argument '{ptype}' requires a specialized attack generator")
+
     raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
 
 
