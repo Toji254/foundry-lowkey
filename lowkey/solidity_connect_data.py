@@ -3146,7 +3146,25 @@ def connection_paths(names):
     return rows
 
 
-def _scene(**kwargs):
+def _scene(*args, **kwargs):
+    # Support the original keyword-form scenes plus compact positional scenes
+    # used by later corpus extensions.
+    if args:
+        if len(args) != 7 or kwargs:
+            raise TypeError(
+                "_scene positional form expects: keys, title, story, code, "
+                "variables, flow, call"
+            )
+        keys, title, story, code, variables, flow, call = args
+        return {
+            "keys": keys,
+            "title": title,
+            "story": story,
+            "code": code,
+            "variables": variables,
+            "flow": flow,
+            "call": call,
+        }
     return kwargs
 
 
