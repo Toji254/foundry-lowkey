@@ -346,30 +346,37 @@ def file_render(i, item):
     return f"{lead}{path}\n    import: {syms[0].import_path}\n    exports: {names}\n"
 
 
-def combined_import(symbols: list[Symbol]) -> list[str]:
-    """Build valid copy-ready imports, grouping symbols by their real source."""
+def combined_import(symbols: list[Symbol], aliases: dict[str, str] | None = None) -> list[str]:
+    """Build copy-ready imports, grouping symbols by their verified source."""
     groups: dict[str, list[Symbol]] = {}
+    aliases = aliases or {}
     for symbol in symbols:
         groups.setdefault(symbol.import_path, []).append(symbol)
 
     lines = []
     for path, grouped in groups.items():
-        names = ", ".join(symbol.name for symbol in grouped)
+        names = ", ".join(
+            f"{symbol.name} as {aliases[symbol.name]}" if symbol.name in aliases else symbol.name
+            for symbol in grouped
+        )
         lines.append(f'import {{{names}}} from "{path}";')
     return lines
 
 
-def show_copy_imports(symbols: list[Symbol], requested_path: str | None = None):
-    imports = combined_import(symbols)
+def show_copy_imports(
+    symbols: list[Symbol],
+    requested_path: str | None = None,
+    aliases: dict[str, str] | None = None,
+):
     print("\nCOPY:")
-    for stmt in imports:
+    for stmt in combined_import(symbols, aliases=aliases):
         print(f"  {stmt}")
     if requested_path:
         actual = sorted({s.import_path for s in symbols})
         if requested_path not in actual:
-            print(f"\nNOTE: requested path was not the defining source: {requested_path}")
+            print()
+            print(f"NOTE: requested path was not the defining source: {requested_path}")
             print("      Lowkey used the verified source path(s) above.")
-
 
 def show_symbol(s: Symbol):
     why, when = explain(s)
@@ -446,378 +453,71 @@ def common():
         print()
 
 
-def parse_import_query(query: str) -> tuple[list[str], str | None, str]:
-    """
-    Parse a pasted Solidity import declaration.
-
-    Returns (symbol_names, import_path, mode), where mode is one of:
-      symbols, file, namespace, search
-    """
+def parse_import_query(
+    query: str,
+) -> tuple[list[tuple[str, str | None]], str | None, str, str | None]:
+    """Parse a pasted Solidity import declaration."""
     q = query.strip()
 
-    match = re.match(
-        r'^\s*import\s*\{(.*?)\}\s*from\s*["\']([^"\']+)["\']\s*;?\s*
-
-def run_category(category: str, root: Path, maps) -> int:
-    cat = category.lower()
-    if cat in {"packages", "package", "deps"}:
-        header("INSTALLED PACKAGES")
-        p = choose(packages(root, maps), pkg_render, "installed packages")
-        if p:
-            browse_package(p, root, maps)
-        return 0
-
-    if cat in {"contracts", "contract"}:
-        header("CONTRACTS / ABSTRACT CONTRACTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "contract"], sym_render, "contracts")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"interfaces", "interface"}:
-        header("INTERFACES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "interface"], sym_render, "interfaces")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"libraries", "library"}:
-        header("SOLIDITY LIBRARIES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "library"], sym_render, "libraries")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"types", "structs", "errors", "type"}:
-        header("STRUCTS / ENUMS / TYPES / ERRORS / CONSTANTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind in {"struct", "enum", "type", "error", "constant"}], sym_render, "types")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"files", "file", "source", "sources"}:
-        header("IMPORTABLE SOURCE FILES")
-        items = [(p, extract(p, root, maps)) for p in list(sol_files(root / "src")) + list(sol_files(root / "lib"))]
-        items = [x for x in items if x[1]]
-        s = choose(items, file_render, "source files")
-        if s:
-            show_file(s)
-        return 0
-
-    if cat in {"mappings", "mapping", "remappings"}:
-        header("FORGE IMPORT MAPPINGS")
-        if not maps:
-            print("No remappings detected.")
-        else:
-            for prefix, target in maps:
-                print(f"{prefix}= {target}")
-        return 0
-
-    if cat in {"common", "known"}:
-        common()
-        return 0
-
-    return import_query(category, root, maps)
-
-
-def interactive(root: Path, maps) -> int:
-    header("IMPORT BROWSER")
-    print("A standalone learning lookup. It does not touch audit/target/RPC state.\n")
-    print("  1. Installed packages")
-    print("  2. Contracts / abstract contracts")
-    print("  3. Interfaces")
-    print("  4. Solidity libraries")
-    print("  5. Structs / enums / types / errors / constants")
-    print("  6. Source files")
-    print("  7. Forge import mappings")
-    print("  8. Common reference imports")
-    print("  q. Quit")
-    while True:
-        a = input("\nSelect: ").strip().lower()
-        if a == "q":
-            return 0
-        cat = {"1":"packages","2":"contracts","3":"interfaces","4":"libraries","5":"types","6":"files","7":"mappings","8":"common"}.get(a)
-        if not cat:
-            print("Pick 1-8 or q.")
-            continue
-        run_category(cat, root, maps)
-
-
-def main(argv=None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if args and args[0].lower() in {"--h", "--help", "-h", "help"}:
-        print(HELP.strip())
-        return 0
-    root = root_for()
-    maps = remappings(root)
-    if not args:
-        try:
-            return interactive(root, maps)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
-    return run_category(" ".join(args), root, maps)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-,
+    match = re.fullmatch(
+        r'\s*import\s*\{(.*?)\}\s*from\s*["\']([^"\']+)["\']\s*;?\s*',
         q,
         flags=re.I | re.S,
     )
     if match:
-        names = re.findall(r'\b[A-Za-z_]\w*\b', match.group(1))
-        return names, match.group(2), "symbols"
+        imports = []
+        for item in match.group(1).split(','):
+            item = item.strip()
+            if not item:
+                continue
+            parts = re.split(r'\s+as\s+', item, maxsplit=1, flags=re.I)
+            name = parts[0].strip()
+            alias = parts[1].strip() if len(parts) == 2 else None
+            if not re.fullmatch(r'[A-Za-z_]\w*', name):
+                continue
+            if alias and not re.fullmatch(r'[A-Za-z_]\w*', alias):
+                alias = None
+            imports.append((name, alias))
+        return imports, match.group(2), 'symbols', None
 
-    match = re.match(
-        r'^\s*import\s*\*\s*as\s+([A-Za-z_]\w*)\s*from\s*["\']([^"\']+)["\']\s*;?\s*
-
-def run_category(category: str, root: Path, maps) -> int:
-    cat = category.lower()
-    if cat in {"packages", "package", "deps"}:
-        header("INSTALLED PACKAGES")
-        p = choose(packages(root, maps), pkg_render, "installed packages")
-        if p:
-            browse_package(p, root, maps)
-        return 0
-
-    if cat in {"contracts", "contract"}:
-        header("CONTRACTS / ABSTRACT CONTRACTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "contract"], sym_render, "contracts")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"interfaces", "interface"}:
-        header("INTERFACES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "interface"], sym_render, "interfaces")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"libraries", "library"}:
-        header("SOLIDITY LIBRARIES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "library"], sym_render, "libraries")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"types", "structs", "errors", "type"}:
-        header("STRUCTS / ENUMS / TYPES / ERRORS / CONSTANTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind in {"struct", "enum", "type", "error", "constant"}], sym_render, "types")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"files", "file", "source", "sources"}:
-        header("IMPORTABLE SOURCE FILES")
-        items = [(p, extract(p, root, maps)) for p in list(sol_files(root / "src")) + list(sol_files(root / "lib"))]
-        items = [x for x in items if x[1]]
-        s = choose(items, file_render, "source files")
-        if s:
-            show_file(s)
-        return 0
-
-    if cat in {"mappings", "mapping", "remappings"}:
-        header("FORGE IMPORT MAPPINGS")
-        if not maps:
-            print("No remappings detected.")
-        else:
-            for prefix, target in maps:
-                print(f"{prefix}= {target}")
-        return 0
-
-    if cat in {"common", "known"}:
-        common()
-        return 0
-
-    return import_query(category, root, maps)
-
-
-def interactive(root: Path, maps) -> int:
-    header("IMPORT BROWSER")
-    print("A standalone learning lookup. It does not touch audit/target/RPC state.\n")
-    print("  1. Installed packages")
-    print("  2. Contracts / abstract contracts")
-    print("  3. Interfaces")
-    print("  4. Solidity libraries")
-    print("  5. Structs / enums / types / errors / constants")
-    print("  6. Source files")
-    print("  7. Forge import mappings")
-    print("  8. Common reference imports")
-    print("  q. Quit")
-    while True:
-        a = input("\nSelect: ").strip().lower()
-        if a == "q":
-            return 0
-        cat = {"1":"packages","2":"contracts","3":"interfaces","4":"libraries","5":"types","6":"files","7":"mappings","8":"common"}.get(a)
-        if not cat:
-            print("Pick 1-8 or q.")
-            continue
-        run_category(cat, root, maps)
-
-
-def main(argv=None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if args and args[0].lower() in {"--h", "--help", "-h", "help"}:
-        print(HELP.strip())
-        return 0
-    root = root_for()
-    maps = remappings(root)
-    if not args:
-        try:
-            return interactive(root, maps)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
-    return run_category(" ".join(args), root, maps)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-,
+    match = re.fullmatch(
+        r'\s*import\s*\*\s*as\s+([A-Za-z_]\w*)\s*from\s*["\']([^"\']+)["\']\s*;?\s*',
         q,
         flags=re.I | re.S,
     )
     if match:
-        return [], match.group(2), "namespace"
+        return [], match.group(2), 'namespace', match.group(1)
 
-    match = re.match(
-        r'^\s*import\s*["\']([^"\']+)["\']\s*;?\s*
-
-def run_category(category: str, root: Path, maps) -> int:
-    cat = category.lower()
-    if cat in {"packages", "package", "deps"}:
-        header("INSTALLED PACKAGES")
-        p = choose(packages(root, maps), pkg_render, "installed packages")
-        if p:
-            browse_package(p, root, maps)
-        return 0
-
-    if cat in {"contracts", "contract"}:
-        header("CONTRACTS / ABSTRACT CONTRACTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "contract"], sym_render, "contracts")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"interfaces", "interface"}:
-        header("INTERFACES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "interface"], sym_render, "interfaces")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"libraries", "library"}:
-        header("SOLIDITY LIBRARIES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "library"], sym_render, "libraries")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"types", "structs", "errors", "type"}:
-        header("STRUCTS / ENUMS / TYPES / ERRORS / CONSTANTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind in {"struct", "enum", "type", "error", "constant"}], sym_render, "types")
-        if s:
-            show_symbol(s)
-        return 0
-
-    if cat in {"files", "file", "source", "sources"}:
-        header("IMPORTABLE SOURCE FILES")
-        items = [(p, extract(p, root, maps)) for p in list(sol_files(root / "src")) + list(sol_files(root / "lib"))]
-        items = [x for x in items if x[1]]
-        s = choose(items, file_render, "source files")
-        if s:
-            show_file(s)
-        return 0
-
-    if cat in {"mappings", "mapping", "remappings"}:
-        header("FORGE IMPORT MAPPINGS")
-        if not maps:
-            print("No remappings detected.")
-        else:
-            for prefix, target in maps:
-                print(f"{prefix}= {target}")
-        return 0
-
-    if cat in {"common", "known"}:
-        common()
-        return 0
-
-    return import_query(category, root, maps)
-
-
-def interactive(root: Path, maps) -> int:
-    header("IMPORT BROWSER")
-    print("A standalone learning lookup. It does not touch audit/target/RPC state.\n")
-    print("  1. Installed packages")
-    print("  2. Contracts / abstract contracts")
-    print("  3. Interfaces")
-    print("  4. Solidity libraries")
-    print("  5. Structs / enums / types / errors / constants")
-    print("  6. Source files")
-    print("  7. Forge import mappings")
-    print("  8. Common reference imports")
-    print("  q. Quit")
-    while True:
-        a = input("\nSelect: ").strip().lower()
-        if a == "q":
-            return 0
-        cat = {"1":"packages","2":"contracts","3":"interfaces","4":"libraries","5":"types","6":"files","7":"mappings","8":"common"}.get(a)
-        if not cat:
-            print("Pick 1-8 or q.")
-            continue
-        run_category(cat, root, maps)
-
-
-def main(argv=None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if args and args[0].lower() in {"--h", "--help", "-h", "help"}:
-        print(HELP.strip())
-        return 0
-    root = root_for()
-    maps = remappings(root)
-    if not args:
-        try:
-            return interactive(root, maps)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
-    return run_category(" ".join(args), root, maps)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-,
+    match = re.fullmatch(
+        r'\s*import\s*["\']([^"\']+)["\']\s*;?\s*',
         q,
-        flags=re.I,
+        flags=re.I | re.S,
     )
     if match:
-        return [], match.group(1), "file"
+        return [], match.group(1), 'file', None
 
-    return [], None, "search"
-
+    return [], None, 'search', None
 
 def importable_files(root: Path, maps) -> list[tuple[Path, str]]:
-    files = list(sol_files(root / "src")) + list(sol_files(root / "lib"))
-    out = []
-    for path in files:
-        out.append((path, import_path(path, root, maps)))
-    return out
+    files = list(sol_files(root / 'src')) + list(sol_files(root / 'lib'))
+    return [(path, import_path(path, root, maps)) for path in files]
 
 
 def find_import_path(path_query: str, root: Path, maps):
     target = path_query.strip().strip('"').strip("'")
-    files = importable_files(root, maps)
-    exact = [item for item in files if item[1] == target]
-    if exact:
-        return exact[0]
-    target_lower = target.lower()
-    ci = [item for item in files if item[1].lower() == target_lower]
-    return ci[0] if ci else None
+    for source, resolved in importable_files(root, maps):
+        if resolved == target or resolved.lower() == target.lower():
+            return source, resolved
+    return None
 
 
-def print_import_file(path: str, root: Path, maps, mode: str) -> int:
+def print_import_file(
+    path: str,
+    root: Path,
+    maps,
+    mode: str,
+    namespace_alias: str | None = None,
+) -> int:
     resolved = find_import_path(path, root, maps)
     if not resolved:
         print(f"No Solidity source file resolves to import path '{path}'.")
@@ -826,38 +526,48 @@ def print_import_file(path: str, root: Path, maps, mode: str) -> int:
     print()
     print(f"SOURCE:      {source}")
     print(f"IMPORT FILE: {import_name}")
-    print(f"COPY:\n  import {'* as Lowkey' if mode == 'namespace' else ''}{f' from ' if mode == 'namespace' else ' '}" + (f'"{import_name}";' if mode == 'file' else f'"{import_name}";'))
-    if mode == "namespace":
-        print("  Replace Lowkey with the namespace alias you want.")
+    print("COPY:")
+    if mode == 'namespace':
+        alias = namespace_alias or 'Lib'
+        print(f'  import * as {alias} from "{import_name}";')
+    else:
+        print(f'  import "{import_name}";')
     return 0
 
 
 def import_query(query: str, root: Path, maps) -> int:
-    tokens, requested_path, mode = parse_import_query(query)
+    requested_imports, requested_path, mode, namespace_alias = parse_import_query(query)
+    tokens = [name for name, _alias in requested_imports]
 
-    if mode in {"file", "namespace"}:
-        return print_import_file(requested_path, root, maps, mode)
+    if mode in {'file', 'namespace'}:
+        return print_import_file(requested_path, root, maps, mode, namespace_alias)
 
-    if mode == "symbols":
+    if mode == 'symbols':
         if not tokens:
-            print("No imported symbols found inside the declaration.")
+            print('No imported symbols found inside the declaration.')
             return 2
 
         syms = all_symbols(root, maps)
-        by_name = {}
+        by_name: dict[str, list[Symbol]] = {}
         for symbol in syms:
             by_name.setdefault(symbol.name.lower(), []).append(symbol)
 
         found = []
         missing = []
-        for name in tokens:
+        aliases: dict[str, str] = {}
+        for name, alias in requested_imports:
             candidates = by_name.get(name.lower(), [])
+            if requested_path:
+                same_file = [s for s in candidates if s.import_path == requested_path]
+                if same_file:
+                    candidates = same_file
             if candidates:
                 found.append(candidates[0])
+                if alias:
+                    aliases[candidates[0].name] = alias
             else:
                 missing.append(name)
 
-        # Keep pasted order, but collapse duplicate symbols.
         unique_found = []
         seen = set()
         for symbol in found:
@@ -867,35 +577,48 @@ def import_query(query: str, root: Path, maps) -> int:
                 unique_found.append(symbol)
 
         if missing:
-            print("UNRESOLVED SYMBOLS:")
+            print('UNRESOLVED SYMBOLS:')
             for name in missing:
-                print(f"  - {name}")
+                print(f'  - {name}')
             if unique_found:
-                print("\nRESOLVED SYMBOLS:")
+                print()
+                print('RESOLVED SYMBOLS:')
                 for symbol in unique_found:
-                    print(f"  - {symbol.name} -> {symbol.import_path}")
+                    print(f'  - {symbol.name} -> {symbol.import_path}')
             return 2
 
-        print(f"\nRESOLVED {len(unique_found)} SYMBOL(S)")
+        print()
+        print(f'RESOLVED {len(unique_found)} SYMBOL(S)')
         for symbol in unique_found:
-            print(f"  {symbol.name} [{symbol.kind}] -> {symbol.import_path}")
-        show_copy_imports(unique_found, requested_path=requested_path)
+            print(f'  {symbol.name} [{symbol.kind}] -> {symbol.import_path}')
+        show_copy_imports(unique_found, requested_path=requested_path, aliases=aliases)
         if len({s.import_path for s in unique_found}) > 1:
-            print("\nNOTE: symbols came from different source files, so Lowkey emitted separate valid imports.")
+            print()
+            print('NOTE: symbols came from different source files, so Lowkey emitted separate valid imports.')
         return 0
 
     if not tokens:
         tokens = search_tokens(query)
+
     if not tokens:
-        print("No import query provided.")
+        path_match = find_import_path(query, root, maps)
+        if path_match:
+            source, import_name = path_match
+            symbols = [s for s in all_symbols(root, maps) if s.import_path == import_name]
+            if symbols:
+                show_file((source, symbols))
+            else:
+                print()
+                print(f'SOURCE:      {source}')
+                print(f'IMPORT FILE: {import_name}')
+                print('COPY:')
+                print(f'  import "{import_name}";')
+            return 0
+        print('No import query provided.')
         return 2
 
     syms = all_symbols(root, maps)
-    exact = [
-        s for s in syms
-        if s.name.lower() in tokens or s.import_path.lower() in tokens
-    ]
-
+    exact = [s for s in syms if s.name.lower() in tokens or s.import_path.lower() in tokens]
     if len(exact) == 1:
         show_symbol(exact[0])
         return 0
@@ -912,17 +635,16 @@ def import_query(query: str, root: Path, maps) -> int:
         )[:3]
         print(f"No importable symbol or source file matches '{query.strip()}'.")
         if choices and difflib.SequenceMatcher(None, tokens[0], choices[0].lower()).ratio() >= 0.45:
-            print("Did you mean:")
+            print('Did you mean:')
             for name in choices:
-                print(f"  - {name}")
-        print("Try: lk import /<symbol>, lk import <symbol>, or lk import files")
+                print(f'  - {name}')
+        print('Try: lk import /<symbol>, lk import <symbol>, or lk import files')
         return 2
 
-    s = choose(matches, sym_render, "matching importable symbols")
+    s = choose(matches, sym_render, 'matching importable symbols')
     if s:
         show_symbol(s)
     return 0
-
 
 def run_category(category: str, root: Path, maps) -> int:
     cat = category.lower()
