@@ -14,6 +14,7 @@ from lowkey.solidity_connect_data import (
     UNIVERSAL_CONNECTION_LAB,
     _COMPREHENSIVE_CONNECTION_EDGES,
     find_micro_scene,
+    find_connection_scenes,
     is_known_concept,
     connection_route,
     canonicalize,
@@ -115,7 +116,7 @@ class SolidityConnectTests(unittest.TestCase):
             "static-array", "enum"
         )
         self.assertEqual(result, 0)
-        self.assertIn("Address → struct → enum/bytes/array → nested mapping", output)
+        self.assertIn("A mapping stores a struct with an enum, bytes, and arrays", output)
 
     def test_mapping_decode_hash_connection_is_not_fallback_graph_noise(self):
         result, output = self.render(
