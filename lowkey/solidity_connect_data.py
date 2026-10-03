@@ -1601,38 +1601,72 @@ contract Vault is Owned {
         "call": 'new Vault("Savings");  // name = "Savings", owner = deployer',
     },
     {
-        "keys": {"structs", "mapping", "arrays"},
-        "title": "A mapping stores a struct that owns an array",
-        "story": "A mapping chooses a Profile by address. The Profile is a struct, and one field is a dynamic array. A function looks up that struct and pushes into the array.",
-        "code": """struct Profile {
+    {
+        "keys": {"structs", "mapping", "nested-mapping", "arrays", "enum", "bytes", "address"},
+        "title": "A mapping stores a struct with an enum, bytes, and arrays",
+        "story": "An address selects a struct from a mapping. The struct contains an enum, raw bytes, and a dynamic array. A second mapping uses two keys, while separate arrays show dynamic versus fixed size.",
+        "code": """enum Status { Open, Done }
+
+struct Profile {
     address owner;
     uint256 score;
+    Status status;
+    bytes note;
     uint256[] tags;
 }
 
 mapping(address => Profile) public profiles;
+mapping(address => mapping(bytes32 => uint256)) public balances;
 
-function addTag(address user_, uint256 tag_) external {
+address[] public users;
+address[3] public fixedUsers;
+
+function update(
+    address user_,
+    uint256 score_,
+    Status status_,
+    bytes calldata note_,
+    bytes32 id_,
+    uint256[] calldata tags_
+) external {
     Profile storage profile = profiles[user_];
+
     profile.owner = user_;
-    profile.tags.push(tag_);
+    profile.score = score_;
+    profile.status = status_;
+    profile.note = note_;
+    profile.tags = tags_;
+
+    balances[user_][id_] = score_;
+    users.push(user_);
 }""",
         "variables": [
-            ("state", "mapping(address => Profile)", "profiles", "profiles[user_]", "Address key selects a stored Profile."),
-            ("struct field", "address", "owner", "user_", "Address inside Profile."),
-            ("struct field", "uint256", "score", "22", "Numeric field inside Profile."),
-            ("struct field", "uint256[]", "tags", "[1, 2]", "Dynamic array inside Profile."),
-            ("parameter", "address", "user_", "0xAlice", "Mapping key."),
-            ("parameter", "uint256", "tag_", "99", "Value pushed into the array."),
-            ("local", "Profile storage", "profile", "profiles[user_]", "Storage reference; writes persist."),
+            ("state", "mapping(address => Profile)", "profiles", "profiles[user_]", "Address key selects a whole Profile."),
+            ("state", "mapping(address => mapping(bytes32 => uint256))", "balances", "balances[user_][id_]", "Two keys select one uint256."),
+            ("state", "address[]", "users", "[alice, ...]", "Dynamic array; its length can grow."),
+            ("state", "address[3]", "fixedUsers", "[alice, bob, carol]", "Fixed/static array with exactly three slots."),
+            ("struct field", "address", "owner", "user_", "Address stored in Profile."),
+            ("struct field", "uint256", "score", "22", "Numeric field stored in Profile."),
+            ("struct field", "Status", "status", "Status.Done", "Enum value stored in Profile."),
+            ("struct field", "bytes", "note", 'hex"6869"', "Dynamic bytes stored in Profile."),
+            ("struct field", "uint256[]", "tags", "[1, 2, 3]", "Dynamic array stored inside Profile."),
+            ("parameter", "address", "user_", "0xAlice", "Outer mapping key."),
+            ("parameter", "uint256", "score_", "22", "Number written into the struct and nested mapping."),
+            ("parameter", "Status", "status_", "Status.Done", "Enum supplied to the update."),
+            ("parameter", "bytes calldata", "note_", 'hex"6869"', "Read-only raw bytes input."),
+            ("parameter", "bytes32", "id_", 'bytes32("A")', "Inner mapping key."),
+            ("parameter", "uint256[] calldata", "tags_", "[1, 2, 3]", "Dynamic array input."),
+            ("local", "Profile storage", "profile", "profiles[user_]", "Storage reference; field writes persist."),
         ],
         "flow": [
-            "user_ is used as the mapping key.",
-            "The mapping returns a Profile storage reference.",
-            "profile.tags selects the array field inside that struct.",
-            "push(99) grows the stored dynamic array.",
+            "user_ is the address key for profiles[user_].",
+            "The lookup returns a Profile storage reference, so profile.* writes the stored record.",
+            "status_ becomes the enum field and note_ becomes the raw bytes field.",
+            "tags_ replaces the Profile's dynamic array.",
+            "balances[user_][id_] performs an outer and inner mapping lookup before storing score_.",
+            "users.push(user_) grows the dynamic array; fixedUsers stays exactly length 3.",
         ],
-        "call": "addTag(alice, 99);  // profiles[alice].tags becomes [1, 2, 99]",
+        "call": 'update(alice, 22, Status.Done, hex"6869", bytes32("A"), [1, 2, 3]);',
     },
     {
         "keys": {"mapping", "keccak256", "abi.encode"},
