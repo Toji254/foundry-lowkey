@@ -552,6 +552,78 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertEqual(contract, "ConfidencePoolFactory")
             self.assertEqual(resolved_artifact, str(artifact))
 
+    def test_project_lab_prefers_broadcast_records_from_executed_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePoolFactory.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePoolFactory {}",
+                encoding="utf-8",
+            )
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.26; contract LocalAudit {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePoolFactory",
+                    "sourceName": "src/ConfidencePoolFactory.sol",
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0xdeadbeef"},
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            proxy = "0x" + "1" * 40
+            implementation = "0x" + "2" * 40
+            unrelated = "0x" + "3" * 40
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x1234", 0)
+                if args[:2] == ["implementation", proxy]:
+                    return lk.CommandResult(implementation, 0)
+                if args[:2] == ["code", implementation]:
+                    return lk.CommandResult("0xnotartifact", 0)
+                return lk.CommandResult("", 0)
+
+            deployments = [
+                {
+                    "contract": "Unrelated",
+                    "address": unrelated,
+                    "file": str(root / "broadcast" / "Other.s.sol" / "31337" / "run-latest.json"),
+                    "time": 999,
+                    "run_timestamp": 999,
+                },
+                {
+                    "contract": "ConfidencePoolFactory",
+                    "address": implementation,
+                    "file": str(root / "broadcast" / "script" / "LocalAudit.s.sol" / "31337" / "run-latest.json"),
+                    "time": 100,
+                    "run_timestamp": 100,
+                },
+            ]
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast),                  patch.object(lk, "discover_deployments", return_value=deployments):
+                contract, resolved_artifact, error = lk._validate_project_lab_target(
+                    config,
+                    root,
+                    "http://127.0.0.1:8545",
+                    proxy,
+                    provenance_script=script,
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(contract, "ConfidencePoolFactory")
+            self.assertEqual(resolved_artifact, str(artifact))
+
     def test_project_lab_rejects_unmatched_broadcast_deployment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
