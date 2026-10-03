@@ -179,6 +179,39 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("lastAttackSuccess = ok;", body)
         self.assertIn('console2.log("TARGET_OUTER_SUCCESS", hostile.lastAttackSuccess());', body)
         self.assertIn('console2.log("ATTACKER_WITHDRAW_RECEIVED", received);', body)
+    def test_family_generator_exception_becomes_blocked(self):
+        target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)
+        fn = {
+            "name": "initialize",
+            "inputs": [{"name": "accounts", "type": "address[]"}],
+            "stateMutability": "nonpayable",
+        }
+
+        def exploding(*args, **kwargs):
+            raise ValueError("complex ABI type 'address[]' needs a specialized attack generator")
+
+        original = break_engine._run_family
+        break_engine._run_family = exploding
+        try:
+            result = break_engine._safe_run_family(
+                type("Host", (), {"format_signature": lambda self, item: "initialize(address[])"})(),
+                {},
+                "http://127.0.0.1:8545",
+                target,
+                fn,
+                "reentrancy",
+                {},
+                None,
+                {},
+            )
+        finally:
+            break_engine._run_family = original
+
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.family, "reentrancy")
+        self.assertIn("Attack generator failed safely", result.summary)
+        self.assertEqual(result.detail["error_type"], "ValueError")
+
     def test_result_parser_surfaces_missing_telemetry(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
