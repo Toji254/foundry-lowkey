@@ -3029,23 +3029,7 @@ def _norm(value: str) -> str:
 
 def find_topic(query: str):
     key = _norm(query)
-    direct = _ALIAS.get(key)
-    if direct:
-        return direct
-
-    ranked = []
-    for topic in TOPICS:
-        names = [topic["name"]] + topic["aliases"]
-        score = max(
-            difflib.SequenceMatcher(None, key, _norm(name)).ratio()
-            for name in names
-        )
-        hay = " ".join(names).lower()
-        if key and key in _norm(hay):
-            score = max(score, 0.9)
-        ranked.append((score, topic))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return ranked[0][1] if ranked and ranked[0][0] >= 0.45 else None
+    return _ALIAS.get(key)
 
 
 def search(query: str):
