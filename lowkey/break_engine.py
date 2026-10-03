@@ -73,6 +73,31 @@ ATTACK_FAMILIES = {
         "basis": "arbitrary recipients, low-level calls and callback surfaces",
         "priority": 8,
     },
+    "oracle": {
+        "title": "Oracle / price manipulation",
+        "basis": "staleness, manipulable spot prices, feed assumptions and price-dependent accounting",
+        "priority": 10,
+    },
+    "economic": {
+        "title": "Economic / flash-loan-shaped abuse",
+        "basis": "temporary capital, invariant breaks across pools, fees, rewards and collateral",
+        "priority": 11,
+    },
+    "erc20": {
+        "title": "Non-standard token integration abuse",
+        "basis": "fee-on-transfer, rebasing, false-returning, callback and allowance assumptions",
+        "priority": 12,
+    },
+    "proxy": {
+        "title": "Proxy / implementation / storage abuse",
+        "basis": "delegatecall context, initialization, upgrade authority and storage assumptions",
+        "priority": 13,
+    },
+    "storage": {
+        "title": "Storage corruption / invariant drift",
+        "basis": "state-slot assumptions, packed storage, mappings and cross-contract state",
+        "priority": 14,
+    },
     "signature": {
         "title": "Signature / nonce / authorization replay",
         "basis": "permit/execute/meta-tx style surfaces and replayable calldata",
@@ -451,6 +476,11 @@ ATTACK FAMILIES
   callback      hostile external-call behavior and return handling
   signature     permit/meta-tx/nonce/replay-shaped surfaces
   dos           repeated/pathological execution and griefing probes
+  oracle        oracle/price dependency probes
+  economic      economic and flash-loan-shaped probes
+  erc20         non-standard token assumption probes
+  proxy         proxy/initialization/implementation probes
+  storage       storage/invariant probes
 
 MODES
   --system      Attack every live target Lowkey knows for this project/system.
@@ -474,20 +504,23 @@ OUTPUT
 """
 
 
-def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str) -> list[str]:
+def _anvil_accounts(host, config) -> list[str]:
+    try:
+        info = host.anvil_rpc_info(config)
+        accounts = info.get("accounts", []) if isinstance(info, dict) else []
+        return [x for x in accounts if host.is_address(x)]
+    except Exception:
+        return []
+
+
+def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str, config=None) -> list[str]:
     args = []
+    accounts = _anvil_accounts(host, config or {})
+    fallback = accounts[0] if accounts else "0x" + "11" * 20
     for item in fn.get("inputs") or []:
         ptype = str(item.get("type") or "").lower()
-        internal = str(item.get("internalType") or "").lower()
         if ptype == "address":
-            # Use a stable local actor so generic calls can reach user-specific branches.
-            actors = host.configured_actor_addresses if hasattr(host, "configured_actor_addresses") else []
-            if actors:
-                args.append(actors[0][1])
-            else:
-                info = host.anvil_rpc_info
-                accounts = info({}).get("accounts", []) if callable(info) else []
-                args.append(accounts[0] if accounts else "0x" + "11" * 20)
+            args.append(fallback)
         elif ptype == "bool":
             args.append("true" if mode == "one" else "false")
         elif ptype.startswith("uint"):
@@ -529,9 +562,9 @@ def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str) -> list
             # for probing missing non-empty constraints.
             args.append("[]")
         elif ptype.startswith("tuple"):
-            # Generic tuple attacks are emitted as a blocked edge-case rather than
-            # inventing a protocol-specific struct encoding.
-            args.append("[]")
+            # Generic tuple/struct values are protocol-specific; do not fabricate
+            # an apparently valid tuple that could produce misleading evidence.
+            raise ValueError("tuple/struct argument requires a protocol-specific generator")
         else:
             args.append("0")
     return args
@@ -650,7 +683,7 @@ contract LowkeyBreakRepeat is Test {{
 """
 
 
-def _render_access_test(target: Target, signature: str, calldata: str, value: str):
+def _render_access_test(target: Target, signature: str, calldata: str, value: str, break_on_success: bool = True):
     target_lit = f"address(0x{target.address[2:]})"
     value_lit = "0" if value in {"0", "0wei"} else "1"
     return _render_common_header() + f"""
@@ -668,7 +701,7 @@ contract LowkeyBreakAccess is Test {{
         console2.log("LOWKEY_BREAK_FAMILY", "access");
         console2.log("SUCCESS", success);
         console2.log("RETURNDATA_LENGTH", returndata.length);
-        console2.log("LOWKEY_BREAK", success);
+        console2.log("LOWKEY_BREAK", break_on_success && success);
     }}
 }}
 """
@@ -736,20 +769,38 @@ contract LowkeyBreakTime is Test {{
 """
 
 
-def _render_reentrancy_test(target: Target, signature: str, attacker_signature: str, args_expr: list[str], value: str, depth: int):
+def _basic_solidity_expr(ptype: str, value: str) -> str:
+    raw = str(value)
+    lower = ptype.lower()
+    if lower == "address":
+        return f"address({raw})"
+    if lower == "bool":
+        return "true" if raw.lower() == "true" else "false"
+    if lower.startswith(("uint", "int", "bytes")):
+        return raw
+    raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
+
+
+def _render_reentrancy_test(target: Target, fn: dict[str, Any], signature: str, values: list[str], depth: int):
     target_lit = f"address(0x{target.address[2:]})"
-    value_lit = "0" if value in {"0", "0wei"} else "1"
-    selector = None
-    try:
-        import re as _re
-        selector = "0x" + hashlib.sha256(signature.encode()).hexdigest()[:8]
-    except Exception:
-        selector = "0x00000000"
-    # The selector is replaced by a literal generated from the real ABI in the caller.
+    params = list(fn.get("inputs") or [])
+    expressions = [
+        _basic_solidity_expr(str(item.get("type") or ""), str(value))
+        for item, value in zip(params, values)
+    ]
+    encoded_args = [
+        "address(hostile)" if str(item.get("type") or "").lower() == "address" else expr
+        for item, expr in zip(params, expressions)
+    ]
+    payload_expr = (
+        f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
+        if encoded_args else f'abi.encodeWithSignature("{signature}")'
+    )
+
     return _render_common_header() + f"""
 contract LowkeyBreakReentrant {{
     address public immutable target;
-    bytes public payload;
+    bytes public immutable payload;
     uint256 public attempts;
     uint256 public successes;
 
@@ -758,8 +809,9 @@ contract LowkeyBreakReentrant {{
         payload = _payload;
     }}
 
-    function attack() external payable returns (bool outerSuccess) {{
-        (outerSuccess, ) = target.call{{value: msg.value}}(payload);
+    function attack() external payable {{
+        (bool ok, ) = target.call{{value: msg.value}}(payload);
+        require(ok, "outer attack reverted");
     }}
 
     receive() external payable {{
@@ -780,36 +832,39 @@ contract LowkeyBreakReentrant {{
 
 contract LowkeyBreakReentrancy is Test {{
     address constant TARGET = {target_lit};
-    address constant ATTACKER = address(0xBEEF000000000000000000000000000000000042);
 
     function test_break_reentrancy() public {{
-        vm.deal(ATTACKER, 100 ether);
-
-        // Lowkey's generic callback attacker is intentionally deployed inside
-        // the isolated Forge fork. No production state is touched.
-        bytes memory payload = abi.encodePacked(hex"{attacker_signature}");
-        LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET, payload);
-
+        LowkeyBreakReentrant hostile;
+        bytes memory payload = {payload_expr};
+        hostile = new LowkeyBreakReentrant(TARGET, payload);
         vm.deal(address(hostile), 100 ether);
-        uint256 before = address(hostile).balance;
-        (bool outer, ) = address(hostile).call{{value: {value_lit}}}(abi.encodeWithSignature("attack()"));
-        uint256 afterBalance = address(hostile).balance;
-        uint256 received = afterBalance > before ? afterBalance - before : 0;
+
+        uint256 beforeHostile = address(hostile).balance;
+        uint256 beforeTarget = TARGET.balance;
+
+        (bool outer, ) = address(hostile).call{{value: 1 wei}}(
+            abi.encodeWithSignature("attack()")
+        );
+
+        uint256 afterHostile = address(hostile).balance;
+        uint256 afterTarget = TARGET.balance;
+        uint256 received = afterHostile > beforeHostile ? afterHostile - beforeHostile : 0;
+        uint256 targetLoss = beforeTarget > afterTarget ? beforeTarget - afterTarget : 0;
 
         console2.log("LOWKEY_BREAK_FAMILY", "reentrancy");
         console2.log("OUTER_SUCCESS", outer);
         console2.log("REENTRY_ATTEMPTS", hostile.attempts());
         console2.log("REENTRY_SUCCESSES", hostile.successes());
-        console2.log("ATTACKER_CONTRACT_GAIN", received);
+        console2.log("ATTACKER_RECEIVED", received);
+        console2.log("TARGET_LOSS", targetLoss);
 
-        if (hostile.successes() > 0 && received > 0) {{
+        if (hostile.successes() > 0 && received > 0 && targetLoss > 0) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
             console2.log("LOWKEY_BREAK", false);
         }}
     }}
 }}
-"""
 
 
 def _result_from_output(
@@ -924,7 +979,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             target, signature, calldata, value, family, seed_fund
         )
     elif family == "access":
-        body = _render_access_test(target, signature, calldata, value)
+        body = _render_access_test(target, signature, calldata, value, break_on_success=True)
     elif family == "boundary":
         zero_values = _make_value(host, fn, rng, "zero")
         max_values = _make_value(host, fn, rng, "max")
@@ -949,21 +1004,20 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 family, target.contract, target.address, signature, "BLOCKED",
                 "Generic reentrancy payload generation is deferred for complex ABI types.",
             )
-        body = _render_reentrancy_test(
-            target, signature, calldata, value, opts.get("depth", 3)
-        )
-        # Replace the placeholder payload with the real calldata in the generated
-        # test. The hostile contract sees exactly the same bytes on every reentry.
-        body = body.replace(
-            f'abi.encodePacked(hex"{hashlib.sha256(signature.encode()).hexdigest()[:8]}")',
-            f'hex"{calldata[2:]}"',
-        )
-    elif family in {"upgrade", "callback", "signature", "dos"}:
-        # These families require protocol-specific setup more often than the generic
-        # executor can safely infer. We still probe the exact function with the same
-        # attacker-controlled values and record the evidence; only explicit BREAK
-        # conditions stop the campaign.
-        body = _render_access_test(target, signature, calldata, value)
+        try:
+            body = _render_reentrancy_test(
+                target, fn, signature, values, opts.get("depth", 3)
+            )
+        except ValueError as error:
+            return AttackResult(
+                family, target.contract, target.address, signature, "BLOCKED", str(error)
+            )
+    elif family == "upgrade":
+        body = _render_access_test(target, signature, calldata, value, break_on_success=True)
+    elif family in {"callback", "signature", "dos", "oracle", "economic", "erc20", "proxy", "storage"}:
+        # Generic success is only an observation. These families need a
+        # protocol-specific invariant before Lowkey may call it a BREAK.
+        body = _render_access_test(target, signature, calldata, value, break_on_success=False)
     else:
         return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "Unknown family.")
 
