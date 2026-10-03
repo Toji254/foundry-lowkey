@@ -7,34 +7,45 @@ from lowkey.solidity_cheat_data import CONTRACT_LABS
 
 
 class SolidityCheatLabCompileTests(unittest.TestCase):
-    """Compile every explicit standalone cheat lab in one Foundry project."""
+    """Compile every explicit standalone cheat lab in its own tiny Foundry project."""
 
     def test_standalone_labs_compile(self):
-        with tempfile.TemporaryDirectory(prefix="lowkey-cheat-labs-") as td:
-            root = Path(td)
-            src = root / "src"
-            src.mkdir()
-            (root / "foundry.toml").write_text(
-                '[profile.default]\nsrc = "src"\nsolc_version = "0.8.20"\n',
-                encoding="utf-8",
-            )
-            for name, source in CONTRACT_LABS.items():
-                safe = "".join(ch if ch.isalnum() else "_" for ch in name)
-                (src / f"{safe}.sol").write_text(
-                    "// SPDX-License-Identifier: UNLICENSED\n"
-                    "pragma solidity ^0.8.20;\n\n" + source + "\n",
+        for name, source in CONTRACT_LABS.items():
+            with self.subTest(lab=name), tempfile.TemporaryDirectory(prefix=f"lowkey-cheat-{name}-") as td:
+                root = Path(td)
+                src = root / "src"
+                src.mkdir()
+                (root / "foundry.toml").write_text(
+                    '[profile.default]
+src = "src"
+solc_version = "0.8.20"
+',
                     encoding="utf-8",
                 )
-            proc = subprocess.run(
-                ["forge", "build", "--root", str(root), "--offline"],
-                text=True,
-                capture_output=True,
-            )
-            self.assertEqual(
-                proc.returncode,
-                0,
-                f"standalone cheat labs failed to compile:\n{proc.stdout}\n{proc.stderr}",
-            )
+                safe = "".join(ch if ch.isalnum() else "_" for ch in name)
+                (src / f"{safe}.sol").write_text(
+                    "// SPDX-License-Identifier: UNLICENSED
+"
+                    "pragma solidity ^0.8.20;
+
+"
+                    + source
+                    + "
+",
+                    encoding="utf-8",
+                )
+                proc = subprocess.run(
+                    ["forge", "build", "--root", str(root)],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual(
+                    proc.returncode,
+                    0,
+                    f"Lab {name} failed to compile:
+{proc.stdout}
+{proc.stderr}",
+                )
 
 
 if __name__ == "__main__":
