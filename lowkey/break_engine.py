@@ -1267,6 +1267,31 @@ def _render_reentrancy_test(
         console2.log("ENTITLEMENT_AFTER_SETUP", entitlementAfterSetup);
 """
 
+    entitlement_before_attack_block = ""
+    entitlement_after_attack_block = ""
+    if entitlement_signature:
+        entitlement_before_attack_block = f"""
+        {{
+            (bool ok, bytes memory data) = TARGET.staticcall(
+                abi.encodeWithSignature("{entitlement_signature}", address(hostile))
+            );
+            entitlementBeforeAttackOk = ok && data.length >= 32;
+            if (entitlementBeforeAttackOk) {{
+                entitlementBeforeAttack = abi.decode(data, (uint256));
+            }}
+        }}
+"""
+        entitlement_after_attack_block = f"""
+        {{
+            (bool ok, bytes memory data) = TARGET.staticcall(
+                abi.encodeWithSignature("{entitlement_signature}", address(hostile))
+            );
+            if (ok && data.length >= 32) {{
+                entitlementAfterAttack = abi.decode(data, (uint256));
+            }}
+        }}
+"""
+
     return _render_common_header() + f"""
 contract LowkeyBreakReentrant {{
     address public immutable target;
@@ -1333,7 +1358,7 @@ contract LowkeyBreakReentrancy is Test {{
         uint256 entitlementBeforeAttack = 0;
         bool entitlementBeforeAttackOk = false;
 
-        ENTITLEMENT_READ_BEFORE_ATTACK
+{entitlement_before_attack_block}
 
         (bool outer, ) = address(hostile).call{{value: 1 wei}}(
             abi.encodeWithSignature("attack()")
@@ -1342,7 +1367,7 @@ contract LowkeyBreakReentrancy is Test {{
         uint256 afterHostile = address(hostile).balance;
         uint256 afterTarget = TARGET.balance;
         uint256 entitlementAfterAttack = 0;
-        ENTITLEMENT_READ_AFTER_ATTACK
+{entitlement_after_attack_block}
 
         uint256 outerInput = 1 wei;
         uint256 received = afterHostile > beforeHostile + outerInput
@@ -1354,6 +1379,9 @@ contract LowkeyBreakReentrancy is Test {{
         console2.log("HOSTILE_WRAPPER_SUCCESS", outer);
         console2.log("TARGET_SETUP_SUCCESS", hostile.lastSeedSuccess());
         console2.log("TARGET_SETUP_RETURNDATA_LENGTH", hostile.lastSeedReturndata().length);
+        console2.log("TARGET_BALANCE_BEFORE_FUNDING", targetBalanceBeforeFunding);
+        console2.log("TARGET_BALANCE_BEFORE_SETUP", targetBalanceBeforeSetup);
+        console2.log("TARGET_BALANCE_AFTER_SETUP", targetBalanceAfterSetup);
         console2.logBytes(hostile.lastSeedReturndata());
         console2.log("TARGET_OUTER_SUCCESS", hostile.lastAttackSuccess());
         console2.log("TARGET_OUTER_RETURNDATA_LENGTH", hostile.lastAttackReturndata().length);
@@ -1363,9 +1391,20 @@ contract LowkeyBreakReentrancy is Test {{
         console2.log("REENTRY_ATTEMPTS", hostile.attempts());
         console2.log("REENTRY_SUCCESSES", hostile.successes());
         console2.log("ATTACKER_WITHDRAW_RECEIVED", received);
+        console2.log("ENTITLEMENT_BEFORE_ATTACK", entitlementBeforeAttack);
+        console2.log("ENTITLEMENT_BEFORE_ATTACK_READ_OK", entitlementBeforeAttackOk);
+        console2.log("ENTITLEMENT_AFTER_ATTACK", entitlementAfterAttack);
         console2.log("TARGET_LOSS", targetLoss);
 
-        if (hostile.successes() > 0 && received > 1 wei && targetLoss > 1 wei) {{
+        bool exceededEntitlement = entitlementBeforeAttackOk
+            && hostile.successes() > 0
+            && received > entitlementBeforeAttack;
+        bool genericValueBreak = !entitlementBeforeAttackOk
+            && hostile.successes() > 0
+            && received > 1 wei
+            && targetLoss > 1 wei;
+
+        if (exceededEntitlement || genericValueBreak) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
             console2.log("LOWKEY_BREAK", false);
