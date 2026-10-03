@@ -1567,7 +1567,7 @@ contract Reader {
     },
     {
         "keys": {"imports", "constructor"},
-        "title": "An import exposes a base constructor",
+        "title": "Import → base/interface → constructor chain",
         "story": "import makes a declaration available; deployment calls the child constructor, which can pass a value to an imported base constructor.",
         "code": """// Owned.sol
 contract Owned {
