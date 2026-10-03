@@ -56,8 +56,9 @@ INSTALL INTELLIGENCE:
     Explicitly run the verified Forge install command, then re-run the
     lookup to resolve the actual source/remapping.
 
-The helper is standalone: it does not select targets, change RPC/ABI/audit
-state, send transactions, or write project files.
+The lookup mode is standalone: it does not select targets, change RPC/ABI/audit
+state, send transactions, or write project files. Only explicit --install mode
+runs a verified Forge dependency install command.
 """
 
 
@@ -387,6 +388,26 @@ def forge_repo_slug(remote: str | None) -> str | None:
     return None
 
 
+def install_status(symbol: Symbol, root: Path) -> str:
+    if symbol.source.name.startswith("(reference only"):
+        meta = known_metadata(symbol.name)
+        package_dirs = {
+            "OpenZeppelin Contracts": "openzeppelin-contracts",
+            "Chainlink Contracts (chainlink-evm)": "chainlink-evm",
+            "forge-std": "forge-std",
+        }
+        package_dir = meta.get("package_dir") or package_dirs.get(meta.get("package", ""))
+        if package_dir and (root / "lib" / package_dir).is_dir():
+            return f"INSTALLED at lib/{package_dir}"
+        return "NOT INSTALLED"
+    package_root = package_root_for(symbol.source, root)
+    if package_root:
+        return f"INSTALLED at {package_root.relative_to(root).as_posix()}"
+    if symbol.source.exists():
+        return "LOCAL PROJECT SOURCE"
+    return "SOURCE NOT PRESENT"
+
+
 def install_guidance(symbol: Symbol, root: Path) -> tuple[str, str]:
     meta = known_metadata(symbol.name)
     if meta.get("forge_install"):
@@ -470,15 +491,40 @@ def usage_guidance(s: Symbol) -> tuple[str, list[str], str, str]:
 
 def install_symbols(symbols: list[Symbol], root: Path) -> int:
     commands: dict[str, tuple[str, str]] = {}
+    skipped = []
+    unavailable = []
+
     for symbol in symbols:
         package, command = install_guidance(symbol, root)
-        if command.startswith("forge install "):
+        status = install_status(symbol, root)
+        if status.startswith("INSTALLED") or status == "LOCAL PROJECT SOURCE":
+            skipped.append((package, status))
+        elif command.startswith("forge install "):
             commands[command] = (package, command)
+        else:
+            unavailable.append((package, status))
+
+    if skipped:
+        print()
+        print("INSTALL STATUS")
+        print("--------------")
+        for package, status in skipped:
+            print(f"  SKIP: {package} — {status}")
+
+    if unavailable:
+        print()
+        print("NO AUTOMATIC INSTALL")
+        print("--------------------")
+        for package, status in unavailable:
+            print(f"  {package}: {status}")
 
     if not commands:
+        if skipped and not unavailable:
+            print()
+            print("Everything requested is already available; nothing was installed.")
+            return 0
         print()
         print("No safe automatic install command is available for the requested symbol(s).")
-        print("They may already be local project sources or a dependency without a verified Git remote.")
         return 2
 
     print()
@@ -694,6 +740,7 @@ def show_symbol(s: Symbol, root: Path | None = None):
     why, when = explain(s)
     how, use_cases, example, audit = usage_guidance(s)
     package, forge_command = install_guidance(s, root)
+    status = install_status(s, root)
     print()
     print(f"NAME:       {s.name}")
     print(f"TYPE:       {s.kind}")
@@ -702,6 +749,7 @@ def show_symbol(s: Symbol, root: Path | None = None):
     print(f"WHY:        {why}")
     print(f"WHEN:       {when}")
     print(f"PACKAGE:    {package}")
+    print(f"STATUS:     {status}")
     print(f"FORGE:      {forge_command}")
     print(f"HOW:        {how}")
     if use_cases:
