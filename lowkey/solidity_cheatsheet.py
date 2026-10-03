@@ -3014,6 +3014,797 @@ stopHoax();""",
 )
 
 
+
+# ---------------------------------------------------------------------------
+# LEARNING-FIRST EXTENSIONS
+# ---------------------------------------------------------------------------
+
+add(
+    "for", ["for-loop", "counted-loop"], "CONTROL FLOW",
+    "A counted loop with an initializer, a condition, an update step, and a body.",
+    "Start at 0, check whether you may continue, do the work, then move to the next item.",
+    """for (uint256 i = 0; i < users.length; i++) {
+    // users[i]
+}""",
+    """contract ForExample {
+    uint256[] public numbers;
+
+    function addNumbers(uint256 count) external {
+        for (uint256 i = 0; i < count; i++) {
+            numbers.push(i);
+        }
+    }
+
+    function sum() external view returns (uint256 total) {
+        for (uint256 i = 0; i < numbers.length; i++) {
+            total += numbers[i];
+        }
+    }
+}""",
+    [
+        "Initializer runs once: uint256 i = 0.",
+        "Condition is checked before each iteration: i < numbers.length.",
+        "Body runs when the condition is true.",
+        "Post step runs after the body: i++.",
+        "When the condition becomes false, the loop ends.",
+    ],
+    audit="A loop bounded by attacker-controlled data can become a gas or denial-of-service problem.",
+    gotchas="Solidity has no native foreach keyword; 'for each' is normally an indexed for loop.",
+)
+
+add(
+    "while", ["while-loop"], "CONTROL FLOW",
+    "A loop that checks its condition before every pass.",
+    "Ask the guard first: should I keep going?",
+    """while (i < limit) {
+    i++;
+}""",
+    """contract WhileExample {
+    function count(uint256 limit)
+        external
+        pure
+        returns (uint256 i)
+    {
+        while (i < limit) {
+            i++;
+        }
+    }
+}""",
+    [
+        "Check the condition.",
+        "Run the body when true.",
+        "Change the state used by the condition.",
+        "Check again.",
+    ],
+    audit="An unreachable or attacker-controlled exit condition can make a while loop consume all available gas.",
+)
+
+add(
+    "do-while", ["do while", "do-while-loop"], "CONTROL FLOW",
+    "A loop that executes its body once before checking whether it should repeat.",
+    "Do it once, then ask whether another round is needed.",
+    """do {
+    i++;
+} while (i < limit);""",
+    """contract DoWhileExample {
+    function count(uint256 limit)
+        external
+        pure
+        returns (uint256 i)
+    {
+        do {
+            i++;
+        } while (i < limit);
+    }
+}""",
+    [
+        "Enter the body immediately.",
+        "Run the body once.",
+        "Evaluate the while condition.",
+        "Repeat only when the condition is true.",
+    ],
+    gotchas="With limit == 0, the body still executes once. That is the key difference from while.",
+)
+
+add(
+    "for-each", ["foreach", "for-every", "iterate-array"], "CONTROL FLOW",
+    "Solidity has no foreach keyword. The usual pattern is for with an index.",
+    "For every item, use its array index to fetch that item.",
+    """for (uint256 i = 0; i < users.length; i++) {
+    address user = users[i];
+}""",
+    """contract ForEachExample {
+    address[] public users;
+    mapping(address => uint256) public points;
+
+    function reward(uint256 amount) external {
+        for (uint256 i = 0; i < users.length; i++) {
+            points[users[i]] += amount;
+        }
+    }
+}""",
+    [
+        "Keep the iterable items in an array.",
+        "Start at index zero.",
+        "Stop at users.length.",
+        "Read the current item with users[i].",
+        "Perform the same action for that item.",
+    ],
+    audit="Large arrays make this pattern a common gas and DoS review point.",
+    gotchas="Mappings are not enumerable: they do not expose a list of keys you can loop over.",
+)
+
+add(
+    "loop-comparison", ["for-vs-while", "loop-compare"], "CONTROL FLOW",
+    "A side-by-side comparison of for, while, and do-while.",
+    "for = counted checklist; while = condition first; do-while = guaranteed first pass.",
+    """for (init; condition; update) { ... }
+
+while (condition) { ... }
+
+do { ... } while (condition);""",
+    """contract LoopComparison {
+    function useFor(uint256[] memory xs)
+        external
+        pure
+        returns (uint256 total)
+    {
+        for (uint256 i = 0; i < xs.length; i++) {
+            total += xs[i];
+        }
+    }
+
+    function useWhile(uint256 target)
+        external
+        pure
+        returns (uint256 i)
+    {
+        while (i < target) {
+            i++;
+        }
+    }
+
+    function useDoWhile(uint256 target)
+        external
+        pure
+        returns (uint256 i)
+    {
+        do {
+            i++;
+        } while (i < target);
+    }
+}""",
+    [
+        "Use for when an index or count naturally controls the loop.",
+        "Use while when the condition is the main idea and the number of passes is less direct.",
+        "Use do-while when one pass must happen before the first condition check.",
+        "For auditing, always identify how the loop eventually stops and whether an attacker controls its size.",
+    ],
+)
+
+add(
+    "globals", ["global-variables", "global-vars", "special-variables"], "GLOBAL VALUES",
+    "Special values and functions Solidity exposes without declaring them yourself.",
+    "Every call arrives with context: who called, what ETH arrived, what bytes arrived, and which block/transaction is executing.",
+    """msg.sender
+msg.value
+msg.data
+msg.sig
+block.timestamp
+block.number
+block.chainid
+tx.origin
+tx.gasprice
+gasleft()
+address(this).balance""",
+    """contract GlobalsExample {
+    function inspect() external payable returns (
+        address sender,
+        uint256 value,
+        bytes calldata data,
+        bytes4 sig,
+        uint256 timestamp,
+        uint256 number,
+        uint256 balance
+    ) {
+        return (
+            msg.sender,
+            msg.value,
+            msg.data,
+            msg.sig,
+            block.timestamp,
+            block.number,
+            address(this).balance
+        );
+    }
+}""",
+    [
+        "msg.sender = immediate caller of this message call.",
+        "msg.value = wei attached to this message call.",
+        "msg.data = complete calldata bytes.",
+        "msg.sig = first four bytes of msg.data, normally the function selector.",
+        "block.timestamp and block.number describe the current block context.",
+        "block.chainid identifies the chain.",
+        "tx.origin is the original transaction sender, not necessarily the immediate caller.",
+        "gasleft() reports remaining gas.",
+        "address(this).balance is the contract's current native-coin balance. address(this).amount is not a Solidity global.",
+    ],
+    audit="Treat msg.sender, tx.origin, msg.value, and block values as call context, not persistent state.",
+)
+
+add(
+    "globals-map", ["global-variable-map", "global-map"], "GLOBAL VALUES",
+    "A table you can scan when a contract uses a built-in context value.",
+    """NAME                 WHAT IT MEANS / WHEN YOU USE IT
+msg.sender             immediate caller
+msg.value              wei attached to this call
+msg.data               complete raw calldata
+msg.sig                first four calldata bytes
+block.timestamp        current block timestamp
+block.number           current block number
+block.chainid           current chain ID
+block.basefee          current base fee
+block.prevrandao       current beacon-derived value
+tx.origin              original transaction sender
+tx.gasprice             transaction gas price
+gasleft()               gas remaining
+address(this).balance  current contract native-coin balance""",
+    """contract GlobalMapExample {
+    function payment()
+        external
+        payable
+        returns (address who, uint256 sent, uint256 held)
+    {
+        return (msg.sender, msg.value, address(this).balance);
+    }
+}""",
+    [
+        "msg.* describes the current message/call frame.",
+        "block.* describes the current block.",
+        "tx.* describes transaction-wide context.",
+        "address(this).balance asks how much native currency this contract holds now.",
+        "Always ask whether you need the current call value or the contract's total balance.",
+    ],
+)
+
+add(
+    "mapping-types", ["mapping-type", "mapping-table", "mapping-reference"], "TYPES",
+    "A mapping type has a key type on the left and a value type on the right.",
+    "The key is the label you put inside []; the value is what the lookup gives you.",
+    """mapping(KeyType => ValueType) name;
+
+EXAMPLE:
+mapping(address => uint256) balances;
+
+LOOKUP:
+balances[msg.sender]""",
+    """contract MappingTypesExample {
+    mapping(address => uint256) public balances;
+
+    mapping(address => mapping(address => uint256))
+        public allowance;
+
+    function deposit() external payable {
+        balances[msg.sender] += msg.value;
+    }
+
+    function approve(address spender, uint256 amount) external {
+        allowance[msg.sender][spender] = amount;
+    }
+
+    function read() external view returns (uint256) {
+        return balances[msg.sender];
+    }
+}""",
+    [
+        "For mapping(address => uint256), the thing inside [] must be an address value.",
+        "The lookup result is a uint256 value.",
+        "In balances[msg.sender] = 100, msg.sender is the key and 100 is the value being stored.",
+        "A nested mapping uses another lookup: allowance[owner][spender].",
+        "Mappings are storage-only and do not give you an enumerable list of keys.",
+    ],
+    audit="Remember that a mapping can return a default value even when you never explicitly stored that key.",
+)
+
+add(
+    "struct-types", ["struct-type", "struct-table", "struct-fields"], "TYPES",
+    "A struct groups named fields; each field has a type and an actual value.",
+    "Think a form with named boxes. The type tells you what kind of thing each box accepts; the value is the data currently inside it.",
+    """struct Bounty {
+    address creator;
+    uint256 amount;
+    string description;
+    bytes32 solutionHash;
+    Status status;
+}""",
+    """contract StructTypesExample {
+    enum Status { Open, Claimed, Paid }
+
+    struct Bounty {
+        address creator;
+        address hunter;
+        uint256 amount;
+        string description;
+        bytes32 solutionHash;
+        Status status;
+    }
+
+    mapping(bytes32 => Bounty) public bounties;
+
+    function create(
+        bytes32 id,
+        uint256 amount,
+        string calldata description
+    ) external {
+        bounties[id] = Bounty({
+            creator: msg.sender,
+            hunter: address(0),
+            amount: amount,
+            description: description,
+            solutionHash: keccak256(bytes(description)),
+            status: Status.Open
+        });
+    }
+
+    function claim(bytes32 id) external {
+        Bounty storage b = bounties[id];
+        b.hunter = msg.sender;
+        b.status = Status.Claimed;
+    }
+}""",
+    [
+        "creator is a field and address is its field type.",
+        "msg.sender is the actual value assigned to creator.",
+        "amount is a field name in one place and a function parameter/value in another; context matters.",
+        "In amount: amount, the left amount is the struct field and the right amount is the value being put into it.",
+        "Bounty storage b is a reference to the real stored struct; changing b changes the stored record.",
+    ],
+)
+
+add(
+    "types-table", ["type-table", "type-map", "solidity-types"], "TYPES",
+    "A practical map of the Solidity type families you will repeatedly see.",
+    """FAMILY         EXAMPLES                         WHAT IT HOLDS
+uint / int      uint256 / int128                  numbers
+bool            bool                              true or false
+address         address / address payable         account/contract address
+bytesN          bytes32 / bytes4                  fixed-size bytes
+bytes / string  bytes / string                    dynamic bytes / text
+array           uint256[] / address[3]            ordered elements
+mapping         mapping(address => uint256)       key -> value lookup
+struct          struct User { ... }               named fields
+enum            enum Status { Open, Paid }        one named option
+contract        MyToken / IERC20                  contract-typed reference""",
+    """contract TypesTableExample {
+    uint256 public amount;
+    bool public active;
+    address public owner;
+    bytes32 public id;
+    string public note;
+    uint256[] public scores;
+
+    enum Status { Open, Paid }
+    Status public status;
+
+    struct User {
+        address account;
+        uint256 score;
+    }
+
+    User public user;
+}""",
+    [
+        "Ask what kind of thing you need to store or pass.",
+        "Simple copied values are usually value types.",
+        "Compound or dynamically-sized data uses reference types such as arrays, structs, bytes, and strings.",
+        "Use mappings for key-based lookup.",
+        "Use structs when several named fields describe one record.",
+    ],
+)
+
+add(
+    "calldata-deep", ["calldata-101", "call-data-explained"], "ABI",
+    "Calldata is the raw byte payload supplied with a contract call. The word is also used as a data location for read-only external input.",
+    "M-Pesa analogy: think of the API request body arriving as bytes. The first four bytes normally choose the function; the remaining bytes carry ABI-encoded arguments.",
+    """0x
+[4-byte function selector]
+[ABI-encoded argument 1]
+[ABI-encoded argument 2]
+...""",
+    """contract CalldataDeepExample {
+    uint256 public lastAmount;
+
+    function setAmount(uint256 amount) external {
+        lastAmount = amount;
+    }
+
+    function raw() external view returns (bytes calldata) {
+        return msg.data;
+    }
+
+    fallback(bytes calldata input) external {
+        bytes4 selector =
+            input.length >= 4 ? bytes4(input[:4]) : bytes4(0);
+        selector;
+    }
+}""",
+    [
+        "A caller supplies a byte payload to the contract.",
+        "The first four bytes normally identify a normal function.",
+        "The remaining bytes normally contain ABI-encoded arguments.",
+        "msg.data exposes the complete payload.",
+        "A parameter such as string calldata note is a read-only view of external call input.",
+        "Do not confuse the calldata data location with msg.data: one is a type/location declaration, the other is the complete current payload.",
+    ],
+    audit="Manual calldata parsing is security-sensitive around selectors, lengths, decoding, fallback routing, and arbitrary forwarding.",
+)
+
+add(
+    "call-data-layout", ["calldata-layout", "msg.data-layout", "abi-call-layout"], "ABI",
+    "A small visual model for how a normal ABI function call is laid out in calldata.",
+    "Selector first, arguments after it, all encoded into bytes.",
+    """CALL DATA
+0x
+|---- 4 bytes ----|-------------------------------|
+| function sig    | ABI-encoded arguments         |
+| selector        | uint/address/bytes/etc.       |
+""",
+    """contract CalldataLayout {
+    function set(uint256 amount, address user) external {
+        amount;
+        user;
+    }
+
+    fallback(bytes calldata input) external returns (bytes memory) {
+        bytes4 selector =
+            input.length >= 4 ? bytes4(input[:4]) : bytes4(0);
+
+        // input[4:] is the ABI-encoded body.
+        return abi.encode(selector, input[4:]);
+    }
+}""",
+    [
+        "Selector = first four bytes.",
+        "Argument bytes start immediately after the selector.",
+        "msg.sig gives the first four bytes.",
+        "msg.data gives the whole byte sequence.",
+        "A fallback bytes parameter receives that same full payload as input.",
+    ],
+)
+
+add(
+    "terminology", ["glossary", "terms", "solidity-glossary", "jargon"], "GLOSSARY",
+    "Plain-English explanations for the fancy words that show up in Solidity documentation and audits.",
+    "When a word sounds complicated, translate it into what data, control flow, storage, or calls are actually doing.",
+    """TERM                 PLAIN ENGLISH
+ternary              compact if/else that produces a value
+parameter            named input slot in a function definition
+argument              actual value passed to that slot
+expression            code that produces/refers to a value
+statement             an instruction
+state variable        persistent contract-level data
+local variable        temporary function-level data
+value type            copied value
+reference type        data handled through a location
+calldata              raw call input bytes
+ABI                    encoding/decoding rules for contract calls
+selector               first four calldata bytes
+callback               a call made back into another contract
+mutability             pure/view/payable/nonpayable permission
+visibility             who/where can access something
+storage slot            numbered persistent storage location
+packing                putting small values into one slot
+reentrancy              entering again before the first operation finishes
+delegatecall            run other code using this contract's storage
+invariant               property that should remain true""",
+    """contract TerminologyExample {
+    uint256 public stored; // state variable
+
+    function set(uint256 amount) external {
+        uint256 next = amount + 1; // local variable
+        stored = next;
+    }
+
+    function pick(bool ok)
+        external
+        pure
+        returns (uint256)
+    {
+        return ok ? 1 : 0; // ternary expression
+    }
+}""",
+    [
+        "Parameter = named slot in the function definition.",
+        "Argument = actual value supplied at the call site.",
+        "Expression = code that produces/refers to a value.",
+        "Statement = an executable instruction.",
+        "Calldata = raw incoming call bytes; calldata as a data location is read-only.",
+        "A ternary is just a value-producing condition: condition ? A : B.",
+    ],
+)
+
+add(
+    "ternary-deep", ["ternary-operator", "conditional-expression", "terniary"], "GLOSSARY",
+    "The ternary operator is a compact condition that chooses one of two values.",
+    "It is a tiny if/else that returns a value instead of opening a whole block.",
+    """condition ? valueWhenTrue : valueWhenFalse""",
+    """contract TernaryExample {
+    function fee(uint256 amount, bool vip)
+        external
+        pure
+        returns (uint256)
+    {
+        uint256 rate = vip ? 1 : 2;
+        return amount * rate / 100;
+    }
+}""",
+    [
+        "Evaluate the condition.",
+        "True -> choose the value before the colon.",
+        "False -> choose the value after the colon.",
+        "Because the expression produces a value, it can be assigned or returned.",
+    ],
+    gotchas="Use normal if/else when branches perform several statements or become difficult to read.",
+)
+
+add(
+    "parameter-vs-argument", ["parameter-argument", "params-vs-args"], "GLOSSARY",
+    "Parameter and argument are different parts of a function call.",
+    "Function definition = empty form. Function call = completed form.",
+    """function withdraw(uint256 amount) external { ... }
+// amount = parameter
+
+withdraw(1 ether);
+// 1 ether = argument""",
+    """contract ParameterArgumentExample {
+    function withdraw(uint256 amount) external {
+        require(amount > 0);
+    }
+
+    function demo() external {
+        this.withdraw(1 ether);
+    }
+}""",
+    [
+        "Look at the function definition: amount is the parameter.",
+        "Look at the call: 1 ether is the argument.",
+        "At execution time, the argument supplies the parameter's value.",
+    ],
+)
+
+for _topic in TOPICS:
+    if _topic["name"] in {
+        "loops", "receive", "fallback", "receive-vs-fallback",
+        "calls", "calldata", "storage-memory-calldata",
+        "msg-block-tx", "msg.value-vs-balance", "ternary", "types",
+    }:
+        _topic["_learning_ready"] = True
+
+_CONTRACT_LABS = {
+    "loops": """contract LoopLab {
+    function demo(uint256[] memory xs)
+        external
+        pure
+        returns (uint256 total)
+    {
+        for (uint256 i = 0; i < xs.length; i++) {
+            total += xs[i];
+        }
+    }
+}""",
+    "receive": """contract ReceiveLab {
+    event Received(address indexed from, uint256 amount, uint256 dataLength);
+
+    receive() external payable {
+        emit Received(msg.sender, msg.value, msg.data.length);
+    }
+}""",
+    "fallback": """contract FallbackLab {
+    event Routed(bytes4 selector, uint256 dataLength, uint256 value);
+
+    fallback(bytes calldata input) external payable {
+        bytes4 selector =
+            input.length >= 4 ? bytes4(input[:4]) : bytes4(0);
+        emit Routed(selector, input.length, msg.value);
+    }
+}""",
+    "receive-vs-fallback": """contract ReceiveFallbackLab {
+    event Path(string which, uint256 value, uint256 dataLength);
+
+    receive() external payable {
+        emit Path("receive", msg.value, msg.data.length);
+    }
+
+    fallback(bytes calldata input) external payable {
+        emit Path("fallback", msg.value, input.length);
+    }
+}""",
+    "calls": """interface ITarget {
+    function ping(uint256 x) external returns (uint256);
+}
+
+contract CallsLab {
+    function use(ITarget target, uint256 x)
+        external
+        returns (uint256)
+    {
+        return target.ping(x);
+    }
+}""",
+    "calldata": """contract CalldataLab {
+    function set(uint256 amount) external {
+        amount;
+    }
+
+    fallback(bytes calldata input) external returns (bytes memory) {
+        return input;
+    }
+}""",
+    "msg-block-tx": """contract ContextLab {
+    function inspect() external payable returns (
+        address,
+        uint256,
+        bytes calldata,
+        bytes4
+    ) {
+        return (msg.sender, msg.value, msg.data, msg.sig);
+    }
+}""",
+    "msg.value-vs-balance": """contract BalanceLab {
+    function observe() external payable returns (
+        uint256 sentNow,
+        uint256 totalHeld
+    ) {
+        return (msg.value, address(this).balance);
+    }
+}""",
+    "ternary": """contract TernaryLab {
+    function fee(uint256 amount, bool vip)
+        external
+        pure
+        returns (uint256)
+    {
+        return amount * (vip ? 1 : 2) / 100;
+    }
+}""",
+    "types": """contract TypesLab {
+    uint256 public amount;
+    bool public active;
+    address public owner;
+    bytes32 public id;
+    string public note;
+    uint256[] public scores;
+
+    enum Status { Open, Paid }
+    Status public status;
+
+    struct User {
+        address account;
+        uint256 score;
+    }
+
+    User public user;
+}""",
+}
+
+_TERM_DEFINITIONS = {
+    "ternary": "Compact if/else expression that produces a value.",
+    "parameter": "Named input slot in a function definition.",
+    "argument": "Actual value passed to a function parameter.",
+    "expression": "Code that evaluates to or refers to a value.",
+    "statement": "An executable instruction.",
+    "state variable": "Contract-level data that persists in storage.",
+    "local variable": "Temporary variable declared inside a function or scope.",
+    "value type": "A type whose values are copied when assigned or passed.",
+    "reference type": "A type whose data is handled through a data location.",
+    "calldata": "Raw bytes supplied to a contract call; calldata as a data location is read-only external input.",
+    "ABI": "The rules used to encode typed values into bytes and decode returned bytes.",
+    "selector": "The first four bytes of normal function calldata.",
+    "callback": "A call made back into a contract during another operation.",
+    "mutability": "A function's state/ETH permission: pure, view, nonpayable, payable.",
+    "visibility": "Who or where a function/state variable can be accessed.",
+    "storage slot": "A numbered 32-byte persistent storage location.",
+    "packing": "Storing multiple small state variables in one slot when possible.",
+    "reentrancy": "Re-entering a contract before an earlier interaction has finished.",
+    "delegatecall": "Running another contract's code while using the caller's storage/context.",
+    "interface": "A description of callable functions without their implementation.",
+    "modifier": "Reusable wrapper/check logic around a function.",
+    "invariant": "A property that should remain true across state transitions.",
+    "PoC": "A proof-of-concept reproduction of a security claim.",
+    "value": "The actual data stored in or returned by a variable/field.",
+}
+
+def _render_contract_lab(topic):
+    print()
+    print(f"LOWKEY // CONTRACT LAB • {topic['name']}")
+    print("=" * 76)
+    code = _CONTRACT_LABS.get(topic["name"])
+    if code is None:
+        raw = topic["example"].strip()
+        if raw.startswith(("contract ", "interface ", "import ")):
+            code = raw
+        else:
+            code = "contract CheatExample {\n"
+            code += "    // Educational contract context for: " + topic["name"] + "\n"
+            for line in raw.splitlines():
+                if line.startswith(("pragma ", "import ")):
+                    continue
+                code += "    " + line + "\n"
+            code += "}"
+    print(code)
+    print()
+    print("The goal is to see where the concept lives inside a contract.")
+    print("Some older topics use an illustrative wrapper rather than a drop-in file.")
+
+def _render_walkthrough(topic):
+    print()
+    print(f"LOWKEY // WALKTHROUGH • {topic['name']}")
+    print("=" * 76)
+    print("PLAIN ENGLISH")
+    print("------------")
+    print(topic["meaning"])
+    print()
+    print("HOW IT RUNS")
+    print("-----------")
+    for index, step in enumerate(topic["steps"], 1):
+        print(f"  {index}. {step}")
+    print()
+    print("MENTAL MODEL")
+    print("------------")
+    print(topic["mental"])
+
+def _render_term_decoder(topic):
+    print()
+    print(f"LOWKEY // TERM DECODER • {topic['name']}")
+    print("=" * 76)
+    blob = " ".join(
+        [topic["name"], topic["meaning"], topic["mental"],
+         topic["syntax"], topic["example"]]
+    ).lower()
+    found = []
+    for term, definition in _TERM_DEFINITIONS.items():
+        if term.lower() in blob:
+            found.append((term, definition))
+    if not found:
+        found = [("value", _TERM_DEFINITIONS["value"])]
+    for term, definition in found[:18]:
+        print(f"  {term:<18} {definition}")
+    print()
+    print("Full glossary: lk cheat terminology")
+
+def _render_audit_lens(topic):
+    print()
+    print(f"LOWKEY // AUDIT LENS • {topic['name']}")
+    print("=" * 76)
+    print(topic["audit"] or "No topic-specific audit note yet.")
+    print()
+    print("QUESTIONS")
+    print("---------")
+    for q in (
+        "Who controls the inputs?",
+        "Does this change persistent state or cross an external call boundary?",
+        "Can it repeat, nest, or become unexpectedly expensive?",
+        "What invariant or authorization rule must remain true?",
+    ):
+        print("  - " + q)
+    if topic["gotchas"]:
+        print()
+        print("WATCH OUT")
+        print("---------")
+        print(topic["gotchas"])
+
+def _render_next_views(topic):
+    print()
+    print("NEXT VIEW")
+    print("---------")
+    print("  1  Contract Lab     see the concept inside contract-shaped code")
+    print("  2  Walkthrough      plain-English execution path")
+    print("  3  Term Decoder     translate the jargon used here")
+    print("  4  Audit Lens       turn the concept into review questions")
+    print()
+    print(f"Use: lk cheat {topic['name']} 1   (or 2 / 3 / 4)")
+
+
 _ALIAS = {}
 for _topic in TOPICS:
     _ALIAS[_topic["name"].lower()] = _topic
@@ -3116,6 +3907,7 @@ def render_topic(topic):
         print("  " + ", ".join(related[:8]))
     print()
     print("Educational lookup. Verify exact details against your compiler/version.")
+    _render_next_views(topic)
 
 
 def run(args=None):
@@ -3149,10 +3941,38 @@ def run(args=None):
         print("Open one with: lk cheat <topic>")
         return 0
 
-    query = " ".join(args).strip()
+    mode = None
+    query_args = list(args)
+    if len(query_args) > 1:
+        last = query_args[-1].lower()
+        mode = {
+            "1": "contract",
+            "2": "walkthrough",
+            "3": "terms",
+            "4": "audit",
+            "--contract": "contract",
+            "--walkthrough": "walkthrough",
+            "--terms": "terms",
+            "--audit": "audit",
+        }.get(last)
+        if mode:
+            query_args = query_args[:-1]
+
+    query = " ".join(query_args).strip()
     topic = find_topic(query)
     if topic:
-        render_topic(topic)
+        if mode == "contract":
+            _render_contract_lab(topic)
+        elif mode == "walkthrough":
+            _render_walkthrough(topic)
+            print()
+            _render_contract_lab(topic)
+        elif mode == "terms":
+            _render_term_decoder(topic)
+        elif mode == "audit":
+            _render_audit_lens(topic)
+        else:
+            render_topic(topic)
         return 0
 
     print(f"No Solidity cheat topic matched: {query}")
