@@ -1330,6 +1330,10 @@ contract LowkeyBreakReentrancy is Test {{
 {setup_block}
         uint256 beforeHostile = address(hostile).balance;
         uint256 beforeTarget = TARGET.balance;
+        uint256 entitlementBeforeAttack = 0;
+        bool entitlementBeforeAttackOk = false;
+
+        ENTITLEMENT_READ_BEFORE_ATTACK
 
         (bool outer, ) = address(hostile).call{{value: 1 wei}}(
             abi.encodeWithSignature("attack()")
@@ -1337,6 +1341,9 @@ contract LowkeyBreakReentrancy is Test {{
 
         uint256 afterHostile = address(hostile).balance;
         uint256 afterTarget = TARGET.balance;
+        uint256 entitlementAfterAttack = 0;
+        ENTITLEMENT_READ_AFTER_ATTACK
+
         uint256 outerInput = 1 wei;
         uint256 received = afterHostile > beforeHostile + outerInput
             ? afterHostile - beforeHostile - outerInput
