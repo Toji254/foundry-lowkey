@@ -1382,6 +1382,17 @@ def canonicalize(name: str) -> str:
     return _CONCEPT_ALIASES.get(key, key)
 
 
+def is_known_concept(name: str) -> bool:
+    key = _norm(name)
+    if key in _CONCEPT_ALIASES or key in _COMPOSITE_ALIASES:
+        return True
+    canonical = canonicalize(key)
+    return any(
+        canonical in {canonicalize(item) for item in lab["concepts"]}
+        for lab in CONNECTION_LABS
+    ) or canonical in {"yul", "assembly"} or canonical in set(_CONCEPT_ALIASES.values())
+
+
 def expand_name(name: str):
     key = _norm(name)
     composite = _COMPOSITE_ALIASES.get(key)
