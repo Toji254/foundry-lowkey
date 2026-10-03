@@ -46,7 +46,7 @@ TOPICS = []
 
 
 def add(name, aliases, category, meaning, mental, syntax, example, steps,
-        audit="", gotchas=""):
+        audit="", gotchas="", version="Solidity 0.8.x"):
     TOPICS.append({
         "name": name,
         "aliases": aliases,
@@ -58,6 +58,7 @@ def add(name, aliases, category, meaning, mental, syntax, example, steps,
         "steps": steps,
         "audit": audit,
         "gotchas": gotchas,
+        "version": version,
     })
 
 
@@ -82,6 +83,11 @@ ASSIGNMENT
 *=      multiply, then assign
 /=      divide, then assign
 %=      remainder, then assign
+|=      bitwise OR, then assign
+^=      bitwise XOR, then assign
+&=      bitwise AND, then assign
+<<=     shift left, then assign
+>>=     shift right, then assign
 
 ARITHMETIC
 +       add
@@ -3298,7 +3304,7 @@ address(this).balance""",
     function inspect() external payable returns (
         address sender,
         uint256 value,
-        bytes calldata data,
+        bytes memory data,
         bytes4 sig,
         uint256 timestamp,
         uint256 number,
@@ -3466,7 +3472,9 @@ add(
     "struct-types", ["struct-type", "struct-table", "struct-fields"], "TYPES",
     "A struct groups named fields; each field has a type and an actual value.",
     "Think a form with named boxes. The type tells you what kind of thing each box accepts; the value is the data currently inside it.",
-    """FIELD TYPE       WHAT IS THE VALUE?                 EXAMPLE
+    """FIELD NAME       FIELD TYPE       WHAT IS THE VALUE?                 EXAMPLE
+creator            address        actual address stored in field       creator = msg.sender
+amount             uint256        actual number stored in field        amount = 100
 address           actual address stored in field       creator = msg.sender
 uint256           actual number stored in field        amount = 100
 string            actual text stored in field          description = "bug"
@@ -3584,7 +3592,7 @@ add(
         lastAmount = amount;
     }
 
-    function raw() external view returns (bytes calldata) {
+    function raw() external view returns (bytes memory) {
         return msg.data;
     }
 
@@ -3595,7 +3603,7 @@ add(
     }
 }""",
     [
-        "A caller supplies a byte payload to the contract.",
+        "A caller supplies a raw byte payload to the contract.",
         "The first four bytes normally identify a normal function.",
         "The remaining bytes normally contain ABI-encoded arguments.",
         "msg.data exposes the complete payload.",
@@ -3652,7 +3660,7 @@ state variable        persistent contract-level data
 local variable        temporary function-level data
 value type            copied value
 reference type        data handled through a location
-calldata              raw call input bytes
+calldata              raw byte payload from an external call
 ABI                    encoding/decoding rules for contract calls
 selector               first four calldata bytes
 callback               a call made back into another contract
@@ -3737,6 +3745,413 @@ withdraw(1 ether);
         "At execution time, the argument supplies the parameter's value.",
     ],
 )
+
+
+add(
+    "keywords", ["keyword", "language-keywords", "solidity-keywords"], "SYNTAX",
+    "Solidity keywords are words with special meaning in the language.",
+    "Read a keyword as an instruction to the compiler: contract declares a contract, external marks external-call access, and storage/calldata/memory choose where reference data lives.",
+    """contract, interface, library, abstract, is, import, using
+function, constructor, fallback, receive, modifier, returns, return
+public, external, internal, private, view, pure, payable
+memory, calldata, storage
+mapping, struct, enum, bytes, string, address
+if, else, for, while, do, break, continue, unchecked
+try, catch, assert, require, revert, emit, new, delete
+assembly, error, event, virtual, override, super, this""",
+    """contract KeywordsLab {
+    uint256 public value;
+
+    modifier nonZero(uint256 x) {
+        require(x != 0);
+        _;
+    }
+
+    constructor() {
+        value = 1;
+    }
+
+    function set(uint256 next) external nonZero(next) {
+        value = next;
+    }
+
+    receive() external payable {}
+    fallback() external payable {}
+}""",
+    [
+        "First classify the keyword: structure, access, data location, control flow, or execution.",
+        "Then read the surrounding symbols and types; keywords rarely work alone.",
+        "external + payable, for example, means an externally callable function that may receive ETH.",
+        "Punctuation such as => or [] is separate from keywords such as mapping or external.",
+    ],
+    audit="Keywords can change access control, data location, state/ETH permissions, execution routing, or inheritance behavior.",
+);
+
+add(
+    "contract-anatomy", ["contract-structure", "contract-layout", "solidity-contract-anatomy"], "ARCHITECTURE",
+    "A contract is easier to audit when you read its persistent state and trust boundaries before the business logic.",
+    "Think of a shop: state is the ledger, modifiers are door checks, events are receipts, and functions are actions.",
+    """contract Store is Parent {
+    // state
+    uint256 public price;
+
+    // event
+    event Bought(address indexed buyer, uint256 amount);
+
+    // error
+    error TooSmall(uint256 sent, uint256 needed);
+
+    // modifier
+    modifier enough(uint256 sent) {
+        if (sent < price) revert TooSmall(sent, price);
+        _;
+    }
+
+    // constructor
+    constructor(uint256 startingPrice) {
+        price = startingPrice;
+    }
+
+    // function + ETH routing
+    function buy() external payable enough(msg.value) {
+        emit Bought(msg.sender, msg.value);
+    }
+
+    receive() external payable {}
+    fallback() external payable {}
+}""",
+    """contract ContractAnatomyLab {
+    uint256 public price;
+    event Bought(address indexed buyer, uint256 amount);
+    error TooSmall(uint256 sent, uint256 needed);
+
+    constructor(uint256 startingPrice) {
+        price = startingPrice;
+    }
+
+    modifier enough(uint256 sent) {
+        if (sent < price) revert TooSmall(sent, price);
+        _;
+    }
+
+    function buy() external payable enough(msg.value) {
+        emit Bought(msg.sender, msg.value);
+    }
+
+    receive() external payable {}
+    fallback() external payable {}
+}""",
+    [
+        "Read inheritance first: is tells you which base contract/interface relationships matter.",
+        "Find state variables: these are persistent storage.",
+        "Find the constructor and initialization assumptions.",
+        "Inspect modifiers because they wrap function execution.",
+        "Mark ETH movement and external calls as trust boundaries.",
+        "Only then read each state-changing function as a state transition.",
+    ],
+    audit="Map storage writes, authorization checks, ETH movement, events, and external calls before reasoning about business rules.",
+);
+
+add(
+    "call-anatomy", ["calls-anatomy", "external-call-anatomy", "call-patterns"], "CALLS",
+    "A contract call can be typed or low-level, and call, staticcall, and delegatecall deliberately produce different execution contexts.",
+    "Think phone calls: a typed call uses a known menu, call sends a raw request, staticcall is read-only, delegatecall runs someone else's code with your storage.",
+    """target.ping(7);
+
+target.call(
+    abi.encodeWithSignature("ping(uint256)", 7)
+);
+
+target.staticcall(
+    abi.encodeWithSignature("price()")
+);
+
+target.delegatecall(
+    abi.encodeWithSignature("set(uint256)", 7)
+);""",
+    """interface ITarget {
+    function ping(uint256 x) external returns (uint256);
+}
+
+contract CallAnatomyLab {
+    function typed(ITarget target) external returns (uint256) {
+        return target.ping(7);
+    }
+
+    function raw(address target)
+        external
+        returns (bool ok, bytes memory data)
+    {
+        return target.call(
+            abi.encodeWithSignature("ping(uint256)", 7)
+        );
+    }
+
+    function read(address target)
+        external
+        view
+        returns (bool ok, bytes memory data)
+    {
+        return target.staticcall(
+            abi.encodeWithSignature("price()")
+        );
+    }
+}""",
+    [
+        "A typed interface call encodes the function selector and arguments for you.",
+        "Low-level call returns success plus raw return bytes.",
+        "staticcall constrains the called execution from changing state.",
+        "delegatecall runs target code using the caller's storage and address context.",
+        "Decode raw return bytes before treating them as typed values.",
+    ],
+    audit="Check target control, return-success handling, msg.sender/msg.value behavior, and delegatecall storage compatibility.",
+);
+
+add(
+    "types-defaults", ["defaults", "default-values", "solidity-defaults"], "TYPES",
+    "Every Solidity type has a default value, which matters for fresh storage, mapping misses, zeroed structs, and delete.",
+    "Every empty box already contains the type's zero-equivalent: numbers 0, bool false, address(0), empty dynamic data.",
+    """uint256       -> 0
+int256          -> 0
+bool            -> false
+address         -> address(0)
+bytes32         -> bytes32(0)
+string          -> ""
+bytes           -> 0x
+T[]             -> empty array
+enum Status     -> Status(0)
+struct User     -> every field at its default""",
+    """contract TypesDefaultsLab {
+    enum Status { Open, Paid }
+
+    struct User {
+        address account;
+        uint256 score;
+        bool active;
+        Status status;
+    }
+
+    mapping(address => uint256) public balances;
+    User public user;
+
+    function reset() external {
+        delete user;
+    }
+}""",
+    [
+        "Read the declared type.",
+        "Ask what its zero/default representation is.",
+        "A missing mapping key can return the default without having been explicitly written.",
+        "delete restores the targeted storage value to its default.",
+    ],
+    audit="Zero, false, empty, and address(0) are often valid values; do not mistake them for proof that data does not exist.",
+);
+
+add(
+    "expression-reader", ["expressions", "read-expression", "expression-decode"], "LEARNING TOOL",
+    "A small expression reader that teaches you to trace the value source, lookup, operator, and destination.",
+    "Read a line as a sentence. For balances[msg.sender] += msg.value: choose the caller's balance, add the ETH sent now, then store the new balance.",
+    """balances[msg.sender] += msg.value
+│        │             │
+│        │             └─ current call's ETH
+│        └────────────── caller becomes mapping key
+└────────────────────── mapping lookup
+
+target.call{value: amount}(data)
+      │       │          │
+      │       │          └─ argument bytes
+      │       └──────────── call option: send ETH
+      └──────────────────── external call""",
+    """contract ExpressionReaderLab {
+    mapping(address => uint256) public balances;
+
+    function deposit() external payable {
+        balances[msg.sender] += msg.value;
+    }
+
+    function send(address target, uint256 amount) external {
+        (bool ok,) = target.call{value: amount}("");
+        require(ok);
+    }
+}""",
+    [
+        "Start with the base name.",
+        "Read [] as an indexed/mapping lookup.",
+        "Read += as calculate-then-store-back.",
+        "Translate globals such as msg.sender and msg.value using the current call context.",
+        "At a call, separately identify the target, call options, and arguments.",
+    ],
+    audit="Expression reading is a core audit skill: trace each value source and each state write before judging the line.",
+);
+
+add(
+    "practice", ["exercises", "questions", "practice-mode"], "LEARNING TOOL",
+    "Prediction-first drills that make you reason before copying a result.",
+    "Predict first. Then run the smallest local test you can build and compare the observed state with your prediction.",
+    """PREDICT FIRST
+1. Missing mapping key?
+2. do-while with an immediately false condition?
+3. Which bytes form the function selector?
+4. Is msg.value the same as address(this).balance?
+5. What changes when a reference uses storage vs memory?""",
+    """contract PracticeLab {
+    mapping(address => uint256) public balances;
+
+    receive() external payable {
+        balances[msg.sender] += msg.value;
+    }
+
+    function loop(uint256 limit) external pure returns (uint256 i) {
+        do {
+            i++;
+        } while (i < limit);
+    }
+}""",
+    [
+        "Write down the result before executing anything.",
+        "Explain why you predicted it.",
+        "Run the smallest local test or call.",
+        "Compare prediction vs observation.",
+        "Turn surprises into a new test or cheat topic.",
+    ],
+);
+
+add(
+    "confused", ["commonly-confused", "confusion-index", "confusions"], "LEARNING TOOL",
+    "A quick map of Solidity terms that sound interchangeable but control different things.",
+    "When terms look similar, compare the question each one answers: data location, caller identity, ETH amount, storage, or execution context.",
+    """parameter vs argument
+msg.value vs address(this).balance
+calldata vs msg.data
+receive vs fallback
+for vs while vs do-while
+require vs revert vs assert
+call vs staticcall vs delegatecall
+storage vs memory vs calldata""",
+    """contract ConfusedLab {
+    function compare(address target) external payable {
+        msg.value;
+        address(this).balance;
+        target.call("");
+        target.staticcall("");
+        target.delegatecall("");
+    }
+}""",
+    [
+        "Name the two concepts.",
+        "Write the question each one answers.",
+        "Find the smallest example where their behavior diverges.",
+        "Only then choose which concept belongs in your code.",
+    ],
+);
+
+add(
+    "patterns", ["solidity-patterns", "common-patterns", "audit-patterns"], "PATTERNS",
+    "Recurring Solidity code shapes that are useful to recognize instantly.",
+    "Patterns are templates, not proof. Verify the concrete state transition and trust boundary.",
+    """CHECK -> EFFECT -> INTERACTION
+require(...);
+balances[msg.sender] -= amount;
+(bool ok,) = msg.sender.call{value: amount}("");
+require(ok);
+
+PULL PAYMENT
+claimable[user] += amount;
+...
+claimable[msg.sender] = 0;
+pay(msg.sender, amount);
+
+MAPPING + ARRAY INDEX
+if (!seen[user]) {
+    seen[user] = true;
+    users.push(user);
+}""",
+    """contract PatternsLab {
+    mapping(address => uint256) public claimable;
+    mapping(address => bool) public seen;
+    address[] public users;
+
+    function register() external {
+        if (!seen[msg.sender]) {
+            seen[msg.sender] = true;
+            users.push(msg.sender);
+        }
+    }
+
+    function claim() external {
+        uint256 amount = claimable[msg.sender];
+        claimable[msg.sender] = 0;
+
+        (bool ok,) = msg.sender.call{value: amount}("");
+        require(ok);
+    }
+}""",
+    [
+        "Recognize the shape.",
+        "Classify each line as state read, state write, external interaction, or event.",
+        "Check whether the implementation actually preserves the intended invariant.",
+        "Never accept a pattern name as proof of correctness.",
+    ],
+    audit="Use patterns to navigate quickly, then verify the exact implementation and threat model.",
+);
+
+add(
+    "versioning", ["versions", "compiler-version", "version-compatibility"], "REFERENCE",
+    "Solidity syntax and EVM globals evolve, so compiler and EVM version are part of the meaning of a snippet.",
+    "Read pragma first. Then distinguish language support from the EVM fork selected by the project.",
+    """pragma solidity ^0.8.20;
+
+BLOCK / EVM ERA EXAMPLES
+block.basefee       London-era
+block.prevrandao    Paris-era
+block.blobbasefee   Cancun-era
+blobhash(i)          Cancun-era
+block.slotnum       Amsterdam-era / experimental in current docs""",
+    """contract VersioningLab {
+    function baseFee() external view returns (uint256) {
+        return block.basefee;
+    }
+
+    function randao() external view returns (uint256) {
+        return block.prevrandao;
+    }
+}""",
+    [
+        "Read the pragma.",
+        "Check the compiler version actually installed by the project.",
+        "Check the selected evmVersion when a global depends on a fork.",
+        "Compile in the project settings before treating a current-docs feature as available.",
+    ],
+    audit="Version drift can cause compile failures or different EVM behavior.",
+    gotchas="EVM-era labels are intentionally broad; exact availability depends on the Solidity release and selected evmVersion.",
+);
+
+add(
+    "lab-workflow", ["runnable-labs", "lab-guide", "contract-labs"], "LEARNING TOOL",
+    "A repeatable workflow for turning any cheat contract into a tiny local experiment.",
+    "The cheat command prints code only. You decide when to copy it into a scratch Foundry project and run it.",
+    """lk cheat <topic> 1
+copy contract into src/
+write one tiny test
+forge test -vv
+change one line
+run again
+explain the state transition""",
+    """contract LabWorkflowExample {
+    uint256 public value;
+
+    function set(uint256 next) external {
+        value = next;
+    }
+}""",
+    [
+        "Start from the smallest contract lab.",
+        "Copy it into your own scratch project.",
+        "Write a test that proves your prediction.",
+        "Change one thing and observe the difference.",
+    ],
+    gotchas="Cheat remains read-only: it does not create files, start Anvil, or modify your project.",
+);
 
 for _topic in TOPICS:
     if _topic["name"] in {
@@ -3873,7 +4288,7 @@ contract CallsLab {
         return result;
     }
 }""",
-    "for": """contract ForLab {
+    "for": """contract ForExample {
     uint256[] public numbers;
 
     function fill(uint256 count) external {
@@ -4086,7 +4501,16 @@ contract CallsLab {
     function demo() external {
         this.withdraw(1 ether);
     }
-}""",
+}""",,
+    "require": """contract RequireLab {
+    mapping(address => uint256) public balances;
+
+    function withdraw(uint256 amount) external {
+        require(amount > 0, "zero amount");
+        require(balances[msg.sender] >= amount, "insufficient");
+        balances[msg.sender] -= amount;
+    }
+}"""
 }
 
 _TERM_DEFINITIONS = {
@@ -4114,6 +4538,14 @@ _TERM_DEFINITIONS = {
     "invariant": "A property that should remain true across state transitions.",
     "PoC": "A proof-of-concept reproduction of a security claim.",
     "value": "The actual data stored in or returned by a variable/field.",
+    "keyword": "A reserved or context-sensitive language word with special compiler meaning.",
+    "contract anatomy": "The structural pieces of a contract: inheritance, state, events, errors, modifiers, constructor, functions, and ETH fallbacks.",
+    "call": "An external message sent to another contract/address.",
+    "staticcall": "An external call constrained from modifying state in the called execution.",
+    "parameter vs argument": "Parameter is the named input in a function definition; argument is the actual value supplied at the call site.",
+    "default value": "The zero-equivalent value Solidity gives fresh or deleted data of a type.",
+    "pattern": "A recurring code shape used for a common design or control-flow task.",
+    "pragma": "A compiler/version directive such as pragma solidity ^0.8.20;.",
 }
 
 def _render_contract_lab(topic):
@@ -4136,8 +4568,12 @@ def _render_contract_lab(topic):
             code += "}"
     print(code)
     print()
-    print("The goal is to see where the concept lives inside a contract.")
-    print("Some older topics use an illustrative wrapper rather than a drop-in file.")
+    print("LAB NOTES")
+    print("---------")
+    print("  • Copy this contract into a scratch Foundry project to run it.")
+    print("  • The cheat command itself is read-only: it does not create files or start Anvil.")
+    print("  • Pair it with one tiny test that proves your prediction.")
+
 
 def _render_walkthrough(topic):
     print()
@@ -4155,15 +4591,16 @@ def _render_walkthrough(topic):
     print("MENTAL MODEL")
     print("------------")
     print(topic["mental"])
+    print()
+    print("CONTRACT CONTEXT")
+    print("----------------")
+    _render_contract_lab(topic)
 
 def _render_term_decoder(topic):
     print()
     print(f"LOWKEY // TERM DECODER • {topic['name']}")
     print("=" * 76)
-    blob = " ".join(
-        [topic["name"], topic["meaning"], topic["mental"],
-         topic["syntax"], topic["example"]]
-    ).lower()
+    blob = " ".join([topic["name"], topic["meaning"], topic["mental"], topic["syntax"], topic["example"]]).lower()
     found = []
     for term, definition in _TERM_DEFINITIONS.items():
         if term.lower() in blob:
@@ -4183,13 +4620,15 @@ def _render_audit_lens(topic):
     print()
     print("QUESTIONS")
     print("---------")
-    for q in (
+    for question in (
         "Who controls the inputs?",
-        "Does this change persistent state or cross an external call boundary?",
+        "What storage is read or written?",
+        "Does execution cross an external call boundary?",
         "Can it repeat, nest, or become unexpectedly expensive?",
+        "What happens on failure: revert, false return, empty/default value, or partial effect?",
         "What invariant or authorization rule must remain true?",
     ):
-        print("  - " + q)
+        print("  - " + question)
     if topic["gotchas"]:
         print()
         print("WATCH OUT")
@@ -4204,9 +4643,160 @@ def _render_next_views(topic):
     print("  2  Walkthrough      plain-English execution path")
     print("  3  Term Decoder     translate the jargon used here")
     print("  4  Audit Lens       turn the concept into review questions")
+    print("  P  Practice         prediction exercises")
     print()
-    print(f"Use: lk cheat {topic['name']} 1   (or 2 / 3 / 4)")
+    print(f"Use: lk cheat {topic['name']} 1   (or 2 / 3 / 4 / p)")
 
+_COMPARISONS = {
+    ("for", "while", "do-while"): [
+        ("for", "Counted/indexed repetition; initializer, condition, increment in one line.", "for (uint256 i = 0; i < n; i++) { ... }"),
+        ("while", "Test before every iteration.", "while (i < n) { i++; }"),
+        ("do-while", "Run the body once before testing.", "do { i++; } while (i < n);"),
+    ],
+    ("require", "revert", "assert"): [
+        ("require", "Expected/user-controlled condition guard.", "require(amount > 0);"),
+        ("revert", "Explicit abort, often after branching.", "if (bad) revert Bad();"),
+        ("assert", "Internal invariant that should never fail.", "assert(total == expected);"),
+    ],
+    ("msg.value", "address(this).balance"): [
+        ("msg.value", "ETH attached to the current message/call.", "msg.value"),
+        ("address(this).balance", "ETH currently held by this contract address.", "address(this).balance"),
+    ],
+    ("calldata", "msg.data"): [
+        ("calldata", "Read-only external input data location; also used to mean raw call bytes.", "bytes calldata input"),
+        ("msg.data", "Complete calldata bytes of the current call.", "msg.data"),
+    ],
+    ("receive", "fallback"): [
+        ("receive", "Empty-calldata ETH route.", "receive() external payable { ... }"),
+        ("fallback", "Unmatched-call route; bytes form can expose raw input.", "fallback(bytes calldata input) external payable { ... }"),
+    ],
+    ("call", "staticcall", "delegatecall"): [
+        ("call", "Normal external message call.", "target.call(data)"),
+        ("staticcall", "External call constrained from changing state.", "target.staticcall(data)"),
+        ("delegatecall", "Runs target code using caller storage/context.", "target.delegatecall(data)"),
+    ],
+    ("storage", "memory", "calldata"): [
+        ("storage", "Persistent contract data.", "T storage ref"),
+        ("memory", "Temporary mutable reference data.", "T memory tmp"),
+        ("calldata", "Read-only external input.", "T calldata input"),
+    ],
+}
+
+def _render_compare(names):
+    print()
+    print("LOWKEY // COMPARE")
+    print("=" * 76)
+    normalized = tuple(sorted(_norm(name) for name in names))
+    rows = None
+    for key, value in _COMPARISONS.items():
+        if tuple(sorted(_norm(x) for x in key)) == normalized:
+            rows = value
+            break
+    if rows is None:
+        topics = [find_topic(name) for name in names]
+        if any(topic is None for topic in topics) or len(topics) < 2:
+            print("Usage: lk compare <topicA> <topicB> [topicC]")
+            return 2
+        rows = [(topic["name"], topic["meaning"], topic["syntax"].splitlines()[0]) for topic in topics]
+    width = max(16, max(len(row[0]) for row in rows))
+    print(f"{'CONCEPT':<{width}} | WHAT IT ANSWERS | SYNTAX")
+    print("-" * (width + 65))
+    for name, meaning, syntax in rows:
+        print(f"{name:<{width}} | {meaning} | {syntax}")
+    print()
+    print("READING RULE")
+    print("------------")
+    print("Compare the question each concept answers, not just the spelling.")
+    return 0
+
+def _render_expression(expr):
+    expression = expr.strip()
+    print()
+    print("LOWKEY // EXPRESSION READER")
+    print("=" * 76)
+    print("INPUT")
+    print("-----")
+    print(expression)
+    print()
+    print("TOKENS / HOW TO READ")
+    print("--------------------")
+    match = re.match(r"^(.*)\\[(.*)\\](\\s*\\+=\\s*)(.*)$", expression)
+    if match:
+        print(f"  BASE          {match.group(1)}")
+        print(f"  KEY / INDEX   {match.group(2)}  -> choose one mapping key/index")
+        print(f"  OPERATOR      {match.group(3).strip()}  -> calculate, then store back")
+        print(f"  RIGHT SIDE    {match.group(4)}  -> value being added")
+        return 0
+    match = re.match(r"^(.*)\\{value\\s*:\\s*(.*)\\}\\((.*)\\)$", expression)
+    if match:
+        print(f"  TARGET        {match.group(1)}")
+        print(f"  CALL OPTION   value: {match.group(2)} -> send ETH with the call")
+        print(f"  ARGUMENTS     {match.group(3)} -> actual values supplied to parameters")
+        return 0
+    print("  No special pattern matched; read left-to-right:")
+    print("  1. Find the base variable/function.")
+    print("  2. Read [] as lookup/index, . as member access, () as a call.")
+    print("  3. Read operators as transformations between values.")
+    print("  4. Trace msg.sender/msg.value to the current call context.")
+    return 0
+
+_TOPICS_PRACTICE_TEXT = """PREDICT FIRST
+-------------
+1. Missing mapping key -> what default?
+2. do-while -> how many times can the body execute?
+3. Which four bytes identify a normal function?
+4. msg.value vs address(this).balance -> same or different?
+5. storage vs memory -> which one persists?"""
+
+def _render_practice(topic_name):
+    print()
+    print("LOWKEY // PRACTICE")
+    print("=" * 76)
+    topic = find_topic(topic_name) if topic_name else None
+    if topic and topic["name"] != "practice":
+        print(f"TOPIC • {topic['name']}")
+        print("-" * (8 + len(topic["name"])))
+        print("PREDICT BEFORE EXECUTING")
+        print("------------------------")
+        print(topic["syntax"])
+        print()
+        print("Questions:")
+        print("  1. What value is read?")
+        print("  2. What value is written?")
+        print("  3. What are msg.sender/msg.value?")
+        print("  4. Could this revert or return a default?")
+        print("  5. What changes with a different caller/argument?")
+    else:
+        print(_TOPICS_PRACTICE_TEXT)
+    return 0
+
+_TOPICS_CONFUSION = """KEY CONFUSIONS
+--------------
+parameter / argument
+calldata / msg.data
+msg.value / address(this).balance
+receive / fallback
+for / while / do-while
+require / revert / assert
+call / staticcall / delegatecall
+storage / memory / calldata"""
+
+def _render_confused(term):
+    print()
+    print("LOWKEY // COMMONLY CONFUSED")
+    print("=" * 76)
+    topic = find_topic(term) if term else None
+    q = _norm(term)
+    if topic and topic["name"] != "confused":
+        for key, rows in _COMPARISONS.items():
+            if any(_norm(x) == q for x in key):
+                print(f"Related concepts for: {topic['name']}")
+                print()
+                for name, meaning, syntax in rows:
+                    print(f"  {name:<22} {meaning}")
+                return 0
+    print(_TOPICS_CONFUSION)
+    return 0
 
 _ALIAS = {}
 for _topic in TOPICS:
@@ -4258,10 +4848,18 @@ def render_index():
         print(f"  {topic['name']:<28} {topic['meaning']}")
     print()
     print("Use:")
-    print("  lk cheat <topic>          detailed beginner explanation")
-    print("  lk cheat symbols           punctuation/operators")
-    print("  lk cheat search <word>     topic search")
-    print("  lk cheat --help            cheatsheet help")
+    print("  lk cheat <topic>            syntax-first topic")
+    print("  lk cheat <topic> 1          contract lab")
+    print("  lk cheat <topic> 2          walkthrough")
+    print("  lk cheat <topic> 3          term decoder")
+    print("  lk cheat <topic> 4          audit lens")
+    print("  lk compare <topic...>       compare concepts")
+    print('  lk expression "<expr>"      explain one expression')
+    print("  lk practice [topic]         prediction drill")
+    print("  lk confused <term>          common confusions")
+    print("  lk patterns                 recurring Solidity patterns")
+    print("  lk cheat search <word>      topic search")
+    print("  lk cheat --help             cheatsheet help")
 
 
 def render_topic(topic):
@@ -4272,7 +4870,16 @@ def render_topic(topic):
     print()
     print(topic["name"].upper())
     print("─" * len(topic["name"]))
+
+    print()
+    print("SYNTAX")
+    print("──────")
     print(topic["syntax"])
+
+    print()
+    print("VERSION")
+    print("───────")
+    print(topic.get("version", "Solidity 0.8.x"))
 
     print()
     print("CONTRACT USE")
@@ -4309,19 +4916,17 @@ def render_topic(topic):
     related = [
         item["name"]
         for item in TOPICS
-        if item["name"] != topic["name"]
-        and item["category"] == topic["category"]
+        if item["name"] != topic["name"] and item["category"] == topic["category"]
     ]
     if related:
         print()
         print("RELATED")
         print("───────")
-        print("  " + ", ".join(related[:8]))
+        print("  " + ", ".join(related[:10]))
 
     print()
     print("Educational lookup. Verify exact details against your compiler/version.")
     _render_next_views(topic)
-
 
 
 def run(args=None):
@@ -4330,15 +4935,15 @@ def run(args=None):
         render_index()
         return 0
 
-    if args[0].lower() in {"--help", "--h", "-h", "help"}:
+    command = args[0].lower()
+
+    if command in {"--help", "--h", "-h", "help"}:
         print(HELP.strip())
         return 0
-
-    if args[0].lower() in {"list", "all"}:
+    if command in {"list", "all"}:
         render_index()
         return 0
-
-    if args[0].lower() == "search":
+    if command == "search":
         query = " ".join(args[1:]).strip()
         if not query:
             print("Usage: lk cheat search <word or phrase>")
@@ -4354,41 +4959,62 @@ def run(args=None):
         print()
         print("Open one with: lk cheat <topic>")
         return 0
+    if command == "compare":
+        names = args[1:]
+        if len(names) < 2:
+            print("Usage: lk compare <topicA> <topicB> [topicC]")
+            return 2
+        return _render_compare(names)
+    if command == "expression":
+        expression = " ".join(args[1:]).strip()
+        if not expression:
+            print('Usage: lk expression "<expression>"')
+            return 2
+        return _render_expression(expression)
+    if command == "practice":
+        return _render_practice(" ".join(args[1:]).strip())
+    if command == "confused":
+        return _render_confused(" ".join(args[1:]).strip())
+    if command == "patterns":
+        topic = find_topic("patterns")
+        render_topic(topic)
+        return 0
 
     mode = None
     query_args = list(args)
     if len(query_args) > 1:
-        last = query_args[-1].lower()
         mode = {
             "1": "contract",
             "2": "walkthrough",
             "3": "terms",
             "4": "audit",
+            "p": "practice",
             "--contract": "contract",
             "--walkthrough": "walkthrough",
             "--terms": "terms",
             "--audit": "audit",
-        }.get(last)
+            "--practice": "practice",
+        }.get(query_args[-1].lower())
         if mode:
             query_args = query_args[:-1]
 
-    query = " ".join(query_args).strip()
-    topic = find_topic(query)
+    topic = find_topic(" ".join(query_args).strip())
     if topic:
         if mode == "contract":
             _render_contract_lab(topic)
         elif mode == "walkthrough":
             _render_walkthrough(topic)
-            print()
-            _render_contract_lab(topic)
         elif mode == "terms":
             _render_term_decoder(topic)
         elif mode == "audit":
             _render_audit_lens(topic)
+        elif mode == "practice":
+            _render_practice(topic["name"])
         else:
             render_topic(topic)
         return 0
 
+    query = " ".join(query_args).strip()
     print(f"No Solidity cheat topic matched: {query}")
     rows = search(query)
     if rows:
