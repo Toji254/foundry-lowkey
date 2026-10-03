@@ -9333,7 +9333,7 @@ _EXTRA_CONCEPTS.update({
     "no-delegatecall",
 })
 
-_COMPREHENSIVE_MICRO_SCENES.extend([
+COMPREHENSIVE_MICRO_SCENES.extend([
     _scene(
         ["erc4626-pattern", "interface", "mapping", "structs", "arrays", "math", "events", "front-running"],
         "ERC4626: assets ↔ shares → conversion → slippage",
