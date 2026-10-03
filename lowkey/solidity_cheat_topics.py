@@ -871,7 +871,7 @@ def register_topics(add):
         "receive-vs-fallback", ["fallback-receive", "receive-fallback"], "ETH FLOW",
         "Empty calldata prefers receive; unmatched calldata goes to fallback.",
         "Check the envelope before deciding which door gets the call.",
-        """empty calldata       -> receive(), if present
+        """Empty calldata       -> receive(), if present
     unknown selector       -> fallback()
     unknown selector + ETH -> payable fallback()""",
         """contract Example {
@@ -879,7 +879,7 @@ def register_topics(add):
         fallback() external payable {}
     }""",
         [
-            "Empty data: receive gets priority when defined.",
+            "Empty calldata: receive gets priority when defined.",
             "Non-empty unmatched data: fallback.",
             "Without receive, payable fallback can handle empty data too.",
         ],
@@ -3290,11 +3290,16 @@ def register_topics(add):
     block.timestamp        current block timestamp
     block.number           current block number
     block.chainid           current chain ID
-    block.basefee          current base fee
-    block.prevrandao       current beacon-derived value
-    tx.origin              original transaction sender
+    block.coinbase          current block beneficiary/address
+    block.gaslimit          current block gas limit
+    block.basefee           current base fee
+    block.prevrandao        current beacon-derived value
+    block.blobbasefee       current blob base fee (Cancun-era)
+    tx.origin               original transaction sender
     tx.gasprice             transaction gas price
     gasleft()               gas remaining
+    blobhash(index)         version-dependent blob hash helper
+    blockhash(blockNumber)  recent block hash helper
     address(this).balance  current contract native-coin balance""",
         """contract GlobalMapExample {
         function payment()
@@ -3695,12 +3700,14 @@ def register_topics(add):
         "Solidity keywords are words with special meaning in the language.",
         "Read a keyword as an instruction to the compiler: contract declares a contract, external marks external-call access, and storage/calldata/memory choose where reference data lives.",
         """contract, interface, library, abstract, is, import, using
+    constant, immutable, transient, type, fixed, ufixed
     function, constructor, fallback, receive, modifier, returns, return
     public, external, internal, private, view, pure, payable
     memory, calldata, storage
     mapping, struct, enum, bytes, string, address
     if, else, for, while, do, break, continue, unchecked
     try, catch, assert, require, revert, emit, new, delete
+    call, staticcall, delegatecall
     assembly, error, event, virtual, override, super, this""",
         """contract KeywordsLab {
         uint256 public value;
