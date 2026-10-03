@@ -873,7 +873,9 @@ def register_topics(add):
         "Check the envelope before deciding which door gets the call.",
         """empty calldata       -> receive(), if present
     unknown selector       -> fallback()
-    unknown selector + ETH -> payable fallback()""",
+    unknown selector + ETH -> payable fallback()
+    msg.data               -> complete calldata in normal/fallback calls
+    receive()              -> cannot access msg.data""",
         """contract Example {
         receive() external payable {}
         fallback() external payable {}
