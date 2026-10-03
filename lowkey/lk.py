@@ -10820,7 +10820,14 @@ COMMAND_HELP = {
         "lk compare <topicA> <topicB> [topicC]",
         "lk compare for while do-while",
         "Use it when concepts sound similar but behave differently.",
-        related=["lk cheat", "lk expression"],
+        related=["lk cheat", "lk connect", "lk expression"],
+    ),
+    "connect": _help_entry(
+        "Connect two or more Solidity concepts inside one concrete contract-shaped lab.",
+        "lk connect <conceptA> <conceptB> [conceptC...] | lk connect --list",
+        "lk connect structs mappings arrays enums bytes addresses",
+        "Use it when you understand individual pieces but need to see how their variables, values, calls, and state updates fit together.",
+        related=["lk cheat", "lk compare", "lk expression"],
     ),
     "expression": _help_entry(
         "Explain one Solidity expression by its pieces.",
@@ -11091,6 +11098,7 @@ START HERE
   lk cheat interface                Explain interfaces step by step.
   lk cheat symbols                  Show Solidity symbols/operators at a glance.
   lk compare for while do-while     Compare loop forms.
+  lk connect structs mappings arrays Connect concepts inside one contract lab.
   lk expression "balances[...]"     Read one Solidity expression.
   lk practice mapping               Predict behavior before executing.
   lk confused calldata              Compare commonly confused terms.
@@ -11604,7 +11612,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="symbolic": return run_symbolic(args)
     elif cmd=="brutalize": return run_brutalize(args)
     elif cmd in {"cheat","cheats","cheatsheet"}: return run_cheat(args)
-    elif cmd in {"compare","expression","practice","confused","patterns"}: return run_cheat([cmd,*args])
+    elif cmd in {"compare","connect","expression","practice","confused","patterns"}: return run_cheat([cmd,*args])
     elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
     elif cmd in {"actors","actor-list"}: return list_anvil_actors(config)
     elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
