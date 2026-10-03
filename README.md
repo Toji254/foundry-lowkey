@@ -202,7 +202,10 @@ lk import search reentrancy
 
 # Jump straight to a view
 lk import explain ERC721
+lk import explain interface
+lk import explain abstract
 lk import usage ERC721
+lk import graph ERC721
 lk import related ERC721
 lk import audit ERC721
 
