@@ -60,7 +60,7 @@ if str(MODULE_DIR) not in sys.path:
 
 from solidity_cheat_topics import register_topics
 from solidity_cheat_data import CONTRACT_LABS as _CONTRACT_LABS, TERM_DEFINITIONS as _TERM_DEFINITIONS
-from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept
+from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept, connection_paths
 
 TOPICS = []
 
@@ -331,6 +331,15 @@ def _render_connect(names):
                 print(f"      {line}")
         else:
             print(f"  {raw} -> {', '.join(sorted(expand_name(raw)))}")
+    print()
+
+    print("REQUESTED CONCEPT TRACE")
+    print("-----------------------")
+    for start_node, goal_node, path_nodes, edge_text in connection_paths(topics):
+        print(f"  {start_node} -> {goal_node}")
+        print("    path: " + " -> ".join(path_nodes))
+        for relation in edge_text:
+            print("    why : " + relation)
     print()
 
     print("CONNECTION LAB")
