@@ -376,3 +376,145 @@ class SolidityCheatsheetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SolidityConnectCoverageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.catalog = []
+
+        def capture(name, aliases, category, meaning, *args):
+            cls.catalog.append((name, aliases, category, meaning))
+
+        register_topics(capture)
+
+    def test_every_catalog_topic_and_alias_is_known_by_connect(self):
+        unknown = []
+        for name, aliases, _, _ in self.catalog:
+            if not connect.is_known_concept(name):
+                unknown.append(name)
+            for alias in aliases:
+                if not connect.is_known_concept(alias):
+                    unknown.append(alias)
+        self.assertEqual(unknown, [], f"Unrecognized catalog concepts: {unknown}")
+
+    def test_every_catalog_topic_is_connected(self):
+        nodes = {connect.canonicalize(name) for name, _, _, _ in self.catalog}
+        adjacency = {node: set() for node in nodes}
+        for left, right, _ in connect._COMPREHENSIVE_CONNECTION_EDGES:
+            a = connect.canonicalize(left)
+            b = connect.canonicalize(right)
+            if a in nodes:
+                adjacency[a].add(b)
+            if b in nodes:
+                adjacency[b].add(a)
+
+        isolated = sorted(node for node, neighbors in adjacency.items() if not neighbors)
+        self.assertEqual(isolated, [], f"Isolated catalog concepts: {isolated}")
+
+        start = next(iter(nodes))
+        seen = {start}
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            for nxt in adjacency.get(node, ()):
+                if nxt in nodes and nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+
+        self.assertEqual(
+            sorted(nodes - seen),
+            [],
+            "Catalog concepts must be reachable through the same connection graph.",
+        )
+
+    def test_graph_and_scene_depth(self):
+        self.assertGreaterEqual(len(connect._COMPREHENSIVE_CONNECTION_EDGES), 250)
+        self.assertGreaterEqual(len(connect.COMPREHENSIVE_MICRO_SCENES), 30)
+
+    def test_mapping_keccak_decode_has_a_first_class_scene(self):
+        scene = connect.find_micro_scene(
+            ["mapping", "keccak256", "abi.decode"]
+        )
+        self.assertIsNotNone(scene)
+        self.assertIn("Decode the bytes", scene["title"])
+        self.assertIn("abi.decode", scene["code"])
+        self.assertIn("keccak256", scene["code"])
+        self.assertIn("owners[id]", scene["code"])
+
+    def test_mapping_keccak_scene_does_not_smuggle_in_encode(self):
+        scene = connect.find_micro_scene(["mapping", "keccak256"])
+        self.assertIsNotNone(scene)
+        self.assertEqual(
+            {connect.canonicalize(x) for x in scene["keys"]},
+            {"mapping", "keccak256"},
+        )
+
+    def test_aliases_are_hidden_from_connect_output(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = run_cheatsheet(["connect", "interface", "functions"])
+        rendered = output.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("  interface", rendered)
+        self.assertIn("  function", rendered)
+        self.assertNotIn("functions -> function", rendered)
+
+    def test_semantic_meanings_are_used(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            run_cheatsheet(["connect", "mapping", "keccak256", "abi.decode"])
+        rendered = output.getvalue()
+        self.assertIn("keccak256: Keccak-256 hashes", rendered)
+        self.assertIn("abi.decode: ABI-decodes", rendered)
+        self.assertIn("Decode the bytes", rendered)
+        self.assertNotIn("UniversalConnectionLab", rendered)
+
+    def test_key_multi_hop_connections_have_scenes(self):
+        cases = [
+            ["mapping", "abi.decode"],
+            ["mapping", "keccak256"],
+            ["mapping", "keccak256", "abi.decode"],
+            ["abi.encode", "abi.decode", "keccak256"],
+            ["function-signature", "function-selector", "calldata", "abi.decode"],
+            ["function-selector", "abi.encodeWithSelector", "abi.encodeCall", "function-types"],
+            ["events", "event-indexed", "keccak256"],
+            ["receive", "fallback", "payable", "msg.value", "call"],
+            ["require", "revert", "assert", "custom-errors", "try-catch"],
+            ["modifier", "access-control", "mapping", "msg.sender", "enum", "events"],
+            ["proxy-fallback", "fallback", "delegatecall", "storage-layout", "returndata"],
+            ["transient-storage", "reentrancy", "storage", "yul"],
+            ["erc7201", "custom-storage-layout", "structs", "mapping", "keccak256", "yul-storage"],
+            ["new", "constructor", "address", "try-catch"],
+            ["vm-expect-call", "calls", "abi.encode", "test"],
+            ["fuzz-tests", "bounded-fuzz", "vm-assume", "vm-bound"],
+            ["poc-reentrancy", "reentrancy", "call", "receive", "mapping"],
+        ]
+        for concepts in cases:
+            with self.subTest(concepts=concepts):
+                self.assertIsNotNone(
+                    connect.find_micro_scene(concepts),
+                    f"No teaching scene for {concepts}",
+                )
+
+    def test_current_solidity_helper_concepts_are_known(self):
+        expected = [
+            "abi.encodeCall", "function-types", "contract-types",
+            "user-defined-value-types", "transient-storage", "erc7201",
+            "ecrecover", "sha256", "ripemd160", "addmod", "mulmod",
+            "bytes.concat", "string.concat", "nonce", "selfdestruct",
+        ]
+        unknown = [name for name in expected if not connect.is_known_concept(name)]
+        self.assertEqual(unknown, [])
+
+    def test_arbitrary_known_combinations_remain_progressive(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = run_cheatsheet(
+                ["connect", "interface", "mapping", "yul", "ecrecover"]
+            )
+        rendered = output.getvalue()
+        self.assertEqual(result, 0)
+        self.assertNotIn("UniversalConnectionLab", rendered)
+        self.assertIn("THE CONNECTION", rendered)
+        self.assertIn("NEXT", rendered)
