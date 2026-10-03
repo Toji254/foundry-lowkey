@@ -125,15 +125,13 @@ class ImportHelperTests(unittest.TestCase):
                 result = helper.run_category("Ownable", root, helper.remappings(root))
             rendered = out.getvalue()
             self.assertEqual(result, 0)
-            self.assertIn("NAME:       Ownable", rendered)
-            self.assertIn("IMPORT:     import {Ownable} from", rendered)
-            self.assertIn("PACKAGE:    demo", rendered)
-            self.assertIn("STATUS:     INSTALLED at lib/demo", rendered)
+            self.assertIn("NAME:   Ownable", rendered)
+            self.assertIn("IMPORT: import {Ownable} from", rendered)
+            self.assertNotIn("PACKAGE:", rendered)
+            self.assertNotIn("STATUS:", rendered)
             self.assertNotIn("OpenZeppelin Contracts", rendered)
             self.assertIn("No verified upstream install command in Lowkey's registry", rendered)
             self.assertIn("HOW:", rendered)
-            self.assertIn("USE CASES:", rendered)
-            self.assertIn("AUDIT LENS:", rendered)
         finally:
             tmp.cleanup()
 
@@ -401,6 +399,46 @@ class ImportHelperTests(unittest.TestCase):
         rendered = out.getvalue()
         self.assertIn("SOLIDITY CONCEPT • ABSTRACT CONTRACT", rendered)
         self.assertIn("not deployable", rendered)
+
+
+    def test_local_dependency_does_not_infer_forge_command_from_git_origin(self):
+        tmp, root = self.project()
+        try:
+            symbol = helper.Symbol(
+                "Ownable",
+                "contract",
+                root / "lib" / "demo" / "src" / "Ownable.sol",
+                "demo/Ownable.sol",
+                2,
+            )
+            package, command = helper.install_guidance(symbol, root)
+            self.assertEqual(package, "demo")
+            self.assertIn("No verified upstream install command", command)
+            self.assertNotIn("Toji254", command)
+        finally:
+            tmp.cleanup()
+
+
+    def test_known_erc721_related_prefers_openzeppelin_over_same_name(self):
+        tmp, root = self.project()
+        try:
+            (root / "lib" / "openzeppelin-contracts" / "contracts" / "token" / "ERC721").mkdir(parents=True)
+            (root / "lib" / "openzeppelin-contracts" / "contracts" / "token" / "ERC721" / "IERC721.sol").write_text(
+                "interface IERC721 {}\n", encoding="utf-8"
+            )
+            symbol = helper.Symbol(
+                "ERC721",
+                "contract",
+                root / "lib" / "openzeppelin-contracts" / "contracts" / "token" / "ERC721" / "ERC721.sol",
+                "@openzeppelin/contracts/token/ERC721/ERC721.sol",
+                1,
+            )
+            related = helper.related_symbols(symbol, root, [])
+            self.assertTrue(related)
+            self.assertEqual(related[0].name, "IERC721")
+            self.assertEqual(related[0].import_path, "@openzeppelin/contracts/token/ERC721/IERC721.sol")
+        finally:
+            tmp.cleanup()
 
     def test_common_reference_lists_install_metadata(self):
         out = io.StringIO()
