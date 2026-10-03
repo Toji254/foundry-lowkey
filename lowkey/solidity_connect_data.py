@@ -1909,7 +1909,7 @@ from solidity_cheat_topics import register_topics as _register_catalog_topics
 def _build_catalog_aliases():
     result = {}
 
-    def capture(name, aliases, *args):
+    def capture(name, aliases, *args, **kwargs):
         result[_norm(name)] = name
         for alias in aliases:
             result[_norm(alias)] = name
