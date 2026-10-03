@@ -1189,12 +1189,14 @@ def _render_reentrancy_test(
     if seed_fund:
         setup_block += f'        vm.deal(TARGET, {seed_fund});\n'
     if setup_signature:
+        seed_value = seed_fund or "2 wei"
         setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
-        (bool seeded, ) = address(hostile).call{{value: 2 wei}}(
+        (bool seeded, ) = address(hostile).call{{value: {seed_value}}}(
             abi.encodeWithSignature("seed(bytes)", setupData)
         );
         console2.log("SETUP_SEEDED", seeded);
+        console2.log("SETUP_VALUE_WEI", {seed_value});
 """
 
     return _render_common_header() + f"""
