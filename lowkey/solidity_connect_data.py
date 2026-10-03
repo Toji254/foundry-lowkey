@@ -3173,6 +3173,12 @@ function register(bytes calldata raw) external {
         call="register(abi.encode(alice));",
         audit="The encoder and decoder must agree on exact types/order. Hashing bytes and hashing re-encoded values are only equivalent when the byte representation is exactly the same.",
     ),
+
+_FINAL_DECODE_HASH_MAPPING_SCENE = next(
+    scene for scene in COMPREHENSIVE_MICRO_SCENES
+    if scene.get("title") == "Decode the bytes, hash the same bytes, use the hash as the key"
+)
+_FINAL_DECODE_HASH_MAPPING_SCENE["route_name"] = "decode/hash/mapping"
     _scene(
         keys={"mapping", "keccak256"},
         title="A hash becomes a mapping key",
@@ -5526,6 +5532,11 @@ def find_micro_scene(names):
         candidates.sort(
             key=lambda scene: (
                 len(frozenset(scene.get("keys", ())) - requested),
+                0 if scene.get("route_name") else 1,
+                0 if any(tag in scene.get("title", "").lower()
+                         for tag in ("erc20:", "erc721:", "erc1155:", "eip712:", "timelock:",
+                                     "governor:", "multisig:", "upgrade proxy", "public getter"))
+                else 1,
                 len(frozenset(scene.get("keys", ()))),
                 scene.get("title", ""),
             )
@@ -8108,6 +8119,81 @@ function verify(
 for _row in _FINAL_RESEARCH_SCENES:
     _final_add_scene(*_row)
 
+
+
+_FINAL_ERC1155_BATCH_SCENE = _final_add_scene(
+    [
+        "erc1155-pattern", "batch-transfer",
+        "nested-mapping", "arrays", "receiver-hook", "events",
+    ],
+    "ERC1155: tokenId → account → balance + batch transfer",
+    "ERC-1155 makes the connection between token-id/account nested mappings and parallel batch arrays explicit. A receiver hook adds the external callback boundary.",
+    """
+mapping(uint256 => mapping(address => uint256)) public balanceOf;
+
+event TransferBatch(
+    address indexed operator,
+    address indexed from,
+    address indexed to,
+    uint256[] ids,
+    uint256[] values
+);
+
+interface IERC1155Receiver {
+    function onERC1155BatchReceived(
+        address operator,
+        address from,
+        uint256[] calldata ids,
+        uint256[] calldata values,
+        bytes calldata data
+    ) external returns (bytes4);
+}
+
+function batchTransfer(
+    address to_,
+    uint256[] calldata ids_,
+    uint256[] calldata values_,
+    bytes calldata data_
+) external {
+    require(ids_.length == values_.length);
+
+    for (uint256 i = 0; i < ids_.length; ++i) {
+        balanceOf[ids_[i]][msg.sender] -= values_[i];
+        balanceOf[ids_[i]][to_] += values_[i];
+    }
+
+    if (to_.code.length > 0) {
+        require(
+            IERC1155Receiver(to_).onERC1155BatchReceived(
+                msg.sender,
+                msg.sender,
+                ids_,
+                values_,
+                data_
+            ) == IERC1155Receiver.onERC1155BatchReceived.selector
+        );
+    }
+
+    emit TransferBatch(msg.sender, msg.sender, to_, ids_, values_);
+}
+""",
+    [
+        ("state", "mapping(uint256 => mapping(address => uint256))", "balanceOf", "balanceOf[id][account]", "Token-id/account balance."),
+        ("parameter", "address", "to_", "0xBob", "Recipient."),
+        ("parameter", "uint256[] calldata", "ids_", "[1, 2]", "Token IDs, one per batch position."),
+        ("parameter", "uint256[] calldata", "values_", "[10, 20]", "Amounts paired by index."),
+        ("parameter", "bytes calldata", "data_", "hex\"\"", "Callback data."),
+        ("global", "address", "msg.sender", "0xAlice", "Operator/source account."),
+    ],
+    [
+        "Each token ID selects an inner account mapping.",
+        "ids_[i] and values_[i] are parallel arrays, so their lengths must match.",
+        "Each loop iteration debits the sender and credits the recipient.",
+        "A contract recipient triggers the receiver hook, creating an external-call/reentrancy boundary.",
+        "The batch event exposes the same ordered arrays for off-chain consumers.",
+    ],
+    "batchTransfer(bob, [1, 2], [10, 20], hex\"\");"
+)
 
 # Keep the most specific final scene for the formerly missed combinations.
 # This helper deliberately prefers an exact-key scene before a superset scene,
