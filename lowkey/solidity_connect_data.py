@@ -3017,14 +3017,29 @@ _COMPREHENSIVE_CONNECTION_EDGES = _ensure_graph_coverage(_COMPREHENSIVE_CONNECTI
 
 
 def connection_meaning(name: str) -> str:
+    raw_key = _norm(name)
+
+    # Prefer the catalog's own definition when the user supplied a real
+    # topic/alias. This keeps "structs", "functions", etc. human-readable
+    # instead of collapsing them to an internal semantic node too early.
+    topic_name = _CATALOG_ALIASES.get(raw_key)
+    if topic_name:
+        found = {"meaning": None}
+
+        def capture(name_, aliases_, category, meaning, *args, **kwargs):
+            if name_ == topic_name:
+                found["meaning"] = meaning
+
+        _register_catalog_topics(capture)
+        if found["meaning"]:
+            return found["meaning"]
+
     canonical = canonicalize(name)
     if canonical in _EXTRA_MEANINGS:
         return _EXTRA_MEANINGS[canonical]
 
     topic_name = _CATALOG_ALIASES.get(_norm(canonical))
     if topic_name:
-        # Re-run the catalog registration locally to get the authoritative
-        # meaning without importing the cheatsheet module (which would cycle).
         found = {"meaning": None}
 
         def capture(name_, aliases_, category, meaning, *args, **kwargs):
@@ -3036,7 +3051,6 @@ def connection_meaning(name: str) -> str:
             return found["meaning"]
 
     return f"{canonical} is a recognized Solidity/Foundry concept."
-
 
 def connection_paths(names):
     """Find short graph bridges using the best-connected requested concept as the hub."""
