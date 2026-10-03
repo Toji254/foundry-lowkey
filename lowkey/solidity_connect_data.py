@@ -5172,7 +5172,7 @@ function approveBySig(
     bytes4(keccak256("transfer(address,uint256)"));
 
 assembly {
-    mstore(0x00, selector)
+    mstore(0x00, shl(224, selector))
     mstore(0x04, to)
     mstore(0x24, amount)
 
@@ -5270,7 +5270,8 @@ function readAt(uint256 i)
     assembly {
         // The array length is at scores.slot.
         // Element data begins at keccak256(scores.slot).
-        let base := keccak256(scores.slot, 0x20)
+        mstore(0x00, scores.slot)
+        let base := keccak256(0x00, 0x20)
         result := sload(add(base, i))
     }
 }""",
@@ -6457,8 +6458,10 @@ require(ok);""",
         (uint256 amount_) =
             abi.decode(input[4:], (uint256));
 
-        // use amount_
+        return abi.encode(amount_);
     }
+
+    return "";
 }""",
         "variables": [
             ("calldata", "bytes calldata", "input", "selector + ABI arguments", "Raw fallback input."),
@@ -6872,7 +6875,7 @@ function emitNote(bytes calldata memo_) external {
 // topic0 = keccak256("Note(address,bytes)")
 // topic1 = padded msg.sender
 // topic2 = keccak256(indexed memo encoding)
-// log2(offset, size, topic1, topic2)""",
+// log3(offset, size, topic0, topic1, topic2)""",
         "variables": [
             ("event field", "address indexed", "user", "msg.sender", "Filterable topic."),
             ("event field", "bytes indexed", "memo", "memo_", "Dynamic value represented by a hash topic."),
