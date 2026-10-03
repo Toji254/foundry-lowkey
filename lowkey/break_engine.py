@@ -723,6 +723,22 @@ def _encode_call(host, config, target: Target, fn: dict[str, Any], values: list[
     return calldata, None
 
 
+def _solidity_amount_literal(value: str) -> str:
+    """Normalize Lowkey's compact amount syntax into a Solidity amount literal."""
+    raw = str(value or "").strip()
+    match = re.fullmatch(
+        r"([0-9]+(?:\\.[0-9]+)?)\\s*(wei|gwei|szabo|finney|ether)",
+        raw,
+        flags=re.I,
+    )
+    if not match:
+        raise ValueError(
+            "Invalid --fund-target amount. Use a numeric Solidity unit such as "
+            "1ether, 10ether, 500gwei, or 1000000wei."
+        )
+    number, unit = match.groups()
+    return f"{number} {unit.lower()}"
+
 def _payable_value(fn: dict[str, Any], opts, mode="normal") -> str:
     if str(fn.get("stateMutability") or "") != "payable":
         return "0"
