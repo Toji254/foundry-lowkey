@@ -11,21 +11,36 @@ spec = importlib.util.spec_from_file_location("lowkey_import_helper", MODULE)
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 
+
 class ImportHelperTests(unittest.TestCase):
     def project(self):
         tmp = tempfile.TemporaryDirectory()
         root = Path(tmp.name)
         (root / "src").mkdir()
         (root / "lib" / "demo" / "src").mkdir(parents=True)
-        (root / "foundry.toml").write_text('[profile.default]\nsrc="src"\nlibs=["lib"]\n', encoding="utf-8")
-        (root / "remappings.txt").write_text("demo/=lib/demo/src/\n", encoding="utf-8")
+        (root / "lib" / "demo" / "lib" / "forge-std" / "src").mkdir(parents=True)
+        (root / "foundry.toml").write_text(
+            '[profile.default]\nsrc="src"\nlibs=["lib"]\n',
+            encoding="utf-8",
+        )
+        (root / "remappings.txt").write_text(
+            "demo/=lib/demo/src/\n"
+            "lib/demo/:forge-std/=lib/demo/lib/forge-std/src/\n",
+            encoding="utf-8",
+        )
         (root / "src" / "A.sol").write_text(
             "pragma solidity ^0.8.20;\ncontract A {}\ninterface IA {}\nlibrary ALib {}\n"
             "struct Data { uint256 x; }\nenum State { A, B }\ntype Amount is uint256;\n"
-            "error Bad();\nuint256 constant LIMIT = 1;\n", encoding="utf-8"
+            "error Bad();\nuint256 constant LIMIT = 1;\n",
+            encoding="utf-8",
         )
         (root / "lib" / "demo" / "src" / "Ownable.sol").write_text(
-            "pragma solidity ^0.8.20;\nabstract contract Ownable {}\n", encoding="utf-8"
+            "pragma solidity ^0.8.20;\nabstract contract Ownable {}\n",
+            encoding="utf-8",
+        )
+        (root / "lib" / "demo" / "lib" / "forge-std" / "src" / "Test.sol").write_text(
+            "pragma solidity ^0.8.20;\ncontract Test {}\n",
+            encoding="utf-8",
         )
         return tmp, root
 
@@ -44,15 +59,36 @@ class ImportHelperTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_package_prefix_ignores_nested_dependency_mapping(self):
+        tmp, root = self.project()
+        try:
+            maps = helper.remappings(root)
+            pkgs = helper.packages(root, maps)
+            self.assertEqual(pkgs[0].prefix, "demo/")
+            files = list(helper.sol_files(root / "lib" / "demo"))
+            self.assertEqual([p.relative_to(root / "lib" / "demo").as_posix() for p in files], ["src/Ownable.sol"])
+        finally:
+            tmp.cleanup()
+
     def test_file_scope_symbols(self):
         tmp, root = self.project()
         try:
             syms = helper.extract(root / "src/A.sol", root, helper.remappings(root))
             names = {(s.kind, s.name) for s in syms}
-            for expected in [("contract","A"),("interface","IA"),("library","ALib"),("struct","Data"),("enum","State"),("type","Amount"),("error","Bad"),("constant","LIMIT")]:
+            for expected in [
+                ("contract", "A"),
+                ("interface", "IA"),
+                ("library", "ALib"),
+                ("struct", "Data"),
+                ("enum", "State"),
+                ("type", "Amount"),
+                ("error", "Bad"),
+                ("constant", "LIMIT"),
+            ]:
                 self.assertIn(expected, names)
         finally:
             tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
