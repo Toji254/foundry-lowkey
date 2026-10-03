@@ -179,6 +179,31 @@ class BreakEngineTests(unittest.TestCase):
         self.assertEqual(observed.status, "BLOCKED")
         self.assertIn("Compiler run failed", observed.summary)
 
+    def test_reentrancy_harness_exposes_seed_revert_telemetry(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        fn = {
+            "name": "withdraw",
+            "inputs": [
+                {"name": "recipient", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+            ],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_reentrancy_test(
+            target,
+            fn,
+            "withdraw(address,uint256)",
+            ["0x1111111111111111111111111111111111111111", "1"],
+            3,
+            setup_signature="deposit()",
+            seed_fund="10ether",
+        )
+        self.assertIn("lastSeedReturndata", body)
+        self.assertIn("lastAttackReturndata", body)
+        self.assertIn("TARGET_SETUP_RETURNDATA_LENGTH", body)
+        self.assertIn("TARGET_CODE_LENGTH", body)
+        self.assertIn("TARGET_BALANCE_AFTER_SETUP", body)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
