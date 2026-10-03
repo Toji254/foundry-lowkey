@@ -351,6 +351,28 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("totalGain > entitlementBefore", body)
         self.assertNotIn("if (second && secondGain > 0 && secondOutflow > 0)", body)
 
+    def test_repeat_renderer_funds_attacker_before_payable_setup(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        fn = {
+            "name": "withdraw",
+            "inputs": [{"name": "recipient", "type": "address"}, {"name": "amount", "type": "uint256"}],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_repeat_test(
+            target,
+            fn,
+            "withdraw(address,uint256)",
+            ["0x2222222222222222222222222222222222222222", "1"],
+            "0",
+            "accounting",
+            "10ether",
+            setup_signature="deposit()",
+            entitlement_signature="balances(address)",
+        )
+        deal_pos = body.index("vm.deal(ATTACKER, 100 ether);")
+        setup_pos = body.index("abi.encodeWithSignature(\"deposit()\")")
+        self.assertLess(deal_pos, setup_pos)
+
     def test_accounting_break_requires_entitlement_baseline(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         fn = {
