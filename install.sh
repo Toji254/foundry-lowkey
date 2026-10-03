@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-  INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
+if [[ -n "$SCRIPT_SOURCE" && -f "$SCRIPT_SOURCE" ]]; then
+  INSTALLER_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 else
   # curl | bash has no script file. In that mode the installer operates on the
   # current working directory, but only after verifying it is a Lowkey checkout.
