@@ -160,6 +160,8 @@ class BreakEngineTests(unittest.TestCase):
         self.assertNotIn('require(ok, "outer attack reverted")', body)
         self.assertIn("SETUP_VALUE_WEI", body)
 
+        self.assertIn("console2.log(\"SETUP_VALUE_WEI\", uint256(10 ether));", body)
+
     def test_result_parser_surfaces_missing_telemetry(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
