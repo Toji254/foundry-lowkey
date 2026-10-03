@@ -31,6 +31,19 @@ Usage:
   lk import "<import/path.sol>"
   lk import --h
 
+IMPORT SYNTAX CHEAT SHEET:
+  Named symbols:
+    import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+  One symbol:
+    import {ERC721URIStorage} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+  Whole file:
+    import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+  Namespace:
+    import * as Utils from "@openzeppelin/contracts/utils/Address.sol";
+
+  You can paste any of those directly into:
+    lk import "..."
+
 The helper is standalone: it does not select targets, change RPC/ABI/audit
 state, send transactions, or write project files.
 """
