@@ -58,6 +58,9 @@ _CONCEPT_ALIASES = {
     "function-signature": "function",
     "function-call": "function",
     "function-calls": "function",
+    "cheatcodes": "forge-cheatcodes",
+    "expectRevert": "vm-expect-revert",
+    "expectEmit": "vm-expect-emit",
     "modifier": "modifier",
     "modifiers": "modifier",
     "event": "events",
@@ -2924,6 +2927,9 @@ _COMPREHENSIVE_CONNECTION_EDGES.extend([
     ("script-interaction", "abi.encode", "raw calls in scripts still use ABI bytes"),
     ("vm-prank", "msg.sender", "prank changes the caller observed by Solidity"),
     ("vm-start-prank", "msg.sender", "startPrank changes caller context across multiple calls"),
+    ("vm-roll", "block.number", "roll changes the block number used by the test EVM"),
+    ("yul-memory", "memory", "Yul memory operations operate on Solidity memory layout"),
+    ("vm-start-prank", "msg.sender", "startPrank changes caller context across multiple calls"),
     ("vm-hoax", "vm-prank", "hoax combines caller control with funded balance"),
     ("vm-hoax", "vm-deal", "hoax provisions ETH as part of caller setup"),
     ("vm-deal", "contract-balance", "deal changes an address balance directly in a test"),
@@ -3021,7 +3027,7 @@ def connection_meaning(name: str) -> str:
         # meaning without importing the cheatsheet module (which would cycle).
         found = {"meaning": None}
 
-        def capture(name_, aliases_, category, meaning, *args):
+        def capture(name_, aliases_, category, meaning, *args, **kwargs):
             if name_ == topic_name:
                 found["meaning"] = meaning
 
@@ -4197,6 +4203,7 @@ _EXTRA_MEANINGS.update({
     "nonce": "A unique counter commonly used to make signed messages or state transitions single-use and prevent replay.",
     "compound-assignment": "An assignment operator such as += or -= that combines an operation with writing the result back.",
     "tload": "EVM/Yul operation that reads a word from transaction-scoped transient storage.",
+    "forge-cheatcodes": "Foundry cheatcodes expose controlled EVM/test context operations through the vm interface.",
     "tstore": "EVM/Yul operation that writes a word to transaction-scoped transient storage.",
 })
 
