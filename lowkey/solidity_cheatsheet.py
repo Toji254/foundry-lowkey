@@ -60,7 +60,7 @@ if str(MODULE_DIR) not in sys.path:
 
 from solidity_cheat_topics import register_topics
 from solidity_cheat_data import CONTRACT_LABS as _CONTRACT_LABS, TERM_DEFINITIONS as _TERM_DEFINITIONS
-from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name
+from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept
 
 TOPICS = []
 
@@ -281,64 +281,41 @@ def _render_connect(names):
 
     topics = []
     invalid = []
-    for raw in names:
-        # Prefer the connector vocabulary first. This keeps learning aliases such
-        # as "functions" or "function-syntax" from leaking the renderer's topic
-        # names into the connection view.
-        connector_names = expand_name(raw)
-        key = _norm(raw)
-        known_direct = key in connector_names or key in {
-            _norm(alias)
-            for alias in (
-                "strings-bytes", "receive-vs-fallback", "call-anatomy",
-                "storage-memory-calldata", "mapping-types", "struct-types",
-            )
-        }
-        if known_direct:
-            resolved = ", ".join(sorted(connector_names))
-        else:
-            topic = find_topic(raw)
-            if topic:
-                expanded = expand_name(topic["name"])
-                resolved = ", ".join(sorted(expanded))
-            else:
-                invalid.append(raw)
-                resolved = raw
-        topics.extend(sorted(connector_names) if known_direct else ([*expand_name(topic["name"])] if 'topic' in locals() and topic else []))
-        print_resolved = resolved
-    if invalid:
-        print("Unknown Solidity/Yul concept(s): " + ", ".join(invalid))
-        print("Use 'lk cheat' to inspect available Solidity topics, or:")
-        print("  lk connect --list")
-        return 2
+    resolved_display = []
 
-    # Rebuild the resolved concept set without duplicates.
-    topics = list(dict.fromkeys(topics))
-    lab = find_connection(topics)
+    for raw in names:
+        topic = find_topic(raw)
+        if is_known_concept(raw):
+            expanded = expand_name(raw)
+        elif topic:
+            expanded = expand_name(topic["name"])
+        else:
+            invalid.append(raw)
+            continue
+
+        topics.extend(sorted(expanded))
+        resolved_display.append((raw, ", ".join(sorted(expanded))))
+
     print("REQUESTED CONCEPTS")
     print("------------------")
-    for raw in names:
-        direct = expand_name(raw)
-        topic = find_topic(raw)
-        resolved_set = direct
-        if not (len(direct) == 1 and next(iter(direct)) == _norm(raw)):
-            resolved_set = direct
-        elif topic:
-            resolved_set = set(expand_name(topic["name"]))
-        resolved = ", ".join(sorted(resolved_set))
+    for raw, resolved in resolved_display:
         suffix = f" -> {resolved}" if _norm(raw) != _norm(resolved) else ""
         print(f"  {raw}{suffix}")
-    print()
 
-    if lab is None:
-        print("No single connection lab currently covers that combination.")
+    if invalid:
         print()
-        print("Try a smaller group, or inspect the available bundles with:")
+        print("Unknown Solidity/Yul concept(s): " + ", ".join(invalid))
+        print("Use 'lk cheat' to inspect available topics, or:")
         print("  lk connect --list")
-        print()
-        print("Every concept still has its own syntax-first view:")
-        print("  lk cheat <topic>")
         return 2
+
+    topics = list(dict.fromkeys(topics))
+    if len(topics) < 2:
+        print()
+        print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
+        return 2
+
+    lab = find_connection(topics)
 
     print("CONNECTION LAB")
     print("--------------")
