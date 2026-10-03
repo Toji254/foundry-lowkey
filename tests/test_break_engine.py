@@ -130,6 +130,12 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("call{value: 10 ether}", funded)
 
 
+    def test_fund_target_compact_amount_is_normalized_for_solidity(self):
+        self.assertEqual(break_engine._solidity_amount_literal("10ether"), "10 ether")
+        self.assertEqual(break_engine._solidity_amount_literal("500gwei"), "500 gwei")
+        with self.assertRaises(ValueError):
+            break_engine._solidity_amount_literal("10 apples")
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
