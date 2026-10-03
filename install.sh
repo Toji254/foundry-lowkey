@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  # curl | bash has no script file. In that mode the installer operates on the
+  # current working directory, but only after verifying it is a Lowkey checkout.
+  INSTALLER_DIR="$PWD"
+fi
+
+REPO_DIR="$(cd "$INSTALLER_DIR" && pwd)"
+if [ ! -f "$REPO_DIR/lowkey/lk.py" ] || [ ! -f "$REPO_DIR/bin/lk" ]; then
+  echo "Error: Lowkey installer could not locate the repository checkout." >&2
+  echo "Run it from the foundry-lowkey repository root, or use: bash install.sh" >&2
+  exit 1
+fi
+
 TARGET_LOWKEY_DIR="$HOME/.lowkey"
 TARGET_BIN_DIR="$HOME/.foundry/bin"
 LEGACY_BIN="$HOME/bin/lk"
