@@ -8343,3 +8343,115 @@ function balanceOf(bytes calldata raw)
 
 # Recompute after FINAL CONNECTION AUDIT 2 so the exported snapshot includes all nodes.
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
+
+
+
+# Final API polish: every curated scene carries an explicit route, and the
+# connection list advertises the research-backed protocol families.
+def _final_find_micro_scene_v2(names):
+    ordered = []
+    seen = set()
+    for name in names:
+        node = canonicalize(name)
+        if node not in seen:
+            ordered.append(node)
+            seen.add(node)
+
+    requested = frozenset(ordered)
+    exact = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if frozenset(scene.get("keys", ())) == requested
+    ]
+    if exact:
+        exact.sort(key=lambda s: s.get("title", ""))
+        chosen = exact[0]
+        chosen["route"] = _covering_route(ordered)
+        return chosen
+
+    candidates = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if requested <= frozenset(scene.get("keys", ()))
+    ]
+    if candidates:
+        candidates.sort(
+            key=lambda scene: (
+                len(frozenset(scene.get("keys", ())) - requested),
+                len(frozenset(scene.get("keys", ()))),
+                scene.get("title", ""),
+            )
+        )
+        chosen = candidates[0]
+        chosen["route"] = _covering_route(ordered)
+        return chosen
+
+    return _generic_connect_scene(ordered)
+
+
+find_micro_scene = _final_find_micro_scene_v2
+
+
+def list_connections():
+    return [
+        {
+            "name": "solidity-yul-comprehensive-graph",
+            "aliases": ["graph", "comprehensive"],
+            "concepts": ["all recognized Solidity/Yul/Foundry concepts"],
+            "summary": (
+                f"{len(_COMPREHENSIVE_CONNECTION_EDGES)} semantic edges, "
+                f"{len(COMPREHENSIVE_MICRO_SCENES)} curated teaching scenes, "
+                "plus route generation for arbitrary recognized combinations."
+            ),
+        },
+        {
+            "name": "data / ABI path",
+            "aliases": [],
+            "concepts": ["mapping", "structs", "arrays", "tuples", "abi.encode", "abi.decode", "keccak256"],
+            "summary": "Values → ABI bytes/tuples → hashing/decoding → storage selection.",
+        },
+        {
+            "name": "call / dispatch path",
+            "aliases": [],
+            "concepts": ["function", "function-signature", "function-selector", "calldata", "call", "returndata"],
+            "summary": "Function definition → selector → calldata → external call → raw return bytes.",
+        },
+        {
+            "name": "error / event path",
+            "aliases": [],
+            "concepts": ["errors", "custom-errors", "revert", "error-selector", "events", "event-indexed", "log-topics"],
+            "summary": "Failure and observability both cross ABI-shaped/log-shaped data boundaries.",
+        },
+        {
+            "name": "token path",
+            "aliases": [],
+            "concepts": ["erc20-pattern", "erc721-pattern", "erc1155-pattern", "token-approval", "transfer-from", "receiver-hook"],
+            "summary": "Mappings + approvals + arrays + events + receiver callbacks.",
+        },
+        {
+            "name": "authorization path",
+            "aliases": [],
+            "concepts": ["eip712-pattern", "permit-pattern", "erc1271", "multisig-pattern", "nonce", "ecrecover"],
+            "summary": "Structured signed data → digest → signer validation → replay-protected state change.",
+        },
+        {
+            "name": "protocol lifecycle path",
+            "aliases": [],
+            "concepts": ["timelock-pattern", "governor-pattern", "proxy-upgrade-pattern", "erc1967-storage", "delegatecall"],
+            "summary": "Hashed protocol state + time/governance + upgrade boundaries + delegated execution.",
+        },
+        {
+            "name": "storage / Yul path",
+            "aliases": [],
+            "concepts": ["storage-layout", "mapping-slots", "array-storage", "transient-storage", "yul-storage", "yul-memory", "yul-calldata"],
+            "summary": "High-level state → physical coordinates → raw EVM/Yul access.",
+        },
+        {
+            "name": "Foundry path",
+            "aliases": [],
+            "concepts": ["vm-prank", "vm-deal", "vm-expect-call", "fuzz-tests", "invariant-tests", "poc"],
+            "summary": "Controlled execution context → state manipulation → assertions/PoCs.",
+        },
+    ]
+
+
+_FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
+
