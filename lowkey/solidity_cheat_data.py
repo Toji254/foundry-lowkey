@@ -37,7 +37,7 @@ CONTRACT_LABS = {
     event Path(string which, uint256 value, uint256 dataLength);
 
     receive() external payable {
-        emit Path("receive", msg.value, msg.data.length);
+        emit Path("receive", msg.value, 0);
     }
 
     fallback(bytes calldata input)
