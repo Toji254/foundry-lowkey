@@ -1025,7 +1025,13 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             target, signature, calldata, value, family, seed_fund
         )
     elif family == "access":
-        body = _render_access_test(target, signature, calldata, value, break_on_success=True)
+        body = _render_access_test(
+            target,
+            signature,
+            calldata,
+            value,
+            break_on_success=bool(PRIVILEGED_RE.search(name)),
+        )
     elif family == "boundary":
         zero_values = _make_value(host, fn, rng, "zero")
         max_values = _make_value(host, fn, rng, "max")
@@ -1058,7 +1064,13 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 family, target.contract, target.address, signature, "BLOCKED", str(error)
             )
     elif family == "upgrade":
-        body = _render_access_test(target, signature, calldata, value, break_on_success=True)
+        body = _render_access_test(
+            target,
+            signature,
+            calldata,
+            value,
+            break_on_success=bool(UPGRADE_RE.search(name)),
+        )
     elif family in {"callback", "signature", "dos", "oracle", "economic", "erc20", "proxy", "storage"}:
         # Generic success is only an observation. These families need a
         # protocol-specific invariant before Lowkey may call it a BREAK.
