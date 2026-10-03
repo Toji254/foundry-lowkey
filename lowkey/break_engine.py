@@ -558,10 +558,13 @@ def _parse_args(args: list[str]):
             i += 2
             continue
         if low in {"--explain", "--evidence"}:
-            if i + 1 >= len(args):
-                raise ValueError(f"{item} needs a JSON evidence path.")
-            opts["explain"] = str(args[i + 1])
-            i += 2
+            # No path means "explain the newest break evidence".
+            if i + 1 >= len(args) or str(args[i + 1]).startswith("-"):
+                opts["explain"] = "latest"
+                i += 1
+            else:
+                opts["explain"] = str(args[i + 1])
+                i += 2
             continue
         if low == "--quiet":
             opts["quiet"] = True
@@ -631,7 +634,8 @@ MODES
   --fund-target 10ether
                 Fund the target only inside the disposable Forge fork.
                 This is useful for withdrawal/reserve experiments.
-  --explain <file>  Explain a JSON evidence file in auditor-friendly language.
+  --explain [file|latest]  Explain JSON evidence in auditor-friendly language.
+                    With no file, Lowkey explains the newest break evidence.
                     This reads evidence only; it does not rerun the attack.
 
 SAFETY
@@ -2243,9 +2247,24 @@ def _run_native_backend(host, project_info: dict[str, Any], opts: dict[str, Any]
     return 0
 
 
-def _explain_evidence(path: str) -> int:
+def _explain_evidence(path: str, root: Path | None = None) -> int:
     """Render a break/evidence JSON file as an auditor-readable explanation."""
-    evidence_path = Path(path).expanduser().resolve()
+    root = Path(root).expanduser().resolve() if root else Path.cwd().resolve()
+    if str(path).strip().lower() == "latest":
+        candidates = sorted(
+            (root / ".audit" / "break").rglob("*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        ) if (root / ".audit" / "break").is_dir() else []
+        if not candidates:
+            print(
+                f"Error: no break evidence JSON files found under {root / '.audit' / 'break'}.",
+                file=sys.stderr,
+            )
+            return 1
+        evidence_path = candidates[0].resolve()
+    else:
+        evidence_path = Path(path).expanduser().resolve()
     try:
         payload = json.loads(evidence_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -2372,10 +2391,13 @@ def _explain_evidence(path: str) -> int:
 def run(config, args=None, host=None):
     host = host or __import__("lowkey.lk", fromlist=["*"])
     args = list(args or [])
-    opts = _parse_args(args)
+    try:
+        opts = _parse_args(args)
+    except (TypeError, ValueError) as exc:
+        return host.fail(f"Error: {exc}")
 
     if opts.get("explain"):
-        return _explain_evidence(opts["explain"])
+        return _explain_evidence(opts["explain"], root=_root(host))
 
     if opts.get("help"):
         print(help_text())
