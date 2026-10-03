@@ -10864,6 +10864,8 @@ COMMAND_HELP = {
 }
 
 HELP_ALIASES = {
+    "cheats": "cheat",
+    "cheatsheet": "cheat",
     "walk": "walkthrough",
     "graph": "project",
     "signals": "findings",
