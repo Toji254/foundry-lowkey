@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import tempfile
 import sys
 import unittest
@@ -293,6 +294,95 @@ class ImportHelperTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIn("FOUNDRY INSTALL", rendered)
             self.assertIn("forge install OpenZeppelin/openzeppelin-contracts", rendered)
+        finally:
+            tmp.cleanup()
+
+
+    def test_extract_marks_abstract_contract(self):
+        tmp, root = self.project()
+        try:
+            syms = helper.extract(root / "lib" / "demo" / "src" / "Ownable.sol", root, helper.remappings(root))
+            self.assertEqual(len(syms), 1)
+            self.assertEqual(syms[0].kind, "contract")
+            self.assertTrue(syms[0].abstract)
+            self.assertEqual(helper.kind_label(syms[0]), "abstract contract")
+            why, when = helper.explain(syms[0])
+            self.assertIn("Abstract contract", why)
+            self.assertIn("building block", when)
+        finally:
+            tmp.cleanup()
+
+    def test_reference_interface_surface_and_related_learning(self):
+        tmp, root = self.project()
+        try:
+            symbol = helper.reference_symbol("IERC721", root)
+            self.assertIsNotNone(symbol)
+            surface = helper.interface_surface(symbol)
+            self.assertIn("ownerOf(tokenId)", surface)
+            self.assertIn("transferFrom(from, to, tokenId)", surface)
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.print_related(helper.reference_symbol("ERC721", root), root, [])
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn("IERC721", rendered)
+            self.assertIn("IERC721Receiver", rendered)
+            self.assertIn("ERC721URIStorage", rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_learning_search_finds_reference_concepts(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category("search nft", root, [])
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn("ERC721", rendered)
+            self.assertIn("IERC721", rendered)
+            self.assertIn("IERC721Receiver", rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_json_mode_contains_source_learning_and_audit_fields(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category("ERC721", root, [], json_mode=True)
+            data = json.loads(out.getvalue())
+            self.assertEqual(result, 0)
+            self.assertEqual(data["name"], "ERC721")
+            self.assertIn("source_status", data)
+            self.assertIn("related", data)
+            self.assertIn("common_mistakes", data)
+            self.assertIn("audit_questions", data)
+            self.assertIn("interface_surface", data)
+        finally:
+            tmp.cleanup()
+
+    def test_copy_only_emits_exact_import(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category("ERC721", root, [], copy_only=True)
+            rendered = out.getvalue().strip()
+            self.assertEqual(result, 0)
+            self.assertEqual(rendered, '  import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";')
+        finally:
+            tmp.cleanup()
+
+    def test_dry_run_does_not_execute_forge_install(self):
+        tmp, root = self.project()
+        try:
+            symbol = helper.reference_symbol("ERC721", root)
+            with patch("lowkey_import_helper.subprocess.run") as mocked:
+                result = helper.install_symbols([symbol], root, dry_run=True)
+            self.assertEqual(result, 0)
+            mocked.assert_not_called()
         finally:
             tmp.cleanup()
 
