@@ -15,6 +15,14 @@ This branch is the integration candidate for the current Lowkey feature set. It 
 Useful discovery commands:
 
 ~~~bash
+lk cheat
+lk cheat mapping
+lk cheat require
+lk cheat fallback
+lk cheat receive
+lk cheat interface
+lk cheat symbols
+lk cheat search mapping
 lk -h
 lk project
 lk system
