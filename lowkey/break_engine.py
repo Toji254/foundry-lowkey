@@ -1104,7 +1104,7 @@ def _record_break(host, result: AttackResult):
     return str(path)
 
 
-def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], family: str, opts, rng) -> AttackResult:
+def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], family: str, opts, rng, project_info: dict[str, Any] | None = None) -> AttackResult:
     signature = _format_signature(fn, host)
     name = _function_name(signature)
     modes = ["normal", "one", "zero", "max"]
@@ -1211,7 +1211,11 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         "generated_at": time.time(),
         "research_basis": ATTACK_FAMILIES.get(family, {}),
         "project_detection": {
-            "kind": project_info.get("kind") if "project_info" in locals() else None,
+            "kind": (project_info or {}).get("kind"),
+            "break_backend": (project_info or {}).get("break_backend"),
+            "languages": (project_info or {}).get("languages", {}),
+            "stacks": (project_info or {}).get("stacks", []),
+            "language_features": _language_features(_root(host), project_info or {}),
         },
     }
     evidence_path = _write_json(host, f"experiment_{target.contract}_{name}_{family}", evidence)
@@ -1285,7 +1289,7 @@ def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> 
     return funcs
 
 
-def _print_banner(targets: list[Target], opts: dict[str, Any], rpc: str | None, project_info: dict[str, Any]):
+def _print_banner(host, targets: list[Target], opts: dict[str, Any], rpc: str | None, project_info: dict[str, Any]):
     print()
     print("LOWKEY // BREAK MODE")
     print("====================")
@@ -1305,7 +1309,7 @@ def _print_banner(targets: list[Target], opts: dict[str, Any], rpc: str | None, 
     else:
         print("Scope   : CURRENT TARGET")
     print(f"Mode    : {'INDEFINITE / STOP ON BREAK' if opts.get('until_found') else f'ROUND-LIMITED ({opts.get('max_rounds', 1)})'}")
-    features = _language_features(_root(__import__('lowkey.lk', fromlist=['*'])), project_info)
+    features = _language_features(_root(host), project_info)
     if features:
         print("LANGUAGE CUES")
         print("-------------")
@@ -1408,7 +1412,7 @@ def run(config, args=None, host=None):
     except Exception as exc:
         return host.fail(f"Target discovery failed: {exc}")
 
-    _print_banner(targets, opts, rpc, project_info)
+    _print_banner(host, targets, opts, rpc, project_info)
 
     rounds = 0
     campaign_results: list[AttackResult] = []
@@ -1442,7 +1446,7 @@ def run(config, args=None, host=None):
                     for family in families:
                         made_progress = True
                         result = _run_family(
-                            host, config, rpc, target, fn, family, opts, rng
+                            host, config, rpc, target, fn, family, opts, rng, project_info
                         )
                         campaign_results.append(result)
 
