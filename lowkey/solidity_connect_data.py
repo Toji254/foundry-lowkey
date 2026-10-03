@@ -2045,7 +2045,7 @@ _SEMANTIC_ALIASES = {
     "errors": "errors",
     "error": "errors",
     "call": "call",
-    "calls": "calls",
+    "calls": "call",
     "static-call": "staticcall",
     "delegate-call": "delegatecall",
     "external-call": "external-call",
