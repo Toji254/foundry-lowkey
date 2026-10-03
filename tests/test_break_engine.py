@@ -1,7 +1,10 @@
 import importlib.util
+import io
+import json
 import pathlib
 import sys
 import unittest
+from contextlib import redirect_stdout
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -20,6 +23,55 @@ spec.loader.exec_module(break_engine)
 
 
 class BreakEngineTests(unittest.TestCase):
+    def test_parse_supports_evidence_explainer(self):
+        opts = break_engine._parse_args(["--explain", "/tmp/example.json"])
+        self.assertEqual(opts["explain"], "/tmp/example.json")
+
+    def test_evidence_explainer_translates_replay_telemetry(self):
+        import tempfile
+
+        payload = {
+            "family": "replay",
+            "target": {
+                "contract": "ConfidencePool",
+                "address": "0x" + "1" * 40,
+            },
+            "function": "withdraw()",
+            "forge_returncode": 0,
+            "harness": "/tmp/Lowkey_Break_ConfidencePool.t.sol",
+            "research_basis": {
+                "title": "Replay / repeat-claim abuse",
+                "basis": "claim, withdraw, redeem, release, payout and state-transition paths",
+            },
+            "output_tail": "\n".join([
+                "LOWKEY_BREAK_FAMILY replay",
+                "FIRST_SUCCESS false",
+                "SECOND_SUCCESS false",
+                "TOTAL_ATTACKER_GAIN 0",
+                "TOTAL_TARGET_OUTFLOW 0",
+                "ENTITLEMENT_READ_OK true",
+                "ENTITLEMENT_BEFORE 0",
+                "ENTITLEMENT_AFTER_FIRST 0",
+                "ENTITLEMENT_AFTER_SECOND 0",
+                "LOWKEY_BREAK false",
+            ]),
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "evidence.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = break_engine._explain_evidence(str(path))
+
+        rendered = output.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("ATTACK EXECUTED — NO BREAK", rendered)
+        self.assertIn("First call succeeded", rendered)
+        self.assertIn("Attacker gain", rendered)
+        self.assertIn("The target rejected the attempted call(s), so replay was not demonstrated.", rendered)
+        self.assertIn("This does NOT prove withdraw/redeem is secure", rendered)
+
     def test_parse_supports_function_system_and_until_found(self):
         opts = break_engine._parse_args([
             "--function", "withdraw(address,uint256)",
