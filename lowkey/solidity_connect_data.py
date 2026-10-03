@@ -8455,3 +8455,13 @@ def list_connections():
 
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
 
+
+
+# FINAL TINY EVM LOG NODES
+for _log_node in ("log1", "log2", "log3", "log4"):
+    _log_edge = (_log_node, "log-topics", "low-level LOG instruction emits this many topics")
+    if _log_edge not in _COMPREHENSIVE_CONNECTION_EDGES:
+        _COMPREHENSIVE_CONNECTION_EDGES.append(_log_edge)
+
+# Refresh the exported snapshot one last time.
+_FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
