@@ -943,11 +943,22 @@ def interface_surface(s: Symbol) -> list[str]:
         text = s.source.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
-    match = re.search(rf"\binterface\s+{re.escape(s.name)}\s*\{{(.*?)\n\}}", text, flags=re.S)
+    match = re.search(rf"\binterface\s+{re.escape(s.name)}\s*\{{", text)
     if not match:
         return []
+    depth = 1
+    end = match.end()
+    for idx in range(match.end(), len(text)):
+        if text[idx] == "{":
+            depth += 1
+        elif text[idx] == "}":
+            depth -= 1
+            if depth == 0:
+                end = idx
+                break
+    body = text[match.end():end]
     methods = []
-    for m in re.finditer(r"\bfunction\s+([A-Za-z_]\w*)\s*\(([^)]*)\)", match.group(1)):
+    for m in re.finditer(r"\bfunction\s+([A-Za-z_]\w*)\s*\(([^)]*)\)", body):
         signature = f"{m.group(1)}({re.sub(r'\s+', ' ', m.group(2)).strip()})"
         methods.append(signature)
     return methods[:16]
