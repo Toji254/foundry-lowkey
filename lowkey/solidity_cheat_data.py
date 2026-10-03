@@ -340,7 +340,7 @@ contract CallsLab {
     function demo() external {
         this.withdraw(1 ether);
     }
-}""",,
+}""",
     "require": """contract RequireLab {
     mapping(address => uint256) public balances;
 
