@@ -1515,24 +1515,22 @@ def _merge_protocol_observations(
         container = config.get(container_name)
         if not isinstance(container, dict):
             continue
-        if container_name == "lab_system":
-            system_root = str(
-                config.get("_lab_system_root")
-                or container.get("root_model")
-                or ""
-            ).strip()
-            if active_root and config.get("_lab_system_root"):
-                try:
-                    system_root = str(Path(str(config.get("_lab_system_root"))).resolve())
-                except OSError:
-                    pass
-            if active_root and system_root and system_root != str(Path(active_root).resolve()):
+        if container_name == "lab_system" and active_root:
+            system_root = str(config.get("_lab_system_root") or "").strip()
+            if not system_root:
+                # Legacy lab_system state has no provenance. With an active
+                # project we must reject it rather than guess ownership.
                 continue
+            try:
+                if str(Path(system_root).resolve()) != str(Path(active_root).resolve()):
+                    continue
+            except OSError:
+                if system_root != active_root:
+                    continue
         for key, value in container.items():
             if not is_address(value):
                 continue
-            allow_unowned = container_name == "lab_system" and not project_roots
-            if not owned_here(value, allow_unowned=allow_unowned):
+            if not owned_here(value, allow_unowned=False if active_root else True):
                 continue
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
             merged[str(key)] = value
