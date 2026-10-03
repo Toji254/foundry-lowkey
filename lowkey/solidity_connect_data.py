@@ -8188,3 +8188,155 @@ def _final_graph_audit():
 
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
 
+
+
+
+# FINAL CONNECTION AUDIT 2
+# Subtle language/ABI relationships that are easy to miss in pairwise browsing.
+_SEMANTIC_ALIASES.update({
+    "operators": "symbols",
+    "syntax-symbols": "symbols",
+    "solidity-symbols": "symbols",
+    "keyword": "keywords",
+    "keywords": "keywords",
+    "threshold": "threshold",
+    "log1": "log1",
+    "log2": "log2",
+    "log3": "log3",
+    "log4": "log4",
+    "event-topic": "log-topics",
+    "interface-id": "erc165-interface",
+    "function-selector": "function-selector",
+    "constructor-selector": "constructor",
+    "mapping-abi": "mapping-abi",
+    "abi-types": "abi-types",
+    "abi-type-mapping": "abi-types",
+    "public-state-getter": "public-getter",
+    "state-getter": "public-getter",
+})
+_EXTRA_MEANINGS.update({
+    "symbols": "Solidity punctuation/operators that control grouping, access, assignment, calls, conditions, and value transformations.",
+    "keywords": "Reserved Solidity words that define contracts, visibility, data locations, control flow, inheritance, and low-level constructs.",
+    "threshold": "The minimum number of valid approvals/signatures required before a multisig action can execute.",
+    "log1": "A low-level EVM LOG instruction that emits one topic plus arbitrary data.",
+    "log2": "A low-level EVM LOG instruction that emits two topics plus arbitrary data.",
+    "log3": "A low-level EVM LOG instruction that emits three topics plus arbitrary data.",
+    "log4": "A low-level EVM LOG instruction that emits four topics plus arbitrary data.",
+    "mapping-abi": "Mappings are not directly representable as ABI values; callers normally use a getter or a custom function to select entries.",
+    "abi-types": "The ABI represents structs as tuples, enums as integers, contract types as addresses, and UDVTs by their underlying value type.",
+})
+_EXTRA_CONCEPTS.update({
+    "symbols", "keywords", "threshold", "log1", "log2", "log3", "log4",
+    "mapping-abi", "abi-types",
+})
+
+_COMPREHENSIVE_CONNECTION_EDGES.extend([
+    ("symbols", "mapping", "[] and => are the key/value lookup syntax of a mapping"),
+    ("symbols", "arrays", "[] declares and indexes arrays"),
+    ("symbols", "structs", ". selects struct fields"),
+    ("symbols", "function", "() declares parameters and invokes functions"),
+    ("symbols", "call-options", "{} carries per-call options such as value/gas"),
+    ("symbols", "unchecked", "{} delimits an unchecked arithmetic block"),
+    ("symbols", "yul", "assembly {} enters Yul"),
+    ("keywords", "contract-types", "contract/interface/library keywords create contract-like declarations"),
+    ("keywords", "data-locations", "storage/memory/calldata are language keywords for reference data locations"),
+    ("keywords", "inheritance", "is expresses inheritance"),
+    ("keywords", "override", "override marks inherited implementation replacement"),
+    ("keywords", "virtual", "virtual permits overriding"),
+    ("keywords", "payable", "payable changes ETH-receiving semantics"),
+    ("mapping-abi", "mapping", "a mapping is a Solidity storage construct rather than an ABI value type"),
+    ("mapping-abi", "public-getter", "public mapping getters expose selected entries instead of encoding the mapping itself"),
+    ("mapping-abi", "abi.decode", "ABI decode cannot decode a mapping value directly"),
+    ("abi-types", "struct-abi", "structs are represented as ABI tuples"),
+    ("abi-types", "enum", "enums cross the ABI as integer types"),
+    ("abi-types", "contract-types", "contract/interface values cross the ABI as addresses"),
+    ("abi-types", "user-defined-value-types", "UDVTs use their underlying ABI type"),
+    ("abi-types", "function-types", "external function values encode as an address plus selector"),
+    ("interface", "public-getter", "a public state variable can satisfy an interface function with a matching getter shape"),
+    ("public-getter", "function", "the compiler-generated getter behaves like an externally callable function"),
+    ("public-getter", "function-selector", "a generated getter has a normal selector at the ABI boundary"),
+    ("constructor", "init-code", "constructors execute during creation code, not normal runtime dispatch"),
+    ("constructor", "function-selector", "constructors are not runtime functions with ordinary four-byte selectors"),
+    ("receive", "function-selector", "receive has a special empty-calldata entry route rather than an ordinary function selector"),
+    ("fallback", "function-selector", "fallback handles selectors that do not match ordinary function dispatch"),
+    ("events", "function-selector", "event signatures use 32-byte Keccak topics, distinct from 4-byte function selectors"),
+    ("errors", "function-selector", "custom error data begins with a four-byte selector-like identifier"),
+    ("errors", "abi-types", "error arguments use ABI type representations"),
+    ("events", "abi-types", "event parameters follow ABI type representations"),
+    ("returndata", "abi-types", "returned values are ABI encoded as a tuple of return values"),
+    ("calldata", "abi-types", "function arguments occupy ABI type-defined positions in calldata"),
+])
+
+_FINAL_INTERFACE_GETTER_SCENE = _final_add_scene(
+    [
+        "interface", "public-getter", "function", "function-selector",
+        "mapping", "address",
+    ],
+    "Public getter → interface function",
+    "A public state variable creates an external getter, and that generated getter can satisfy an interface function when the parameter/return shape matches.",
+    """
+interface IPrice {
+    function price() external view returns (uint256);
+}
+
+contract Feed is IPrice {
+    uint256 public override price;
+}
+
+contract Reader {
+    function read(IPrice feed)
+        external
+        view
+        returns (uint256)
+    {
+        return feed.price();
+    }
+}
+""",
+    [
+        ("state", "uint256", "price", "100", "The public variable creates the getter."),
+        ("function", "price()", "selector", "function selector", "The generated external ABI entry."),
+        ("interface", "IPrice", "feed", "0xFeed", "Typed interface reference."),
+    ],
+    [
+        "price is declared as public, so the compiler generates an external getter.",
+        "The getter's signature matches IPrice.price().",
+        "override explicitly states that the generated getter satisfies the interface.",
+        "Reader calls the getter through the interface boundary.",
+    ],
+    "feed.price();",
+)
+
+_FINAL_MAPPING_ABI_SCENE = _final_add_scene(
+    [
+        "mapping", "mapping-abi", "public-getter", "abi.decode", "function",
+    ],
+    "Mapping is storage, not an ABI value",
+    "A mapping cannot simply be returned or ABI-decoded as a value. A function instead selects a key and returns the mapped value.",
+    """
+mapping(address => uint256) public balances;
+
+function balanceOf(bytes calldata raw)
+    external
+    view
+    returns (uint256)
+{
+    address user_ = abi.decode(raw, (address));
+    return balances[user_];
+}
+""",
+    [
+        ("state", "mapping(address => uint256)", "balances", "balances[user_]", "Persistent lookup table."),
+        ("input", "bytes calldata", "raw", "abi.encode(alice)", "ABI payload."),
+        ("decoded", "address", "user_", "abi.decode(raw, (address))", "Selected key."),
+        ("return", "uint256", "balance", "balances[user_]", "ABI-representable result."),
+    ],
+    [
+        "The mapping itself is not the ABI value being returned.",
+        "The function receives bytes and decodes only the needed key.",
+        "The mapping lookup selects one uint256.",
+        "That uint256 is a normal ABI return value.",
+    ],
+    "balanceOf(abi.encode(alice));",
+)
+
