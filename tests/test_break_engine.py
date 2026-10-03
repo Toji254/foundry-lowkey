@@ -74,6 +74,46 @@ class BreakEngineTests(unittest.TestCase):
         self.assertEqual(playbook.backend_for_project({"languages": {"move": 2}, "stacks": ["move"]}), "move")
         self.assertEqual(playbook.backend_for_project({"languages": {"rust": 8}, "stacks": ["solana-anchor"]}), "solana-anchor")
 
+    def test_forge_match_path_is_project_relative(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp).resolve()
+            harness = root / "test" / "Lowkey_Break_withdraw_replay.t.sol"
+            harness.parent.mkdir(parents=True, exist_ok=True)
+            harness.write_text("contract Test {}\n", encoding="utf-8")
+
+            class AuditContext:
+                def foundry_project_root(self):
+                    return root
+
+            class Host:
+                audit_context = AuditContext()
+
+                def tool_path(self, name):
+                    return name
+
+            fake = type("Completed", (), {
+                "returncode": 0,
+                "stdout": "LOWKEY_BREAK false",
+                "stderr": "",
+            })()
+
+            with patch.object(break_engine.subprocess, "run", return_value=fake) as run:
+                break_engine._forge_run(
+                    Host(),
+                    {},
+                    str(harness),
+                    "http://127.0.0.1:8545",
+                    {"stacks": ["foundry"], "native": {"forge": True}},
+                )
+
+            command = run.call_args.args[0]
+            match_index = command.index("--match-path")
+            self.assertEqual(command[match_index + 1], "test/Lowkey_Break_withdraw_replay.t.sol")
+            self.assertNotIn(str(root), command[match_index + 1])
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
