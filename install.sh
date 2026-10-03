@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
-if [[ -n "$SCRIPT_SOURCE" && -f "$SCRIPT_SOURCE" ]]; then
-  INSTALLER_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
-else
-  # curl | bash has no script file. In that mode the installer operates on the
-  # current working directory, but only after verifying it is a Lowkey checkout.
-  INSTALLER_DIR="$PWD"
-fi
+# "$0" is always defined under Bash, including when the script is piped
+# through stdin. Avoid BASH_SOURCE here because indexed array elements can still
+# trigger nounset failures when no script file is attached to stdin.
+case "${0##*/}" in
+  bash|sh)
+    # curl | bash has no script file. In that mode the installer operates on the
+    # current working directory, but only after verifying it is a Lowkey checkout.
+    INSTALLER_DIR="$PWD"
+    ;;
+  *)
+    if [ -f "$0" ]; then
+      INSTALLER_DIR="$(cd "$(dirname "$0")" && pwd)"
+    else
+      INSTALLER_DIR="$PWD"
+    fi
+    ;;
+esac
 
 REPO_DIR="$(cd "$INSTALLER_DIR" && pwd)"
 if [ ! -f "$REPO_DIR/lowkey/lk.py" ] || [ ! -f "$REPO_DIR/bin/lk" ]; then
