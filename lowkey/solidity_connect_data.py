@@ -8856,3 +8856,388 @@ def render_connection_pack(requested, scenes, walkthrough=False):
     print("  1  full contract lab")
     print("  2  slower walkthrough")
     print("  lk cheat <concept>")
+
+
+# ---------------------------------------------------------------------------
+# FINAL LOW-LEVEL TEACHING SCENES
+# ---------------------------------------------------------------------------
+
+_final_add_scene(
+    [
+        "yul", "yul-storage", "mapping", "keccak256",
+        "mapping-slots", "storage-layout", "sload", "sstore",
+    ],
+    "High-level mapping → exact storage slot → Yul sload/sstore",
+    "A Solidity mapping lookup is a logical operation. At the EVM level the key and mapping anchor are hashed into a physical slot that Yul can read or write.",
+    """
+mapping(address => uint256) public balances;
+
+function set(address user_, uint256 amount_) external {
+    balances[user_] = amount_;
+}
+
+function read(address user_)
+    external
+    view
+    returns (uint256 result)
+{
+    assembly {
+        mstore(0x00, user_)
+        mstore(0x20, balances.slot)
+        let slot := keccak256(0x00, 0x40)
+        result := sload(slot)
+    }
+}
+
+// The write analogue is:
+// sstore(slot, amount_)
+""",
+    [
+        ("state", "mapping(address => uint256)", "balances", "balances[user_]", "High-level storage lookup."),
+        ("parameter", "address", "user_", "0xAlice", "Mapping key."),
+        ("parameter", "uint256", "amount_", "100", "Stored value."),
+        ("Yul local", "word", "slot", "keccak256(user_, balances.slot)", "Physical storage coordinate."),
+    ],
+    [
+        "balances[user_] selects a logical mapping entry.",
+        "The mapping declaration has an anchor slot even though that slot itself does not hold the mapped value.",
+        "The key and anchor are ABI-word-shaped values put into memory for hashing.",
+        "keccak256 produces the entry's physical slot.",
+        "sload reads the slot; sstore would write the slot.",
+    ],
+    "set(alice, 100);  // then read(alice)",
+)
+
+_final_add_scene(
+    [
+        "mload", "mstore", "mstore8", "mcopy",
+        "memory", "yul-memory", "yul",
+    ],
+    "Memory pointer → word load/store → byte copy",
+    "Yul treats memory as byte-addressable temporary space. mstore writes 32 bytes, mload reads 32 bytes, mstore8 writes one byte, and mcopy moves a byte range.",
+    """
+function demo()
+    external
+    pure
+    returns (bytes32 word)
+{
+    assembly {
+        mstore(0x80, 0x1234)
+        mstore8(0xA0, 0xFF)
+
+        // Copy 32 bytes from 0x80 to 0xC0.
+        mcopy(0xC0, 0x80, 0x20)
+
+        word := mload(0xC0)
+    }
+}
+""",
+    [
+        ("Yul address", "word", "0x80", "free-memory area", "Memory destination/source."),
+        ("Yul word", "bytes32", "word", "0x1234", "Value loaded from memory."),
+        ("Yul byte", "byte", "0xA0", "0xFF", "Single-byte write."),
+    ],
+    [
+        "mstore writes one 32-byte word.",
+        "mstore8 changes one byte at a chosen offset.",
+        "mcopy copies an arbitrary byte range.",
+        "mload reads one 32-byte word from the destination.",
+    ],
+    "demo();",
+)
+
+_final_add_scene(
+    [
+        "calldata", "yul-calldata", "calldataload", "calldatacopy",
+        "calldatasize", "function-selector", "msg.data",
+    ],
+    "Raw calldata → size → load/copy → selector",
+    "The same call payload can be treated as a Solidity calldata value or as raw EVM input. Yul gives byte-level access through load, copy, and size operations.",
+    """
+fallback() external {
+    assembly {
+        let size := calldatasize()
+        let firstWord := calldataload(0)
+
+        // Copy the whole payload into memory.
+        calldatacopy(0x80, 0, size)
+
+        // The high four bytes of firstWord contain the selector.
+        firstWord := firstWord
+    }
+}
+""",
+    [
+        ("raw input", "bytes", "msg.data", "selector + ABI arguments", "Complete current calldata."),
+        ("Yul", "word", "size", "calldatasize()", "Input length."),
+        ("Yul", "word", "firstWord", "calldataload(0)", "First 32 calldata bytes."),
+    ],
+    [
+        "A normal external function receives ABI-decoded parameters from calldata.",
+        "fallback can instead expose the raw payload.",
+        "calldatasize reports its byte length.",
+        "calldataload reads a 32-byte word from a chosen offset.",
+        "calldatacopy moves the payload into memory for further processing.",
+    ],
+    "send raw calldata to the fallback",
+)
+
+_final_add_scene(
+    [
+        "call", "low-level-call", "returndata",
+        "returndatasize", "returndatacopy", "abi.decode", "revert",
+    ],
+    "External call → success flag → returndata → decode or bubble",
+    "Low-level calls separate execution status from returned bytes. Successful bytes can be decoded; failure bytes can be copied and bubbled back to the caller.",
+    """
+function quote(address target, bytes memory data)
+    external
+    returns (uint256 value)
+{
+    (bool ok, ) = target.call(data);
+
+    if (!ok) {
+        assembly {
+            let size := returndatasize()
+            returndatacopy(0, 0, size)
+            revert(0, size)
+        }
+    }
+
+    bytes memory out = new bytes(returndatasize());
+
+    assembly {
+        returndatacopy(add(out, 32), 0, returndatasize())
+    }
+
+    value = abi.decode(out, (uint256));
+}
+""",
+    [
+        ("target", "address", "target", "0xOracle", "External call destination."),
+        ("input", "bytes", "data", "selector + args", "Raw calldata."),
+        ("flag", "bool", "ok", "true/false", "Low-level success result."),
+        ("bytes", "bytes", "out", "raw returndata", "Successful return payload."),
+        ("return", "uint256", "value", "abi.decode(out, (uint256))", "Typed value."),
+    ],
+    [
+        "target.call(data) crosses the external boundary.",
+        "ok says whether the subcall succeeded; it is separate from the returned bytes.",
+        "returndatasize tells how many bytes are available.",
+        "returndatacopy copies those bytes into memory.",
+        "Success bytes can be ABI-decoded; failure bytes can be returned with revert.",
+    ],
+    "quote(oracle, data);",
+)
+
+_final_add_scene(
+    [
+        "events", "event-indexed", "log-topics",
+        "log0", "log1", "log2", "log3", "log4", "keccak256", "bytes32",
+    ],
+    "Event declaration → topics → low-level LOG",
+    "A Solidity event becomes an EVM log. Indexed values occupy topics; the event signature is represented by a Keccak-derived topic, while low-level LOG operations expose the same underlying mechanism.",
+    """
+event Deposit(address indexed user, uint256 amount, bytes indexed memo);
+
+function deposit(bytes calldata memo_)
+    external
+    payable
+{
+    emit Deposit(msg.sender, msg.value, memo_);
+}
+
+// Low-level shape:
+// log3(dataPtr, dataSize, topic0, topic1, topic2)
+""",
+    [
+        ("event", "Deposit", "signature", "Deposit(address,uint256,bytes)", "Logical log definition."),
+        ("topic", "bytes32", "topic0", "keccak256(signature)", "Event identity."),
+        ("topic", "address", "user", "msg.sender", "Indexed value."),
+        ("data", "uint256", "amount", "msg.value", "Non-indexed data."),
+        ("topic", "bytes32", "memo topic", "keccak256(memo)", "Dynamic indexed value representation."),
+    ],
+    [
+        "The event declaration defines which parameters are indexed.",
+        "The event signature is represented by a Keccak-derived topic.",
+        "Indexed value types occupy additional topics.",
+        "A dynamic indexed value is represented by a hash topic rather than its full dynamic bytes.",
+        "The EVM LOG0–LOG4 instructions provide the low-level topic/data machinery.",
+    ],
+    'deposit(hex"6869");',
+)
+
+_final_add_scene(
+    [
+        "address", "address.code", "address.codehash",
+        "extcodesize", "extcodehash", "extcodecopy", "contract-types", "bytes",
+    ],
+    "Address → deployed code → size/hash/copy",
+    "An address can be treated as a contract reference, inspected for runtime code, hashed for code identity, or copied into memory. These are different questions about the same address.",
+    """
+function inspect(address target)
+    external
+    view
+    returns (
+        bytes memory code,
+        bytes32 hash,
+        uint256 size
+    )
+{
+    code = target.code;
+    hash = target.codehash;
+
+    assembly {
+        size := extcodesize(target)
+        extcodecopy(target, add(code, 32), 0, size)
+    }
+}
+""",
+    [
+        ("address", "address", "target", "0xTarget", "Account/contract address."),
+        ("bytes", "bytes", "code", "target.code", "Runtime bytecode bytes."),
+        ("bytes32", "bytes32", "hash", "target.codehash", "Code identity hash."),
+        ("word", "uint256", "size", "extcodesize(target)", "Runtime code length."),
+    ],
+    [
+        "The same address identifies the account being inspected.",
+        "address.code exposes runtime bytecode as bytes.",
+        "address.codehash exposes code identity as a bytes32 value.",
+        "extcodesize gives the EVM code length.",
+        "extcodecopy copies runtime code bytes into memory.",
+    ],
+    "inspect(target);",
+)
+
+_final_add_scene(
+    [
+        "create", "create2", "new", "constructor", "salt",
+        "init-code", "runtime-code", "address", "keccak256",
+    ],
+    "Creation → init code → runtime code → deterministic address",
+    "CREATE runs initialization and returns an address. CREATE2 adds a salt and init-code hash so the resulting address is determined before deployment.",
+    """
+// High-level creation:
+Child child = new Child(100);
+
+// CREATE2 address idea:
+// address = address(
+//     uint160(uint256(keccak256(
+//         abi.encodePacked(
+//             bytes1(0xff),
+//             deployer,
+//             salt,
+//             keccak256(initCode)
+//         )
+//     )))
+// );
+""",
+    [
+        ("constructor input", "uint256", "100", "100", "Deployment-time constructor argument."),
+        ("creation", "new", "child", "fresh contract", "High-level CREATE path."),
+        ("salt", "bytes32", "salt", "0x01", "CREATE2 deterministic input."),
+        ("code", "bytes", "initCode", "constructor + runtime-producing code", "Creation bytecode."),
+        ("derived", "bytes32", "address hash", "keccak256(...)", "Deterministic address preimage."),
+        ("result", "address", "child", "0xChild", "Fresh contract address."),
+    ],
+    [
+        "new invokes contract creation and its constructor.",
+        "Init code runs during creation and returns the runtime bytecode.",
+        "CREATE chooses the address using the normal creation mechanism.",
+        "CREATE2 mixes deployer, salt, and init-code hash into the address formula.",
+        "Therefore changing constructor arguments can change the init-code hash and the predicted CREATE2 address.",
+    ],
+    "new Child(100);  // CREATE2 prediction uses the corresponding init code + salt",
+)
+
+_final_add_scene(
+    [
+        "block.chainid", "block.basefee", "block.prevrandao",
+        "block.number", "block.timestamp", "blockhash",
+        "blobhash", "tx.gasprice", "gas", "contract-balance",
+    ],
+    "Block/transaction context → protocol assumptions",
+    "Global block and transaction values are ambient inputs. Protocols use them for time gates, chain binding, randomness assumptions, fee logic, recent-block references, and gas-sensitive behavior.",
+    """
+function context()
+    external
+    view
+    returns (
+        uint256 chainId,
+        uint256 timestamp,
+        uint256 number,
+        uint256 basefee_,
+        uint256 gasprice_,
+        uint256 balance
+    )
+{
+    chainId = block.chainid;
+    timestamp = block.timestamp;
+    number = block.number;
+    basefee_ = block.basefee;
+    gasprice_ = tx.gasprice;
+    balance = address(this).balance;
+}
+
+// Other context helpers:
+// block.prevrandao
+// blockhash(blockNumber)
+// blobhash(index)
+""",
+    [
+        ("global", "uint256", "block.chainid", "chain identity", "Chain binding."),
+        ("global", "uint256", "block.timestamp", "current block time", "Time checks/deadlines."),
+        ("global", "uint256", "block.number", "current block", "Block-relative state."),
+        ("global", "uint256", "block.basefee", "current base fee", "Block fee context."),
+        ("global", "uint256", "tx.gasprice", "tx fee price", "Transaction fee context."),
+        ("global", "uint256", "address(this).balance", "held ETH", "Current contract balance."),
+    ],
+    [
+        "These are context values, not ordinary function parameters.",
+        "block.chainid can bind signatures/authorization to one chain.",
+        "block.timestamp commonly controls deadlines and timelocks.",
+        "block.number/blockhash provide block-relative references.",
+        "basefee and tx.gasprice are fee context, while gas/gasleft describe execution budget.",
+    ],
+    "context();",
+)
+
+_final_add_scene(
+    [
+        "function", "named-arguments", "call-options", "symbols",
+        "parameter-vs-argument", "payable", "call",
+    ],
+    "Function definition → named arguments → call options",
+    "Solidity has two different brace/parenthesis ideas at a call site: named arguments provide parameter names, while call options such as value/gas configure the external message.",
+    """
+function pay(address payable to, uint256 amount_)
+    external
+    payable
+{
+    (bool ok, ) = to.call{value: amount_}("");
+    require(ok);
+}
+
+// Names at the definition can be matched at the call site:
+// pay({to: alice, amount_: 1 ether});
+
+// Message options are separate:
+// pay{value: 1 ether}(alice, 1 ether);
+""",
+    [
+        ("parameter", "address payable", "to", "alice", "Named input slot in the function."),
+        ("parameter", "uint256", "amount_", "1 ether", "Second input slot."),
+        ("argument", "address", "alice", "alice", "Actual address value supplied."),
+        ("argument", "uint256", "1 ether", "1 ether", "Actual numeric value supplied."),
+        ("call option", "uint256", "value", "1 ether", "ETH attached to the external message."),
+    ],
+    [
+        "The function definition declares parameters.",
+        "A call site supplies arguments.",
+        "Named arguments choose parameters by name but do not attach ETH.",
+        "The {value: ...} call option attaches ETH to the message.",
+        "Inside the function, msg.value reflects the attached ETH.",
+    ],
+    "pay{value: 1 ether}({to: alice, amount_: 1 ether});",
+)
+
