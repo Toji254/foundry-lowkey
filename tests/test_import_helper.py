@@ -284,10 +284,11 @@ class ImportHelperTests(unittest.TestCase):
         tmp, root = self.project()
         try:
             out = io.StringIO()
-            completed = type("Result", (), {"returncode": 0})()
+            maps = helper.remappings(root)
+            completed = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
             with patch("lowkey_import_helper.subprocess.run", return_value=completed):
                 with contextlib.redirect_stdout(out):
-                    result = helper.run_category("--install ERC721", root, helper.remappings(root))
+                    result = helper.run_category("--install ERC721", root, maps)
             rendered = out.getvalue()
             self.assertEqual(result, 0)
             self.assertIn("FOUNDRY INSTALL", rendered)
