@@ -1317,7 +1317,13 @@ def _result_from_output(
         "OBSERVED": "Attack executed; no concrete break condition reached.",
         "BLOCKED": "Attack harness did not produce a usable execution result.",
     }[status]
-    detail = {"raw_tail": "\n".join(text_output.splitlines()[-80:])}
+    raw_tail = "\n".join(text_output.splitlines()[-80:])
+    if not structured and raw_tail:
+        # A generated harness can fail to compile or execute before emitting
+        # Lowkey markers. Preserve the real tool error instead of hiding it behind
+        # a generic "BLOCKED" message.
+        summary = f"Forge produced no Lowkey telemetry. Last output: {raw_tail}"
+    detail = {"raw_tail": raw_tail}
     return AttackResult(
         family=family,
         contract=target.contract,
