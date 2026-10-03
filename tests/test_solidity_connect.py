@@ -16,6 +16,8 @@ from lowkey.solidity_connect_data import (
     find_micro_scene,
     is_known_concept,
     connection_route,
+    canonicalize,
+    connection_meaning,
 )
 
 
