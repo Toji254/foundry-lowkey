@@ -135,10 +135,10 @@ SIGNATURE_RE = re.compile(
 )
 
 CALLBACK_RE = re.compile(r"(?i)(callback|hook|receiver|fallback|receive|on[A-Z])")
-ACCESS_RE = re.compile(
+PRIVILEGED_RE = re.compile(
     r"(?i)(owner|admin|guardian|pause|unpause|upgrade|initialize|grant|revoke|"
-    r"renounce|rescue|sweep|emergency|set[A-Za-z]|configure|mint|burn|"
-    r"withdraw|claim|redeem|release|unlock|payout|execute)"
+    r"renounce|setOwner|transferOwnership|acceptOwnership|rescue|sweep|"
+    r"emergency|configure|set[A-Za-z]+|upgradeToAndCall|proxiable)"
 )
 SETUP_RE = re.compile(r"(?i)^(deposit|seed|fund|topUp|top_up|stake|credit)$")
 
@@ -1123,7 +1123,7 @@ def _families_for_function(fn: dict[str, Any], requested: str | None) -> list[st
     name = str(fn.get("name") or "")
     signature = _format_signature(fn)
     families = ["reentrancy", "replay", "accounting", "boundary"]
-    if ACCESS_RE.search(name):
+    if PRIVILEGED_RE.search(name):
         families.append("access")
     if UPGRADE_RE.search(name):
         families.append("upgrade")
