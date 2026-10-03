@@ -727,7 +727,7 @@ def _solidity_amount_literal(value: str) -> str:
     """Normalize Lowkey's compact amount syntax into a Solidity amount literal."""
     raw = str(value or "").strip()
     match = re.fullmatch(
-        r"([0-9]+(?:\\.[0-9]+)?)\\s*(wei|gwei|szabo|finney|ether)",
+        r"([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|szabo|finney|ether)",
         raw,
         flags=re.I,
     )
@@ -1009,7 +1009,8 @@ def _render_repeat_test(target: Target, signature: str, calldata: str, value: st
     value_lit = "0" if value in {"0", "0wei"} else "1"
     fund_line = ""
     if seed_fund:
-        fund_line = f'        vm.deal(TARGET, {seed_fund});\n'
+        seed_amount = _solidity_amount_literal(seed_fund)
+        fund_line = f'        vm.deal(TARGET, {seed_amount});\n'
     return _render_common_header() + f"""
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
@@ -1203,9 +1204,10 @@ def _render_reentrancy_test(
     )
     setup_block = ""
     if seed_fund:
-        setup_block += f'        vm.deal(TARGET, {seed_fund});\n'
+        seed_amount = _solidity_amount_literal(seed_fund)
+        setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
     if setup_signature:
-        seed_value = seed_fund or "2 wei"
+        seed_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
         setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
         (bool seeded, ) = address(hostile).call{{value: {seed_value}}}(
