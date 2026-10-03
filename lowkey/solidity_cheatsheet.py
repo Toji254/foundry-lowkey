@@ -317,6 +317,22 @@ def _render_connect(names):
 
     lab = find_connection(topics)
 
+    print("SELECTED CONCEPT REFERENCES")
+    print("---------------------------")
+    for raw in names:
+        topic = find_topic(raw)
+        if topic:
+            print(f"  {raw} -> {topic['name']}")
+            print("    syntax:")
+            for line in topic["syntax"].splitlines()[:8]:
+                print(f"      {line}")
+            print("    example:")
+            for line in topic["example"].splitlines()[:8]:
+                print(f"      {line}")
+        else:
+            print(f"  {raw} -> {', '.join(sorted(expand_name(raw)))}")
+    print()
+
     print("CONNECTION LAB")
     print("--------------")
     print(f"  {lab['name']}")
