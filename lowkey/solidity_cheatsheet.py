@@ -60,7 +60,7 @@ if str(MODULE_DIR) not in sys.path:
 
 from solidity_cheat_topics import register_topics
 from solidity_cheat_data import CONTRACT_LABS as _CONTRACT_LABS, TERM_DEFINITIONS as _TERM_DEFINITIONS
-from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept, connection_paths, find_micro_scene
+from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept, connection_paths, find_micro_scene, connection_meaning
 
 TOPICS = []
 
@@ -322,9 +322,15 @@ def _render_connect(names):
 
     print("REQUESTED CONCEPTS")
     print("------------------")
-    for raw, resolved in resolved_display:
-        suffix = f" -> {resolved}" if _norm(raw) != _norm(resolved) else ""
-        print(f"  {raw}{suffix}")
+    shown_concepts = []
+    seen_requested = set()
+    for raw in cleaned:
+        for concept in sorted(expand_name(raw)):
+            if concept not in seen_requested:
+                seen_requested.add(concept)
+                shown_concepts.append(concept)
+    for concept in shown_concepts:
+        print(f"  {concept}")
 
     if invalid:
         print()
@@ -391,10 +397,11 @@ def _render_connect(names):
     print("----------------------")
     seen = set()
     for raw in cleaned:
-        topic = find_topic(raw)
-        if topic and topic["name"] not in seen:
-            seen.add(topic["name"])
-            print(f"  {topic['name']}: {topic['meaning']}")
+        for concept in sorted(expand_name(raw)):
+            if concept in seen:
+                continue
+            seen.add(concept)
+            print(f"  {concept}: {connection_meaning(concept)}")
 
     if micro:
         print()
