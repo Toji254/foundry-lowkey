@@ -1031,55 +1031,144 @@ import {console2} from "forge-std/console2.sol";
 """
 
 
-def _render_repeat_test(target: Target, signature: str, calldata: str, value: str, label: str, seed_fund: str | None):
+def _render_repeat_test(
+    target: Target,
+    fn: dict[str, Any],
+    signature: str,
+    values: list[str],
+    value: str,
+    label: str,
+    seed_fund: str | None,
+    setup_signature: str | None = None,
+    entitlement_signature: str | None = None,
+):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
-    value_lit = "0" if value in {"0", "0wei"} else "1"
-    fund_line = ""
+    params = list(fn.get("inputs") or [])
+    expressions = []
+    for item, raw_value in zip(params, values):
+        ptype = str(item.get("type") or "").lower()
+        if ptype == "address":
+            expressions.append("address(ATTACKER)")
+        else:
+            expressions.append(_basic_solidity_expr(ptype, str(raw_value)))
+    payload_expr = (
+        f'abi.encodeWithSignature("{signature}", {", ".join(expressions)})'
+        if expressions else f'abi.encodeWithSignature("{signature}")'
+    )
+
+    setup_block = ""
     if seed_fund:
         seed_amount = _solidity_amount_literal(seed_fund)
-        fund_line = f'        vm.deal(TARGET, {seed_amount});\n'
+        if setup_signature:
+            setup_block += f"""
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
+        vm.prank(ATTACKER);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: {seed_amount}}}(setupData);
+        console2.log("SETUP_SUCCESS", setupSuccess);
+        console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
+        """
+        else:
+            setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
+    elif setup_signature:
+        setup_block += """
+        bytes memory setupData = abi.encodeWithSignature("%s");
+        vm.prank(ATTACKER);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{value: 2 wei}(setupData);
+        console2.log("SETUP_SUCCESS", setupSuccess);
+        console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
+        """ % setup_signature
+
+    entitlement_before = ""
+    entitlement_after_first = ""
+    entitlement_after_second = ""
+    if entitlement_signature:
+        entitlement_before = f"""
+        uint256 entitlementBefore = 0;
+        bool entitlementReadOk = false;
+        {{
+            (bool ok, bytes memory data) = TARGET.staticcall(
+                abi.encodeWithSignature("{entitlement_signature}", address(ATTACKER))
+            );
+            entitlementReadOk = ok && data.length >= 32;
+            if (entitlementReadOk) entitlementBefore = abi.decode(data, (uint256));
+        }}
+"""
+        entitlement_after_first = f"""
+        uint256 entitlementAfterFirst = 0;
+        {{
+            (bool ok, bytes memory data) = TARGET.staticcall(
+                abi.encodeWithSignature("{entitlement_signature}", address(ATTACKER))
+            );
+            if (ok && data.length >= 32) entitlementAfterFirst = abi.decode(data, (uint256));
+        }}
+"""
+        entitlement_after_second = f"""
+        uint256 entitlementAfterSecond = 0;
+        {{
+            (bool ok, bytes memory data) = TARGET.staticcall(
+                abi.encodeWithSignature("{entitlement_signature}", address(ATTACKER))
+            );
+            if (ok && data.length >= 32) entitlementAfterSecond = abi.decode(data, (uint256));
+        }}
+"""
+
     return _render_common_header() + f"""
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
 
     function test_break_repeat() public {{
-{fund_line}        bytes memory data = hex"{calldata[2:]}";
-        vm.deal(ATTACKER, 100 ether);
+{setup_block}
+{entitlement_before}
+        bytes memory data = {payload_expr};
 
+        // Measure withdrawal gains only after setup has established the attacker's entitlement.
         uint256 targetBefore = TARGET.balance;
         uint256 attackerBefore = ATTACKER.balance;
 
         vm.prank(ATTACKER);
-        (bool first, ) = TARGET.call{{value: {value_lit}}}(data);
+        (bool first, bytes memory firstReturndata) = TARGET.call{{value: {value}}}(data);
 
         uint256 targetMid = TARGET.balance;
         uint256 attackerMid = ATTACKER.balance;
-
+{entitlement_after_first}
         vm.prank(ATTACKER);
-        (bool second, ) = TARGET.call{{value: {value_lit}}}(data);
+        (bool second, bytes memory secondReturndata) = TARGET.call{{value: {value}}}(data);
 
         uint256 targetAfter = TARGET.balance;
         uint256 attackerAfter = ATTACKER.balance;
-
-        uint256 secondGain = attackerAfter > attackerMid ? attackerAfter - attackerMid : 0;
-        uint256 secondOutflow = targetMid > targetAfter ? targetMid - targetAfter : 0;
+{entitlement_after_second}
+        uint256 totalGain = attackerAfter > attackerBefore ? attackerAfter - attackerBefore : 0;
+        uint256 totalTargetOutflow = targetBefore > targetAfter ? targetBefore - targetAfter : 0;
 
         console2.log("LOWKEY_BREAK_FAMILY", "{label}");
         console2.log("FIRST_SUCCESS", first);
         console2.log("SECOND_SUCCESS", second);
-        console2.log("SECOND_ATTACKER_GAIN", secondGain);
-        console2.log("SECOND_TARGET_OUTFLOW", secondOutflow);
+        console2.log("FIRST_RETURNDATA_LENGTH", firstReturndata.length);
+        console2.log("SECOND_RETURNDATA_LENGTH", secondReturndata.length);
+        console2.log("TOTAL_ATTACKER_GAIN", totalGain);
+        console2.log("TOTAL_TARGET_OUTFLOW", totalTargetOutflow);
+        console2.log("ENTITLEMENT_READ_OK", entitlementReadOk);
+        console2.log("ENTITLEMENT_BEFORE", entitlementBefore);
+        console2.log("ENTITLEMENT_AFTER_FIRST", entitlementAfterFirst);
+        console2.log("ENTITLEMENT_AFTER_SECOND", entitlementAfterSecond);
 
-        if (second && secondGain > 0 && secondOutflow > 0) {{
+        // A second successful withdrawal is normal when the attacker still has entitlement.
+        // BREAK requires demonstrated payout greater than the entitlement recorded before attack.
+        bool breakByEntitlement = entitlementReadOk
+            && totalGain > entitlementBefore;
+        bool breakWithoutGetter = !entitlementReadOk
+            && second
+            && totalGain > 1 wei
+            && totalTargetOutflow > 1 wei;
+
+        if (breakByEntitlement || breakWithoutGetter) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
             console2.log("LOWKEY_BREAK", false);
         }}
 
-        // Never make the test itself fail on a mere candidate: Lowkey parses the
-        // observations and decides whether the behavioral break condition is met.
-        targetBefore; attackerBefore;
+        targetMid; attackerMid;
     }}
 }}
 """
@@ -1571,8 +1660,23 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     seed_fund = opts.get("fund_target")
 
     if family in {"replay", "accounting"}:
+        try:
+            all_functions = _discover_functions(host, config, target)
+            setup_signature = _find_setup_signature(all_functions)
+            entitlement_signature = _find_entitlement_getter_signature(all_functions)
+        except Exception:
+            setup_signature = None
+            entitlement_signature = None
         body = _render_repeat_test(
-            target, signature, calldata, value, family, seed_fund
+            target,
+            fn,
+            signature,
+            values,
+            value,
+            family,
+            seed_fund,
+            setup_signature=setup_signature,
+            entitlement_signature=entitlement_signature,
         )
     elif family == "access":
         body = _render_access_test(
