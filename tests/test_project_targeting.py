@@ -308,6 +308,95 @@ class ProjectTargetingTests(unittest.TestCase):
         class FakeSubprocess:
             @staticmethod
             def run(*args, **kwargs):
+                FakeSubprocess.kwargs = kwargs
+                return Completed()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            original_subprocess = lk.subprocess
+            original_tool_path = lk.tool_path
+            lk.subprocess = FakeSubprocess
+            lk.tool_path = lambda name: "/usr/bin/forge" if name == "forge" else None
+            try:
+                with patch_cwd(pathlib.Path(tmp)):
+                    result = lk.run_foundry(["create", "src/Test.sol:Test"], capture=True, cwd=root)
+            finally:
+                lk.subprocess = original_subprocess
+                lk.tool_path = original_tool_path
+
+        self.assertEqual(result.code, 0)
+        self.assertIn("compile warning", result.text)
+        self.assertIn("Deployed to: 0x" + "e" * 40, result.text)
+        self.assertEqual(FakeSubprocess.kwargs.get("cwd"), str(root))
+
+
+    def test_lab_source_integrity_rejects_walkthrough_output_in_first_party_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePool.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26;\n"
+                "contract ConfidencePool {\n"
+                "    uint256 x;\n"
+                "    // LOWKEY // LIVE PROTOCOL WALKTHROUGH\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            issue = lk._lab_source_integrity_issue(root)
+            self.assertIsNotNone(issue)
+            self.assertEqual(issue[0], "src/ConfidencePool.sol")
+            self.assertEqual(issue[1], 4)
+            self.assertEqual(issue[2], "LOWKEY // LIVE PROTOCOL WALKTHROUGH")
+
+
+    def test_auto_abi_path_with_root_never_uses_another_project_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            other = pathlib.Path(tmp) / "other"
+            other.mkdir()
+            current_artifact = root / "out" / "ConfidencePool.sol" / "ConfidencePool.json"
+            foreign_artifact = other / "out" / "Escrow.sol" / "Escrow.json"
+            current_artifact.parent.mkdir(parents=True)
+            foreign_artifact.parent.mkdir(parents=True)
+            current_artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePool",
+                    "sourceName": "src/ConfidencePool.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+            foreign_artifact.write_text(
+                json.dumps({
+                    "contractName": "Escrow",
+                    "sourceName": "src/Escrow.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6001"},
+                }),
+                encoding="utf-8",
+            )
+            (root / "src" / "ConfidencePool.sol").write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePool {}",
+                encoding="utf-8",
+            )
+            config = {"target_contract": "ConfidencePool", "abi_paths": {}, "project_roots": {}}
+            with patch_cwd(other):
+                resolved = lk.auto_abi_path("0x" + "1" * 40, config, root=root)
+            self.assertEqual(resolved, str(current_artifact.resolve()))
+            self.assertNotEqual(resolved, str(foreign_artifact.resolve()))
+
+
+    def test_run_foundry_capture_combines_stdout_and_stderr(self):
+        class Completed:
+            returncode = 0
+            stdout = "compile warning"
+            stderr = "Deployed to: 0x" + "e" * 40
+
+        class FakeSubprocess:
+            @staticmethod
+            def run(*args, **kwargs):
                 return Completed()
 
         with tempfile.TemporaryDirectory() as tmp:
