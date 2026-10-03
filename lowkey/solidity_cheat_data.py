@@ -16,16 +16,21 @@ CONTRACT_LABS = {
     event Received(address indexed from, uint256 amount, uint256 dataLength);
 
     receive() external payable {
-        emit Received(msg.sender, msg.value, msg.data.length);
+        emit Received(msg.sender, msg.value, 0);
     }
 }""",
     "fallback": """contract FallbackLab {
     event Routed(bytes4 selector, uint256 dataLength, uint256 value);
 
-    fallback(bytes calldata input) external payable {
+    fallback(bytes calldata input)
+        external
+        payable
+        returns (bytes memory)
+    {
         bytes4 selector =
             input.length >= 4 ? bytes4(input[:4]) : bytes4(0);
         emit Routed(selector, input.length, msg.value);
+        return "";
     }
 }""",
     "receive-vs-fallback": """contract ReceiveFallbackLab {
@@ -35,8 +40,13 @@ CONTRACT_LABS = {
         emit Path("receive", msg.value, msg.data.length);
     }
 
-    fallback(bytes calldata input) external payable {
+    fallback(bytes calldata input)
+        external
+        payable
+        returns (bytes memory)
+    {
         emit Path("fallback", msg.value, input.length);
+        return "";
     }
 }""",
     "calls": """interface ITarget {
@@ -306,10 +316,14 @@ contract CallsLab {
         lastAmount = amount;
     }
 
-    fallback(bytes calldata input) external {
+    fallback(bytes calldata input)
+        external
+        returns (bytes memory)
+    {
         bytes4 selector =
             input.length >= 4 ? bytes4(input[:4]) : bytes4(0);
         selector;
+        return input;
     }
 }""",
     "call-data-layout": """contract CalldataLayoutLab {
