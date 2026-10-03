@@ -1546,21 +1546,63 @@ def _solidity_function_source_index(source):
 def _function_source_file(artifact, root):
     if not isinstance(artifact, dict):
         return None, []
+    root_path = Path(root).expanduser().resolve()
     candidates = []
     source_name = artifact.get("sourceName")
     if source_name:
-        candidate = Path(root) / str(source_name)
+        candidate = root_path / str(source_name)
         if candidate.is_file():
             candidates.append(candidate)
+
     contract = str(artifact.get("contractName") or "")
     if not candidates and contract:
-        for path in source_sol_files(root):
+        try:
+            discovered = source_sol_files(str(root_path))
+        except Exception:
+            discovered = []
+        for path in discovered:
             try:
                 content = Path(path).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
             if re.search(r"\b(?:contract|interface|library)\s+" + re.escape(contract) + r"\b", content):
                 candidates.append(Path(path))
+                break
+
+    if not candidates and contract:
+        # .audit/abi/*.json intentionally keeps only contractName + ABI. When
+        # sourceName was stripped, recover the application source from the
+        # project's normal Solidity roots.
+        roots = [root_path / "src", root_path / "contracts", root_path]
+        seen = set()
+        for source_root in roots:
+            if not source_root.is_dir():
+                continue
+            try:
+                paths = source_root.rglob("*.sol")
+            except OSError:
+                continue
+            for path in paths:
+                try:
+                    resolved = path.resolve()
+                except OSError:
+                    continue
+                if resolved in seen or any(
+                    part in {".git", "out", "cache", "node_modules", "artifacts", "build", ".audit"}
+                    for part in resolved.parts
+                ):
+                    continue
+                seen.add(resolved)
+                try:
+                    content = resolved.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if re.search(r"\b(?:contract|interface|library)\s+" + re.escape(contract) + r"\b", content):
+                    candidates.append(resolved)
+                    break
+            if candidates:
+                break
+
     if not candidates:
         return None, []
     path = candidates[0]
@@ -1740,7 +1782,15 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
         "reads": reads, "writes": writes, "events": events, "calls": calls, "eth": eth, "creates": creates,
         "assembly": assembly, "getter": name in getter_names, "admin": admin, "asset_action": asset_action,
         "callback": callback, "upgrade": upgrade, "source": source_label, "_source": source,
-        "selector": (method_ids or {}).get(signature),
+        "selector": (
+            (
+                (method_ids or {}).get(signature)
+                if str((method_ids or {}).get(signature)).lower().startswith("0x")
+                else "0x" + str((method_ids or {}).get(signature))
+            )
+            if (method_ids or {}).get(signature)
+            else None
+        ),
     }
     record["classes"] = _function_inventory_classes(record)
     record["risk_flags"] = _function_inventory_risk_flags(record)
