@@ -1219,6 +1219,7 @@ def _render_reentrancy_test(
     depth: int,
     setup_signature: str | None = None,
     seed_fund: str | None = None,
+    entitlement_signature: str | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
@@ -1234,10 +1235,13 @@ def _render_reentrancy_test(
         f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
         if encoded_args else f'abi.encodeWithSignature("{signature}")'
     )
-    setup_block = ""
+    setup_block = """        uint256 targetBalanceBeforeFunding = TARGET.balance;
+"""
     if seed_fund:
         seed_amount = _solidity_amount_literal(seed_fund)
         setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
+    setup_block += """        uint256 targetBalanceBeforeSetup = TARGET.balance;
+"""
     if setup_signature:
         seed_value = _solidity_amount_literal(seed_fund) if seed_fund else "2 wei"
         setup_block += f"""
@@ -1245,8 +1249,22 @@ def _render_reentrancy_test(
         (bool seeded, ) = address(hostile).call{{value: {seed_value}}}(
             abi.encodeWithSignature("seed(bytes)", setupData)
         );
-        console2.log("SETUP_SEEDED", seeded);
+        console2.log("SETUP_WRAPPER_SUCCESS", seeded);
         console2.log("SETUP_VALUE_WEI", uint256({seed_value}));
+"""
+    setup_block += """        uint256 targetBalanceAfterSetup = TARGET.balance;
+"""
+    if entitlement_signature:
+        setup_block += f"""
+        (bool entitlementSetupOk, bytes memory entitlementSetupData) = TARGET.staticcall(
+            abi.encodeWithSignature("{entitlement_signature}", address(hostile))
+        );
+        uint256 entitlementAfterSetup = 0;
+        if (entitlementSetupOk && entitlementSetupData.length >= 32) {{
+            entitlementAfterSetup = abi.decode(entitlementSetupData, (uint256));
+        }}
+        console2.log("ENTITLEMENT_SETUP_READ_OK", entitlementSetupOk);
+        console2.log("ENTITLEMENT_AFTER_SETUP", entitlementAfterSetup);
 """
 
     return _render_common_header() + f"""
