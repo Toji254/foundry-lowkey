@@ -228,6 +228,53 @@ class SolidityConnectTests(unittest.TestCase):
             "Every catalog concept must be reachable through the connection graph.",
         )
 
+    def test_plain_keccak_meaning_does_not_leak_selector_language(self):
+        meaning = connection_meaning("keccak256").lower()
+        self.assertIn("hash", meaning)
+        self.assertNotIn("function selector", meaning)
+
+    def test_modern_reference_primitives_are_known_and_connected(self):
+        primitives = [
+            "abi.encodeCall",
+            "abi.encodeWithSelector",
+            "function-types",
+            "contract-types",
+            "user-defined-value-types",
+            "transient-storage",
+            "erc7201",
+            "ecrecover",
+            "sha256",
+            "ripemd160",
+            "addmod",
+            "mulmod",
+            "bytes.concat",
+            "string.concat",
+            "nonce",
+            "selfdestruct",
+            "address.code",
+            "address.codehash",
+            "block.chainid",
+            "block.basefee",
+            "block.prevrandao",
+            "mload",
+            "mstore",
+            "sload",
+            "sstore",
+            "tload",
+            "tstore",
+            "calldataload",
+            "returndatacopy",
+            "log4",
+        ]
+        for name in primitives:
+            self.assertTrue(is_known_concept(name), name)
+        edge_nodes = set()
+        for left, right, _ in _COMPREHENSIVE_CONNECTION_EDGES:
+            edge_nodes.add(canonicalize(left))
+            edge_nodes.add(canonicalize(right))
+        for name in primitives:
+            self.assertIn(canonicalize(name), edge_nodes, name)
+
     def test_graph_and_scene_depth(self):
         self.assertGreaterEqual(len(_COMPREHENSIVE_CONNECTION_EDGES), 250)
         self.assertGreaterEqual(len(COMPREHENSIVE_MICRO_SCENES), 30)
