@@ -5792,14 +5792,15 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
         system.setdefault("deployed_contract", target)
         if selected_record.get("contract"):
             system.setdefault("deployed_contract_name", selected_record["contract"])
+    # LOWKEY_TARGET is the canonical target contract between a project-native
+    # lab script and Lowkey. Other LOWKEY_* markers describe the deployed
+    # protocol graph; they must never silently replace the canonical target.
+    # This keeps native labs protocol-agnostic: a project may expose a factory,
+    # pool, router, vault, proxy, implementation, etc. without Lowkey guessing
+    # which one should become the audit target.
     effective_target = target
     if system:
-        if is_address(system.get("factory")):
-            effective_target = system["factory"]
-        elif is_address(system.get("pool")):
-            effective_target = system["pool"]
-        else:
-            system.setdefault("target", target)
+        system.setdefault("target", target)
 
         config["lab_system"] = system
         config["_lab_system_root"] = str(Path(root).resolve())
