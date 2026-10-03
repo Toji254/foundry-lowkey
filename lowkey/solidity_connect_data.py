@@ -5582,3 +5582,68 @@ def list_connections():
             "summary": "Test-controlled actor/balance → contract call context → observed external call.",
         },
     ]
+
+# Final correctness fixes after CI cross-check.
+def _catalog_meaning_for(name: str):
+    target = _CATALOG_ALIASES.get(_norm(name))
+    if not target:
+        return None
+    found = {"meaning": None}
+
+    def capture(topic_name, aliases, category, meaning, *args, **kwargs):
+        if topic_name == target:
+            found["meaning"] = meaning
+
+    _register_catalog_topics(capture)
+    return found["meaning"]
+
+
+def _final_known_nodes():
+    nodes = set()
+    for left, right, _label in _COMPREHENSIVE_CONNECTION_EDGES:
+        nodes.add(canonicalize(left))
+        nodes.add(canonicalize(right))
+    nodes.update(canonicalize(name) for name in _EXTRA_CONCEPTS)
+    nodes.update(canonicalize(name) for name in _CATALOG_ALIASES.values())
+    return nodes
+
+
+def connection_meaning(name: str) -> str:
+    canonical = canonicalize(name)
+
+    # Always prefer the semantic definition for the canonical node.
+    if canonical in _EXTRA_MEANINGS:
+        return _EXTRA_MEANINGS[canonical]
+
+    meaning = _catalog_meaning_for(name)
+    if meaning:
+        return meaning
+
+    meaning = _catalog_meaning_for(canonical)
+    if meaning:
+        return meaning
+
+    return f"{canonical} is a recognized Solidity/Foundry concept."
+
+
+# Keep the legacy combined selector topic connected after semantic
+# canonicalization. This edge is intentionally redundant if an equivalent edge
+# already exists, but harmless and makes the invariant explicit.
+_COMPREHENSIVE_CONNECTION_EDGES.append(
+    (
+        "keccak-selectors",
+        "keccak256",
+        "combined selector/hash topic: selector derivation is a specific Keccak use",
+    )
+)
+
+
+def is_known_concept(name: str) -> bool:
+    key = _norm(name)
+    if key in _COMPREHENSIVE_COMPOSITES:
+        return True
+    if key in _SEMANTIC_ALIASES:
+        return True
+    if key in _CATALOG_ALIASES:
+        return True
+    return canonicalize(name) in _final_known_nodes()
