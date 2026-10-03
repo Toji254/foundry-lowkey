@@ -5615,8 +5615,10 @@ def _validate_project_lab_target(
         if not artifact_is_project_application(str(root_path), artifact_path, artifact_data):
             continue
         artifact_name = artifact_contract_name(artifact_path, artifact_data)
-        if requested_lower and artifact_name.strip().lower() != requested_lower:
-            continue
+        # "requested" is a discovery preference, not proof of the runtime
+        # identity. A native lab may intentionally expose a protocol root
+        # (for example a factory proxy) while the initially discovered target
+        # was another application contract (for example a pool).
         deployed = artifact_data.get("deployedBytecode")
         if isinstance(deployed, dict):
             deployed = deployed.get("object")
@@ -5629,8 +5631,6 @@ def _validate_project_lab_target(
         deployed_address = str(item.get("address") or "").lower()
         contract_name = str(item.get("contract") or "").strip()
         if not implementation_lower or deployed_address != implementation_lower:
-            continue
-        if requested_lower and contract_name.lower() != requested_lower:
             continue
         for artifact_name, artifact_path, _ in application_artifacts:
             if artifact_name.strip().lower() == contract_name.lower():
