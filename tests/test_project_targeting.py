@@ -605,7 +605,7 @@ class ProjectTargetingTests(unittest.TestCase):
                 {
                     "contract": "ConfidencePoolFactory",
                     "address": implementation,
-                    "file": str(root / "broadcast" / "script" / "LocalAudit.s.sol" / "31337" / "run-latest.json"),
+                    "file": str(root / "broadcast" / "LocalAudit.s.sol" / "31337" / "run-latest.json"),
                     "time": 100,
                     "run_timestamp": 100,
                 },
