@@ -871,7 +871,7 @@ def register_topics(add):
         "receive-vs-fallback", ["fallback-receive", "receive-fallback"], "ETH FLOW",
         "Empty calldata prefers receive; unmatched calldata goes to fallback.",
         "Check the envelope before deciding which door gets the call.",
-        """Empty calldata       -> receive(), if present
+        """empty calldata       -> receive(), if present
     unknown selector       -> fallback()
     unknown selector + ETH -> payable fallback()""",
         """contract Example {
