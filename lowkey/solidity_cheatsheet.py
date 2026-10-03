@@ -393,6 +393,14 @@ def _render_connect(names):
                 print(f"    {relation}")
 
     print()
+    print("CONNECTION ROUTE")
+    print("----------------")
+    route = connection_route(topics)
+    if route:
+        shown = route if len(route) <= 14 else route[:14] + ["…"]
+        print("  " + " → ".join(shown))
+
+    print()
     print("1. WHAT EACH PIECE IS")
     print("----------------------")
     seen = set()
