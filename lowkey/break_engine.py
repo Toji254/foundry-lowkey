@@ -1214,7 +1214,7 @@ def _render_reentrancy_test(
             abi.encodeWithSignature("seed(bytes)", setupData)
         );
         console2.log("SETUP_SEEDED", seeded);
-        console2.log("SETUP_VALUE_WEI", {seed_value});
+        console2.log("SETUP_VALUE_WEI", uint256({seed_value}));
 """
 
     return _render_common_header() + f"""
