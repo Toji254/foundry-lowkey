@@ -3,6 +3,7 @@ import importlib.util
 import io
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -103,7 +104,7 @@ class ImportHelperTests(unittest.TestCase):
         try:
             a = helper.Symbol("ERC721", "contract", root / "src/A.sol", "demo/ERC721.sol", 1)
             b = helper.Symbol("ERC721URIStorage", "contract", root / "src/A.sol", "demo/ERC721URIStorage.sol", 1)
-            with unittest.mock.patch("builtins.input", side_effect=["/ERC721URIStorage,"]):
+            with patch("builtins.input", side_effect=["/ERC721URIStorage,"]):
                 selected = helper.choose([a, b], helper.sym_render, "symbols")
             self.assertEqual(selected.name, "ERC721URIStorage")
         finally:
