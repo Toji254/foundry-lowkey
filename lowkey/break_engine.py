@@ -1179,6 +1179,38 @@ def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _find_entitlement_getter_signature(functions: list[dict[str, Any]]) -> str | None:
+    """Find an address-keyed uint view that can expose an attacker's entitlement."""
+    candidates: list[tuple[int, str]] = []
+    preferred = re.compile(r"(?i)(^|_)(balances?|credit|amount|entitlement|debt|shares?|position)(_|$)")
+    widths = {"uint8", "uint16", "uint32", "uint64", "uint96", "uint128", "uint256"}
+    for item in functions:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("stateMutability") or "").lower() not in {"view", "pure"}:
+            continue
+        inputs = item.get("inputs") or []
+        outputs = item.get("outputs") or []
+        if len(inputs) != 1 or len(outputs) != 1:
+            continue
+        if str(inputs[0].get("type") or "").lower() != "address":
+            continue
+        if str(outputs[0].get("type") or "").lower() not in widths:
+            continue
+        name = str(item.get("name") or "")
+        score = 100
+        if name.lower() == "balances":
+            score -= 60
+        elif name.lower() == "balance":
+            score -= 50
+        elif preferred.search(name):
+            score -= 25
+        candidates.append((score, _format_signature(item)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda value: (value[0], value[1]))
+    return candidates[0][1]
+
 def _render_reentrancy_test(
     target: Target,
     fn: dict[str, Any],
