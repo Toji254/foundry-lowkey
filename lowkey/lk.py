@@ -5605,6 +5605,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             system.setdefault("target", target)
 
         config["lab_system"] = system
+        config["_lab_system_root"] = str(Path(root).resolve())
         names = {
             "factory": "Factory",
             "pool": "Pool",
@@ -5622,6 +5623,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             label = names.get(alias, alias)
             config.setdefault("aliases", {})[label] = address
             config.setdefault("targets", {})[label] = address
+            config.setdefault("project_roots", {})[address] = str(Path(root).resolve())
 
     # Resolve the effective live target exclusively against this project's artifacts.
     if requested and system:
@@ -6148,6 +6150,8 @@ def _deploy_artifact_locally(config, root, rpc, accounts, artifact, constructor_
 
 
 def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="generic"):
+    config["_lab_system_root"] = str(Path(root).resolve())
+    config.pop("lab_system", None)
     candidate = (
         discover_artifact_lab_contract(root, requested)
         if mode == "artifact"
@@ -6213,6 +6217,13 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     ):
         _ensure_lab_deployer(config, accounts[0], 0)
     set_lab_target(config, root, target, contract, path)
+    config["_lab_system_root"] = str(Path(root).resolve())
+    config["lab_system"] = {
+        "root": target,
+        "target": target,
+        "root_model": contract,
+        "target_model": contract,
+    }
 
     print(f"Target  : {contract} -> {target}")
     print(f"ABI     : {path}")
@@ -6420,6 +6431,16 @@ def run_lab(config,args):
     root = audit_context.foundry_project_root()
     if not root:
         return fail("Error: Lowkey could not resolve the current project root.")
+
+    # Lab state is project-scoped. Clear transient protocol state whenever the
+    # caller moves between repositories so a previous lab can never become the
+    # current project's protocol graph or walkthrough target.
+    project_root_key = str(Path(root).resolve())
+    if config.get("_lowkey_active_project_root") != project_root_key:
+        config["_lowkey_active_project_root"] = project_root_key
+        config.pop("lab_system", None)
+        config.pop("_walkthrough_observed", None)
+        config.pop("_walkthrough_recipe", None)
 
     # A repository root may be a workspace/monorepo rather than the project to audit.
     # Lowkey discovers nested projects from manifests and source trees without assuming
