@@ -714,10 +714,10 @@ class SolidityConnectTests(unittest.TestCase):
 
     def test_production_protocol_patterns_have_curated_scenes(self):
         cases = [
-            (["erc4626", "mapping", "shares", "assets"], "ERC4626: assets ↔ shares → conversion → slippage"),
+            (["erc4626", "mapping", "structs", "arrays"], "ERC4626: assets ↔ shares → conversion → slippage"),
             (["erc1271", "interface", "bytes32", "bytes"], "Contract wallet → signature validation interface"),
             (["erc1967", "delegatecall", "storage-layout"], "ERC1967 slot → implementation → delegatecall"),
-            (["multicall", "bytes[]", "delegatecall", "returndata"], "bytes[] batch → delegatecall self → returndata[]"),
+            (["multicall", "arrays", "delegatecall", "returndata"], "bytes[] batch → delegatecall self → returndata[]"),
             (["flashloan", "callback", "interface", "mapping"], "Flash loan → callback → repayment invariant"),
             (["permit2", "mapping", "nonce", "signature-verification"], "Permit2-style authorization → nonce/allowance → transfer"),
             (["hook", "callback", "interface", "reentrancy"], "Protocol hook → external callback → state boundary"),
