@@ -309,7 +309,7 @@ def backend_for_project(info: dict[str, Any] | None) -> str:
 
 def language_label(info: dict[str, Any] | None) -> str:
     info = info or {}
-    languages = info.get("languages") or {}
+    languages = info.get("effective_languages") or info.get("languages") or {}
     if isinstance(languages, dict):
         return ", ".join(f"{k} ({v})" for k, v in languages.items()) or "unknown"
     return ", ".join(str(x) for x in languages) or "unknown"
