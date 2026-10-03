@@ -488,6 +488,7 @@ def _parse_args(args: list[str]):
         "depth": 3,
         "seed": 1337,
         "quiet": False,
+        "explain": None,
     }
     positionals = []
     i = 0
@@ -554,6 +555,12 @@ def _parse_args(args: list[str]):
             if i + 1 >= len(args):
                 raise ValueError("--seed needs an integer.")
             opts["seed"] = int(args[i + 1])
+            i += 2
+            continue
+        if low in {"--explain", "--evidence"}:
+            if i + 1 >= len(args):
+                raise ValueError(f"{item} needs a JSON evidence path.")
+            opts["explain"] = str(args[i + 1])
             i += 2
             continue
         if low == "--quiet":
@@ -624,6 +631,8 @@ MODES
   --fund-target 10ether
                 Fund the target only inside the disposable Forge fork.
                 This is useful for withdrawal/reserve experiments.
+  --explain <file>  Explain a JSON evidence file in auditor-friendly language.
+                    This reads evidence only; it does not rerun the attack.
 
 SAFETY
   lk break requires a detected Anvil node. It does not send production
@@ -2234,10 +2243,139 @@ def _run_native_backend(host, project_info: dict[str, Any], opts: dict[str, Any]
     return 0
 
 
+def _explain_evidence(path: str) -> int:
+    """Render a break/evidence JSON file as an auditor-readable explanation."""
+    evidence_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(f"Error: evidence file not found: {evidence_path}", file=sys.stderr)
+        return 1
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Error: could not read JSON evidence: {exc}", file=sys.stderr)
+        return 1
+
+    if not isinstance(payload, dict):
+        print("Error: evidence JSON must contain an object.", file=sys.stderr)
+        return 1
+
+    family = str(payload.get("family") or "unknown")
+    target = payload.get("target") if isinstance(payload.get("target"), dict) else {}
+    contract = str(target.get("contract") or "Unknown")
+    address = str(target.get("address") or "unknown")
+    function = str(payload.get("function") or "unknown")
+    forge_code = payload.get("forge_returncode")
+    harness = str(payload.get("harness") or "unknown")
+    research = payload.get("research_basis") if isinstance(payload.get("research_basis"), dict) else {}
+    raw = str(payload.get("output_tail") or "")
+
+    found = re.search(r"LOWKEY_BREAK\s+(true|false)", raw, flags=re.I)
+    is_break = bool(found and found.group(1).lower() == "true")
+
+    def read_bool(label: str):
+        match = re.search(rf"(?mi)^\\s*{re.escape(label)}\\s+(true|false)\\s*$", raw)
+        return match.group(1).lower() == "true" if match else None
+
+    def read_uint(label: str):
+        match = re.search(rf"(?mi)^\\s*{re.escape(label)}\\s+([0-9]+)\\s*$", raw)
+        return int(match.group(1)) if match else None
+
+    first_success = read_bool("FIRST_SUCCESS")
+    second_success = read_bool("SECOND_SUCCESS")
+    setup_success = read_bool("SETUP_SUCCESS")
+    attacker_gain = read_uint("TOTAL_ATTACKER_GAIN")
+    target_outflow = read_uint("TOTAL_TARGET_OUTFLOW")
+    entitlement_before = read_uint("ENTITLEMENT_BEFORE")
+    entitlement_after_first = read_uint("ENTITLEMENT_AFTER_FIRST")
+    entitlement_after_second = read_uint("ENTITLEMENT_AFTER_SECOND")
+
+    status = "BREAK PROVEN" if is_break else (
+        "ATTACK EXECUTED — NO BREAK" if "LOWKEY_BREAK_FAMILY" in raw
+        else "HARNESS DID NOT EMIT A STRUCTURED BREAK RESULT"
+    )
+
+    print()
+    print("LOWKEY // EVIDENCE EXPLAINER")
+    print("============================")
+    print(f"Evidence : {evidence_path}")
+    print(f"Family   : {family}")
+    print(f"Target   : {contract} @ {address}")
+    print(f"Function : {function}")
+    print()
+    print(f"VERDICT  : {status}")
+    print()
+    print("EXECUTION")
+    print("---------")
+    if forge_code == 0:
+        print("  Forge test: PASSED (the generated harness executed successfully).")
+    else:
+        print(f"  Forge test: return code {forge_code!r}.")
+    print(f"  Harness   : {harness}")
+
+    if research:
+        print()
+        print("WHY THIS ATTACK FAMILY")
+        print("----------------------")
+        print(f"  {research.get('title') or family}")
+        basis = research.get("basis")
+        if basis:
+            print(f"  Looks for: {basis}")
+
+    print()
+    print("WHAT THE TELEMETRY SAYS")
+    print("-----------------------")
+    shown = False
+    for label, value in (
+        ("Setup succeeded", setup_success),
+        ("First call succeeded", first_success),
+        ("Second/repeat call succeeded", second_success),
+        ("Attacker gain", attacker_gain),
+        ("Target outflow", target_outflow),
+        ("Entitlement before", entitlement_before),
+        ("Entitlement after first call", entitlement_after_first),
+        ("Entitlement after second call", entitlement_after_second),
+    ):
+        if value is not None:
+            print(f"  {label:<32} {value}")
+            shown = True
+    if not shown:
+        print("  No structured telemetry was found in this evidence file.")
+
+    print()
+    print("INTERPRETATION")
+    print("--------------")
+    if is_break:
+        print("  Lowkey's explicit break condition was reached.")
+        print("  Treat this as reproduced behavioral evidence, then inspect the")
+        print("  generated harness and prove the exact invariant and impact manually.")
+    elif family in {"replay", "accounting"} and first_success is False and second_success is False:
+        print("  The target rejected the attempted call(s), so replay was not demonstrated.")
+        if entitlement_before == 0 and entitlement_after_first == 0 and entitlement_after_second == 0:
+            print("  The observed state also shows zero entitlement throughout this probe.")
+        print("  This does NOT prove withdraw/redeem is secure; it only describes this")
+        print("  exact generated state and call sequence.")
+    elif family == "replay" and first_success is True and second_success is False:
+        print("  The first call succeeded but the repeat call failed.")
+        print("  Lowkey therefore did not demonstrate a replay break in this run.")
+    elif not is_break:
+        print("  The harness did not reach Lowkey's explicit break condition.")
+        print("  Treat the result as a lead/observation, not a vulnerability finding.")
+
+    print()
+    print("RAW EVIDENCE")
+    print("------------")
+    print("  The JSON remains the machine-readable source of record.")
+    print()
+    return 0
+
+
 def run(config, args=None, host=None):
     host = host or __import__("lowkey.lk", fromlist=["*"])
     args = list(args or [])
     opts = _parse_args(args)
+
+    if opts.get("explain"):
+        return _explain_evidence(opts["explain"])
 
     if opts.get("help"):
         print(help_text())
