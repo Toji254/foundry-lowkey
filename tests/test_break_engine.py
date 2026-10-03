@@ -351,6 +351,25 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("totalGain > entitlementBefore", body)
         self.assertNotIn("if (second && secondGain > 0 && secondOutflow > 0)", body)
 
+    def test_accounting_break_requires_entitlement_baseline(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        fn = {
+            "name": "withdraw",
+            "inputs": [{"name": "amount", "type": "uint256"}],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_repeat_test(
+            target,
+            fn,
+            "withdraw(uint256)",
+            ["1"],
+            "0",
+            "accounting",
+            None,
+            entitlement_signature=None,
+        )
+        self.assertIn("console2.log(\"LOWKEY_BREAK\", false);", body)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
