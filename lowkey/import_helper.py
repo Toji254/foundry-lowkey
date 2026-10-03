@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import subprocess
 import sys
@@ -29,6 +30,14 @@ Usage:
   lk import <symbol>
   lk import --install <symbol>
   lk import install <symbol>
+  lk import --install --dry-run <symbol>
+  lk import --json <symbol>
+  lk import --copy-only <symbol>
+  lk import search nft
+  lk import explain ERC721
+  lk import usage ERC721
+  lk import related ERC721
+  lk import audit ERC721
   lk import "<import declaration>"
   lk import "<import/path.sol>"
   lk import --h
@@ -55,6 +64,22 @@ INSTALL INTELLIGENCE:
   lk import --install ERC721
     Explicitly run the verified Forge install command, then re-run the
     lookup to resolve the actual source/remapping.
+
+  lk import --install --dry-run ERC721
+    Show the exact Forge install plan without changing the project.
+
+  lk import --json ERC721
+    Emit machine-readable import/learning/dependency metadata.
+
+  lk import --copy-only ERC721
+    Emit only the copy-ready Solidity import.
+
+  lk import search nft
+    Search deterministic learning tags, roles, use cases, and import paths.
+
+  lk import explain/usage/related/audit ERC721
+    Jump directly to the conceptual explanation, project usage, related
+    components, or auditor questions for a symbol.
 
 The lookup mode is standalone: it does not select targets, change RPC/ABI/audit
 state, send transactions, or write project files. Only explicit --install mode
@@ -206,6 +231,204 @@ IMPORT_METADATA = {
 }
 
 
+# Extra learning/reference entries cover common OpenZeppelin pieces that are useful
+# neighbours but are intentionally not all promoted into the short COMMON list.
+REFERENCE_CATALOG = {
+    "IERC721Receiver": {
+        "kind": "interface",
+        "import_path": "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol",
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "why": "Receiver interface used by safe ERC721 transfers to verify the recipient contract can handle NFTs.",
+        "when": "Study this whenever an NFT is sent to a contract address or you are implementing an NFT vault/game/market.",
+        "role": "interface",
+        "tags": ["nft", "erc721", "interface", "callback", "receiver"],
+        "related": ["IERC721", "ERC721", "ERC721URIStorage"],
+        "surface": ["onERC721Received(operator, from, tokenId, data)"],
+        "how": "A receiving contract implements onERC721Received and returns the expected selector during safeTransferFrom.",
+        "example": "contract Vault is IERC721Receiver { function onERC721Received(address,address,uint256,bytes calldata) external pure returns (bytes4) { return this.onERC721Received.selector; } }",
+        "audit": "Check callback assumptions, sender/token binding, reentrancy, and whether the recipient can cause state-dependent logic to run during NFT transfers.",
+        "mistakes": ["Assuming safeTransferFrom means the transfer itself is safe from reentrancy.", "Ignoring the receiver callback as an external execution boundary."],
+    },
+    "ERC721Enumerable": {
+        "kind": "extension",
+        "import_path": "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol",
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "why": "ERC721 extension that tracks owner/global token enumeration.",
+        "when": "Use when your application needs enumerable token IDs or owner token lists and you accept the extra bookkeeping/gas.",
+        "role": "extension",
+        "tags": ["nft", "erc721", "extension", "enumeration"],
+        "related": ["ERC721", "IERC721", "ERC721URIStorage"],
+        "how": "Inherit alongside ERC721 and satisfy any required overrides for the OpenZeppelin version you installed.",
+        "audit": "Check enumeration bookkeeping across mint, burn, and transfer paths plus gas growth for state-heavy collections.",
+        "mistakes": ["Treating enumeration as free; it adds state bookkeeping.", "Copying override lists from a different OpenZeppelin major version."],
+    },
+    "ERC721Burnable": {
+        "kind": "extension",
+        "import_path": "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol",
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "why": "ERC721 extension that provides burn functionality subject to ownership/approval rules.",
+        "when": "Use when NFTs should be permanently destroyed through a standard burn path.",
+        "role": "extension",
+        "tags": ["nft", "erc721", "extension", "burn"],
+        "related": ["ERC721", "IERC721"],
+        "how": "Inherit ERC721Burnable with ERC721 and call burn(tokenId) from an authorized owner/operator.",
+        "audit": "Check who can burn, whether business logic assumes token existence, and what state/metadata is removed on burn.",
+        "mistakes": ["Assuming burn can only ever be called by the owner without checking approval semantics.", "Leaving protocol accounting tied to a token that can disappear."],
+    },
+    "ERC20Burnable": {
+        "kind": "extension",
+        "import_path": "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol",
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "why": "ERC20 extension that provides burn functionality.",
+        "when": "Use when token holders or permitted spenders need a standard burn path.",
+        "role": "extension",
+        "tags": ["token", "erc20", "extension", "burn"],
+        "related": ["ERC20", "IERC20", "SafeERC20"],
+        "how": "Inherit the extension with ERC20 and use burn/burnFrom according to the allowance model.",
+        "audit": "Check who can burn, supply accounting, allowance semantics, and whether external protocol accounting updates consistently.",
+        "mistakes": ["Assuming burnFrom ignores allowance semantics.", "Forgetting that total supply changes can affect protocol accounting."],
+    },
+    "IERC20Metadata": {
+        "kind": "interface",
+        "import_path": "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol",
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "why": "ERC20 metadata interface for name, symbol, and decimals.",
+        "when": "Use when an integration needs human/display metadata or decimals from an external token.",
+        "role": "interface",
+        "tags": ["token", "erc20", "interface", "metadata", "decimals"],
+        "related": ["IERC20", "ERC20", "SafeERC20"],
+        "surface": ["name()", "symbol()", "decimals()"],
+        "how": "Cast a token address to IERC20Metadata and query metadata; treat returned decimals as token-specific configuration, not a universal value.",
+        "audit": "Check decimal normalization, precision loss, and whether a protocol incorrectly assumes 18 decimals.",
+        "mistakes": ["Assuming every ERC20 uses 18 decimals.", "Using UI metadata as a security-critical identity without validating the token address."],
+    },
+}
+
+IMPORT_LEARNING = {
+    "Ownable": {
+        "role": "access-control base contract",
+        "tags": ["access", "admin", "owner", "authorization", "contract"],
+        "related": ["Ownable2Step", "AccessControl", "Pausable"],
+        "next": ["Read owner()/onlyOwner first, then inspect ownership transfer.", "Compare Ownable with Ownable2Step."],
+        "mistakes": ["Assuming onlyOwner means the whole protocol is safe; map every privileged function.", "Missing the ownership-transfer path and its operational consequences."],
+        "compatibility": "OpenZeppelin major versions can change constructors and inheritance details. Check the installed package source before copying a tutorial.",
+    },
+    "Ownable2Step": {
+        "role": "access-control base contract",
+        "tags": ["access", "admin", "owner", "authorization", "handover"],
+        "related": ["Ownable", "AccessControl"],
+        "next": ["Trace transferOwnership → pending owner → acceptOwnership."],
+        "mistakes": ["Forgetting the recipient must explicitly accept ownership.", "Not checking what happens when a pending owner is replaced."],
+        "compatibility": "Ownership APIs and constructor requirements can vary by OpenZeppelin major version.",
+    },
+    "AccessControl": {
+        "role": "role-based access-control base contract",
+        "tags": ["access", "roles", "admin", "authorization", "contract"],
+        "related": ["Ownable", "Ownable2Step"],
+        "next": ["Read role identifiers, grantRole/revokeRole, and each onlyRole gate."],
+        "mistakes": ["Looking only at role checks without tracing who can grant/revoke the role.", "Treating role names as permissions; the implementation defines the actual powers."],
+        "compatibility": "Role-management and constructor/inheritance details depend on the installed OpenZeppelin major version.",
+    },
+    "ReentrancyGuard": {
+        "role": "security helper / base contract",
+        "tags": ["security", "reentrancy", "external-call", "guard"],
+        "related": ["Address", "SafeERC20"],
+        "next": ["Trace the external call sites first, then inspect which state changes happen before/after them."],
+        "mistakes": ["Thinking nonReentrant proves there is no reentrancy.", "Missing cross-function/read-only reentrancy or callback paths."],
+        "compatibility": "Check the installed OpenZeppelin source for modifier/state details before relying on tutorial-specific internals.",
+    },
+    "Pausable": {
+        "role": "lifecycle/emergency-control base contract",
+        "tags": ["pause", "emergency", "access", "lifecycle", "contract"],
+        "related": ["Ownable", "AccessControl"],
+        "next": ["Find who controls pause/unpause and which entry points use whenNotPaused/whenPaused."],
+        "mistakes": ["Pausing one function while another path still changes the same critical state.", "Giving pause power to an address without considering the trust boundary."],
+    },
+    "ERC20": {
+        "role": "token implementation",
+        "tags": ["token", "erc20", "fungible", "contract"],
+        "related": ["IERC20", "IERC20Metadata", "SafeERC20", "ERC20Burnable"],
+        "next": ["Understand IERC20 first, then ERC20's internal token update/mint/burn behavior in the installed version."],
+        "mistakes": ["Assuming ERC20 behavior is identical across every token.", "Missing custom transfer/mint/burn logic added by the application contract."],
+        "compatibility": "OpenZeppelin ERC20 internals and extension hooks differ across major versions; inspect the version you actually installed.",
+    },
+    "IERC20": {
+        "role": "token interface",
+        "tags": ["token", "erc20", "interface", "integration"],
+        "related": ["ERC20", "IERC20Metadata", "SafeERC20"],
+        "surface": ["totalSupply()", "balanceOf(account)", "transfer(to, value)", "allowance(owner, spender)", "approve(spender, value)", "transferFrom(from, to, value)"],
+        "next": ["Trace one transferFrom flow: owner → allowance → spender → token balance."],
+        "mistakes": ["Treating an interface as the implementation.", "Assuming every token returns values or behaves exactly like the reference implementation."],
+    },
+    "SafeERC20": {
+        "role": "token safety library",
+        "tags": ["token", "erc20", "library", "transfer", "safety"],
+        "related": ["IERC20", "ERC20"],
+        "next": ["Understand why low-level wrappers exist, then inspect the surrounding protocol accounting."],
+        "mistakes": ["Thinking SafeERC20 fixes wrong amounts/recipients or business-logic bugs.", "Ignoring fee-on-transfer or rebasing behavior."],
+    },
+    "ERC721": {
+        "role": "NFT implementation",
+        "tags": ["nft", "erc721", "token", "contract"],
+        "related": ["IERC721", "IERC721Receiver", "ERC721URIStorage", "ERC721Enumerable", "ERC721Burnable"],
+        "next": ["Read IERC721 first. Then trace mint → transfer → approval → safe receiver callback."],
+        "mistakes": ["Thinking ERC721 is only ownerOf/tokenURI; approvals and receiver callbacks matter.", "Copying override patterns from another OpenZeppelin major version."],
+        "compatibility": "ERC721 extension/override requirements differ across OpenZeppelin major versions. The installed source is the authority.",
+    },
+    "IERC721": {
+        "role": "NFT interface",
+        "tags": ["nft", "erc721", "interface", "ownership", "approval"],
+        "related": ["ERC721", "IERC721Receiver", "ERC721URIStorage"],
+        "surface": ["balanceOf(owner)", "ownerOf(tokenId)", "approve(to, tokenId)", "getApproved(tokenId)", "setApprovalForAll(operator, approved)", "isApprovedForAll(owner, operator)", "transferFrom(from, to, tokenId)", "safeTransferFrom(...)"],
+        "next": ["Understand ownerOf + approvals + transferFrom before reading ERC721 internals."],
+        "mistakes": ["Treating ownerOf as proof of application-level authorization.", "Ignoring operator approvals and safe-transfer callbacks."],
+    },
+    "ERC721URIStorage": {
+        "role": "NFT metadata extension",
+        "tags": ["nft", "erc721", "metadata", "extension", "uri"],
+        "related": ["ERC721", "IERC721", "IERC721Receiver"],
+        "next": ["Compare tokenURI and URI storage with the base ERC721 metadata model."],
+        "mistakes": ["Copying required override lists across OpenZeppelin versions.", "Forgetting metadata update authorization and storage-cost implications."],
+        "compatibility": "This extension has version-specific inheritance/override details. Inspect the installed source rather than a tutorial's exact override list.",
+    },
+    "ERC1155": {
+        "role": "multi-token implementation",
+        "tags": ["token", "erc1155", "batch", "fungible", "nft", "contract"],
+        "related": ["IERC1155", "IERC1155Receiver"],
+        "next": ["Understand balances[id][account] and safe batch receiver callbacks."],
+        "mistakes": ["Treating ERC1155 as a normal one-balance-per-address token.", "Ignoring batch callbacks and per-token-ID accounting."],
+        "compatibility": "ERC1155 hook/override details vary by OpenZeppelin major version.",
+    },
+    "AggregatorV3Interface": {
+        "role": "oracle interface",
+        "tags": ["oracle", "chainlink", "price-feed", "interface", "defi"],
+        "related": ["IERC20"],
+        "surface": ["decimals()", "description()", "version()", "getRoundData(roundId)", "latestRoundData()"],
+        "next": ["Read latestRoundData() and understand round IDs, updatedAt, decimals, and zero/negative answers."],
+        "mistakes": ["Using a price without checking freshness.", "Forgetting feed decimals or assuming any feed address is trustworthy."],
+    },
+    "Test": {
+        "role": "testing base contract",
+        "tags": ["foundry", "test", "cheatcode", "contract"],
+        "related": ["Script"],
+        "next": ["Learn vm.prank, vm.deal, vm.expectRevert, and invariant/fuzz assertions."],
+        "mistakes": ["Writing tests that only assert a transaction succeeded.", "Using powerful cheatcodes without understanding which state they mutate."],
+    },
+    "Script": {
+        "role": "deployment/interaction base contract",
+        "tags": ["foundry", "script", "deployment", "contract"],
+        "related": ["Test"],
+        "next": ["Trace startBroadcast/stopBroadcast and make every deployed address/argument explicit."],
+        "mistakes": ["Assuming deployment inputs are correct because deployment succeeded.", "Forgetting post-deployment initialization/admin ownership."],
+    },
+}
+
+
 @dataclass(frozen=True)
 class Symbol:
     name: str
@@ -213,6 +436,7 @@ class Symbol:
     source: Path
     import_path: str
     line: int
+    abstract: bool = False
 
     @property
     def import_stmt(self) -> str:
@@ -328,7 +552,16 @@ def extract(path: Path, root: Path, maps: list[tuple[str, Path]]) -> list[Symbol
             for kind, pat in compiled:
                 m = pat.match(line)
                 if m:
-                    found.append(Symbol(m.group(1), kind, path, import_path(path, root, maps), n))
+                    found.append(
+                        Symbol(
+                            m.group(1),
+                            kind,
+                            path,
+                            import_path(path, root, maps),
+                            n,
+                            abstract=(kind == "contract" and bool(re.match(r"^abstract\\s+contract\\b", line))),
+                        )
+                    )
                     break
         depth += line.count("{") - line.count("}")
         depth = max(depth, 0)
@@ -345,13 +578,24 @@ def all_symbols(root: Path, maps: list[tuple[str, Path]]) -> list[Symbol]:
 
 
 def known_metadata(name: str) -> dict:
-    return IMPORT_METADATA.get(name, {})
+    meta: dict = {}
+    meta.update(IMPORT_METADATA.get(name, {}))
+    meta.update(IMPORT_LEARNING.get(name, {}))
+    meta.update(REFERENCE_CATALOG.get(name, {}))
+    return meta
+
+
+def canonical_import_path(name: str) -> str | None:
+    if name in COMMON:
+        return COMMON[name][2]
+    extra = REFERENCE_CATALOG.get(name, {})
+    return extra.get("import_path")
 
 
 def symbol_metadata(s: Symbol) -> dict:
-    if s.name not in COMMON:
+    canonical_path = canonical_import_path(s.name)
+    if not canonical_path:
         return {}
-    canonical_path = COMMON[s.name][2]
     if s.source.name.startswith("(reference only") or s.import_path == canonical_path:
         return known_metadata(s.name)
     return {}
@@ -437,21 +681,35 @@ def install_guidance(symbol: Symbol, root: Path) -> tuple[str, str]:
 
 def reference_symbol(name: str, root: Path) -> Symbol | None:
     entry = COMMON.get(name)
-    if not entry:
+    if entry:
+        _why, _when, import_name = entry
+        meta = known_metadata(name)
+        kind = meta.get("kind")
+        if not kind:
+            if name == "SafeERC20":
+                kind = "library"
+            elif name.startswith("I") and (name.endswith("Interface") or name.startswith("IERC")):
+                kind = "interface"
+            else:
+                kind = "contract"
+        return Symbol(
+            name=name,
+            kind=kind,
+            source=Path("(reference only — dependency not installed)"),
+            import_path=import_name,
+            line=0,
+            abstract=False,
+        )
+    extra = REFERENCE_CATALOG.get(name)
+    if not extra:
         return None
-    _why, _when, import_name = entry
-    if name == "SafeERC20":
-        kind = "library"
-    elif name.startswith("I") and (name.endswith("Interface") or name.startswith("IERC")):
-        kind = "interface"
-    else:
-        kind = "contract"
     return Symbol(
         name=name,
-        kind=kind,
+        kind=extra.get("kind", "contract"),
         source=Path("(reference only — dependency not installed)"),
-        import_path=import_name,
+        import_path=extra["import_path"],
         line=0,
+        abstract=False,
     )
 
 
@@ -478,6 +736,13 @@ def usage_guidance(s: Symbol) -> tuple[str, list[str], str, str]:
             f"using {s.name} for SomeType;",
             "Review library assumptions, unsafe external calls, storage context, and whether the helper is suitable for the values and invariants in your protocol.",
         )
+    if s.kind == "contract" and s.abstract:
+        return (
+            f"Inherit from {s.name}; implement every required abstract member in the child contract before deployment.",
+            ["shared state and implementation", "template/base-contract behavior", "extension points"],
+            f"contract MyContract is {s.name} {{ /* implement required functions */ }}",
+            "Separate inherited behavior from child overrides. An abstract base can contain real state-changing logic, so audit it just like any other execution path.",
+        )
     if s.kind == "contract":
         return (
             f"Inherit from or instantiate {s.name} after reading its constructor, public API, and extension points.",
@@ -500,7 +765,7 @@ def usage_guidance(s: Symbol) -> tuple[str, list[str], str, str]:
     )
 
 
-def install_symbols(symbols: list[Symbol], root: Path) -> int:
+def install_symbols(symbols: list[Symbol], root: Path, dry_run: bool = False) -> int:
     if not (root / "foundry.toml").is_file():
         print()
         print("Forge installation requires a Foundry project.")
@@ -546,10 +811,15 @@ def install_symbols(symbols: list[Symbol], root: Path) -> int:
         return 2
 
     print()
-    print("FOUNDRY INSTALL")
+    print("FOUNDRY INSTALL" + (" • DRY RUN" if dry_run else ""))
     print("----------------")
     for package, command in commands.values():
         print(f"  {package}: {command}")
+
+    if dry_run:
+        print()
+        print("No changes made.")
+        return 0
 
     for package, command in commands.values():
         try:
@@ -566,13 +836,22 @@ def install_symbols(symbols: list[Symbol], root: Path) -> int:
     return 0
 
 
+def kind_label(s: Symbol) -> str:
+    if s.kind == "contract" and s.abstract:
+        return "abstract contract"
+    return s.kind
+
+
 def explain(s: Symbol) -> tuple[str, str]:
-    if symbol_metadata(s):
-        return COMMON[s.name][0], COMMON[s.name][1]
+    meta = symbol_metadata(s)
+    if meta.get("why") and meta.get("when"):
+        return meta["why"], meta["when"]
     if s.kind == "interface":
-        return f"Interface {s.name} describes an external contract's callable surface.", "Use it when your contract needs typed interaction with an existing contract."
+        return f"Interface {s.name} describes callable behavior that another contract can implement.", "Use it for typed interaction with an existing contract; the interface tells you what can be called, not how it works."
     if s.kind == "library":
         return f"Library {s.name} contains reusable helper logic.", "Use it when you need the helper behavior exposed by this library."
+    if s.kind == "contract" and s.abstract:
+        return f"Abstract contract {s.name} is a reusable base that is not directly deployable until all required abstract behavior is implemented.", "Use it as a building block for another contract when you want shared state/logic plus extension points."
     if s.kind == "contract":
         return f"Contract {s.name} is a reusable implementation.", "Use it when you want to inherit from or instantiate this component."
     if s.kind == "struct":
@@ -588,6 +867,268 @@ def explain(s: Symbol) -> tuple[str, str]:
     if s.kind == "constant":
         return f"File-level constant {s.name} is directly importable.", "Use it when several files need the same constant."
     return f"Importable {s.kind} {s.name}.", "Read its source/API before using it."
+
+
+def git_commit(package_root: Path) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(package_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if r.returncode == 0:
+            value = r.stdout.strip()
+            return value or None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def git_version(package_root: Path) -> str | None:
+    for command in (
+        ["git", "-C", str(package_root), "describe", "--tags", "--exact-match"],
+        ["git", "-C", str(package_root), "describe", "--tags", "--always", "--dirty"],
+    ):
+        try:
+            r = subprocess.run(command, capture_output=True, text=True, timeout=3)
+            if r.returncode == 0:
+                value = r.stdout.strip()
+                if value:
+                    return value
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def source_status_label(s: Symbol) -> str:
+    if s.source.name.startswith("(reference only"):
+        return "📚 REFERENCE ONLY"
+    if s.source.resolve().is_relative_to((root_for() / "lib").resolve()):
+        return "📦 INSTALLED DEPENDENCY"
+    return "✅ VERIFIED PROJECT SOURCE"
+
+
+def source_location(s: Symbol) -> str:
+    if s.line <= 0 or s.source.name.startswith("(reference only"):
+        return str(s.source)
+    return f"{s.source.resolve()}:{s.line}"
+
+
+def source_web_url(s: Symbol, root: Path) -> str | None:
+    package_root = package_root_for(s.source, root)
+    if not package_root:
+        return None
+    remote = git_remote(package_root)
+    slug = forge_repo_slug(remote)
+    commit = git_commit(package_root)
+    if not slug or not commit:
+        return None
+    try:
+        rel = s.source.resolve().relative_to(package_root.resolve()).as_posix()
+    except ValueError:
+        return None
+    return f"https://github.com/{slug}/blob/{commit}/{rel}#L{s.line}"
+
+
+def interface_surface(s: Symbol) -> list[str]:
+    meta = symbol_metadata(s)
+    surface = list(meta.get("surface", []))
+    if surface:
+        return surface
+    if s.source.name.startswith("(reference only") or not s.source.is_file():
+        return []
+    try:
+        text = s.source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    match = re.search(rf"\binterface\s+{re.escape(s.name)}\s*\{{(.*?)\n\}}", text, flags=re.S)
+    if not match:
+        return []
+    methods = []
+    for m in re.finditer(r"\bfunction\s+([A-Za-z_]\w*)\s*\(([^)]*)\)", match.group(1)):
+        signature = f"{m.group(1)}({re.sub(r'\s+', ' ', m.group(2)).strip()})"
+        methods.append(signature)
+    return methods[:16]
+
+
+def direct_imports(source: Path) -> list[str]:
+    if not source.is_file():
+        return []
+    try:
+        text = source.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found = re.findall(r'\bimport\s+(?:[^;]*?\s+from\s+)?["\']([^"\']+)["\']\s*;', text)
+    return list(dict.fromkeys(found))
+
+
+def project_usage(s: Symbol, root: Path) -> list[tuple[Path, int, str]]:
+    if s.source.name.startswith("(reference only"):
+        return []
+    uses = []
+    needle = re.compile(rf"\b{re.escape(s.name)}\b")
+    for path in sol_files(root / "src"):
+        if path.resolve() == s.source.resolve():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            if needle.search(line):
+                uses.append((path, line_no, line.strip()))
+                if len(uses) >= 20:
+                    return uses
+    return uses
+
+
+def related_symbols(s: Symbol, root: Path, maps) -> list[Symbol]:
+    names = list(symbol_metadata(s).get("related", []))
+    out = []
+    all_syms = all_symbols(root, maps)
+    by_name = {}
+    for item in all_syms:
+        by_name.setdefault(item.name.lower(), []).append(item)
+    for name in names:
+        candidates = by_name.get(name.lower(), [])
+        item = candidates[0] if candidates else reference_symbol(name, root)
+        if item:
+            out.append(item)
+    return out
+
+
+def audit_questions(s: Symbol) -> list[str]:
+    questions = [
+        "Who controls the privileged entry points around this component?",
+        "What state can this component read or change?",
+        "What external calls/callbacks can happen on its paths?",
+        "What assumptions does application code make about this dependency?",
+    ]
+    meta = symbol_metadata(s)
+    if s.kind == "interface":
+        questions.insert(0, "What concrete contract is actually behind this interface address?")
+    if s.kind == "contract" and s.abstract:
+        questions.insert(0, "Which abstract functions are implemented by the child, and did any override weaken a security invariant?")
+    questions.extend(meta.get("mistakes", [])[:2])
+    return list(dict.fromkeys(questions))
+
+
+def symbol_record(s: Symbol, root: Path, maps) -> dict:
+    why, when = explain(s)
+    how, use_cases, example, audit = usage_guidance(s)
+    package, forge_command = install_guidance(s, root)
+    status = install_status(s, root)
+    package_root = package_root_for(s.source, root)
+    version = git_version(package_root) if package_root else None
+    commit = git_commit(package_root) if package_root else None
+    meta = symbol_metadata(s)
+    return {
+        "name": s.name,
+        "type": kind_label(s),
+        "role": meta.get("role", kind_label(s)),
+        "abstract": bool(s.abstract),
+        "source": str(s.source),
+        "source_location": source_location(s),
+        "source_status": source_status_label(s),
+        "import_path": s.import_path,
+        "import": s.import_stmt,
+        "why": why,
+        "when": when,
+        "package": package,
+        "status": status,
+        "version": version or "unknown",
+        "commit": commit or "unknown",
+        "forge": forge_command,
+        "how": how,
+        "use_cases": use_cases,
+        "interface_surface": interface_surface(s),
+        "related": [x.name for x in related_symbols(s, root, maps)],
+        "next_to_learn": meta.get("next", []),
+        "common_mistakes": meta.get("mistakes", []),
+        "compatibility": meta.get("compatibility", "Check the installed source/version before copying examples from another project."),
+        "project_usage": [
+            {"path": str(path.resolve()), "line": line, "text": text}
+            for path, line, text in project_usage(s, root)
+        ],
+        "direct_imports": direct_imports(s.source),
+        "source_web_url": source_web_url(s, root),
+        "audit_lens": audit,
+        "audit_questions": audit_questions(s),
+    }
+
+
+def print_symbol_json(s: Symbol, root: Path, maps) -> None:
+    print(json.dumps(symbol_record(s, root, maps), indent=2, sort_keys=False))
+
+
+def print_related(s: Symbol, root: Path, maps) -> int:
+    related = related_symbols(s, root, maps)
+    if not related:
+        print("\nRELATED: none recorded for this symbol.")
+        return 0
+    print("\nRELATED / NEXT TO LEARN:")
+    for item in related:
+        print(f"  - {item.name} [{kind_label(item)}] -> {item.import_path}")
+        print(f"    source: {source_location(item)}")
+        why, _when = explain(item)
+        print(f"    why: {why}")
+    return 0
+
+
+def search_imports(query: str, root: Path, maps) -> int:
+    q = query.strip().lower()
+    if not q:
+        print("Usage: lk import search <term>")
+        return 2
+    catalog = {}
+    for item in all_symbols(root, maps):
+        catalog[(item.name.lower(), item.import_path)] = item
+    for name in list(COMMON) + list(REFERENCE_CATALOG):
+        ref = reference_symbol(name, root)
+        if ref:
+            catalog[(ref.name.lower(), ref.import_path)] = ref
+    scored = []
+    for item in catalog.values():
+        meta = symbol_metadata(item)
+        hay = " ".join([
+            item.name,
+            kind_label(item),
+            item.import_path,
+            meta.get("package", ""),
+            meta.get("role", ""),
+            meta.get("why", ""),
+            meta.get("when", ""),
+            " ".join(meta.get("tags", [])),
+            " ".join(meta.get("use_cases", [])),
+        ]).lower()
+        score = 0
+        for token in re.findall(r"[a-z0-9_]+", q):
+            if token == item.name.lower():
+                score += 100
+            if token in hay:
+                score += 10
+            if token in " ".join(meta.get("tags", [])).lower():
+                score += 25
+        if score:
+            scored.append((score, item))
+    if not scored:
+        print(f"No import-learning matches for '{query.strip()}'.")
+        return 2
+    scored.sort(key=lambda x: (-x[0], x[1].name.lower(), kind_label(x[1])))
+    print(f"\nLOWKEY // IMPORT SEARCH • {query.strip()}")
+    print("=" * 76)
+    for _score, item in scored[:20]:
+        print(f"{item.name} [{kind_label(item)}]")
+        print(f"  import: {item.import_path}")
+        print(f"  source: {source_location(item)}")
+        meta = symbol_metadata(item)
+        if meta.get("role"):
+            print(f"  role:   {meta['role']}")
+        if meta.get("tags"):
+            print(f"  tags:   {', '.join(meta['tags'])}")
+        print()
+    return 0
 
 
 def package_prefix(package: Path, maps: list[tuple[str, Path]]) -> str | None:
@@ -704,7 +1245,13 @@ def choose(items, renderer, label):
 def sym_render(i, s):
     why, when = explain(s)
     p = f"{i:>2}. " if i else ""
-    return f"{p}{s.name} [{s.kind}]\n    import: {s.import_stmt}\n    why: {why}\n    when: {when}\n"
+    return (
+        f"{p}{s.name} [{kind_label(s)}]\n"
+        f"    source: {source_location(s)}\n"
+        f"    import: {s.import_stmt}\n"
+        f"    why: {why}\n"
+        f"    when: {when}\n"
+    )
 
 
 def pkg_render(i, p):
@@ -738,38 +1285,59 @@ def combined_import(symbols: list[Symbol], aliases: dict[str, str] | None = None
     return lines
 
 
-def show_copy_imports(
-    symbols: list[Symbol],
-    requested_path: str | None = None,
-    aliases: dict[str, str] | None = None,
-):
-    print("\nCOPY:")
+def show_copy_imports(symbols: list[Symbol], requested_path: str | None = None, aliases: dict[str, str] | None = None, copy_only: bool = False):
+    if not copy_only:
+        print("\nCOPY:")
     for stmt in combined_import(symbols, aliases=aliases):
         print(f"  {stmt}")
-    if requested_path:
+    if requested_path and not copy_only:
         actual = sorted({s.import_path for s in symbols})
         if requested_path not in actual:
             print()
             print(f"NOTE: requested path was not the defining source: {requested_path}")
             print("      Lowkey used the verified source path(s) above.")
 
-def show_symbol(s: Symbol, root: Path | None = None):
+
+def show_symbol(s: Symbol, root: Path | None = None, maps=None, json_mode: bool = False, copy_only: bool = False):
     root = root or root_for()
+    maps = maps if maps is not None else remappings(root)
+    if json_mode:
+        print_symbol_json(s, root, maps)
+        return
+    if copy_only:
+        show_copy_imports([s], copy_only=True)
+        return
     why, when = explain(s)
     how, use_cases, example, audit = usage_guidance(s)
     package, forge_command = install_guidance(s, root)
     status = install_status(s, root)
+    meta = symbol_metadata(s)
     print()
     print(f"NAME:       {s.name}")
-    print(f"TYPE:       {s.kind}")
-    print(f"SOURCE:     {s.source}")
+    print(f"TYPE:       {kind_label(s)}")
+    print(f"ROLE:       {meta.get('role', kind_label(s))}")
+    print(f"SOURCE:     {source_location(s)}")
+    print(f"SOURCE KIND:{'  ' + source_status_label(s)}")
+    url = source_web_url(s, root)
+    if url:
+        print(f"SOURCE URL: {url}")
     print(f"IMPORT:     {s.import_stmt}")
     print(f"WHY:        {why}")
     print(f"WHEN:       {when}")
     print(f"PACKAGE:    {package}")
     print(f"STATUS:     {status}")
+    package_root = package_root_for(s.source, root)
+    print(f"VERSION:    {git_version(package_root) if package_root else 'not installed / not versioned'}")
+    print(f"COMMIT:     {git_commit(package_root) if package_root else 'n/a'}")
     print(f"FORGE:      {forge_command}")
     print(f"HOW:        {how}")
+    if s.kind == "interface":
+        surface = interface_surface(s)
+        if surface:
+            print("INTERFACE SURFACE:")
+            for method in surface:
+                print(f"  - {method}")
+            print("  These are callable shapes; the interface does NOT contain the concrete implementation.")
     if use_cases:
         print("USE CASES:")
         for item in use_cases:
@@ -777,20 +1345,55 @@ def show_symbol(s: Symbol, root: Path | None = None):
     if example:
         print("EXAMPLE:")
         print(f"  {example}")
+    related = related_symbols(s, root, maps)
+    if related:
+        print("RELATED:")
+        for item in related:
+            print(f"  - {item.name} [{kind_label(item)}] -> {item.import_path}")
+    next_items = meta.get("next", [])
+    if next_items:
+        print("NEXT TO LEARN:")
+        for item in next_items:
+            print(f"  - {item}")
+    imports = direct_imports(s.source)
+    if imports:
+        print("DEPENDS ON:")
+        for item in imports[:16]:
+            print(f"  - {item}")
+    usage = project_usage(s, root)
+    if usage:
+        print("PROJECT USAGE:")
+        for path, line, text in usage[:12]:
+            print(f"  - {path.resolve()}:{line}  {text}")
+    if meta.get("compatibility"):
+        print(f"COMPATIBILITY: {meta['compatibility']}")
+    mistakes = meta.get("mistakes", [])
+    if mistakes:
+        print("COMMON MISTAKES:")
+        for item in mistakes:
+            print(f"  - {item}")
     if audit:
         print(f"AUDIT LENS: {audit}")
+    questions = audit_questions(s)
+    if questions:
+        print("AUDIT QUESTIONS:")
+        for item in questions[:8]:
+            print(f"  ? {item}")
     print(f"LINE:       {s.line}")
+    if s.line > 0 and not s.source.name.startswith("(reference only"):
+        print("EDITOR:     Ctrl+Click the SOURCE or PROJECT USAGE path above in terminals that support file links.")
     show_copy_imports([s])
 
 
 def show_file(item):
     path, syms = item
+    line = syms[0].line if syms else 1
     print()
-    print(f"SOURCE:      {path}")
+    print(f"SOURCE:      {path.resolve()}:{line}")
     print(f"IMPORT FILE: {syms[0].import_path}")
     print("IMPORTABLE SYMBOLS:")
     for s in syms:
-        print(f"  {s.name} [{s.kind}]")
+        print(f"  {s.name} [{kind_label(s)}] — {source_location(s)}")
         print(f"    {s.import_stmt}")
 
 
@@ -805,6 +1408,7 @@ def browse_package(p: Package, root: Path, maps):
         print("  3. Libraries")
         print("  4. Structs / enums / types / errors / constants")
         print("  5. Source files")
+        print("  6. Search this package")
         print("  b. Back")
         a = input("\nSelect: ").strip().lower()
         if a == "b":
@@ -819,6 +1423,17 @@ def browse_package(p: Package, root: Path, maps):
             s = choose(items, file_render, "source files")
             if s:
                 show_file(s)
+        elif a == "6":
+            q = input("Search package for: ").strip().lower()
+            if q:
+                items = []
+                for source in sol_files(p.path):
+                    syms = extract(source, root, maps)
+                    if q in source.as_posix().lower() or any(q in x.name.lower() for x in syms):
+                        items.extend(syms)
+                s = choose(items, sym_render, "package matches")
+                if s:
+                    show_symbol(s, root, maps)
         elif a in kinds:
             syms = []
             for source in sol_files(p.path):
@@ -847,6 +1462,10 @@ def common():
         print(f"    import:  import {{{name}}} from \"{path}\";")
         print(f"    why:     {why}")
         print(f"    when:    {when}")
+        if meta.get("role"):
+            print(f"    role:    {meta['role']}")
+        if meta.get("tags"):
+            print(f"    tags:    {', '.join(meta['tags'])}")
         if meta.get("use_cases"):
             print(f"    use:     {', '.join(meta['use_cases'])}")
         print()
@@ -934,7 +1553,7 @@ def print_import_file(
     return 0
 
 
-def import_query(query: str, root: Path, maps, install: bool = False) -> int:
+def import_query(query: str, root: Path, maps, install: bool = False, dry_run: bool = False, json_mode: bool = False, copy_only: bool = False) -> int:
     requested_imports, requested_path, mode, namespace_alias = parse_import_query(query)
     tokens = [name for name, _alias in requested_imports]
 
@@ -999,10 +1618,10 @@ def import_query(query: str, root: Path, maps, install: bool = False) -> int:
             print()
             print(f'RESOLVED {len(unique_found)} SYMBOL(S)')
             for symbol in unique_found:
-                show_symbol(symbol, root)
+                show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only)
             show_copy_imports(unique_found, requested_path=requested_path, aliases=aliases)
             if install:
-                return install_symbols(unique_found, root)
+                return install_symbols(unique_found, root, dry_run=dry_run)
             return 0
 
         print()
@@ -1010,13 +1629,13 @@ def import_query(query: str, root: Path, maps, install: bool = False) -> int:
         for symbol in unique_found:
             print(f'  {symbol.name} [{symbol.kind}] -> {symbol.import_path}')
         for symbol in unique_found:
-            show_symbol(symbol, root)
+            show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only)
         show_copy_imports(unique_found, requested_path=requested_path, aliases=aliases)
         if len({s.import_path for s in unique_found}) > 1:
             print()
             print('NOTE: symbols came from different source files, so Lowkey emitted separate valid imports.')
         if install:
-            return install_symbols(unique_found, root)
+            return install_symbols(unique_found, root, dry_run=dry_run)
         return 0
 
     if not tokens:
@@ -1074,15 +1693,15 @@ def import_query(query: str, root: Path, maps, install: bool = False) -> int:
                     known_matches.append(ref)
         if known_matches:
             if len(known_matches) == 1:
-                show_symbol(known_matches[0], root)
+                show_symbol(known_matches[0], root, maps, json_mode=json_mode, copy_only=copy_only)
                 if install:
-                    return install_symbols(known_matches, root)
+                    return install_symbols(known_matches, root, dry_run=dry_run)
                 return 0
             s = choose(known_matches, sym_render, 'known import references')
             if s:
-                show_symbol(s, root)
+                show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
                 if install:
-                    return install_symbols([s], root)
+                    return install_symbols([s], root, dry_run=dry_run)
             return 0
         choices = sorted(
             {s.name for s in syms},
@@ -1099,53 +1718,91 @@ def import_query(query: str, root: Path, maps, install: bool = False) -> int:
 
     s = choose(matches, sym_render, 'matching importable symbols')
     if s:
-        show_symbol(s, root)
+        show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
     return 0
 
-def run_category(category: str, root: Path, maps, install: bool = False) -> int:
+def resolve_single_symbol(query: str, root: Path, maps) -> Symbol | None:
+    tokens = search_tokens(query)
+    syms = all_symbols(root, maps)
+    exact = [s for s in syms if tokens and (s.name.lower() in tokens or s.import_path.lower() in tokens)]
+    if len(exact) == 1:
+        return exact[0]
+    for token in tokens:
+        ref = reference_symbol(token, root)
+        if ref:
+            return ref
+    return None
+
+
+def run_learning_command(category: str, root: Path, maps, json_mode: bool = False, copy_only: bool = False) -> int:
+    parts = category.split(None, 1)
+    command = parts[0].lower() if parts else ""
+    query = parts[1].strip() if len(parts) > 1 else ""
+    if command == "search":
+        return search_imports(query, root, maps)
+    if command in {"explain", "usage", "audit", "related", "graph"}:
+        symbol = resolve_single_symbol(query, root, maps)
+        if not symbol:
+            print(f"No import-learning symbol matches '{query}'.")
+            return 2
+        if command == "related":
+            return print_related(symbol, root, maps)
+        if command == "usage":
+            if json_mode:
+                data = symbol_record(symbol, root, maps)
+                print(json.dumps({"name": symbol.name, "project_usage": data["project_usage"]}, indent=2))
+                return 0
+            uses = project_usage(symbol, root)
+            print(f"\nPROJECT USAGE • {symbol.name}")
+            print("=" * 76)
+            if not uses:
+                print("No project-source usage found.")
+            for path, line, text in uses:
+                print(f"  {path.resolve()}:{line}  {text}")
+            return 0
+        show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only)
+        if command == "audit" and not json_mode:
+            print()
+            print("AUDITOR VIEW: start from the questions above; these are hypotheses to investigate, not a verdict.")
+        return 0
+    return import_query(category, root, maps, json_mode=json_mode, copy_only=copy_only)
+
+
+def run_category(category: str, root: Path, maps, install: bool = False, dry_run: bool = False, json_mode: bool = False, copy_only: bool = False) -> int:
     category = category.strip()
-    if category.lower().startswith("--install "):
-        install = True
-        category = category[10:].strip()
-    if category.lower().startswith("install "):
-        install = True
-        category = category[8:].strip()
     cat = category.lower()
+    if cat.startswith(("search ", "explain ", "usage ", "audit ", "related ", "graph ")):
+        return run_learning_command(category, root, maps, json_mode=json_mode, copy_only=copy_only)
     if cat in {"packages", "package", "deps"}:
         header("INSTALLED PACKAGES")
         p = choose(packages(root, maps), pkg_render, "installed packages")
         if p:
             browse_package(p, root, maps)
         return 0
-
     if cat in {"contracts", "contract"}:
         header("CONTRACTS / ABSTRACT CONTRACTS")
         s = choose([x for x in all_symbols(root, maps) if x.kind == "contract"], sym_render, "contracts")
         if s:
-            show_symbol(s)
+            show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
-
     if cat in {"interfaces", "interface"}:
         header("INTERFACES")
         s = choose([x for x in all_symbols(root, maps) if x.kind == "interface"], sym_render, "interfaces")
         if s:
-            show_symbol(s)
+            show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
-
     if cat in {"libraries", "library"}:
         header("SOLIDITY LIBRARIES")
         s = choose([x for x in all_symbols(root, maps) if x.kind == "library"], sym_render, "libraries")
         if s:
-            show_symbol(s)
+            show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
-
     if cat in {"types", "structs", "errors", "type"}:
         header("STRUCTS / ENUMS / TYPES / ERRORS / CONSTANTS")
         s = choose([x for x in all_symbols(root, maps) if x.kind in {"struct", "enum", "type", "error", "constant"}], sym_render, "types")
         if s:
-            show_symbol(s)
+            show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
-
     if cat in {"files", "file", "source", "sources"}:
         header("IMPORTABLE SOURCE FILES")
         items = [(p, extract(p, root, maps)) for p in list(sol_files(root / "src")) + list(sol_files(root / "lib"))]
@@ -1154,7 +1811,6 @@ def run_category(category: str, root: Path, maps, install: bool = False) -> int:
         if s:
             show_file(s)
         return 0
-
     if cat in {"mappings", "mapping", "remappings"}:
         header("FORGE IMPORT MAPPINGS")
         if not maps:
@@ -1163,12 +1819,24 @@ def run_category(category: str, root: Path, maps, install: bool = False) -> int:
             for prefix, target in maps:
                 print(f"{prefix}= {target}")
         return 0
-
     if cat in {"common", "known"}:
         common()
         return 0
-
-    return import_query(category, root, maps, install=install)
+    if cat.startswith("--install "):
+        install = True
+        category = category[10:].strip()
+    if cat.startswith("install "):
+        install = True
+        category = category[8:].strip()
+    if install:
+        symbol = resolve_single_symbol(category, root, maps)
+        if symbol:
+            if not copy_only:
+                show_symbol(symbol, root, maps, json_mode=json_mode)
+            else:
+                show_symbol(symbol, root, maps, copy_only=True)
+            return install_symbols([symbol], root, dry_run=dry_run)
+    return import_query(category, root, maps, install=install, dry_run=dry_run, json_mode=json_mode, copy_only=copy_only)
 
 
 def interactive(root: Path, maps) -> int:
@@ -1182,14 +1850,20 @@ def interactive(root: Path, maps) -> int:
     print("  6. Source files")
     print("  7. Forge import mappings")
     print("  8. Common reference imports")
+    print("  9. Search import concepts (nft, oracle, access, token, reentrancy)")
     print("  q. Quit")
     while True:
         a = input("\nSelect: ").strip().lower()
         if a == "q":
             return 0
         cat = {"1":"packages","2":"contracts","3":"interfaces","4":"libraries","5":"types","6":"files","7":"mappings","8":"common"}.get(a)
+        if a == "9":
+            query = input("Search concept: ").strip()
+            if query:
+                search_imports(query, root, maps)
+            continue
         if not cat:
-            print("Pick 1-8 or q.")
+            print("Pick 1-9 or q.")
             continue
         run_category(cat, root, maps)
 
@@ -1201,25 +1875,49 @@ def main(argv=None) -> int:
         return 0
 
     install = False
+    dry_run = False
+    json_mode = False
+    copy_only = False
     cleaned = []
     for arg in args:
-        if arg.lower() == "--install":
+        flag = arg.lower()
+        if flag == "--install":
             install = True
+            continue
+        if flag == "--dry-run":
+            dry_run = True
+            continue
+        if flag == "--json":
+            json_mode = True
+            continue
+        if flag in {"--copy-only", "--copy"}:
+            copy_only = True
             continue
         cleaned.append(arg)
 
     root = root_for()
     maps = remappings(root)
     if not cleaned:
-        if install:
-            print("Usage: lk import --install <symbol>")
+        if install or dry_run or json_mode or copy_only:
+            print("Usage: lk import [--install] [--dry-run] [--json] [--copy-only] <symbol>")
             return 2
         try:
             return interactive(root, maps)
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
-    return run_category(" ".join(cleaned), root, maps, install=install)
+    query = " ".join(cleaned)
+    if install:
+        query = f"--install {query}"
+    return run_category(
+        query,
+        root,
+        maps,
+        install=install,
+        dry_run=dry_run,
+        json_mode=json_mode,
+        copy_only=copy_only,
+    )
 
 
 if __name__ == "__main__":
