@@ -3235,6 +3235,7 @@ address(this).balance""",
 add(
     "globals-map", ["global-variable-map", "global-map"], "GLOBAL VALUES",
     "A table you can scan when a contract uses a built-in context value.",
+    "Quick-reference card for the built-in context attached to an execution.",
     """NAME                 WHAT IT MEANS / WHEN YOU USE IT
 msg.sender             immediate caller
 msg.value              wei attached to this call
@@ -3364,6 +3365,7 @@ add(
 add(
     "types-table", ["type-table", "type-map", "solidity-types"], "TYPES",
     "A practical map of the Solidity type families you will repeatedly see.",
+    "Think of choosing the shape of the box before putting data into it.",
     """FAMILY         EXAMPLES                         WHAT IT HOLDS
 uint / int      uint256 / int128                  numbers
 bool            bool                              true or false
