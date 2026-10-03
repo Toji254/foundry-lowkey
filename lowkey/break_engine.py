@@ -701,8 +701,33 @@ def _payable_value(fn: dict[str, Any], opts, mode="normal") -> str:
     return "1wei"
 
 
-def _forge_run(host, config, source_path: str, rpc: str):
+def _evm_runner(project_info: dict[str, Any], root: Path) -> str:
+    """Select an execution runner instead of equating EVM with Foundry."""
+    stacks = {str(x).lower() for x in (project_info.get("stacks") or [])}
+    manifests = project_info.get("manifests") or {}
+    native = project_info.get("native") or {}
+    if "foundry" in stacks and native.get("forge"):
+        return "foundry"
+    if "hardhat" in stacks and native.get("hardhat"):
+        return "hardhat"
+    if "vyper" in stacks:
+        # A Vyper project may be driven by pytest/Boa/Titanoboa/Ape rather than Foundry.
+        if native.get("pytest") or native.get("boa") or native.get("ape"):
+            return "vyper-native"
+        if native.get("forge") and manifests.get("foundry"):
+            return "foundry"
+        return "vyper-native"
+    return "evm-native"
+
+
+def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str, Any] | None = None):
     root = _root(host)
+    project_info = project_info or {}
+    if _evm_runner(project_info, root) != "foundry":
+        raise RuntimeError(
+            "This EVM project is not configured for a Forge breaker. "
+            "Lowkey routed it to its native runner instead of inventing a Forge project."
+        )
     forge = host.tool_path("forge") if hasattr(host, "tool_path") else "forge"
     if not forge:
         raise RuntimeError("forge was not found on PATH.")
@@ -1188,7 +1213,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     # The optional target funding is scoped to the Forge fork and therefore cannot
     # persist into the user's Anvil node.
     try:
-        completed = _forge_run(host, config, harness, rpc)
+        completed = _forge_run(host, config, harness, rpc, project_info)
         output = "\n".join(
             x for x in (completed.stdout or "", completed.stderr or "") if x
         )
@@ -1386,6 +1411,9 @@ def run(config, args=None, host=None):
 
     project_info = _project_break_context(host)
     if project_info.get("break_backend") != "evm":
+        return _run_native_backend(host, project_info, opts)
+
+    if _evm_runner(project_info, _root(host)) != "foundry":
         return _run_native_backend(host, project_info, opts)
 
     try:
