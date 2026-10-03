@@ -103,7 +103,7 @@ IMPORT_METADATA = {
         "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
         "use_cases": ["operator/admin separation", "role-based protocol permissions", "upgrade or parameter-management roles"],
         "how": "Inherit from AccessControl, define role identifiers, grant roles, and gate functions with onlyRole(...).",
-        "example": "bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");",
+        "example": 'bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");',
         "audit": "Map each role to its actual powers, inspect grant/revoke/admin-role paths, and check for accidental privilege escalation.",
     },
     "ReentrancyGuard": {
@@ -127,7 +127,7 @@ IMPORT_METADATA = {
         "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
         "use_cases": ["fungible tokens", "protocol reward tokens", "share/accounting units"],
         "how": "Inherit from ERC20, set the token name/symbol in the constructor, and implement your mint/burn policy in your contract.",
-        "example": "contract MyToken is ERC20 { constructor() ERC20("MyToken", "MTK") {} }",
+        "example": 'contract MyToken is ERC20 { constructor() ERC20("MyToken", "MTK") {} }',
         "audit": "Focus on mint/burn authorization, supply/accounting invariants, decimals assumptions, hooks/extensions, and any custom transfer logic.",
     },
     "IERC20": {
@@ -151,7 +151,7 @@ IMPORT_METADATA = {
         "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
         "use_cases": ["NFT collections", "membership/access NFTs", "game items", "tokenized assets"],
         "how": "Inherit from ERC721, provide name/symbol, and build your mint/burn/application authorization around the standard transfer and approval machinery.",
-        "example": "contract MyNFT is ERC721 { constructor() ERC721("MyNFT", "MNFT") {} }",
+        "example": 'contract MyNFT is ERC721 { constructor() ERC721("MyNFT", "MNFT") {} }',
         "audit": "Inspect mint/burn authorization, token-ID uniqueness, approvals, receiver callbacks, transfer hooks/overrides, and metadata assumptions.",
     },
     "IERC721": {
@@ -748,8 +748,8 @@ def browse_package(p: Package, root: Path, maps):
 
 def common():
     header("COMMON REFERENCE IMPORTS")
-    print("These reference the conventional package import names; the package must")
-    print("exist in your project and its remapping must match the path.")
+    print("These are verified reference entries. Use lk import <symbol> for the")
+    print("full install, usage, use-case, and audit guide; lookup never mutates a project.")
     print()
     for i, (name, (why, when, path)) in enumerate(COMMON.items(), 1):
         meta = known_metadata(name)
@@ -906,10 +906,14 @@ def import_query(query: str, root: Path, maps, install: bool = False) -> int:
         print(f'RESOLVED {len(unique_found)} SYMBOL(S)')
         for symbol in unique_found:
             print(f'  {symbol.name} [{symbol.kind}] -> {symbol.import_path}')
+        for symbol in unique_found:
+            show_symbol(symbol, root)
         show_copy_imports(unique_found, requested_path=requested_path, aliases=aliases)
         if len({s.import_path for s in unique_found}) > 1:
             print()
             print('NOTE: symbols came from different source files, so Lowkey emitted separate valid imports.')
+        if install:
+            return install_symbols(unique_found, root)
         return 0
 
     if not tokens:
