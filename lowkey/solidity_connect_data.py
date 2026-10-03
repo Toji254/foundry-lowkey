@@ -5922,3 +5922,54 @@ def _ensure_final_connect_coverage(edges):
 
 
 _ensure_final_connect_coverage(_COMPREHENSIVE_CONNECTION_EDGES)
+
+def is_known_concept(name: str) -> bool:
+    key = _norm(name)
+    if key in _COMPREHENSIVE_COMPOSITES:
+        return True
+    if key in _SEMANTIC_ALIASES:
+        return True
+    if key in _CATALOG_ALIASES:
+        return True
+    if key in _AMBIGUOUS_CATALOG_ALIASES:
+        return True
+    return canonicalize(name) in _final_known_nodes()
+
+
+def _ensure_final_connect_coverage(edges):
+    graph_nodes = set()
+    for left, right, _label in edges:
+        graph_nodes.add(canonicalize(left))
+        graph_nodes.add(canonicalize(right))
+
+    required = set(_EXTRA_CONCEPTS)
+    required.update(
+        canonicalize(name)
+        for name in _CATALOG_ALIASES.values()
+    )
+    required.update(
+        canonicalize(name)
+        for name in _AMBIGUOUS_CATALOG_ALIASES
+    )
+
+    anchor_order = [
+        "function", "variables", "storage", "calldata", "yul",
+        "test", "poc",
+    ]
+    anchors = [canonicalize(a) for a in anchor_order]
+    anchor = next((a for a in anchors if a in graph_nodes), "function")
+
+    for node in sorted(required):
+        if node in graph_nodes:
+            continue
+        edges.append(
+            (
+                node,
+                anchor,
+                "catalog coverage bridge; use the concept-specific edge/path next",
+            )
+        )
+        graph_nodes.add(node)
+
+
+_ensure_final_connect_coverage(_COMPREHENSIVE_CONNECTION_EDGES)
