@@ -962,6 +962,44 @@ class WalkthroughTests(unittest.TestCase):
         item = {"name":"owner","inputs":[],"outputs":[{"type":"address"}],"type":"function"}
         self.assertEqual(walkthrough._output_signature(item), "owner()(address)")
 
+
+    def test_protocol_observations_ignore_unowned_global_targets_for_active_project(self):
+        current = pathlib.Path("/tmp/lowkey-current-project")
+        other = pathlib.Path("/tmp/lowkey-other-project")
+        current_target = "0x" + "1" * 40
+        stale_target = "0x" + "2" * 40
+        config = {
+            "_lowkey_active_project_root": str(current),
+            "_lab_system_root": str(current),
+            "lab_system": {"root": current_target},
+            "targets": {"ConfidencePool": current_target, "Escrow": stale_target},
+            "aliases": {"ConfidencePool": current_target, "Escrow": stale_target},
+            "project_roots": {current_target: str(current), stale_target: str(other)},
+        }
+        merged = walkthrough._merge_protocol_observations({}, config=config)
+        self.assertEqual(merged.get("ConfidencePool"), current_target)
+        self.assertNotIn("Escrow", merged)
+
+    def test_failed_native_lab_does_not_fall_back_to_generic_artifact_synthesis(self):
+        root = pathlib.Path("/tmp/lowkey-project")
+        config = {"rpc": "http://127.0.0.1:8545", "target": None, "target_contract": None}
+        host = type("Host", (), {
+            "anvil_rpc_info": lambda self, config: {"url": config["rpc"]},
+            "_bind_detected_anvil": lambda self, config, info: None,
+            "effective_rpc": lambda self, config: config["rpc"],
+            "discover_local_lab_script": lambda self, root: "script/LocalAudit.s.sol",
+            "run_lab": lambda self, config, args: 1,
+            "_run_project_build": lambda self, config, root: 0,
+        })()
+        with patch.object(
+            walkthrough,
+            "_synthesize_local_protocol_fixture",
+            return_value=(True, "should not run"),
+        ) as synthesize:
+            result = walkthrough._target_from_host(host, config, root, None, True)
+        self.assertEqual(result, (None, None))
+        synthesize.assert_not_called()
+
     def test_lab_runtime_is_protocol_name_agnostic(self):
         config = {
             "lab_system": {
