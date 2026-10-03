@@ -1553,6 +1553,1192 @@ vm.store(address(target), slot, value);""",
 )
 
 
+# ---------------------------------------------------------------------------
+# FOUNDRY TEST / SCRIPT / POC DICTIONARY
+# ---------------------------------------------------------------------------
+
+add(
+    "test", ["tests", "foundry-test", "solidity-tests"], "FOUNDRY TESTING",
+    "A Foundry test is a Solidity contract whose functions exercise another contract and prove properties about it.",
+    "Think of a lab notebook: set up the machine, do one action, then check what happened.",
+    """import {Test} from "forge-std/Test.sol";
+
+contract BankTest is Test {
+    Bank bank;
+
+    function setUp() public {
+        bank = new Bank();
+    }
+
+    function testDeposit() public {
+        bank.deposit{value: 1 ether}();
+        assertEq(address(bank).balance, 1 ether);
+    }
+}""",
+    """// test/Bank.t.sol
+pragma solidity ^0.8.20;
+
+import {Test} from "forge-std/Test.sol";
+import {Bank} from "../src/Bank.sol";
+
+contract BankTest is Test {
+    Bank bank;
+
+    function setUp() public {
+        bank = new Bank();
+    }
+
+    function testDeposit() public {
+        bank.deposit{value: 1 ether}();
+        assertEq(address(bank).balance, 1 ether);
+    }
+}""",
+    [
+        "Put tests under test/ and normally give them a .t.sol suffix.",
+        "Import forge-std/Test.sol and inherit Test to get assertions and vm cheatcodes.",
+        "setUp() runs before each test function.",
+        "A normal test function commonly starts with test and makes the expected result explicit.",
+        "Run it with forge test or the matching LowkeyCast/Foundsry workflow.",
+    ],
+    audit="For auditing, a test should turn a security hypothesis into repeatable evidence rather than merely showing the happy path.",
+    gotchas="A test passing does not prove the contract is secure; it proves only the behavior you actually checked.",
+)
+
+add(
+    "test-structure", ["test-file", "test-contract", "setUp", "setup"], "FOUNDRY TESTING",
+    "The standard shape of a Foundry test file.",
+    "Imports -> test contract -> fixtures -> individual experiments.",
+    """contract MyTest is Test {
+    Target target;
+
+    function setUp() public {
+        target = new Target();
+    }
+
+    function testSomething() public {
+        ...
+    }
+}""",
+    """// test/Target.t.sol
+pragma solidity ^0.8.20;
+import {Test} from "forge-std/Test.sol";
+import {Target} from "../src/Target.sol";
+
+contract TargetTest is Test {
+    Target target;
+    address alice = makeAddr("alice");
+
+    function setUp() public {
+        target = new Target();
+    }
+
+    function testHappyPath() public {
+        ...
+    }
+}""",
+    [
+        "Import Test.sol.",
+        "Inherit Test.",
+        "Declare target, actors, constants, and fixtures.",
+        "Create/reset state in setUp().",
+        "Keep each test focused on one behavior or property.",
+    ],
+)
+
+add(
+    "test-arrange-act-assert", ["AAA", "arrange-act-assert"], "FOUNDRY TESTING",
+    "A simple pattern for writing readable tests: prepare, act, verify.",
+    "Prepare the room -> press the button -> check the result.",
+    """// Arrange
+// Act
+// Assert""",
+    """function testWithdraw() public {
+    // Arrange
+    vm.deal(alice, 10 ether);
+    vm.startPrank(alice);
+    target.deposit{value: 1 ether}();
+    vm.stopPrank();
+
+    // Act
+    vm.prank(alice);
+    target.withdraw(1 ether);
+
+    // Assert
+    assertEq(alice.balance, 10 ether);
+}""",
+    [
+        "Arrange creates the state and actors needed for the experiment.",
+        "Act performs the action under investigation.",
+        "Assert checks the property that must hold.",
+        "For a PoC, the Assert section is usually the concrete exploit evidence.",
+    ],
+)
+
+add(
+    "test-assertions", ["assertions", "forge-std-assertions", "assertEq"], "FOUNDRY TESTING",
+    "Assertions fail a test when the observed result does not match the expected property.",
+    "A referee checking whether the scoreboard matches the rule.",
+    """assertEq(actual, expected);
+assertTrue(condition);
+assertGt(a, b);
+assertLt(a, b);
+assertGe(a, b);
+assertLe(a, b);""",
+    """uint256 beforeBal = alice.balance;
+target.withdraw(1 ether);
+uint256 afterBal = alice.balance;
+
+assertEq(afterBal, beforeBal + 1 ether);
+assertTrue(afterBal > beforeBal);
+assertGe(afterBal, beforeBal);""",
+    [
+        "Calculate or read the actual value.",
+        "State the expected value or relationship.",
+        "Use the assertion that expresses the property most clearly.",
+    ],
+)
+
+add(
+    "fuzz-tests", ["fuzz", "fuzzing", "testFuzz"], "FOUNDRY TESTING",
+    "A fuzz test lets Foundry try many input values against one test property.",
+    "Instead of checking one key, hand the tester a whole key ring and see which key breaks the door.",
+    """function testFuzz_deposit(uint256 amount) public {
+    ...
+}""",
+    """function testFuzz_noFreeMoney(uint256 amount) public {
+    vm.assume(amount > 0);
+    vm.deal(alice, amount);
+
+    vm.prank(alice);
+    target.deposit{value: amount}();
+
+    assertEq(target.balanceOf(alice), amount);
+}""",
+    [
+        "Write the test as a function with input parameters.",
+        "Restrict impossible or irrelevant values with vm.assume when necessary.",
+        "Assert the invariant/property that should hold for every accepted input.",
+        "Run forge test; Foundry supplies many values and reports a counterexample when one fails.",
+    ],
+    audit="Fuzzing is strong for arithmetic boundaries, accounting conservation, authorization inputs, and unexpected values.",
+    gotchas="Do not use vm.assume to hide the interesting attack surface. Bound or constrain only values that are genuinely out of scope.",
+)
+
+add(
+    "bounded-fuzz", ["bound", "vm.bound", "bounded-fuzzing"], "FOUNDRY TESTING",
+    "Bound a fuzzed value into an inclusive range instead of discarding cases.",
+    "Turn any random number into one that fits the test's allowed lane.",
+    """amount = bound(amount, 1, 100 ether);""",
+    """function testFuzz_withinRange(uint256 amount) public {
+    amount = bound(amount, 1, 100 ether);
+    vm.deal(alice, amount);
+    ...
+}""",
+    [
+        "Foundry gives you a fuzzed value.",
+        "bound maps it into the requested inclusive range.",
+        "The test still explores many values without throwing away values through repeated assumptions.",
+    ],
+)
+
+add(
+    "invariant-tests", ["invariant", "invariants"], "FOUNDRY TESTING",
+    "An invariant test checks that a property remains true across many generated calls and states.",
+    "A rule the bank must never break, no matter which valid customer action happens next.",
+    """function invariant_totalSupplyMatchesBalances() public {
+    assertEq(..., ...);
+}""",
+    """contract Handler {
+    Target target;
+
+    function deposit(uint256 amount) external {
+        ...
+    }
+}
+
+contract TargetInvariantTest is Test {
+    Target target;
+    Handler handler;
+
+    function setUp() public {
+        target = new Target();
+        handler = new Handler(target);
+        targetContract(address(handler));
+    }
+
+    function invariant_accounting() public view {
+        assertEq(target.totalAssets(), target.recordedAssets());
+    }
+}""",
+    [
+        "Define a property that must survive sequences of actions.",
+        "Create a target or handler that exposes meaningful actions.",
+        "Register the handler/target for invariant execution.",
+        "Assert the property from the resulting state.",
+    ],
+    audit="For security work, invariants often catch accounting drift or state combinations that hand-written examples miss.",
+)
+
+add(
+    "invariant-handler", ["handler", "handler-pattern"], "FOUNDRY TESTING",
+    "A handler turns messy fuzzed calls into controlled protocol actions for invariant testing.",
+    "A test operator chooses realistic buttons instead of letting the machine smash random keyboard keys.",
+    """function deposit(uint256 amount) external {
+    amount = bound(amount, 1, 10 ether);
+    ...
+}
+
+function withdraw(uint256 amount) external {
+    ...
+}""",
+    """contract Handler {
+    Target internal target;
+    address internal alice;
+
+    constructor(Target _target) {
+        target = _target;
+        alice = makeAddr("alice");
+    }
+
+    function deposit(uint256 amount) external {
+        amount = bound(amount, 1, 10 ether);
+        vm.deal(alice, amount);
+        vm.prank(alice);
+        target.deposit{value: amount}();
+    }
+}""",
+    [
+        "Expose one function per meaningful action.",
+        "Bound inputs into realistic domains.",
+        "Control actors explicitly.",
+        "Use the invariant contract to assert system-wide properties.",
+    ],
+)
+
+add(
+    "fork-tests", ["fork", "mainnet-fork", "fork-testing"], "FOUNDRY TESTING",
+    "Fork testing runs tests against a copy of a real chain state.",
+    "Freeze a copy of the real M-Pesa ledger at a moment, then experiment without changing the real ledger.",
+    """vm.createSelectFork(vm.envString("RPC_URL"));
+address forked = ...;""",
+    """function setUp() public {
+    vm.createSelectFork(vm.envString("RPC_URL"));
+    target = IERC20(0x...);
+}""",
+    [
+        "Choose an RPC endpoint.",
+        "Create or select a fork.",
+        "Interact with real deployed addresses against copied state.",
+        "Optionally pin a block for deterministic historical conditions.",
+        "Run the test locally; the fork itself is the sandbox.",
+    ],
+    audit="Fork tests are useful for reproducing bugs involving real integrations, balances, oracle state, and upgrade paths.",
+    gotchas="A fork is local execution against copied state; it does not automatically broadcast your test transaction to the real network.",
+)
+
+add(
+    "test-reverts", ["expectRevert", "revert-tests", "custom-errors-test"], "FOUNDRY TESTING",
+    "Tell Foundry that the next call is expected to revert, optionally with a specific reason or error.",
+    "You tell the referee: the next play is supposed to be rejected.",
+    """vm.expectRevert();
+vm.expectRevert("Not owner");
+vm.expectRevert(MyError.selector);""",
+    """vm.prank(attacker);
+vm.expectRevert(NotOwner.selector);
+target.withdraw(1 ether);""",
+    [
+        "Set the expected revert before the call that should fail.",
+        "Execute the call.",
+        "The test passes when the expected revert occurs.",
+        "Use exact revert data when the reason itself matters.",
+    ],
+    audit="A PoC can use expectRevert to prove that a protection blocks an attack path; the opposite is useful when proving a missing check.",
+)
+
+add(
+    "test-events", ["expectEmit", "events-test", "event-tests"], "FOUNDRY TESTING",
+    "Check that an emitted event matches the fields your protocol promises.",
+    "Listen at the counter and verify the receipt says the right thing.",
+    """vm.expectEmit(true, true, true, true);
+emit Withdraw(alice, 1 ether);""",
+    """vm.expectEmit(true, true, false, true);
+emit Withdraw(alice, 1 ether);
+vm.prank(alice);
+target.withdraw(1 ether);""",
+    [
+        "Tell Foundry which event fields to compare.",
+        "Emit the expected event in the test.",
+        "Call the target.",
+        "Foundry compares the actual emitted log with the expected event.",
+    ],
+)
+
+add(
+    "vm-prank", ["prank", "vm.prank", "change-sender"], "FOUNDRY CHEATCODES",
+    "Make the next external call appear to come from a chosen address.",
+    "Put on Alice's caller-ID for one phone call.",
+    """vm.prank(alice);
+target.withdraw(1 ether);""",
+    """vm.deal(alice, 1 ether);
+vm.prank(alice);
+target.deposit{value: 1 ether}();""",
+    [
+        "Choose the actor address.",
+        "Call vm.prank(actor).",
+        "The next call uses that actor as msg.sender.",
+        "After the one call, normal caller identity returns.",
+    ],
+)
+
+add(
+    "vm-start-prank", ["startPrank", "stopPrank", "persistent-prank"], "FOUNDRY CHEATCODES",
+    "Make calls from a chosen address until you stop the prank.",
+    "Keep the same caller badge on for several interactions.",
+    """vm.startPrank(alice);
+...
+vm.stopPrank();""",
+    """vm.startPrank(alice);
+target.deposit{value: 1 ether}();
+target.withdraw(1 ether);
+vm.stopPrank();""",
+    [
+        "Start with vm.startPrank(actor).",
+        "Every applicable call uses the selected caller.",
+        "Call vm.stopPrank() when finished.",
+    ],
+    gotchas="For calls involving contract recipients, distinguish msg.sender from tx.origin and choose prank overloads deliberately.",
+)
+
+add(
+    "vm-deal", ["deal", "vm.deal", "set-balance"], "FOUNDRY CHEATCODES",
+    "Directly set an address's ETH balance inside the test environment.",
+    "Give Alice test money instantly instead of mining a faucet transaction.",
+    """vm.deal(alice, 100 ether);""",
+    """vm.deal(alice, 10 ether);
+vm.prank(alice);
+target.deposit{value: 1 ether}();""",
+    [
+        "Pick the address.",
+        "Set its test ETH balance.",
+        "Use the account normally in the test.",
+    ],
+)
+
+add(
+    "vm-warp", ["warp", "time-travel", "block.timestamp-test"], "FOUNDRY CHEATCODES",
+    "Set the simulated block timestamp.",
+    "Move the laboratory clock forward.",
+    """vm.warp(block.timestamp + 7 days);""",
+    """uint256 deadline = block.timestamp + 1 days;
+vm.warp(deadline + 1);
+assertTrue(block.timestamp > deadline);""",
+    [
+        "Read the current test timestamp.",
+        "Choose the new timestamp.",
+        "Call vm.warp(newTimestamp).",
+        "The following EVM execution sees the new block timestamp.",
+    ],
+)
+
+add(
+    "vm-roll", ["roll", "block-number-test"], "FOUNDRY CHEATCODES",
+    "Set the simulated block number.",
+    "Move the lab to a later block height.",
+    """vm.roll(block.number + 100);""",
+    """uint256 beforeBlock = block.number;
+vm.roll(beforeBlock + 100);
+assertEq(block.number, beforeBlock + 100);""",
+    [
+        "Read the current block number.",
+        "Call vm.roll(newBlockNumber).",
+        "Later execution sees the changed block number.",
+    ],
+)
+
+add(
+    "vm-assume", ["assume", "fuzz-filter"], "FOUNDRY CHEATCODES",
+    "Discard fuzz inputs that do not satisfy a condition.",
+    "Tell the tester: do not waste runs on impossible cases.",
+    """vm.assume(amount > 0 && amount < 1 ether);""",
+    """function testFuzz_fee(uint256 amount) public {
+    vm.assume(amount > 0);
+    ...
+}""",
+    [
+        "Write the domain condition.",
+        "Call vm.assume(condition).",
+        "Foundry keeps only inputs satisfying the condition.",
+    ],
+    gotchas="Overusing assume can cause excessive rejected inputs and can accidentally exclude the bug.",
+)
+
+add(
+    "vm-bound", ["bound-cheatcode"], "FOUNDRY CHEATCODES",
+    "Transform a fuzz value into an inclusive numeric range.",
+    "Put a giant random number through a gate that returns a permitted value.",
+    """amount = bound(amount, 1, 100);""",
+    """function testFuzz_withdraw(uint256 amount) public {
+    amount = bound(amount, 1, 10 ether);
+    ...
+}""",
+    [
+        "Take the fuzzed variable.",
+        "Supply lower and upper limits.",
+        "Use the returned value in the test.",
+    ],
+)
+
+add(
+    "vm-makeaddr", ["makeAddr", "make-address"], "FOUNDRY CHEATCODES",
+    "Create a deterministic test address from a readable label.",
+    "Turn the name alice into a repeatable fake wallet address.",
+    """address alice = makeAddr("alice");""",
+    """address public alice;
+function setUp() public {
+    alice = makeAddr("alice");
+}""",
+    [
+        "Give makeAddr a stable label.",
+        "Use the returned address as an actor.",
+        "Combine it with vm.label or vm.deal when useful.",
+    ],
+)
+
+add(
+    "vm-label", ["label", "vm.label"], "FOUNDRY CHEATCODES",
+    "Give an address a human-readable label in Foundry traces.",
+    "Put a sticky name on a wallet so traces stop showing raw hex everywhere.",
+    """vm.label(alice, "Alice");""",
+    """alice = makeAddr("alice");
+vm.label(alice, "Alice");
+vm.label(address(target), "Target");""",
+    [
+        "Choose an address.",
+        "Assign a label.",
+        "Verbose traces can display the label for easier reading.",
+    ],
+)
+
+add(
+    "vm-expect-revert", ["expect-revert", "expectRevert"], "FOUNDRY CHEATCODES",
+    "Configure the next call to be expected to revert.",
+    "Set the referee's expected result before the play.",
+    """vm.expectRevert();
+vm.expectRevert(bytes4(MyError.selector));
+vm.expectRevert(abi.encodeWithSelector(MyError.selector, 7));""",
+    """vm.prank(attacker);
+vm.expectRevert(Unauthorized.selector);
+target.adminAction();""",
+    [
+        "Choose the revert shape you need to check.",
+        "Set the expectation before the target call.",
+        "Execute the target call.",
+        "Foundry fails the test if the expected revert does not happen.",
+    ],
+)
+
+add(
+    "vm-expect-emit", ["expect-emit", "expectEmit"], "FOUNDRY CHEATCODES",
+    "Configure the next log assertion and compare an expected event with the real event.",
+    "Put a receipt template on the desk and compare it with what the contract emits.",
+    """vm.expectEmit(true, true, true, true);
+emit Transfer(from, to, amount);""",
+    """vm.expectEmit(true, false, false, true);
+emit Deposit(alice, 1 ether);
+target.deposit{value: 1 ether}();""",
+    [
+        "Set which indexed/data fields matter.",
+        "Emit the expected event.",
+        "Call the target.",
+        "Foundry compares the corresponding log.",
+    ],
+)
+
+add(
+    "vm-recordlogs", ["recordLogs", "getRecordedLogs", "logs"], "FOUNDRY CHEATCODES",
+    "Record emitted logs so a test can inspect them after a call.",
+    "Turn on a camera before the transaction, then review the footage.",
+    """vm.recordLogs();
+target.doThing();
+Vm.Log[] memory entries = vm.getRecordedLogs();""",
+    """vm.recordLogs();
+target.deposit{value: 1 ether}();
+Vm.Log[] memory logs = vm.getRecordedLogs();
+
+assertGt(logs.length, 0);""",
+    [
+        "Start recording before the target call.",
+        "Execute the action.",
+        "Read the recorded logs afterward.",
+        "Inspect topics and data when exact event decoding matters.",
+    ],
+)
+
+add(
+    "vm-snapshots", ["snapshot", "revertTo", "snapshotState"], "FOUNDRY CHEATCODES",
+    "Save test state and later restore it.",
+    "Take a save-game before the experiment, then load it again.",
+    """uint256 snap = vm.snapshotState();
+...
+vm.revertTo(snap);""",
+    """uint256 snap = vm.snapshotState();
+target.deposit{value: 1 ether}();
+
+vm.revertTo(snap);
+assertEq(address(target).balance, 0);""",
+    [
+        "Capture the state before the experiment.",
+        "Perform any number of actions.",
+        "Revert to the snapshot when you want the earlier state back.",
+    ],
+)
+
+add(
+    "vm-storage", ["vm.store", "vm.load", "storage-cheatcodes"], "FOUNDRY CHEATCODES",
+    "Read or directly write raw storage slots in a test environment.",
+    "Open the bank's ledger drawer by slot number instead of using the normal app interface.",
+    """bytes32 raw = vm.load(address(target), slot);
+vm.store(address(target), slot, raw);""",
+    """bytes32 beforeValue = vm.load(address(target), 0);
+vm.store(address(target), 0, bytes32(uint256(42)));
+bytes32 afterValue = vm.load(address(target), 0);
+assertTrue(afterValue != beforeValue);""",
+    [
+        "Determine the storage slot carefully.",
+        "vm.load reads the raw 32-byte word.",
+        "vm.store overwrites a raw storage word in the test environment.",
+        "Use storage layout knowledge to decode the word.",
+    ],
+    audit="This is extremely useful for reproducing slot-sensitive bugs, but a PoC should explain how the real attacker reaches the state rather than pretending vm.store is an attacker primitive.",
+    gotchas="vm.store is a test-environment power tool, not something an external user can call on a real deployed contract.",
+)
+
+add(
+    "vm-etch", ["etch", "vm.etch", "replace-code"], "FOUNDRY CHEATCODES",
+    "Replace an address's runtime bytecode in the test environment.",
+    "Swap the machine installed at an address in the sandbox.",
+    """vm.etch(target, runtimeCode);""",
+    """bytes memory fakeCode = hex"6000";
+vm.etch(address(target), fakeCode);""",
+    [
+        "Prepare bytecode bytes.",
+        "Choose the address to modify.",
+        "Call vm.etch(address, code).",
+        "Test behavior under the changed code.",
+    ],
+    audit="Useful for simulating hostile or unusual dependencies; it is a testing primitive, not an ordinary mainnet exploit.",
+)
+
+add(
+    "vm-fork", ["createSelectFork", "selectFork", "rollFork"], "FOUNDRY CHEATCODES",
+    "Create and control local chain forks during tests.",
+    "Choose which copied chain universe the test is currently inside.",
+    """uint256 forkId = vm.createFork(rpcUrl);
+vm.selectFork(forkId);
+vm.rollFork(forkId, blockNumber);""",
+    """uint256 forkId = vm.createFork(vm.envString("RPC_URL"), 18000000);
+vm.selectFork(forkId);""",
+    [
+        "Create a fork from an RPC endpoint.",
+        "Keep the returned fork identifier when using multiple forks.",
+        "Select the fork before interacting with it.",
+        "Pin or roll the block when the test requires a deterministic state.",
+    ],
+)
+
+add(
+    "vm-env", ["env", "envUint", "envAddress", "environment-variables"], "FOUNDRY CHEATCODES",
+    "Read environment variables from a test or script.",
+    "Read configuration from the machine instead of hard-coding secrets or endpoints.",
+    """string memory rpc = vm.envString("RPC_URL");
+uint256 amount = vm.envUint("AMOUNT");
+address owner = vm.envAddress("OWNER");""",
+    """string memory rpc = vm.envString("RPC_URL");
+address whale = vm.envAddress("WHALE");""",
+    [
+        "Set the variable in your shell or .env workflow.",
+        "Read it with the type-specific vm.env... helper.",
+        "Keep secrets out of source code and commits.",
+    ],
+    gotchas="Environment variables can affect reproducibility. Document required variables clearly.",
+)
+
+add(
+    "script", ["scripts", "forge-script", "solidity-script"], "FOUNDRY SCRIPTING",
+    "A Foundry script is Solidity code that automates deployment or on-chain interaction.",
+    "A test runs experiments in a lab; a script performs a real sequence of actions against the selected network when broadcast.",
+    """import {Script} from "forge-std/Script.sol";
+
+contract Deploy is Script {
+    function run() external {
+        vm.startBroadcast();
+        ...
+        vm.stopBroadcast();
+    }
+}""",
+    """// script/Deploy.s.sol
+pragma solidity ^0.8.20;
+
+import {Script} from "forge-std/Script.sol";
+import {MyToken} from "../src/MyToken.sol";
+
+contract Deploy is Script {
+    function run() external returns (MyToken token) {
+        vm.startBroadcast();
+        token = new MyToken();
+        vm.stopBroadcast();
+    }
+}""",
+    [
+        "Put deployment/interaction automation under script/ and commonly use .s.sol.",
+        "Import forge-std/Script.sol and inherit Script.",
+        "Expose a run() entry point.",
+        "Wrap intended real transactions in vm.startBroadcast() and vm.stopBroadcast().",
+        "Run with forge script script/Deploy.s.sol plus the network/broadcast options appropriate to the task.",
+    ],
+    audit="For audit labs, scripts are useful for setting up repeatable deployment and interaction flows, but broadcasting must be an explicit choice.",
+    gotchas="A script is not a test. A broadcast-enabled script can send real transactions to the selected network.",
+)
+
+add(
+    "script-structure", ["script-file", "run-function", "broadcast-script"], "FOUNDRY SCRIPTING",
+    "The basic shape of a deployment or interaction script.",
+    "Configuration -> prepare -> broadcast -> act -> finish.",
+    """contract MyScript is Script {
+    function run() external {
+        vm.startBroadcast();
+        ...
+        vm.stopBroadcast();
+    }
+}""",
+    """contract Interact is Script {
+    function run() external {
+        uint256 key = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(key);
+
+        Target target = Target(vm.envAddress("TARGET"));
+        target.setValue(7);
+
+        vm.stopBroadcast();
+    }
+}""",
+    [
+        "Load configuration.",
+        "Start broadcasting with the intended signer context.",
+        "Deploy or interact.",
+        "Stop broadcasting.",
+        "Return addresses or values you need for the next step.",
+    ],
+)
+
+add(
+    "script-broadcast", ["startBroadcast", "stopBroadcast", "broadcast"], "FOUNDRY SCRIPTING",
+    "Control which script operations become broadcast transactions.",
+    "Flip the switch: these actions are intended to be sent, then flip it back off.",
+    """vm.startBroadcast();
+...
+vm.stopBroadcast();""",
+    """vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+MyToken token = new MyToken();
+token.transfer(vm.envAddress("TREASURY"), 1000);
+vm.stopBroadcast();""",
+    [
+        "Select the signer/account context.",
+        "Start broadcasting.",
+        "Perform the intended deployment/calls.",
+        "Stop broadcasting.",
+    ],
+    gotchas="Never treat a broadcast block as a harmless dry run. Network, signer, gas, and target addresses matter.",
+)
+
+add(
+    "script-env", ["script environment", "script-config"], "FOUNDRY SCRIPTING",
+    "Scripts commonly read RPCs, private keys, addresses, and other settings from environment variables.",
+    "Keep machine-specific configuration outside source code.",
+    """uint256 privateKey = vm.envUint("PRIVATE_KEY");
+address target = vm.envAddress("TARGET");
+string memory rpc = vm.envString("RPC_URL");""",
+    """uint256 key = vm.envUint("PRIVATE_KEY");
+address owner = vm.envAddress("OWNER");
+address target = vm.envAddress("TARGET");
+
+vm.startBroadcast(key);
+Target(target).setOwner(owner);
+vm.stopBroadcast();""",
+    [
+        "Name each required variable.",
+        "Read it with the matching vm.env helper.",
+        "Fail clearly when required configuration is missing or malformed.",
+        "Keep actual secrets outside git.",
+    ],
+)
+
+add(
+    "script-deploy", ["deployment-script", "deploy-script"], "FOUNDRY SCRIPTING",
+    "Use a script to deploy a contract and expose the deployed address for later steps.",
+    "A factory checklist for creating the contract in a repeatable way.",
+    """vm.startBroadcast();
+Target target = new Target(args);
+vm.stopBroadcast();""",
+    """contract DeployTarget is Script {
+    function run() external returns (address) {
+        vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+        Target target = new Target(vm.envAddress("OWNER"));
+        vm.stopBroadcast();
+        return address(target);
+    }
+}""",
+    [
+        "Load constructor inputs/configuration.",
+        "Broadcast the constructor deployment.",
+        "Capture the resulting address/reference.",
+        "Record that address for subsequent calls or verification.",
+    ],
+)
+
+add(
+    "script-interaction", ["script-call", "script-admin", "interaction-script"], "FOUNDRY SCRIPTING",
+    "Use a script after deployment to call real contract functions in a repeatable order.",
+    "A checklist for pressing several buttons on the deployed protocol.",
+    """Target target = Target(vm.envAddress("TARGET"));
+vm.startBroadcast();
+target.setValue(7);
+vm.stopBroadcast();""",
+    """Target target = Target(vm.envAddress("TARGET"));
+
+vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+target.configure(vm.envAddress("ORACLE"), 1 days);
+target.pause();
+vm.stopBroadcast();""",
+    [
+        "Load the deployed target address.",
+        "Start broadcasting with the intended signer.",
+        "Call functions in the required sequence.",
+        "Stop broadcasting and inspect the receipts.",
+    ],
+)
+
+add(
+    "poc", ["poc-test", "proof-of-concept", "exploit-poc"], "AUDIT POC",
+    "A PoC is a small reproducible program that demonstrates a concrete security claim.",
+    "A burglary demonstration: show the exact door, the exact trick, and the measurable result.",
+    """function testPoC() public {
+    // setup
+    // attacker action
+    // prove impact
+}""",
+    """function testPoC_reentrancyDrains() public {
+    // 1. Set up attacker funds/state.
+    // 2. Give the victim contract the required ETH.
+    // 3. Trigger the vulnerable entry point.
+    // 4. Re-enter during the external call.
+    // 5. Assert attacker profit or invariant break.
+}""",
+    [
+        "State the security property in one sentence.",
+        "Set up only the state an attacker can realistically reach.",
+        "Perform the attacker-controlled sequence.",
+        "Capture the before/after state, balance, role, or other impact.",
+        "Assert the concrete violation.",
+        "Keep the PoC deterministic and easy for another reviewer to replay.",
+    ],
+    audit="A strong PoC separates attacker actions from test-only setup such as vm.store or vm.deal and explains every privileged test primitive used.",
+)
+
+add(
+    "poc-template", ["poc-format", "poc-skeleton", "audit-poc"], "AUDIT POC",
+    "A reusable structure for writing audit PoCs.",
+    "Claim -> setup -> trigger -> exploit path -> impact proof.",
+    """function testPoC_<claim>() public {
+    // GIVEN
+    // WHEN
+    // THEN
+}""",
+    """function testPoC_unauthorizedWithdraw() public {
+    // GIVEN: only owner should withdraw
+    uint256 before = attacker.balance;
+
+    // WHEN: attacker reaches the sensitive path
+    vm.prank(attacker);
+    target.withdrawAll();
+
+    // THEN: unauthorized value moved
+    assertGt(attacker.balance, before);
+}""",
+    [
+        "Name the test after the concrete security claim.",
+        "Write GIVEN as attacker-reachable setup.",
+        "Write WHEN as the exact exploit sequence.",
+        "Write THEN as measurable impact.",
+        "Avoid unrelated helpers that make the exploit harder to audit.",
+    ],
+)
+
+add(
+    "poc-reentrancy", ["reentrancy-poc", "reentry-poc"], "AUDIT POC",
+    "A PoC for proving an external callback can re-enter a vulnerable state transition.",
+    "The attacker calls the vault, the vault calls the attacker, and the attacker calls the vault again before the ledger is safe.",
+    """receive() external payable {
+    if (...) target.withdraw();
+}""",
+    """contract Attacker {
+    Target target;
+
+    constructor(Target _target) {
+        target = _target;
+    }
+
+    receive() external payable {
+        if (address(target).balance > 0) {
+            target.withdraw();
+        }
+    }
+
+    function attack() external {
+        target.deposit{value: 1 ether}();
+        target.withdraw();
+    }
+}""",
+    [
+        "Identify the victim function that makes an external call.",
+        "Create an attacker contract with a callback.",
+        "Make the callback call back into the victim.",
+        "Track recursion/termination so the test remains deterministic.",
+        "Assert stolen value or a broken accounting invariant.",
+    ],
+    audit="The key evidence is state/control returning to the victim before the original operation has safely completed.",
+)
+
+add(
+    "poc-access-control", ["authorization-poc", "access-control-poc"], "AUDIT POC",
+    "A PoC proving an unauthorized actor can reach a privileged action.",
+    "Try the locked door with the wrong key, then prove the door actually opened.",
+    """vm.prank(attacker);
+target.adminAction();""",
+    """uint256 before = target.sensitiveValue();
+
+vm.prank(attacker);
+target.adminAction();
+
+assertTrue(target.sensitiveValue() != before);""",
+    [
+        "Identify the privileged state change.",
+        "Choose an attacker address with no intended privilege.",
+        "Call the exact reachable entry point.",
+        "Prove the privileged state changed.",
+    ],
+)
+
+add(
+    "poc-accounting", ["accounting-poc", "balance-poc", "asset-accounting"], "AUDIT POC",
+    "A PoC showing recorded balances no longer match actual assets or allowed conservation rules.",
+    "Compare the paper ledger to the cash in the drawer.",
+    """before = address(target).balance;
+...
+after = address(target).balance;""",
+    """uint256 recordedBefore = target.totalLiabilities();
+uint256 assetsBefore = address(target).balance;
+
+vm.prank(attacker);
+target.exploit();
+
+assertTrue(
+    target.totalLiabilities() > address(target).balance
+);""",
+    [
+        "Write the accounting invariant in plain language.",
+        "Measure both sides before the attack.",
+        "Execute only attacker-reachable actions.",
+        "Measure both sides after the attack.",
+        "Assert the mismatch or unauthorized gain.",
+    ],
+)
+
+add(
+    "poc-accessible-state", ["realistic-poc", "attacker-reachable"], "AUDIT POC",
+    "Separate realistic attacker actions from test-only powers used to arrange the initial state.",
+    "The tester may reset the stage before the play, but the attacker should not get backstage keys during the play.",
+    """// TEST SETUP ONLY
+vm.deal(victim, 100 ether);
+
+// ATTACKER ACTION
+vm.startPrank(attacker);
+target.withdraw(...);
+vm.stopPrank();""",
+    """// Stage the protocol into a state a real attacker could plausibly encounter.
+vm.deal(address(target), 10 ether);
+
+// From here, use only the attacker's normal capabilities.
+vm.startPrank(attacker);
+target.withdraw(1 ether);
+vm.stopPrank();
+
+assertGt(attacker.balance, 0);""",
+    [
+        "Mark every vm.* operation used only to arrange starting state.",
+        "Do not use vm.store, vm.etch, or privileged identities as part of the attacker path unless the real bug grants that power.",
+        "Make the exploit sequence use only public/externally reachable behavior.",
+        "Document why each setup step is realistic.",
+    ],
+    audit="This is one of the most important habits for audit PoCs: prove exploitability without accidentally giving the attacker supernatural test powers.",
+)
+
+add(
+    "poc-dos", ["dos-poc", "denial-of-service-poc", "griefing-poc"], "AUDIT POC",
+    "A PoC for a state or gas condition that blocks a required function from completing.",
+    "Fill the doorway with something until the legitimate user cannot get through.",
+    """// trigger the blocking state
+// attempt the required action
+// prove it consistently reverts or becomes unusable""",
+    """function testPoC_withdrawBlocked() public {
+    // attacker reaches the griefing condition
+    vm.prank(attacker);
+    target.grief();
+
+    // required user path now fails
+    vm.expectRevert();
+    vm.prank(user);
+    target.withdraw();
+}""",
+    [
+        "Identify the function that must remain callable.",
+        "Create the blocker using attacker-reachable actions.",
+        "Attempt the legitimate action.",
+        "Prove the block is reproducible and materially affects the protocol.",
+    ],
+)
+
+add(
+    "poc-oracle", ["oracle-poc", "price-poc"], "AUDIT POC",
+    "A PoC for an unsafe price/oracle assumption.",
+    "Change the information source the protocol trusts and see whether money follows the bad number.",
+    """// attacker influences or exploits the oracle assumption
+// trigger the priced action
+// prove value moves incorrectly""",
+    """function testPoC_badPrice() public {
+    // Use a fork or protocol-supported oracle manipulation path.
+    // Trigger the victim calculation.
+    uint256 received = ...;
+    assertGt(received, fairAmount);
+}""",
+    [
+        "Identify the exact oracle assumption.",
+        "Choose a realistic way the attacker can influence or exploit it.",
+        "Trigger the consumer function.",
+        "Compare the resulting value with the intended pricing rule.",
+    ],
+    gotchas="Do not fake an oracle by vm.store unless the vulnerability itself is a storage-integrity issue; on a realistic PoC, model the real integration path.",
+)
+
+add(
+    "poc-signature", ["signature-poc", "replay-poc"], "AUDIT POC",
+    "A PoC for forged, replayed, wrongly scoped, or incorrectly validated signed authorization.",
+    "Copy a signed permission into the wrong context and see whether it is still accepted.",
+    """sign -> submit -> replay/change-domain -> prove acceptance""",
+    """function testPoC_signatureReplay() public {
+    // Prepare a valid signature once.
+    // Submit it successfully.
+    // Re-submit the same signature in the context that should reject it.
+    vm.prank(attacker);
+    target.execute(signature, payload);
+
+    vm.prank(attacker);
+    target.execute(signature, payload);
+
+    // Assert the second use was accepted when it should not be.
+}""",
+    [
+        "Define exactly what a valid signature is supposed to authorize.",
+        "Create a valid signed payload.",
+        "Use it once.",
+        "Replay or alter only the context that should be bound by the design.",
+        "Assert the invalid second use succeeds.",
+    ],
+)
+
+add(
+    "poc-upgrade", ["upgrade-poc", "proxy-poc", "initialization-poc"], "AUDIT POC",
+    "A PoC for an upgrade, proxy, initializer, or storage-layout security failure.",
+    "The building manager changes the machine behind the front desk without the right key, or the new machine reads the wrong drawers.",
+    """proxy -> implementation -> upgrade/init -> impact""",
+    """function testPoC_unauthorizedUpgrade() public {
+    address beforeImpl = proxy.implementation();
+
+    vm.prank(attacker);
+    proxy.upgradeTo(attackerImplementation);
+
+    assertTrue(proxy.implementation() != beforeImpl);
+}""",
+    [
+        "Identify the privileged upgrade/initialization boundary.",
+        "Choose an attacker with only normal public permissions.",
+        "Reach the upgrade or initialization path.",
+        "Prove implementation, storage, or control changed.",
+    ],
+    audit="Check upgrade authority, initializer replay, delegatecall storage ownership, selector collisions, and storage compatibility.",
+)
+
+add(
+    "poc-storage", ["storage-poc", "slot-poc", "storage-collision-poc"], "AUDIT POC",
+    "A PoC for a storage-layout or slot-collision consequence.",
+    "Two machines believe drawer 3 contains different things, so one machine overwrites the other's ledger.",
+    """slot = keccak256(abi.encode(key, mappingSlot));""",
+    """function testPoC_storageCollision() public {
+    // Trigger the real proxy/upgrade path that causes layout overlap.
+    // Then prove the victim variable changed unexpectedly.
+    uint256 beforeValue = target.ownerSetting();
+    triggerUpgradePath();
+    assertTrue(target.ownerSetting() != beforeValue);
+}""",
+    [
+        "Map the storage layout of each relevant contract.",
+        "Identify the overlapping slot or incompatible packing.",
+        "Trigger the real path that causes the layouts to coexist.",
+        "Prove the wrong variable changed.",
+    ],
+)
+
+add(
+    "poc-token", ["erc20-poc", "erc721-poc", "token-integration-poc"], "AUDIT POC",
+    "A PoC for incorrect token-standard assumptions or accounting around ERC20/ERC721-like integrations.",
+    "The protocol assumes the cashier always behaves exactly like its manual, but the token can behave differently.",
+    """transfer / transferFrom / safeTransferFrom
+check return / callback / allowance / decimals""",
+    """function testPoC_tokenAssumption() public {
+    // Use a realistic token implementation or a forked token.
+    // Trigger the victim's transfer/accounting path.
+    // Assert the protocol's recorded result matches the actual token state.
+}""",
+    [
+        "Identify which standard behavior the protocol assumes.",
+        "Check return values, callbacks, decimals, approvals, and receiver behavior as relevant.",
+        "Use a realistic token or forked deployment.",
+        "Assert the mismatch in balances, ownership, or accounting.",
+    ],
+)
+
+add(
+    "poc-cross-contract", ["cross-contract-poc", "integration-poc", "callback-poc"], "AUDIT POC",
+    "A PoC for a bug that appears only when two or more contracts interact.",
+    "The broken part is not one machine; it is the handoff between machines.",
+    """A -> B -> callback/response -> A""",
+    """function testPoC_callbackReachesSensitiveState() public {
+    // Arrange integration state.
+    // Trigger A.
+    // B calls back into A.
+    // Prove A's protected state changed unexpectedly.
+}""",
+    [
+        "Draw the call chain.",
+        "Identify where control crosses the contract boundary.",
+        "Choose the callback or external response that creates the unexpected path.",
+        "Assert the final state/asset change.",
+    ],
+)
+
+add(
+    "forge-test-cli", ["forge test commands", "test-cli"], "FOUNDRY CLI",
+    "Core forge test commands for running, filtering, tracing, fuzzing, and measuring tests.",
+    "Start broad, then zoom into the failing experiment.",
+    """forge test
+forge test --match-test testName
+forge test --match-contract ContractName
+forge test -vvvv
+forge test --gas-report
+forge coverage""",
+    """forge test --match-test testPoC -vvvv
+forge test --match-contract BankTest
+forge test --gas-report
+forge coverage""",
+    [
+        "Run forge test for the whole suite.",
+        "Use --match-test or --match-contract to focus.",
+        "Increase -v levels to inspect traces.",
+        "Use coverage/gas options when evaluating test depth or cost.",
+    ],
+)
+
+add(
+    "forge-script-cli", ["forge script commands", "script-cli"], "FOUNDRY CLI",
+    "Core forge script commands and flags for simulating or broadcasting Solidity scripts.",
+    "Choose the script, choose the network, then decide whether to broadcast.",
+    """forge script script/Deploy.s.sol
+forge script script/Deploy.s.sol --rpc-url $RPC_URL
+forge script script/Deploy.s.sol --broadcast --rpc-url $RPC_URL""",
+    """forge script script/Deploy.s.sol --rpc-url $RPC_URL
+forge script script/Deploy.s.sol --broadcast --rpc-url $RPC_URL""",
+    [
+        "Select the .s.sol script file.",
+        "Choose the RPC/network explicitly.",
+        "Run without --broadcast when you only want script execution/simulation.",
+        "Add --broadcast only when you intend to send the transactions.",
+    ],
+)
+
+add(
+    "forge-cheatcodes-map", ["cheatcode-map", "vm-cheatsheet", "cheatcodes"], "FOUNDRY CHEATCODES",
+    "A quick map of the Foundry cheatcodes you will repeatedly use in tests and PoCs.",
+    "Cheatcodes are test-lab controls: actor, money, time, blocks, reverts, logs, storage, forks, and state snapshots.",
+    """ACTOR: prank / startPrank / stopPrank / deal
+TIME: warp / roll
+ERRORS: expectRevert
+EVENTS: expectEmit / recordLogs / getRecordedLogs
+STATE: load / store / snapshotState / revertTo / etch
+FORKS: createFork / createSelectFork / selectFork / rollFork
+INPUT: assume / bound / makeAddr / env...""",
+    """vm.deal(alice, 10 ether);
+vm.prank(alice);
+target.deposit{value: 1 ether}();
+
+vm.warp(block.timestamp + 1 days);
+vm.expectRevert();
+target.withdraw(2 ether);""",
+    [
+        "Actor control answers: who is calling?",
+        "deal answers: how much test ETH does the actor have?",
+        "warp/roll answer: what time/block does the test see?",
+        "expectRevert/expectEmit answer: what execution result should happen?",
+        "load/store/etch/snapshots answer: what controlled state do I need?",
+        "fork controls answer: which copied chain state am I testing?",
+    ],
+    audit="Learn the cheatcodes as testing instruments, then keep exploit execution realistic. A PoC that only succeeds because vm.store or vm.prank gives it impossible privileges is not strong evidence of real exploitability.",
+)
+
+add(
+    "test-poc-workflow", ["audit-test-workflow", "write-poc"], "AUDIT WORKFLOW",
+    "A practical workflow for turning an audit suspicion into a Foundry test and then a PoC.",
+    "Read -> hypothesis -> reproduce -> assert -> minimize -> document.",
+    """1. Read the code.
+2. State the property.
+3. Build the smallest test.
+4. Try normal actors.
+5. Add fuzz/forking if needed.
+6. Assert impact.
+7. Minimize the PoC.""",
+    """// Hypothesis:
+// "attacker can withdraw more than their recorded balance"
+
+// Reproduce
+function testPoC_overwithdraw() public {
+    // setup reachable state
+    ...
+    // attacker path
+    ...
+    // impact proof
+    assertGt(attackerGain, 0);
+}""",
+    [
+        "Write the suspected bug in one sentence.",
+        "Identify the exact entry point and state variables involved.",
+        "Build a minimal deterministic test.",
+        "Use realistic actors and calls.",
+        "Escalate to fuzzing, invariants, or a fork only when the basic path is insufficient.",
+        "Assert a concrete impact or broken invariant.",
+        "Keep only the steps needed to reproduce the claim.",
+    ],
+)
+
+
 _ALIAS = {}
 for _topic in TOPICS:
     _ALIAS[_topic["name"].lower()] = _topic
