@@ -6367,7 +6367,7 @@ _deep_add_edges()
 # Production-derived micro scenes.
 # ---------------------------------------------------------------------------
 
-_COMPREHENSIVE_MICRO_SCENES.extend([
+COMPREHENSIVE_MICRO_SCENES.extend([
     {
         "keys": frozenset({"function", "visibility", "mutability", "returns", "parameter-vs-argument"}),
         "title": "Function definition → call site → return value",
