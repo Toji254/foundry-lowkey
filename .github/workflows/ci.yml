@@ -44,10 +44,16 @@ jobs:
           test -f "$HOME/.lowkey/import_helper.py"
           test -f "$HOME/.lowkey/break_playbook.py"
           test -f "$HOME/.lowkey/break_engine.py"
+          test -f "$HOME/.lowkey/solidity_cheatsheet.py"
+          test -f "$HOME/.lowkey/solidity_cheat_topics.py"
+          test -f "$HOME/.lowkey/solidity_cheat_data.py"
           grep -q '/bootstrap.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/import_helper.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_playbook.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_engine.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_cheatsheet.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_cheat_topics.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_cheat_data.py":' "$HOME/.lowkey/install-manifest.json"
           python3 - "$HOME/.lowkey" <<'PY'
           import pathlib
           import sys
