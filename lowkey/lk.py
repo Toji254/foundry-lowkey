@@ -1296,95 +1296,628 @@ def run_abi(config):
             print(f"\n{group}")
             for item in items:
                 print(f"  {format_signature(item)}")
-def run_functions(config,query=None):
-    if query and str(query).lower() in {"-h", "--help", "help"}:
-        print("Usage: lk fn [query]")
-        print("List all functions, or search the current target/build artifacts by function name or signature.")
-        print("Examples:")
-        print("  lk fn")
-        print("  lk fn withdraw")
-        print("  lk fn 'batchRedeemWToken((address,uint256,address)[])'")
-        return 0
+_FUNCTION_VISIBILITIES = {"public", "external", "internal", "private", "unknown", "ambiguous"}
+_FUNCTION_MUTABILITIES = {"pure", "view", "nonpayable", "payable"}
+_FUNCTION_CLASS_ALIASES = {
+    "state": "STATE-CHANGING", "state-changing": "STATE-CHANGING", "state-write": "STATE-CHANGING",
+    "read": "READ-ONLY", "read-only": "READ-ONLY",
+    "getter": "STORAGE-GETTER", "storage-getter": "STORAGE-GETTER",
+    "payable": "PAYABLE", "admin": "ADMIN", "asset": "ASSET-ACTION", "asset-action": "ASSET-ACTION",
+    "external-call": "EXTERNAL-CALL", "callback": "CALLBACK", "upgrade": "UPGRADE",
+    "assembly": "ASSEMBLY", "creation": "CONTRACT-CREATION", "eth": "ETH-FLOW", "eth-flow": "ETH-FLOW",
+}
 
-    root=audit_context.foundry_project_root()
-    target=active_project_target(config,root)
+def _function_usage():
+    return (
+        "Usage: lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]\n"
+        "  -v, --verbose              Show per-function audit metadata.\n"
+        "  -V, --visibility VALUE     Filter by source visibility (public/external/internal/private/unknown).\n"
+        "  -m, --mutability VALUE     Filter by mutability (pure/view/nonpayable/payable).\n"
+        "  -c, --class VALUE          Filter by class (state/read/getter/payable/admin/asset/external-call/callback/upgrade/assembly/creation/eth-flow).\n"
+        "  -r, --risk                 Show compact audit-review flags.\n"
+        "\n"
+        "Examples:\n"
+        "  lk fn\n"
+        "  lk fn -v\n"
+        "  lk fn -v withdraw\n"
+        "  lk fn -V external\n"
+        "  lk fn -m payable\n"
+        "  lk fn -c admin\n"
+        "  lk fn -r\n"
+    )
+
+def _parse_function_options(raw_args):
+    args = [str(item) for item in (raw_args if isinstance(raw_args, (list, tuple)) else [raw_args] if raw_args is not None else [])]
+    options = {"verbose": False, "visibility": None, "mutability": None, "class": None, "risk": False}
+    query_parts = []
+    value_flags = {
+        "-V": "visibility", "--visibility": "visibility",
+        "-m": "mutability", "--mutability": "mutability",
+        "-c": "class", "--class": "class",
+    }
+    bool_flags = {"-v": "verbose", "--verbose": "verbose", "-r": "risk", "--risk": "risk"}
+    i = 0
+    while i < len(args):
+        token = args[i].strip()
+        if token in {"-h", "--help", "help"}:
+            return None, "help"
+        if token in bool_flags:
+            options[bool_flags[token]] = True
+            i += 1
+            continue
+        matched = False
+        for flag, key in value_flags.items():
+            if token == flag:
+                if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                    return None, f"missing value for {flag}"
+                options[key] = args[i + 1].strip()
+                i += 2
+                matched = True
+                break
+            prefix = flag + "="
+            if token.startswith(prefix):
+                value = token[len(prefix):].strip()
+                if not value:
+                    return None, f"missing value for {flag}"
+                options[key] = value
+                i += 1
+                matched = True
+                break
+        if matched:
+            continue
+        if token.startswith("-"):
+            return None, f"unknown function option: {token}"
+        query_parts.append(token)
+        i += 1
+
+    if options["visibility"]:
+        options["visibility"] = options["visibility"].lower()
+        if options["visibility"] not in _FUNCTION_VISIBILITIES:
+            return None, "visibility must be public, external, internal, private, unknown, or ambiguous"
+    if options["mutability"]:
+        options["mutability"] = options["mutability"].lower()
+        if options["mutability"] not in _FUNCTION_MUTABILITIES:
+            return None, "mutability must be pure, view, nonpayable, or payable"
+    if options["class"]:
+        options["class"] = options["class"].lower()
+        if options["class"] not in _FUNCTION_CLASS_ALIASES:
+            return None, "unknown class; try state, read, getter, payable, admin, asset, external-call, callback, upgrade, assembly, creation, or eth-flow"
+    return options, " ".join(query_parts).strip()
+
+def _matching_delimiter(text_content, start, opening="(", closing=")"):
+    depth = 0
+    quote = ""
+    escape = False
+    for index in range(start, len(text_content)):
+        ch = text_content[index]
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+        elif ch == opening:
+            depth += 1
+        elif ch == closing:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+def _split_top_level(text_content):
+    parts = []
+    start = 0
+    parens = brackets = braces = 0
+    quote = ""
+    escape = False
+    for index, ch in enumerate(text_content):
+        if quote:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+        elif ch == "(":
+            parens += 1
+        elif ch == ")" and parens:
+            parens -= 1
+        elif ch == "[":
+            brackets += 1
+        elif ch == "]" and brackets:
+            brackets -= 1
+        elif ch == "{":
+            braces += 1
+        elif ch == "}" and braces:
+            braces -= 1
+        elif ch == "," and parens == 0 and brackets == 0 and braces == 0:
+            parts.append(text_content[start:index].strip())
+            start = index + 1
+    tail = text_content[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+def _solidity_function_source_index(source):
+    masked = _strip_scan_comments(source, "solidity")
+    declarations = []
+    for match in re.finditer(r"\bfunction\s+([A-Za-z_]\w*)\s*\(", masked):
+        name = match.group(1)
+        opening = masked.find("(", match.start(), match.end())
+        closing = _matching_delimiter(masked, opening, "(", ")")
+        if closing is None:
+            continue
+
+        boundary = None
+        parens = brackets = 0
+        quote = ""
+        escape = False
+        for index in range(closing + 1, len(masked)):
+            ch = masked[index]
+            if quote:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == quote:
+                    quote = ""
+                continue
+            if ch in {"'", '"'}:
+                quote = ch
+                continue
+            if ch == "(":
+                parens += 1
+            elif ch == ")" and parens:
+                parens -= 1
+            elif ch == "[":
+                brackets += 1
+            elif ch == "]" and brackets:
+                brackets -= 1
+            elif ch == "{" and parens == 0 and brackets == 0:
+                boundary = index
+                break
+            elif ch == ";" and parens == 0 and brackets == 0:
+                boundary = index
+                break
+        if boundary is None:
+            continue
+
+        body = ""
+        if masked[boundary] == "{":
+            end = _matching_delimiter(masked, boundary, "{", "}")
+            if end is not None:
+                body = source[boundary + 1:end]
+
+        header = source[closing + 1:boundary]
+        visibility_match = re.search(r"\b(external|public|internal|private)\b", header)
+        mutability_match = re.search(r"\b(pure|view|payable|nonpayable)\b", header)
+
+        clean_header = header
+        for keyword in ("returns", "override"):
+            while True:
+                named = re.search(r"\b" + keyword + r"\b", clean_header)
+                if not named:
+                    break
+                open_pos = clean_header.find("(", named.end())
+                if open_pos < 0:
+                    clean_header = clean_header[:named.start()] + " " + clean_header[named.end():]
+                    break
+                close_pos = _matching_delimiter(clean_header, open_pos, "(", ")")
+                if close_pos is None:
+                    break
+                clean_header = clean_header[:named.start()] + " " + clean_header[close_pos + 1:]
+
+        excluded = {
+            "external", "public", "internal", "private", "pure", "view", "payable", "nonpayable",
+            "virtual", "memory", "calldata", "storage", "returns", "override",
+        }
+        modifiers = []
+        for token_match in re.finditer(r"\b[A-Za-z_]\w*\b", clean_header):
+            token = token_match.group(0)
+            prefix = clean_header[:token_match.start()]
+            depth = prefix.count("(") - prefix.count(")")
+            if depth != 0 or token in excluded:
+                continue
+            if token not in modifiers:
+                modifiers.append(token)
+
+        params = source[opening + 1:closing]
+        declarations.append({
+            "name": name,
+            "param_count": len(_split_top_level(params)),
+            "visibility": visibility_match.group(1) if visibility_match else "unknown",
+            "mutability": mutability_match.group(1) if mutability_match else None,
+            "modifiers": modifiers,
+            "body": body,
+            "line": source.count("\n", 0, match.start()) + 1,
+        })
+    return declarations
+
+def _function_source_file(artifact, root):
+    if not isinstance(artifact, dict):
+        return None, []
+    candidates = []
+    source_name = artifact.get("sourceName")
+    if source_name:
+        candidate = Path(root) / str(source_name)
+        if candidate.is_file():
+            candidates.append(candidate)
+    contract = str(artifact.get("contractName") or "")
+    if not candidates and contract:
+        for path in source_sol_files(root):
+            try:
+                content = Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if re.search(r"\b(?:contract|interface|library)\s+" + re.escape(contract) + r"\b", content):
+                candidates.append(Path(path))
+    if not candidates:
+        return None, []
+    path = candidates[0]
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return path, []
+    return path, _solidity_function_source_index(source)
+
+def _function_storage_labels(target, config, artifact):
+    labels = set()
+    if isinstance(artifact, dict):
+        layout = artifact.get("storageLayout", {})
+        storage = layout.get("storage", []) if isinstance(layout, dict) else []
+        labels.update(str(entry.get("label")) for entry in storage if isinstance(entry, dict) and entry.get("label"))
+    if labels:
+        return labels
+
+    contract_name = artifact.get("contractName") if isinstance(artifact, dict) else None
+    contract_name = contract_name or config.get("target_contract")
+    if not contract_name:
+        return labels
+    for command in (
+        ["forge", "inspect", str(contract_name), "storage-layout", "--json"],
+        ["forge", "inspect", str(contract_name), "storage-layout"],
+    ):
+        code, out, _ = cast_output(command)
+        if code != 0 or not out:
+            continue
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payload = payload.get("storageLayout") or payload.get("storage") or payload
+        storage = payload if isinstance(payload, list) else []
+        labels.update(str(entry.get("label")) for entry in storage if isinstance(entry, dict) and entry.get("label"))
+        if labels:
+            break
+    return labels
+
+def _function_storage_refs(body, storage_labels):
+    if not body or not storage_labels:
+        return [], []
+    reads = set()
+    writes = set()
+    for line in body.splitlines() or [body]:
+        for name in storage_labels:
+            if not re.search(r"\b" + re.escape(name) + r"\b", line):
+                continue
+            write_match = re.search(
+                r"\b" + re.escape(name) +
+                r"\b[^;\n]*(?:\+=|-=|\*=|/=|%=|&=|\|=|\^=|\+\+|--|(?<![=!<>])=(?!=))",
+                line,
+            )
+            if write_match:
+                writes.add(name)
+                if any(op in line for op in ("+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "++", "--")):
+                    reads.add(name)
+                else:
+                    operator_pos = re.search(r"(?:\+=|-=|\*=|/=|%=|&=|\|=|\^=|(?<![=!<>])=(?!=))", line)
+                    if operator_pos and re.search(r"\b" + re.escape(name) + r"\b", line[operator_pos.end():]):
+                        reads.add(name)
+            else:
+                reads.add(name)
+    return sorted(reads), sorted(writes)
+
+def _function_modifier_text(record):
+    modifiers = record.get("modifiers", [])
+    return ", ".join(modifiers) if modifiers else "—"
+
+def _function_inventory_risk_flags(record):
+    flags = []
+    name = record["name"].lower()
+    mutable = record["mutability"] not in {"view", "pure"}
+    modifiers = [str(item).lower() for item in record.get("modifiers", [])]
+    if mutable:
+        flags.append("STATE-WRITE")
+    if record["mutability"] == "payable":
+        flags.append("VALUE-FLOW")
+    if record.get("eth") == "SENDS":
+        flags.append("ETH-SEND")
+    elif record.get("eth") == "RECEIVES + SENDS":
+        flags.append("ETH-FLOW")
+    elif record.get("eth") == "RECEIVES":
+        flags.append("ETH-RECEIVE")
+    if any(token in name for token in ("owner", "admin", "role", "upgrade", "pause", "unpause")) or any(
+        token.startswith(("only", "auth", "when")) for token in modifiers
+    ):
+        flags.append("PRIVILEGED")
+    if any(token in name for token in ("withdraw", "transfer", "send", "execute", "mint", "burn", "sweep", "claim", "release", "approve")):
+        flags.append("ASSET/ACTION")
+    if record.get("calls"):
+        flags.append("EXTERNAL-CALL")
+    if any(token in name for token in ("callback", "hook", "flash")):
+        flags.append("CALLBACK")
+    if any(token in name for token in ("upgrade", "implementation", "proxiable")):
+        flags.append("UPGRADE")
+    if record.get("assembly"):
+        flags.append("ASSEMBLY")
+    return flags or ["—"]
+
+def _function_inventory_classes(record):
+    classes = []
+    if record.get("getter"):
+        classes.append("STORAGE-GETTER")
+    classes.append("READ-ONLY" if record["mutability"] in {"view", "pure"} else "STATE-CHANGING")
+    if record["mutability"] == "payable":
+        classes.append("PAYABLE")
+    if record.get("eth"):
+        classes.append("ETH-FLOW")
+    if record.get("admin"):
+        classes.append("ADMIN")
+    if record.get("asset_action"):
+        classes.append("ASSET-ACTION")
+    if record.get("calls"):
+        classes.append("EXTERNAL-CALL")
+    if record.get("callback"):
+        classes.append("CALLBACK")
+    if record.get("upgrade"):
+        classes.append("UPGRADE")
+    if record.get("assembly"):
+        classes.append("ASSEMBLY")
+    if record.get("creates"):
+        classes.append("CONTRACT-CREATION")
+    return list(dict.fromkeys(classes))
+
+def _function_inventory_record(item, source_decls, storage_labels, getter_names, method_ids, source_path):
+    signature = format_signature(item)
+    name = str(item.get("name") or "<anonymous>")
+    candidates = [
+        decl for decl in source_decls
+        if decl.get("name") == name and decl.get("param_count") == len(item.get("inputs", []))
+    ]
+    source = candidates[0] if len(candidates) == 1 else None
+    if name in getter_names:
+        visibility = "public"
+    elif source:
+        visibility = source.get("visibility") or "unknown"
+    elif len(candidates) > 1:
+        visibility = "ambiguous"
+    else:
+        visibility = "unknown"
+
+    mutability = item.get("stateMutability") or (source or {}).get("mutability") or "unknown"
+    body = source.get("body", "") if source else ""
+    reads, writes = _function_storage_refs(body, storage_labels)
+    if name in getter_names and name in storage_labels:
+        reads = sorted(set(reads + [name]))
+
+    events = sorted(set(re.findall(r"\bemit\s+([A-Za-z_]\w*)\s*(?:\(|;)", body)))
+    calls = [method for method in ("delegatecall", "staticcall", "call", "send", "transfer")
+             if re.search(r"\.\s*" + method + r"\s*(?:\{|\()", body)]
+    sends_eth = bool(re.search(r"\.\s*call\s*\{\s*value\s*:", body)) or bool(
+        re.search(r"\.\s*(?:send|transfer)\s*\(", body)
+    )
+    receives_eth = mutability == "payable"
+    eth = "RECEIVES + SENDS" if receives_eth and sends_eth else "RECEIVES" if receives_eth else "SENDS" if sends_eth else None
+    creates = bool(re.search(r"\bnew\s+[A-Za-z_]\w*", body))
+    assembly = bool(re.search(r"\bassembly\s*\{|\b(?:sstore|sload|calldatacopy|extcodesize)\b", body))
+
+    name_lower = name.lower()
+    admin = any(token in name_lower for token in ("owner", "admin", "role", "upgrade", "pause", "unpause")) or any(
+        str(token).lower().startswith(("only", "auth", "when")) for token in (source or {}).get("modifiers", [])
+    )
+    asset_action = any(token in name_lower for token in ("withdraw", "transfer", "send", "execute", "mint", "burn", "sweep", "claim", "release", "approve"))
+    callback = any(token in name_lower for token in ("callback", "hook", "flash"))
+    upgrade = any(token in name_lower for token in ("upgrade", "implementation", "proxiable"))
+
+    source_label = None
+    if source_path:
+        source_label = f"{source_path}:{source.get('line')}" if source else str(source_path)
+
+    record = {
+        "item": item, "name": name, "signature": signature, "visibility": visibility, "mutability": mutability,
+        "modifiers": (source or {}).get("modifiers", []), "inputs": item.get("inputs", []), "outputs": item.get("outputs", []),
+        "reads": reads, "writes": writes, "events": events, "calls": calls, "eth": eth, "creates": creates,
+        "assembly": assembly, "getter": name in getter_names, "admin": admin, "asset_action": asset_action,
+        "callback": callback, "upgrade": upgrade, "source": source_label, "_source": source,
+        "selector": (method_ids or {}).get(signature),
+    }
+    record["classes"] = _function_inventory_classes(record)
+    record["risk_flags"] = _function_inventory_risk_flags(record)
+    return record
+
+def _function_matches_filter(record, options):
+    if options.get("visibility") and record["visibility"].lower() != options["visibility"]:
+        return False
+    if options.get("mutability") and record["mutability"].lower() != options["mutability"]:
+        return False
+    if options.get("class"):
+        wanted = _FUNCTION_CLASS_ALIASES[options["class"]]
+        if wanted not in record.get("classes", []):
+            return False
+    return True
+
+def _print_function_inventory(records, contract=None, source_path=None, verbose=False, show_risk=False):
+    title = "LOWKEY // FUNCTION INVENTORY"
+    if verbose:
+        title += " • VERBOSE"
+    elif show_risk:
+        title += " • REVIEW FLAGS"
+    print(title)
+    print("=" * 78)
+    if contract:
+        print(f"Contract : {contract}")
+    if source_path:
+        print(f"Source   : {source_path}")
+    print(f"Count    : {len(records)}")
+    if not records:
+        print("\nNo functions matched the requested filters.")
+        return
+
+    if verbose:
+        for index, record in enumerate(records, 1):
+            print(f"\n[{index}] {record['signature']}")
+            print(f"  visibility : {record['visibility']}")
+            print(f"  mutability : {record['mutability']}")
+            print(f"  class      : {' • '.join(record['classes'])}")
+            print(f"  modifiers  : {_function_modifier_text(record)}")
+            params = [f"{param.get('name') or 'arg' + str(position)}:{canonical_type(param)}"
+                      for position, param in enumerate(record["inputs"], 1)]
+            outputs = [f"{param.get('name') or 'ret' + str(position)}:{canonical_type(param)}"
+                       for position, param in enumerate(record["outputs"], 1)]
+            print(f"  params     : {', '.join(params) if params else '—'}")
+            print(f"  returns    : {', '.join(outputs) if outputs else '—'}")
+            print(f"  reads      : {', '.join(record['reads']) if record['reads'] else '—'}")
+            print(f"  writes     : {', '.join(record['writes']) if record['writes'] else '—'}")
+            print(f"  emits      : {', '.join(record['events']) if record['events'] else '—'}")
+            print(f"  calls      : {', '.join(record['calls']) if record['calls'] else '—'}")
+            print(f"  ether      : {record['eth'] or '—'}")
+            print(f"  creates    : {'YES' if record['creates'] else '—'}")
+            print(f"  assembly   : {'YES' if record['assembly'] else '—'}")
+            print(f"  selector   : {record['selector'] or '—'}")
+            print(f"  risk flags : {' • '.join(record['risk_flags'])}")
+            print(f"  source     : {record['source'] or 'ABI only'}")
+        return
+
+    signature_width = min(max(max(len(record["signature"]) for record in records), 18), 48)
+    headers = ["FUNCTION", "VISIBILITY", "MUTABILITY", "CLASS"]
+    if show_risk:
+        headers.append("RISK")
+    widths = [
+        signature_width,
+        max(len(headers[1]), max(len(record["visibility"]) for record in records)),
+        max(len(headers[2]), max(len(record["mutability"]) for record in records)),
+        min(max(len(headers[3]), max(len(" / ".join(record["classes"])) for record in records)), 42),
+    ]
+    if show_risk:
+        widths.append(min(max(len(headers[4]), max(len(" / ".join(record["risk_flags"])) for record in records)), 38))
+    print()
+    print("  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))))
+    print("-" * (sum(widths) + 2 * (len(headers) - 1)))
+    for record in records:
+        cells = [
+            record["signature"][:signature_width],
+            record["visibility"],
+            record["mutability"],
+            " / ".join(record["classes"])[:widths[3]],
+        ]
+        if show_risk:
+            cells.append(" / ".join(record["risk_flags"])[:widths[4]])
+        print("  ".join(cells[index].ljust(widths[index]) for index in range(len(cells))))
+
+def _function_inventory_artifact(target, config):
+    path = resolve_abi_path(config, target) or auto_abi_path(target, config)
+    artifact = read_artifact(path) if path else None
+    return path, artifact or {}
+
+def run_functions(config, args=None):
+    raw_args = [args] if isinstance(args, str) else args
+    options, query = _parse_function_options(raw_args)
+    if options is None:
+        if query == "help":
+            print(_function_usage())
+            return 0
+        return fail(f"Error: {query}\n\n{_function_usage()}")
+
+    root = audit_context.foundry_project_root()
+    target = active_project_target(config, root)
     if not target:
-        explicit_target=config.get("target")
-        explicit_abi=config.get("abi_paths",{}).get(explicit_target) if isinstance(config.get("abi_paths"),dict) else None
+        explicit_target = config.get("target")
+        explicit_abi = config.get("abi_paths", {}).get(explicit_target) if isinstance(config.get("abi_paths"), dict) else None
         if is_address(explicit_target) and explicit_abi and os.path.exists(os.path.expanduser(str(explicit_abi))):
-            target=explicit_target
-    if not target:
-        explicit_target=config.get("target")
-        explicit_abi=config.get("abi_paths",{}).get(explicit_target) if isinstance(config.get("abi_paths"),dict) else None
-        if is_address(explicit_target) and explicit_abi and os.path.exists(os.path.expanduser(str(explicit_abi))):
-            target=explicit_target
+            target = explicit_target
     if not target:
         if not query:
             return fail("Error: no project target selected. Use 'lk fn <function>' to search build artifacts, or deploy and run 'lk target auto'.")
-        matches=project_artifact_function_matches(root,query)
+        if any(options.values()):
+            return fail("Error: function filters/verbose mode need a selected target with an ABI. Use 'lk target <name|address>' first.")
+        matches = project_artifact_function_matches(root, query)
         if not matches:
             return fail(f"Error: no built-project function matched '{query}'. Run 'forge build' first.")
         print("LOWKEY BUILD FUNCTION")
         print("====================")
         print(f"Query:   {query}")
-
-        def artifact_kind(contract, path):
-            lowered_contract = str(contract).lower()
-            lowered_path = str(path).lower()
-            if "/mocks/" in lowered_path or lowered_contract.startswith("mock"):
-                return "test mock"
-            # Solidity interfaces conventionally use an I-prefixed contract name.
-            if str(contract).startswith("I") and len(str(contract)) > 1 and str(contract)[1].isupper():
-                return "interface"
-            if "/interfaces/" in lowered_path:
-                return "interface"
-            return "implementation"
-
-        ranked = sorted(
-            matches,
-            key=lambda item: (
-                0 if artifact_kind(item[0], item[2]) == "implementation" else
-                1 if artifact_kind(item[0], item[2]) == "interface" else 2,
-                item[0].lower(),
-            ),
-        )
-        primary = next((item for item in ranked if artifact_kind(item[0], item[2]) == "implementation"), ranked[0])
-        contract, signature, path = primary
-
-        print(f"Found:   {contract}::{signature}")
-        print(f"ABI:     {path}")
-
-        others = [
-            f"{c} ({artifact_kind(c, p)})"
-            for c, s, p in ranked
-            if (c, s, p) != primary
-        ]
-        if others:
-            print(f"Other:   {', '.join(others)}")
-
+        for contract, signature, path in matches[:8]:
+            print(f"  {contract}::{signature}")
         print("Live:    none")
         print("Next:    deploy a target before using lk changes/trace.")
         return 0
 
-    functions=abi_functions(load_abi(target,config))
-    if not functions: return fail("Error: No ABI functions loaded for the current target.")
-    getter_names=storage_getter_names(target,config,functions)
+    abi = load_abi(target, config)
+    functions = abi_functions(abi)
+    if not functions:
+        return fail("Error: No ABI functions loaded for the current target.")
+
+    getter_names = storage_getter_names(target, config, functions)
+    artifact_path, artifact = _function_inventory_artifact(target, config)
+    source_root = Path(root).resolve()
+    source_path, source_decls = _function_source_file(artifact, source_root)
+    storage_labels = _function_storage_labels(target, config, artifact)
+    method_ids = artifact.get("methodIdentifiers") or (
+        artifact.get("evm", {}).get("methodIdentifiers") if isinstance(artifact.get("evm"), dict) else {}
+    )
+    records = [
+        _function_inventory_record(
+            item, source_decls, storage_labels, getter_names,
+            method_ids if isinstance(method_ids, dict) else {}, source_path
+        )
+        for item in functions
+    ]
+    records = [record for record in records if _function_matches_filter(record, options)]
     if query:
-        functions=sorted(functions,key=lambda item:function_score(item,query),reverse=True)[:8]
-    groups=[
-        ("WRITE FUNCTIONS",[item for item in functions if item.get("stateMutability") not in {"view","pure"}]),
-        ("READ FUNCTIONS",[item for item in functions if item.get("stateMutability") in {"view","pure"} and item.get("name") not in getter_names]),
-        ("STORAGE GETTERS",[item for item in functions if item.get("name") in getter_names]),
+        records = sorted(records, key=lambda record: function_score(record["item"], query), reverse=True)[:8]
+
+    if options.get("verbose"):
+        _print_function_inventory(
+            records,
+            contract=artifact.get("contractName") or config.get("target_contract"),
+            source_path=source_path,
+            verbose=True,
+        )
+        return 0
+
+    if options.get("visibility") or options.get("mutability") or options.get("class") or options.get("risk"):
+        _print_function_inventory(
+            records,
+            contract=artifact.get("contractName") or config.get("target_contract"),
+            source_path=source_path,
+            show_risk=options.get("risk", False),
+        )
+        return 0
+
+    groups = [
+        ("WRITE FUNCTIONS", [record["item"] for record in records if record["item"].get("stateMutability") not in {"view", "pure"}]),
+        ("READ FUNCTIONS", [record["item"] for record in records if record["item"].get("stateMutability") in {"view", "pure"} and record["name"] not in getter_names]),
+        ("STORAGE GETTERS", [record["item"] for record in records if record["name"] in getter_names]),
     ]
     if query:
         print(f"Function matches for '{query}':")
-    for title,items in groups:
+    for title, items in groups:
         if not items:
             continue
         print(f"\n{title}:")
-        for index,item in enumerate(items,1):
-            suffix="  [public storage getter]" if title=="STORAGE GETTERS" else ""
+        for index, item in enumerate(items, 1):
+            suffix = "  [public storage getter]" if title == "STORAGE GETTERS" else ""
             print(f"  {index:>2}. {format_signature(item)}{suffix}")
+    return 0
+
 def run_info(config):
     target = config.get("target")
     if not target:
@@ -9675,8 +10208,27 @@ COMMAND_HELP = {
         options=[("--preview", "Encode/check without sending.", "lk send release --preview"), ("--confirm", "Preview first, then ask before sending.", "lk send release --confirm")],
         related=["lk changes", "lk trace", "lk receipt"],
     ),
-    "functions": _help_entry("List the selected contract's ABI functions.", "lk functions [query]", "lk functions withdraw", "Use it when starting an unfamiliar contract and you need its callable surface.", related=["lk fn", "lk ask", "lk risk"]),
-    "fn": _help_entry("Search ABI functions by name/signature.", "lk fn [query]", "lk fn release", "Use it when you remember part of a function name but not the exact signature.", related=["lk functions", "lk ask"]),
+    "functions": _help_entry(
+        "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
+        "lk functions [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
+        "lk functions -v",
+        "Use it when starting an unfamiliar contract and you need its callable surface or a fast function-level audit inventory.",
+        options=[
+            ("-v", "Verbose function metadata: source visibility, modifiers, storage refs, calls, ETH flow, selectors, and review flags.", "lk functions -v"),
+            ("-V", "Filter by source visibility.", "lk functions -V external"),
+            ("-m", "Filter by mutability.", "lk functions -m payable"),
+            ("-c", "Filter by audit class.", "lk functions -c admin"),
+            ("-r", "Show compact audit-review flags.", "lk functions -r"),
+        ],
+        related=["lk fn", "lk ask", "lk risk"]
+    ),
+    "fn": _help_entry(
+        "Short spelling of the function inventory/search command.",
+        "lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
+        "lk fn -v withdraw",
+        "Use it for the same function inventory when you want the compact command.",
+        related=["lk functions", "lk ask"]
+    ),
     "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createbounty", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
     "wizard": _help_entry("Interactively collect arguments for a function, then call, send, or encode it.", "lk wizard <function> [call|send|encode]", "lk wizard release call", "Use it when manual ABI argument entry is getting annoying.", related=["lk ask", "lk read", "lk send"]),
     "probe": _help_entry("Try a function as local actors and record success/revert behavior without assertions.", "lk probe <function> [args...]", "lk probe withdraw 1000 --actor Attacker", "Use it for a quick behavioral experiment before writing a full proof.", related=["lk walkthrough test", "lk generate test"]),
@@ -10480,8 +11032,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
         return run_probe(config,args)
     elif cmd in {"changes","state-diff"}:
         return run_state_diff(config,args)
-    elif cmd=="functions": run_functions(config,args[0] if args else None)
-    elif cmd=="fn": run_functions(config," ".join(args) if args else None)
+    elif cmd=="functions": return run_functions(config,args)
+    elif cmd=="fn": return run_functions(config,args)
     elif cmd=="wizard": run_wizard(config,args)
     elif cmd=="replay": run_replay(config,args)
     elif cmd=="fork": return run_fork(args,config)
