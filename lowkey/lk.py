@@ -73,7 +73,10 @@ except ImportError:
 
 try:
     import break_engine
-except ImportError:
+except (ImportError, SyntaxError):
+    # Keep read-only/recon commands usable when an unrelated break-engine
+    # checkout is temporarily syntactically invalid. Commands that need the
+    # break engine will report that it is unavailable.
     break_engine = None
 
 try:
