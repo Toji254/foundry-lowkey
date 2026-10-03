@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import re
 
 
 HELP = """
@@ -17,6 +18,12 @@ Usage:
   lk cheat symbols
   lk cheat search <word>
   lk cheat --help
+
+After opening a topic:
+  lk cheat <topic> 1          contract lab
+  lk cheat <topic> 2          plain-English walkthrough
+  lk cheat <topic> 3          term decoder
+  lk cheat <topic> 4          audit lens
 
 Examples:
   lk cheat mapping
@@ -3723,7 +3730,9 @@ def _render_contract_lab(topic):
     code = _CONTRACT_LABS.get(topic["name"])
     if code is None:
         raw = topic["example"].strip()
-        if raw.startswith(("contract ", "interface ", "import ")):
+        if re.search(r"^\s*(?:abstract\s+)?(?:contract|interface|library)\b", raw, re.M):
+            code = raw
+        elif raw.startswith("import "):
             code = raw
         else:
             code = "contract CheatExample {\n"
