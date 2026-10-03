@@ -41,9 +41,18 @@ class BreakEngineTests(unittest.TestCase):
             break_engine._basic_solidity_expr("address[]", "[]"),
             "new address[](0)",
         )
+    def test_generic_array_expression_is_supported_for_dynamic_arrays(self):
+        self.assertEqual(
+            break_engine._basic_solidity_expr("address[]", "[]"),
+            "new address[](0)",
+        )
         self.assertEqual(
             break_engine._basic_solidity_expr("uint256[]", "[]"),
             "new uint256[](0)",
+        )
+        self.assertEqual(
+            break_engine._basic_solidity_expr("bytes[]", "[]"),
+            "new bytes[](0)",
         )
 
     def test_lifecycle_functions_do_not_get_irrelevant_generic_families(self):
