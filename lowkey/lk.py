@@ -5581,15 +5581,6 @@ def _validate_project_lab_target(config, root, rpc, target, requested=None):
             if deployed.lower() == candidate_runtime.lower():
                 return artifact_name, artifact_path, None
 
-    # A requested first-party contract with an initializer can still be a valid
-    # native lab mapping when the compiler omitted deployedBytecode metadata from
-    # the artifact. Only allow this after proxy resolution, and never accept a
-    # dependency/test/support artifact.
-    if requested_lower:
-        for artifact_name, artifact_path, _ in artifacts:
-            if artifact_name.strip().lower() == requested_lower:
-                return artifact_name, artifact_path, None
-
     return None, None, "selected address could not be mapped to a current-project application artifact"
 
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
