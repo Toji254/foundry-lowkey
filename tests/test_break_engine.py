@@ -36,6 +36,31 @@ class BreakEngineTests(unittest.TestCase):
         self.assertEqual(opts["depth"], 8)
         self.assertEqual(opts["seed"], 42)
 
+    def test_generic_array_expression_is_supported_for_dynamic_arrays(self):
+        self.assertEqual(
+            break_engine._basic_solidity_expr("address[]", "[]"),
+            "new address[](0)",
+        )
+        self.assertEqual(
+            break_engine._basic_solidity_expr("uint256[]", "[]"),
+            "new uint256[](0)",
+        )
+
+    def test_lifecycle_functions_do_not_get_irrelevant_generic_families(self):
+        initialize = {
+            "name": "initialize",
+            "inputs": [{"name": "accounts", "type": "address[]"}],
+            "stateMutability": "nonpayable",
+        }
+        families = break_engine._families_for_function(initialize, None)
+        self.assertIn("boundary", families)
+        self.assertIn("access", families)
+        self.assertIn("upgrade", families)
+        self.assertIn("proxy", families)
+        self.assertNotIn("reentrancy", families)
+        self.assertNotIn("replay", families)
+        self.assertNotIn("accounting", families)
+
     def test_function_scoped_shortcut(self):
         opts = break_engine._parse_args(["withdraw", "replay"])
         self.assertEqual(opts["function"], "withdraw")
