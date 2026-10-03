@@ -205,6 +205,93 @@ class SolidityCheatsheetTests(unittest.TestCase):
         self.assertIn("fallback", output)
         self.assertIn("msg.data", output)
 
+    def test_reference_format_and_contract_view(self):
+        result, output = self.render("require")
+        self.assertEqual(result, 0)
+        self.assertIn("REQUIRE", output)
+        self.assertIn("─", output)
+        self.assertIn("require(condition, \"message\");", output)
+        self.assertIn("CONTRACT USE", output)
+        self.assertIn("contract RequireLab", output)
+        self.assertIn("MENTAL MODEL", output)
+        self.assertIn("STEP BY STEP", output)
+
+        result, output = self.render("require", "1")
+        self.assertEqual(result, 0)
+        self.assertIn("LOWKEY // CONTRACT LAB", output)
+        self.assertIn("contract RequireLab", output)
+
+    def test_symbols_reference_covers_core_solidity_marks(self):
+        result, output = self.render("symbols")
+        self.assertEqual(result, 0)
+        for token in (
+            ";", ",", "()", "{}", "[]", ".", ":", "=>",
+            "=", "+=", "-=", "*=", "/=", "%=",
+            "+", "-", "*", "/", "%", "**", "++", "--",
+            "==", "!=", "<", "<=", ">", ">=", "!", "&&", "||",
+            "&", "|", "^", "~", "<<", ">>", "? :",
+            "a[i]", "a[i:j]", "f{value: amount}()",
+            "// comment", "/* block comment */", "/// NatSpec line",
+        ):
+            self.assertIn(token, output)
+
+    def test_loop_topics_are_separate_and_contract_backed(self):
+        for topic in ("for", "while", "do-while", "for-each", "loop-comparison"):
+            result, output = self.render(topic)
+            self.assertEqual(result, 0)
+            self.assertIn("CONTRACT USE", output)
+            self.assertIn("STEP BY STEP", output)
+        result, output = self.render("loop-comparison")
+        self.assertIn("for", output.lower())
+        self.assertIn("while", output.lower())
+        self.assertIn("do-while", output.lower())
+
+    def test_globals_and_global_functions_are_separate(self):
+        result, output = self.render("globals")
+        self.assertEqual(result, 0)
+        for token in ("msg.sender", "msg.value", "msg.data", "msg.sig",
+                      "block.timestamp", "block.number", "tx.origin",
+                      "gasleft()", "address(this).balance"):
+            self.assertIn(token, output)
+
+        result, output = self.render("global-functions")
+        self.assertEqual(result, 0)
+        for token in ("keccak256", "abi.encode", "abi.decode",
+                      "type(T)", "gasleft()"):
+            self.assertIn(token, output)
+
+    def test_type_reference_tables_explain_key_and_value(self):
+        result, output = self.render("mapping-types")
+        self.assertEqual(result, 0)
+        for token in ("KEY TYPE", "VALID?", "WHAT GOES INSIDE []",
+                      "ValueType", "balances[msg.sender]"):
+            self.assertIn(token, output)
+
+        result, output = self.render("struct-types")
+        self.assertEqual(result, 0)
+        for token in ("FIELD TYPE", "WHAT IS THE VALUE?",
+                      "FIELD NAME", "actual data", "amount: amount"):
+            self.assertIn(token, output)
+
+    def test_calldata_reference_connects_to_receive_and_fallback(self):
+        result, output = self.render("calldata-deep")
+        self.assertEqual(result, 0)
+        for token in ("raw byte payload", "first four bytes",
+                      "msg.data", "string calldata"):
+            self.assertIn(token, output)
+
+        result, output = self.render("receive-vs-fallback")
+        self.assertEqual(result, 0)
+        for token in ("Empty calldata", "fallback", "msg.data", "msg.value"):
+            self.assertIn(token, output)
+
+    def test_complex_term_alias_is_explained(self):
+        result, output = self.render("terniary")
+        self.assertEqual(result, 0)
+        self.assertIn("TERNARY", output)
+        self.assertIn("condition", output.lower())
+        self.assertIn("value", output.lower())
+
     def test_unknown_topic_is_helpful(self):
         result, output = self.render("recieve")
         self.assertEqual(result, 2)
