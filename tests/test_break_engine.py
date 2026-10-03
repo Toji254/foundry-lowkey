@@ -297,6 +297,26 @@ class BreakEngineTests(unittest.TestCase):
             self.assertIn("--via-ir", retry)
             self.assertIn("--optimize", retry)
 
+    def test_result_parser_distinguishes_target_rejection_before_callback(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        observed = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="reentrancy",
+            target=target,
+            function="withdraw(address,uint256)",
+            output=(
+                "LOWKEY_BREAK_FAMILY reentrancy\n"
+                "TARGET_REJECTED_ATTACK true\n"
+                "TARGET_REVERT_DATA_PRESENT false\n"
+                "REENTRY_REACHED false\n"
+                "LOWKEY_BREAK false"
+            ),
+            evidence_path="/tmp/evidence.json",
+        )
+        self.assertEqual(observed.status, "OBSERVED")
+        self.assertIn("rejected the attack before the callback boundary", observed.summary)
+        self.assertIn("No revert data was returned", observed.summary)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
