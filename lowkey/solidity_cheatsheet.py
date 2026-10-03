@@ -1064,11 +1064,10 @@ add(
     """withdraw(uint256)
 transfer(address,uint256)
 createbounty(address,uint256)""",
-    """// Signature:
-createbounty(address,uint256)
-
-// Call values:
-createbounty(0x1234..., 100 ether)""",
+    "function name(types...)",
+    """function transfer(address to, uint256 amount) external returns (bool) {
+    ...
+}""",
     [
         "Write function name.",
         "Write parameter types.",
@@ -1388,6 +1387,15 @@ add(
     "Think someone sees the order before the clerk processes it.",
     """commit = keccak256(abi.encode(secret, amount));
 reveal(secret, amount);""",
+    """mapping(address => bytes32) public commitments;
+
+function commit(bytes32 hash) external {
+    commitments[msg.sender] = hash;
+}
+
+function reveal(uint256 amount, bytes32 secret) external {
+    require(commitments[msg.sender] == keccak256(abi.encode(secret, amount)));
+}""",
     [
         "Identify information visible before execution.",
         "Ask whether another actor profits by reacting first.",
