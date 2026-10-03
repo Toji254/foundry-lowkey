@@ -645,6 +645,72 @@ class SolidityConnectTests(unittest.TestCase):
         ):
             self.assertIn(token, output)
 
+    def test_scene_pack_covers_every_requested_concept(self):
+        cases = [
+            ["yul", "mapping", "keccak256", "storage-layout"],
+            ["function-selector", "abi.encodeCall", "call", "returndata", "abi.decode"],
+            ["events", "event-indexed", "keccak256", "log4"],
+            ["create2", "init-code", "runtime-code", "address"],
+            ["vm-prank", "msg.sender", "mapping", "test"],
+        ]
+        for concepts in cases:
+            with self.subTest(concepts=concepts):
+                scenes = find_connection_scenes(concepts, max_scenes=4)
+                self.assertTrue(scenes)
+                covered = set()
+                for scene in scenes:
+                    covered.update(
+                        solidity_cheatsheet.canonicalize(name)
+                        for name in scene.get("keys", ())
+                    )
+                for concept in concepts:
+                    self.assertIn(
+                        solidity_cheatsheet.canonicalize(concept),
+                        covered,
+                    )
+
+    def test_yul_mapping_hash_storage_gets_the_actual_storage_scene(self):
+        result, output = self.render(
+            "connect", "yul", "mapping", "keccak256", "storage-layout"
+        )
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "High-level mapping → exact storage slot → Yul sload/sstore",
+            output,
+        )
+        self.assertIn("sload(slot)", output)
+        self.assertIn("balances.slot", output)
+        self.assertNotIn("Guided bridge: yul", output)
+
+    def test_scene_pack_never_reintroduces_the_universal_dump(self):
+        result, output = self.render(
+            "connect",
+            "mapping",
+            "events",
+            "calldata",
+            "create2",
+            "yul",
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("CONNECTED BRIDGES", output)
+        self.assertNotIn("UniversalConnectionLab", output)
+        self.assertNotIn("FULL CONNECTION LAB", output)
+
+    def test_low_level_reference_connections_are_concrete(self):
+        cases = [
+            (("mload", "mstore", "mcopy", "memory"), "Memory pointer → word load/store → byte copy"),
+            (("calldataload", "calldatacopy", "calldatasize", "calldata"), "Raw calldata → size → load/copy → selector"),
+            (("returndatasize", "returndatacopy", "abi.decode", "call"), "External call → success flag → returndata → decode or bubble"),
+            (("address.code", "address.codehash", "extcodesize", "extcodehash"), "Address → deployed code → size/hash/copy"),
+            (("create2", "constructor", "init-code", "runtime-code"), "Creation → init code → runtime code → deterministic address"),
+            (("named-arguments", "call-options", "payable", "call"), "Function definition → named arguments → call options"),
+        ]
+        for concepts, title in cases:
+            with self.subTest(concepts=concepts):
+                scenes = find_connection_scenes(concepts, max_scenes=4)
+                self.assertTrue(scenes)
+                self.assertTrue(any(scene.get("title") == title for scene in scenes))
+
     def test_universal_connection_lab_compiles(self):
         if shutil.which("forge") is None:
             self.skipTest("Forge is required for connection-lab compiler coverage.")
