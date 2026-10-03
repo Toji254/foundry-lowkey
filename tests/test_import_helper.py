@@ -125,6 +125,98 @@ class ImportHelperTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_combines_symbols_from_same_source_file(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category(
+                    'import {A, Data} from "demo/A.sol";',
+                    root,
+                    helper.remappings(root),
+                )
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn('RESOLVED 2 SYMBOL(S)', rendered)
+            self.assertIn('import {A, Data} from "demo/A.sol";', rendered)
+            self.assertNotIn("separate valid imports", rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_splits_symbols_when_pasted_path_is_not_the_defining_source(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category(
+                    'import {A, Ownable} from "demo/A.sol";',
+                    root,
+                    helper.remappings(root),
+                )
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn('import {A} from "demo/A.sol";', rendered)
+            self.assertIn('import {Ownable} from "demo/Ownable.sol";', rendered)
+            self.assertIn("separate valid imports", rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_preserves_named_import_aliases(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category(
+                    'import {A as Foo, Data as Bar} from "demo/A.sol";',
+                    root,
+                    helper.remappings(root),
+                )
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn('import {A as Foo, Data as Bar} from "demo/A.sol";', rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_resolves_direct_source_path_query(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category("demo/A.sol", root, helper.remappings(root))
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn("IMPORT FILE: demo/A.sol", rendered)
+            self.assertIn("A [contract]", rendered)
+            self.assertIn("Data [struct]", rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_preserves_namespace_import_alias(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category(
+                    'import * as Utils from "demo/A.sol";',
+                    root,
+                    helper.remappings(root),
+                )
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn('import * as Utils from "demo/A.sol";', rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_offers_fuzzy_suggestion_for_import_search(self):
+        tmp, root = self.project()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = helper.run_category("Ownabl", root, helper.remappings(root))
+        rendered = out.getvalue()
+        self.assertEqual(result, 2)
+        self.assertIn("Did you mean:", rendered)
+        self.assertIn("Ownable", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
