@@ -323,6 +323,34 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("rejected the attack before the callback boundary", observed.summary)
         self.assertIn("No revert data was returned", observed.summary)
 
+    def test_repeat_renderer_targets_attacker_and_seeds_entitlement(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        fn = {
+            "name": "withdraw",
+            "inputs": [
+                {"name": "recipient", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+            ],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_repeat_test(
+            target,
+            fn,
+            "withdraw(address,uint256)",
+            ["0x2222222222222222222222222222222222222222", "1"],
+            "0",
+            "accounting",
+            "10ether",
+            setup_signature="deposit()",
+            entitlement_signature="balances(address)",
+        )
+        self.assertIn("address(ATTACKER)", body)
+        self.assertIn("abi.encodeWithSignature(\"deposit()\")", body)
+        self.assertIn('TARGET.call{value: 10 ether}(setupData)', body)
+        self.assertIn('abi.encodeWithSignature("balances(address)", address(ATTACKER))', body)
+        self.assertIn("totalGain > entitlementBefore", body)
+        self.assertNotIn("if (second && secondGain > 0 && secondOutflow > 0)", body)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
