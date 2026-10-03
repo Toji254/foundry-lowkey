@@ -370,7 +370,6 @@ def _render_connect(names):
         print("This is intentionally exhaustive. The default connect view is not.")
         return 0
 
-    route = connection_route(requested)
     scenes = find_connection_scenes(requested, max_scenes=4)
 
     # Keep the familiar single-scene view for focused requests. When several
@@ -385,6 +384,7 @@ def _render_connect(names):
         return 0
 
     scene = scenes[0] if scenes else find_micro_scene(requested)
+    route = scene.get("route") or connection_route(requested)
 
     print()
     print("CONNECTION ROUTE")
