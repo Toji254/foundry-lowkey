@@ -54,6 +54,17 @@ class LowkeyCastTests(unittest.TestCase):
         )
         self.assertIsNone(lk.parse_lab_marker("no lab target here"))
 
+    def test_parse_lab_marker_accepts_forge_prefixed_console_output(self):
+        target = "0x" + "6" * 40
+        output = "\n".join([
+            "  [123] 0x0000000000000000000000000000000000000000",
+            f"  LOWKEY_TARGET {target} (script console)",
+            "  return value: done",
+        ])
+
+        self.assertEqual(lk.parse_lab_marker(output), target)
+        self.assertEqual(lk.parse_lab_system(output)["target"], target)
+
     def test_tracked_scarb_manifest_drift_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
