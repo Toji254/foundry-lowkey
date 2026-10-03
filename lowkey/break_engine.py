@@ -1066,6 +1066,8 @@ def _render_repeat_test(
         (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: {seed_amount}}}(setupData);
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
+        console2.logBytes(setupReturndata);
+        console2.logBytes(setupReturndata);
         """
         else:
             setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
@@ -1078,9 +1080,16 @@ def _render_repeat_test(
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
         """ % setup_signature
 
-    entitlement_before = ""
-    entitlement_after_first = ""
-    entitlement_after_second = ""
+    entitlement_before = """
+        uint256 entitlementBefore = 0;
+        bool entitlementReadOk = false;
+"""
+    entitlement_after_first = """
+        uint256 entitlementAfterFirst = 0;
+"""
+    entitlement_after_second = """
+        uint256 entitlementAfterSecond = 0;
+"""
     if entitlement_signature:
         entitlement_before = f"""
         uint256 entitlementBefore = 0;
@@ -1149,7 +1158,9 @@ contract LowkeyBreakRepeat is Test {{
         console2.log("FIRST_SUCCESS", first);
         console2.log("SECOND_SUCCESS", second);
         console2.log("FIRST_RETURNDATA_LENGTH", firstReturndata.length);
+        console2.logBytes(firstReturndata);
         console2.log("SECOND_RETURNDATA_LENGTH", secondReturndata.length);
+        console2.logBytes(secondReturndata);
         console2.log("TOTAL_ATTACKER_GAIN", totalGain);
         console2.log("TOTAL_TARGET_OUTFLOW", totalTargetOutflow);
         console2.log("ENTITLEMENT_READ_OK", entitlementReadOk);
@@ -1533,6 +1544,147 @@ contract LowkeyBreakReentrancy is Test {{
 }}
 """
 
+def _extract_console_bytes(text_output: str, marker: str) -> str | None:
+    """Return the first raw 0x-prefixed bytes line immediately after a telemetry marker."""
+    lines = str(text_output or "").splitlines()
+    for index, line in enumerate(lines):
+        if marker not in line:
+            continue
+        for candidate in lines[index + 1:index + 5]:
+            value = candidate.strip()
+            if re.fullmatch(r"0x[0-9a-fA-F]*", value):
+                return value
+    return None
+
+
+def _read_telemetry_bool(text_output: str, marker: str) -> bool | None:
+    match = re.search(
+        rf"{re.escape(marker)}\\s+(true|false)",
+        str(text_output or ""),
+        flags=re.I,
+    )
+    if not match:
+        return None
+    return match.group(1).lower() == "true"
+
+
+def _read_telemetry_uint(text_output: str, marker: str) -> int | None:
+    match = re.search(
+        rf"{re.escape(marker)}\\s+(\\d+)",
+        str(text_output or ""),
+        flags=re.I,
+    )
+    return int(match.group(1)) if match else None
+
+
+def _keccak256(data: bytes) -> bytes | None:
+    """Use Ethereum Keccak when available; never substitute NIST SHA3-256."""
+    try:
+        from Crypto.Hash import keccak
+        digest = keccak.new(digest_bits=256)
+        digest.update(data)
+        return digest.digest()
+    except Exception:
+        pass
+    try:
+        from eth_hash.auto import keccak
+        return keccak(data)
+    except Exception:
+        return None
+
+
+def _canonical_abi_type(item: dict[str, Any]) -> str:
+    type_name = str(item.get("type") or "")
+    if not type_name.startswith("tuple"):
+        return type_name
+    suffix = type_name[len("tuple"):]
+    components = item.get("components") or []
+    inner = ",".join(_canonical_abi_type(component) for component in components)
+    return f"({inner}){suffix}"
+
+
+def _error_signature(item: dict[str, Any]) -> str | None:
+    name = str(item.get("name") or "")
+    if not name:
+        return None
+    return f"{name}({','.join(_canonical_abi_type(x) for x in (item.get('inputs') or []))})"
+
+
+def _decode_revert_data(host, config, target: Target, raw_hex: str | None) -> str | None:
+    """Decode standard/custom ABI errors without assuming a specific protocol."""
+    if not raw_hex or raw_hex == "0x":
+        return None
+    try:
+        raw = bytes.fromhex(raw_hex[2:])
+    except ValueError:
+        return None
+    if len(raw) < 4:
+        return f"raw revert ({len(raw)} bytes): {raw_hex}"
+
+    selector = raw[:4].hex()
+    payload = raw[4:]
+
+    # Solidity's standard revert formats.
+    if selector == "08c379a0":
+        try:
+            if len(payload) >= 64:
+                offset = int.from_bytes(payload[:32], "big")
+                if offset + 32 <= len(payload):
+                    length = int.from_bytes(payload[offset:offset + 32], "big")
+                    start = offset + 32
+                    end = min(start + length, len(payload))
+                    message = payload[start:end].decode("utf-8", errors="replace")
+                    return f"Error(string): {message}"
+        except Exception:
+            pass
+        return "Error(string) [malformed payload]"
+    if selector == "4e487b71":
+        code = int.from_bytes(payload[:32], "big") if len(payload) >= 32 else None
+        return f"Panic({code})" if code is not None else "Panic(uint256) [malformed payload]"
+
+    abi = []
+    try:
+        probe_cfg = dict(config or {})
+        probe_cfg["target"] = target.address
+        abi = _abi_for(host, probe_cfg, target.address)
+    except Exception:
+        abi = []
+
+    for item in abi:
+        if not isinstance(item, dict) or item.get("type") != "error":
+            continue
+        expected = None
+        item_selector = item.get("selector")
+        if isinstance(item_selector, str) and re.fullmatch(r"0x[0-9a-fA-F]{8}", item_selector):
+            expected = item_selector[2:].lower()
+        else:
+            signature = _error_signature(item)
+            digest = _keccak256(signature.encode()) if signature else None
+            if digest is not None:
+                expected = digest[:4].hex()
+        if expected != selector:
+            continue
+
+        signature = _error_signature(item) or str(item.get("name") or "custom error")
+        # eth_abi is optional. The error name/selector remains useful even when
+        # a deployment uses complex tuple/custom types that aren't installed here.
+        inputs = item.get("inputs") or []
+        if inputs:
+            try:
+                from eth_abi import decode
+                values = decode(
+                    [_canonical_abi_type(x) for x in inputs],
+                    payload,
+                )
+                rendered = ", ".join(repr(value) for value in values)
+                return f"{signature}: {rendered}"
+            except Exception:
+                return f"{signature} [selector 0x{selector}]"
+        return signature
+
+    return f"Unknown custom error [selector 0x{selector}]"
+
+
 def _result_from_output(
     host,
     *,
@@ -1541,6 +1693,7 @@ def _result_from_output(
     function: str | None,
     output: str,
     evidence_path: str | None,
+    config: dict[str, Any] | None = None,
 ) -> AttackResult:
     text_output = str(output or "")
     found = re.search(r"LOWKEY_BREAK\s+(true|false)", text_output, flags=re.I)
@@ -1556,7 +1709,59 @@ def _result_from_output(
     target_rejected = bool(re.search(r"TARGET_REJECTED_ATTACK\s+true", text_output, flags=re.I))
     reentry_reached = bool(re.search(r"REENTRY_REACHED\s+true", text_output, flags=re.I))
     target_revert_data = bool(re.search(r"TARGET_REVERT_DATA_PRESENT\s+true", text_output, flags=re.I))
-    if structured and target_rejected and not reentry_reached:
+    if structured and family in {"replay", "accounting"}:
+        setup_success = _read_telemetry_bool(text_output, "SETUP_SUCCESS")
+        first_success = _read_telemetry_bool(text_output, "FIRST_SUCCESS")
+        second_success = _read_telemetry_bool(text_output, "SECOND_SUCCESS")
+        first_len = _read_telemetry_uint(text_output, "FIRST_RETURNDATA_LENGTH") or 0
+        second_len = _read_telemetry_uint(text_output, "SECOND_RETURNDATA_LENGTH") or 0
+        target_outflow = _read_telemetry_uint(text_output, "TOTAL_TARGET_OUTFLOW")
+        decoded_setup = _decode_revert_data(
+            host, config, target,
+            _extract_console_bytes(text_output, "SETUP_RETURNDATA_LENGTH"),
+        )
+        decoded_first = _decode_revert_data(
+            host, config, target,
+            _extract_console_bytes(text_output, "FIRST_RETURNDATA_LENGTH"),
+        )
+        decoded_second = _decode_revert_data(
+            host, config, target,
+            _extract_console_bytes(text_output, "SECOND_RETURNDATA_LENGTH"),
+        )
+        function_name = _function_name(function or "target call")
+        if setup_success is False:
+            reason = decoded_setup or (
+                "No revert data was returned."
+                if not first_len
+                else f"Revert data length: {first_len} bytes."
+            )
+            summary = (
+                f"Target rejected the setup call before the {family} probe could establish its intended state. "
+                f"{reason}"
+            )
+        elif first_success is False:
+            reason = decoded_first or (
+                "No revert data was returned."
+                if not first_len
+                else f"Revert data length: {first_len} bytes."
+            )
+            flow = (
+                f"Target rejected the first {function_name} attempt before value movement."
+                if target_outflow in {None, 0}
+                else f"Target rejected the first {function_name} attempt."
+            )
+            summary = f"{flow} {reason}"
+        elif second_success is False:
+            reason = decoded_second or (
+                "No revert data was returned."
+                if not second_len
+                else f"Revert data length: {second_len} bytes."
+            )
+            summary = (
+                f"First {function_name} attempt succeeded; the repeat attempt was rejected. "
+                f"No repeat break was demonstrated. {reason}"
+            )
+    elif structured and target_rejected and not reentry_reached:
         summary = (
             "Target rejected the attack before the callback boundary. "
             + ("Revert data was returned; inspect the ABI/reason." if target_revert_data
@@ -1567,7 +1772,24 @@ def _result_from_output(
         # Lowkey markers. Preserve the real tool error instead of hiding it behind
         # a generic "BLOCKED" message.
         summary = f"Forge produced no Lowkey telemetry. Last output: {raw_tail}"
-    detail = {"raw_tail": raw_tail}
+    detail = {
+        "raw_tail": raw_tail,
+    }
+    if structured and family in {"replay", "accounting"}:
+        detail.update({
+            "setup_revert": _decode_revert_data(
+                host, config, target,
+                _extract_console_bytes(text_output, "SETUP_RETURNDATA_LENGTH"),
+            ),
+            "first_revert": _decode_revert_data(
+                host, config, target,
+                _extract_console_bytes(text_output, "FIRST_RETURNDATA_LENGTH"),
+            ),
+            "second_revert": _decode_revert_data(
+                host, config, target,
+                _extract_console_bytes(text_output, "SECOND_RETURNDATA_LENGTH"),
+            ),
+        })
     return AttackResult(
         family=family,
         contract=target.contract,
@@ -1786,6 +2008,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         function=signature,
         output=output,
         evidence_path=str(evidence_path),
+        config=config,
     )
     result.detail = result.detail or {}
     result.detail["harness"] = harness
