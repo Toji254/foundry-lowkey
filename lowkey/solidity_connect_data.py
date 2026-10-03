@@ -1907,18 +1907,40 @@ from solidity_cheat_topics import register_topics as _register_catalog_topics
 
 
 def _build_catalog_aliases():
-    result = {}
+    names_by_alias = {}
 
     def capture(name, aliases, *args, **kwargs):
-        result[_norm(name)] = name
+        names_by_alias.setdefault(_norm(name), set()).add(name)
         for alias in aliases:
-            result[_norm(alias)] = name
+            names_by_alias.setdefault(_norm(alias), set()).add(name)
 
     _register_catalog_topics(capture)
-    return result
+
+    exact_names = {
+        _norm(name)
+        for names in names_by_alias.values()
+        for name in names
+        if _norm(name) == _norm(name)
+    }
+    result = {}
+    ambiguous = set()
+
+    for alias, names in names_by_alias.items():
+        if len(names) == 1:
+            result[alias] = next(iter(names))
+        elif alias in exact_names:
+            # An exact topic name always wins over aliases that happen to
+            # share the same spelling.
+            result[alias] = next(
+                name for name in names if _norm(name) == alias
+            )
+        else:
+            ambiguous.add(alias)
+
+    return result, ambiguous
 
 
-_CATALOG_ALIASES = _build_catalog_aliases()
+_CATALOG_ALIASES, _AMBIGUOUS_CATALOG_ALIASES = _build_catalog_aliases()
 
 
 # Semantic names deliberately collapse spelling variants that describe one
@@ -2071,6 +2093,8 @@ def canonicalize(name: str) -> str:
     key = _norm(name)
     if key in _SEMANTIC_ALIASES:
         return _SEMANTIC_ALIASES[key]
+    if key in _AMBIGUOUS_CATALOG_ALIASES:
+        return key
     catalog_name = _CATALOG_ALIASES.get(key)
     if catalog_name:
         catalog_key = _norm(catalog_name)
@@ -2108,6 +2132,8 @@ def is_known_concept(name: str) -> bool:
     key = _norm(name)
     if key in _EXTRA_CONCEPTS or key in _SEMANTIC_ALIASES:
         return True
+    if key in _AMBIGUOUS_CATALOG_ALIASES:
+        return False
     if key in _CATALOG_ALIASES:
         return True
     canonical = canonicalize(key)
