@@ -41,6 +41,15 @@ class SolidityCheatsheetTests(unittest.TestCase):
             "interface",
             "calls",
             "symbols",
+            "test",
+            "test-cheatsheet",
+            "script",
+            "script-cheatsheet",
+            "poc",
+            "poc-cheatsheet",
+            "vm-expect-call",
+            "vm-mockcall",
+            "vm-hoax",
         ):
             self.assertIn(topic, output)
 
@@ -87,6 +96,25 @@ class SolidityCheatsheetTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("mapping", output)
         self.assertIn("nested-mapping", output)
+
+    def test_foundry_test_script_poc_cheat_maps_are_detailed(self):
+        for topic in ("test-cheatsheet", "script-cheatsheet", "poc-cheatsheet"):
+            result, output = self.render(topic)
+            self.assertEqual(result, 0)
+            self.assertIn("MENTAL MODEL", output)
+            self.assertIn("SYNTAX", output)
+            self.assertIn("REAL EXAMPLE", output)
+            self.assertIn("STEP BY STEP", output)
+
+    def test_foundry_cheatcode_topics_show_usage(self):
+        for topic, token in (
+            ("vm-expect-call", "expectCall"),
+            ("vm-mockcall", "mockCall"),
+            ("vm-hoax", "hoax"),
+        ):
+            result, output = self.render(topic)
+            self.assertEqual(result, 0)
+            self.assertIn(token, output)
 
     def test_unknown_topic_is_helpful(self):
         result, output = self.render("recieve")
