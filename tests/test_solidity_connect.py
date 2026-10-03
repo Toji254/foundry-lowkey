@@ -17,6 +17,47 @@ class SolidityConnectTests(unittest.TestCase):
             result = solidity_cheatsheet.run(list(args))
         return result, buf.getvalue()
 
+    def test_default_connect_is_progressive_not_the_full_universal_contract(self):
+        result, output = self.render(
+            "connect", "interface", "functions", "arrays"
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("THE CONNECTION", output)
+        self.assertIn("TINY CONNECTED EXAMPLE", output)
+        self.assertIn("VARIABLES IN THIS EXAMPLE", output)
+        self.assertIn("FOLLOW THE VALUE", output)
+        self.assertIn("IUserStore", output)
+        self.assertIn("address[] memory", output)
+        self.assertNotIn("contract UniversalConnectionLab", output)
+
+    def test_data_structure_scene_includes_all_requested_types(self):
+        result, output = self.render(
+            "connect", "structs", "mappings", "arrays",
+            "enums", "bytes", "addresses"
+        )
+        self.assertEqual(result, 0)
+        for token in (
+            "mapping(address => Profile)",
+            "mapping(address => mapping(bytes32 => uint256))",
+            "uint256[]",
+            "address[]",
+            "address[3]",
+            "Status",
+            "bytes calldata",
+            "address user_",
+            "uint256 score_",
+            "Profile storage",
+        ):
+            self.assertIn(token, output)
+
+    def test_full_mode_is_explicit(self):
+        result, output = self.render(
+            "connect", "interface", "functions", "arrays", "1"
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("FULL CONNECTION LAB", output)
+        self.assertIn("UniversalConnectionLab", output)
+
     def test_big_data_connection_shows_requested_concepts_and_variables(self):
         result, output = self.render(
             "connect", "structs", "mappings", "arrays", "enums", "bytes", "addresses"
