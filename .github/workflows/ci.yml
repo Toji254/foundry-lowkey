@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/system_model.py lowkey/project_tools.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/break_engine.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/system_model.py lowkey/project_tools.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/break_engine.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -36,6 +36,8 @@ jobs:
           anvil --version
       - name: Install Lowkey
         run: ./install.sh
+      - name: Compile standalone Solidity cheat labs
+        run: python -m unittest tests/test_solidity_cheat_labs.py -v
       - name: Verify installed runtime module
         run: |
           test -f "$HOME/.lowkey/bootstrap.py"
