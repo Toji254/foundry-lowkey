@@ -89,6 +89,39 @@ class ImportHelperTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_search_tokens_accept_solidity_import_declaration(self):
+        self.assertEqual(
+            helper.search_tokens(
+                'import {ERC721URIStorage, ERC721} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";'
+            ),
+            ["erc721uristorage", "erc721"],
+        )
+        self.assertEqual(helper.search_tokens("ERC721URIStorage,"), ["erc721uristorage"])
+
+    def test_choose_exact_symbol_search_accepts_trailing_punctuation(self):
+        tmp, root = self.project()
+        try:
+            a = helper.Symbol("ERC721", "contract", root / "src/A.sol", "demo/ERC721.sol", 1)
+            b = helper.Symbol("ERC721URIStorage", "contract", root / "src/A.sol", "demo/ERC721URIStorage.sol", 1)
+            with unittest.mock.patch("builtins.input", side_effect=["/ERC721URIStorage,"]):
+                selected = helper.choose([a, b], helper.sym_render, "symbols")
+            self.assertEqual(selected.name, "ERC721URIStorage")
+        finally:
+            tmp.cleanup()
+
+    def test_direct_import_query_finds_symbol_without_category(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category("Ownable", root, helper.remappings(root))
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn("NAME:   Ownable", rendered)
+            self.assertIn("IMPORT: import {Ownable} from", rendered)
+        finally:
+            tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()
