@@ -383,6 +383,11 @@ def _render_connect(names):
         print(micro["title"])
         print()
         print(micro["story"])
+        if micro.get("route"):
+            print()
+            print("CONNECTION ROUTE")
+            print("----------------")
+            print("  " + " → ".join(micro["route"]))
     else:
         paths = connection_paths(topics)
         print("Follow one bridge at a time:")
