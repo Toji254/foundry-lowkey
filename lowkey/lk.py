@@ -10815,6 +10815,41 @@ COMMAND_HELP = {
         "Use it whenever a Solidity concept is fuzzy. It gives a mental model, syntax, real example, step-by-step explanation, and audit lookout without touching project state.",
         related=["lk import", "lk functions", "lk ask"],
     ),
+    "compare": _help_entry(
+        "Compare Solidity concepts side by side.",
+        "lk compare <topicA> <topicB> [topicC]",
+        "lk compare for while do-while",
+        "Use it when concepts sound similar but behave differently.",
+        related=["lk cheat", "lk expression"],
+    ),
+    "expression": _help_entry(
+        "Explain one Solidity expression by its pieces.",
+        'lk expression "<expression>"',
+        'lk expression "balances[msg.sender] += msg.value"',
+        "Use it when brackets, dots, call options, or operators make a line hard to parse.",
+        related=["lk cheat", "lk compare"],
+    ),
+    "practice": _help_entry(
+        "Run prediction-first Solidity drills.",
+        "lk practice [topic]",
+        "lk practice mapping",
+        "Use it before executing code so you learn to predict state transitions.",
+        related=["lk cheat", "lk test"],
+    ),
+    "confused": _help_entry(
+        "Show common Solidity concept confusions.",
+        "lk confused <term>",
+        "lk confused calldata",
+        "Use it when two terms seem interchangeable.",
+        related=["lk compare", "lk cheat"],
+    ),
+    "patterns": _help_entry(
+        "Show recurring Solidity coding/audit patterns.",
+        "lk patterns",
+        "lk patterns",
+        "Use it to recognize common state-transition and external-call shapes.",
+        related=["lk cheat", "lk audit"],
+    ),
     "cheatcode": _help_entry(
         "Alias for the Foundry cheatcode helper.",
         "lk cheatcode [args...]",
@@ -11055,6 +11090,11 @@ START HERE
   lk cheat receive                  Explain receive() step by step.
   lk cheat interface                Explain interfaces step by step.
   lk cheat symbols                  Show Solidity symbols/operators at a glance.
+  lk compare for while do-while     Compare loop forms.
+  lk expression "balances[...]"     Read one Solidity expression.
+  lk practice mapping               Predict behavior before executing.
+  lk confused calldata              Compare commonly confused terms.
+  lk patterns                       Show recurring Solidity patterns.
 
 FIRST 10 MINUTES
   1. Start Anvil:                  anvil
@@ -11564,6 +11604,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="symbolic": return run_symbolic(args)
     elif cmd=="brutalize": return run_brutalize(args)
     elif cmd in {"cheat","cheats","cheatsheet"}: return run_cheat(args)
+    elif cmd in {"compare","expression","practice","confused","patterns"}: return run_cheat([cmd,*args])
     elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
     elif cmd in {"actors","actor-list"}: return list_anvil_actors(config)
     elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
