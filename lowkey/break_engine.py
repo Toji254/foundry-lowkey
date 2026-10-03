@@ -2101,21 +2101,38 @@ def _families_for_function(
             return [mapped[0]]
         raise ValueError(f"Finding pattern '{pattern_hint}' has no executable attack family.")
 
-    families = ["reentrancy", "replay", "accounting", "boundary"]
-    if PRIVILEGED_RE.search(name):
-        families.append("access")
-    if UPGRADE_RE.search(name):
-        families.append("upgrade")
-    if TIME_RE.search(name) or TIME_RE.search(signature):
-        families.append("time")
-    if SIGNATURE_RE.search(name) or SIGNATURE_RE.search(signature):
-        families.append("signature")
-    if CALLBACK_RE.search(name) or CALLBACK_RE.search(signature):
-        families.append("callback")
-    for family in family_names(patterns):
-        if family in ATTACK_FAMILIES and family not in families:
-            families.append(family)
-    return families or ["dos"]
+    # Initialization/upgrade entry points are not meaningful generic
+    # reentrancy/replay/accounting targets. Treat them as lifecycle/auth/proxy
+    # surfaces instead; this avoids fabricating nonsense experiments such as
+    # "reenter initialize(address[])". Explicit --family still overrides this
+    # selection because the user may be testing a protocol-specific hypothesis.
+    lifecycle = bool(UPGRADE_RE.search(name) or re.fullmatch(r"(?i)(initialize|init)", name))
+    if lifecycle:
+        families = ["boundary"]
+        if PRIVILEGED_RE.search(name):
+            families.append("access")
+        if UPGRADE_RE.search(name):
+            families.extend(["upgrade", "proxy"])
+        if TIME_RE.search(name) or TIME_RE.search(signature):
+            families.append("time")
+        if CALLBACK_RE.search(name) or CALLBACK_RE.search(signature):
+            families.append("callback")
+    else:
+        families = ["reentrancy", "replay", "accounting", "boundary"]
+        if PRIVILEGED_RE.search(name):
+            families.append("access")
+        if UPGRADE_RE.search(name):
+            families.append("upgrade")
+        if TIME_RE.search(name) or TIME_RE.search(signature):
+            families.append("time")
+        if SIGNATURE_RE.search(name) or SIGNATURE_RE.search(signature):
+            families.append("signature")
+        if CALLBACK_RE.search(name) or CALLBACK_RE.search(signature):
+            families.append("callback")
+        for family in family_names(patterns):
+            if family in ATTACK_FAMILIES and family not in families:
+                families.append(family)
+    return list(dict.fromkeys(families)) or ["dos"]
 
 
 def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> list[dict[str, Any]]:
