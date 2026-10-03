@@ -79,7 +79,6 @@ INSTALL INTELLIGENCE:
 
   lk import --verbose ERC721
     Show the deeper package/version/dependency/project-usage/audit details.
-    Emit only the copy-ready Solidity import.
 
   lk import search nft
     Search deterministic learning tags, roles, use cases, and import paths.
@@ -1760,7 +1759,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
         for symbol in unique_found:
             print(f'  {symbol.name} [{symbol.kind}] -> {symbol.import_path}')
         for symbol in unique_found:
-            show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only)
+            show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
         show_copy_imports(unique_found, requested_path=requested_path, aliases=aliases)
         if len({s.import_path for s in unique_found}) > 1:
             print()
@@ -1824,7 +1823,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
                     known_matches.append(ref)
         if known_matches:
             if len(known_matches) == 1:
-                show_symbol(known_matches[0], root, maps, json_mode=json_mode, copy_only=copy_only)
+                show_symbol(known_matches[0], root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
                 if install:
                     return install_symbols(known_matches, root, dry_run=dry_run)
                 return 0
@@ -1849,7 +1848,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
 
     s = choose(matches, sym_render, 'matching importable symbols')
     if s:
-        show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
+        show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
     return 0
 
 def resolve_single_symbol(query: str, root: Path, maps) -> Symbol | None:
@@ -1895,12 +1894,12 @@ def run_learning_command(category: str, root: Path, maps, json_mode: bool = Fals
             for path, line, text in uses:
                 print(f"  {path.resolve()}:{line}  {text}")
             return 0
-        show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only)
+        show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
         if command == "audit" and not json_mode:
             print()
             print("AUDITOR VIEW: start from the questions above; these are hypotheses to investigate, not a verdict.")
         return 0
-    return import_query(category, root, maps, json_mode=json_mode, copy_only=copy_only)
+    return import_query(category, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
 
 
 def run_category(category: str, root: Path, maps, install: bool = False, dry_run: bool = False, json_mode: bool = False, copy_only: bool = False, verbose: bool = False) -> int:
