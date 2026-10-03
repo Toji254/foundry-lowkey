@@ -1146,6 +1146,9 @@ def auto_abi_path(target,config,root=None):
             artifact=read_artifact(artifact_path)
             name=artifact_contract_name(artifact_path,artifact).lower()
             if name==preferred_lower or Path(artifact_path).stem.lower()==preferred_lower:
+                artifact_data = artifact or {}
+                if root is not None and not artifact_is_project_application(project_root, artifact_path, artifact_data):
+                    continue
                 remember_abi_path(config,target,artifact_path)
                 return artifact_path
 
@@ -5434,11 +5437,8 @@ def _project_source_fingerprint(root):
 
 def _project_source_mutations(root, before):
     after = _project_source_fingerprint(root)
-    changed = sorted(
-        set(before) | set(after)
-        - set(key for key, value in before.items() if after.get(key) == value)
-    )
-    return changed
+    keys = set(before) | set(after)
+    return sorted(key for key in keys if before.get(key) != after.get(key))
 
 
 def _lab_source_integrity_issue(root):
