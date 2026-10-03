@@ -133,6 +133,11 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
 
 
+    def test_import_is_in_main_help(self):
+        script = (ROOT / "lowkey" / "lk.py").read_text(encoding="utf-8")
+        self.assertIn("lk import", script)
+        self.assertIn("importable packages", script)
+
     def test_question_help_is_contextual(self):
         code, output = self.capture_dispatch("q", "--h")
         self.assertEqual(code, 0)
