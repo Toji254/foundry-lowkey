@@ -4511,16 +4511,17 @@ def artifact_source_name(artifact, path, root=None):
         root_path = Path(root).expanduser().resolve()
         src_prefix = _configured_src_prefix(root_path)
         src_root = root_path / src_prefix
-        contract_name = artifact_contract_name(path, artifact)
         contract_dir = Path(path).parent.name
 
+        # When sourceName/metadata is absent, anchor the artifact to the source
+        # file represented by Foundry's artifact directory. Do not fall back to
+        # "find any source with the same contract name": tests/POCs can compile
+        # another artifact with an identical contractName.
         candidates = []
-        direct = src_root / contract_dir
-        if direct.is_file():
-            candidates.append(direct)
-
-        named = sorted(src_root.rglob(f"{contract_name}.sol")) if src_root.is_dir() else []
-        candidates.extend(p for p in named if p not in candidates)
+        if src_root.is_dir() and contract_dir:
+            candidates.extend(
+                sorted(src_root.rglob(contract_dir))
+            )
 
         for candidate in candidates:
             try:
