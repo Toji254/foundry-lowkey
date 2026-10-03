@@ -1312,7 +1312,8 @@ def _print_banner(host, targets: list[Target], opts: dict[str, Any], rpc: str | 
         print(f"Scope   : FINDING PATTERN {opts['pattern']}")
     else:
         print("Scope   : CURRENT TARGET")
-    print(f"Mode    : {'INDEFINITE / STOP ON BREAK' if opts.get('until_found') else f'ROUND-LIMITED ({opts.get('max_rounds', 1)})'}")
+    mode_label = "INDEFINITE / STOP ON BREAK" if opts.get("until_found") else f"ROUND-LIMITED ({opts.get('max_rounds', 1)})"
+    print(f"Mode    : {mode_label}")
     features = _language_features(_root(host), project_info)
     if features:
         print("LANGUAGE CUES")
