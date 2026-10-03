@@ -1118,6 +1118,10 @@ contract LowkeyBreakRepeat is Test {{
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
 
     function test_break_repeat() public {{
+        // Fund the attacker before any payable setup call. Otherwise a seeded
+        // deposit/credit path can revert for lack of ETH and masquerade as a
+        // protocol-level accounting observation.
+        vm.deal(ATTACKER, 100 ether);
 {setup_block}
 {entitlement_before}
         bytes memory data = {payload_expr};
