@@ -106,6 +106,42 @@ class SolidityConnectTests(unittest.TestCase):
         self.assertIn("No single connection lab currently covers", output)
         self.assertIn("lk connect --list", output)
 
+    def test_arbitrary_known_combinations_use_universal_composer(self):
+        cases = [
+            ("interface", "mapping", "arrays"),
+            ("imports", "interface"),
+            ("mapping", "keccak256", "abi.encode"),
+            ("yul", "mapping", "keccak256"),
+            ("functions", "interface", "arrays"),
+        ]
+        for terms in cases:
+            with self.subTest(terms=terms):
+                result, output = self.render("connect", *terms)
+                self.assertEqual(result, 0)
+                self.assertIn("LOWKEY // CONNECT", output)
+                self.assertIn("solidity-yul-composer", output)
+                self.assertIn("CONNECTION MAP", output)
+
+    def test_function_alias_is_displayed_as_function(self):
+        result, output = self.render("connect", "interface", "functions")
+        self.assertEqual(result, 0)
+        self.assertIn("functions -> function", output)
+        self.assertNotIn("functions -> function-syntax", output)
+
+    def test_yul_topics_exist(self):
+        for topic in (
+            "yul",
+            "yul-memory",
+            "yul-storage",
+            "yul-calldata",
+            "yul-control-flow",
+            "yul-functions",
+            "yul-call",
+        ):
+            result, output = self.render("connect", topic, "mapping")
+            self.assertEqual(result, 0)
+            self.assertIn("CONNECTION LAB", output)
+
     def test_every_connection_lab_compiles(self):
         if shutil.which("forge") is None:
             self.skipTest("Forge is required for connection-lab compiler coverage.")
