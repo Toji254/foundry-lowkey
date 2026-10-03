@@ -635,6 +635,65 @@ class LowkeyCastTests(unittest.TestCase):
             self.assertEqual(candidate["contract"], "ConfidencePoolFactory")
 
 
+    @patch.object(lk, "_validate_project_lab_target", return_value=("CanonicalTarget", "/tmp/CanonicalTarget.json", None))
+    @patch.object(lk, "run_foundry")
+    def test_project_lab_lowkey_target_wins_over_system_markers(
+        self,
+        run_foundry,
+        validate_target,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.20; contract LocalAudit { function run() external {} }",
+                encoding="utf-8",
+            )
+
+            canonical = "0x" + "1" * 40
+            factory = "0x" + "2" * 40
+            pool = "0x" + "3" * 40
+            run_foundry.return_value = lk.CommandResult(
+                "\n".join([
+                    f"LOWKEY_TARGET {canonical}",
+                    f"LOWKEY_FACTORY {factory}",
+                    f"LOWKEY_POOL {pool}",
+                ]),
+                0,
+            )
+
+            config = {
+                "actor": None,
+                "wallets": {},
+                "labels": {},
+                "aliases": {},
+                "targets": {},
+                "abi_paths": {},
+            }
+
+            with patch.object(lk, "auto_abi_path", return_value=None):
+                with patch.object(
+                    lk,
+                    "derive_default_anvil_key",
+                    return_value="0x" + "4" * 64,
+                ):
+                    with patch.object(lk, "set_lab_target"):
+                        result = lk.run_project_lab_script(
+                            config,
+                            root,
+                            str(script),
+                            "http://127.0.0.1:8545",
+                            ["0x" + "5" * 40],
+                            "0x" + "4" * 64,
+                        )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(validate_target.call_args.args[3], canonical)
+            self.assertEqual(config["lab_system"]["factory"], factory)
+            self.assertEqual(config["lab_system"]["pool"], pool)
+            self.assertEqual(config["lab_system"]["target"], canonical)
+
     @patch.object(lk, "run_cast")
     @patch.object(lk, "run_foundry")
     @patch.object(lk, "derive_default_anvil_key", return_value="0x" + "1" * 64)
