@@ -11,6 +11,7 @@ spec = importlib.util.spec_from_file_location("lowkey_solidity_cheatsheet", MODU
 cheat = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = cheat
 spec.loader.exec_module(cheat)
+import solidity_connect_data as connect
 
 
 class SolidityCheatsheetTests(unittest.TestCase):
@@ -386,7 +387,7 @@ class SolidityConnectCoverageTests(unittest.TestCase):
         def capture(name, aliases, category, meaning, *args):
             cls.catalog.append((name, aliases, category, meaning))
 
-        register_topics(capture)
+        cheat.register_topics(capture)
 
     def test_every_catalog_topic_and_alias_is_known_by_connect(self):
         unknown = []
@@ -453,7 +454,7 @@ class SolidityConnectCoverageTests(unittest.TestCase):
     def test_aliases_are_hidden_from_connect_output(self):
         output = io.StringIO()
         with redirect_stdout(output):
-            result = run_cheatsheet(["connect", "interface", "functions"])
+            result = cheat.run(["connect", "interface", "functions"])
         rendered = output.getvalue()
         self.assertEqual(result, 0)
         self.assertIn("  interface", rendered)
@@ -463,7 +464,7 @@ class SolidityConnectCoverageTests(unittest.TestCase):
     def test_semantic_meanings_are_used(self):
         output = io.StringIO()
         with redirect_stdout(output):
-            run_cheatsheet(["connect", "mapping", "keccak256", "abi.decode"])
+            cheat.run(["connect", "mapping", "keccak256", "abi.decode"])
         rendered = output.getvalue()
         self.assertIn("keccak256: Keccak-256 hashes", rendered)
         self.assertIn("abi.decode: ABI-decodes", rendered)
@@ -510,7 +511,7 @@ class SolidityConnectCoverageTests(unittest.TestCase):
     def test_arbitrary_known_combinations_remain_progressive(self):
         output = io.StringIO()
         with redirect_stdout(output):
-            result = run_cheatsheet(
+            result = cheat.run(
                 ["connect", "interface", "mapping", "yul", "ecrecover"]
             )
         rendered = output.getvalue()
