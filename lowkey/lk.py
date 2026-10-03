@@ -4425,8 +4425,15 @@ def discover_local_lab_script(root=".", requested=None):
     return None
 
 def parse_lab_markers(output, marker):
+    """Parse LOWKEY_* address markers even when Forge prefixes console lines.
+
+    Foundry can decorate script output with labels/metadata around console2.log
+    lines. The marker itself is the contract between a project-native lab
+    script and Lowkey, so parsing must not require the marker to occupy the
+    entire physical line.
+    """
     return re.findall(
-        rf"(?m)^\s*{re.escape(marker)}\s*:?\s*(0x[0-9a-fA-F]{{40}})\s*$",
+        rf"(?i)\\b{re.escape(marker)}\\b\\s*:?\\s*(0x[0-9a-fA-F]{{40}})\\b",
         str(output or ""),
     )
 
