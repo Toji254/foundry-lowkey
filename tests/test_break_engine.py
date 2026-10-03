@@ -136,6 +136,30 @@ class BreakEngineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             break_engine._solidity_amount_literal("10 apples")
 
+    def test_reentrancy_harness_does_not_mask_target_reverts(self):
+        target = break_engine.Target("Tipjar", "0x5fbdb2315678afecb367f032d93f642f64180aa3")
+        fn = {
+            "name": "withdraw",
+            "inputs": [
+                {"name": "recipient", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+            ],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_reentrancy_test(
+            target,
+            fn,
+            "withdraw(address,uint256)",
+            ["0x1111111111111111111111111111111111111111", "1"],
+            3,
+            setup_signature="deposit()",
+            seed_fund="10ether",
+        )
+        self.assertIn("emit TargetCall", body)
+        self.assertNotIn('require(ok, "seed call reverted")', body)
+        self.assertNotIn('require(ok, "outer attack reverted")', body)
+        self.assertIn("SETUP_VALUE_WEI", body)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
