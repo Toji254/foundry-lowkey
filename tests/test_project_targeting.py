@@ -465,6 +465,7 @@ class ProjectTargetingTests(unittest.TestCase):
                     "contractName": "ConfidencePoolFactory",
                     "sourceName": "src/ConfidencePoolFactory.sol",
                     "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0x60006000"},
                     "abi": [],
                 }),
                 encoding="utf-8",
@@ -474,19 +475,16 @@ class ProjectTargetingTests(unittest.TestCase):
             implementation = "0x" + "2" * 40
             config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
 
-            seen = {}
-
-            def fake_auto_abi_path(target, resolver_config, root=None):
-                seen["target"] = target
-                seen["rpc"] = resolver_config.get("rpc")
-                return str(artifact)
-
             def fake_run_cast(args, config=None, capture=False):
                 if args[:2] == ["code", proxy]:
-                    return lk.CommandResult("0x6000", 0)
+                    return lk.CommandResult("0x600060", 0)
+                if args[:2] == ["implementation", proxy]:
+                    return lk.CommandResult(implementation, 0)
+                if args[:2] == ["code", implementation]:
+                    return lk.CommandResult("0x60006000", 0)
                 return lk.CommandResult("", 0)
 
-            with patch.object(lk, "run_cast", side_effect=fake_run_cast),                  patch.object(lk, "auto_abi_path", side_effect=fake_auto_abi_path),                  patch.object(lk, "artifact_is_project_application", return_value=True):
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
                 contract, resolved_artifact, error = lk._validate_project_lab_target(
                     config,
                     root,
@@ -497,8 +495,6 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(contract, "ConfidencePoolFactory")
             self.assertEqual(resolved_artifact, str(artifact))
-            self.assertEqual(seen["target"], proxy)
-            self.assertEqual(seen["rpc"], "http://127.0.0.1:8545")
 
     def test_project_lab_rejects_unmatched_broadcast_deployment(self):
         with tempfile.TemporaryDirectory() as tmp:
