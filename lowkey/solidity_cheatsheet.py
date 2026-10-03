@@ -28,6 +28,10 @@ Examples:
   lk cheat interface
   lk cheat calls
   lk cheat storage
+  lk cheat test
+  lk cheat script
+  lk cheat poc
+  lk cheat forge-cheatcodes-map
   lk cheat symbols
 """
 
@@ -2736,6 +2740,269 @@ function testPoC_overwithdraw() public {
         "Assert a concrete impact or broken invariant.",
         "Keep only the steps needed to reproduce the claim.",
     ],
+)
+
+add(
+    "test-cheatsheet", ["test-cheats", "testing-cheatsheet", "forge-test-cheatsheet"], "FOUNDRY TESTING",
+    "The compact dictionary for writing Foundry tests: setup, actors, actions, assertions, reverts, fuzzing, invariants, forks, traces, and evidence.",
+    "Think: build a safe lab experiment, perform the action, then prove one property.",
+    """// test/Bank.t.sol
+pragma solidity ^0.8.20;
+
+import {Test} from "forge-std/Test.sol";
+import {Bank} from "../src/Bank.sol";
+
+contract BankTest is Test {
+    Bank bank;
+    address alice = makeAddr("alice");
+
+    function setUp() public {
+        bank = new Bank();
+    }
+
+    function test_deposit() public {
+        vm.deal(alice, 10 ether);
+        vm.prank(alice);
+        bank.deposit{value: 1 ether}();
+
+        assertEq(address(bank).balance, 1 ether);
+    }
+}""",
+    """UNIT:
+function test_X() public { ... }
+
+FUZZ:
+function testFuzz_X(uint256 x) public { ... }
+
+INVARIANT:
+function invariant_X() public { ... }
+
+REVERT:
+vm.expectRevert(Error.selector);
+target.action();
+
+EVENT:
+vm.expectEmit(true, false, false, true);
+emit Deposit(alice, 1 ether);
+target.deposit{value: 1 ether}();
+
+ACTOR:
+vm.prank(alice);
+vm.startPrank(alice);
+vm.stopPrank();
+
+MONEY:
+vm.deal(alice, 10 ether);
+
+TIME / BLOCK:
+vm.warp(newTimestamp);
+vm.roll(newBlock);
+
+STATE:
+uint256 snap = vm.snapshotState();
+vm.revertTo(snap);
+vm.load(address(target), slot);
+vm.store(address(target), slot, value);
+
+LOGS:
+vm.recordLogs();
+Vm.Log[] memory logs = vm.getRecordedLogs();
+
+FORK:
+vm.createSelectFork(vm.envString("RPC_URL"));""",
+    [
+        "Put tests under test/ and commonly use a .t.sol suffix.",
+        "Import forge-std/Test.sol and inherit Test.",
+        "Use setUp() for state every test needs; Foundry runs it before each test.",
+        "Use test_ for deterministic tests, testFuzz_ for fuzzed inputs, and invariant_ for state properties checked across sequences.",
+        "Create actors with makeAddr(), fund them with vm.deal(), and choose msg.sender with vm.prank() or vm.startPrank().",
+        "Arrange state, perform the action, then assert the exact property you care about.",
+        "Use vm.expectRevert before an expected failure and vm.expectEmit before checking an event.",
+        "Use vm.assume() only for genuinely invalid fuzz inputs; use bound() when you want values inside a range.",
+        "Use snapshots, logs, raw storage, and traces when the final state alone does not explain behavior.",
+        "Use a fork when real deployed integrations or real chain state are part of the hypothesis.",
+        "Run forge test, then narrow with --match-test/--match-contract and raise verbosity with -vv/-vvvv when debugging.",
+    ],
+    audit="For an audit, turn a suspicious rule into an executable property. A passing test only proves the exact property and path you wrote.",
+    gotchas="Do not give the attacker powers in setup that a real attacker does not have. vm.deal/vm.store/vm.etch are lab controls, not normal on-chain attacker capabilities.",
+)
+
+add(
+    "script-cheatsheet", ["script-cheats", "scripting-cheatsheet", "forge-script-cheatsheet"], "FOUNDRY SCRIPTING",
+    "The compact dictionary for writing Foundry deployment and interaction scripts.",
+    "Think: a repeatable checklist that can either simulate actions or deliberately broadcast them.",
+    """// script/Deploy.s.sol
+pragma solidity ^0.8.20;
+
+import {Script} from "forge-std/Script.sol";
+import {MyToken} from "../src/MyToken.sol";
+
+contract Deploy is Script {
+    function run() external returns (MyToken token) {
+        address owner = vm.envAddress("OWNER");
+
+        vm.startBroadcast();
+        token = new MyToken(owner);
+        vm.stopBroadcast();
+
+        return token;
+    }
+}""",
+    """BASIC SHAPE:
+contract MyScript is Script {
+    function run() external {
+        // load config
+        // prepare
+        // broadcast intended transactions
+        // finish
+    }
+}
+
+DEPLOY:
+vm.startBroadcast();
+Target target = new Target(arg1);
+vm.stopBroadcast();
+
+INTERACT:
+Target target = Target(vm.envAddress("TARGET"));
+vm.startBroadcast();
+target.setValue(7);
+vm.stopBroadcast();
+
+SIGNER:
+vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
+
+ENV:
+vm.envString("RPC_URL");
+vm.envAddress("TARGET");
+vm.envUint("PRIVATE_KEY");""",
+    [
+        "Create the file in script/ and commonly name it Something.s.sol.",
+        "Import Script from forge-std and inherit Script.",
+        "Put automation in run().",
+        "Read addresses, RPCs, keys, and other configuration from environment variables instead of hard-coding secrets.",
+        "Use vm.startBroadcast(...) to mark intended transactions and vm.stopBroadcast() to end that broadcast section.",
+        "Deploy with new Contract(args) or interact with an existing address cast to a contract/interface type.",
+        "Run without --broadcast when you are inspecting or simulating the flow; add --broadcast only when you deliberately want transactions sent to the selected network.",
+        "Keep the signer, target, order of operations, and expected post-state obvious to the next reviewer.",
+    ],
+    audit="Scripts are useful for repeatable deployment and integration flows. Keep it obvious which steps are simulation-only and which would become real transactions.",
+    gotchas="Broadcasting is real network activity. Verify RPC, chain, signer, target, constructor arguments, and network before using --broadcast.",
+)
+
+add(
+    "poc-cheatsheet", ["poc-cheats", "poc-dictionary", "audit-poc-cheatsheet"], "AUDIT POC",
+    "The compact dictionary for writing a security proof-of-concept in Foundry.",
+    "Think: make one claim, reproduce one attack path, and measure one concrete impact.",
+    """function testPoC_reentrancy() public {
+    // GIVEN: attacker can reach a funded target
+    vm.deal(address(target), 10 ether);
+
+    // WHEN: attacker performs the malicious sequence
+    attacker.attack();
+
+    // THEN: prove the security property was broken
+    assertGt(attacker.balance, 1 ether);
+}""",
+    """POC SHAPE:
+CLAIM  -> what security property is supposed to hold?
+GIVEN  -> attacker-reachable starting state
+WHEN   -> exact attacker sequence
+THEN   -> measurable impact
+EVIDENCE -> balances / storage / events / traces
+REPLAY -> deterministic, minimal reproduction
+
+COMMON CLAIMS:
+access control
+reentrancy
+accounting
+DoS / griefing
+oracle assumptions
+signature replay
+proxy / upgrade / storage
+token integration
+cross-contract callbacks""",
+    [
+        "Write the security claim in one sentence before coding.",
+        "Identify the smallest victim function and state needed to test it.",
+        "Arrange starting state with test-only powers when necessary, and clearly separate that setup from the attacker path.",
+        "Run the attack path with a normal actor, interface, or attacker contract.",
+        "Measure before/after balances, storage values, ownership, supply, shares, or another concrete impact.",
+        "Assert the violated invariant or unauthorized gain. Do not stop at 'the call succeeded'.",
+        "Use a callback contract for reentrancy, a wrong actor for access control, realistic token/oracle state for integration bugs, and a fork when real chain state matters.",
+        "Minimize the final PoC so the exploit path is obvious and reproducible.",
+    ],
+    audit="A PoC is evidence, not a verdict. Strong PoCs prove impact with attacker-reachable execution and identify which setup operations were only laboratory controls.",
+    gotchas="Do not use vm.prank(owner), vm.store(), vm.etch(), or other privileged test controls as part of the exploit unless the real vulnerability gives the attacker that capability.",
+)
+
+add(
+    "vm-expect-call", ["expectCall", "expected-call", "call-expectation"], "FOUNDRY CHEATCODES",
+    "Check that the target makes an expected external call with expected calldata or value.",
+    "Put a 'this phone call must happen' rule on the test before the transaction.",
+    """vm.expectCall(
+    address(token),
+    abi.encodeCall(IERC20.transfer, (treasury, amount))
+);""",
+    """vm.expectCall(
+    address(token),
+    abi.encodeCall(IERC20.transfer, (treasury, 100))
+);
+vault.sweep(treasury, 100);""",
+    [
+        "Choose the external contract whose call must happen.",
+        "Encode the expected calldata.",
+        "Set the expectation before the action.",
+        "Run the action and let Foundry fail the test when the call is missing or mismatched.",
+    ],
+    audit="Useful for proving that protocol actions actually route calls and value through the dependency you think they do.",
+)
+
+add(
+    "vm-mockcall", ["mockCall", "mock-call", "mocked-dependency"], "FOUNDRY CHEATCODES",
+    "Return controlled data for a selected external call in the test environment.",
+    "Replace a dependency's answer in your lab without changing the real contract.",
+    """vm.mockCall(
+    address(feed),
+    abi.encodeWithSignature("latestAnswer()"),
+    abi.encode(int256(2000))
+);""",
+    """vm.mockCall(
+    address(feed),
+    abi.encodeWithSignature("latestAnswer()"),
+    abi.encode(int256(2000))
+);
+
+int256 price = feed.latestAnswer();
+assertEq(price, 2000);""",
+    [
+        "Choose the external dependency.",
+        "Match the call data you want to intercept.",
+        "Provide the bytes that should be returned.",
+        "Execute the path that calls the dependency.",
+        "Assert the protocol behavior under the mocked response.",
+    ],
+    audit="Useful for isolating an oracle or integration assumption while developing a hypothesis; replace the mock with a realistic fork/integration path for exploit proof.",
+    gotchas="A mock proves your code responds to the mocked behavior. It does not prove that a real attacker can make the real dependency return that value.",
+)
+
+add(
+    "vm-hoax", ["hoax", "startHoax"], "FOUNDRY CHEATCODES",
+    "A forge-std helper that combines funding and caller impersonation for a test actor.",
+    "Give the actor ETH and put their caller-ID on in one helper.",
+    """hoax(alice, 10 ether);
+target.deposit{value: 1 ether}();""",
+    """hoax(alice, 10 ether);
+target.deposit{value: 1 ether}();
+
+stopHoax();""",
+    [
+        "Choose the test actor.",
+        "hoax gives the actor test ETH and starts the prank/caller context.",
+        "Perform the target calls.",
+        "Use stopHoax() when the persistent caller context is finished.",
+    ],
+    gotchas="This is a Foundry testing helper, not a Solidity language feature or a real permission-escalation primitive.",
 )
 
 
