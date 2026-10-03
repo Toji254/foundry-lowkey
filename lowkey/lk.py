@@ -5508,7 +5508,14 @@ def _lab_source_integrity_issue(root):
     return None
 
 
-def _validate_project_lab_target(config, root, rpc, target, requested=None):
+def _validate_project_lab_target(
+    config,
+    root,
+    rpc,
+    target,
+    requested=None,
+    provenance_script=None,
+):
     """Require a live lab target to resolve to a first-party application artifact."""
     if not is_address(target):
         return None, None, "deployment output did not contain a valid contract address"
@@ -5552,28 +5559,54 @@ def _validate_project_lab_target(config, root, rpc, target, requested=None):
     if implementation and implementation.lower() != target.lower():
         candidate_addresses.insert(0, implementation)
 
-    # First use the native broadcast manifest as deployment provenance. This is
-    # especially important for proxy/immutable deployments where raw runtime
-    # bytecode may differ from the compiler artifact representation even though
-    # the deployment is unambiguously the project's own current run.
+    # Use deployments from the script Lowkey just executed before considering
+    # any other broadcast run. This avoids a newer unrelated deployment from
+    # shadowing a valid current lab deployment.
     try:
         deployments = discover_deployments(str(root_path))
     except Exception:
         deployments = []
 
-    latest_timestamp = max(
-        (
-            int(item.get("run_timestamp") or 0)
-            for item in deployments
+    scoped = []
+    if provenance_script:
+        try:
+            script_path = Path(provenance_script).expanduser().resolve()
+            script_relative = script_path.relative_to(root_path).as_posix()
+            broadcast_root = (root_path / "broadcast" / script_relative).resolve()
+            for item in deployments:
+                if not isinstance(item, dict):
+                    continue
+                item_file = item.get("file")
+                if not item_file:
+                    continue
+                try:
+                    Path(item_file).expanduser().resolve().relative_to(broadcast_root)
+                except (OSError, ValueError):
+                    continue
+                scoped.append(item)
+        except (OSError, ValueError):
+            scoped = []
+
+    if scoped:
+        provenance_records = scoped
+    else:
+        latest_timestamp = max(
+            (
+                int(item.get("run_timestamp") or 0)
+                for item in deployments
+                if isinstance(item, dict)
+            ),
+            default=0,
+        )
+        provenance_records = [
+            item for item in deployments
             if isinstance(item, dict)
-        ),
-        default=0,
-    )
-    latest = [
-        item for item in deployments
-        if isinstance(item, dict)
-        and (int(item.get("run_timestamp") or 0) == latest_timestamp if latest_timestamp else True)
-    ] if deployments else []
+            and (
+                int(item.get("run_timestamp") or 0) == latest_timestamp
+                if latest_timestamp
+                else True
+            )
+        ] if deployments else []
 
     application_artifacts = []
     for artifact_path in local_artifact_paths(str(root_path)):
@@ -5591,7 +5624,7 @@ def _validate_project_lab_target(config, root, rpc, target, requested=None):
 
     implementation_lower = implementation.lower() if implementation else None
 
-    for item in latest:
+    for item in provenance_records:
         deployed_address = str(item.get("address") or "").lower()
         contract_name = str(item.get("contract") or "").strip()
         if not implementation_lower or deployed_address != implementation_lower:
@@ -5774,7 +5807,12 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             effective_target = system_candidates[0][0]
 
     contract, artifact, target_error = _validate_project_lab_target(
-        config, root, rpc, effective_target, requested=requested
+        config,
+        root,
+        rpc,
+        effective_target,
+        requested=requested,
+        provenance_script=script,
     )
     if target_error:
         return fail(
