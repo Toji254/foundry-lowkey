@@ -31,7 +31,10 @@ _CONCEPT_ALIASES = {
     "enum": "enum",
     "enums": "enum",
     "bytes": "bytes",
+    "strings-bytes": "bytes",
+    "dynamic-bytes": "bytes",
     "bytes32": "bytes32",
+    "bytesn": "bytes32",
     "address": "address",
     "addresses": "address",
     "string": "string",
@@ -804,13 +807,42 @@ contract AbiHashLab {
 ]
 
 
+_COMPOSITE_ALIASES = {
+    "arrays-mappings": {"arrays", "mapping"},
+    "arrays-structs": {"arrays", "structs"},
+    "mapping-struct": {"mapping", "structs"},
+    "mapping-array-value": {"mapping", "arrays"},
+    "storage-memory-calldata": {"storage", "memory", "calldata"},
+    "receive-vs-fallback": {"receive", "fallback"},
+    "call-anatomy": {"call", "staticcall", "delegatecall"},
+    "strings-bytes": {"string", "bytes"},
+    "globals": {"msg.sender", "msg.value"},
+    "msg-block-tx": {"msg.sender", "msg.value"},
+    "msg.value-vs-balance": {"msg.value", "address"},
+    "mapping-types": {"mapping"},
+    "struct-types": {"structs"},
+}
+
+
 def canonicalize(name: str) -> str:
     key = _norm(name)
     return _CONCEPT_ALIASES.get(key, key)
 
 
+def expand_name(name: str):
+    key = _norm(name)
+    composite = _COMPOSITE_ALIASES.get(key)
+    if composite:
+        return set(composite)
+    return {canonicalize(key)}
+
+
 def find_connection(names):
-    requested = frozenset(canonicalize(name) for name in names if str(name).strip())
+    requested = set()
+    for name in names:
+        if str(name).strip():
+            requested.update(expand_name(name))
+    requested = frozenset(requested)
     if len(requested) < 2:
         return None
 
