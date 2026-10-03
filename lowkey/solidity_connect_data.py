@@ -8340,3 +8340,6 @@ function balanceOf(bytes calldata raw)
     "balanceOf(abi.encode(alice));",
 )
 
+
+# Recompute after FINAL CONNECTION AUDIT 2 so the exported snapshot includes all nodes.
+_FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
