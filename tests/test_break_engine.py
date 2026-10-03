@@ -5,6 +5,11 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "break_engine.py"
+PLAYBOOK = ROOT / "lowkey" / "break_playbook.py"
+
+playbook_spec = importlib.util.spec_from_file_location("lowkey_break_playbook", PLAYBOOK)
+playbook = importlib.util.module_from_spec(playbook_spec)
+playbook_spec.loader.exec_module(playbook)
 
 spec = importlib.util.spec_from_file_location("lowkey_break_engine", MODULE)
 break_engine = importlib.util.module_from_spec(spec)
@@ -48,6 +53,26 @@ class BreakEngineTests(unittest.TestCase):
             break_engine._score_function(claim)[0],
             break_engine._score_function(ordinary)[0],
         )
+
+    def test_parse_supports_short_pattern_selector(self):
+        opts = break_engine._parse_args(["--pattern", "REENT-001"])
+        self.assertEqual(opts["pattern"], "REENT-001")
+
+    def test_public_finding_playbook_is_cross_language(self):
+        self.assertGreaterEqual(len(playbook.FINDING_PATTERNS), 30)
+        ids = {item.id for item in playbook.FINDING_PATTERNS}
+        self.assertIn("ORACLE-001", ids)
+        self.assertIn("VAULT-001", ids)
+        self.assertIn("BRIDGE-001", ids)
+        vyper = {"languages": {"vyper": 4}, "stacks": ["vyper"]}
+        self.assertEqual(playbook.backend_for_project(vyper), "evm")
+        patterns = playbook.patterns_for(project=vyper, function_name="deposit", source_text="raw_call")
+        self.assertTrue(any(item.id == "REENT-001" for item in patterns))
+
+    def test_native_backend_selection_does_not_assume_anvil(self):
+        self.assertEqual(playbook.backend_for_project({"languages": {"cairo": 4}, "stacks": ["cairo-starknet"]}), "cairo-starknet")
+        self.assertEqual(playbook.backend_for_project({"languages": {"move": 2}, "stacks": ["move"]}), "move")
+        self.assertEqual(playbook.backend_for_project({"languages": {"rust": 8}, "stacks": ["solana-anchor"]}), "solana-anchor")
 
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
