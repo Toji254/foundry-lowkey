@@ -8831,17 +8831,23 @@ def _render_scene_compact(scene, number, walkthrough=False):
 
 def render_connection_pack(requested, scenes, walkthrough=False):
     """Render a multi-scene connection without changing single-scene output."""
-    computed_route = connection_route(requested)
     explicit_routes = [
         scene.get("route")
         for scene in scenes
         if scene.get("route")
     ]
-    route = explicit_routes[0] if len(scenes) == 1 and explicit_routes else computed_route
     print()
     print("CONNECTION ROUTE")
     print("----------------")
-    print("  " + " → ".join(route))
+    if len(scenes) == 1 and explicit_routes:
+        print("  " + " → ".join(explicit_routes[0]))
+    else:
+        for index, scene in enumerate(scenes, 1):
+            route = scene.get("route")
+            if route:
+                print(f"  {index}. " + " → ".join(route))
+            else:
+                print(f"  {index}. {scene.get('title', 'connected bridge')}")
 
     print()
     print("THE CONNECTION")
