@@ -2070,6 +2070,9 @@ _SEMANTIC_ALIASES = {
     "cheatcodes": "forge-cheatcodes",
     "expectrevert": "vm-expect-revert",
     "expectemit": "vm-expect-emit",
+    "cheatcodes": "forge-cheatcodes",
+    "expectrevert": "vm-expect-revert",
+    "expectemit": "vm-expect-emit",
 }
 
 
@@ -4946,6 +4949,9 @@ _FINAL_TINY_EDGES = [
     ("vm-roll", "block.number", "roll controls block number in tests"),
     ("vm-expect-revert", "errors", "tests can match custom-error/revert behavior"),
     ("vm-expect-emit", "event-indexed", "event assertions can inspect indexed topics"),
+    ("error-data", "errors", "custom-error failures cross the boundary as raw error bytes"),
+    ("error-data", "returndata", "low-level failure paths expose error bytes as returndata"),
+    ("error-data", "abi.decode", "error arguments can be decoded from the raw payload"),
     ("vm-recordlogs", "events", "recordLogs exposes emitted logs to tests"),
     ("vm-expect-call", "abi.encodeCall", "expected calls can be specified with typed ABI encoding"),
     ("vm-mockcall", "returndata", "mocked call return bytes flow into the caller"),
