@@ -116,6 +116,95 @@ class SolidityCheatsheetTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertIn(token, output)
 
+    def test_learning_extensions_cover_loops_globals_types_and_calldata(self):
+        for topic in (
+            "for",
+            "while",
+            "do-while",
+            "for-each",
+            "loop-comparison",
+            "globals",
+            "globals-map",
+            "mapping-types",
+            "struct-types",
+            "types-table",
+            "calldata-deep",
+            "call-data-layout",
+            "terminology",
+            "ternary-deep",
+            "parameter-vs-argument",
+        ):
+            result, output = self.render(topic)
+            self.assertEqual(result, 0)
+            self.assertIn("STEP BY STEP", output)
+
+    def test_topic_view_menu_and_contract_mode(self):
+        result, output = self.render("for")
+        self.assertEqual(result, 0)
+        self.assertIn("NEXT VIEW", output)
+        self.assertIn("1  Contract Lab", output)
+        self.assertIn("2  Walkthrough", output)
+        self.assertIn("3  Term Decoder", output)
+        self.assertIn("4  Audit Lens", output)
+
+        result, output = self.render("for", "1")
+        self.assertEqual(result, 0)
+        self.assertIn("LOWKEY // CONTRACT LAB", output)
+        self.assertIn("contract ForExample", output)
+        self.assertIn("numbers.push(i)", output)
+
+    def test_topic_detail_modes_are_selectable(self):
+        for option, marker in (
+            ("2", "LOWKEY // WALKTHROUGH"),
+            ("3", "LOWKEY // TERM DECODER"),
+            ("4", "LOWKEY // AUDIT LENS"),
+        ):
+            result, output = self.render("ternary", option)
+            self.assertEqual(result, 0)
+            self.assertIn(marker, output)
+
+    def test_global_values_explain_call_context(self):
+        result, output = self.render("globals")
+        self.assertEqual(result, 0)
+        for token in (
+            "msg.sender",
+            "msg.value",
+            "msg.data",
+            "msg.sig",
+            "block.timestamp",
+            "tx.origin",
+            "address(this).balance",
+        ):
+            self.assertIn(token, output)
+        self.assertIn("address(this).amount is not a Solidity global", output)
+
+    def test_mapping_and_struct_tables_explain_key_and_value(self):
+        result, output = self.render("mapping-types")
+        self.assertEqual(result, 0)
+        self.assertIn("balances[msg.sender]", output)
+        self.assertIn("key", output.lower())
+        self.assertIn("value", output.lower())
+
+        result, output = self.render("struct-types")
+        self.assertEqual(result, 0)
+        self.assertIn("field type", output.lower())
+        self.assertIn("actual value", output.lower())
+        self.assertIn("amount: amount", output)
+
+    def test_calldata_and_receive_fallback_are_connected(self):
+        result, output = self.render("calldata-deep")
+        self.assertEqual(result, 0)
+        self.assertIn("raw byte payload", output)
+        self.assertIn("first four bytes", output)
+        self.assertIn("msg.data", output)
+        self.assertIn("string calldata", output)
+
+        result, output = self.render("receive-vs-fallback")
+        self.assertEqual(result, 0)
+        self.assertIn("Empty calldata", output)
+        self.assertIn("fallback", output)
+        self.assertIn("msg.data", output)
+
     def test_unknown_topic_is_helpful(self):
         result, output = self.render("recieve")
         self.assertEqual(result, 2)
