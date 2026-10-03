@@ -1481,16 +1481,58 @@ def _merge_protocol_observations(
     config: dict[str, Any] | None = None,
     runtime: list[RuntimeContract] | None = None,
 ) -> dict[str, Any]:
-    """Merge live lab roles, aliases, and runtime contracts into one catalog."""
+    """Merge only project-owned live lab state into one catalog.
+
+    Config is global for backwards compatibility, so every persisted address
+    must carry project provenance before it is allowed into a walkthrough. A
+    stale address from another repository is worse than an omitted hint.
+    """
     merged: dict[str, Any] = dict(observed or {})
     config = config or {}
+    active_root = str(
+        config.get("_lowkey_active_project_root")
+        or config.get("_lab_system_root")
+        or ""
+    ).strip()
+    project_roots = config.get("project_roots") if isinstance(config.get("project_roots"), dict) else {}
+
+    def owned_here(value: Any, *, allow_unowned: bool = False) -> bool:
+        if not is_address(value):
+            return False
+        if not active_root:
+            return True
+        owner = project_roots.get(value)
+        if owner is None:
+            owner = project_roots.get(str(value).lower())
+        if owner is None:
+            return allow_unowned
+        try:
+            return str(Path(owner).resolve()) == str(Path(active_root).resolve())
+        except OSError:
+            return str(owner) == active_root
 
     for container_name in ("_walkthrough_observed", "lab_system", "aliases", "targets"):
         container = config.get(container_name)
         if not isinstance(container, dict):
             continue
+        if container_name == "lab_system":
+            system_root = str(
+                config.get("_lab_system_root")
+                or container.get("root_model")
+                or ""
+            ).strip()
+            if active_root and config.get("_lab_system_root"):
+                try:
+                    system_root = str(Path(str(config.get("_lab_system_root"))).resolve())
+                except OSError:
+                    pass
+            if active_root and system_root and system_root != str(Path(active_root).resolve()):
+                continue
         for key, value in container.items():
             if not is_address(value):
+                continue
+            allow_unowned = container_name == "lab_system" and not project_roots
+            if not owned_here(value, allow_unowned=allow_unowned):
                 continue
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
             merged[str(key)] = value
@@ -7694,6 +7736,10 @@ def _synthesize_generic_protocol_fixture(
     config["target"] = target
     config["target_contract"] = root_model.name
     config["_walkthrough_recipe"] = "generic-system"
+    config["_lab_system_root"] = str(Path(root).resolve())
+    for value in system.values():
+        if is_address(value):
+            config.setdefault("project_roots", {})[value] = str(Path(root).resolve())
     config["lab_system"] = {
         **{key: value for key, value in system.items() if is_address(value)},
         "root": target,
@@ -7775,6 +7821,8 @@ def _synthesize_local_protocol_fixture(
         config["target"] = target
         config["target_contract"] = root_model.name
         config.setdefault("abi_paths", {})[target] = str(entry[0])
+        config["_lab_system_root"] = str(Path(root).resolve())
+        config.setdefault("project_roots", {})[target] = str(Path(root).resolve())
         config["lab_system"] = {
             "root": target,
             "target": target,
@@ -7855,7 +7903,20 @@ def _target_from_host(
             if adapter and not system_ready and hasattr(host, "run_lab"):
                 code = host.run_lab(config, [])
                 if code != 0:
-                    system_ready = _system_has_live_core(config, rpc)
+                    # A project-native lab is the authoritative setup when one
+                    # exists. Never reinterpret a failed native build/deployment
+                    # as permission to synthesize from stale artifacts.
+                    return None, None
+                system_ready = _system_has_live_core(config, rpc)
+
+            # Auto synthesis is allowed only after a successful current-project
+            # native build. Otherwise old artifacts can masquerade as live source.
+            if not system_ready and hasattr(host, "_run_project_build"):
+                try:
+                    if host._run_project_build(config, root) != 0:
+                        return None, None
+                except Exception:
+                    return None, None
 
             if not system_ready:
                 synthesized, synthesis_reason = _synthesize_local_protocol_fixture(
@@ -9191,6 +9252,7 @@ def run(config: dict[str, Any], args: list[str] | None = None, host: Any | None 
                     # protocol system so the next live/test operation can use them.
                     lab = config.get("lab_system")
                     if isinstance(lab, dict):
+                        config["_lab_system_root"] = str(Path(root).resolve())
                         for node in discovered:
                             child_model = str(lab.get("child_model") or "").strip().lower()
                             if (
