@@ -11645,8 +11645,6 @@ def main():
 
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
-        print_help()
-        return
 
     runtime = runtime_sync_status()
     runtime_safe_commands = {
