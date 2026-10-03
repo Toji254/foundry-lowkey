@@ -1642,7 +1642,8 @@ def run(config, args=None, host=None):
         for item in FINDING_PATTERNS:
             print(f"  {item.id:<12} [{item.family}] {item.title}")
             print(f"               LOGIC: {item.logic}")
-        print(f"\\nTotal: {len(FINDING_PATTERNS)} recurring logic patterns")
+        print()
+        print(f"Total: {len(FINDING_PATTERNS)} recurring logic patterns")
         return 0
 
     project_info = _project_break_context(host)
