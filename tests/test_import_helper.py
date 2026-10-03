@@ -124,8 +124,13 @@ class ImportHelperTests(unittest.TestCase):
                 result = helper.run_category("Ownable", root, helper.remappings(root))
             rendered = out.getvalue()
             self.assertEqual(result, 0)
-            self.assertIn("NAME:   Ownable", rendered)
-            self.assertIn("IMPORT: import {Ownable} from", rendered)
+            self.assertIn("NAME:       Ownable", rendered)
+            self.assertIn("IMPORT:     import {Ownable} from", rendered)
+            self.assertIn("PACKAGE:    OpenZeppelin Contracts", rendered)
+            self.assertIn("FORGE:      forge install OpenZeppelin/openzeppelin-contracts", rendered)
+            self.assertIn("HOW:", rendered)
+            self.assertIn("USE CASES:", rendered)
+            self.assertIn("AUDIT LENS:", rendered)
         finally:
             tmp.cleanup()
 
@@ -220,6 +225,83 @@ class ImportHelperTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertIn("Did you mean:", rendered)
         self.assertIn("Ownable", rendered)
+
+    def test_known_reference_is_available_without_dependency_installed(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = helper.run_category("ERC721", root, helper.remappings(root))
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn("NAME:       ERC721", rendered)
+            self.assertIn("SOURCE:     (reference only — dependency not installed)", rendered)
+            self.assertIn("FORGE:      forge install OpenZeppelin/openzeppelin-contracts", rendered)
+            self.assertIn('import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";', rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_install_guidance_for_known_symbol(self):
+        tmp, root = self.project()
+        try:
+            symbol = helper.reference_symbol("ERC721", root)
+            self.assertIsNotNone(symbol)
+            package, command = helper.install_guidance(symbol, root)
+            self.assertEqual(package, "OpenZeppelin Contracts")
+            self.assertEqual(command, "forge install OpenZeppelin/openzeppelin-contracts")
+        finally:
+            tmp.cleanup()
+
+    def test_forge_repo_slug_from_git_remote(self):
+        self.assertEqual(
+            helper.forge_repo_slug("https://github.com/smartcontractkit/chainlink-evm.git"),
+            "smartcontractkit/chainlink-evm",
+        )
+        self.assertEqual(
+            helper.forge_repo_slug("git@github.com:OpenZeppelin/openzeppelin-contracts.git"),
+            "OpenZeppelin/openzeppelin-contracts",
+        )
+
+    def test_install_symbols_runs_verified_forge_command(self):
+        tmp, root = self.project()
+        try:
+            symbol = helper.reference_symbol("ERC721", root)
+            completed = type("Result", (), {"returncode": 0})()
+            with patch("lowkey_import_helper.subprocess.run", return_value=completed) as mocked:
+                result = helper.install_symbols([symbol], root)
+            self.assertEqual(result, 0)
+            mocked.assert_called_once_with(
+                ["forge", "install", "OpenZeppelin/openzeppelin-contracts"],
+                cwd=root,
+                text=True,
+            )
+        finally:
+            tmp.cleanup()
+
+    def test_install_mode_is_explicit_and_uses_common_reference(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            completed = type("Result", (), {"returncode": 0})()
+            with patch("lowkey_import_helper.subprocess.run", return_value=completed):
+                with contextlib.redirect_stdout(out):
+                    result = helper.run_category("--install ERC721", root, helper.remappings(root))
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn("FOUNDRY INSTALL", rendered)
+            self.assertIn("forge install OpenZeppelin/openzeppelin-contracts", rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_common_reference_lists_install_metadata(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = helper.run_category("common", Path.cwd(), [])
+        rendered = out.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("ERC721", rendered)
+        self.assertIn("OpenZeppelin Contracts", rendered)
+        self.assertIn("smartcontractkit/chainlink-evm", rendered)
 
 
 if __name__ == "__main__":
