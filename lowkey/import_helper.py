@@ -1132,6 +1132,35 @@ def search_imports(query: str, root: Path, maps) -> int:
     return 0
 
 
+
+def print_import_graph(s: Symbol, root: Path, maps) -> int:
+    print(f"\nIMPORT GRAPH • {s.name}")
+    print("=" * 76)
+    print(f"ROOT: {s.name} [{kind_label(s)}]")
+    print(f"SOURCE: {source_location(s)}")
+    print(f"IMPORT: {s.import_path}")
+    imports = direct_imports(s.source)
+    if imports:
+        print("DIRECT DEPENDENCIES:")
+        for item in imports:
+            print(f"  └─ {item}")
+    else:
+        print("DIRECT DEPENDENCIES: none detected")
+    related = related_symbols(s, root, maps)
+    if related:
+        print("RELATED LEARNING NODES:")
+        for item in related:
+            print(f"  └─ {item.name} [{kind_label(item)}] → {item.import_path}")
+    uses = project_usage(s, root)
+    if uses:
+        print("APPLICATION EDGES:")
+        for path, line, text in uses[:12]:
+            print(f"  └─ {path.resolve()}:{line}  {text}")
+    else:
+        print("APPLICATION EDGES: no project-source references detected")
+    return 0
+
+
 def package_prefix(package: Path, maps: list[tuple[str, Path]]) -> str | None:
     candidates = []
     package = package.resolve()
@@ -1748,6 +1777,8 @@ def run_learning_command(category: str, root: Path, maps, json_mode: bool = Fals
             return 2
         if command == "related":
             return print_related(symbol, root, maps)
+        if command == "graph":
+            return print_import_graph(symbol, root, maps)
         if command == "usage":
             if json_mode:
                 data = symbol_record(symbol, root, maps)
