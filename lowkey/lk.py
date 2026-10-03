@@ -5626,11 +5626,14 @@ def _validate_project_lab_target(
         application_artifacts.append((artifact_name, artifact_path, deployed))
 
     implementation_lower = implementation.lower() if implementation else None
+    # For a direct deployment the target itself is the deployment identity.
+    # For an ERC-1967 target the implementation is the deployment identity.
+    provenance_address = implementation_lower or target.lower()
 
     for item in provenance_records:
         deployed_address = str(item.get("address") or "").lower()
         contract_name = str(item.get("contract") or "").strip()
-        if not implementation_lower or deployed_address != implementation_lower:
+        if deployed_address != provenance_address:
             continue
         for artifact_name, artifact_path, _ in application_artifacts:
             if artifact_name.strip().lower() == contract_name.lower():
@@ -5813,7 +5816,13 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             config.setdefault("project_roots", {})[address] = str(Path(root).resolve())
 
     # Resolve the effective live target exclusively against this project's artifacts.
-    if requested and system:
+    # An explicit contract argument may override a native harness target.
+    # In automatic mode, however, LOWKEY_TARGET is the harness author's
+    # declared protocol root and must take precedence over Lowkey's heuristic
+    # "most interesting contract" discovery. Otherwise a system harness that
+    # deliberately exposes a factory proxy can be silently replaced by a pool.
+    explicit_requested = bool(args) and mode == "auto" and str(args[0]).strip().lower() not in {"", "auto"}
+    if requested and system and explicit_requested:
         requested_lower = str(requested).strip().lower()
         system_candidates = []
         for alias, address in system.items():
