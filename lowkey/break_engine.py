@@ -1004,8 +1004,8 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     signature = _format_signature(fn, host)
     name = _function_name(signature)
     modes = ["normal", "one", "zero", "max"]
-    mode = modes[rng.randrange(len(modes))]
-    values = _make_value(host, fn, rng, mode)
+    mode = "one" if family in {"reentrancy", "replay", "accounting"} else modes[rng.randrange(len(modes))]
+    values = _make_value(host, fn, rng, mode, config)
     calldata, error = _encode_call(host, config, target, fn, values)
     if not calldata:
         return AttackResult(
