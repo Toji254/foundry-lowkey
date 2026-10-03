@@ -9279,3 +9279,316 @@ function read(address user_)
     ],
     "read(alice);",
 )
+
+# FINAL PRODUCTION-PATTERN COVERAGE
+_SEMANTIC_ALIASES.update({
+    "erc4626": "erc4626-pattern",
+    "erc4626-pattern": "erc4626-pattern",
+    "vault": "erc4626-pattern",
+    "erc1271": "erc1271",
+    "contract-signature": "erc1271",
+    "erc1967": "erc1967-storage",
+    "erc1967-storage": "erc1967-storage",
+    "implementation-slot": "erc1967-storage",
+    "multicall": "multicall",
+    "batch-call": "multicall",
+    "flashloan": "flashloan-pattern",
+    "flash-loan": "flashloan-pattern",
+    "flashloan-pattern": "flashloan-pattern",
+    "permit2": "permit2-pattern",
+    "permit2-pattern": "permit2-pattern",
+    "callback": "callback",
+    "hook": "hook",
+    "hooks": "hook",
+    "no-delegate-call": "no-delegatecall",
+    "no-delegatecall": "no-delegatecall",
+})
+_EXTRA_MEANINGS.update({
+    "erc4626-pattern": "Tokenized-vault accounting: underlying assets are exchanged for ERC-20-like shares, with conversion/preview and slippage assumptions.",
+    "erc1271": "Contract-based signature validation through isValidSignature(bytes32,bytes), rather than assuming the signer is an EOA.",
+    "erc1967-storage": "A proxy storage convention that places implementation/admin/beacon addresses in deterministic special slots.",
+    "multicall": "Batch multiple calls in one transaction, commonly using bytes[] calldata and delegatecall.",
+    "flashloan-pattern": "Temporary liquidity sent out and required to be returned, usually enforced by a callback and repayment invariant in one transaction.",
+    "permit2-pattern": "Signature/allowance transfer infrastructure combining token approvals, nonces, deadlines, and transfer authorization.",
+    "callback": "An external call into a caller-supplied contract that lets the callee continue the workflow through a callback function.",
+    "hook": "An externally supplied extension point called at a protocol lifecycle boundary.",
+    "no-delegatecall": "A guard that prevents execution through delegatecall, often used where storage/context must remain tied to the deployed instance.",
+})
+_EXTRA_CONCEPTS.update({
+    "erc4626-pattern", "erc1271", "erc1967-storage", "multicall",
+    "flashloan-pattern", "permit2-pattern", "callback", "hook",
+    "no-delegatecall",
+})
+
+_COMPREHENSIVE_MICRO_SCENES.extend([
+    _scene(
+        ["erc4626-pattern", "interface", "mapping", "structs", "arrays", "math", "events", "front-running"],
+        "ERC4626: assets ↔ shares → conversion → slippage",
+        "A tokenized vault maps users to shares while the vault holds underlying assets. Deposits and redemptions depend on the current asset/share ratio, so the empty-vault and donation/inflation cases matter.",
+        """
+mapping(address => uint256) public shares;
+uint256 public totalShares;
+uint256 public totalAssets;
+
+function convertToShares(uint256 assets)
+    public
+    view
+    returns (uint256)
+{
+    if (totalShares == 0) return assets;
+    return assets * totalShares / totalAssets;
+}
+
+function deposit(uint256 assets, address receiver)
+    external
+    returns (uint256 minted)
+{
+    minted = convertToShares(assets);
+    totalAssets += assets;
+    totalShares += minted;
+    shares[receiver] += minted;
+}
+""",
+        [
+            ("state", "mapping(address => uint256)", "shares", "shares[alice]", "Receiver's vault-share balance."),
+            ("state", "uint256", "totalAssets", "10_000", "Underlying asset accounting."),
+            ("state", "uint256", "totalShares", "5_000", "Share supply used for conversion."),
+            ("parameter", "uint256", "assets", "100", "Assets being deposited."),
+            ("parameter", "address", "receiver", "0xAlice", "Account receiving shares."),
+            ("derived", "uint256", "minted", "50", "Shares produced by the current exchange ratio."),
+        ],
+        [
+            "The vault starts with an asset/share ratio.",
+            "convertToShares derives the share amount from totalAssets and totalShares.",
+            "The receiver's mapped share balance increases.",
+            "totalAssets and totalShares move together, preserving the accounting model.",
+            "An empty or manipulated vault can make this ratio a security/slippage boundary.",
+        ],
+        "deposit(100, alice);",
+    ),
+    _scene(
+        ["erc1271", "interface", "bytes32", "bytes", "signature-verification", "ecrecover"],
+        "Contract wallet → signature validation interface",
+        "A contract signer cannot be treated like an EOA with ecrecover alone. The protocol can ask the contract wallet whether a hash/signature pair is valid.",
+        """
+interface IERC1271 {
+    function isValidSignature(
+        bytes32 hash,
+        bytes calldata signature
+    ) external view returns (bytes4 magicValue);
+}
+
+function check(
+    IERC1271 wallet,
+    bytes32 hash,
+    bytes calldata signature
+) external view returns (bool) {
+    return wallet.isValidSignature(hash, signature)
+        == IERC1271.isValidSignature.selector;
+}
+""",
+        [
+            ("interface", "IERC1271", "wallet", "0xSafe", "Contract signature authority."),
+            ("digest", "bytes32", "hash", "message digest", "Data being authorized."),
+            ("bytes", "bytes", "signature", "encoded signature", "Signature/certificate bytes."),
+            ("return", "bytes4", "magicValue", "isValidSignature.selector", "Validation result identifier."),
+        ],
+        [
+            "The message is represented by a bytes32 digest.",
+            "The signature is raw bytes whose structure belongs to the wallet.",
+            "The protocol crosses an interface boundary to ask the contract signer.",
+            "The magic value confirms validity instead of recovering an EOA address directly.",
+        ],
+        "check(wallet, hash, signature);",
+    ),
+    _scene(
+        ["erc1967-storage", "proxy-fallback", "delegatecall", "storage-layout", "address", "events", "keccak256"],
+        "ERC1967 slot → implementation → delegatecall",
+        "A proxy can keep its implementation address outside ordinary sequential storage, then delegate arbitrary calldata to that implementation while sharing the proxy's storage.",
+        """
+bytes32 internal constant IMPLEMENTATION_SLOT =
+    bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
+
+function implementation() external view returns (address impl) {
+    assembly {
+        impl := sload(IMPLEMENTATION_SLOT)
+    }
+}
+
+fallback() external payable {
+    (bool ok, bytes memory out) =
+        address(uint160(implementationAddress())).delegatecall(msg.data);
+    if (!ok) revert();
+    assembly { return(add(out, 32), mload(out)) }
+}
+""",
+        [
+            ("slot", "bytes32", "IMPLEMENTATION_SLOT", "hash-derived special slot", "Proxy implementation storage location."),
+            ("state", "address", "implementation", "0xImpl", "Code target."),
+            ("global", "bytes", "msg.data", "selector + args", "Caller payload."),
+            ("call", "delegatecall", "implementation", "same proxy storage", "Implementation execution context."),
+        ],
+        [
+            "The special slot is hash-derived rather than ordinary slot 0/1 state.",
+            "Fallback receives the original calldata.",
+            "delegatecall executes implementation code against proxy storage.",
+            "Changing the implementation therefore changes behavior without moving the proxy's state.",
+        ],
+        "proxy.setValue(100);",
+    ),
+    _scene(
+        ["multicall", "arrays", "calldata", "delegatecall", "returndata", "function-selector", "this-call", "msg.sender"],
+        "bytes[] batch → delegatecall self → returndata[]",
+        "A multicall turns many encoded calls into one transaction. delegatecall keeps the batch inside the same storage/context, which also makes sender/context assumptions important.",
+        """
+function multicall(bytes[] calldata data)
+    external
+    returns (bytes[] memory results)
+{
+    results = new bytes[](data.length);
+
+    for (uint256 i = 0; i < data.length; ++i) {
+        (bool ok, bytes memory out) =
+            address(this).delegatecall(data[i]);
+        if (!ok) revert();
+        results[i] = out;
+    }
+}
+""",
+        [
+            ("input", "bytes[] calldata", "data", "[call1, call2]", "Batch of encoded calls."),
+            ("index", "uint256", "i", "0 → length - 1", "Batch position."),
+            ("call", "delegatecall", "address(this)", "same storage/context", "Self-delegated subcall."),
+            ("return", "bytes[] memory", "results", "raw outputs", "Per-call return bytes."),
+        ],
+        [
+            "The outer call carries an array of raw calldata payloads.",
+            "Each bytes item identifies a normal function via its selector.",
+            "delegatecall runs each subcall against the current contract's storage/context.",
+            "Each raw return payload is collected into the results array.",
+            "Batching can bypass assumptions made only at the outer transaction boundary.",
+        ],
+        "multicall([abi.encodeWithSignature(\"set(uint256)\", 1), ...]);",
+    ),
+    _scene(
+        ["flashloan-pattern", "interface", "callback", "call", "mapping", "checks-effects-interactions", "reentrancy", "events"],
+        "Flash loan → callback → repayment invariant",
+        "A flash-loan provider transfers temporary liquidity, calls a receiver, then checks that principal plus fee has returned before the transaction can succeed.",
+        """
+interface IFlashReceiver {
+    function executeOperation(
+        address asset,
+        uint256 amount,
+        uint256 fee,
+        bytes calldata params
+    ) external returns (bool);
+}
+
+function flashLoan(
+    IFlashReceiver receiver,
+    address token,
+    uint256 amount,
+    uint256 fee
+) external {
+    IERC20(token).transfer(address(receiver), amount);
+    receiver.executeOperation(token, amount, fee, "");
+    require(IERC20(token).balanceOf(address(this)) >= amount + fee);
+}
+""",
+        [
+            ("target", "IFlashReceiver", "receiver", "0xArb", "Callback recipient."),
+            ("token", "address", "token", "0xToken", "Borrowed asset contract."),
+            ("value", "uint256", "amount", "1_000", "Temporary liquidity."),
+            ("value", "uint256", "fee", "3", "Repayment fee."),
+        ],
+        [
+            "The provider sends assets before calling the receiver.",
+            "The receiver callback executes arbitrary strategy code inside the same transaction.",
+            "The provider resumes after the callback returns.",
+            "The repayment invariant requires principal plus fee to be present.",
+        ],
+        "flashLoan(receiver, token, 1000, 3);",
+    ),
+    _scene(
+        ["permit2-pattern", "mapping", "nested-mapping", "nonce", "signature-verification", "keccak256", "abi.encode", "block.timestamp", "bytes"],
+        "Permit2-style authorization → nonce/allowance → transfer",
+        "Signature-based token transfer infrastructure combines mapped permissions, a nonce, an expiry, typed hashing, and raw signature bytes before changing token state.",
+        """
+mapping(address => mapping(address => uint256)) public allowance;
+mapping(address => uint256) public nonces;
+
+function digest(
+    address owner,
+    address spender,
+    uint256 amount,
+    uint256 deadline
+) public view returns (bytes32) {
+    return keccak256(
+        abi.encode(owner, spender, amount, nonces[owner], deadline)
+    );
+}
+
+function consume(
+    address owner,
+    address spender,
+    uint256 amount,
+    uint256 deadline,
+    bytes calldata signature
+) external {
+    require(block.timestamp <= deadline);
+    bytes32 hash = digest(owner, spender, amount, deadline);
+    // verify(hash, signature);
+    nonces[owner]++;
+    allowance[owner][spender] = amount;
+}
+""",
+        [
+            ("state", "mapping(address => mapping(address => uint256))", "allowance", "allowance[owner][spender]", "Delegated token permission."),
+            ("state", "mapping(address => uint256)", "nonces", "nonces[owner]", "Replay protection."),
+            ("parameter", "uint256", "deadline", "now + 1 hour", "Expiry boundary."),
+            ("parameter", "bytes calldata", "signature", "signature bytes", "Authorization proof."),
+            ("derived", "bytes32", "hash", "keccak256(abi.encode(...))", "Signed digest."),
+        ],
+        [
+            "The owner/spender pair selects allowance state through two mapping keys.",
+            "The nonce becomes part of the signed digest.",
+            "The deadline limits when the authorization can be consumed.",
+            "Signature verification binds the digest to the authorized signer.",
+            "Consuming the authorization increments the nonce before reuse is possible.",
+        ],
+        'consume(alice, bob, 100, deadline, signature);',
+    ),
+    _scene(
+        ["hook", "callback", "interface", "external-call", "msg.sender", "mapping", "events", "reentrancy"],
+        "Protocol hook → external callback → state boundary",
+        "Hook systems deliberately call user-supplied code at protocol lifecycle points. The hook address, caller identity, state ordering, and callback re-entry path all become part of the design.",
+        """
+interface IHook {
+    function beforeAction(bytes32 id, address caller) external;
+}
+
+mapping(bytes32 => uint256) public value;
+
+function action(bytes32 id_, uint256 amount_, IHook hook_) external {
+    hook_.beforeAction(id_, msg.sender);
+    value[id_] += amount_;
+    emit Action(id_, amount_);
+}
+
+event Action(bytes32 indexed id, uint256 amount);
+""",
+        [
+            ("interface", "IHook", "hook_", "0xHook", "User-supplied extension point."),
+            ("global", "address", "msg.sender", "0xAlice", "Original caller for this frame."),
+            ("state", "mapping(bytes32 => uint256)", "value", "value[id_]", "Protocol state."),
+            ("event", "Action", "id_", "bytes32", "Observable state transition."),
+        ],
+        [
+            "The caller supplies a hook contract through an interface.",
+            "The protocol calls the hook before changing its own state.",
+            "The hook is an external callback boundary and can attempt re-entry.",
+            "State ordering therefore determines whether stale state can be observed or exploited.",
+        ],
+        "action(bytes32(\"POOL\"), 100, hook);",
+    ),
+])
