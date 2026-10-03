@@ -4169,12 +4169,15 @@ _EXTRA_MEANINGS.update({
     "this": "The current contract as a contract-typed value; using this.f() performs an external call to the current address.",
     "super": "A contract-typed reference used to call the next implementation in the inheritance hierarchy.",
     "nonce": "A unique counter commonly used to make signed messages or state transitions single-use and prevent replay.",
+    "compound-assignment": "An assignment operator such as += or -= that combines an operation with writing the result back.",
+    "tload": "EVM/Yul operation that reads a word from transaction-scoped transient storage.",
+    "tstore": "EVM/Yul operation that writes a word to transaction-scoped transient storage.",
 })
 
 _EXTRA_CONCEPTS.update({
-    "assignment", "abi.encodeCall", "sha256", "ripemd160", "ecrecover",
+    "assignment", "compound-assignment", "abi.encodeCall", "sha256", "ripemd160", "ecrecover",
     "addmod", "mulmod", "bytes.concat", "string.concat", "selfdestruct",
-    "this", "super", "nonce", "erc7201",
+    "this", "super", "nonce", "erc7201", "tload", "tstore",
 })
 
 
