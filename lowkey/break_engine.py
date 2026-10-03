@@ -1233,14 +1233,16 @@ contract LowkeyBreakReentrant {{
     }}
 
     function seed(bytes calldata data) external payable {{
-        (bool ok, ) = target.call{{value: msg.value}}(data);
-        require(ok, "seed call reverted");
+        (bool ok, bytes memory returndata) = target.call{{value: msg.value}}(data);
+        emit TargetCall("SEED", ok, returndata);
     }}
 
     function attack() external payable {{
-        (bool ok, ) = target.call{{value: msg.value}}(payload);
-        require(ok, "outer attack reverted");
+        (bool ok, bytes memory returndata) = target.call{{value: msg.value}}(payload);
+        emit TargetCall("OUTER", ok, returndata);
     }}
+
+    event TargetCall(string phase, bool success, bytes returndata);
 
     receive() external payable {{
         _reenter();
