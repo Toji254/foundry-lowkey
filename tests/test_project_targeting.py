@@ -624,6 +624,37 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertEqual(contract, "ConfidencePoolFactory")
             self.assertEqual(resolved_artifact, str(artifact))
 
+    def test_artifact_without_source_metadata_rejects_same_name_from_poc_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePoolFactory.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePoolFactory {}",
+                encoding="utf-8",
+            )
+
+            poc_artifact = root / "out" / "PocAttack.sol" / "ConfidencePoolFactory.json"
+            poc_artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact = {
+                "contractName": "ConfidencePoolFactory",
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+                "abi": [],
+            }
+            poc_artifact.write_text(json.dumps(artifact), encoding="utf-8")
+
+            real_artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            real_artifact.parent.mkdir(parents=True, exist_ok=True)
+            real_artifact.write_text(json.dumps(artifact), encoding="utf-8")
+
+            self.assertFalse(
+                lk.artifact_is_project_application(root, str(poc_artifact), artifact)
+            )
+            self.assertTrue(
+                lk.artifact_is_project_application(root, str(real_artifact), artifact)
+            )
+
     def test_project_lab_rejects_unmatched_broadcast_deployment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
