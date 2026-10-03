@@ -421,6 +421,163 @@ class SolidityConnectTests(unittest.TestCase):
             self.assertTrue(is_known_concept(term), term)
 
 
+
+    def test_final_reference_crosscheck_matrix(self):
+        # These are deliberately tiny connections that are easy to lose when
+        # expanding the graph. Every one must have a path and a focused scene.
+        required_pairs = [
+            ("mapping", "abi.decode"),
+            ("mapping", "keccak256"),
+            ("abi.encode", "abi.decode"),
+            ("function-signature", "function-selector"),
+            ("function-selector", "msg.sig"),
+            ("function-selector", "msg.data"),
+            ("function-selector", "abi.encodeWithSelector"),
+            ("function-signature", "abi.encodeWithSignature"),
+            ("abi.encodeCall", "interface"),
+            ("call", "returndata"),
+            ("returndata", "abi.decode"),
+            ("errors", "returndata"),
+            ("event-indexed", "keccak256"),
+            ("public-getter", "mapping"),
+            ("struct-abi", "tuples"),
+            ("struct-abi", "abi.decode"),
+            ("receiver-hook", "reentrancy"),
+            ("erc1271", "signature-verification"),
+            ("erc20-pattern", "token-approval"),
+            ("erc20-pattern", "mapping"),
+            ("erc721-pattern", "receiver-hook"),
+            ("erc1155-pattern", "batch-transfer"),
+            ("permit-pattern", "nonce"),
+            ("eip712-pattern", "block.chainid"),
+            ("multisig-pattern", "threshold"),
+            ("multisig-pattern", "call"),
+            ("timelock-pattern", "block.timestamp"),
+            ("governor-pattern", "arrays"),
+            ("proxy-upgrade-pattern", "erc1967-storage"),
+            ("erc1967-storage", "storage-slot"),
+            ("delegatecall", "storage-layout"),
+            ("create2", "init-code"),
+            ("init-code", "runtime-code"),
+            ("address.code", "extcodesize"),
+            ("address.codehash", "extcodehash"),
+            ("caller", "msg.sender"),
+            ("callvalue", "msg.value"),
+            ("mload", "memory"),
+            ("sload", "storage-slot"),
+            ("tload", "transient-storage"),
+            ("tstore", "reentrancy"),
+            ("vm-prank", "msg.sender"),
+            ("vm-deal", "contract-balance"),
+            ("vm-load", "mapping-slots"),
+            ("vm-store", "mapping-slots"),
+            ("vm-etch", "address.code"),
+        ]
+
+        for left, right in required_pairs:
+            with self.subTest(left=left, right=right):
+                self.assertTrue(
+                    solidity_cheatsheet.connection_paths([left, right]),
+                    f"No graph route for {left} -> {right}",
+                )
+                self.assertIsNotNone(
+                    solidity_cheatsheet.find_micro_scene([left, right]),
+                    f"No teaching scene for {left} + {right}",
+                )
+
+    def test_deep_research_aliases_are_known(self):
+        aliases = [
+            "abi.encodeWithSelector",
+            "abi.encodeWithSignature",
+            "abi.encodeCall",
+            "function-overloading",
+            "parameter-vs-argument",
+            "event-indexed",
+            "public-getter",
+            "struct-abi",
+            "receiver-hook",
+            "erc1271",
+            "erc20",
+            "erc721",
+            "erc1155",
+            "permit",
+            "eip712",
+            "multisig",
+            "timelock",
+            "governor",
+            "uups",
+            "erc1967",
+            "storage-slot",
+            "create2",
+            "init-code",
+            "runtime-code",
+            "address.code",
+            "address.codehash",
+            "block.chainid",
+            "blockhash",
+            "blobhash",
+            "selfbalance",
+            "caller",
+            "callvalue",
+            "mcopy",
+            "pc",
+            "msize",
+            "memoryguard",
+            "verbatim",
+            "datasize",
+            "dataoffset",
+            "datacopy",
+            "linkersymbol",
+            "tuples",
+            "named-arguments",
+            "call-options",
+        ]
+        unknown = [name for name in aliases if not solidity_cheatsheet.is_known_concept(name)]
+        self.assertEqual(unknown, [])
+
+    def test_every_recognized_pair_can_be_connected(self):
+        nodes = set()
+        for name, aliases, _category, _meaning in self.catalog:
+            nodes.add(solidity_cheatsheet.canonicalize(name))
+            for alias in aliases:
+                nodes.add(solidity_cheatsheet.canonicalize(alias))
+
+        nodes.discard("symbols")
+        nodes.discard("keywords")
+
+        # The graph is a learning navigator, so every recognized concept pair
+        # should at least produce a route rather than dropping to "unknown".
+        sample = sorted(nodes)
+        root = sample[0]
+        for node in sample:
+            with self.subTest(node=node):
+                if node == root:
+                    continue
+                self.assertTrue(
+                    solidity_cheatsheet.connection_paths([root, node]),
+                    f"No route from {root} to {node}",
+                )
+
+    def test_final_graph_has_no_weak_nodes(self):
+        audit = solidity_cheatsheet._FINAL_GRAPH_AUDIT_RESULT
+        self.assertEqual(
+            audit["weak_nodes"],
+            [],
+            f"Concepts with no semantic neighbor: {audit['weak_nodes']}",
+        )
+        self.assertGreaterEqual(audit["edges"], 700)
+        self.assertGreaterEqual(audit["scenes"], 40)
+
+    def test_scene_selection_prefers_exact_missed_connection(self):
+        result, output = self.render(
+            "connect", "mapping", "keccak256", "abi.decode"
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("decode/hash/mapping", output)
+        self.assertIn("abi.decode(raw, (address))", output)
+        self.assertIn("keccak256(raw)", output)
+        self.assertNotIn("UniversalConnectionLab", output)
+
     def test_universal_connection_lab_compiles(self):
         if shutil.which("forge") is None:
             self.skipTest("Forge is required for connection-lab compiler coverage.")
