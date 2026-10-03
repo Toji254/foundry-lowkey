@@ -64,6 +64,13 @@ class SolidityConnectTests(unittest.TestCase):
         ):
             self.assertIn(token, output)
 
+    def test_function_topic_aliases_connect_to_interface_lab(self):
+        for term in ("functions", "function-syntax", "function-signature", "function-call"):
+            result, output = self.render("connect", "interface", term)
+            self.assertEqual(result, 0)
+            self.assertIn("external-interfaces", output)
+            self.assertIn("ICounter", output)
+
     def test_three_or_more_concepts_select_a_bundle(self):
         result, output = self.render(
             "connect", "interface", "external-call", "abi-decode", "address"
