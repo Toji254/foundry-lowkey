@@ -9241,3 +9241,41 @@ function pay(address payable to, uint256 amount_)
     "pay{value: 1 ether}({to: alice, amount_: 1 ether});",
 )
 
+
+# FINAL EXACT BRIDGE: mapping + keccak256 + storage-layout + Yul
+_final_add_scene(
+    ["mapping", "keccak256", "storage-layout", "yul"],
+    "Exact bridge: mapping → keccak256 → storage-layout → Yul",
+    "A mapping lookup is a logical key/value operation; storage layout tells you where the mapping is anchored, Keccak derives the entry slot, and Yul exposes the raw storage read.",
+    """
+mapping(address => uint256) public balances;
+
+function read(address user_)
+    external
+    view
+    returns (uint256 result)
+{
+    assembly {
+        mstore(0x00, user_)
+        mstore(0x20, balances.slot)
+        let slot := keccak256(0x00, 0x40)
+        result := sload(slot)
+    }
+}
+""",
+    [
+        ("mapping", "mapping(address => uint256)", "balances[user_]", "balances[0xAlice]", "Logical key/value lookup."),
+        ("input", "address", "user_", "0xAlice", "Mapping key supplied to the function."),
+        ("layout", "storage slot", "balances.slot", "7", "Anchor slot determined by storage layout."),
+        ("derived", "bytes32", "slot", "keccak256(user_ + balances.slot)", "Physical mapping entry location."),
+        ("Yul", "word", "sload(slot)", "100", "Raw persistent storage read."),
+    ],
+    [
+        "user_ is the logical mapping key.",
+        "balances.slot is the mapping's storage-layout anchor; it is not the stored balance itself.",
+        "Yul places the key and anchor into memory and hashes the 64-byte pair.",
+        "The digest is the physical storage slot for balances[user_].",
+        "sload(slot) reads the value stored there.",
+    ],
+    "read(alice);",
+)
