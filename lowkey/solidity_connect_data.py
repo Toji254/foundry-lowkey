@@ -9871,4 +9871,24 @@ _COMPREHENSIVE_CONNECTION_EDGES.extend([
     ("no-delegatecall", "storage", "the guard protects execution/storage assumptions"),
 ])
 
+
+# Final low-level arithmetic/bitwise neighborhood coverage.
+_COMPREHENSIVE_CONNECTION_EDGES.extend([
+    ("yul-and", "yul", "bitwise AND is a Yul word operation"),
+    ("yul-or", "yul", "bitwise OR is a Yul word operation"),
+    ("yul-xor", "yul", "bitwise XOR is a Yul word operation"),
+    ("yul-byte", "yul", "byte extraction is a Yul word operation"),
+    ("yul-shl", "yul", "left shift is a Yul word operation"),
+    ("yul-shr", "yul", "right shift is a Yul word operation"),
+    ("yul-sar", "yul", "arithmetic right shift is a Yul word operation"),
+    ("yul-signextend", "yul", "sign extension is a Yul word operation"),
+    ("yul-sub", "yul", "subtraction is a Yul arithmetic operation"),
+    ("yul-mul", "yul", "multiplication is a Yul arithmetic operation"),
+    ("yul-div", "yul", "unsigned division is a Yul arithmetic operation"),
+    ("yul-sdiv", "yul", "signed division is a Yul arithmetic operation"),
+    ("yul-smod", "yul", "signed remainder is a Yul arithmetic operation"),
+    ("yul-exp", "yul", "exponentiation is a Yul arithmetic operation"),
+    ("yul-clz", "yul", "count-leading-zero is a Yul bit operation"),
+])
+
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
