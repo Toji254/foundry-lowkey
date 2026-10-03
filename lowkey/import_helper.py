@@ -348,6 +348,15 @@ def known_metadata(name: str) -> dict:
     return IMPORT_METADATA.get(name, {})
 
 
+def symbol_metadata(s: Symbol) -> dict:
+    if s.name not in COMMON:
+        return {}
+    canonical_path = COMMON[s.name][2]
+    if s.source.name.startswith("(reference only") or s.import_path == canonical_path:
+        return known_metadata(s.name)
+    return {}
+
+
 def package_root_for(source: Path, root: Path) -> Path | None:
     try:
         rel = source.resolve().relative_to((root / "lib").resolve())
@@ -409,10 +418,6 @@ def install_status(symbol: Symbol, root: Path) -> str:
 
 
 def install_guidance(symbol: Symbol, root: Path) -> tuple[str, str]:
-    meta = known_metadata(symbol.name)
-    if meta.get("forge_install"):
-        return meta.get("package", "Known dependency"), meta["forge_install"]
-
     package_root = package_root_for(symbol.source, root)
     if package_root:
         remote = git_remote(package_root)
@@ -420,6 +425,10 @@ def install_guidance(symbol: Symbol, root: Path) -> tuple[str, str]:
         if slug:
             return package_root.name, f"forge install {slug}"
         return package_root.name, "Already installed locally; no verified Forge install command was detected."
+
+    meta = symbol_metadata(symbol)
+    if meta.get("forge_install"):
+        return meta.get("package", "Known dependency"), meta["forge_install"]
 
     return "Current project", "No forge install needed — this symbol is in the current project's source."
 
@@ -445,7 +454,7 @@ def reference_symbol(name: str, root: Path) -> Symbol | None:
 
 
 def usage_guidance(s: Symbol) -> tuple[str, list[str], str, str]:
-    meta = known_metadata(s.name)
+    meta = symbol_metadata(s)
     if meta:
         return (
             meta.get("how", "Read the source/API before using it."),
@@ -549,7 +558,7 @@ def install_symbols(symbols: list[Symbol], root: Path) -> int:
 
 
 def explain(s: Symbol) -> tuple[str, str]:
-    if s.name in COMMON:
+    if symbol_metadata(s):
         return COMMON[s.name][0], COMMON[s.name][1]
     if s.kind == "interface":
         return f"Interface {s.name} describes an external contract's callable surface.", "Use it when your contract needs typed interaction with an existing contract."
