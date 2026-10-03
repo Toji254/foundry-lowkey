@@ -712,6 +712,22 @@ class SolidityConnectTests(unittest.TestCase):
                 self.assertTrue(scenes)
                 self.assertTrue(any(scene.get("title") == title for scene in scenes))
 
+    def test_production_protocol_patterns_have_curated_scenes(self):
+        cases = [
+            (["erc4626", "mapping", "shares", "assets"], "ERC4626: assets ↔ shares → conversion → slippage"),
+            (["erc1271", "interface", "bytes32", "bytes"], "Contract wallet → signature validation interface"),
+            (["erc1967", "delegatecall", "storage-layout"], "ERC1967 slot → implementation → delegatecall"),
+            (["multicall", "bytes[]", "delegatecall", "returndata"], "bytes[] batch → delegatecall self → returndata[]"),
+            (["flashloan", "callback", "interface", "mapping"], "Flash loan → callback → repayment invariant"),
+            (["permit2", "mapping", "nonce", "signature-verification"], "Permit2-style authorization → nonce/allowance → transfer"),
+            (["hook", "callback", "interface", "reentrancy"], "Protocol hook → external callback → state boundary"),
+        ]
+        for concepts, title in cases:
+            with self.subTest(concepts=concepts):
+                scenes = find_connection_scenes(concepts, max_scenes=4)
+                self.assertTrue(scenes)
+                self.assertTrue(any(scene.get("title") == title for scene in scenes))
+
     def test_universal_connection_lab_compiles(self):
         if shutil.which("forge") is None:
             self.skipTest("Forge is required for connection-lab compiler coverage.")
