@@ -160,6 +160,19 @@ class BreakEngineTests(unittest.TestCase):
         self.assertNotIn('require(ok, "outer attack reverted")', body)
         self.assertIn("SETUP_VALUE_WEI", body)
 
+    def test_result_parser_surfaces_missing_telemetry(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        observed = break_engine._result_from_output(
+            type("Host", (), {})(),
+            family="reentrancy",
+            target=target,
+            function="withdraw(address,uint256)",
+            output="Error: Compiler run failed:\nError (1234): bad harness",
+            evidence_path="/tmp/evidence.json",
+        )
+        self.assertEqual(observed.status, "BLOCKED")
+        self.assertIn("Compiler run failed", observed.summary)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
