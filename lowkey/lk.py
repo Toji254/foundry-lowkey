@@ -67,6 +67,11 @@ except ImportError:
     project_tools = None
 
 try:
+    import solidity_cheatsheet
+except ImportError:
+    solidity_cheatsheet = None
+
+try:
     from audit_engine import run_rg as audit_run_rg, run_slither as audit_run_slither, run_audit_pipeline as audit_run_pipeline, generate_poc as audit_generate_poc, run_source_triage as audit_run_source_triage
 except ImportError:
     audit_run_rg = audit_run_slither = audit_run_pipeline = audit_generate_poc = None
@@ -8415,6 +8420,12 @@ def run_symbolic(args):
     return run_foundry(["test","--symbolic",*values])
 
 
+def run_cheat(args):
+    if solidity_cheatsheet is None:
+        return fail("Solidity cheatsheet is not installed. Re-run install.sh from this checkout.")
+    return solidity_cheatsheet.run(args)
+
+
 def run_cheatcodes(args):
     snippets = {
         "prank": 'vm.prank(alice);\\ntarget.withdraw();',
@@ -10797,6 +10808,13 @@ COMMAND_HELP = {
     "mutate": _help_entry("Run mutation testing when configured.", "lk mutate [args...]", "lk mutate", "Use it to check whether your tests notice meaningful code changes.", related=["lk test", "lk fuzz"]),
     "symbolic": _help_entry("Run symbolic-testing workflows when configured.", "lk symbolic [args...]", "lk symbolic", "Use it when symbolic path exploration is useful.", related=["lk fuzz", "lk invariant"]),
     "brutalize": _help_entry("Stress calldata/state assumptions with adversarial inputs.", "lk brutalize [args...]", "lk brutalize", "Use it when you suspect edge cases around malformed/extreme input.", related=["lk probe", "lk fuzz"]),
+    "cheat": _help_entry(
+        "Open the read-only Solidity learning dictionary covering syntax, symbols, data structures, storage, calls, errors, ETH flow, interfaces, fallback/receive, and common audit concepts.",
+        "lk cheat [topic] | lk cheat symbols | lk cheat search <word>",
+        "lk cheat mapping",
+        "Use it whenever a Solidity concept is fuzzy. It gives a mental model, syntax, real example, step-by-step explanation, and audit lookout without touching project state.",
+        related=["lk import", "lk functions", "lk ask"],
+    ),
     "cheatcode": _help_entry(
         "Alias for the Foundry cheatcode helper.",
         "lk cheatcode [args...]",
@@ -11026,7 +11044,15 @@ START HERE
   lk break                           Aggressively attack the current target/function in a local Anvil/Forge lab.
   lk q                              Get the next auditor-mindset question from current evidence.
   lk questions                      See the compact question frontier across the project.
-  lk import                         Browse importable packages, contracts, interfaces, types, source files, and Forge remappings.
+  lk import                         Browse/import Solidity declarations and source files.
+  lk cheat                          Read-only Solidity learning dictionary.
+  lk cheat mapping                  Explain mappings with a real contract example.
+  lk cheat arrays-mappings           Explain arrays + mappings together.
+  lk cheat require                  Explain require(condition, "message") structure.
+  lk cheat fallback                 Explain fallback() step by step.
+  lk cheat receive                  Explain receive() step by step.
+  lk cheat interface                Explain interfaces step by step.
+  lk cheat symbols                  Show Solidity symbols/operators at a glance.
 
 FIRST 10 MINUTES
   1. Start Anvil:                  anvil
@@ -11535,6 +11561,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="mutate": return run_mutate(args)
     elif cmd=="symbolic": return run_symbolic(args)
     elif cmd=="brutalize": return run_brutalize(args)
+    elif cmd in {"cheat","cheats","cheatsheet"}: return run_cheat(args)
     elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
     elif cmd in {"actors","actor-list"}: return list_anvil_actors(config)
     elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
@@ -11603,13 +11630,22 @@ def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
     config=load_config()
-    root = audit_context.foundry_project_root()
-    _sync_audit_context(config, root)
     if len(sys.argv)<2:
         print_help()
         return
 
     command = sys.argv[1]
+    if command.lower() in {"cheat", "cheats", "cheatsheet"}:
+        result = run_cheat(sys.argv[2:])
+        if isinstance(result, int):
+            raise SystemExit(result)
+        return
+
+    root = audit_context.foundry_project_root()
+    _sync_audit_context(config, root)
+        print_help()
+        return
+
     runtime = runtime_sync_status()
     runtime_safe_commands = {
         "--h", "--help", "-h", "help", "--version", "-V", "version",
