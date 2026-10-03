@@ -9047,7 +9047,7 @@ def _shortest(a,b):
 def connection_paths(names):
     concepts=[]
     for raw in names:
-        for c in expand_name(raw):
+        for c in sorted(expand_name(raw)):
             if c not in concepts: concepts.append(c)
     if len(concepts)<2: return []
     root=concepts[0]
@@ -9057,7 +9057,7 @@ def connection_route(names):
     route=[]; seen=set()
     concepts=[]
     for raw in names:
-        for c in expand_name(raw):
+        for c in sorted(expand_name(raw)):
             if c not in concepts: concepts.append(c)
     if not concepts: return route
     current=concepts[0]
@@ -9071,7 +9071,7 @@ def connection_route(names):
     return route
 
 def _route_scene(names):
-    requested=list(dict.fromkeys(c for n in names for c in expand_name(n)))
+    requested=list(dict.fromkeys(c for n in names for c in sorted(expand_name(n))))
     route=connection_route(requested)
     return {
         "keys":frozenset(requested),
@@ -9210,7 +9210,7 @@ COMPREHENSIVE_MICRO_SCENES=list(MICRO_SCENES)+_EXTRA_SCENES
 MICRO_SCENES=COMPREHENSIVE_MICRO_SCENES
 
 def find_micro_scene(names):
-    requested=frozenset(c for raw in names for c in expand_name(raw))
+    requested=frozenset(c for raw in names for c in sorted(expand_name(raw)))
     exact=[s for s in COMPREHENSIVE_MICRO_SCENES if s["keys"]==requested]
     if exact:
         return exact[0]
