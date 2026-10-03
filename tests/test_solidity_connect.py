@@ -578,6 +578,48 @@ class SolidityConnectTests(unittest.TestCase):
         self.assertIn("keccak256(raw)", output)
         self.assertNotIn("UniversalConnectionLab", output)
 
+
+    def test_protocol_patterns_have_curated_routes(self):
+        patterns = [
+            ("erc20-pattern", "token-approval", "ERC20: balance + allowance + transfer"),
+            ("erc721-pattern", "receiver-hook", "ERC721: tokenId"),
+            ("erc1155-pattern", "batch-transfer", "ERC1155: tokenId"),
+            ("eip712-pattern", "block.chainid", "EIP712: typed struct"),
+            ("timelock-pattern", "block.timestamp", "Timelock: operation hash"),
+            ("governor-pattern", "arrays", "Governor: proposal payload arrays"),
+            ("multisig-pattern", "nonce", "Multisig: nonce"),
+            ("proxy-upgrade-pattern", "erc1967-storage", "Upgrade proxy"),
+            ("public-getter", "interface", "Public getter"),
+            ("mapping-abi", "mapping", "Mapping is storage"),
+        ]
+        for left, right, title_fragment in patterns:
+            with self.subTest(left=left, right=right):
+                scene = solidity_cheatsheet.find_micro_scene([left, right])
+                self.assertIsNotNone(scene)
+                self.assertIn(title_fragment.split()[0], scene["title"])
+
+    def test_abi_type_boundaries_are_explicit(self):
+        pairs = [
+            ("struct-abi", "tuples"),
+            ("abi-types", "structs"),
+            ("abi-types", "enum"),
+            ("abi-types", "contract-types"),
+            ("abi-types", "user-defined-value-types"),
+            ("mapping-abi", "public-getter"),
+            ("constructor", "init-code"),
+            ("constructor", "function-selector"),
+            ("receive", "function-selector"),
+            ("fallback", "function-selector"),
+            ("events", "log-topics"),
+            ("errors", "error-selector"),
+        ]
+        for left, right in pairs:
+            with self.subTest(left=left, right=right):
+                self.assertTrue(
+                    solidity_cheatsheet.connection_paths([left, right]),
+                    f"No route for ABI boundary pair {left} -> {right}",
+                )
+
     def test_universal_connection_lab_compiles(self):
         if shutil.which("forge") is None:
             self.skipTest("Forge is required for connection-lab compiler coverage.")
