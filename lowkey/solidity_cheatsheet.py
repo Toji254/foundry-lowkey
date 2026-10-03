@@ -279,11 +279,11 @@ def _render_connect(names):
         print("CONNECTION LABS")
         print("---------------")
         for lab in list_connections():
-            print(f"  {lab['name']:<24} {', '.join(lab['concepts'])}")
+            print(f"  {lab['name']}")
+            print(f"    concepts: {', '.join(lab['concepts'])}")
             print(f"    {lab['summary']}")
         print()
-        print("Shortcut recipes + universal composer.")
-        print("Any recognized Solidity/Yul concepts can be combined.")
+        print("The normal view is progressive. Full code is explicit.")
         return 0
 
     if len(names) < 2:
@@ -292,7 +292,7 @@ def _render_connect(names):
         print("Examples:")
         print("  lk connect interface functions arrays")
         print("  lk connect structs mappings arrays enums bytes addresses")
-        print("  lk connect mapping keccak256 abi.encode")
+        print("  lk connect mapping keccak256 abi.decode")
         print("  lk connect yul mapping keccak256")
         print()
         print("Deeper:")
@@ -317,33 +317,17 @@ def _render_connect(names):
         print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
         return 2
 
-    topics = []
-    invalid = []
-    for raw in cleaned:
-        topic = find_topic(raw)
-        if is_known_concept(raw):
-            expanded = expand_name(raw)
-        elif topic:
-            expanded = expand_name(topic["name"])
-        else:
-            expanded = set()
-            invalid.append(raw)
-
-        if expanded:
-            topics.extend(sorted(expanded))
-            resolved_display.append((raw, ", ".join(sorted(expanded))))
-
+    invalid = [raw for raw in cleaned if not is_known_concept(raw)]
     print("REQUESTED CONCEPTS")
     print("------------------")
-    shown_concepts = []
-    seen_requested = set()
+    requested = []
+    seen = set()
     for raw in cleaned:
         for concept in sorted(expand_name(raw)):
-            if concept not in seen_requested:
-                seen_requested.add(concept)
-                shown_concepts.append(concept)
-    for concept in shown_concepts:
-        print(f"  {concept}")
+            if concept not in seen:
+                seen.add(concept)
+                requested.append(concept)
+                print(f"  {concept}")
 
     if invalid:
         print()
@@ -351,26 +335,23 @@ def _render_connect(names):
         print("Use 'lk cheat <topic>' to inspect a concept.")
         return 2
 
-    topics = list(dict.fromkeys(topics))
-    if len(topics) < 2:
+    if len(requested) < 2:
         print()
         print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
         return 2
 
-    lab = find_connection(topics)
-
     if mode == "full":
+        lab = find_connection(requested)
         print()
         print("FULL CONNECTION LAB")
         print("-------------------")
         print(f"  {lab['name']}")
         print()
-        support = lab.get("support_files", {})
-        if support:
+        if lab.get("support_files"):
             print("FILE: <main contract>")
             print("---------------------")
         print(lab["source"].rstrip())
-        for filename, source in support.items():
+        for filename, source in lab.get("support_files", {}).items():
             print()
             print(f"FILE: {filename}")
             print("-" * (6 + len(filename)))
@@ -384,114 +365,65 @@ def _render_connect(names):
                 f"{value:<32} {purpose}"
             )
         print()
-        print("This view is intentionally exhaustive. Copy it into a scratch Foundry project.")
+        print("This is intentionally exhaustive. The default connect view is not.")
         return 0
 
-    micro = find_micro_scene(topics)
+    route = connection_route(requested)
+    scene = find_micro_scene(requested)
+
+    print()
+    print("CONNECTION ROUTE")
+    print("----------------")
+    print("  " + " → ".join(route))
 
     print()
     print("THE CONNECTION")
     print("--------------")
-    route = connection_route(topics)
-    if micro and micro.get("route_name"):
-        print(micro["title"])
-        print()
-        print(micro["story"])
-        print()
-        print("CONNECTION ROUTE")
-        print("----------------")
-        print("  " + micro["route_name"])
-        if route:
-            shown = route if len(route) <= 14 else route[:14] + ["…"]
-            print("  path: " + " → ".join(shown))
-    elif micro:
-        print(micro["title"])
-        print()
-        print(micro["story"])
-        print()
-        print("CONNECTION ROUTE")
-        print("----------------")
-        if route:
-            shown = route if len(route) <= 14 else route[:14] + ["…"]
-            print("  " + " → ".join(shown))
-    else:
-        paths = connection_paths(topics)
-        print("Follow one bridge at a time:")
-        for start_node, goal_node, path_nodes, edge_text in paths[:3]:
-            print(f"  {start_node} → {goal_node}")
-            print(f"    {' → '.join(path_nodes)}")
-            for relation in edge_text:
-                print(f"    {relation}")
-        if route:
-            print()
-            print("CONNECTION ROUTE")
-            print("----------------")
-            shown = route if len(route) <= 14 else route[:14] + ["…"]
-            print("  " + " → ".join(shown))
+    print(scene["title"])
+    print()
+    print(scene["story"])
 
     print()
     print("1. WHAT EACH PIECE IS")
     print("----------------------")
-    seen = set()
-    for raw in cleaned:
-        for concept in sorted(expand_name(raw)):
-            if concept in seen:
-                continue
-            seen.add(concept)
-            print(f"  {concept}: {connection_meaning(concept)}")
+    for concept in requested:
+        print(f"  {concept}: {connection_meaning(concept)}")
 
-    if micro:
-        print()
-        print("2. TINY CONNECTED EXAMPLE")
-        print("--------------------------")
-        print(micro["code"].rstrip())
+    print()
+    print("2. TINY CONNECTED EXAMPLE")
+    print("--------------------------")
+    print(scene["code"].rstrip())
 
-        print()
-        print("3. VARIABLES IN THIS EXAMPLE")
-        print("-----------------------------")
-        for role, value_type, name, value, purpose in micro["variables"]:
+    print()
+    print("3. VARIABLES IN THIS EXAMPLE")
+    print("-----------------------------")
+    variables = scene.get("variables", [])
+    if variables:
+        for role, value_type, name, value, purpose in variables:
             print(
-                f"  {role:<22} {value_type:<42} "
-                f"{name:<16} = {value:<26} {purpose}"
+                f"  {role:<22} {value_type:<26} "
+                f"{name:<18} = {value:<24} {purpose}"
             )
-
-        print()
-        print("4. FOLLOW THE VALUE")
-        print("-------------------")
-        for index, step in enumerate(micro["flow"], 1):
-            print(f"  {index}. {step}")
-
-        print()
-        print("5. TRY THIS CALL")
-        print("----------------")
-        print(f"  {micro['call']}")
     else:
-        print()
-        print("2. CONCEPT BRIDGE")
-        print("-----------------")
-        for start_node, goal_node, path_nodes, edge_text in connection_paths(topics)[:3]:
-            print(f"  {start_node} → {goal_node}")
-            print(f"    path: {' → '.join(path_nodes)}")
-            for relation in edge_text:
-                print(f"    why : {relation}")
+        print("  See the code and route above; this connection is intentionally kept compact.")
 
-        print()
-        print("3. NEXT DEPTH")
-        print("-------------")
-        print("  Full code:  lk connect " + " ".join(cleaned) + " 1")
+    print()
+    print("4. FOLLOW THE VALUE")
+    print("-------------------")
+    for index, step in enumerate(scene.get("flow", []), 1):
+        print(f"  {index}. {step}")
+
+    print()
+    print("5. TRY THIS CALL")
+    print("----------------")
+    print(f"  {scene.get('call', 'Trace the example by hand first.')}")
 
     if mode == "walkthrough":
         print()
         print("WALKTHROUGH")
         print("------------")
-        if micro:
-            for index, step in enumerate(micro["flow"], 1):
-                print(f"  {index}. {step}")
-        else:
-            for start_node, goal_node, path_nodes, edge_text in connection_paths(topics)[:3]:
-                print(f"  {start_node} → {goal_node}")
-                for relation in edge_text:
-                    print(f"    {relation}")
+        for index, step in enumerate(scene.get("flow", []), 1):
+            print(f"  {index}. {step}")
 
     print()
     print("NEXT")
@@ -500,8 +432,6 @@ def _render_connect(names):
     print("  2  slower walkthrough")
     print("  lk cheat <concept>")
     return 0
-
-
 
 def _render_expression(expr):
     expression = expr.strip()
