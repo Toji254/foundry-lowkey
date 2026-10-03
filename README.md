@@ -178,6 +178,51 @@ When Lowkey resolves an ABI, it keeps the original Foundry artifact as the sourc
 
 The project-local copy is pretty-printed JSON with an `abi` field. This makes the audit workspace easy to inspect or archive without changing the original `out/` artifact.
 
+## Import intelligence
+
+Lowkey’s import browser is a project-aware Solidity dependency and usage guide. It can resolve real symbols from `src/` and `lib/`, or fall back to a verified reference catalog for common components such as OpenZeppelin, Chainlink, and forge-std.
+
+~~~bash
+# Interactive browser
+lk import
+
+# Look up one thing
+lk import ERC721
+lk import AggregatorV3Interface
+
+# Browse common reference entries
+lk import common
+~~~
+
+A symbol lookup shows:
+
+~~~text
+package
+install status
+Forge install command
+verified Solidity import
+why to use it
+when to use it
+practical use cases
+a small usage example
+audit lens / things to inspect
+~~~
+
+For symbols that are already installed, Lowkey prefers the actual source and remapping discovered in the current Foundry project. For symbols that are not installed but exist in the reference catalog, Lowkey still explains the dependency and gives the standard install/import recipe.
+
+Installation is explicit and idempotent:
+
+~~~bash
+lk import --install ERC721
+lk import install AggregatorV3Interface
+~~~
+
+`--install` is the only import-helper mode that mutates the project. Lowkey runs only a verified `forge install ...` command, skips dependencies that are already installed, and leaves ordinary lookups read-only.
+
+For unknown installed packages, Lowkey can inspect the package’s Git remote and derive a `forge install owner/repo` hint when the remote is a GitHub repository. It does not invent an install command when the source or remote cannot be verified.
+
+The reference data is intentionally separated from project discovery: a local contract named `ERC721` or `Ownable` is not mislabeled as OpenZeppelin unless its source/import path matches the verified reference.
+
 ## Storage and state forensics
 
 ~~~bash
