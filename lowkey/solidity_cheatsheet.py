@@ -19,6 +19,8 @@ Usage:
   lk cheat keywords
   lk cheat search <word>
   lk compare <topicA> <topicB> [topicC]
+  lk connect <conceptA> <conceptB> [conceptC...]
+  lk connect --list
   lk expression "<expression>"
   lk practice [topic]
   lk confused <term>
@@ -58,6 +60,7 @@ if str(MODULE_DIR) not in sys.path:
 
 from solidity_cheat_topics import register_topics
 from solidity_cheat_data import CONTRACT_LABS as _CONTRACT_LABS, TERM_DEFINITIONS as _TERM_DEFINITIONS
+from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections
 
 TOPICS = []
 
@@ -251,6 +254,131 @@ def _render_compare(names):
     print("------------")
     print("Compare the question each concept answers, not just the spelling.")
     return 0
+
+def _render_connect(names):
+    print()
+    print("LOWKEY // CONNECT")
+    print("=" * 76)
+
+    if names and _norm(names[0]) in {"--list", "list", "all"}:
+        print("CONNECTION LABS")
+        print("---------------")
+        for lab in list_connections():
+            print(f"  {lab['name']:<24} {lab['summary']}")
+            print("    concepts: " + ", ".join(lab["concepts"]))
+        print()
+        print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
+        return 0
+
+    if len(names) < 2:
+        print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
+        print("Examples:")
+        print("  lk connect imports constructor")
+        print("  lk connect structs mappings arrays enums bytes addresses")
+        print("  lk connect interface external-call abi-decode")
+        print("  lk connect receive mapping call")
+        return 2
+
+    topics = []
+    for raw in names:
+        topic = find_topic(raw)
+        if topic:
+            topics.append(topic["name"])
+        else:
+            topics.append(raw)
+
+    lab = find_connection(topics)
+    print("REQUESTED CONCEPTS")
+    print("------------------")
+    for raw, resolved in zip(names, topics):
+        suffix = f" -> {resolved}" if _norm(raw) != _norm(resolved) else ""
+        print(f"  {raw}{suffix}")
+    print()
+
+    if lab is None:
+        print("No single connection lab currently covers that combination.")
+        print()
+        print("Try a smaller group, or inspect the available bundles with:")
+        print("  lk connect --list")
+        print()
+        print("Every concept still has its own syntax-first view:")
+        print("  lk cheat <topic>")
+        return 2
+
+    print("CONNECTION LAB")
+    print("--------------")
+    print(f"  {lab['name']}")
+    print(f"  {lab['summary']}")
+    print()
+    print("The lab may include a few extra concepts when they are needed to make the")
+    print("connection concrete. That is intentional: the goal is to see the data flow.")
+    print()
+
+    print("SOURCE FILES")
+    print("------------")
+    support = lab.get("support_files", {})
+    if not support:
+        print("  main contract only")
+    else:
+        print("  main contract")
+        for filename in support:
+            print(f"  support file: {filename}")
+    print()
+
+    if support:
+        print("FILE: <main contract>")
+        print("---------------------")
+    print(lab["source"].rstrip())
+    if support:
+        for filename, source in support.items():
+            print()
+            print(f"FILE: {filename}")
+            print("-" * (6 + len(filename)))
+            print(source.rstrip())
+
+    print()
+    print("VARIABLE MAP")
+    print("------------")
+    print("  ROLE               TYPE                                      NAME             EXAMPLE / VALUE                 PURPOSE")
+    print("  " + "-" * 120)
+    for role, value_type, name, value, purpose in lab.get("variables", []):
+        print(
+            f"  {role:<18} {value_type:<42} {name:<16} "
+            f"{value:<32} {purpose}"
+        )
+
+    print()
+    print("EXAMPLE CALLS")
+    print("-------------")
+    for call in lab.get("calls", []):
+        print(f"  {call}")
+
+    print()
+    print("HOW THE PIECES CONNECT")
+    print("----------------------")
+    for index, step in enumerate(lab.get("steps", []), 1):
+        print(f"  {index}. {step}")
+
+    print()
+    print("CONNECTION MAP")
+    print("--------------")
+    for item in lab.get("connections", []):
+        print(f"  • {item}")
+
+    print()
+    print("AUDIT LOOKOUT")
+    print("-------------")
+    print(lab.get("audit") or "Trace every input, lookup, write, and external interaction.")
+
+    print()
+    print("LAB NOTES")
+    print("---------")
+    print("  • The lab is read-only output; it does not create files or start Anvil.")
+    print("  • Copy the main/support files into a scratch Foundry project to compile and run it.")
+    print("  • Example addresses such as alice/bob are caller placeholders; replace them with real test accounts.")
+    print("  • When a bundle includes extra concepts, read those extra lines too: they show why the connection exists.")
+    return 0
+
 
 def _render_expression(expr):
     expression = expr.strip()
@@ -508,6 +636,8 @@ def run(args=None):
             print("Usage: lk compare <topicA> <topicB> [topicC]")
             return 2
         return _render_compare(names)
+    if command == "connect":
+        return _render_connect(args[1:])
     if command == "expression":
         expression = " ".join(args[1:]).strip()
         if not expression:
