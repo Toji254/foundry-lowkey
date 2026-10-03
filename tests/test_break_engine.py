@@ -114,6 +114,16 @@ class BreakEngineTests(unittest.TestCase):
             self.assertEqual(command[match_index + 1], "test/Lowkey_Break_withdraw_replay.t.sol")
             self.assertNotIn(str(root), command[match_index + 1])
 
+    def test_generated_break_harness_avoids_checksum_sensitive_address_literals(self):
+        target = break_engine.Target("Tipjar", "0x5fbdb2315678afecb367f032d93f642f64180aa3")
+        fn = {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"}
+        body = break_engine._render_reentrancy_test(
+            target, fn, "withdraw()", [], 3
+        )
+        self.assertIn("address(uint160(0x5fbdb2315678afecb367f032d93f642f64180aa3))", body)
+        self.assertIn("address(uint160(0xBEEF000000000000000000000000000000000042))", body)
+        self.assertNotIn("address(0x5fbdb2315678afecb367f032d93f642f64180aa3)", body)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
