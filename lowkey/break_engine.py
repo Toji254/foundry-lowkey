@@ -1157,12 +1157,9 @@ contract LowkeyBreakRepeat is Test {{
         // BREAK requires demonstrated payout greater than the entitlement recorded before attack.
         bool breakByEntitlement = entitlementReadOk
             && totalGain > entitlementBefore;
-        bool breakWithoutGetter = !entitlementReadOk
-            && second
-            && totalGain > 1 wei
-            && totalTargetOutflow > 1 wei;
-
-        if (breakByEntitlement || breakWithoutGetter) {{
+        // Without an entitlement baseline, repeated value movement is only an
+        // observation. Do not label a normal second payout as an accounting BREAK.
+        if (breakByEntitlement) {{
             console2.log("LOWKEY_BREAK", true);
         }} else {{
             console2.log("LOWKEY_BREAK", false);
