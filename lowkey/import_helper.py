@@ -388,9 +388,11 @@ def forge_repo_slug(remote: str | None) -> str | None:
     if not remote:
         return None
     value = remote.strip()
-    value = re.sub(r"^(?:https?://|ssh://git@|git@)", "", value)
-    if value.startswith("github.com/"):
-        value = value[len("github.com/"):]
+    value = re.sub(
+        r"^(?:https?://github\.com/|ssh://git@github\.com/|git@github\.com:|git://github\.com/)",
+        "",
+        value,
+    )
     value = value.removesuffix(".git").strip("/")
     if re.fullmatch(r"[^/\s]+/[^/\s]+", value):
         return value
@@ -499,6 +501,13 @@ def usage_guidance(s: Symbol) -> tuple[str, list[str], str, str]:
 
 
 def install_symbols(symbols: list[Symbol], root: Path) -> int:
+    if not (root / "foundry.toml").is_file():
+        print()
+        print("Forge installation requires a Foundry project.")
+        print(f"Current root: {root}")
+        print("Run this command from a directory containing foundry.toml, or cd into the project first.")
+        return 2
+
     commands: dict[str, tuple[str, str]] = {}
     skipped = []
     unavailable = []
