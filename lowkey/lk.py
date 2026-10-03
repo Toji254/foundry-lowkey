@@ -10029,6 +10029,7 @@ START HERE
   lk audit                           Run the interactive audit workflow.
   lk q                              Get the next auditor-mindset question from current evidence.
   lk questions                      See the compact question frontier across the project.
+  lk import                         Browse importable packages, contracts, interfaces, types, source files, and Forge remappings.
 
 FIRST 10 MINUTES
   1. Start Anvil:                  anvil
