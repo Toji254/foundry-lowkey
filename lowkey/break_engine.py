@@ -163,7 +163,8 @@ CALLBACK_RE = re.compile(r"(?i)(callback|hook|receiver|fallback|receive|on[A-Z])
 PRIVILEGED_RE = re.compile(
     r"(?i)(owner|admin|guardian|pause|unpause|upgrade|initialize|grant|revoke|"
     r"renounce|setOwner|transferOwnership|acceptOwnership|rescue|sweep|"
-    r"emergency|configure|set[A-Za-z]+|upgradeToAndCall|proxiable)"
+    r"emergency|configure|set[A-Za-z]+|upgradeToAndCall|proxiable|"
+    r"withdraw|claim|redeem|release|unlock|payout|collect|harvest)"
 )
 SETUP_RE = re.compile(r"(?i)^(deposit|seed|fund|topUp|top_up|stake|credit)$")
 
