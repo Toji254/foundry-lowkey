@@ -403,6 +403,26 @@ def install_guidance(symbol: Symbol, root: Path) -> tuple[str, str]:
     return "Current project", "No forge install needed — this symbol is in the current project's source."
 
 
+def reference_symbol(name: str, root: Path) -> Symbol | None:
+    entry = COMMON.get(name)
+    if not entry:
+        return None
+    _why, _when, import_name = entry
+    if name == "SafeERC20":
+        kind = "library"
+    elif name.startswith("I") and (name.endswith("Interface") or name.startswith("IERC")):
+        kind = "interface"
+    else:
+        kind = "contract"
+    return Symbol(
+        name=name,
+        kind=kind,
+        source=Path("(reference only — dependency not installed)"),
+        import_path=import_name,
+        line=0,
+    )
+
+
 def usage_guidance(s: Symbol) -> tuple[str, list[str], str, str]:
     meta = known_metadata(s.name)
     if meta:
@@ -890,17 +910,34 @@ def import_query(query: str, root: Path, maps, install: bool = False) -> int:
                 unique_found.append(symbol)
 
         if missing:
-            if install and unique_found:
-                print("Resolved symbols can be installed from their verified dependency metadata, but unresolved symbols are not installed yet.")
-            print('UNRESOLVED SYMBOLS:')
+            reference_found = []
+            still_missing = []
             for name in missing:
-                print(f'  - {name}')
-            if unique_found:
-                print()
-                print('RESOLVED SYMBOLS:')
-                for symbol in unique_found:
-                    print(f'  - {symbol.name} -> {symbol.import_path}')
-            return 2
+                ref = reference_symbol(name, root)
+                if ref:
+                    reference_found.append(ref)
+                else:
+                    still_missing.append(name)
+            if reference_found:
+                unique_found.extend(reference_found)
+            if still_missing:
+                print('UNRESOLVED SYMBOLS:')
+                for name in still_missing:
+                    print(f'  - {name}')
+                if unique_found:
+                    print()
+                    print('RESOLVED SYMBOLS:')
+                    for symbol in unique_found:
+                        print(f'  - {symbol.name} -> {symbol.import_path}')
+                return 2
+            print()
+            print(f'RESOLVED {len(unique_found)} SYMBOL(S)')
+            for symbol in unique_found:
+                show_symbol(symbol, root)
+            show_copy_imports(unique_found, requested_path=requested_path, aliases=aliases)
+            if install:
+                return install_symbols(unique_found, root)
+            return 0
 
         print()
         print(f'RESOLVED {len(unique_found)} SYMBOL(S)')
@@ -963,6 +1000,24 @@ def import_query(query: str, root: Path, maps, install: bool = False) -> int:
         if any(token in s.name.lower() or token in s.import_path.lower() for token in tokens)
     ]
     if not matches:
+        known_matches = []
+        for name in COMMON:
+            if any(token == name.lower() for token in tokens):
+                ref = reference_symbol(name, root)
+                if ref:
+                    known_matches.append(ref)
+        if known_matches:
+            if len(known_matches) == 1:
+                show_symbol(known_matches[0], root)
+                if install:
+                    return install_symbols(known_matches, root)
+                return 0
+            s = choose(known_matches, sym_render, 'known import references')
+            if s:
+                show_symbol(s, root)
+                if install:
+                    return install_symbols([s], root)
+            return 0
         choices = sorted(
             {s.name for s in syms},
             key=lambda name: difflib.SequenceMatcher(None, tokens[0], name.lower()).ratio(),
