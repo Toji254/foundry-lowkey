@@ -9,6 +9,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+HELP = """
+LOWKEY // IMPORT HELPER
+=======================
+
+Browse Solidity things you can import from the current Foundry project.
+
+Usage:
+  lk import
+  lk import packages
+  lk import contracts
+  lk import interfaces
+  lk import libraries
+  lk import types
+  lk import files
+  lk import mappings
+  lk import common
+  lk import --h
+
+The helper is standalone: it does not select targets, change RPC/ABI/audit
+state, send transactions, or write project files.
+"""
+
 COMMON = {
     "Ownable": ("Single-owner access control.", "Use for simple owner-only administration.", "@openzeppelin/contracts/access/Ownable.sol"),
     "Ownable2Step": ("Two-step ownership transfer.", "Use when ownership handover should require explicit acceptance.", "@openzeppelin/contracts/access/Ownable2Step.sol"),
@@ -180,7 +202,7 @@ def packages(root: Path, maps: list[tuple[str, Path]]) -> list[Package]:
     for p in sorted(lib.iterdir(), key=lambda x: x.name.lower()):
         if not p.is_dir() or p.name.startswith("."):
             continue
-        prefix = next((prefix for prefix, target in maps if p.resolve() == target.resolve() or target.resolve() in p.resolve().parents), None)
+        prefix = next((prefix for prefix, target in maps if p.resolve() == target.resolve() or p.resolve() in target.resolve().parents), None)
         out.append(Package(p.name, p, prefix))
     return out
 
@@ -296,7 +318,11 @@ def browse_package(p: Package, root: Path, maps):
             if s:
                 show_file(s)
         elif a in kinds:
-            syms = [s for s in all_symbols(p.path, maps) if s.kind in kinds[a]]
+            syms = []
+            for source in sol_files(p.path):
+                syms += [s for s in extract(source, root, maps) if s.kind in kinds[a]]
+            syms = sorted({(s.kind, s.name, s.import_path): s for s in syms}.values(),
+                          key=lambda s: (s.name.lower(), s.kind, str(s.source)))
             s = choose(syms, sym_render, "symbols")
             if s:
                 show_symbol(s)
