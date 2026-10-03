@@ -1605,9 +1605,6 @@ def run(config, args=None, host=None):
     if project_info.get("break_backend") != "evm":
         return _run_native_backend(host, project_info, opts)
 
-    if _evm_runner(project_info, _root(host)) != "foundry":
-        return _run_native_backend(host, project_info, opts)
-
     try:
         rpc = _require_anvil(host, config)
     except Exception as exc:
