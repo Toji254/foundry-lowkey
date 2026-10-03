@@ -199,6 +199,34 @@ def _root(host) -> Path:
     return Path(host.audit_context.foundry_project_root()).expanduser().resolve()
 
 
+def _effective_source_languages(root: Path, detected: dict[str, Any]) -> dict[str, int]:
+    """Count first-party source languages while excluding generated/dependency trees."""
+    counts: dict[str, int] = {}
+    excluded = {".git", ".audit", "out", "build", "cache", "node_modules", "lib", "script", "scripts", "test", "tests", "mock", "mocks", "fixtures"}
+    extensions = {
+        ".sol": "solidity",
+        ".vy": "vyper",
+        ".cairo": "cairo",
+        ".move": "move",
+        ".rs": "rust",
+        ".huff": "huff",
+        ".yul": "yul",
+    }
+    try:
+        for path in root.rglob("*"):
+            if not path.is_file() or any(part in excluded for part in path.relative_to(root).parts[:-1]):
+                continue
+            language = extensions.get(path.suffix.lower())
+            if language:
+                counts[language] = counts.get(language, 0) + 1
+    except OSError:
+        pass
+    return counts or {
+        str(key): int(value)
+        for key, value in ((detected.get("languages") or {}) if isinstance(detected.get("languages"), dict) else {}).items()
+    }
+
+
 def _project_break_context(host) -> dict[str, Any]:
     """Detect the active project/workspace and derive its breaker backend."""
     root = _root(host)
@@ -215,6 +243,7 @@ def _project_break_context(host) -> dict[str, Any]:
             "native": {},
             "detection_error": str(exc),
         }
+    info["effective_languages"] = _effective_source_languages(root, info)
     info["break_backend"] = backend_for_project(info)
     info["break_catalog"] = catalog_summary(info)
     return info
