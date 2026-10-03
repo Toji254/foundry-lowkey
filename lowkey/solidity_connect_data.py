@@ -8318,6 +8318,19 @@ _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
 
 
 
+# Curated routes for exact scenes preferred over later duplicate scenes.
+for _scene_item in COMPREHENSIVE_MICRO_SCENES:
+    _title = _scene_item.get("title", "")
+    if _title == "Address → deployed code → code identity":
+        _scene_item["route"] = [
+            "address", "address.code", "address.codehash",
+            "extcodesize", "extcodehash",
+        ]
+    elif _title.startswith("Upgrade proxy: implementation slot"):
+        _scene_item["route"] = [
+            "erc1967-storage", "storage-layout",
+            "proxy-fallback", "delegatecall",
+        ]
 # FINAL CONNECTION AUDIT 2
 # Subtle language/ABI relationships that are easy to miss in pairwise browsing.
 _SEMANTIC_ALIASES.update({
@@ -9824,5 +9837,38 @@ for _left, _right, _label in _LATE_ATOM_EDGES:
     _COMPREHENSIVE_CONNECTION_EDGES.append((
         canonicalize(_left), canonicalize(_right), _label
     ))
+
+_FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
+
+# Late production-pattern edges. These concepts are introduced by the
+# research scene corpus after the original graph was constructed.
+_COMPREHENSIVE_CONNECTION_EDGES.extend([
+    ("erc4626-pattern", "mapping", "vault shares are commonly tracked by mapping"),
+    ("erc4626-pattern", "structs", "vault accounting can group share/asset state"),
+    ("erc4626-pattern", "events", "vault deposits and withdrawals emit lifecycle events"),
+    ("erc1271", "interface", "contract signatures are queried through a typed interface"),
+    ("erc1271", "bytes32", "signature validation takes a message digest"),
+    ("erc1271", "bytes", "signature material is passed as bytes"),
+    ("erc1967-storage", "delegatecall", "the implementation slot feeds delegated execution"),
+    ("erc1967-storage", "storage-layout", "proxy slot conventions protect implementation state"),
+    ("multicall", "arrays", "batch calls are represented as arrays of calldata bytes"),
+    ("multicall", "delegatecall", "self-delegation keeps batch calls in one storage context"),
+    ("multicall", "returndata", "each subcall can produce raw return bytes"),
+    ("flashloan-pattern", "callback", "temporary liquidity is followed by a receiver callback"),
+    ("flashloan-pattern", "interface", "flash-loan receivers expose a typed callback interface"),
+    ("flashloan-pattern", "reentrancy", "callback execution is an external re-entry boundary"),
+    ("flashloan-pattern", "checks-effects-interactions", "repayment state must survive the callback boundary"),
+    ("permit2-pattern", "mapping", "delegated permissions are represented as allowance mappings"),
+    ("permit2-pattern", "nonce", "nonces prevent replay of signed permissions"),
+    ("permit2-pattern", "signature-verification", "signature validation authorizes the permission"),
+    ("permit2-pattern", "keccak256", "signed permission digests are hash-derived"),
+    ("callback", "external-call", "a callback is entered through an external call"),
+    ("callback", "reentrancy", "callbacks can re-enter the calling protocol"),
+    ("hook", "callback", "hooks are lifecycle callbacks"),
+    ("hook", "external-call", "hooks cross a contract boundary"),
+    ("hook", "reentrancy", "hooks create re-entry opportunities"),
+    ("no-delegatecall", "delegatecall", "the guard exists to reject delegated execution"),
+    ("no-delegatecall", "storage", "the guard protects execution/storage assumptions"),
+])
 
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
