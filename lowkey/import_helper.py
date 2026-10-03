@@ -987,7 +987,8 @@ def interface_surface(s: Symbol) -> list[str]:
     body = text[match.end():end]
     methods = []
     for m in re.finditer(r"\bfunction\s+([A-Za-z_]\w*)\s*\(([^)]*)\)", body):
-        signature = f"{m.group(1)}({re.sub(r'\s+', ' ', m.group(2)).strip()})"
+        params = re.sub(r"\s+", " ", m.group(2)).strip()
+        signature = f"{m.group(1)}({params})"
         methods.append(signature)
     return methods[:16]
 
