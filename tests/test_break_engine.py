@@ -252,6 +252,51 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("ENTITLEMENT_AFTER_ATTACK", body)
         self.assertIn("exceededEntitlement", body)
 
+    def test_forge_run_retries_stack_too_deep_with_ir(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp).resolve()
+            harness = root / "test" / "Lowkey_Break.t.sol"
+            harness.parent.mkdir(parents=True, exist_ok=True)
+            harness.write_text("contract Test {}\n", encoding="utf-8")
+
+            class AuditContext:
+                def foundry_project_root(self):
+                    return root
+
+            class Host:
+                audit_context = AuditContext()
+                def tool_path(self, name):
+                    return name
+
+            first = type("Completed", (), {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "Error: Stack too deep. Try compiling with --via-ir",
+            })()
+            second = type("Completed", (), {
+                "returncode": 0,
+                "stdout": "LOWKEY_BREAK false",
+                "stderr": "",
+            })()
+
+            with patch.object(break_engine.subprocess, "run", side_effect=[first, second]) as run:
+                result = break_engine._forge_run(
+                    Host(),
+                    {},
+                    str(harness),
+                    "http://127.0.0.1:8545",
+                    {"stacks": ["foundry"], "native": {"forge": True}},
+                )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(run.call_count, 2)
+            retry = run.call_args_list[1].args[0]
+            self.assertIn("--via-ir", retry)
+            self.assertIn("--optimize", retry)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
