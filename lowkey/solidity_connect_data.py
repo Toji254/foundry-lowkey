@@ -8875,7 +8875,7 @@ def render_connection_pack(requested, scenes, walkthrough=False):
     covered = set()
     for index, scene in enumerate(scenes, 1):
         keys = _scene_keys(scene)
-        newly = [node for node in route if node in keys and node not in covered]
+        newly = [node for node in requested if node in keys and node not in covered]
         covered.update(newly)
         label = " → ".join(newly) if newly else "extends the previous bridge"
         print(f"  {index}. {label}")
