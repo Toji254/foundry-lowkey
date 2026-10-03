@@ -424,8 +424,9 @@ class BreakEngineTests(unittest.TestCase):
             "type": "error",
             "name": "Unauthorized",
             "inputs": [{"name": "caller", "type": "address"}],
+            "selector": "0x12345678",
         }
-        selector = break_engine._keccak256(b"Unauthorized(address)")[:4].hex()
+        selector = "12345678"
         caller = "0000000000000000000000002222222222222222222222222222222222222222"
         raw = "0x" + selector + caller
 
