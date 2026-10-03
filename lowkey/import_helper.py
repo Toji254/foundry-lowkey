@@ -25,6 +25,9 @@ Usage:
   lk import files
   lk import mappings
   lk import common
+  lk import <symbol>
+  lk import "<import declaration>"
+  lk import "<import/path.sol>"
   lk import --h
 
 The helper is standalone: it does not select targets, change RPC/ABI/audit
@@ -256,13 +259,36 @@ def header(title: str):
     print("=" * 76)
 
 
+def search_tokens(query: str) -> list[str]:
+    """
+    Normalize human Solidity import searches.
+
+    Examples:
+      ERC721URIStorage,
+      import {ERC721URIStorage, ERC721} from "...";
+      @openzeppelin/contracts/token/ERC721/ERC721.sol
+    """
+    q = query.strip()
+    brace = re.search(r"\{(.*?)\}", q, flags=re.S)
+    if brace:
+        return [x.lower() for x in re.findall(r"\b[A-Za-z_]\w*\b", brace.group(1))]
+    q = re.sub(r"^\s*import\s+", "", q, flags=re.I).strip()
+    q = q.strip().strip(";").strip().strip('"').strip("'")
+    q = re.sub(r"[,;]+$", "", q).strip()
+    if not q:
+        return []
+    q = re.sub(r"[^A-Za-z0-9_@./:-]", "", q)
+    return [q.lower()] if q else []
+
+
 def choose(items, renderer, label):
     if not items:
         print(f"No {label} found.")
         return None
-    for i, item in enumerate(items, 1):
-        print(renderer(i, item))
+    current = items
     while True:
+        for i, item in enumerate(current, 1):
+            print(renderer(i, item))
         try:
             a = input("\nSelect number, /search, b=back, q=quit: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -273,21 +299,28 @@ def choose(items, renderer, label):
         if a.lower() == "b":
             return None
         if a.startswith("/"):
-            q = a[1:].lower()
-            matches = [x for x in items if q in renderer(0, x).lower()]
+            tokens = search_tokens(a[1:])
+            if not tokens:
+                print("Enter a symbol, import path, or Solidity import declaration after '/'.")
+                continue
+            rendered = [renderer(0, x).lower() for x in current]
+            matches = [
+                x for x, text in zip(current, rendered)
+                if any(token in text for token in tokens)
+            ]
             if not matches:
-                print(f"No matches for '{q}'.")
+                print(f"No matches for '{a[1:].strip()}'.")
                 continue
-            for i, item in enumerate(matches, 1):
-                print(renderer(i, item))
-            a = input("Select filtered number, b=back, q=quit: ").strip()
-            if a.lower() == "b":
-                continue
-            if a.lower() == "q":
-                raise SystemExit(0)
-            items = matches
+            exact_symbols = [
+                x for x in matches
+                if isinstance(x, Symbol) and any(token == x.name.lower() for token in tokens)
+            ]
+            if len(exact_symbols) == 1:
+                return exact_symbols[0]
+            current = matches
+            continue
         try:
-            return items[int(a) - 1]
+            return current[int(a) - 1]
         except (ValueError, IndexError):
             print("Invalid selection.")
 
@@ -386,6 +419,43 @@ def common():
         print()
 
 
+def import_query(query: str, root: Path, maps) -> int:
+    tokens = search_tokens(query)
+    if not tokens:
+        print("No import query provided.")
+        return 2
+
+    syms = all_symbols(root, maps)
+    exact = [
+        s for s in syms
+        if s.name.lower() in tokens or s.import_path.lower() in tokens
+    ]
+
+    has_braces = bool(re.search(r"\{.*?\}", query, flags=re.S))
+    if has_braces and exact:
+        for s in exact:
+            show_symbol(s)
+        return 0
+
+    if len(exact) == 1:
+        show_symbol(exact[0])
+        return 0
+
+    matches = [
+        s for s in syms
+        if any(token in s.name.lower() or token in s.import_path.lower() for token in tokens)
+    ]
+    if not matches:
+        print(f"No importable symbol or source file matches '{query.strip()}'.")
+        print("Try: lk import /<symbol>, lk import <symbol>, or lk import files")
+        return 2
+
+    s = choose(matches, sym_render, "matching importable symbols")
+    if s:
+        show_symbol(s)
+    return 0
+
+
 def run_category(category: str, root: Path, maps) -> int:
     cat = category.lower()
     if cat in {"packages", "package", "deps"}:
@@ -445,9 +515,7 @@ def run_category(category: str, root: Path, maps) -> int:
         common()
         return 0
 
-    print(f"Unknown import category: {category}")
-    print("Run: lk import --h")
-    return 2
+    return import_query(category, root, maps)
 
 
 def interactive(root: Path, maps) -> int:
@@ -486,7 +554,7 @@ def main(argv=None) -> int:
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
-    return run_category(args[0], root, maps)
+    return run_category(" ".join(args), root, maps)
 
 
 if __name__ == "__main__":
