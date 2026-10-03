@@ -1601,7 +1601,6 @@ contract Vault is Owned {
         "call": 'new Vault("Savings");  // name = "Savings", owner = deployer',
     },
     {
-    {
         "keys": {"structs", "mapping", "nested-mapping", "arrays", "enum", "bytes", "address"},
         "title": "A mapping stores a struct with an enum, bytes, and arrays",
         "story": "An address selects a struct from a mapping. The struct contains an enum, raw bytes, and a dynamic array. A second mapping uses two keys, while separate arrays show dynamic versus fixed size.",
