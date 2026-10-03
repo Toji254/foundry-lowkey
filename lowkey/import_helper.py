@@ -35,6 +35,9 @@ Usage:
   lk import --copy-only <symbol>
   lk import search nft
   lk import explain ERC721
+  lk import explain interface
+  lk import explain abstract
+  lk import graph ERC721
   lk import usage ERC721
   lk import related ERC721
   lk import audit ERC721
@@ -428,6 +431,31 @@ IMPORT_LEARNING = {
     },
 }
 
+
+
+LEARNING_CONCEPTS = {
+    "interface": {
+        "title": "INTERFACE",
+        "what": "A Solidity interface is a contract-shaped list of callable declarations. It tells your code what functions/events/errors it can expect, but the implementation lives at another address.",
+        "analogy": "Think M-Pesa API docs: the API tells you how to call sendMoney(), but the docs themselves do not move the money.",
+        "use": "Use an interface when your contract needs to interact with an existing contract without inheriting its implementation.",
+        "audit": "Find the concrete address behind the interface. Then audit that real implementation and every assumption your code makes about its behavior.",
+    },
+    "abstract": {
+        "title": "ABSTRACT CONTRACT",
+        "what": "An abstract contract is a reusable base contract that is not deployable while required behavior is still unimplemented. It may still contain real state, constructors, modifiers, and working functions.",
+        "analogy": "Think of a partly-built house blueprint that already specifies the foundation and some finished rooms, but leaves required rooms for the final builder.",
+        "use": "Use it when several child contracts should share real implementation/state while forcing each child to provide specific behavior.",
+        "audit": "Audit the base implementation as executable code, then compare every child override against the security invariants established by the base.",
+    },
+    "contract": {
+        "title": "NORMAL CONTRACT",
+        "what": "A normal concrete contract has all required behavior implemented and can be deployed as its own runtime contract.",
+        "analogy": "A finished M-Pesa business workflow: the rules and operations are actually implemented, so it can run.",
+        "use": "Deploy it directly or inherit from it when the implementation is complete.",
+        "audit": "Review its public/external entry points, state, trust boundaries, external calls, and inherited behavior.",
+    },
+}
 
 @dataclass(frozen=True)
 class Symbol:
@@ -1144,6 +1172,30 @@ def search_imports(query: str, root: Path, maps) -> int:
 
 
 
+def show_concept(name: str, json_mode: bool = False) -> int:
+    key = name.strip().lower().replace("-", " ")
+    aliases = {
+        "interfaces": "interface",
+        "abstract contract": "abstract",
+        "abstract contracts": "abstract",
+        "normal": "contract",
+        "concrete contract": "contract",
+    }
+    key = aliases.get(key, key)
+    item = LEARNING_CONCEPTS.get(key)
+    if not item:
+        return 2
+    if json_mode:
+        print(json.dumps({"concept": key, **item}, indent=2))
+        return 0
+    print(f"\nLOWKEY // SOLIDITY CONCEPT • {item['title']}")
+    print("=" * 76)
+    print(f"WHAT: {item['what']}")
+    print(f"ANALOGY: {item['analogy']}")
+    print(f"USE: {item['use']}")
+    print(f"AUDIT: {item['audit']}")
+    return 0
+
 def print_import_graph(s: Symbol, root: Path, maps) -> int:
     print(f"\nIMPORT GRAPH • {s.name}")
     print("=" * 76)
@@ -1781,6 +1833,8 @@ def run_learning_command(category: str, root: Path, maps, json_mode: bool = Fals
     query = parts[1].strip() if len(parts) > 1 else ""
     if command == "search":
         return search_imports(query, root, maps)
+    if command == "explain" and query.strip().lower().replace("-", " ") in {"interface", "interfaces", "abstract", "abstract contract", "abstract contracts", "normal", "concrete contract", "contract"}:
+        return show_concept(query, json_mode=json_mode)
     if command in {"explain", "usage", "audit", "related", "graph"}:
         symbol = resolve_single_symbol(query, root, maps)
         if not symbol:
