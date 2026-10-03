@@ -7248,3 +7248,943 @@ def _shortest_path(start, goal):
 
     return None, None
 
+
+
+
+# ---------------------------------------------------------------------------
+# END OF DEEP CROSS-CHECK LAYER
+# ---------------------------------------------------------------------------
+#
+# Final reference pass, 2026-10.  These nodes/edges were checked against:
+# - the Solidity language reference and ABI specification,
+# - storage/transient-layout rules and Yul builtins,
+# - representative OpenZeppelin token/access-control/proxy/cryptography code,
+# - Safe multisig patterns,
+# - Uniswap v4 hook/library/transient-state patterns.
+#
+# The graph distinguishes "direct syntax/data-flow relationship" from
+# "same protocol pattern".  A route may therefore use intermediate concepts.
+#
+
+_FINAL_SEMANTIC_ALIASES = {
+    "tuple": "tuples",
+    "tuples": "tuples",
+    "destructuring": "tuples",
+    "named-arguments": "named-arguments",
+    "named-argument": "named-arguments",
+    "call-options": "call-options",
+    "value-option": "call-options",
+    "gas-option": "call-options",
+    "memory-copy": "memory-copy",
+    "calldata-slice": "calldata-slices",
+    "calldata-slices": "calldata-slices",
+    "public-getter": "public-getter",
+    "getter": "public-getter",
+    "event-indexed": "event-indexed",
+    "indexed": "event-indexed",
+    "anonymous-event": "anonymous-event",
+    "packed-encoding": "encodePacked",
+    "encode-packed": "encodePacked",
+    "erc165": "erc165-interface",
+    "erc165-interface": "erc165-interface",
+    "receiver-hook": "receiver-hook",
+    "token-receiver": "receiver-hook",
+    "erc1271": "erc1271",
+    "erc1271-signature": "erc1271",
+    "erc20": "erc20-pattern",
+    "erc20-pattern": "erc20-pattern",
+    "erc721": "erc721-pattern",
+    "erc721-pattern": "erc721-pattern",
+    "erc1155": "erc1155-pattern",
+    "erc1155-pattern": "erc1155-pattern",
+    "permit": "permit-pattern",
+    "permit-pattern": "permit-pattern",
+    "eip712": "eip712-pattern",
+    "eip712-pattern": "eip712-pattern",
+    "multisig": "multisig-pattern",
+    "safe": "multisig-pattern",
+    "safe-pattern": "multisig-pattern",
+    "timelock": "timelock-pattern",
+    "timelock-pattern": "timelock-pattern",
+    "governor": "governor-pattern",
+    "governor-pattern": "governor-pattern",
+    "proxy-upgrade": "proxy-upgrade-pattern",
+    "proxy-upgrade-pattern": "proxy-upgrade-pattern",
+    "uups": "proxy-upgrade-pattern",
+    "erc1967": "erc1967-storage",
+    "erc1967-storage": "erc1967-storage",
+    "storage-slot": "storage-slot",
+    "struct-abi": "struct-abi",
+    "error-data": "error-data",
+    "log-topics": "log-topics",
+    "token-approval": "token-approval",
+    "allowance": "token-approval",
+    "transfer-from": "transfer-from",
+    "safe-transfer": "safe-transfer",
+    "batch-transfer": "batch-transfer",
+    "hook": "receiver-hook",
+    "create2": "create2",
+    "salt": "create2",
+    "creation-code": "init-code",
+    "runtime-code": "runtime-code",
+    "address-code": "address.code",
+    "address-codehash": "address.codehash",
+    "block-chainid": "block.chainid",
+    "chainid": "block.chainid",
+    "blob-basefee": "block.blobbasefee",
+    "blobhash": "blobhash",
+    "blockhash": "blockhash",
+    "block-coinbase": "block.coinbase",
+    "block-gaslimit": "block.gaslimit",
+    "tx-gasprice": "tx.gasprice",
+    "self-balance": "selfbalance",
+    "yul-assembly": "yul",
+    "leave": "yul-control-flow",
+    "break": "yul-control-flow",
+    "continue": "yul-control-flow",
+    "switch": "yul-control-flow",
+    "yul-loop": "yul-control-flow",
+    "object": "yul-object",
+    "memory-safe": "memory-safe",
+}
+_SEMANTIC_ALIASES.update(_FINAL_SEMANTIC_ALIASES)
+
+_FINAL_MEANINGS = {
+    "tuples": "A fixed grouping of values used for multiple returns, destructuring, and ABI tuple encoding.",
+    "named-arguments": "Call-site syntax that names arguments by parameter name.",
+    "call-options": "Per-call settings such as attached ETH and forwarded gas.",
+    "memory-copy": "A copy of reference-type data into temporary memory rather than persistent storage.",
+    "public-getter": "Compiler-generated external getter behavior for public state variables, with special rules for mappings and arrays.",
+    "anonymous-event": "An event whose signature is not automatically stored in topic zero.",
+    "erc165-interface": "A standard interface-ID capability check built from XORed function selectors.",
+    "receiver-hook": "A callback interface used to confirm that a contract can safely receive tokens or another protocol asset.",
+    "erc1271": "A contract-wallet signature validation interface that lets contracts approve signatures without EOA ecrecover.",
+    "erc1155-pattern": "Multi-token accounting using token-id/account mappings, batch arrays, and receiver callbacks.",
+    "eip712-pattern": "Typed structured-data hashing that combines type hashes, a domain separator, a struct hash, and a final digest.",
+    "multisig-pattern": "Threshold-controlled execution using owners, signatures, a nonce, transaction hashing, and external calls.",
+    "timelock-pattern": "Scheduled operation state keyed by a hash with timestamp-based readiness and later execution.",
+    "governor-pattern": "Proposal/vote state built from hashed proposal identities, arrays of targets/calldatas, interfaces, and events.",
+    "proxy-upgrade-pattern": "Upgrade logic that changes an implementation address while calls execute through delegatecall in proxy storage.",
+    "erc1967-storage": "A standardized proxy storage-slot convention for implementation/admin/beacon addresses.",
+    "storage-slot": "The 32-byte storage coordinate used by SLOAD/SSTORE and exposed by advanced storage patterns.",
+    "struct-abi": "The ABI representation of a Solidity struct as a tuple with its component types and order.",
+    "error-data": "Raw revert bytes containing an error selector plus ABI-encoded arguments when a custom error is used.",
+    "log-topics": "The topic words attached to an EVM log, including event signature and indexed parameters.",
+    "token-approval": "Allowance/approval state that authorizes another address to spend or move assets.",
+    "transfer-from": "A delegated token transfer that consumes an allowance or approval on behalf of an owner.",
+    "safe-transfer": "A token movement that verifies the recipient contract's receiver hook when required.",
+    "batch-transfer": "A token operation that processes parallel id/value arrays in one call.",
+    "block.chainid": "The current chain identifier, often bound into signatures and domain separators.",
+    "blobbasefee": "The current block's blob base fee.",
+    "blobhash": "A global that returns a blob versioned hash for a blob index.",
+    "blockhash": "A global function that retrieves a recent block hash within its allowed history window.",
+    "block.coinbase": "The current block's fee-recipient address.",
+    "block.gaslimit": "The current block gas limit.",
+    "tx.gasprice": "The gas price associated with the current transaction context.",
+    "selfbalance": "A Yul builtin that reads the current contract balance.",
+    "yul-object": "Yul object/data syntax used to package deploy-time and runtime code.",
+    "memory-safe": "An inline-assembly annotation/discipline used to let the compiler reason about memory safety.",
+}
+_EXTRA_MEANINGS.update(_FINAL_MEANINGS)
+_EXTRA_CONCEPTS.update(_FINAL_MEANINGS)
+
+_FINAL_TINY_CONNECTIONS = [
+    # Core language/data semantics.
+    ("tuples", "abi.encode", "ABI encodes grouped values as tuples"),
+    ("tuples", "abi.decode", "ABI decoding can restore multiple tuple components"),
+    ("tuples", "returns", "multiple return values are commonly unpacked as tuples"),
+    ("tuples", "parameter-vs-argument", "function arguments occupy tuple-shaped ABI positions"),
+    ("named-arguments", "function", "named arguments refer to parameter names at the call site"),
+    ("call-options", "call", "call options attach ETH/gas to an outgoing call"),
+    ("call-options", "payable", "value call options require an ETH-compatible call path"),
+    ("memory-copy", "storage-memory-calldata", "copies explain why storage/memory/calldata are not interchangeable"),
+    ("public-getter", "mapping", "public mapping getters take keys instead of returning the mapping itself"),
+    ("public-getter", "arrays", "public array getters expose indexed elements and length-dependent behavior"),
+    ("public-getter", "structs", "public struct getters omit fields that cannot be represented as getter arguments/returns"),
+    ("anonymous-event", "events", "anonymous changes how event signature topics are emitted"),
+    ("log-topics", "event-indexed", "indexed fields occupy log topics"),
+    ("log-topics", "keccak256", "event signatures and dynamic indexed values use Keccak-derived topics"),
+    ("erc165-interface", "interface", "ERC-165 expresses interface support as a bytes4 interface ID"),
+    ("erc165-interface", "function-selector", "interface IDs are derived from function selectors"),
+    ("receiver-hook", "interface", "receiver checks are usually defined through interfaces"),
+    ("receiver-hook", "external-call", "receiver hooks create a callback boundary after a token transfer"),
+    ("receiver-hook", "reentrancy", "receiver callbacks can re-enter a token contract"),
+    ("erc1271", "signature-verification", "contract wallets validate signatures through a callable interface"),
+    ("erc1271", "interface", "contract signature validation is an interface call rather than ecrecover"),
+    ("erc1271", "bytes", "signature payloads are passed as bytes"),
+    ("struct-abi", "structs", "Solidity structs map to ABI tuples"),
+    ("struct-abi", "tuples", "a struct's ABI shape is tuple(component types in order)"),
+    ("struct-abi", "abi.encode", "struct arguments are ABI-encoded by component values"),
+    ("struct-abi", "abi.decode", "encoded tuples can be decoded into struct-shaped values"),
+    ("encodePacked", "keccak256", "packed encodings are commonly hashed"),
+    ("encodePacked", "signature-verification", "packed encodings are often used in signed-message construction"),
+    ("encodePacked", "bytes", "packed encoding produces bytes"),
+    ("encodePacked", "front-running", "a commitment may hash a packed representation of a secret"),
+    # Tokens.
+    ("erc20-pattern", "mapping", "ERC-20 balances are commonly stored as address-to-amount mappings"),
+    ("erc20-pattern", "token-approval", "ERC-20 allowance is an owner-to-spender nested mapping"),
+    ("erc20-pattern", "events", "ERC-20 state transitions emit Transfer/Approval logs"),
+    ("token-approval", "nested-mapping", "allowance has two address keys"),
+    ("token-approval", "msg.sender", "approve typically records the caller as the allowance owner"),
+    ("transfer-from", "token-approval", "delegated transfers consume an owner's allowance"),
+    ("transfer-from", "msg.sender", "the caller is the spender in a typical allowance flow"),
+    ("transfer-from", "mapping", "transferFrom updates balances and allowance mappings"),
+    ("safe-transfer", "receiver-hook", "safe transfer checks the recipient contract callback"),
+    ("safe-transfer", "interface", "receiver validation calls a receiver interface"),
+    ("safe-transfer", "reentrancy", "receiver callbacks happen across an external call boundary"),
+    ("erc721-pattern", "mapping", "NFT ownership and approval state use tokenId-based mappings"),
+    ("erc721-pattern", "receiver-hook", "safe NFT transfers use an ERC721 receiver callback"),
+    ("erc721-pattern", "token-approval", "NFTs use per-token approvals and operator approvals"),
+    ("erc721-pattern", "events", "NFT transfers/approvals are represented by events"),
+    ("erc1155-pattern", "nested-mapping", "ERC-1155 balances use tokenId/account keyed mappings"),
+    ("erc1155-pattern", "arrays", "batch operations process parallel id and value arrays"),
+    ("erc1155-pattern", "receiver-hook", "safe ERC-1155 transfers call receiver interfaces"),
+    ("erc1155-pattern", "events", "single and batch transfers emit distinct events"),
+    ("batch-transfer", "arrays", "ids and values are parallel arrays"),
+    ("batch-transfer", "loops", "batch processing commonly iterates the input arrays"),
+    # Typed-signature / permit / governance.
+    ("eip712-pattern", "structs", "typed messages mirror Solidity-style structured records"),
+    ("eip712-pattern", "keccak256", "domain and struct hashes are Keccak digests"),
+    ("eip712-pattern", "abi.encode", "type hashes and fields are ABI-encoded before hashing"),
+    ("eip712-pattern", "block.chainid", "the domain commonly binds the signed message to a chain"),
+    ("eip712-pattern", "address", "the domain commonly binds the verifying contract address"),
+    ("eip712-pattern", "signature-verification", "the final digest is checked against a signature"),
+    ("eip712-pattern", "nonce", "application protocols commonly add nonces for replay protection"),
+    ("permit-pattern", "eip712-pattern", "permit flows are a common EIP-712 application"),
+    ("permit-pattern", "token-approval", "permit authorizes allowance without an on-chain approve transaction"),
+    ("permit-pattern", "nonce", "each permit authorization commonly consumes a nonce"),
+    ("multisig-pattern", "mapping", "owner/approval state uses mappings in common multisig designs"),
+    ("multisig-pattern", "arrays", "owner sets and transaction payloads commonly use arrays"),
+    ("multisig-pattern", "nonce", "the transaction hash is bound to a nonce"),
+    ("multisig-pattern", "eip712-pattern", "Safe-style transaction hashes use typed-data hashing"),
+    ("multisig-pattern", "ecrecover", "EOA signatures can be checked by recovering the signer"),
+    ("multisig-pattern", "call", "successful authorization ends in external transaction execution"),
+    ("multisig-pattern", "threshold", "execution requires a configured minimum number of valid approvals"),
+    ("timelock-pattern", "mapping", "scheduled operation state is keyed by an operation ID"),
+    ("timelock-pattern", "keccak256", "operation IDs are hashes of operation content"),
+    ("timelock-pattern", "abi.encode", "operation content is commonly encoded before hashing"),
+    ("timelock-pattern", "block.timestamp", "readiness depends on a time threshold"),
+    ("timelock-pattern", "enum", "timelocks often expose Pending/Ready/Done-style state"),
+    ("timelock-pattern", "call", "execution eventually performs the queued target call(s)"),
+    ("timelock-pattern", "events", "scheduling and execution are observable through events"),
+    ("governor-pattern", "arrays", "proposals carry target/value/calldata arrays"),
+    ("governor-pattern", "keccak256", "proposal IDs are commonly hash-derived"),
+    ("governor-pattern", "abi.encode", "proposal inputs are encoded before hashing"),
+    ("governor-pattern", "mapping", "proposal/vote state is stored by proposal ID/account"),
+    ("governor-pattern", "enum", "governance uses explicit proposal/vote states"),
+    ("governor-pattern", "events", "proposal and voting transitions emit logs"),
+    ("governor-pattern", "interface", "governance implements a public interface"),
+    ("governor-pattern", "eip712-pattern", "off-chain vote signatures may use typed structured data"),
+    # Proxies / storage.
+    ("erc1967-storage", "storage-slot", "ERC-1967 identifies special implementation/admin storage coordinates"),
+    ("erc1967-storage", "keccak256", "standardized slots are hash-derived constants"),
+    ("erc1967-storage", "proxy-fallback", "the implementation slot feeds proxy delegation"),
+    ("proxy-upgrade-pattern", "proxy-fallback", "upgradeable proxies and forwarding share the fallback/delegatecall path"),
+    ("proxy-upgrade-pattern", "delegatecall", "implementation code runs through delegatecall"),
+    ("proxy-upgrade-pattern", "storage-layout", "implementation upgrades depend on compatible storage layout"),
+    ("proxy-upgrade-pattern", "access-control", "changing an implementation is privileged state"),
+    ("proxy-upgrade-pattern", "events", "upgrades are commonly emitted as events"),
+    ("proxy-upgrade-pattern", "erc1967-storage", "ERC-1967 is a standard implementation-slot pattern"),
+    ("delegatecall", "msg.sender", "delegatecall preserves the original caller in the delegated context"),
+    ("delegatecall", "address(this).balance", "delegatecall preserves the proxy address as the execution address"),
+    ("delegatecall", "storage-layout", "delegated code interprets the caller's storage"),
+    ("proxy-fallback", "calldata", "proxy fallback forwards the received calldata"),
+    ("proxy-fallback", "returndata", "proxy fallback bubbles implementation returndata"),
+    # Creation / code.
+    ("create2", "init-code", "CREATE2 hashes the exact init code"),
+    ("init-code", "abi.encode", "constructor arguments are appended/encoded into creation input"),
+    ("init-code", "constructor", "init code executes construction logic"),
+    ("runtime-code", "address.code", "runtime bytecode is what an address.code read exposes"),
+    ("runtime-code", "address.codehash", "runtime bytecode determines the code hash"),
+    ("address.code", "extcodesize", "Solidity code length and Yul extcodesize inspect deployed code presence"),
+    ("address.codehash", "extcodehash", "Solidity codehash and Yul extcodehash inspect code identity"),
+    ("create2", "address.code", "CREATE2 creates the address whose runtime code is inspected later"),
+    # Globals and Yul.
+    ("block.chainid", "eip712-pattern", "chain identity is part of domain separation"),
+    ("block.chainid", "signature-verification", "signatures may be bound to a specific chain"),
+    ("blockhash", "block.number", "blockhash is indexed by a recent block number"),
+    ("block.coinbase", "address", "the block fee recipient is an address"),
+    ("block.gaslimit", "gasleft", "block gas limit and remaining execution gas are distinct gas contexts"),
+    ("tx.gasprice", "gasleft", "transaction pricing and remaining execution gas answer different questions"),
+    ("blobbasefee", "blobhash", "blob-related globals describe blob pricing and blob identities"),
+    ("selfbalance", "contract-balance", "Yul selfbalance reads the current contract balance"),
+    ("caller", "msg.sender", "Yul caller is the low-level equivalent of the immediate Solidity sender"),
+    ("callvalue", "msg.value", "Yul callvalue is the low-level equivalent of attached call ETH"),
+    ("mload", "memory-copy", "memory reads/writes are how Yul manipulates copied reference data"),
+    ("calldataload", "calldata", "Yul reads the raw external input"),
+    ("calldatacopy", "calldata-slices", "Yul can copy a selected calldata region into memory"),
+    ("returndatacopy", "returndata", "Yul copies the most recent return-data buffer"),
+    ("returndatasize", "returndata", "Yul exposes the size of the most recent return-data buffer"),
+    ("sload", "storage-slot", "SLOAD reads one 32-byte storage coordinate"),
+    ("sstore", "storage-slot", "SSTORE writes one 32-byte storage coordinate"),
+    ("tload", "transient-storage", "TLOAD reads transaction-scoped storage"),
+    ("tstore", "transient-storage", "TSTORE writes transaction-scoped storage"),
+    ("tload", "reentrancy", "transient guards commonly use TLOAD/TSTORE"),
+    ("tstore", "reentrancy", "transient guards commonly use TLOAD/TSTORE"),
+    ("yul-control-flow", "if-else", "Yul supplies low-level conditional control"),
+    ("yul-control-flow", "loops", "Yul supports for/break/continue-style control"),
+    ("yul-control-flow", "switch", "Yul switch selects among cases"),
+    ("yul-functions", "function", "Yul local functions encapsulate low-level computation"),
+    ("yul-object", "init-code", "Yul objects can package creation and runtime data"),
+    ("memory-safe", "yul-memory", "memory-safety annotations constrain inline assembly's memory use"),
+    # Testing / PoC connections.
+    ("vm-load", "storage-slot", "vm.load exposes a raw storage coordinate to tests"),
+    ("vm-store", "storage-slot", "vm.store writes a raw storage coordinate in tests"),
+    ("vm-load", "mapping-slots", "reading a mapping requires its derived slot"),
+    ("vm-store", "mapping-slots", "writing a mapping requires its derived slot"),
+    ("vm-etch", "address.code", "etch changes runtime code at a test address"),
+    ("vm-etch", "extcodesize", "code replacement can exercise code-existence assumptions"),
+    ("vm-expect-call", "function-selector", "expected calls can be asserted by calldata selector"),
+    ("vm-expect-call", "returndata", "call expectations sit around an external boundary"),
+    ("test-events", "log-topics", "event assertions inspect emitted log topics"),
+    ("invariant-tests", "mapping", "stateful invariants often quantify over mapping-backed accounting"),
+    ("invariant-tests", "arrays", "handlers commonly mutate arrays/state over many calls"),
+    ("fork-tests", "oracle", "forks reproduce external protocol/oracle state"),
+    ("script-interaction", "interface", "scripts use interfaces to interact with deployed dependencies"),
+    ("script-interaction", "call", "scripts cross external call boundaries"),
+    ("poc-upgrade", "proxy-upgrade-pattern", "upgrade PoCs test implementation/storage assumptions"),
+    ("poc-signature", "eip712-pattern", "signature PoCs test typed-data/authentication boundaries"),
+    ("poc-token", "erc20-pattern", "token PoCs exercise token accounting and allowance invariants"),
+    ("poc-token", "erc721-pattern", "NFT PoCs exercise owner/approval/receiver behavior"),
+]
+
+for _edge in _FINAL_TINY_CONNECTIONS:
+    if _edge not in _COMPREHENSIVE_CONNECTION_EDGES:
+        _COMPREHENSIVE_CONNECTION_EDGES.append(_edge)
+
+
+def _final_add_scene(keys, title, story, code, variables, flow, call):
+    scene = {
+        "keys": frozenset(canonicalize(k) for k in keys),
+        "title": title,
+        "story": story,
+        "code": code.strip("\n"),
+        "variables": list(variables),
+        "flow": list(flow),
+        "call": call,
+    }
+    COMPREHENSIVE_MICRO_SCENES.append(scene)
+    return scene
+
+
+_FINAL_RESEARCH_SCENES = [
+    (
+        ["erc20-pattern", "mapping", "token-approval", "events", "msg.sender"],
+        "ERC20: balance + allowance + transfer",
+        "A fungible token ties two mappings together: one for balances and one for delegated spending. Events expose the state transition.",
+        """
+mapping(address => uint256) public balanceOf;
+mapping(address => mapping(address => uint256)) public allowance;
+
+event Approval(address indexed owner, address indexed spender, uint256 amount);
+event Transfer(address indexed from, address indexed to, uint256 amount);
+
+function approve(address spender_, uint256 amount_) external {
+    allowance[msg.sender][spender_] = amount_;
+    emit Approval(msg.sender, spender_, amount_);
+}
+
+function transferFrom(address owner_, address to_, uint256 amount_) external {
+    require(allowance[owner_][msg.sender] >= amount_);
+    allowance[owner_][msg.sender] -= amount_;
+    balanceOf[owner_] -= amount_;
+    balanceOf[to_] += amount_;
+    emit Transfer(owner_, to_, amount_);
+}
+""",
+        [
+            ("state", "mapping(address => uint256)", "balanceOf", "balanceOf[alice]", "Owner-to-token balance."),
+            ("state", "mapping(address => mapping(address => uint256))", "allowance", "allowance[alice][bob]", "Owner-to-spender authorization."),
+            ("global", "address", "msg.sender", "bob", "Spender in transferFrom."),
+            ("parameter", "address", "owner_", "alice", "Token owner."),
+            ("parameter", "address", "to_", "carol", "Recipient."),
+            ("parameter", "uint256", "amount_", "100", "Transfer amount."),
+        ],
+        [
+            "approve records msg.sender as the allowance owner and spender_ as the delegate.",
+            "transferFrom reads allowance[owner_][msg.sender].",
+            "The allowance and both balances are updated.",
+            "Approval/Transfer events expose the important state transitions.",
+        ],
+        "alice.approve(bob, 100); bob.transferFrom(alice, carol, 100);",
+    ),
+    (
+        ["erc721-pattern", "mapping", "token-approval", "receiver-hook", "events"],
+        "ERC721: tokenId → owner → approval → receiver",
+        "An NFT tracks ownership by tokenId, approvals by tokenId, and optionally calls the receiver contract during safe transfer.",
+        """
+mapping(uint256 => address) public ownerOf;
+mapping(uint256 => address) public getApproved;
+
+interface IERC721Receiver {
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external returns (bytes4);
+}
+
+event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+
+function approve(address to_, uint256 tokenId_) external {
+    getApproved[tokenId_] = to_;
+}
+
+function safeTransfer(address to_, uint256 tokenId_, bytes calldata data_) external {
+    address from = ownerOf[tokenId_];
+    ownerOf[tokenId_] = to_;
+
+    if (to_.code.length > 0) {
+        require(
+            IERC721Receiver(to_).onERC721Received(
+                msg.sender, from, tokenId_, data_
+            ) == IERC721Receiver.onERC721Received.selector
+        );
+    }
+
+    emit Transfer(from, to_, tokenId_);
+}
+""",
+        [
+            ("state", "mapping(uint256 => address)", "ownerOf", "ownerOf[tokenId]", "NFT ownership."),
+            ("state", "mapping(uint256 => address)", "getApproved", "getApproved[tokenId]", "Per-token delegate."),
+            ("parameter", "address", "to_", "0xBob", "New owner."),
+            ("parameter", "uint256", "tokenId_", "7", "Token identity."),
+            ("global", "address", "msg.sender", "0xAlice", "Caller/operator."),
+        ],
+        [
+            "tokenId_ selects the current owner.",
+            "approve writes a per-token mapping entry.",
+            "safeTransfer changes ownership before checking a contract receiver.",
+            "The receiver callback crosses an external boundary and returns a selector.",
+            "Transfer emits the state change.",
+        ],
+        "safeTransfer(bob, 7, hex\"\");",
+    ),
+    (
+        ["erc1155-pattern", "nested-mapping", "arrays", "receiver-hook", "events"],
+        "ERC1155: tokenId + account → balance, plus batch arrays",
+        "Multi-token accounting adds a tokenId dimension to balances and uses parallel arrays for batch transfers.",
+        """
+mapping(uint256 => mapping(address => uint256)) public balanceOf;
+
+event TransferSingle(
+    address indexed operator,
+    address indexed from,
+    address indexed to,
+    uint256 id,
+    uint256 value
+);
+
+event TransferBatch(
+    address indexed operator,
+    address indexed from,
+    address indexed to,
+    uint256[] ids,
+    uint256[] values
+);
+
+function mintBatch(
+    address to_,
+    uint256[] calldata ids_,
+    uint256[] calldata values_
+) external {
+    require(ids_.length == values_.length);
+
+    for (uint256 i = 0; i < ids_.length; ++i) {
+        balanceOf[ids_[i]][to_] += values_[i];
+    }
+
+    emit TransferBatch(msg.sender, address(0), to_, ids_, values_);
+}
+""",
+        [
+            ("state", "mapping(uint256 => mapping(address => uint256))", "balanceOf", "balanceOf[id][account]", "Token/account balance."),
+            ("parameter", "uint256[] calldata", "ids_", "[1, 2]", "Batch token IDs."),
+            ("parameter", "uint256[] calldata", "values_", "[10, 20]", "Parallel quantities."),
+            ("global", "address", "msg.sender", "0xMinter", "Operator."),
+        ],
+        [
+            "Each token ID selects an inner account mapping.",
+            "The two arrays must have the same length.",
+            "The loop updates one token/account pair per index.",
+            "The batch event records the parallel arrays.",
+        ],
+        "mintBatch(alice, [1, 2], [10, 20]);",
+    ),
+    (
+        ["eip712-pattern", "structs", "keccak256", "abi.encode", "signature-verification", "nonce", "block.chainid", "address"],
+        "EIP712: typed struct → domain → digest → signer",
+        "Typed structured data connects Solidity structs to deterministic hashing, a domain separator, chain/contract binding, and signature verification.",
+        """
+struct Permit {
+    address owner;
+    address spender;
+    uint256 value;
+    uint256 nonce;
+}
+
+bytes32 public constant TYPEHASH =
+    keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce)");
+
+function digest(Permit memory permit_)
+    external
+    view
+    returns (bytes32)
+{
+    bytes32 structHash = keccak256(
+        abi.encode(
+            TYPEHASH,
+            permit_.owner,
+            permit_.spender,
+            permit_.value,
+            permit_.nonce
+        )
+    );
+
+    bytes32 domainSeparator = keccak256(
+        abi.encode(
+            keccak256("EIP712Domain(uint256 chainId,address verifyingContract)"),
+            block.chainid,
+            address(this)
+        )
+    );
+
+    return keccak256(
+        abi.encodePacked("\\x19\\x01", domainSeparator, structHash)
+    );
+}
+""",
+        [
+            ("struct", "Permit", "permit_", "owner/spender/value/nonce", "Typed message."),
+            ("state", "bytes32", "TYPEHASH", "keccak256(type string)", "Type identity."),
+            ("global", "uint256", "block.chainid", "1", "Domain binding."),
+            ("global", "address", "address(this)", "0xToken", "Verifying-contract binding."),
+            ("field", "uint256", "nonce", "7", "Replay protection field."),
+        ],
+        [
+            "The struct fields form a typed message.",
+            "abi.encode packs the type hash and fields.",
+            "keccak256 produces the struct hash.",
+            "The domain binds the digest to a chain and verifying contract.",
+            "A signature verifier can use the final digest to authenticate the signer.",
+        ],
+        "digest(permit);",
+    ),
+    (
+        ["timelock-pattern", "mapping", "keccak256", "abi.encode", "block.timestamp", "call", "events"],
+        "Timelock: operation hash → timestamp → executable call",
+        "A timelock stores a hashed operation and the timestamp when it becomes executable, then later performs the target call.",
+        """
+mapping(bytes32 => uint256) public readyAt;
+
+event Scheduled(bytes32 indexed id, uint256 executeAt);
+event Executed(bytes32 indexed id);
+
+function schedule(
+    address target_,
+    uint256 value_,
+    bytes calldata data_,
+    uint256 delay_
+) external returns (bytes32 id) {
+    id = keccak256(abi.encode(target_, value_, data_));
+    readyAt[id] = block.timestamp + delay_;
+    emit Scheduled(id, readyAt[id]);
+}
+
+function execute(
+    address target_,
+    uint256 value_,
+    bytes calldata data_
+) external {
+    bytes32 id = keccak256(abi.encode(target_, value_, data_));
+    require(block.timestamp >= readyAt[id]);
+    (bool ok, ) = target_.call{value: value_}(data_);
+    require(ok);
+    emit Executed(id);
+}
+""",
+        [
+            ("state", "mapping(bytes32 => uint256)", "readyAt", "readyAt[id]", "Scheduled execution time."),
+            ("parameter", "address", "target_", "0xTarget", "Target contract."),
+            ("parameter", "bytes", "data_", "selector + args", "Call payload."),
+            ("derived", "bytes32", "id", "keccak256(abi.encode(...))", "Operation identity."),
+            ("global", "uint256", "block.timestamp", "now", "Time gate."),
+        ],
+        [
+            "The target/value/data tuple is encoded and hashed into one ID.",
+            "The ID becomes a mapping key whose value is a future timestamp.",
+            "Execution recomputes the same ID.",
+            "The timestamp gates a low-level call with the stored ETH value.",
+            "Events expose scheduling and execution.",
+        ],
+        "schedule(target, 1 ether, data, 2 days); execute(target, 1 ether, data);",
+    ),
+    (
+        ["governor-pattern", "arrays", "keccak256", "abi.encode", "mapping", "enum", "events"],
+        "Governor: proposal payload arrays → proposalId → state",
+        "Governance proposals bundle parallel arrays of targets, ETH values, and calldata; hashing that payload creates the proposal identity used by state/vote mappings.",
+        """
+enum ProposalState { Pending, Active, Succeeded, Executed, Canceled }
+
+mapping(uint256 => ProposalState) public state;
+
+event ProposalCreated(
+    uint256 indexed id,
+    address[] targets,
+    uint256[] values,
+    bytes[] calldatas
+);
+
+function hashProposal(
+    address[] calldata targets_,
+    uint256[] calldata values_,
+    bytes[] calldata calldatas_
+) public pure returns (uint256) {
+    return uint256(keccak256(
+        abi.encode(targets_, values_, calldatas_)
+    ));
+}
+""",
+        [
+            ("parameter", "address[] calldata", "targets_", "[0xA, 0xB]", "Proposal destinations."),
+            ("parameter", "uint256[] calldata", "values_", "[0, 1 ether]", "ETH values paired by index."),
+            ("parameter", "bytes[] calldata", "calldatas_", "[dataA, dataB]", "Call payloads paired by index."),
+            ("derived", "uint256", "proposalId", "uint256(keccak256(...))", "Proposal identity."),
+            ("state", "mapping(uint256 => ProposalState)", "state", "state[proposalId]", "Lifecycle state."),
+        ],
+        [
+            "The three arrays represent one ordered operation bundle.",
+            "ABI encoding preserves the tuple/array structure before hashing.",
+            "The hash becomes a stable proposal ID.",
+            "The ID selects proposal state and related accounting.",
+            "Events let indexers reconstruct the proposal payload.",
+        ],
+        "hashProposal(targets, values, calldatas);",
+    ),
+    (
+        ["multisig-pattern", "mapping", "nonce", "eip712-pattern", "ecrecover", "call"],
+        "Multisig: nonce → typed transaction hash → threshold signatures → call",
+        "A multisig turns a transaction into a hash, verifies enough owners signed it, then executes the authorized call.",
+        """
+mapping(address => bool) public isOwner;
+uint256 public threshold;
+uint256 public nonce;
+
+function transactionHash(
+    address to_,
+    uint256 value_,
+    bytes calldata data_
+) public view returns (bytes32) {
+    return keccak256(
+        abi.encode(
+            keccak256("Tx(address to,uint256 value,bytes data,uint256 nonce)"),
+            to_,
+            value_,
+            keccak256(data_),
+            nonce
+        )
+    );
+}
+
+// Conceptual execution:
+// verify signatures -> nonce++ -> to_.call{value: value_}(data_)
+""",
+        [
+            ("state", "mapping(address => bool)", "isOwner", "isOwner[alice]", "Owner membership."),
+            ("state", "uint256", "threshold", "2", "Required signatures."),
+            ("state", "uint256", "nonce", "7", "Replay protection."),
+            ("parameter", "address", "to_", "0xTarget", "Execution destination."),
+            ("parameter", "bytes", "data_", "selector + args", "Execution payload."),
+        ],
+        [
+            "isOwner identifies who is allowed to sign.",
+            "The transaction fields and nonce are ABI-encoded and hashed.",
+            "Signatures are checked against the digest and owner set.",
+            "Enough valid signatures satisfy the threshold.",
+            "The nonce advances before the external call.",
+            "The authorized call executes.",
+        ],
+        "execute(to, value, data, signatures);",
+    ),
+    (
+        ["proxy-upgrade-pattern", "erc1967-storage", "delegatecall", "proxy-fallback", "storage-layout"],
+        "Upgrade proxy: implementation slot → delegatecall → shared storage",
+        "An upgradeable proxy stores the implementation address in a dedicated slot, then fallback delegates calls into that implementation while using proxy storage.",
+        """
+bytes32 internal constant IMPLEMENTATION_SLOT =
+    bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
+
+function _implementation() internal view returns (address impl) {
+    assembly {
+        impl := sload(IMPLEMENTATION_SLOT)
+    }
+}
+
+fallback() external payable {
+    address impl = _implementation();
+
+    assembly {
+        calldatacopy(0, 0, calldatasize())
+        let ok := delegatecall(
+            gas(), impl, 0, calldatasize(), 0, 0
+        )
+        returndatacopy(0, 0, returndatasize())
+
+        switch ok
+        case 0 { revert(0, returndatasize()) }
+        default { return(0, returndatasize()) }
+    }
+}
+""",
+        [
+            ("constant", "bytes32", "IMPLEMENTATION_SLOT", "hash-derived", "Dedicated proxy slot."),
+            ("derived", "address", "impl", "sload(slot)", "Current implementation."),
+            ("global", "msg.data", "calldata", "selector + args", "Forwarded call."),
+            ("Yul", "word", "ok", "0/1", "delegatecall result."),
+        ],
+        [
+            "The implementation slot is a fixed storage coordinate.",
+            "Fallback receives the original calldata.",
+            "delegatecall executes implementation code in proxy storage/context.",
+            "returndata is forwarded back to the caller.",
+            "Therefore implementation storage layout and proxy storage layout must agree.",
+        ],
+        "proxy.setValue(100);",
+    ),
+    (
+        ["public-getter", "mapping", "structs", "arrays"],
+        "Public variable → generated getter → selected values",
+        "The compiler creates getter functions for public state, but complex mappings/arrays/structs are exposed through selectors and key/index arguments rather than a full object dump.",
+        """
+struct User {
+    uint256 score;
+    uint256[] tags;
+}
+
+mapping(address => User) public users;
+uint256[] public scores;
+
+function read(address user_, uint256 index_)
+    external
+    view
+    returns (uint256 score, uint256 tag)
+{
+    score = users[user_].score;
+    tag = users[user_].tags[index_];
+}
+
+// Generated getter idea:
+// users(user_) -> score
+// users(user_, index_) -> one dynamic-array element
+""",
+        [
+            ("state", "mapping(address => User)", "users", "users[user_]", "Struct selected by address."),
+            ("state", "uint256[]", "scores", "scores[index]", "Dynamic array with indexed getter behavior."),
+            ("parameter", "address", "user_", "0xAlice", "Mapping key."),
+            ("parameter", "uint256", "index_", "0", "Array index."),
+        ],
+        [
+            "A public mapping gets an automatically generated external getter.",
+            "The mapping key is an argument to that getter.",
+            "For complex struct values, fields that cannot be selected through the getter are omitted.",
+            "Array values are selected by index when needed.",
+        ],
+        "users(alice, 0);",
+    ),
+    (
+        ["struct-abi", "structs", "tuples", "abi.encode", "abi.decode", "calldata"],
+        "Struct → ABI tuple → bytes → struct-shaped values",
+        "A Solidity struct crosses an ABI boundary as a tuple: the component types and order matter, while field names do not affect the encoded bytes.",
+        """
+struct Order {
+    address buyer;
+    uint256 amount;
+    bytes note;
+}
+
+function pack(Order calldata order_)
+    external
+    pure
+    returns (bytes memory raw)
+{
+    return abi.encode(order_);
+}
+
+function unpack(bytes calldata raw)
+    external
+    pure
+    returns (address buyer, uint256 amount, bytes memory note)
+{
+    return abi.decode(raw, (address, uint256, bytes));
+}
+""",
+        [
+            ("struct", "Order", "order_", "buyer/amount/note", "Named Solidity record."),
+            ("tuple", "(address,uint256,bytes)", "ABI shape", "ordered components", "ABI representation."),
+            ("parameter", "bytes", "raw", "ABI tuple bytes", "Wire representation."),
+        ],
+        [
+            "The struct fields become an ordered ABI tuple.",
+            "abi.encode serializes the tuple into bytes.",
+            "The decoder must use matching component types and order.",
+            "Field names are source-level labels, not ABI payload data.",
+        ],
+        "unpack(pack(order));",
+    ),
+    (
+        ["encodePacked", "keccak256", "bytes", "string", "front-running"],
+        "Packed commit → hash → reveal check",
+        "A commitment stores a hash of hidden data. Packed encoding is compact, but combining ambiguous dynamic values can create collision risk.",
+        """
+mapping(address => bytes32) public commitment;
+
+function commit(string calldata secret_, uint256 nonce_) external {
+    commitment[msg.sender] =
+        keccak256(abi.encodePacked(secret_, nonce_));
+}
+
+function reveal(string calldata secret_, uint256 nonce_)
+    external
+    view
+    returns (bool)
+{
+    return commitment[msg.sender] ==
+        keccak256(abi.encodePacked(secret_, nonce_));
+}
+""",
+        [
+            ("state", "mapping(address => bytes32)", "commitment", "commitment[msg.sender]", "Stored commitment."),
+            ("parameter", "string calldata", "secret_", '"heads"', "Hidden value."),
+            ("parameter", "uint256", "nonce_", "1", "Second packed field."),
+        ],
+        [
+            "The secret and nonce are packed into bytes.",
+            "keccak256 turns the packed bytes into a commitment hash.",
+            "Only the hash is stored during commit.",
+            "Reveal recomputes the same digest.",
+            "For multiple dynamic fields, audit for packed-encoding ambiguity/collision.",
+        ],
+        'commit("heads", 1);',
+    ),
+    (
+        ["erc1271", "signature-verification", "interface", "bytes"],
+        "Contract wallet → signature interface → magic value",
+        "A contract wallet cannot rely on msg.sender being an EOA, so another contract can ask it whether a signature is valid.",
+        """
+interface IERC1271 {
+    function isValidSignature(
+        bytes32 hash,
+        bytes memory signature
+    ) external view returns (bytes4 magicValue);
+}
+
+function verify(
+    IERC1271 wallet_,
+    bytes32 digest_,
+    bytes memory signature_
+) external view returns (bool) {
+    return wallet_.isValidSignature(digest_, signature_) ==
+        IERC1271.isValidSignature.selector;
+}
+""",
+        [
+            ("parameter", "IERC1271", "wallet_", "0xSafe", "Contract signer."),
+            ("parameter", "bytes32", "digest_", "0xDigest", "Signed message hash."),
+            ("parameter", "bytes", "signature_", "r/s/v or contract format", "Signature payload."),
+            ("return", "bytes4", "magicValue", "selector", "Contract-defined success marker."),
+        ],
+        [
+            "The wallet is a contract address represented through an interface.",
+            "The verifier sends the digest and signature bytes to the wallet.",
+            "The wallet decides whether the signature is valid.",
+            "The verifier checks the returned bytes4 magic value.",
+        ],
+        "verify(safe, digest, signature);",
+    ),
+]
+
+for _row in _FINAL_RESEARCH_SCENES:
+    _final_add_scene(*_row)
+
+
+# Keep the most specific final scene for the formerly missed combinations.
+# This helper deliberately prefers an exact-key scene before a superset scene,
+# then leaves the generic route for everything else.
+def _final_find_micro_scene(names):
+    ordered = []
+    seen = set()
+    for name in names:
+        node = canonicalize(name)
+        if node not in seen:
+            ordered.append(node)
+            seen.add(node)
+
+    requested = frozenset(ordered)
+    exact = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if frozenset(scene.get("keys", ())) == requested
+    ]
+    if exact:
+        exact.sort(key=lambda s: s.get("title", ""))
+        return exact[0]
+
+    candidates = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if requested <= frozenset(scene.get("keys", ()))
+    ]
+    if candidates:
+        # Prefer the smallest surplus. For ties, prefer scenes whose title says
+        # what the requested path is actually teaching.
+        candidates.sort(
+            key=lambda scene: (
+                len(frozenset(scene.get("keys", ())) - requested),
+                len(frozenset(scene.get("keys", ()))),
+                "protocol" in scene.get("title", "").lower(),
+                scene.get("title", ""),
+            )
+        )
+        chosen = candidates[0]
+        if "route" not in chosen:
+            chosen["route"] = _covering_route(ordered)
+        return chosen
+
+    return _generic_connect_scene(ordered)
+
+
+find_micro_scene = _final_find_micro_scene
+
+# A final deterministic graph invariant: every canonical node must have a
+# semantic neighbor beyond the generic catalogue-coverage fallback whenever
+# possible.  This makes newly-added concepts visible to the connection system.
+def _final_graph_audit():
+    nodes = set()
+    for left, right, label in _COMPREHENSIVE_CONNECTION_EDGES:
+        a, b = canonicalize(left), canonicalize(right)
+        nodes.add(a)
+        nodes.add(b)
+
+    coverage_only = {
+        "catalog coverage bridge; use the concept-specific edge/path next"
+    }
+    weak = []
+    for node in sorted(nodes):
+        real_neighbors = {
+            (left if right == node else right)
+            for left, right, label in _COMPREHENSIVE_CONNECTION_EDGES
+            if node in {left, right} and label not in coverage_only
+        }
+        if not real_neighbors:
+            weak.append(node)
+
+    return {
+        "nodes": len(nodes),
+        "edges": len(_COMPREHENSIVE_CONNECTION_EDGES),
+        "scenes": len(COMPREHENSIVE_MICRO_SCENES),
+        "weak_nodes": weak,
+    }
+
+
+_FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
+
