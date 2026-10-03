@@ -60,7 +60,7 @@ if str(MODULE_DIR) not in sys.path:
 
 from solidity_cheat_topics import register_topics
 from solidity_cheat_data import CONTRACT_LABS as _CONTRACT_LABS, TERM_DEFINITIONS as _TERM_DEFINITIONS
-from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept, connection_paths
+from solidity_connect_data import CONNECTION_LABS, find_connection, list_connections, canonicalize, expand_name, is_known_concept, connection_paths, find_micro_scene
 
 TOPICS = []
 
@@ -264,37 +264,61 @@ def _render_connect(names):
         print("CONNECTION LABS")
         print("---------------")
         for lab in list_connections():
-            print(f"  {lab['name']:<24} {lab['summary']}")
-            print("    concepts: " + ", ".join(lab["concepts"]))
+            print(f"  {lab['name']:<24} {', '.join(lab['concepts'])}")
+            print(f"    {lab['summary']}")
         print()
-        print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
+        print("Shortcut recipes + universal composer.")
+        print("Any recognized Solidity/Yul concepts can be combined.")
         return 0
 
     if len(names) < 2:
         print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
+        print()
         print("Examples:")
-        print("  lk connect imports constructor")
+        print("  lk connect interface functions arrays")
         print("  lk connect structs mappings arrays enums bytes addresses")
-        print("  lk connect interface external-call abi-decode")
-        print("  lk connect receive mapping call")
+        print("  lk connect mapping keccak256 abi.encode")
+        print("  lk connect yul mapping keccak256")
+        print()
+        print("Deeper:")
+        print("  lk connect interface functions arrays 1")
+        print("  lk connect interface functions arrays 2")
+        return 2
+
+    mode = "guided"
+    cleaned = list(names)
+    mode_alias = {
+        "1": "full",
+        "--full": "full",
+        "full": "full",
+        "2": "walkthrough",
+        "--walkthrough": "walkthrough",
+        "walkthrough": "walkthrough",
+    }
+    if cleaned and _norm(cleaned[-1]) in mode_alias:
+        mode = mode_alias[_norm(cleaned.pop())]
+
+    if len(cleaned) < 2:
+        print("Usage: lk connect <conceptA> <conceptB> [conceptC...]")
         return 2
 
     topics = []
     invalid = []
     resolved_display = []
 
-    for raw in names:
+    for raw in cleaned:
         topic = find_topic(raw)
         if is_known_concept(raw):
             expanded = expand_name(raw)
         elif topic:
             expanded = expand_name(topic["name"])
         else:
+            expanded = set()
             invalid.append(raw)
-            continue
 
-        topics.extend(sorted(expanded))
-        resolved_display.append((raw, ", ".join(sorted(expanded))))
+        if expanded:
+            topics.extend(sorted(expanded))
+            resolved_display.append((raw, ", ".join(sorted(expanded))))
 
     print("REQUESTED CONCEPTS")
     print("------------------")
@@ -305,8 +329,7 @@ def _render_connect(names):
     if invalid:
         print()
         print("Unknown Solidity/Yul concept(s): " + ", ".join(invalid))
-        print("Use 'lk cheat' to inspect available topics, or:")
-        print("  lk connect --list")
+        print("Use 'lk cheat <topic>' to inspect a concept.")
         return 2
 
     topics = list(dict.fromkeys(topics))
@@ -317,104 +340,123 @@ def _render_connect(names):
 
     lab = find_connection(topics)
 
-    print("SELECTED CONCEPT REFERENCES")
-    print("---------------------------")
-    for raw in names:
-        topic = find_topic(raw)
-        if topic:
-            print(f"  {raw} -> {topic['name']}")
-            print("    syntax:")
-            for line in topic["syntax"].splitlines()[:8]:
-                print(f"      {line}")
-            print("    example:")
-            for line in topic["example"].splitlines()[:8]:
-                print(f"      {line}")
-        else:
-            print(f"  {raw} -> {', '.join(sorted(expand_name(raw)))}")
-    print()
-
-    print("REQUESTED CONCEPT TRACE")
-    print("-----------------------")
-    for start_node, goal_node, path_nodes, edge_text in connection_paths(topics):
-        print(f"  {start_node} -> {goal_node}")
-        print("    path: " + " -> ".join(path_nodes))
-        for relation in edge_text:
-            print("    why : " + relation)
-    print()
-
-    print("CONNECTION LAB")
-    print("--------------")
-    print(f"  {lab['name']}")
-    print(f"  {lab['summary']}")
-    print()
-    print("The lab may include a few extra concepts when they are needed to make the")
-    print("connection concrete. That is intentional: the goal is to see the data flow.")
-    print()
-
-    print("SOURCE FILES")
-    print("------------")
-    support = lab.get("support_files", {})
-    if not support:
-        print("  main contract only")
-    else:
-        print("  main contract")
-        for filename in support:
-            print(f"  support file: {filename}")
-    print()
-
-    if support:
-        print("FILE: <main contract>")
-        print("---------------------")
-    print(lab["source"].rstrip())
-    if support:
+    if mode == "full":
+        print()
+        print("FULL CONNECTION LAB")
+        print("-------------------")
+        print(f"  {lab['name']}")
+        print()
+        support = lab.get("support_files", {})
+        if support:
+            print("FILE: <main contract>")
+            print("---------------------")
+        print(lab["source"].rstrip())
         for filename, source in support.items():
             print()
             print(f"FILE: {filename}")
             print("-" * (6 + len(filename)))
             print(source.rstrip())
+        print()
+        print("VARIABLE MAP")
+        print("------------")
+        for role, value_type, name, value, purpose in lab.get("variables", []):
+            print(
+                f"  {role:<18} {value_type:<42} {name:<16} "
+                f"{value:<32} {purpose}"
+            )
+        print()
+        print("This view is intentionally exhaustive. Copy it into a scratch Foundry project.")
+        return 0
+
+    micro = find_micro_scene(topics)
 
     print()
-    print("VARIABLE MAP")
-    print("------------")
-    print("  ROLE               TYPE                                      NAME             EXAMPLE / VALUE                 PURPOSE")
-    print("  " + "-" * 120)
-    for role, value_type, name, value, purpose in lab.get("variables", []):
-        print(
-            f"  {role:<18} {value_type:<42} {name:<16} "
-            f"{value:<32} {purpose}"
-        )
-
-    print()
-    print("EXAMPLE CALLS")
-    print("-------------")
-    for call in lab.get("calls", []):
-        print(f"  {call}")
-
-    print()
-    print("HOW THE PIECES CONNECT")
-    print("----------------------")
-    for index, step in enumerate(lab.get("steps", []), 1):
-        print(f"  {index}. {step}")
-
-    print()
-    print("CONNECTION MAP")
+    print("THE CONNECTION")
     print("--------------")
-    for item in lab.get("connections", []):
-        print(f"  • {item}")
+    if micro:
+        print(micro["title"])
+        print()
+        print(micro["story"])
+    else:
+        paths = connection_paths(topics)
+        print("Follow one bridge at a time:")
+        for start_node, goal_node, path_nodes, edge_text in paths[:3]:
+            print(f"  {start_node} → {goal_node}")
+            print(f"    {' → '.join(path_nodes)}")
+            for relation in edge_text:
+                print(f"    {relation}")
 
     print()
-    print("AUDIT LOOKOUT")
-    print("-------------")
-    print(lab.get("audit") or "Trace every input, lookup, write, and external interaction.")
+    print("1. WHAT EACH PIECE IS")
+    print("----------------------")
+    seen = set()
+    for raw in cleaned:
+        topic = find_topic(raw)
+        if topic and topic["name"] not in seen:
+            seen.add(topic["name"])
+            print(f"  {topic['name']}: {topic['meaning']}")
+
+    if micro:
+        print()
+        print("2. TINY CONNECTED EXAMPLE")
+        print("--------------------------")
+        print(micro["code"].rstrip())
+
+        print()
+        print("3. VARIABLES IN THIS EXAMPLE")
+        print("-----------------------------")
+        for role, value_type, name, value, purpose in micro["variables"]:
+            print(
+                f"  {role:<22} {value_type:<42} "
+                f"{name:<16} = {value:<26} {purpose}"
+            )
+
+        print()
+        print("4. FOLLOW THE VALUE")
+        print("-------------------")
+        for index, step in enumerate(micro["flow"], 1):
+            print(f"  {index}. {step}")
+
+        print()
+        print("5. TRY THIS CALL")
+        print("----------------")
+        print(f"  {micro['call']}")
+    else:
+        print()
+        print("2. CONCEPT BRIDGE")
+        print("-----------------")
+        for start_node, goal_node, path_nodes, edge_text in connection_paths(topics)[:3]:
+            print(f"  {start_node} → {goal_node}")
+            print(f"    path: {' → '.join(path_nodes)}")
+            for relation in edge_text:
+                print(f"    why : {relation}")
+
+        print()
+        print("3. NEXT DEPTH")
+        print("-------------")
+        print("  Full code:  lk connect " + " ".join(cleaned) + " 1")
+
+    if mode == "walkthrough":
+        print()
+        print("WALKTHROUGH")
+        print("------------")
+        if micro:
+            for index, step in enumerate(micro["flow"], 1):
+                print(f"  {index}. {step}")
+        else:
+            for start_node, goal_node, path_nodes, edge_text in connection_paths(topics)[:3]:
+                print(f"  {start_node} → {goal_node}")
+                for relation in edge_text:
+                    print(f"    {relation}")
 
     print()
-    print("LAB NOTES")
-    print("---------")
-    print("  • The lab is read-only output; it does not create files or start Anvil.")
-    print("  • Copy the main/support files into a scratch Foundry project to compile and run it.")
-    print("  • Example addresses such as alice/bob are caller placeholders; replace them with real test accounts.")
-    print("  • When a bundle includes extra concepts, read those extra lines too: they show why the connection exists.")
+    print("NEXT")
+    print("----")
+    print("  1  full contract lab")
+    print("  2  slower walkthrough")
+    print("  lk cheat <concept>")
     return 0
+
 
 
 def _render_expression(expr):
