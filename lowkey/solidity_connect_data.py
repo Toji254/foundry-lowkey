@@ -4677,3 +4677,908 @@ function sendToken(
         audit="Call expectations are especially useful for authority routing, token transfers, callbacks, and proxy interactions.",
     ),
 ])
+
+# =============================================================================
+# FINAL CONNECT GRAPH PASS
+# =============================================================================
+#
+# This pass intentionally lives at the end of the module so older shortcut
+# compatibility data remains intact while the comprehensive graph becomes the
+# single authoritative behavior for the connect command.
+#
+# Important design rule:
+#   "recognized" != "has a hand-written pair."
+# Every recognized concept gets a semantic identity, graph relationships, and
+# either a curated micro-scene or a generated human-sized bridge.
+
+_SEMANTIC_ALIASES.update({
+    "function-selector": "function-selector",
+    "selector": "function-selector",
+    "function-selectors": "function-selector",
+    "function-signature": "function-signature",
+    "function-signatures": "function-signature",
+
+    "abi-encodewithselector": "abi.encodeWithSelector",
+    "abi.encodewithselector": "abi.encodeWithSelector",
+    "encodewithselector": "abi.encodeWithSelector",
+    "abi-encodewithsignature": "abi.encodeWithSignature",
+    "abi.encodewithsignature": "abi.encodeWithSignature",
+    "encodewithsignature": "abi.encodeWithSignature",
+    "abi-encodecall": "abi.encodeCall",
+    "abi.encodecall": "abi.encodeCall",
+    "encodecall": "abi.encodeCall",
+
+    # Keep the combined cheatsheet topic distinct from plain keccak256.
+    "keccak-selectors": "keccak-selectors",
+    "keccak256": "keccak256",
+    "keccak": "keccak256",
+    "hash": "keccak256",
+
+    "event-indexed": "event-indexed",
+    "indexed": "event-indexed",
+    "returndata": "returndata",
+    "return-data": "returndata",
+    "return-data-bytes": "returndata",
+
+    "function-type": "function-types",
+    "function-types": "function-types",
+    "external-function-types": "external-function-types",
+    "contract-type": "contract-types",
+    "contract-types": "contract-types",
+    "user-defined-value-type": "user-defined-value-types",
+    "user-defined-value-types": "user-defined-value-types",
+    "udvt": "user-defined-value-types",
+
+    "bytes-concat": "bytes.concat",
+    "bytes.concat": "bytes.concat",
+    "string-concat": "string.concat",
+    "string.concat": "string.concat",
+    "ecrecover": "ecrecover",
+    "sha256": "sha256",
+    "ripemd160": "ripemd160",
+    "addmod": "addmod",
+    "mulmod": "mulmod",
+    "nonce": "nonce",
+
+    "transient": "transient-storage",
+    "transient-storage": "transient-storage",
+    "tload-tstore": "transient-storage",
+    "erc7201": "erc7201",
+    "custom-storage-layout": "custom-storage-layout",
+    "storage-slot": "storage-slot",
+
+    "gas": "gas",
+    "gasleft": "gasleft",
+    "selfdestruct": "selfdestruct",
+
+    "calls": "calls",
+    "low-level-call": "low-level-call",
+    "call": "call",
+    "staticcall": "staticcall",
+    "delegatecall": "delegatecall",
+    "this-call": "this-call",
+
+    "string": "string",
+    "uint": "uint256",
+    "uint256": "uint256",
+    "int": "int256",
+    "int256": "int256",
+    "bool": "bool",
+})
+
+_EXTRA_MEANINGS.update({
+    "keccak256": "Keccak-256 hashes bytes and returns the digest as bytes32. A function selector is one specific use of a Keccak digest, not the meaning of keccak256 itself.",
+    "keccak-selectors": "The combined pattern of Keccak hashing and selector derivation: hash a canonical signature, then take its leading four bytes.",
+    "abi.encode": "Standard ABI encoding of typed values into bytes.",
+    "abi.decode": "Interpret ABI-encoded bytes as the exact Solidity types and order you specify.",
+    "abi.encodeWithSelector": "Build calldata by prepending a supplied four-byte selector to ABI-encoded arguments.",
+    "abi.encodeWithSignature": "Build calldata from a textual canonical signature; the signature is hashed into the four-byte selector first.",
+    "abi.encodeCall": "Build calldata from a typed function expression and its arguments, with compile-time type checking.",
+    "function-selector": "The first four bytes of the Keccak-256 hash of a canonical external function signature.",
+    "function-signature": "The canonical function name plus parameter types used for selector derivation.",
+    "event-indexed": "An indexed event parameter is stored in a log topic; dynamic/complex indexed values are represented by a hash rather than their original full value.",
+    "returndata": "Raw bytes returned by an external call, or raw revert bytes exposed by low-level/EVM interfaces.",
+    "function-types": "Function values can be stored or passed around as typed callable values.",
+    "external-function-types": "An external function pointer carries a target address and selector, giving a later call enough information to cross the contract boundary.",
+    "contract-types": "A contract/interface declaration creates a contract-specific type that refers to deployed code at an address.",
+    "user-defined-value-types": "A distinct type wrapping an elementary value type, used to prevent accidental mixing of domain values.",
+    "transient-storage": "Transaction-scoped storage with a layout separate from ordinary persistent storage; its contents disappear at transaction end.",
+    "erc7201": "A namespaced storage-root convention that derives deterministic module storage roots.",
+    "custom-storage-layout": "Compiler-supported control over storage-layout bases for advanced storage organization.",
+    "storage-slot": "A 32-byte EVM storage location used when reasoning about storage layout, mappings, arrays, and Yul.",
+    "ecrecover": "Recover an address from an ECDSA digest and signature components.",
+    "sha256": "The SHA-256 hash function returning bytes32.",
+    "ripemd160": "The RIPEMD-160 hash function returning bytes20.",
+    "addmod": "Compute modular addition with the arithmetic performed without intermediate uint256 wraparound.",
+    "mulmod": "Compute modular multiplication with the arithmetic performed without intermediate uint256 wraparound.",
+    "bytes.concat": "Concatenate bytes/fixed-byte values into a dynamic bytes result.",
+    "string.concat": "Concatenate strings into one dynamic string result.",
+    "nonce": "A sequence value commonly used to prevent replay of signed or state-changing actions.",
+    "selfdestruct": "A special EVM operation whose effects depend on the current EVM semantics; old tutorials often describe behavior that no longer applies generally after Cancun.",
+    "gas": "The execution budget that constrains how much work a call can perform.",
+    "calls": "The family of function/message-call surfaces, including typed calls and low-level call operations.",
+    "low-level-call": "Raw external message-call syntax exposing calldata, ETH/gas options, success, and return bytes.",
+})
+
+_EXTRA_CONCEPTS.update({
+    "function-selector", "function-signature",
+    "abi.encodeWithSelector", "abi.encodeWithSignature", "abi.encodeCall",
+    "event-indexed", "returndata",
+    "function-types", "external-function-types", "contract-types",
+    "user-defined-value-types", "transient-storage",
+    "erc7201", "custom-storage-layout", "storage-slot",
+    "ecrecover", "sha256", "ripemd160", "addmod", "mulmod",
+    "bytes.concat", "string.concat", "nonce", "selfdestruct", "gas",
+    "string", "uint256", "int256", "bool", "calls", "call", "low-level-call",
+})
+
+_COMPREHENSIVE_COMPOSITES.update({
+    "keccak-selectors": {"keccak256", "function-selector", "function-signature"},
+    "abi-call": {"function-selector", "abi.encode", "calldata", "call"},
+    "typed-abi-call": {"function-types", "abi.encodeCall", "calldata"},
+    "raw-call-path": {
+        "function-selector", "abi.encodeWithSelector", "calldata",
+        "call", "returndata", "abi.decode",
+    },
+    "signature-verification-path": {
+        "abi.encode", "keccak256", "signature-verification",
+        "ecrecover", "nonce",
+    },
+    "permit-path": {
+        "mapping", "keccak256", "abi.encode", "ecrecover", "nonce",
+        "block.timestamp", "address", "signature-verification",
+    },
+    "event-path": {"function", "events", "event-indexed", "keccak256"},
+    "array-storage-path": {"arrays", "array-storage", "storage-layout", "keccak256", "yul-storage"},
+    "proxy-flow": {
+        "proxy-fallback", "fallback", "delegatecall", "storage-layout",
+        "function-selector", "calldata", "returndata",
+    },
+    "error-path": {"require", "revert", "errors", "custom-errors", "returndata", "abi.decode"},
+    "yul-storage-path": {"mapping", "mapping-slots", "keccak256", "storage", "yul-storage"},
+})
+
+_FINAL_TINY_EDGES = [
+    ("mapping", "keccak256", "mapping values are located using Keccak-derived storage coordinates"),
+    ("mapping", "abi.decode", "decoded bytes can produce the key used by a mapping"),
+    ("abi.decode", "keccak256", "the same raw bytes can be decoded and independently hashed"),
+    ("abi.encode", "abi.decode", "compatible ABI encoding can later be decoded in the same type/order"),
+    ("abi.encode", "keccak256", "encoded bytes are common input to a digest"),
+    ("abi.encodeWithSignature", "function-signature", "the textual signature determines the selector"),
+    ("abi.encodeWithSignature", "keccak256", "signature encoding hashes the canonical signature to derive the selector"),
+    ("abi.encodeWithSelector", "function-selector", "the selector is supplied explicitly at the front of calldata"),
+    ("abi.encodeWithSelector", "calldata", "the result is selector-prefixed call data"),
+    ("abi.encodeCall", "function-types", "a typed function expression supplies the callable shape"),
+    ("abi.encodeCall", "interface", "an interface function can supply a compile-time checked call target/shape"),
+    ("function-selector", "msg.sig", "msg.sig is the selector seen in the current call frame"),
+    ("function-selector", "calldata", "normal function calldata starts with the selector"),
+    ("function-signature", "function-selector", "the selector is derived from the canonical signature"),
+    ("function-selector", "call", "low-level callers can construct a call by supplying the selector"),
+    ("function-selector", "fallback", "fallback can manually inspect/select on the incoming selector"),
+    ("calldata", "msg.data", "msg.data is the complete raw call payload"),
+    ("calldata", "calldata-slices", "calldata can be sliced into selector and argument regions"),
+    ("calldata-slices", "abi.decode", "the argument region can be decoded after removing the selector"),
+    ("call", "returndata", "low-level calls expose success plus raw returned bytes"),
+    ("staticcall", "returndata", "static reads still return raw bytes"),
+    ("delegatecall", "returndata", "delegated execution can bubble implementation return/revert bytes"),
+    ("returndata", "abi.decode", "raw successful return bytes can be decoded into typed values"),
+    ("returndata", "custom-errors", "raw revert bytes can contain a custom-error selector and arguments"),
+    ("errors", "function-selector", "error payloads also use a four-byte Keccak-derived selector"),
+    ("errors", "abi.decode", "error arguments have ABI-shaped data"),
+    ("errors", "returndata", "reverted external calls expose error bytes"),
+    ("event-indexed", "keccak256", "dynamic indexed event values are represented by a hash topic"),
+    ("events", "event-indexed", "indexed parameters become log topics"),
+    ("events", "mapping", "logs commonly mirror state transitions such as mapping updates"),
+    ("events", "function", "functions commonly emit logs after state changes"),
+    ("mapping", "storage-slot", "a mapping declaration has an anchor slot used in location derivation"),
+    ("arrays", "storage-slot", "dynamic arrays have an anchor slot from which element locations are derived"),
+    ("array-storage", "keccak256", "dynamic array data locations are hash-derived"),
+    ("nested-mapping", "mapping-slots", "nested mapping lookup repeats mapping slot derivation"),
+    ("mapping-slots", "yul-storage", "Yul can reproduce mapping slot arithmetic and sload/sstore the result"),
+    ("storage-layout", "yul-storage", "Yul provides the low-level lens for storage coordinates"),
+    ("transient-storage", "yul-storage", "transient storage has tload/tstore rather than persistent sload/sstore"),
+    ("transient-storage", "reentrancy", "a transaction-scoped guard can protect a reentrancy-sensitive boundary"),
+    ("erc7201", "keccak256", "namespace roots are hash-derived"),
+    ("erc7201", "custom-storage-layout", "ERC-7201 is a namespaced storage-layout pattern"),
+    ("erc7201", "structs", "namespaced application state is commonly grouped in a struct"),
+    ("erc7201", "mapping", "mappings can live inside a namespaced state struct"),
+    ("erc7201", "yul-storage", "assembly can inspect a namespaced root and child slots"),
+    ("signature-verification", "ecrecover", "ECDSA signature verification commonly recovers an address"),
+    ("signature-verification", "nonce", "signed authorizations commonly bind an action to a nonce"),
+    ("signature-verification", "keccak256", "verification operates on a signed digest"),
+    ("signature-verification", "abi.encode", "structured authorization fields are encoded before hashing"),
+    ("ecrecover", "address", "ecrecover returns an address"),
+    ("nonce", "mapping", "per-user nonces are commonly stored in a mapping"),
+    ("nonce", "block.timestamp", "signed authorizations often combine a nonce with an expiry timestamp"),
+    ("front-running", "nonce", "nonces prevent replay but do not automatically hide public transaction inputs"),
+    ("front-running", "keccak256", "commit-reveal schemes can hide the meaningful value behind a hash"),
+    ("eip712", "keccak256", "typed-data digests are hash-derived"),
+    ("eip712", "abi.encode", "typed-data struct hashes are ABI-encoded before hashing"),
+    ("eip712", "ecrecover", "verification ends by recovering/checking the signer"),
+    ("bytes", "bytes.concat", "dynamic byte sequences can be concatenated"),
+    ("string", "string.concat", "text values can be concatenated"),
+    ("bytes", "keccak256", "hash functions consume byte sequences"),
+    ("bytes32", "keccak256", "Keccak-256 returns bytes32"),
+    ("addmod", "mulmod", "both implement modular arithmetic"),
+    ("addmod", "uint256", "the operands/result are integer values"),
+    ("mulmod", "uint256", "the operands/result are integer values"),
+    ("unchecked", "addmod", "unchecked wraparound and modular arithmetic solve different arithmetic problems"),
+    ("unchecked", "mulmod", "mulmod can express modulo arithmetic without unchecked multiplication"),
+    ("function-types", "function", "a function value is a typed reference to callable behavior"),
+    ("external-function-types", "address", "an external function pointer includes a target address"),
+    ("external-function-types", "function-selector", "an external function pointer includes a selector"),
+    ("external-function-types", "call", "invoking an external function pointer crosses a message boundary"),
+    ("contract-types", "address", "contract values can be converted to addresses in allowed contexts"),
+    ("contract-types", "interface", "interfaces are contract types defining callable surfaces"),
+    ("type-metadata", "contract-types", "type(C) exposes metadata about contract types"),
+    ("new", "constructor", "new starts contract creation and invokes the constructor"),
+    ("new", "try-catch", "contract creation failures can be caught"),
+    ("new", "address", "a created contract can be viewed through its address"),
+    ("selfdestruct", "contract-balance", "selfdestruct semantics are tied to the current contract/balance"),
+    ("selfdestruct", "ether-flow", "destruction semantics can create unusual Ether-flow assumptions"),
+    ("constant-immutable", "constructor", "immutable values can be fixed during construction"),
+    ("constant-immutable", "storage-layout", "constants/immutables differ from ordinary storage slots"),
+    ("receive", "payable", "receive must be payable"),
+    ("fallback", "payable", "payable fallback can accept Ether"),
+    ("fallback", "msg.data", "fallback sees raw calldata"),
+    ("fallback", "msg.sig", "fallback can inspect the selector"),
+    ("receive", "msg.value", "receive executes for empty-calldata Ether with msg.value"),
+    ("msg.value", "contract-balance", "current call value is an inflow, total contract balance is the held amount"),
+    ("msg.sender", "tx.origin", "immediate caller and transaction origin diverge across call chains"),
+    ("msg.sender", "delegatecall", "delegatecall preserves the external caller as msg.sender"),
+    ("msg.value", "delegatecall", "delegatecall preserves call value/context"),
+    ("vm-prank", "msg.sender", "Foundry prank controls the caller seen by Solidity"),
+    ("vm-start-prank", "msg.sender", "startPrank keeps a controlled caller across a sequence"),
+    ("vm-hoax", "vm-prank", "hoax combines caller manipulation with funded balance setup"),
+    ("vm-hoax", "vm-deal", "hoax includes balance provisioning"),
+    ("vm-deal", "contract-balance", "deal changes the test EVM balance observed through address.balance"),
+    ("vm-warp", "block.timestamp", "warp controls timestamp in tests"),
+    ("vm-roll", "block.number", "roll controls block number in tests"),
+    ("vm-expect-revert", "errors", "tests can match custom-error/revert behavior"),
+    ("vm-expect-emit", "event-indexed", "event assertions can inspect indexed topics"),
+    ("vm-recordlogs", "events", "recordLogs exposes emitted logs to tests"),
+    ("vm-expect-call", "abi.encodeCall", "expected calls can be specified with typed ABI encoding"),
+    ("vm-mockcall", "returndata", "mocked call return bytes flow into the caller"),
+    ("vm-storage", "storage-slot", "raw slot assertions turn storage layout into testable state"),
+    ("vm-etch", "contract-types", "etch changes code at an address in the test EVM"),
+    ("vm-fork", "oracle", "forks reproduce external oracle/protocol state"),
+    ("fuzz-tests", "vm-assume", "assumptions constrain fuzz domains"),
+    ("bounded-fuzz", "vm-bound", "bound normalizes fuzz values into an interval"),
+    ("invariant-tests", "invariant-handler", "handlers shape the transition surface of invariant tests"),
+    ("test-arrange-act-assert", "test-assertions", "AAA separates setup, action, and expected result"),
+    ("poc-reentrancy", "call", "the PoC uses an external call as the callback boundary"),
+    ("poc-reentrancy", "receive", "attacker code can re-enter through receive"),
+    ("poc-reentrancy", "mapping", "victim accounting is commonly stored per address"),
+    ("poc-token", "mapping", "token balances/allowances are mapping-backed"),
+    ("poc-token", "interface", "token interactions normally use interfaces"),
+    ("poc-token", "returndata", "non-standard tokens make return-data handling important"),
+    ("poc-signature", "nonce", "signature PoCs often probe replay protection"),
+    ("poc-upgrade", "proxy-fallback", "upgrade PoCs target proxy dispatch/storage assumptions"),
+    ("poc-storage", "mapping-slots", "storage PoCs can calculate and modify derived mapping locations"),
+    ("poc-dos", "loops", "unbounded loops can make a state transition unexecutable"),
+    ("poc-dos", "arrays", "growing arrays are a common unbounded-loop source"),
+]
+
+
+def _append_unique_edges(edges):
+    existing = {
+        tuple(sorted((canonicalize(left), canonicalize(right))))
+        for left, right, _label in edges
+        if canonicalize(left) != canonicalize(right)
+    }
+    for left, right, label in _FINAL_TINY_EDGES:
+        a, b = canonicalize(left), canonicalize(right)
+        if a == b:
+            continue
+        key = tuple(sorted((a, b)))
+        if key not in existing:
+            edges.append((a, b, label))
+            existing.add(key)
+
+
+_append_unique_edges(_COMPREHENSIVE_CONNECTION_EDGES)
+
+_FINAL_DENSE_GROUPS = [
+    [
+        "variables", "types", "uint256", "int256", "bool", "address", "bytes",
+        "bytesN", "bytes32", "string", "structs", "enum", "arrays",
+        "fixed-array", "mapping", "nested-mapping", "mapping-struct",
+        "mapping-array-value", "storage-memory-calldata", "storage",
+        "storage-layout", "storage-packing", "array-storage", "mapping-slots",
+        "nested-mapping-slots", "delete", "transient-storage",
+        "custom-storage-layout", "erc7201", "user-defined-value-types",
+    ],
+    [
+        "function", "visibility", "mutability", "returns", "parameter-vs-argument",
+        "function-signature", "function-selector", "function-types",
+        "external-function-types", "contract-types", "interface",
+        "calldata", "calldata-deep", "calldata-slices", "call-data-layout",
+        "abi", "abi.encode", "abi.decode", "abi.encodeWithSelector",
+        "abi.encodeWithSignature", "abi.encodeCall", "encodePacked", "msg.data",
+        "msg.sig", "call", "calls", "low-level-call", "external-call",
+        "staticcall", "delegatecall", "returndata", "try-catch",
+    ],
+    [
+        "keccak256", "keccak-selectors", "function-signature", "function-selector",
+        "abi.encode", "abi.decode", "encodePacked", "ecrecover", "sha256",
+        "ripemd160", "addmod", "mulmod", "bytes32", "signature-verification",
+        "eip712", "nonce", "front-running", "events", "event-indexed",
+        "custom-errors", "errors",
+    ],
+    [
+        "imports", "constructor", "inheritance", "abstract", "override",
+        "virtual", "interface", "library", "using-for", "new",
+        "constant-immutable", "type-metadata", "contract-types", "function-types",
+        "external-function-types", "user-defined-value-types",
+        "proxy-fallback", "fallback", "receive", "selfdestruct",
+    ],
+    [
+        "msg.sender", "msg.value", "msg.data", "msg.sig", "block.timestamp",
+        "block.number", "tx.origin", "gas", "gasleft", "contract-balance",
+        "payable", "ether-flow", "receive", "fallback", "call", "staticcall",
+        "delegatecall", "reentrancy", "checks-effects-interactions",
+    ],
+    [
+        "if-else", "ternary", "loops", "for", "while", "do-while", "for-each",
+        "unchecked", "require", "revert", "assert", "errors", "custom-errors",
+        "try-catch",
+    ],
+    [
+        "yul", "yul-memory", "yul-storage", "yul-calldata", "yul-control-flow",
+        "yul-functions", "yul-call", "memory", "storage", "calldata",
+        "mapping-slots", "nested-mapping-slots", "array-storage", "keccak256",
+        "call", "returndata", "transient-storage", "gas",
+    ],
+    [
+        "forge-cheatcodes", "forge-cheatcodes-map", "test", "test-structure",
+        "test-arrange-act-assert", "test-assertions", "fuzz-tests",
+        "bounded-fuzz", "invariant-tests", "invariant-handler", "fork-tests",
+        "test-reverts", "test-events", "vm-prank", "vm-start-prank", "vm-deal",
+        "vm-warp", "vm-roll", "vm-assume", "vm-bound", "vm-makeaddr", "vm-label",
+        "vm-expect-revert", "vm-expect-emit", "vm-recordlogs", "vm-snapshots",
+        "vm-storage", "vm-etch", "vm-fork", "vm-env", "vm-expect-call",
+        "vm-mockcall", "vm-hoax",
+    ],
+    [
+        "script", "script-structure", "script-broadcast", "script-env",
+        "script-deploy", "script-interaction", "poc", "poc-template",
+        "poc-reentrancy", "poc-access-control", "poc-accounting",
+        "poc-accessible-state", "poc-dos", "poc-oracle", "poc-signature",
+        "poc-upgrade", "poc-storage", "poc-token", "poc-cross-contract",
+        "test-poc-workflow", "oracle", "access-control", "modifier",
+        "signature-verification", "reentrancy", "proxy-fallback",
+    ],
+]
+
+
+def _append_dense_group_edges(edges):
+    existing = {
+        tuple(sorted((canonicalize(left), canonicalize(right))))
+        for left, right, _label in edges
+        if canonicalize(left) != canonicalize(right)
+    }
+    for family_index, members in enumerate(_FINAL_DENSE_GROUPS, 1):
+        canonical_members = []
+        seen = set()
+        for member in members:
+            node = canonicalize(member)
+            if node in seen:
+                continue
+            seen.add(node)
+            canonical_members.append(node)
+        if len(canonical_members) < 2:
+            continue
+        anchor = canonical_members[0]
+        for node in canonical_members[1:]:
+            if anchor == node:
+                continue
+            key = tuple(sorted((anchor, node)))
+            if key not in existing:
+                edges.append(
+                    (
+                        anchor,
+                        node,
+                        f"family {family_index}: related subsystem; trace the concrete value/control flow",
+                    )
+                )
+                existing.add(key)
+
+
+_append_dense_group_edges(_COMPREHENSIVE_CONNECTION_EDGES)
+
+
+def _final_known_nodes():
+    nodes = set()
+    for left, right, _label in _COMPREHENSIVE_CONNECTION_EDGES:
+        nodes.add(canonicalize(left))
+        nodes.add(canonicalize(right))
+    nodes.update(canonicalize(name) for name in _EXTRA_CONCEPTS)
+    for name, _aliases, _category, _meaning in _CATALOG_ROWS:
+        nodes.add(canonicalize(name))
+    return nodes
+
+
+def is_known_concept(name: str) -> bool:
+    key = _norm(name)
+    if key in _COMPREHENSIVE_COMPOSITES:
+        return True
+    if key in _SEMANTIC_ALIASES:
+        return True
+    if key in _CATALOG_ALIASES:
+        return True
+    canonical = canonicalize(name)
+    return canonical in _final_known_nodes()
+
+
+COMPREHENSIVE_MICRO_SCENES.extend([
+    {
+        "keys": frozenset({
+            "mapping", "keccak256", "abi.encode", "ecrecover", "nonce",
+            "signature-verification", "block.timestamp", "address",
+        }),
+        "title": "Permit-style authorization: nonce → hash → recover signer → write allowance",
+        "story": "A signed approval path ties together mapping state, a nonce, structured ABI encoding, hashing, signature recovery, expiry, and the final state write.",
+        "code": """mapping(address => uint256) public nonces;
+mapping(address => mapping(address => uint256)) public allowance;
+
+function approveBySig(
+    address owner_,
+    address spender_,
+    uint256 value_,
+    uint256 deadline_,
+    uint8 v,
+    bytes32 r,
+    bytes32 s
+) external {
+    require(block.timestamp <= deadline_);
+
+    bytes32 digest = keccak256(
+        abi.encode(owner_, spender_, value_, nonces[owner_], deadline_)
+    );
+
+    address signer = ecrecover(digest, v, r, s);
+    require(signer == owner_);
+
+    nonces[owner_]++;
+    allowance[owner_][spender_] = value_;
+}""",
+        "variables": [
+            ("state", "mapping(address => uint256)", "nonces", "nonces[owner_]", "Replay-protection state."),
+            ("state", "mapping(address => mapping(address => uint256))", "allowance", "allowance[owner_][spender_]", "Nested approval state."),
+            ("parameter", "address", "owner_", "0xAlice", "Expected signer."),
+            ("parameter", "address", "spender_", "0xBob", "Approved spender."),
+            ("parameter", "uint256", "value_", "100", "Approved amount."),
+            ("parameter", "uint256", "deadline_", "future timestamp", "Expiry bound."),
+            ("derived", "bytes32", "digest", "keccak256(abi.encode(...))", "Signed digest."),
+            ("derived", "address", "signer", "ecrecover(...)", "Recovered signer."),
+        ],
+        "flow": [
+            "The caller supplies the signed message fields and signature components.",
+            "The contract checks the deadline and includes the current nonce in the digest.",
+            "abi.encode creates the exact bytes being hashed.",
+            "ecrecover turns the signed digest into an address.",
+            "A matching signer permits the nonce increment and nested allowance write.",
+        ],
+        "call": "approveBySig(alice, bob, 100, deadline, v, r, s);",
+    },
+    {
+        "keys": frozenset({
+            "interface", "address", "function-selector", "abi.encodeWithSelector",
+            "call", "returndata", "yul",
+        }),
+        "title": "Safe transfer style: selector → assembly call → returndata",
+        "story": "Low-level token libraries often build calldata manually, make a call, then inspect return data because real tokens are not always perfectly ABI-uniform.",
+        "code": """bytes4 selector =
+    bytes4(keccak256("transfer(address,uint256)"));
+
+assembly {
+    mstore(0x00, selector)
+    mstore(0x04, to)
+    mstore(0x24, amount)
+
+    let ok := call(
+        gas(),
+        token,
+        0,
+        0,
+        0x44,
+        0,
+        0
+    )
+
+    if iszero(ok) {
+        returndatacopy(0, 0, returndatasize())
+        revert(0, returndatasize())
+    }
+}""",
+        "variables": [
+            ("address", "address", "token", "0xToken", "External token target."),
+            ("parameter", "address", "to", "0xBob", "Transfer recipient."),
+            ("parameter", "uint256", "amount", "100", "Transfer amount."),
+            ("selector", "bytes4", "selector", "transfer selector", "Four-byte function identifier."),
+            ("Yul", "word", "ok", "0/1", "Low-level call success."),
+        ],
+        "flow": [
+            "The function signature determines a four-byte selector.",
+            "Yul writes the selector and arguments into memory in calldata layout.",
+            "call crosses the token boundary.",
+            "returndatasize/returndatacopy expose failure bytes for bubbling.",
+        ],
+        "call": "token transfer built as raw calldata",
+    },
+    {
+        "keys": frozenset({
+            "mapping", "structs", "keccak256", "storage-layout",
+            "library", "using-for", "interface", "function",
+        }),
+        "title": "Protocol style: hashed ID → state struct → library method → interface hook",
+        "story": "Production protocol cores often turn a structured key into an ID, store a state struct under that ID, use libraries to operate on it, and call hook interfaces around state transitions.",
+        "code": """struct Pool {
+    uint256 liquidity;
+}
+
+mapping(bytes32 => Pool) internal pools;
+
+interface IHook {
+    function beforeSwap(bytes32 poolId)
+        external;
+}
+
+library PoolLib {
+    function add(Pool storage pool, uint256 amount) internal {
+        pool.liquidity += amount;
+    }
+}
+
+using PoolLib for Pool;
+
+function swap(bytes32 poolId, uint256 amount, IHook hook)
+    external
+{
+    hook.beforeSwap(poolId);
+
+    Pool storage pool = pools[poolId];
+    pool.add(amount);
+}""",
+        "variables": [
+            ("state", "mapping(bytes32 => Pool)", "pools", "pools[poolId]", "Pool registry."),
+            ("struct", "Pool", "pool", "liquidity", "State selected by the ID."),
+            ("library", "PoolLib", "add", "pool.add(amount)", "Attached state mutation."),
+            ("interface", "IHook", "hook", "0xHook", "External callback surface."),
+        ],
+        "flow": [
+            "A bytes32 pool ID selects one Pool struct from the mapping.",
+            "The hook interface creates an external callback boundary.",
+            "A storage reference selects persistent pool state.",
+            "using-for turns pool.add(amount) into a readable library operation.",
+        ],
+        "call": "swap(poolId, 100, hook);",
+    },
+    {
+        "keys": frozenset({
+            "arrays", "array-storage", "storage-layout", "keccak256", "yul-storage",
+        }),
+        "title": "Dynamic array: length slot → hashed data region → element",
+        "story": "A dynamic storage array has an anchor slot, while its element data begins from a hash-derived location.",
+        "code": """uint256[] public scores;
+
+function readAt(uint256 i)
+    external
+    view
+    returns (uint256 result)
+{
+    assembly {
+        // The array length is at scores.slot.
+        // Element data begins at keccak256(scores.slot).
+        let base := keccak256(scores.slot, 0x20)
+        result := sload(add(base, i))
+    }
+}""",
+        "variables": [
+            ("state", "uint256[]", "scores", "[10, 20, 30]", "Dynamic storage array."),
+            ("slot", "uint256", "scores.slot", "7", "Anchor slot."),
+            ("derived", "bytes32", "base", "keccak256(scores.slot)", "Start of element data."),
+            ("parameter", "uint256", "i", "1", "Element index."),
+        ],
+        "flow": [
+            "scores.slot stores the dynamic array's length/anchor information.",
+            "Keccak derives the beginning of the array's data region.",
+            "The index advances from that data-region base.",
+            "Yul sload reads the selected word directly.",
+        ],
+        "call": "readAt(1);",
+    },
+    {
+        "keys": frozenset({
+            "errors", "custom-errors", "revert", "function-selector",
+            "abi.decode", "returndata", "try-catch",
+        }),
+        "title": "Error selector → revert bytes → catch → typed meaning",
+        "story": "Failure data travels through the same ABI-style boundary as function data: an error has a selector and encoded arguments, then the caller can catch the failure.",
+        "code": """error TooSmall(uint256 actual, uint256 minimum);
+
+function check(uint256 amount_) external {
+    if (amount_ < 100) {
+        revert TooSmall(amount_, 100);
+    }
+}
+
+try target.check(10) {
+    // success
+} catch (bytes memory reason) {
+    // reason contains the error selector + encoded fields
+}""",
+        "variables": [
+            ("parameter", "uint256", "amount_", "10", "Failing input."),
+            ("error", "custom error", "TooSmall", "(10, 100)", "Structured failure."),
+            ("catch data", "bytes", "reason", "selector + arguments", "Raw failure bytes."),
+        ],
+        "flow": [
+            "The target sees the invalid amount.",
+            "revert creates error-shaped bytes.",
+            "The external caller reaches the catch branch.",
+            "reason can be inspected/decoded to recover the error meaning.",
+        ],
+        "call": "target.check(10);",
+    },
+    {
+        "keys": frozenset({
+            "bytes", "string", "storage-layout", "keccak256", "storage",
+        }),
+        "title": "Dynamic bytes/string: value length changes the storage representation",
+        "story": "bytes and string are dynamic values, but their storage representation depends on length. Hashing reads their logical contents, not their storage encoding.",
+        "code": """string public name;
+bytes public payload;
+
+function ids()
+    external
+    view
+    returns (bytes32 nameHash, bytes32 payloadHash)
+{
+    nameHash = keccak256(bytes(name));
+    payloadHash = keccak256(payload);
+}""",
+        "variables": [
+            ("state", "string", "name", '"Alice"', "Dynamic text."),
+            ("state", "bytes", "payload", "0x0102", "Dynamic bytes."),
+            ("derived", "bytes32", "nameHash", "keccak256(bytes(name))", "Hash of logical text bytes."),
+            ("derived", "bytes32", "payloadHash", "keccak256(payload)", "Hash of logical payload bytes."),
+        ],
+        "flow": [
+            "The logical string/bytes value is independent of the physical storage encoding.",
+            "bytes(name) exposes the textual byte sequence.",
+            "keccak256 hashes the logical bytes.",
+            "Storage-layout analysis is separate from value-level hashing.",
+        ],
+        "call": "ids();",
+    },
+])
+
+
+def connection_meaning(name: str) -> str:
+    canonical = canonicalize(name)
+    if canonical in _EXTRA_MEANINGS:
+        return _EXTRA_MEANINGS[canonical]
+
+    raw_key = _norm(name)
+    topic_name = _CATALOG_ALIASES.get(raw_key)
+    if topic_name:
+        meaning = _CATALOG_NAME_TO_MEANING.get(topic_name)
+        if meaning:
+            return meaning
+
+    topic_name = _CATALOG_ALIASES.get(_norm(canonical))
+    if topic_name:
+        meaning = _CATALOG_NAME_TO_MEANING.get(topic_name)
+        if meaning:
+            return meaning
+
+    return f"{canonical} is a recognized Solidity/Foundry concept."
+
+
+def _generic_connect_scene(nodes):
+    ordered = list(dict.fromkeys(canonicalize(node) for node in nodes))
+    requested_text = " + ".join(ordered)
+
+    if "mapping" in ordered and "abi.decode" in ordered:
+        code = """mapping(address => uint256) public state;
+
+function bridge(bytes calldata raw, uint256 value_) external {
+    address key = abi.decode(raw, (address));
+    state[key] = value_;
+}"""
+        flow = [
+            "Raw bytes enter the contract.",
+            "abi.decode interprets them as a typed value.",
+            "The typed value becomes the mapping key.",
+            "The mapped state is updated.",
+        ]
+        variables = [
+            ("input", "bytes calldata", "raw", "ABI bytes", "Raw boundary data."),
+            ("decoded", "address", "key", "abi.decode(raw, (address))", "Typed key."),
+            ("state", "mapping(address => uint256)", "state", "state[key]", "Persistent lookup."),
+            ("parameter", "uint256", "value_", "100", "Value written to the selected entry."),
+        ]
+        call = "bridge(abi.encode(alice), 100);"
+    elif "mapping" in ordered and "keccak256" in ordered:
+        code = """mapping(bytes32 => address) public state;
+
+function bridge(bytes calldata raw) external {
+    bytes32 key = keccak256(raw);
+    state[key] = msg.sender;
+}"""
+        flow = [
+            "Raw bytes enter the contract.",
+            "keccak256 transforms them into bytes32.",
+            "The digest becomes a mapping key.",
+            "msg.sender supplies the stored address value.",
+        ]
+        variables = [
+            ("input", "bytes calldata", "raw", "raw bytes", "Hash input."),
+            ("derived", "bytes32", "key", "keccak256(raw)", "Mapping key."),
+            ("state", "mapping(bytes32 => address)", "state", "state[key]", "Persistent lookup."),
+            ("global", "address", "msg.sender", "0xAlice", "Stored value."),
+        ]
+        call = 'bridge(hex"416c696365");'
+    elif "interface" in ordered and ("call" in ordered or "external-call" in ordered):
+        code = """interface ITarget {
+    function value() external view returns (uint256);
+}
+
+function bridge(ITarget target)
+    external
+    view
+    returns (uint256)
+{
+    return target.value();
+}"""
+        flow = [
+            "An interface value refers to a target address.",
+            "The interface defines the callable shape.",
+            "The call crosses the contract boundary.",
+            "The result returns through the ABI boundary.",
+        ]
+        variables = [
+            ("parameter", "ITarget", "target", "0xTarget", "Typed target."),
+            ("function", "uint256", "value()", "42", "Declared return."),
+        ]
+        call = "bridge(target);"
+    elif "yul" in ordered or any(node.startswith("yul-") for node in ordered):
+        code = """function bridge(uint256 value_)
+    external
+    pure
+    returns (uint256 result)
+{
+    assembly {
+        result := add(value_, 1)
+    }
+}"""
+        flow = [
+            "A normal Solidity value enters the function.",
+            "assembly exposes the calculation to Yul.",
+            "Yul transforms the word.",
+            "The Solidity return variable receives the result.",
+        ]
+        variables = [
+            ("parameter", "uint256", "value_", "41", "Solidity input."),
+            ("Yul result", "word", "result", "add(value_, 1)", "Assembly output."),
+        ]
+        call = "bridge(41);"
+    else:
+        paths = connection_paths(ordered)
+        path = paths[0][2] if paths else ordered
+        code = """contract ConnectionBridge {
+    // No single Solidity construct owns this combination.
+    // The useful route is:
+    // __PATH__
+}""".replace("__PATH__", " → ".join(path))
+        flow = [
+            f"Start with {ordered[0]}.",
+            f"Use the graph path: {' → '.join(path)}.",
+            "The intermediate concepts are the actual bridge; they are not interchangeable syntax.",
+            "Then inspect each requested concept's cheat view for its exact compiler rules.",
+        ]
+        variables = [
+            ("requested", "concept", node, "selected", connection_meaning(node))
+            for node in ordered
+        ]
+        call = f"lk cheat {ordered[0]}"
+
+    return {
+        "keys": frozenset(ordered),
+        "title": f"Guided bridge: {requested_text}",
+        "story": (
+            "This combination does not have one single canonical Solidity idiom. "
+            "Lowkey therefore keeps the lesson small and shows the strongest semantic "
+            "bridge instead of dumping the universal contract."
+        ),
+        "code": code.strip("\n"),
+        "variables": variables,
+        "flow": flow,
+        "call": call,
+        "generic": True,
+    }
+
+
+def find_micro_scene(names):
+    requested = frozenset(canonicalize(name) for name in names)
+
+    exact = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if frozenset(scene.get("keys", ())) == requested
+    ]
+    if exact:
+        return exact[0]
+
+    candidates = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if requested <= frozenset(scene.get("keys", ()))
+    ]
+    if candidates:
+        candidates.sort(
+            key=lambda scene: (
+                len(frozenset(scene.get("keys", ())) - requested),
+                len(frozenset(scene.get("keys", ()))),
+                scene.get("title", ""),
+            )
+        )
+        return candidates[0]
+
+    return _generic_connect_scene(list(requested))
+
+
+def list_connections():
+    return [
+        {
+            "name": "solidity-yul-comprehensive-graph",
+            "aliases": ["graph", "comprehensive"],
+            "concepts": ["all recognized Solidity/Yul/Foundry concepts"],
+            "summary": (
+                f"{len(_COMPREHENSIVE_CONNECTION_EDGES)} semantic graph edges, "
+                f"{len(COMPREHENSIVE_MICRO_SCENES)} curated micro-scenes, and a "
+                "generated bridge for combinations without a dedicated scene."
+            ),
+        },
+        {
+            "name": "decode/hash/mapping",
+            "aliases": [],
+            "concepts": ["mapping", "abi.decode", "keccak256"],
+            "summary": "Same raw bytes can be decoded into a typed value and independently hashed into a mapping key.",
+        },
+        {
+            "name": "ABI call path",
+            "aliases": [],
+            "concepts": ["function-selector", "abi.encodeCall", "call", "returndata", "abi.decode"],
+            "summary": "Typed function → selector/calldata → external call → raw return bytes → typed value.",
+        },
+        {
+            "name": "proxy flow",
+            "aliases": [],
+            "concepts": ["proxy-fallback", "fallback", "delegatecall", "storage-layout", "returndata"],
+            "summary": "Fallback routing → delegatecall → proxy storage/context → returndata.",
+        },
+        {
+            "name": "permit path",
+            "aliases": [],
+            "concepts": ["mapping", "nonce", "abi.encode", "keccak256", "ecrecover"],
+            "summary": "Signed approval data → digest → recovered signer → nonce/allowance state.",
+        },
+        {
+            "name": "storage path",
+            "aliases": [],
+            "concepts": ["mapping-slots", "array-storage", "storage-layout", "keccak256", "yul-storage"],
+            "summary": "High-level state expression → derived storage coordinates → Yul sload/sstore.",
+        },
+        {
+            "name": "error path",
+            "aliases": [],
+            "concepts": ["custom-errors", "function-selector", "returndata", "try-catch"],
+            "summary": "Error selector/data → revert bytes → catch → decoded meaning.",
+        },
+        {
+            "name": "Foundry boundary path",
+            "aliases": [],
+            "concepts": ["vm-prank", "msg.sender", "vm-deal", "contract-balance", "vm-expect-call"],
+            "summary": "Test-controlled actor/balance → contract call context → observed external call.",
+        },
+    ]
