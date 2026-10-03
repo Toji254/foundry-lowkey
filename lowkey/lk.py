@@ -4289,7 +4289,7 @@ def parse_lab_system(output):
     system = {}
     text = str(output or "")
     for match in re.finditer(
-        r"(?m)^\s*LOWKEY_([A-Z][A-Z0-9_]*)\s*:?\s*(0x[0-9a-fA-F]{40})\s*$",
+        r"(?i)\b(LOWKEY_[A-Z][A-Z0-9_]*)\b\s*:?\s*(0x[0-9a-fA-F]{40})\b",
         text,
     ):
         key = re.sub(r"[^a-z0-9]+", "_", match.group(1).lower()).strip("_")
@@ -4433,7 +4433,7 @@ def parse_lab_markers(output, marker):
     entire physical line.
     """
     return re.findall(
-        rf"(?i)\\b{re.escape(marker)}\\b\\s*:?\\s*(0x[0-9a-fA-F]{{40}})\\b",
+        rf"(?i)\b{re.escape(marker)}\b\s*:?\s*(0x[0-9a-fA-F]{{40}})\b",
         str(output or ""),
     )
 
