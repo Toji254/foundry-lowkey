@@ -127,6 +127,7 @@ class BreakEngineTests(unittest.TestCase):
             target, fn, "withdraw()", [], 3, seed_fund="10 ether"
         )
         self.assertIn("vm.deal(TARGET, 10 ether);", funded)
+        self.assertIn("call{value: 10 ether}", funded)
 
 
     def test_result_parser_requires_explicit_break_marker(self):
