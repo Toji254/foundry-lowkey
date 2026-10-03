@@ -49,13 +49,13 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py system_model.py project_tools.py question_engine.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py; do
+for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py system_model.py project_tools.py question_engine.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
 
-python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"
+python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py"
 bash -n "$REPO_DIR/bin/lk"
 
 # Publish exactly the validated stage so the manifest always describes the
@@ -76,6 +76,7 @@ cp "$STAGE_DIR/import_helper.py" "$TARGET_LOWKEY_DIR/import_helper.py"
 cp "$STAGE_DIR/solidity_cheatsheet.py" "$TARGET_LOWKEY_DIR/solidity_cheatsheet.py"
 cp "$STAGE_DIR/solidity_cheat_topics.py" "$TARGET_LOWKEY_DIR/solidity_cheat_topics.py"
 cp "$STAGE_DIR/solidity_cheat_data.py" "$TARGET_LOWKEY_DIR/solidity_cheat_data.py"
+cp "$STAGE_DIR/solidity_connect_data.py" "$TARGET_LOWKEY_DIR/solidity_connect_data.py"
 cp "$STAGE_DIR/walkthrough.py" "$TARGET_LOWKEY_DIR/walkthrough.py"
 cp "$STAGE_DIR/walkthrough_benchmarks.py" "$TARGET_LOWKEY_DIR/walkthrough_benchmarks.py"
 cp "$STAGE_DIR/walkthrough_finding_patterns.py" "$TARGET_LOWKEY_DIR/walkthrough_finding_patterns.py"
@@ -136,6 +137,7 @@ installed = {
     str(lowkey_dir / "solidity_cheatsheet.py"): sha256(lowkey_dir / "solidity_cheatsheet.py"),
     str(lowkey_dir / "solidity_cheat_topics.py"): sha256(lowkey_dir / "solidity_cheat_topics.py"),
     str(lowkey_dir / "solidity_cheat_data.py"): sha256(lowkey_dir / "solidity_cheat_data.py"),
+    str(lowkey_dir / "solidity_connect_data.py"): sha256(lowkey_dir / "solidity_connect_data.py"),
     str(lowkey_dir / "walkthrough.py"): sha256(lowkey_dir / "walkthrough.py"),
     str(lowkey_dir / "walkthrough_benchmarks.py"): sha256(lowkey_dir / "walkthrough_benchmarks.py"),
     str(lowkey_dir / "walkthrough_finding_patterns.py"): sha256(lowkey_dir / "walkthrough_finding_patterns.py"),
@@ -179,6 +181,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/solidity_cheatsheet.py
   - $TARGET_LOWKEY_DIR/solidity_cheat_topics.py
   - $TARGET_LOWKEY_DIR/solidity_cheat_data.py
+  - $TARGET_LOWKEY_DIR/solidity_connect_data.py
   - $TARGET_LOWKEY_DIR/walkthrough.py
   - $TARGET_LOWKEY_DIR/walkthrough_benchmarks.py
   - $TARGET_LOWKEY_DIR/walkthrough_finding_patterns.py
