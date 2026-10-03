@@ -113,7 +113,7 @@ class SolidityConnectTests(unittest.TestCase):
             "static-array", "enum"
         )
         self.assertEqual(result, 0)
-        self.assertIn("A mapping stores a struct", output)
+        self.assertIn("Address → struct → enum/bytes/array → nested mapping", output)
 
     def test_mapping_decode_hash_connection_is_not_fallback_graph_noise(self):
         result, output = self.render(
