@@ -8813,7 +8813,13 @@ def _render_scene_compact(scene, number, walkthrough=False):
 
 def render_connection_pack(requested, scenes, walkthrough=False):
     """Render a multi-scene connection without changing single-scene output."""
-    route = connection_route(requested)
+    computed_route = connection_route(requested)
+    explicit_routes = [
+        scene.get("route")
+        for scene in scenes
+        if scene.get("route")
+    ]
+    route = explicit_routes[0] if len(scenes) == 1 and explicit_routes else computed_route
     print()
     print("CONNECTION ROUTE")
     print("----------------")
@@ -9279,6 +9285,13 @@ function read(address user_)
     ],
     "read(alice);",
 )
+_FINAL_EXACT_MAPPING_YUL_SCENE = COMPREHENSIVE_MICRO_SCENES[-1]
+_FINAL_EXACT_MAPPING_YUL_SCENE["route"] = [
+    "mapping",
+    "storage-layout",
+    "keccak256",
+    "yul",
+]
 
 # FINAL PRODUCTION-PATTERN COVERAGE
 _SEMANTIC_ALIASES.update({
