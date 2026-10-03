@@ -559,7 +559,7 @@ def extract(path: Path, root: Path, maps: list[tuple[str, Path]]) -> list[Symbol
                             path,
                             import_path(path, root, maps),
                             n,
-                            abstract=(kind == "contract" and bool(re.match(r"^abstract\\s+contract\\b", line))),
+                            abstract=(kind == "contract" and bool(re.match(r"^abstract\s+contract\b", line))),
                         )
                     )
                     break
@@ -901,10 +901,11 @@ def git_version(package_root: Path) -> str | None:
     return None
 
 
-def source_status_label(s: Symbol) -> str:
+def source_status_label(s: Symbol, root: Path | None = None) -> str:
+    root = root or root_for()
     if s.source.name.startswith("(reference only"):
         return "📚 REFERENCE ONLY"
-    if s.source.resolve().is_relative_to((root_for() / "lib").resolve()):
+    if s.source.resolve().is_relative_to((root / "lib").resolve()):
         return "📦 INSTALLED DEPENDENCY"
     return "✅ VERIFIED PROJECT SOURCE"
 
@@ -1030,7 +1031,7 @@ def symbol_record(s: Symbol, root: Path, maps) -> dict:
         "abstract": bool(s.abstract),
         "source": str(s.source),
         "source_location": source_location(s),
-        "source_status": source_status_label(s),
+        "source_status": source_status_label(s, root),
         "import_path": s.import_path,
         "import": s.import_stmt,
         "why": why,
@@ -1317,7 +1318,7 @@ def show_symbol(s: Symbol, root: Path | None = None, maps=None, json_mode: bool 
     print(f"TYPE:       {kind_label(s)}")
     print(f"ROLE:       {meta.get('role', kind_label(s))}")
     print(f"SOURCE:     {source_location(s)}")
-    print(f"SOURCE KIND:{'  ' + source_status_label(s)}")
+    print(f"SOURCE KIND:{'  ' + source_status_label(s, root)}")
     url = source_web_url(s, root)
     if url:
         print(f"SOURCE URL: {url}")
@@ -1444,7 +1445,7 @@ def browse_package(p: Package, root: Path, maps):
             if s:
                 show_symbol(s, root)
         else:
-            print("Pick 1-5 or b.")
+            print("Pick 1-6 or b.")
 
 
 def common():
@@ -1677,7 +1678,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
     syms = all_symbols(root, maps)
     exact = [s for s in syms if s.name.lower() in tokens or s.import_path.lower() in tokens]
     if len(exact) == 1:
-        show_symbol(exact[0], root)
+        show_symbol(exact[0], root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
 
     matches = [
@@ -1686,7 +1687,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
     ]
     if not matches:
         known_matches = []
-        for name in COMMON:
+        for name in list(COMMON) + list(REFERENCE_CATALOG):
             if any(token == name.lower() for token in tokens):
                 ref = reference_symbol(name, root)
                 if ref:
