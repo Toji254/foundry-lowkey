@@ -77,6 +77,10 @@ INSTALL INTELLIGENCE:
   lk import --copy-only ERC721
     Emit only the copy-ready Solidity import.
 
+  lk import --verbose ERC721
+    Show the deeper package/version/dependency/project-usage/audit details.
+    Emit only the copy-ready Solidity import.
+
   lk import search nft
     Search deterministic learning tags, roles, use cases, and import paths.
 
@@ -312,6 +316,19 @@ REFERENCE_CATALOG = {
     },
 }
 
+
+# Official upstreams are trusted installation sources. Never infer install commands
+# from a dependency's local git origin: forks/mirrors/superprojects can rewrite it.
+OFFICIAL_PACKAGE_REGISTRY = {
+    "openzeppelin-contracts": {"package": "OpenZeppelin Contracts", "repo": "OpenZeppelin/openzeppelin-contracts", "forge_install": "forge install OpenZeppelin/openzeppelin-contracts", "docs": "https://docs.openzeppelin.com/contracts/5.x"},
+    "openzeppelin-contracts-upgradeable": {"package": "OpenZeppelin Contracts Upgradeable", "repo": "OpenZeppelin/openzeppelin-contracts-upgradeable", "forge_install": "forge install OpenZeppelin/openzeppelin-contracts-upgradeable", "docs": "https://docs.openzeppelin.com/upgrades-plugins"},
+    "openzeppelin-foundry-upgrades": {"package": "OpenZeppelin Foundry Upgrades", "repo": "OpenZeppelin/openzeppelin-foundry-upgrades", "forge_install": "forge install OpenZeppelin/openzeppelin-foundry-upgrades", "docs": "https://docs.openzeppelin.com/upgrades-plugins/foundry-upgrades"},
+    "openzeppelin-community-contracts": {"package": "OpenZeppelin Community Contracts", "repo": "OpenZeppelin/openzeppelin-community-contracts", "forge_install": "forge install OpenZeppelin/openzeppelin-community-contracts", "docs": "https://docs.openzeppelin.com/community-contracts"},
+    "chainlink-evm": {"package": "Chainlink EVM Contracts", "repo": "smartcontractkit/chainlink-evm", "forge_install": "forge install smartcontractkit/chainlink-evm", "docs": "https://docs.chain.link"},
+    "chainlink-ccip": {"package": "Chainlink CCIP Contracts", "repo": "smartcontractkit/chainlink-ccip", "forge_install": "forge install smartcontractkit/chainlink-ccip", "docs": "https://docs.chain.link/ccip"},
+    "chainlink-local": {"package": "Chainlink Local", "repo": "smartcontractkit/chainlink-local", "forge_install": "forge install smartcontractkit/chainlink-local", "docs": "https://docs.chain.link/chainlink-local"},
+    "forge-std": {"package": "forge-std", "repo": "foundry-rs/forge-std", "forge_install": "forge install foundry-rs/forge-std", "docs": "https://getfoundry.sh/reference/forge-std/overview/"},
+}
 IMPORT_LEARNING = {
     "Ownable": {
         "role": "access-control base contract",
@@ -691,20 +708,24 @@ def install_status(symbol: Symbol, root: Path) -> str:
     return "SOURCE NOT PRESENT"
 
 
+def official_package(package_root: Path | None) -> dict:
+    if not package_root:
+        return {}
+    return OFFICIAL_PACKAGE_REGISTRY.get(package_root.name, {})
+
 def install_guidance(symbol: Symbol, root: Path) -> tuple[str, str]:
     package_root = package_root_for(symbol.source, root)
     if package_root:
-        remote = git_remote(package_root)
-        slug = forge_repo_slug(remote)
-        if slug:
-            return package_root.name, f"forge install {slug}"
-        return package_root.name, "Already installed locally; no verified Forge install command was detected."
+        official = official_package(package_root)
+        if official:
+            return official["package"], official["forge_install"]
+        return package_root.name, "No verified upstream install command in Lowkey's registry."
 
     meta = symbol_metadata(symbol)
     if meta.get("forge_install"):
         return meta.get("package", "Known dependency"), meta["forge_install"]
 
-    return "Current project", "No forge install needed — this symbol is in the current project's source."
+    return "Current project", "No install needed — this symbol is in the current project's source."
 
 
 def reference_symbol(name: str, root: Path) -> Symbol | None:
@@ -946,19 +967,21 @@ def source_location(s: Symbol) -> str:
 
 def source_web_url(s: Symbol, root: Path) -> str | None:
     package_root = package_root_for(s.source, root)
-    if not package_root:
+    official = official_package(package_root)
+    if not package_root or not official or s.line <= 0:
         return None
     remote = git_remote(package_root)
     slug = forge_repo_slug(remote)
+    if not slug or slug.lower() != official["repo"].lower():
+        return None
     commit = git_commit(package_root)
-    if not slug or not commit:
+    if not commit:
         return None
     try:
         rel = s.source.resolve().relative_to(package_root.resolve()).as_posix()
     except ValueError:
         return None
-    return f"https://github.com/{slug}/blob/{commit}/{rel}#L{s.line}"
-
+    return f"https://github.com/{official['repo']}/blob/{commit}/{rel}#L{s.line}"
 
 def interface_surface(s: Symbol) -> list[str]:
     meta = symbol_metadata(s)
@@ -1033,7 +1056,14 @@ def related_symbols(s: Symbol, root: Path, maps) -> list[Symbol]:
         by_name.setdefault(item.name.lower(), []).append(item)
     for name in names:
         candidates = by_name.get(name.lower(), [])
-        item = candidates[0] if candidates else reference_symbol(name, root)
+        canonical = canonical_import_path(name)
+        canonical_candidates = [x for x in candidates if canonical and x.import_path == canonical]
+        if canonical_candidates:
+            item = canonical_candidates[0]
+        else:
+            item = reference_symbol(name, root)
+            if not item and candidates:
+                item = candidates[0]
         if item:
             out.append(item)
     return out
@@ -1392,7 +1422,14 @@ def show_copy_imports(symbols: list[Symbol], requested_path: str | None = None, 
             print("      Lowkey used the verified source path(s) above.")
 
 
-def show_symbol(s: Symbol, root: Path | None = None, maps=None, json_mode: bool = False, copy_only: bool = False):
+def show_symbol(
+    s: Symbol,
+    root: Path | None = None,
+    maps=None,
+    json_mode: bool = False,
+    copy_only: bool = False,
+    verbose: bool = False,
+):
     root = root or root_for()
     maps = maps if maps is not None else remappings(root)
     if json_mode:
@@ -1401,83 +1438,83 @@ def show_symbol(s: Symbol, root: Path | None = None, maps=None, json_mode: bool 
     if copy_only:
         show_copy_imports([s], copy_only=True)
         return
-    why, when = explain(s)
-    how, use_cases, example, audit = usage_guidance(s)
-    package, forge_command = install_guidance(s, root)
-    status = install_status(s, root)
-    meta = symbol_metadata(s)
+    why, _when = explain(s)
+    how, _use_cases, _example, _audit = usage_guidance(s)
     print()
-    print(f"NAME:       {s.name}")
-    print(f"TYPE:       {kind_label(s)}")
-    print(f"ROLE:       {meta.get('role', kind_label(s))}")
-    print(f"SOURCE:     {source_location(s)}")
-    print(f"SOURCE KIND:{'  ' + source_status_label(s, root)}")
-    url = source_web_url(s, root)
-    if url:
-        print(f"SOURCE URL: {url}")
-    print(f"IMPORT:     {s.import_stmt}")
-    print(f"WHY:        {why}")
-    print(f"WHEN:       {when}")
-    print(f"PACKAGE:    {package}")
-    print(f"STATUS:     {status}")
-    package_root = package_root_for(s.source, root)
-    print(f"VERSION:    {git_version(package_root) if package_root else 'not installed / not versioned'}")
-    print(f"COMMIT:     {git_commit(package_root) if package_root else 'n/a'}")
-    print(f"FORGE:      {forge_command}")
-    print(f"HOW:        {how}")
+    print(f"NAME:   {s.name}")
+    print(f"TYPE:   {kind_label(s)}")
+    print(f"SOURCE: {source_location(s)}")
+    print(f"IMPORT: {s.import_stmt}")
+    print(f"WHY:    {why}")
+    print(f"HOW:    {how}")
     if s.kind == "interface":
         surface = interface_surface(s)
         if surface:
-            print("INTERFACE SURFACE:")
+            print("API:")
             for method in surface:
                 print(f"  - {method}")
-            print("  These are callable shapes; the interface does NOT contain the concrete implementation.")
-    if use_cases:
-        print("USE CASES:")
-        for item in use_cases:
-            print(f"  - {item}")
-    if example:
-        print("EXAMPLE:")
-        print(f"  {example}")
     related = related_symbols(s, root, maps)
     if related:
         print("RELATED:")
         for item in related:
-            print(f"  - {item.name} [{kind_label(item)}] -> {item.import_path}")
-    next_items = meta.get("next", [])
-    if next_items:
-        print("NEXT TO LEARN:")
-        for item in next_items:
-            print(f"  - {item}")
+            print(f"  - {item.name} [{kind_label(item)}] -> {source_location(item)}")
+    if s.line > 0 and not s.source.name.startswith("(reference only"):
+        print("EDITOR: Ctrl+Click SOURCE above to open the exact file/line.")
+    show_copy_imports([s])
+    if not verbose:
+        return
+    meta = symbol_metadata(s)
+    package, forge_command = install_guidance(s, root)
+    status = install_status(s, root)
+    package_root = package_root_for(s.source, root)
+    print()
+    print("DETAILS:")
+    print(f"  ROLE:       {meta.get('role', kind_label(s))}")
+    print(f"  SOURCE KIND:{'  ' + source_status_label(s, root)}")
+    print(f"  PACKAGE:    {package}")
+    print(f"  STATUS:     {status}")
+    print(f"  VERSION:    {git_version(package_root) if package_root else 'not installed / not versioned'}")
+    print(f"  COMMIT:     {git_commit(package_root) if package_root else 'n/a'}")
+    print(f"  FORGE:      {forge_command}")
+    official = official_package(package_root)
+    if official.get('repo'):
+        print(f"  UPSTREAM:   {official['repo']}")
+    url = source_web_url(s, root)
+    if url:
+        print(f"  SOURCE URL: {url}")
+    if meta.get("use_cases"):
+        print("  USE CASES:")
+        for item in meta["use_cases"]:
+            print(f"    - {item}")
+    if meta.get("next"):
+        print("  NEXT:")
+        for item in meta["next"]:
+            print(f"    - {item}")
     imports = direct_imports(s.source)
     if imports:
-        print("DEPENDS ON:")
-        for item in imports[:16]:
-            print(f"  - {item}")
+        print("  DEPENDS ON:")
+        for item in imports[:24]:
+            print(f"    - {item}")
     usage = project_usage(s, root)
     if usage:
-        print("PROJECT USAGE:")
-        for path, line, text in usage[:12]:
-            print(f"  - {path.resolve()}:{line}  {text}")
+        print("  PROJECT USAGE:")
+        for path, line, text in usage[:20]:
+            print(f"    - {path.resolve()}:{line}  {text}")
     if meta.get("compatibility"):
-        print(f"COMPATIBILITY: {meta['compatibility']}")
+        print(f"  COMPATIBILITY: {meta['compatibility']}")
     mistakes = meta.get("mistakes", [])
     if mistakes:
-        print("COMMON MISTAKES:")
+        print("  COMMON MISTAKES:")
         for item in mistakes:
-            print(f"  - {item}")
+            print(f"    - {item}")
+    audit = usage_guidance(s)[3]
     if audit:
-        print(f"AUDIT LENS: {audit}")
+        print(f"  AUDIT LENS: {audit}")
     questions = audit_questions(s)
     if questions:
-        print("AUDIT QUESTIONS:")
-        for item in questions[:8]:
-            print(f"  ? {item}")
-    print(f"LINE:       {s.line}")
-    if s.line > 0 and not s.source.name.startswith("(reference only"):
-        print("EDITOR:     Ctrl+Click the SOURCE or PROJECT USAGE path above in terminals that support file links.")
-    show_copy_imports([s])
-
+        print("  AUDIT QUESTIONS:")
+        for item in questions[:12]:
+            print(f"    ? {item}")
 
 def show_file(item):
     path, syms = item
@@ -1647,7 +1684,7 @@ def print_import_file(
     return 0
 
 
-def import_query(query: str, root: Path, maps, install: bool = False, dry_run: bool = False, json_mode: bool = False, copy_only: bool = False) -> int:
+def import_query(query: str, root: Path, maps, install: bool = False, dry_run: bool = False, json_mode: bool = False, copy_only: bool = False, verbose: bool = False) -> int:
     requested_imports, requested_path, mode, namespace_alias = parse_import_query(query)
     tokens = [name for name, _alias in requested_imports]
 
@@ -1712,7 +1749,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
             print()
             print(f'RESOLVED {len(unique_found)} SYMBOL(S)')
             for symbol in unique_found:
-                show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only)
+                show_symbol(symbol, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
             show_copy_imports(unique_found, requested_path=requested_path, aliases=aliases)
             if install:
                 return install_symbols(unique_found, root, dry_run=dry_run)
@@ -1793,7 +1830,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
                 return 0
             s = choose(known_matches, sym_render, 'known import references')
             if s:
-                show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
+                show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
                 if install:
                     return install_symbols([s], root, dry_run=dry_run)
             return 0
@@ -1828,7 +1865,7 @@ def resolve_single_symbol(query: str, root: Path, maps) -> Symbol | None:
     return None
 
 
-def run_learning_command(category: str, root: Path, maps, json_mode: bool = False, copy_only: bool = False) -> int:
+def run_learning_command(category: str, root: Path, maps, json_mode: bool = False, copy_only: bool = False, verbose: bool = False) -> int:
     parts = category.split(None, 1)
     command = parts[0].lower() if parts else ""
     query = parts[1].strip() if len(parts) > 1 else ""
@@ -1866,11 +1903,11 @@ def run_learning_command(category: str, root: Path, maps, json_mode: bool = Fals
     return import_query(category, root, maps, json_mode=json_mode, copy_only=copy_only)
 
 
-def run_category(category: str, root: Path, maps, install: bool = False, dry_run: bool = False, json_mode: bool = False, copy_only: bool = False) -> int:
+def run_category(category: str, root: Path, maps, install: bool = False, dry_run: bool = False, json_mode: bool = False, copy_only: bool = False, verbose: bool = False) -> int:
     category = category.strip()
     cat = category.lower()
     if cat.startswith(("search ", "explain ", "usage ", "audit ", "related ", "graph ")):
-        return run_learning_command(category, root, maps, json_mode=json_mode, copy_only=copy_only)
+        return run_learning_command(category, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
     if cat in {"packages", "package", "deps"}:
         header("INSTALLED PACKAGES")
         p = choose(packages(root, maps), pkg_render, "installed packages")
@@ -1934,7 +1971,7 @@ def run_category(category: str, root: Path, maps, install: bool = False, dry_run
             else:
                 show_symbol(symbol, root, maps, copy_only=True)
             return install_symbols([symbol], root, dry_run=dry_run)
-    return import_query(category, root, maps, install=install, dry_run=dry_run, json_mode=json_mode, copy_only=copy_only)
+    return import_query(category, root, maps, install=install, dry_run=dry_run, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
 
 
 def interactive(root: Path, maps) -> int:
@@ -1976,6 +2013,7 @@ def main(argv=None) -> int:
     dry_run = False
     json_mode = False
     copy_only = False
+    verbose = False
     cleaned = []
     for arg in args:
         flag = arg.lower()
@@ -1991,13 +2029,16 @@ def main(argv=None) -> int:
         if flag in {"--copy-only", "--copy"}:
             copy_only = True
             continue
+        if flag in {"--verbose", "-v"}:
+            verbose = True
+            continue
         cleaned.append(arg)
 
     root = root_for()
     maps = remappings(root)
     if not cleaned:
         if install or dry_run or json_mode or copy_only:
-            print("Usage: lk import [--install] [--dry-run] [--json] [--copy-only] <symbol>")
+            print("Usage: lk import [--install] [--dry-run] [--json] [--copy-only] [--verbose] <symbol>")
             return 2
         try:
             return interactive(root, maps)
@@ -2015,6 +2056,7 @@ def main(argv=None) -> int:
         dry_run=dry_run,
         json_mode=json_mode,
         copy_only=copy_only,
+        verbose=verbose,
     )
 
 
