@@ -31,6 +31,31 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
+try:
+    from break_playbook import (
+        FINDING_PATTERNS,
+        backend_for_project,
+        catalog_summary,
+        family_names,
+        language_label,
+        patterns_for,
+        native_probe_commands,
+    )
+except ImportError:
+    FINDING_PATTERNS = ()
+    def backend_for_project(info):
+        return "generic"
+    def catalog_summary(project=None):
+        return {"total_patterns": 0, "relevant_patterns": [], "families": []}
+    def family_names(patterns):
+        return []
+    def language_label(info):
+        return "unknown"
+    def patterns_for(*, project=None, function_name="", source_text=""):
+        return []
+    def native_probe_commands(info):
+        return []
+
 
 ATTACK_FAMILIES = {
     "reentrancy": {
@@ -172,6 +197,62 @@ def _slug(value: str) -> str:
 
 def _root(host) -> Path:
     return Path(host.audit_context.foundry_project_root()).expanduser().resolve()
+
+
+def _project_break_context(host) -> dict[str, Any]:
+    """Detect the active project/workspace and derive its breaker backend."""
+    root = _root(host)
+    try:
+        from project_detection import detect_project
+        info = detect_project(root)
+    except Exception as exc:
+        info = {
+            "root": str(root),
+            "kind": "unknown",
+            "backend": "generic",
+            "stacks": [],
+            "languages": {},
+            "native": {},
+            "detection_error": str(exc),
+        }
+    info["break_backend"] = backend_for_project(info)
+    info["break_catalog"] = catalog_summary(info)
+    return info
+
+
+def _language_features(root: Path, info: dict[str, Any]) -> list[str]:
+    """Collect language-specific source cues without assuming Solidity syntax."""
+    features: list[str] = []
+    languages = set(str(x).lower() for x in (info.get("languages") or {}).keys())
+    if "vyper" in languages:
+        patterns = {
+            "@external": "external entry points",
+            "@internal": "internal entry points",
+            "@view": "view functions",
+            "@pure": "pure functions",
+            "@nonreentrant": "reentrancy guard",
+            "raw_call": "raw_call external interaction",
+            "extcall": "extcall external interaction",
+            "send(": "native ETH send",
+            "raw_log": "low-level event logging",
+        }
+        for path in root.rglob("*.vy"):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for needle, label in patterns.items():
+                if needle in text and label not in features:
+                    features.append(label)
+            if len(features) >= 12:
+                break
+    if "cairo" in languages:
+        features.append("Cairo entrypoints/storage are language-native; use Starknet tooling")
+    if "move" in languages:
+        features.append("Move entry functions/resources are language-native; use chain-native tests")
+    if "rust" in languages and any("anchor" in str(x).lower() for x in (info.get("stacks") or [])):
+        features.append("Anchor program instructions/accounts are language-native; use local-validator tests")
+    return features
 
 
 def _break_root(host) -> Path:
@@ -367,6 +448,7 @@ def _parse_args(args: list[str]):
     opts = {
         "function": None,
         "family": None,
+        "pattern": None,
         "system": False,
         "auto": False,
         "until_found": False,
@@ -401,6 +483,12 @@ def _parse_args(args: list[str]):
             if i + 1 >= len(args):
                 raise ValueError(f"{item} needs a function name/signature.")
             opts["function"] = str(args[i + 1])
+            i += 2
+            continue
+        if low in {"--pattern", "--finding"}:
+            if i + 1 >= len(args):
+                raise ValueError(f"{item} needs a finding-pattern id.")
+            opts["pattern"] = str(args[i + 1]).upper()
             i += 2
             continue
         if low == "--family":
@@ -466,6 +554,7 @@ USAGE
   lk break <function>
   lk break --function '<signature>'
   lk break --family reentrancy
+  lk break --pattern REENT-001
   lk break --system
   lk break --until-found
   lk break --function withdraw --until-found
@@ -489,6 +578,8 @@ ATTACK FAMILIES
   storage       storage/invariant probes
 
 MODES
+  --pattern ID  Attack using the family mapped from a recurring finding pattern.
+                IDs come from Lowkey's cross-language public-finding playbook.
   --system      Attack every live target Lowkey knows for this project/system.
   --until-found Continue rounds until a concrete break condition is reached
                 or you stop the process with Ctrl-C.
@@ -506,7 +597,8 @@ SAFETY
 OUTPUT
   WHAT / ATTACK / RESULT / BREAK CONDITION / EVIDENCE
   A concrete break stops --until-found immediately and is recorded under
-  .audit/break/.
+  .audit/break/. Non-EVM projects are routed to their native test toolchain;
+  Lowkey never pretends a generic EVM harness proves a Cairo/Move/Anchor bug.
 """
 
 
@@ -526,7 +618,12 @@ def _make_value(host, fn: dict[str, Any], rng: random.Random, mode: str, config=
     for item in fn.get("inputs") or []:
         ptype = str(item.get("type") or "").lower()
         if ptype == "address":
-            args.append(fallback)
+            if mode == "zero":
+                args.append("0x0000000000000000000000000000000000000000")
+            elif mode == "one" and len(accounts) > 1:
+                args.append(accounts[1])
+            else:
+                args.append(fallback)
         elif ptype == "bool":
             args.append("true" if mode == "one" else "false")
         elif ptype.startswith("uint"):
@@ -1113,6 +1210,9 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         "output_tail": "\n".join(output.splitlines()[-160:]),
         "generated_at": time.time(),
         "research_basis": ATTACK_FAMILIES.get(family, {}),
+        "project_detection": {
+            "kind": project_info.get("kind") if "project_info" in locals() else None,
+        },
     }
     evidence_path = _write_json(host, f"experiment_{target.contract}_{name}_{family}", evidence)
 
@@ -1130,8 +1230,14 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     return result
 
 
-def _families_for_function(fn: dict[str, Any], requested: str | None) -> list[str]:
+def _families_for_function(
+    fn: dict[str, Any],
+    requested: str | None,
+    project_info: dict[str, Any] | None = None,
+    pattern_hint: str | None = None,
+) -> list[str]:
     if requested:
+        requested = requested.lower()
         if requested not in ATTACK_FAMILIES:
             raise ValueError(
                 "Unknown attack family '%s'. Choose: %s"
@@ -1141,6 +1247,13 @@ def _families_for_function(fn: dict[str, Any], requested: str | None) -> list[st
 
     name = str(fn.get("name") or "")
     signature = _format_signature(fn)
+    patterns = patterns_for(project=project_info, function_name=name)
+    if pattern_hint:
+        wanted = [item for item in FINDING_PATTERNS if str(item.id).upper() == str(pattern_hint).upper()]
+        if not wanted:
+            raise ValueError(f"Unknown finding pattern '{pattern_hint}'.")
+        patterns = wanted + [item for item in patterns if item.id != wanted[0].id]
+
     families = ["reentrancy", "replay", "accounting", "boundary"]
     if PRIVILEGED_RE.search(name):
         families.append("access")
@@ -1152,9 +1265,10 @@ def _families_for_function(fn: dict[str, Any], requested: str | None) -> list[st
         families.append("signature")
     if CALLBACK_RE.search(name) or CALLBACK_RE.search(signature):
         families.append("callback")
-    if not families:
-        families.append("dos")
-    return families
+    for family in family_names(patterns):
+        if family in ATTACK_FAMILIES and family not in families:
+            families.append(family)
+    return families or ["dos"]
 
 
 def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1171,27 +1285,85 @@ def _select_functions(functions: list[dict[str, Any]], opts: dict[str, Any]) -> 
     return funcs
 
 
-def _print_banner(targets: list[Target], opts: dict[str, Any], rpc: str):
+def _print_banner(targets: list[Target], opts: dict[str, Any], rpc: str | None, project_info: dict[str, Any]):
     print()
     print("LOWKEY // BREAK MODE")
     print("====================")
     print("Mission : actively try to make the selected system violate a concrete property.")
     print("Rule    : static warnings are leads; BREAK requires stateful execution evidence.")
-    print(f"Runtime : {rpc}")
+    print(f"Backend : {project_info.get('break_backend', 'generic')}")
+    print(f"Language: {language_label(project_info)}")
+    if rpc:
+        print(f"Runtime : {rpc}")
     print(f"Targets : {len(targets)}")
     if opts.get("system"):
         print("Scope   : WHOLE SYSTEM")
     elif opts.get("function"):
         print(f"Scope   : FUNCTION {opts['function']}")
+    elif opts.get("pattern"):
+        print(f"Scope   : FINDING PATTERN {opts['pattern']}")
     else:
         print("Scope   : CURRENT TARGET")
     print(f"Mode    : {'INDEFINITE / STOP ON BREAK' if opts.get('until_found') else f'ROUND-LIMITED ({opts.get('max_rounds', 1)})'}")
+    features = _language_features(_root(__import__('lowkey.lk', fromlist=['*'])), project_info)
+    if features:
+        print("LANGUAGE CUES")
+        print("-------------")
+        for item in features[:10]:
+            print(f"  {item}")
     print()
     print("ATTACK LIBRARY")
     print("--------------")
     for key, info in sorted(ATTACK_FAMILIES.items(), key=lambda item: item[1]["priority"]):
         print(f"  {key:<12} {info['title']}")
+    print(f"Public-finding playbook: {len(FINDING_PATTERNS)} recurring logic patterns")
     print()
+
+
+def _run_native_backend(host, project_info: dict[str, Any], opts: dict[str, Any]) -> int:
+    """Route non-EVM projects to their own toolchain without faking exploit proof."""
+    root = Path(str(project_info.get("root") or _root(host)))
+    backend = str(project_info.get("break_backend") or "generic")
+    commands = native_probe_commands(project_info)
+    summary = {
+        "mode": "native-backend",
+        "backend": backend,
+        "kind": project_info.get("kind"),
+        "languages": project_info.get("languages", {}),
+        "stacks": project_info.get("stacks", []),
+        "native": project_info.get("native", {}),
+        "pattern_catalog": project_info.get("break_catalog", {}),
+        "commands": [],
+        "status": "PLAN_ONLY",
+    }
+    print()
+    print(f"LOWKEY // NATIVE {backend.upper()} BREAKER")
+    print("=====================================")
+    print(f"Project : {root}")
+    print(f"Language: {language_label(project_info)}")
+    print("Rule    : native execution is allowed; a test pass/fail is not itself a vulnerability verdict.")
+    if commands:
+        for command in commands:
+            print(f"Native  : {' '.join(command)}")
+            try:
+                completed = subprocess.run(command, cwd=str(root), capture_output=True, text=True, timeout=900)
+                output = (completed.stdout or "") + ("\\n" + completed.stderr if completed.stderr else "")
+                summary["commands"].append({"command": command, "returncode": completed.returncode, "output_tail": "\\n".join(output.splitlines()[-120:])})
+                status = "PASS" if completed.returncode == 0 else "FAIL"
+                print(f"{status:<7} native test execution")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                summary["commands"].append({"command": command, "error": str(exc)})
+                print(f"BLOCKED native test execution: {exc}")
+    else:
+        print("Native  : no supported local test runner detected yet.")
+    evidence = _write_json(host, f"native_{backend}_break", summary)
+    summary["evidence_path"] = str(evidence)
+    _emit(host, "break-native", "Native breaker routed without a fabricated EVM verdict.", summary)
+    print()
+    print(f"Finding logic mapped: {len(FINDING_PATTERNS)} recurring public-audit patterns")
+    print(f"Evidence: {evidence}")
+    print("Status  : native attack generation is deliberately adapter-specific; no BREAK was claimed.")
+    return 0
 
 
 def run(config, args=None, host=None):
@@ -1202,6 +1374,10 @@ def run(config, args=None, host=None):
     if opts.get("help"):
         print(help_text())
         return 0
+
+    project_info = _project_break_context(host)
+    if project_info.get("break_backend") != "evm":
+        return _run_native_backend(host, project_info, opts)
 
     try:
         rpc = _require_anvil(host, config)
@@ -1232,7 +1408,7 @@ def run(config, args=None, host=None):
     except Exception as exc:
         return host.fail(f"Target discovery failed: {exc}")
 
-    _print_banner(targets, opts, rpc)
+    _print_banner(targets, opts, rpc, project_info)
 
     rounds = 0
     campaign_results: list[AttackResult] = []
@@ -1257,7 +1433,12 @@ def run(config, args=None, host=None):
                     display_functions = selected if rounds > 1 else selected[:12]
 
                 for fn in display_functions:
-                    families = _families_for_function(fn, opts.get("family"))
+                    families = _families_for_function(
+                        fn,
+                        opts.get("family"),
+                        project_info=project_info,
+                        pattern_hint=opts.get("pattern"),
+                    )
                     for family in families:
                         made_progress = True
                         result = _run_family(
