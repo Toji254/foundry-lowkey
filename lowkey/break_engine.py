@@ -1567,6 +1567,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         try:
             all_functions = _discover_functions(host, config, target)
             setup_signature = _find_setup_signature(all_functions)
+            entitlement_signature = _find_entitlement_getter_signature(all_functions)
             body = _render_reentrancy_test(
                 target,
                 fn,
@@ -1575,6 +1576,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
                 opts.get("depth", 3),
                 setup_signature,
                 seed_fund=seed_fund,
+                entitlement_signature=entitlement_signature,
             )
         except ValueError as error:
             return AttackResult(
