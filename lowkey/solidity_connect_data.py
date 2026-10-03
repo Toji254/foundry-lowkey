@@ -828,6 +828,555 @@ _COMPOSITE_ALIASES = {
 }
 
 
+
+# Universal fallback: this is deliberately broad. Focused recipes above are used
+# when an exact teaching example exists; otherwise every recognized combination
+# lands here instead of being rejected.
+UNIVERSAL_CONNECTION_LAB = {
+    "name": "solidity-yul-composer",
+    "aliases": ["universal", "all", "composer", "everything"],
+    "concepts": ["*"],
+    "summary": (
+        "A universal connection notebook for recognized Solidity and Yul concepts. "
+        "It deliberately puts data types, state, functions, inheritance, interfaces, "
+        "imports, ABI, hashing, storage, ETH flow, external calls, and Yul in one "
+        "compile-checked environment so arbitrary combinations can be traced through "
+        "real variables and values."
+    ),
+    "source": """// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import "./ConnectionSupport.sol";
+
+contract MiniCounter {
+    uint256 public number;
+
+    constructor(uint256 number_) {
+        number = number_;
+    }
+
+    function increment(uint256 amount_) external {
+        number += amount_;
+    }
+}
+
+contract UniversalConnectionLab is ConnectionOwned {
+    using ConnectionMath for uint256;
+
+    enum Status {
+        None,
+        Active,
+        Done
+    }
+
+    type UserId is uint256;
+
+    struct Profile {
+        address owner;
+        string name;
+        uint256 score;
+        bytes32 id;
+        bytes memo;
+        Status status;
+        uint256[] tags;
+    }
+
+    // State: simple values and reference values.
+    address public manager;
+    string public title;
+    uint256 public total;
+    uint256 public constant VERSION = 1;
+    uint256 public immutable deployedAt;
+    bool public paused;
+    int256 public signedValue;
+    bytes public rawMemo;
+    bytes32 public code;
+
+    // Mapping + nested mapping + mapping-to-array + mapping-to-struct.
+    mapping(address => Profile) public profiles;
+    mapping(address => mapping(bytes32 => uint256)) public balances;
+    mapping(bytes32 => address[]) public members;
+    mapping(address => uint256[]) public scoresByUser;
+
+    // Dynamic + fixed/static arrays.
+    address[] public users;
+    address[3] public fixedUsers;
+    uint256[] public scores;
+    uint256[3] public fixedScores;
+
+    // Interface is an address-typed callable boundary.
+    IConnectionOracle public oracle;
+
+    event ProfileUpdated(
+        address indexed user,
+        uint256 oldScore,
+        uint256 newScore,
+        Status oldStatus,
+        Status newStatus
+    );
+    event OracleChanged(address indexed oracle_);
+    event Paid(address indexed from, uint256 amount);
+    error NotAuthorized(address caller);
+    error BadAmount(uint256 amount_);
+
+    constructor(address owner_, string memory title_, bytes32 code_)
+        ConnectionOwned(owner_)
+    {
+        manager = msg.sender;
+        title = title_;
+        code = code_;
+        deployedAt = block.timestamp;
+    }
+
+    modifier active() {
+        require(!paused, "paused");
+        _;
+    }
+
+    function createProfile(
+        string calldata name_,
+        uint256 score_,
+        bytes32 id_,
+        bytes calldata memo_,
+        uint256[] calldata tags_
+    ) external payable active {
+        if (score_ == 0) revert BadAmount(score_);
+
+        Profile storage profile = profiles[msg.sender];
+
+        profile.owner = msg.sender;
+        profile.name = name_;
+        profile.score = score_;
+        profile.id = id_;
+        profile.memo = memo_;
+        profile.status = Status.Active;
+        profile.tags = tags_;
+
+        users.push(msg.sender);
+        scores.push(score_);
+        scoresByUser[msg.sender].push(score_);
+        balances[msg.sender][id_] += score_;
+
+        total = total.add(score_);
+        emit Paid(msg.sender, msg.value);
+    }
+
+    function updateProfile(
+        address user_,
+        string calldata name_,
+        uint256 score_,
+        bytes32 id_,
+        Status status_,
+        uint256[] calldata tags_
+    ) external onlyOwner {
+        Profile storage profile = profiles[user_];
+
+        uint256 oldScore = profile.score;
+        Status oldStatus = profile.status;
+
+        profile.name = name_;
+        profile.score = score_;
+        profile.id = id_;
+        profile.status = status_;
+        profile.tags = tags_;
+
+        balances[user_][id_] = score_;
+
+        emit ProfileUpdated(user_, oldScore, score_, oldStatus, status_);
+    }
+
+    function addMember(bytes32 groupId_, address member_) external {
+        members[groupId_].push(member_);
+    }
+
+    function setFixed(
+        address[3] calldata users_,
+        uint256[3] calldata scores_
+    ) external onlyOwner {
+        fixedUsers = users_;
+        fixedScores = scores_;
+    }
+
+    function setMemo(bytes calldata memo_, bytes32 code_) external {
+        rawMemo = memo_;
+        code = code_;
+    }
+
+    function setOracle(address oracle_) external onlyOwner {
+        oracle = IConnectionOracle(oracle_);
+        emit OracleChanged(oracle_);
+    }
+
+    function readOracle() external view returns (uint256 price_) {
+        return oracle.price();
+    }
+
+    function readOracleSafely()
+        external
+        view
+        returns (bool ok, uint256 price_)
+    {
+        try oracle.price() returns (uint256 value) {
+            return (true, value);
+        } catch {
+            return (false, 0);
+        }
+    }
+
+    function rawStaticPrice(address target_)
+        external
+        view
+        returns (uint256 price_)
+    {
+        (bool ok, bytes memory data) = target_.staticcall(
+            abi.encodeWithSelector(IConnectionOracle.price.selector)
+        );
+        require(ok, "staticcall failed");
+        price_ = abi.decode(data, (uint256));
+    }
+
+    function rawCall(address target_, bytes calldata data_)
+        external
+        returns (bool ok, bytes memory result)
+    {
+        (ok, result) = target_.call(data_);
+    }
+
+    function rawDelegate(address target_, bytes calldata data_)
+        external
+        returns (bool ok, bytes memory result)
+    {
+        (ok, result) = target_.delegatecall(data_);
+    }
+
+    function encodeAndHash(
+        address user_,
+        uint256 amount_,
+        string calldata label_
+    )
+        external
+        pure
+        returns (bytes memory encoded, bytes32 id)
+    {
+        encoded = abi.encode(user_, amount_, label_);
+        id = keccak256(encoded);
+    }
+
+    function decodeValues(bytes calldata encoded)
+        external
+        pure
+        returns (address user_, uint256 amount_, string memory label_)
+    {
+        (user_, amount_, label_) =
+            abi.decode(encoded, (address, uint256, string));
+    }
+
+    function makeStorageKey(address user_, bytes32 id_)
+        external
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(user_, id_));
+    }
+
+    function readMappingWithYul(address user_, bytes32 id_)
+        external
+        view
+        returns (uint256 result)
+    {
+        uint256 outerSlot;
+        uint256 innerSlot;
+
+        assembly {
+            // balances is mapping(address => mapping(bytes32 => uint256)).
+            mstore(0x00, user_)
+            mstore(0x20, balances.slot)
+            outerSlot := keccak256(0x00, 0x40)
+
+            mstore(0x00, id_)
+            mstore(0x20, outerSlot)
+            innerSlot := keccak256(0x00, 0x40)
+
+            result := sload(innerSlot)
+        }
+    }
+
+    function yulMath(uint256 a_, uint256 b_)
+        external
+        pure
+        returns (uint256 result)
+    {
+        assembly {
+            let sum := add(a_, b_)
+            switch sum
+            case 0 {
+                result := 0
+            }
+            default {
+                result := sum
+            }
+        }
+    }
+
+    function yulFirstArgument() external pure returns (uint256 result) {
+        assembly {
+            // Four-byte selector, then the first ABI word.
+            result := calldataload(4)
+        }
+    }
+
+    function yulStoreAndLoad(uint256 value_)
+        external
+        returns (uint256 result)
+    {
+        uint256 slot = 250;
+
+        assembly {
+            sstore(slot, value_)
+            result := sload(slot)
+        }
+    }
+
+    function addScore(uint256 score_) external {
+        scores.push(score_);
+    }
+
+    function totalScores() external view returns (uint256 sum) {
+        for (uint256 i = 0; i < scores.length; i++) {
+            sum += scores[i];
+        }
+    }
+
+    function firstTag(address user_) external view returns (uint256) {
+        Profile storage profile = profiles[user_];
+        if (profile.tags.length == 0) {
+            return 0;
+        }
+        return profile.tags[0];
+    }
+
+    function copyTags(address user_)
+        external
+        view
+        returns (uint256[] memory result)
+    {
+        result = profiles[user_].tags;
+    }
+
+    function clearProfile(address user_) external onlyOwner {
+        delete profiles[user_];
+    }
+
+    function uncheckedAdd(uint256 a_, uint256 b_)
+        external
+        pure
+        returns (uint256 result)
+    {
+        unchecked {
+            result = a_ + b_;
+        }
+    }
+
+    function deployCounter(uint256 seed_)
+        external
+        returns (address counter)
+    {
+        counter = address(new MiniCounter(seed_));
+    }
+
+    function typedFunctionPointer(uint256 value_)
+        external
+        pure
+        returns (uint256)
+    {
+        function(uint256) internal pure returns (uint256) fn = _double;
+        return fn(value_);
+    }
+
+    function _double(uint256 value_) internal pure returns (uint256) {
+        return value_ * 2;
+    }
+
+    function context()
+        external
+        payable
+        returns (
+            address caller,
+            address origin,
+            uint256 attached,
+            uint256 contractBalance,
+            uint256 blockNumber_,
+            uint256 timestamp_
+        )
+    {
+        caller = msg.sender;
+        origin = tx.origin;
+        attached = msg.value;
+        contractBalance = address(this).balance;
+        blockNumber_ = block.number;
+        timestamp_ = block.timestamp;
+    }
+
+    receive() external payable {
+        total += msg.value;
+        emit Paid(msg.sender, msg.value);
+    }
+
+    fallback() external payable {
+        rawMemo = msg.data;
+        total += msg.value;
+    }
+}
+""",
+    "support_files": {
+        "ConnectionSupport.sol": """// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+abstract contract ConnectionOwned {
+    address public owner;
+
+    constructor(address owner_) {
+        owner = owner_;
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert Unauthorized(msg.sender);
+        _;
+    }
+
+    error Unauthorized(address caller);
+}
+
+interface IConnectionOracle {
+    function price() external view returns (uint256);
+}
+
+library ConnectionMath {
+    function add(uint256 a_, uint256 b_) internal pure returns (uint256) {
+        return a_ + b_;
+    }
+}
+""",
+    },
+    "variables": [
+        ("support state", "address", "owner", "0xAdmin", "Imported abstract base's persistent owner."),
+        ("state", "address", "manager", "msg.sender", "Deployment caller stored as a manager."),
+        ("state", "string", "title", '"Savings"', "Human-readable contract name."),
+        ("state", "uint256", "total", "22", "Numeric state updated by functions and ETH entry points."),
+        ("state", "uint256 constant", "VERSION", "1", "Compile-time constant."),
+        ("state", "uint256 immutable", "deployedAt", "block.timestamp", "Set once in the constructor."),
+        ("state", "bool", "paused", "false", "Simple flag used by a modifier."),
+        ("state", "int256", "signedValue", "-7", "Signed integer example."),
+        ("state", "bytes", "rawMemo", 'hex"6869"', "Dynamic byte sequence."),
+        ("state", "bytes32", "code", 'bytes32("KE")', "Fixed 32-byte value."),
+        ("state", "mapping(address => Profile)", "profiles", "profiles[msg.sender]", "Address selects a whole struct."),
+        ("state", "nested mapping", "balances", "balances[user][id]", "Two keys select a uint256."),
+        ("state", "mapping(bytes32 => address[])", "members", "members[groupId]", "A mapping key selects a dynamic address array."),
+        ("state", "mapping(address => uint256[])", "scoresByUser", "scoresByUser[user]", "A mapping value can itself be a dynamic array."),
+        ("state", "address[]", "users", "[alice, bob, ...]", "Dynamic address array."),
+        ("state", "address[3]", "fixedUsers", "[alice, bob, carol]", "Static/fixed address array."),
+        ("state", "uint256[]", "scores", "[10, 20, 30]", "Dynamic numeric array."),
+        ("state", "uint256[3]", "fixedScores", "[10, 20, 30]", "Static/fixed numeric array."),
+        ("state", "IConnectionOracle", "oracle", "IConnectionOracle(0xOracle)", "Interface reference backed by an address."),
+        ("struct field", "address", "owner", "msg.sender", "Address inside Profile."),
+        ("struct field", "string", "name", '"Toji"', "Text inside Profile."),
+        ("struct field", "uint256", "score", "22", "Number inside Profile."),
+        ("struct field", "bytes32", "id", 'bytes32("KE")', "Identifier inside Profile."),
+        ("struct field", "bytes", "memo", 'hex"6869"', "Dynamic bytes inside Profile."),
+        ("struct field", "Status", "status", "Status.Active", "Named enum state."),
+        ("struct field", "uint256[]", "tags", "[1, 2, 3]", "Dynamic array stored inside Profile."),
+        ("constructor parameter", "address", "owner_", "0xAdmin", "Passed into imported base constructor."),
+        ("constructor parameter", "string", "title_", '"Savings"', "Deployment-time string."),
+        ("constructor parameter", "bytes32", "code_", 'bytes32("KE")', "Deployment-time fixed bytes."),
+        ("function parameter", "string calldata", "name_", '"Toji"', "External read-only text input."),
+        ("function parameter", "uint256", "score_", "22", "External numeric input."),
+        ("function parameter", "bytes32", "id_", 'bytes32("KE")', "External fixed bytes input."),
+        ("function parameter", "bytes calldata", "memo_", 'hex"6869"', "External raw bytes input."),
+        ("function parameter", "uint256[] calldata", "tags_", "[1, 2, 3]", "External dynamic array input."),
+        ("function parameter", "address", "user_", "0xAlice", "Address used as a mapping key."),
+        ("function parameter", "Status", "status_", "Status.Done", "Enum supplied to an update function."),
+        ("function parameter", "address[3]", "users_", "[alice, bob, carol]", "Fixed-size array input."),
+        ("function parameter", "uint256[3]", "scores_", "[10, 20, 30]", "Fixed-size numeric input."),
+        ("local", "Profile storage", "profile", "profiles[user_]", "Storage reference that writes persistent state."),
+        ("local", "uint256", "oldScore", "profile.score", "Value captured before a state update."),
+        ("local", "Status", "oldStatus", "profile.status", "Old enum value for event history."),
+        ("local", "bool", "ok", "true / false", "Low-level call success flag."),
+        ("local", "bytes memory", "data", "ABI bytes", "Raw return data from an external call."),
+        ("local", "bytes memory", "encoded", "abi.encode(...)", "ABI-encoded values."),
+        ("return", "bytes32", "id", "keccak256(encoded)", "Hash used as an identifier."),
+        ("Yul local", "word", "slot", "keccak256(...)", "Manually computed mapping storage slot."),
+        ("Yul local", "word", "sum", "add(a_, b_)", "Arithmetic temporary in assembly."),
+    ],
+    "calls": [
+        'new UniversalConnectionLab(admin, "Savings", bytes32("KE"));',
+        'lab.createProfile("Toji", 22, bytes32("KE"), hex"6869", [1, 2, 3]);',
+        'lab.updateProfile(alice, "Alice", 100, bytes32("A"), Status.Done, [7, 8]);',
+        'lab.addMember(bytes32("DAO"), bob);',
+        'lab.setFixed([alice, bob, carol], [10, 20, 30]);',
+        'lab.encodeAndHash(alice, 100, "deposit");',
+        'lab.decodeValues(encodedBytes);',
+        'lab.readMappingWithYul(alice, bytes32("A"));',
+        'lab.rawStaticPrice(oracle);',
+        'lab.rawCall(target, abi.encodeWithSignature("increment(uint256)", 5));',
+        'lab.totalScores();',
+        'lab.deployCounter(100);',
+        'lab.context{value: 1 ether}();',
+        'address(lab).call{value: 1 ether}(hex"");',
+    ],
+    "steps": [
+        "import loads ConnectionSupport.sol, making its declarations available to the main source file.",
+        "ConnectionOwned is abstract reusable code; UniversalConnectionLab inherits it with is.",
+        "The child constructor receives owner_, title_, and code_, then passes owner_ into ConnectionOwned(owner_).",
+        "msg.sender is an address value that can initialize manager, become a struct field, and become a mapping key.",
+        "createProfile() receives string, uint256, bytes32, bytes, and a dynamic uint256[] through calldata.",
+        "profiles[msg.sender] selects one Profile struct; Profile storage profile points at the persistent struct.",
+        "The struct combines address, string, uint256, bytes32, bytes, enum, and a dynamic array.",
+        "balances[msg.sender][id_] performs two mapping lookups and updates a uint256.",
+        "members[groupId_].push(member_) connects mapping lookup, bytes32 keys, dynamic arrays, and addresses.",
+        "users/scores are dynamic arrays; fixedUsers/fixedScores have fixed lengths and are assigned as whole values.",
+        "abi.encode produces bytes; keccak256 turns those bytes into a bytes32 id that can become a mapping key.",
+        "abi.decode reverses that encoding when the caller supplies the matching type order.",
+        "A typed interface call hides ABI encoding; low-level call/staticcall/delegatecall expose the call boundary.",
+        "try/catch adds explicit external-call failure handling.",
+        "Yul assembly can read/write raw storage and calldata; the nested mapping example manually derives its slot.",
+        "Yul switch/let/add provide low-level control and arithmetic inside an assembly block.",
+        "receive() handles empty-calldata ETH and fallback() handles unmatched calls; both can use msg.value and msg.data.",
+        "A loop walks a dynamic array; storage/memory/calldata determine where reference-type data lives.",
+        "using for attaches library behavior to a value, while new creates a new contract instance.",
+        "constant/immutable/default values, enum values, custom errors, events, modifiers, unchecked arithmetic, and delete all appear in one stateful context.",
+    ],
+    "connections": [
+        "imports → imported abstract contract/interface/library → inheritance/using-for.",
+        "constructor parameters → base-constructor arguments → persistent state.",
+        "address/msg.sender → mapping key → struct or numeric value.",
+        "struct → address + string + uint256 + bytes32 + bytes + enum + dynamic array.",
+        "mapping → nested mapping → bytes32 key → uint256 value.",
+        "mapping → array → push()/indexing/looping.",
+        "dynamic array vs fixed array → variable length vs exact compile-time length.",
+        "string/bytes → calldata → storage/memory copies.",
+        "abi.encode → bytes → keccak256 → bytes32 → mapping key/id.",
+        "interface → address → typed external function → return value.",
+        "ABI encoding → low-level call/staticcall/delegatecall → bytes return data → abi.decode.",
+        "receive/fallback → msg.sender + msg.value + msg.data → state/accounting.",
+        "mapping → storage slot formula → Yul sload/sstore.",
+        "calldata → Yul calldataload; storage → Yul sload/sstore.",
+        "abstract/virtual/override/is → inherited implementation and polymorphic call shape.",
+        "modifier → msg.sender → authorization branch → protected function body.",
+        "enum → explicit named state values → mapping/struct/event state transitions.",
+        "library + using-for → reusable function call on a uint256.",
+        "new → constructor arguments → fresh contract address.",
+        "function type → stored function pointer → internal call.",
+    ],
+    "audit": (
+        "Use the requested concepts as a trace, not isolated vocabulary: identify every input, "
+        "type, lookup/index, storage write, call boundary, return value, and caller identity. "
+        "For Yul, re-check compiler-level assumptions manually because assembly bypasses many "
+        "Solidity safety checks. For mappings, trace keys and storage slots; for ABI/calls, trace "
+        "selectors, encoded arguments, return bytes, and failure handling."
+    ),
+}
+
+
 def canonicalize(name: str) -> str:
     key = _norm(name)
     return _CONCEPT_ALIASES.get(key, key)
@@ -859,14 +1408,25 @@ def find_connection(names):
             candidates.append((extra, len(concepts), lab))
 
     if not candidates:
-        return None
+        # Do not reject a valid combination merely because no hand-authored
+        # shortcut recipe exists. The universal composer can show the concepts
+        # together and trace them through a compile-checked contract.
+        return UNIVERSAL_CONNECTION_LAB
 
     candidates.sort(key=lambda item: (item[0], item[1], item[2]["name"]))
     return candidates[0][2]
 
 
 def list_connections():
-    return [
+    rows = [
+        {
+            "name": UNIVERSAL_CONNECTION_LAB["name"],
+            "aliases": UNIVERSAL_CONNECTION_LAB["aliases"],
+            "concepts": ["any recognized Solidity/Yul concept combination"],
+            "summary": UNIVERSAL_CONNECTION_LAB["summary"],
+        }
+    ]
+    rows.extend(
         {
             "name": lab["name"],
             "aliases": lab["aliases"],
@@ -874,4 +1434,5 @@ def list_connections():
             "summary": lab["summary"],
         }
         for lab in CONNECTION_LABS
-    ]
+    )
+    return rows
