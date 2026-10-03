@@ -204,6 +204,54 @@ class BreakEngineTests(unittest.TestCase):
         self.assertIn("TARGET_CODE_LENGTH", body)
         self.assertIn("TARGET_BALANCE_AFTER_SETUP", body)
 
+    def test_entitlement_getter_discovery_prefers_balances(self):
+        functions = [
+            {
+                "name": "foo",
+                "inputs": [{"name": "who", "type": "address"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+                "stateMutability": "view",
+            },
+            {
+                "name": "balances",
+                "inputs": [{"name": "who", "type": "address"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+                "stateMutability": "view",
+            },
+        ]
+        self.assertEqual(
+            break_engine._find_entitlement_getter_signature(functions),
+            "balances(address)",
+        )
+
+    def test_reentrancy_renderer_tracks_actual_setup_result_and_entitlement(self):
+        target = break_engine.Target("Tipjar", "0x" + "1" * 40)
+        fn = {
+            "name": "withdraw",
+            "inputs": [
+                {"name": "recipient", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+            ],
+            "stateMutability": "nonpayable",
+        }
+        body = break_engine._render_reentrancy_test(
+            target,
+            fn,
+            "withdraw(address,uint256)",
+            ["0x1111111111111111111111111111111111111111", "1"],
+            3,
+            setup_signature="deposit()",
+            seed_fund="10ether",
+            entitlement_signature="balances(address)",
+        )
+        self.assertIn("lastSeedSuccess = ok;", body)
+        self.assertIn("targetBalanceBeforeSetup", body)
+        self.assertIn("targetBalanceAfterSetup", body)
+        self.assertIn("ENTITLEMENT_AFTER_SETUP", body)
+        self.assertIn("ENTITLEMENT_BEFORE_ATTACK", body)
+        self.assertIn("ENTITLEMENT_AFTER_ATTACK", body)
+        self.assertIn("exceededEntitlement", body)
+
     def test_result_parser_requires_explicit_break_marker(self):
         target = break_engine.Target("Tipjar", "0x" + "1" * 40)
         observed = break_engine._result_from_output(
