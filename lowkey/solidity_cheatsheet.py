@@ -555,8 +555,8 @@ add(
     "bytesN", ["bytes32", "fixed-bytes"], "DATA TYPES",
     "Fixed-length byte values.",
     "Think exactly N bytes, not a growable blob.",
-    "bytes32 id;
-bytes4 selector;",
+    """bytes32 id;
+bytes4 selector;""",
     "bytes32 id = keccak256(abi.encode(user, amount));",
     [
         "bytes32 is common for hashes and IDs.",
@@ -568,8 +568,8 @@ add(
     "address", ["address-payable", "payable-address"], "DATA TYPES",
     "An EVM account/contract address; payable is the ETH-receiving form.",
     "Think wallet/account number.",
-    "address user;
-address payable treasury;",
+    """address user;
+address payable treasury;""",
     """function pay(address payable to) external payable {
     (bool ok,) = to.call{value: msg.value}("");
     require(ok);
@@ -1439,8 +1439,8 @@ add(
     "contract-balance", ["address-this-balance", "code-length"], "FORENSICS",
     "Read an address balance or see whether an address currently has code.",
     "Think inspect the account's cash and whether it has deployed code.",
-    "address(this).balance
-address(target).code.length",
+    """address(this).balance
+address(target).code.length""",
     """uint256 held = address(this).balance;
 bool hasCode = target.code.length > 0;""",
     [
