@@ -15,6 +15,7 @@ from lowkey.solidity_connect_data import (
     _COMPREHENSIVE_CONNECTION_EDGES,
     find_micro_scene,
     is_known_concept,
+    connection_route,
 )
 
 
@@ -346,6 +347,77 @@ class SolidityConnectTests(unittest.TestCase):
             with self.subTest(left=left, right=right):
                 paths = solidity_cheatsheet.connection_paths([left, right])
                 self.assertTrue(paths, f"No graph path for {left} -> {right}")
+
+    def test_generic_route_covers_every_requested_concept(self):
+        concepts = [
+            "mapping",
+            "keccak256",
+            "abi.decode",
+            "ecrecover",
+            "nonce",
+            "events",
+        ]
+        route = connection_route(concepts)
+        for concept in concepts:
+            self.assertIn(solidity_cheatsheet.canonicalize(concept), route)
+        result, output = self.render("connect", *concepts)
+        self.assertEqual(result, 0)
+        self.assertIn("CONNECTION ROUTE", output)
+        for concept in ("mapping", "keccak256", "abi.decode", "ecrecover", "nonce", "events"):
+            self.assertIn(solidity_cheatsheet.canonicalize(concept), output)
+
+    def test_deep_reference_atoms_are_composable(self):
+        cases = [
+            ("create2", "keccak256", "init-code", "address"),
+            ("address.code", "extcodecopy", "extcodehash"),
+            ("caller", "msg.sender", "callvalue", "msg.value"),
+            ("mload", "mstore", "mcopy", "memory"),
+            ("sload", "sstore", "mapping-slots", "storage"),
+            ("tload", "tstore", "transient-storage", "reentrancy"),
+            ("log1", "events", "event-indexed", "keccak256"),
+        ]
+        for concepts in cases:
+            with self.subTest(concepts=concepts):
+                result, output = self.render("connect", *concepts)
+                self.assertEqual(result, 0)
+                self.assertIn("CONNECTION ROUTE", output)
+                self.assertNotIn("UniversalConnectionLab", output)
+
+    def test_production_pattern_scenes_exist(self):
+        scenes = [
+            ("erc20-pattern", "mapping", "nested-mapping", "events"),
+            ("erc721-pattern", "mapping", "address", "events"),
+            ("permit-pattern", "structs", "mapping", "keccak256", "ecrecover", "nonce"),
+            ("script-deploy", "constructor", "new", "script-env"),
+            ("create2", "keccak256", "init-code"),
+        ]
+        for concepts in scenes:
+            with self.subTest(concepts=concepts):
+                self.assertIsNotNone(find_micro_scene(concepts))
+
+    def test_new_reference_aliases_are_known(self):
+        for term in (
+            "abi.encodeWithSelector",
+            "abi.encodeWithSignature",
+            "abi.encodeCall",
+            "error-selector",
+            "create2",
+            "salt",
+            "address.code",
+            "address.codehash",
+            "caller",
+            "callvalue",
+            "selfbalance",
+            "mcopy",
+            "extcodecopy",
+            "ecrecover",
+            "nonce",
+            "erc20",
+            "erc721",
+            "permit2",
+        ):
+            self.assertTrue(is_known_concept(term), term)
+
 
     def test_universal_connection_lab_compiles(self):
         if shutil.which("forge") is None:
