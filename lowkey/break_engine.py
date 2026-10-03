@@ -836,7 +836,9 @@ def _render_reentrancy_test(
     if setup_signature:
         setup_block = f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
-        (bool seeded, ) = TARGET.call{{value: 2 wei}}(setupData);
+        (bool seeded, ) = address(hostile).call{{value: 2 wei}}(
+            abi.encodeWithSignature("seed(bytes)", setupData)
+        );
         console2.log("SETUP_SEEDED", seeded);
 """
 
@@ -853,6 +855,11 @@ contract LowkeyBreakReentrant {{
 
     function setPayload(bytes calldata _payload) external {{
         payload = _payload;
+    }}
+
+    function seed(bytes calldata data) external payable {{
+        (bool ok, ) = target.call{{value: msg.value}}(data);
+        require(ok, "seed call reverted");
     }}
 
     function attack() external payable {{
@@ -883,6 +890,7 @@ contract LowkeyBreakReentrancy is Test {{
         LowkeyBreakReentrant hostile = new LowkeyBreakReentrant(TARGET);
         bytes memory payload = {payload_expr};
         hostile.setPayload(payload);
+        vm.deal(address(this), 100 ether);
         vm.deal(address(hostile), 100 ether);
 {setup_block}
         uint256 beforeHostile = address(hostile).balance;
