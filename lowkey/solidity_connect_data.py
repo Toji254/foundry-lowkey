@@ -1525,6 +1525,258 @@ library ConnectionMath {
 }
 
 
+
+# Human-sized teaching scenes. Focused recipes are preferred for the default
+# connect view; the universal lab remains available as the explicit full view.
+MICRO_SCENES = [
+    {
+        "keys": {"interface", "function", "arrays"},
+        "title": "An interface returns an array",
+        "story": "A contract stores another contract's address as an interface. The interface declares a function, and that function returns a dynamic address array.",
+        "code": """interface IUserStore {
+    function users() external view returns (address[] memory);
+}
+
+contract Reader {
+    IUserStore public store;
+
+    constructor(address store_) {
+        store = IUserStore(store_);
+    }
+
+    function getUsers() external view returns (address[] memory) {
+        return store.users();
+    }
+}""",
+        "variables": [
+            ("state", "IUserStore", "store", "IUserStore(0xStore)", "Interface reference; the underlying value is a contract address."),
+            ("constructor parameter", "address", "store_", "0xStore", "Target contract address supplied at deployment."),
+            ("interface function", "address[] memory", "users()", "[alice, bob]", "Function promised by the interface."),
+            ("external function", "address[] memory", "getUsers()", "store.users()", "Calls the interface function and returns its array."),
+        ],
+        "flow": [
+            "store_ is an address supplied when Reader is deployed.",
+            "IUserStore(store_) treats that address as a contract exposing the interface function.",
+            "getUsers() calls store.users().",
+            "users() returns a dynamic array, so the value reaching getUsers() is an address array.",
+        ],
+        "call": "reader.getUsers();  // [alice, bob]",
+    },
+    {
+        "keys": {"imports", "constructor"},
+        "title": "An import exposes a base constructor",
+        "story": "import makes a declaration available; deployment calls the child constructor, which can pass a value to an imported base constructor.",
+        "code": """// Owned.sol
+contract Owned {
+    address public owner;
+
+    constructor(address owner_) {
+        owner = owner_;
+    }
+}
+
+// Vault.sol
+import "./Owned.sol";
+
+contract Vault is Owned {
+    string public name;
+
+    constructor(string memory name_)
+        Owned(msg.sender)
+    {
+        name = name_;
+    }
+}""",
+        "variables": [
+            ("base state", "address", "owner", "msg.sender", "Stored in the imported base."),
+            ("constructor parameter", "string memory", "name_", '"Savings"', "Value supplied to Vault at deployment."),
+            ("base constructor parameter", "address", "owner_", "msg.sender", "Value supplied through Owned(...)."),
+        ],
+        "flow": [
+            "import only makes Owned available to Vault.",
+            "new Vault(\"Savings\") enters Vault's constructor.",
+            "Vault supplies msg.sender to Owned(msg.sender).",
+            "Owned stores that address as owner.",
+        ],
+        "call": 'new Vault("Savings");  // name = "Savings", owner = deployer',
+    },
+    {
+        "keys": {"structs", "mapping", "arrays"},
+        "title": "A mapping stores a struct that owns an array",
+        "story": "A mapping chooses a Profile by address. The Profile is a struct, and one field is a dynamic array. A function looks up that struct and pushes into the array.",
+        "code": """struct Profile {
+    address owner;
+    uint256 score;
+    uint256[] tags;
+}
+
+mapping(address => Profile) public profiles;
+
+function addTag(address user_, uint256 tag_) external {
+    Profile storage profile = profiles[user_];
+    profile.owner = user_;
+    profile.tags.push(tag_);
+}""",
+        "variables": [
+            ("state", "mapping(address => Profile)", "profiles", "profiles[user_]", "Address key selects a stored Profile."),
+            ("struct field", "address", "owner", "user_", "Address inside Profile."),
+            ("struct field", "uint256", "score", "22", "Numeric field inside Profile."),
+            ("struct field", "uint256[]", "tags", "[1, 2]", "Dynamic array inside Profile."),
+            ("parameter", "address", "user_", "0xAlice", "Mapping key."),
+            ("parameter", "uint256", "tag_", "99", "Value pushed into the array."),
+            ("local", "Profile storage", "profile", "profiles[user_]", "Storage reference; writes persist."),
+        ],
+        "flow": [
+            "user_ is used as the mapping key.",
+            "The mapping returns a Profile storage reference.",
+            "profile.tags selects the array field inside that struct.",
+            "push(99) grows the stored dynamic array.",
+        ],
+        "call": "addTag(alice, 99);  // profiles[alice].tags becomes [1, 2, 99]",
+    },
+    {
+        "keys": {"mapping", "keccak256", "abi.encode"},
+        "title": "Encode → hash → mapping key",
+        "story": "Two typed values become bytes with ABI encoding, become a bytes32 hash with keccak256, and that hash becomes a mapping key.",
+        "code": """mapping(bytes32 => address) public owners;
+
+function register(address user_, uint256 amount_)
+    external
+    returns (bytes32 id)
+{
+    bytes memory encoded = abi.encode(user_, amount_);
+    id = keccak256(encoded);
+    owners[id] = user_;
+}""",
+        "variables": [
+            ("state", "mapping(bytes32 => address)", "owners", "owners[id]", "bytes32 key maps to an address value."),
+            ("parameter", "address", "user_", "0xAlice", "First encoded value and stored mapping value."),
+            ("parameter", "uint256", "amount_", "100", "Second encoded value."),
+            ("local", "bytes memory", "encoded", "abi.encode(user_, amount_)", "ABI-encoded representation."),
+            ("return", "bytes32", "id", "keccak256(encoded)", "Hash used as the mapping key."),
+        ],
+        "flow": [
+            "user_ and amount_ are normal typed Solidity values.",
+            "abi.encode turns them into bytes.",
+            "keccak256 turns those bytes into a bytes32 hash.",
+            "owners[id] uses that bytes32 as the mapping key.",
+        ],
+        "call": "register(alice, 100);",
+    },
+    {
+        "keys": {"mapping", "nested-mapping", "keccak256", "abi.encode"},
+        "title": "Nested mapping storage uses two hashes",
+        "story": "A nested mapping performs two logical lookups. At storage level, each lookup derives another slot with keccak256.",
+        "code": """mapping(address => mapping(bytes32 => uint256)) public balances;
+
+function set(address user_, bytes32 id_, uint256 amount_) external {
+    balances[user_][id_] = amount_;
+}
+
+// Conceptually:
+// outer = keccak256(abi.encode(user_, balances.slot))
+// inner = keccak256(abi.encode(id_, outer))""",
+        "variables": [
+            ("state", "mapping(address => mapping(bytes32 => uint256))", "balances", "balances[user_][id_]", "Two keys reach one uint256 value."),
+            ("parameter", "address", "user_", "0xAlice", "Outer key."),
+            ("parameter", "bytes32", "id_", 'bytes32("A")', "Inner key."),
+            ("parameter", "uint256", "amount_", "100", "Stored value."),
+            ("derived", "bytes32", "outer", "keccak256(...)", "Derived outer slot."),
+            ("derived", "bytes32", "inner", "keccak256(...)", "Derived final slot."),
+        ],
+        "flow": [
+            "balances[user_][id_] hides two storage-slot derivations.",
+            "The first hash combines the outer key with the mapping's anchor slot.",
+            "The second hash combines id_ with the derived outer slot.",
+            "The final location is where the uint256 value lives.",
+        ],
+        "call": 'set(alice, bytes32("A"), 100);',
+    },
+    {
+        "keys": {"receive", "fallback", "mapping", "msg.sender", "msg.value", "call"},
+        "title": "ETH enters → accounting → withdrawal",
+        "story": "receive/fallback route ETH in. msg.sender identifies the caller and msg.value carries the amount. A mapping records credit and call sends ETH back out.",
+        "code": """mapping(address => uint256) public credit;
+
+receive() external payable {
+    credit[msg.sender] += msg.value;
+}
+
+function withdraw(uint256 amount_) external {
+    credit[msg.sender] -= amount_;
+
+    (bool ok, ) =
+        payable(msg.sender).call{value: amount_}("");
+    require(ok);
+}""",
+        "variables": [
+            ("state", "mapping(address => uint256)", "credit", "credit[msg.sender]", "Per-address ETH accounting."),
+            ("global", "address", "msg.sender", "0xAlice", "Current caller."),
+            ("global", "uint256", "msg.value", "1 ether", "ETH attached to the current call."),
+            ("parameter", "uint256", "amount_", "0.5 ether", "Withdrawal amount."),
+            ("local", "bool", "ok", "true", "Low-level call success flag."),
+        ],
+        "flow": [
+            "Alice sends 1 ETH with empty calldata, so receive() runs.",
+            "credit[Alice] increases by msg.value.",
+            "Alice calls withdraw(0.5 ether).",
+            "The mapping is reduced before call sends 0.5 ETH to Alice.",
+        ],
+        "call": "1 ETH in → credit[alice] = 1 ETH → withdraw(0.5 ETH) → 0.5 ETH out",
+    },
+    {
+        "keys": {"yul", "mapping", "keccak256", "storage"},
+        "title": "Yul exposes a mapping's storage slot",
+        "story": "Solidity hides mapping slot arithmetic. Yul can build the same hashes manually, then read the final slot with sload.",
+        "code": """mapping(address => mapping(bytes32 => uint256)) public balances;
+
+function read(address user_, bytes32 id_)
+    external
+    view
+    returns (uint256 result)
+{
+    assembly {
+        mstore(0x00, user_)
+        mstore(0x20, balances.slot)
+        let outer := keccak256(0x00, 0x40)
+
+        mstore(0x00, id_)
+        mstore(0x20, outer)
+        let inner := keccak256(0x00, 0x40)
+
+        result := sload(inner)
+    }
+}""",
+        "variables": [
+            ("state", "nested mapping", "balances", "balances[user_][id_]", "Solidity state being inspected."),
+            ("parameter", "address", "user_", "0xAlice", "Outer key."),
+            ("parameter", "bytes32", "id_", 'bytes32("A")', "Inner key."),
+            ("Yul local", "word", "outer", "keccak256(...)", "Derived outer slot."),
+            ("Yul local", "word", "inner", "keccak256(...)", "Derived final slot."),
+            ("return", "uint256", "result", "sload(inner)", "Word read directly from storage."),
+        ],
+        "flow": [
+            "mstore places the key and slot into memory.",
+            "keccak256 derives the outer slot.",
+            "The second key is hashed with the outer slot.",
+            "sload reads the final mapping value.",
+        ],
+        "call": 'read(alice, bytes32("A"));',
+    },
+]
+
+
+def find_micro_scene(names):
+    requested = frozenset(canonicalize(name) for name in names)
+    exact = [scene for scene in MICRO_SCENES if scene["keys"] == requested]
+    if exact:
+        return exact[0]
+    candidates = [scene for scene in MICRO_SCENES if requested <= scene["keys"]]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda scene: (len(scene["keys"] - requested), len(scene["keys"])))
+    return candidates[0]
+
 def canonicalize(name: str) -> str:
     key = _norm(name)
     return _CONCEPT_ALIASES.get(key, key)
