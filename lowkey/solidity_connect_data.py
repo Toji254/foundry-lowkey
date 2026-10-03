@@ -5973,3 +5973,1228 @@ def _ensure_final_connect_coverage(edges):
 
 
 _ensure_final_connect_coverage(_COMPREHENSIVE_CONNECTION_EDGES)
+
+# ---------------------------------------------------------------------------
+# Deep cross-check layer
+# ---------------------------------------------------------------------------
+#
+# This section was built after checking the Solidity language/reference model
+# against representative production code patterns.  It intentionally favors
+# semantic connections over a combinatorial list of pair-specific recipes.
+#
+# Important: these edges mean "these concepts meet in real Solidity", not
+# "these two tokens are interchangeable".
+#
+_DEEP_ALIASES = {
+    "abi.encodewithselector": "abi.encodeWithSelector",
+    "abi.encodewithsignature": "abi.encodeWithSignature",
+    "abi.encodecall": "abi.encodeCall",
+    "encode-with-selector": "abi.encodeWithSelector",
+    "encode-with-signature": "abi.encodeWithSignature",
+    "encode-call": "abi.encodeCall",
+    "function-selector": "function-selector",
+    "selector": "function-selector",
+    "error-selector": "error-selector",
+    "event-indexed": "event-indexed",
+    "indexed": "event-indexed",
+    "event": "events",
+    "log": "events",
+    "parameter": "parameter-vs-argument",
+    "argument": "parameter-vs-argument",
+    "parameters": "parameter-vs-argument",
+    "arguments": "parameter-vs-argument",
+    "overload": "function-overloading",
+    "overloading": "function-overloading",
+    "function-overloads": "function-overloading",
+    "self-call": "this-call",
+    "external-self-call": "this-call",
+    "create": "create",
+    "create2": "create2",
+    "salt": "create2",
+    "init-code": "init-code",
+    "creation-code": "init-code",
+    "runtime-code": "runtime-code",
+    "code": "address.code",
+    "codehash": "address.codehash",
+    "extcodecopy": "extcodecopy",
+    "selfbalance": "selfbalance",
+    "caller": "caller",
+    "callvalue": "callvalue",
+    "mcopy": "mcopy",
+    "memory-copy": "mcopy",
+    "pc": "pc",
+    "msize": "msize",
+    "memoryguard": "memoryguard",
+    "verbatim": "verbatim",
+    "datasize": "datasize",
+    "dataoffset": "dataoffset",
+    "datacopy": "datacopy",
+    "linkersymbol": "linkersymbol",
+    "gas": "gas",
+    "gasleft": "gasleft",
+    "erc20": "erc20-pattern",
+    "erc721": "erc721-pattern",
+    "permit": "permit-pattern",
+    "permit2": "permit-pattern",
+    "safe": "safe-pattern",
+    "multisig": "safe-pattern",
+}
+
+_SEMANTIC_ALIASES.update(_DEEP_ALIASES)
+
+_DEEP_EXTRA_MEANINGS = {
+    "abi.encodeWithSelector": "Build call bytes by prepending a supplied four-byte selector to ABI-encoded arguments.",
+    "abi.encodeWithSignature": "Hash a canonical function signature to four selector bytes, then ABI-encode the arguments.",
+    "abi.encodeCall": "Build ABI call bytes from a typed function reference and arguments with compile-time type checking.",
+    "function-overloading": "Multiple functions may share a name when their parameter lists differ; the selector depends on the full signature.",
+    "parameter-vs-argument": "A parameter is the named slot in a function definition; an argument is the actual value supplied at the call site.",
+    "error-selector": "The first four bytes of a custom error's canonical signature hash.",
+    "create": "The Yul/EVM contract-creation primitive that executes init code and returns a new address.",
+    "create2": "Deterministic contract creation using deployer address, salt, and init-code hash.",
+    "init-code": "Contract-creation bytecode that runs during deployment and returns runtime bytecode.",
+    "runtime-code": "Bytecode that remains at a contract address after creation finishes.",
+    "address.code": "Runtime bytecode associated with an address, exposed by Solidity as bytes.",
+    "address.codehash": "The code hash associated with an address.",
+    "extcodecopy": "Yul copies runtime code from an external address into memory.",
+    "selfbalance": "Yul reads the current contract balance without specifying an address.",
+    "caller": "Yul reads the immediate caller, corresponding to Solidity msg.sender.",
+    "callvalue": "Yul reads the Wei attached to the current call, corresponding to Solidity msg.value.",
+    "mcopy": "Yul copies a byte range from memory to memory.",
+    "pc": "Yul reads the current program counter.",
+    "msize": "Yul reports the highest accessed memory size in bytes, rounded to a word boundary.",
+    "memoryguard": "Yul optimizer memory-safety marker that constrains the optimizer's use of memory.",
+    "verbatim": "Yul escape hatch for emitting raw opcode bytes unknown to the Yul compiler.",
+    "datasize": "Yul object helper returning the size of a named data object.",
+    "dataoffset": "Yul object helper returning the offset of a named data object.",
+    "datacopy": "Yul object helper copying bytes from an object data section into memory.",
+    "linkersymbol": "Yul object placeholder replaced by the linker with a library address.",
+    "gas": "Yul returns the remaining gas available to the current execution context.",
+    "erc20-pattern": "Fungible-token pattern using balances, allowances, transfer state changes, and Transfer/Approval events.",
+    "erc721-pattern": "NFT pattern using tokenId ownership, per-owner balance, approvals/operators, and transfer events.",
+    "permit-pattern": "Signature-authorized token operation combining typed data, hashing, nonces, signer recovery, and state updates.",
+    "safe-pattern": "Multisignature execution pattern combining owners, threshold, transaction hashing, nonce, signatures, modules, and fallback handling.",
+}
+_EXTRA_MEANINGS.update(_DEEP_EXTRA_MEANINGS)
+_EXTRA_CONCEPTS.update(_DEEP_EXTRA_MEANINGS)
+
+_DEEP_EDGES = [
+    ("function", "parameter-vs-argument", "function definitions name parameters while call sites supply arguments"),
+    ("function", "function-overloading", "overloads share a name but differ by parameter types"),
+    ("function-overloading", "function-signature", "the full parameter list distinguishes an overload"),
+    ("function-overloading", "function-selector", "different overload signatures normally have different selectors"),
+    ("function-signature", "abi.encodeWithSignature", "the canonical signature is used to derive the selector"),
+    ("function-signature", "abi.encodeCall", "the typed function reference corresponds to a concrete signature"),
+    ("function-selector", "abi.encodeWithSelector", "a supplied selector becomes the first four calldata bytes"),
+    ("abi.encodeWithSignature", "abi.encodeWithSelector", "encodeWithSignature is conceptually selector derivation plus ABI encoding"),
+    ("abi.encodeWithSelector", "abi.encode", "arguments after the selector use standard ABI encoding"),
+    ("abi.encodeCall", "abi.encode", "the arguments use ABI encoding after the typed selector"),
+    ("abi.encodeCall", "abi.decode", "call output can be decoded after the typed call is made"),
+    ("error-selector", "keccak256", "error selectors are Keccak-derived"),
+    ("error-selector", "errors", "custom errors expose a four-byte selector"),
+    ("error-selector", "returndata", "revert bytes begin with an error selector"),
+    ("error-selector", "abi.decode", "error arguments can be decoded after removing the selector"),
+    ("errors", "function-selector", "error payloads use the same four-byte selector shape as function calls"),
+    ("events", "abi.encode", "non-indexed event data uses ABI-style encoding"),
+    ("event-indexed", "bytes", "indexed dynamic values use hashes rather than raw dynamic bytes"),
+    ("event-indexed", "arrays", "indexed dynamic arrays are represented by hashed topics"),
+    ("event-indexed", "structs", "indexed struct values use a Keccak topic representation"),
+    ("this-call", "function", "this.f() performs an external self-call to function f"),
+    ("this-call", "msg.sender", "the immediate caller observed inside the self-call becomes this contract"),
+    ("this-call", "call", "an external self-call crosses a message boundary"),
+    ("this-call", "reentrancy", "self-calls can create externally visible re-entry boundaries"),
+    ("this-call", "function-selector", "the self-call still has normal calldata/selector dispatch"),
+    ("returns", "abi.decode", "raw return bytes can be decoded into declared return types"),
+    ("visibility", "function-selector", "only externally callable functions participate in external selector dispatch"),
+    ("mutability", "payable", "payable functions can receive ETH while nonpayable functions cannot accept nonzero msg.value"),
+    ("payable", "call", "call options can attach ETH to an outgoing message"),
+    ("payable", "transfer", "transfer requires a payable address"),
+    ("payable", "send", "send requires a payable address"),
+    ("transfer", "contract-balance", "successful Ether transfer decreases the sender's balance and increases the recipient's"),
+    ("send", "contract-balance", "send attempts an Ether transfer and exposes failure as false"),
+    ("call", "contract-balance", "a call with value moves ETH between address balances"),
+    ("address.balance", "contract-balance", "address(this).balance is the current contract address balance"),
+    ("address.balance", "msg.value", "balance is a cumulative address state while msg.value belongs to the current call"),
+    ("address.code", "runtime-code", "address.code exposes deployed runtime bytecode"),
+    ("address.codehash", "runtime-code", "codehash identifies the deployed runtime code"),
+    ("address.code", "extcodesize", "both inspect whether runtime code exists"),
+    ("address.code", "extcodecopy", "both expose external contract code"),
+    ("address.codehash", "extcodehash", "both expose external code identity"),
+    ("create", "new", "new is the high-level contract creation path"),
+    ("create", "constructor", "contract creation runs constructor/init code"),
+    ("create2", "new", "deterministic deployment is an alternate creation primitive"),
+    ("create2", "keccak256", "CREATE2 address derivation hashes deployer/salt/init-code"),
+    ("create2", "salt", "the salt selects a deterministic creation address"),
+    ("create2", "init-code", "the init-code hash is part of CREATE2 address derivation"),
+    ("create2", "address", "successful CREATE2 returns a contract address"),
+    ("init-code", "constructor", "constructor execution happens during contract creation"),
+    ("init-code", "runtime-code", "init code returns the runtime bytecode stored after deployment"),
+    ("extcodesize", "address", "code-size inspection takes an address"),
+    ("extcodecopy", "address", "external code copy takes an address"),
+    ("selfbalance", "contract-balance", "selfbalance is the Yul form of current contract balance"),
+    ("caller", "msg.sender", "Yul caller corresponds to Solidity msg.sender"),
+    ("callvalue", "msg.value", "Yul callvalue corresponds to Solidity msg.value"),
+    ("gas", "gasleft", "Yul gas reports remaining gas while Solidity gasleft exposes the same context"),
+    ("gas", "call", "low-level Yul calls explicitly receive a gas argument"),
+    ("mcopy", "memory", "mcopy copies data inside temporary memory"),
+    ("pc", "yul", "pc is a low-level execution-position primitive"),
+    ("msize", "memory", "msize reports memory expansion size"),
+    ("memoryguard", "memory-safe", "memoryguard is an optimizer-oriented memory discipline marker"),
+    ("verbatim", "yul", "verbatim emits raw bytes beyond ordinary Yul builtins"),
+    ("datasize", "datacopy", "object data is addressed by size/offset and copied into memory"),
+    ("dataoffset", "datacopy", "object data is copied from a named data offset"),
+    ("linkersymbol", "library", "Yul linker symbols resolve library addresses"),
+    ("linkersymbol", "imports", "imported libraries can require linker-resolved addresses"),
+    ("mload", "mcopy", "both operate on Yul memory"),
+    ("calldatacopy", "mcopy", "both move byte ranges, from calldata or memory"),
+    ("returndatacopy", "mcopy", "both copy byte ranges into memory"),
+    ("sload", "mapping-slots", "derived mapping coordinates are read with sload"),
+    ("sstore", "mapping-slots", "derived mapping coordinates are written with sstore"),
+    ("sload", "storage-layout", "raw storage reads depend on layout"),
+    ("sstore", "storage-layout", "raw storage writes depend on layout"),
+    ("tload", "tstore", "transient state is read and written as a separate storage class"),
+    ("transient-storage", "modifier", "reentrancy guards can be implemented as reusable modifiers"),
+    ("transient-storage", "nonReentrant", "transaction-scoped guards can prevent nested entry"),
+    ("delegatecall", "msg.sender", "delegatecall preserves the caller context while changing executed code"),
+    ("delegatecall", "msg.value", "delegatecall preserves call value/context"),
+    ("delegatecall", "address", "delegatecall targets code at an address"),
+    ("delegatecall", "returndata", "delegatecall returns success and raw return/revert bytes"),
+    ("proxy-fallback", "function-selector", "proxy fallback routes unknown selectors"),
+    ("proxy-fallback", "calldata", "proxy forwarding copies calldata"),
+    ("proxy-fallback", "returndata", "proxy forwarding copies implementation returndata back"),
+    ("proxy-fallback", "abi.decode", "decoded upgrade/config data can cross the proxy boundary"),
+    ("erc20-pattern", "mapping", "ERC20-style balances and allowances are mappings"),
+    ("erc20-pattern", "nested-mapping", "allowances are commonly owner -> spender -> amount"),
+    ("erc20-pattern", "address", "token balances and recipients are keyed/represented by addresses"),
+    ("erc20-pattern", "msg.sender", "transferFrom/approve flows use caller identity"),
+    ("erc20-pattern", "events", "Transfer and Approval expose state changes to off-chain observers"),
+    ("erc20-pattern", "event-indexed", "token transfer parties are commonly indexed"),
+    ("erc20-pattern", "errors", "token operations can report typed failure"),
+    ("erc721-pattern", "mapping", "NFT ownership and balances are commonly mapped state"),
+    ("erc721-pattern", "arrays", "operator/token enumeration implementations may maintain arrays"),
+    ("erc721-pattern", "bytes32", "token identifiers/signature or interface metadata may use fixed bytes"),
+    ("erc721-pattern", "events", "Transfer/Approval events describe NFT state transitions"),
+    ("erc721-pattern", "access-control", "minting/burning privileges often use access control"),
+    ("permit-pattern", "mapping", "nonces/allowances are stored in mappings"),
+    ("permit-pattern", "structs", "signed permit payloads are often structs"),
+    ("permit-pattern", "bytes", "signatures and witness data are byte arrays"),
+    ("permit-pattern", "keccak256", "the signed payload becomes a digest"),
+    ("permit-pattern", "ecrecover", "the signer address can be recovered from the digest"),
+    ("permit-pattern", "nonce", "the authorization is bound to a sequence value"),
+    ("permit-pattern", "block.timestamp", "deadlines bind authorization to time"),
+    ("permit-pattern", "front-running", "signatures are observable before execution and need binding/replay protection"),
+    ("safe-pattern", "mapping", "Safe maintains address-based authorization structures"),
+    ("safe-pattern", "structs", "transaction data is represented as structured fields"),
+    ("safe-pattern", "keccak256", "Safe transaction hashes use EIP-712 hashing"),
+    ("safe-pattern", "nonce", "Safe transactions use nonces"),
+    ("safe-pattern", "signature-verification", "owner signatures authorize transaction hashes"),
+    ("safe-pattern", "proxy-fallback", "fallback handlers/modules extend execution boundaries"),
+    ("safe-pattern", "modules", "modules add separate execution surfaces"),
+    ("modules", "access-control", "enabled modules form an authorization boundary"),
+    ("modules", "external-call", "modules can trigger Safe execution"),
+    ("modules", "events", "module changes can be observable through events"),
+    ("signature-verification", "abi.encode", "signed payloads are encoded before hashing"),
+    ("signature-verification", "function-selector", "signature/authentication paths are distinct from calldata selectors even though both use bytes4/hash machinery"),
+    ("signature-verification", "address", "verification resolves an expected signer address"),
+    ("eip712", "structs", "typed-data signing mirrors structured Solidity values"),
+    ("eip712", "string", "type strings/domain text participate in typed-data encoding"),
+    ("eip712", "bytes32", "domain/type hashes are bytes32 values"),
+    ("eip712", "block.chainid", "domain separation can bind signatures to a chain"),
+    ("eip712", "address", "domain separation can bind a verifying contract address"),
+    ("nonce", "mapping", "nonces are commonly per-user mapped state"),
+    ("nonce", "storage", "nonce state persists"),
+    ("mapping-defaults", "delete", "both expose/default mapped values to zero-like defaults"),
+    ("mapping", "public", "public mappings generate getters with recursive key parameters for nested values"),
+    ("mapping", "types-defaults", "a mapping's missing key reads the value type's default"),
+    ("arrays", "mapping-defaults", "arrays can be used as per-key state values whose empty state is significant"),
+    ("arrays", "mapping-struct", "arrays can contain structs and mappings can select either"),
+    ("mapping-struct", "storage-layout", "mapped structs have deterministic field offsets beneath derived roots"),
+    ("mapping-array-value", "array-storage", "mapped dynamic arrays combine mapping roots with array storage rules"),
+    ("struct-types", "storage-packing", "struct field types determine whether fields share storage slots"),
+    ("types-defaults", "delete", "delete restores the default representation"),
+    ("constructor", "constant-immutable", "immutable state is assigned during construction while constants are compile-time fixed"),
+    ("constructor", "type-metadata", "creation code can inspect contract/type metadata"),
+    ("constructor", "new", "new invokes constructors"),
+    ("constructor", "try-catch", "contract creation can fail and be caught externally"),
+    ("imports", "using-for", "imported libraries are commonly attached with using-for"),
+    ("library", "mapping", "libraries can implement operations over mapping storage references"),
+    ("library", "structs", "libraries often mutate struct storage references"),
+    ("using-for", "mapping", "using-for can attach library operations to mapping types"),
+    ("using-for", "structs", "using-for can attach library operations to struct values"),
+    ("interface", "abi.encodeCall", "typed interface functions provide compile-time call shapes"),
+    ("interface", "abi.decode", "interface return values cross an ABI boundary even when the caller uses typed syntax"),
+    ("interface", "try-catch", "typed interface calls can be wrapped in try/catch"),
+    ("oracle", "staticcall", "oracle reads are commonly read-only external calls"),
+    ("oracle", "returndata", "oracle adapters must interpret returned bytes/values"),
+    ("oracle", "block.timestamp", "oracle-dependent protocols often combine data freshness with time"),
+    ("tx.origin", "this-call", "caller chains distinguish original origin from immediate self/contract callers"),
+    ("tx.origin", "reentrancy", "origin does not change during nested contract calls"),
+    ("front-running", "commit-reveal", "commitments can hide a choice until a later reveal"),
+    ("commit-reveal", "keccak256", "commitments are commonly hash values"),
+    ("commit-reveal", "mapping", "commitments are often stored per participant"),
+    ("timestamp", "block.timestamp", "timestamp is the concrete global variable used by time checks"),
+    ("timestamp", "front-running", "block time is visible execution context, not secret input"),
+    ("reentrancy", "checks-effects-interactions", "CEI orders persistent effects before external interaction"),
+    ("reentrancy", "access-control", "reentrancy defenses do not replace authorization checks"),
+    ("reentrancy", "storage", "reentrant behavior often exploits state that remains temporarily stale"),
+    ("reentrancy", "events", "events can help trace repeated externalized effects"),
+    ("checks-effects-interactions", "mapping", "accounting mappings are commonly updated in the effects phase"),
+    ("checks-effects-interactions", "call", "calls are the interaction phase"),
+    ("require", "mapping", "authorization/accounting checks often read mappings"),
+    ("require", "msg.sender", "permission conditions often inspect caller identity"),
+    ("custom-errors", "function-selector", "custom error selectors identify structured failures"),
+    ("custom-errors", "events", "both are typed ABI-facing observability mechanisms with different execution semantics"),
+    ("try-catch", "errors", "caught failures may expose custom error bytes"),
+    ("try-catch", "new", "creation failures can be caught"),
+    ("try-catch", "interface", "typed external interfaces can use try/catch"),
+    ("test", "vm-prank", "tests manipulate caller context"),
+    ("test", "vm-deal", "tests provision ETH"),
+    ("test", "vm-warp", "tests control time"),
+    ("test", "vm-roll", "tests control block number"),
+    ("test", "vm-expect-revert", "tests assert expected failure paths"),
+    ("test", "vm-expect-emit", "tests assert emitted logs"),
+    ("test", "vm-expect-call", "tests assert external call behavior"),
+    ("test", "vm-storage", "tests can inspect raw storage"),
+    ("test", "vm-etch", "tests can replace code at an address"),
+    ("test", "vm-fork", "tests can exercise real forked state"),
+    ("test", "fuzz-tests", "tests can generate varied inputs"),
+    ("test", "invariant-tests", "tests can check properties across sequences"),
+    ("vm-prank", "vm-start-prank", "both manipulate caller identity with different lifetimes"),
+    ("vm-deal", "contract-balance", "deal establishes deterministic ETH balances in tests"),
+    ("vm-warp", "block.timestamp", "warp changes the timestamp observed by the contract"),
+    ("vm-roll", "block.number", "roll changes the block number observed by the contract"),
+    ("vm-assume", "vm-bound", "both constrain fuzz input domains"),
+    ("vm-expect-revert", "custom-errors", "tests can assert typed revert paths"),
+    ("vm-expect-emit", "event-indexed", "event expectations include topic/indexed behavior"),
+    ("vm-expect-call", "abi.encodeCall", "expected call payloads can use typed ABI encoding"),
+    ("vm-mockcall", "interface", "mocked external dependencies often satisfy an interface"),
+    ("vm-hoax", "vm-prank", "hoax combines funding with caller manipulation"),
+    ("fork-tests", "oracle", "fork tests can exercise real oracle state"),
+    ("vm-storage", "mapping-slots", "raw slot inspection helps validate mapping calculations"),
+    ("vm-etch", "address.code", "etch changes the runtime code at an address in test state"),
+    ("script-deploy", "new", "deployment scripts create contract instances"),
+    ("script-deploy", "constructor", "deployment scripts supply constructor arguments"),
+    ("script-interaction", "call", "scripts call deployed contracts"),
+    ("script-env", "vm-env", "environment variables configure execution"),
+    ("script-broadcast", "script", "broadcast controls sending script transactions"),
+    ("poc-accessible-state", "mapping", "an accessible-state PoC targets readable/writable state"),
+    ("poc-dos", "loops", "DoS PoCs often target gas-growing loops"),
+    ("poc-dos", "storage", "state growth can create persistent cost/availability pressure"),
+    ("poc-token", "erc20-pattern", "token PoCs exercise balance/allowance accounting"),
+    ("poc-token", "erc721-pattern", "token PoCs can target NFT ownership/approval state"),
+    ("poc-cross-contract", "interface", "cross-contract PoCs exercise typed boundaries"),
+    ("poc-upgrade", "delegatecall", "upgrade PoCs target implementation execution context"),
+    ("poc-upgrade", "storage-layout", "upgrade safety depends on compatible storage layout"),
+    ("poc-storage", "sload", "storage PoCs can inspect raw words"),
+    ("poc-signature", "nonce", "signature PoCs commonly test replay"),
+    ("poc-signature", "eip712", "typed signing is a common authorization surface"),
+    ("poc-oracle", "oracle", "oracle PoCs target external data assumptions"),
+    ("poc-accounting", "mapping", "accounting PoCs target stored balances/credits"),
+    ("poc-reentrancy", "receive", "reentrant attackers often use receive/fallback callbacks"),
+    ("poc-access-control", "modifier", "authorization PoCs target modifier/permission boundaries"),
+    ("poc-access-control", "msg.sender", "caller identity is a core authorization input"),
+    ("poc-upgrade", "proxy-fallback", "proxy upgrade behavior is exposed through forwarding"),
+    ("poc-cross-contract", "returndata", "cross-contract PoCs can target ignored or malformed return data"),
+    ("poc-dos", "gasleft", "gas-sensitive behavior can become a denial-of-service surface"),
+    ("unchecked", "assert", "unchecked arithmetic shifts the burden to surrounding invariants"),
+    ("addmod", "mulmod", "both provide modular arithmetic"),
+    ("addmod", "keccak256", "modular arithmetic can appear in cryptographic/math-heavy protocols"),
+    ("mulmod", "keccak256", "modular arithmetic can appear in cryptographic/math-heavy protocols"),
+    ("bytes.concat", "abi.encode", "concatenated bytes can become ABI input"),
+    ("string.concat", "abi.encode", "concatenated strings can be ABI encoded"),
+    ("bytes.concat", "keccak256", "concatenated byte sequences can be hashed"),
+    ("string.concat", "keccak256", "text concatenation can feed hashing after conversion to bytes"),
+    ("selfdestruct", "address.balance", "destruction semantics historically affected a contract's balance"),
+    ("selfdestruct", "ether-flow", "destruction is a special ETH/code-flow edge case"),
+    ("selfdestruct", "address", "the operation concerns the current contract address"),
+    ("block.chainid", "nonce", "chain ID and nonce can jointly bind an authorization"),
+    ("block.chainid", "function-selector", "both are execution/call-context metadata but serve different roles"),
+    ("block.basefee", "tx.gasprice", "base fee and transaction gas price are distinct fee-context values"),
+    ("block.prevrandao", "front-running", "randomness context is observable only within execution and should not be treated as secret"),
+    ("blockhash", "block.number", "blockhash takes a recent block number"),
+]
+
+
+def _deep_add_edges():
+    existing = {
+        tuple(sorted((canonicalize(left), canonicalize(right))))
+        for left, right, _label in _COMPREHENSIVE_CONNECTION_EDGES
+    }
+    for left, right, label in _DEEP_EDGES:
+        a, b = canonicalize(left), canonicalize(right)
+        if a == b:
+            continue
+        key = tuple(sorted((a, b)))
+        if key not in existing:
+            _COMPREHENSIVE_CONNECTION_EDGES.append((a, b, label))
+            existing.add(key)
+
+    # Attach newly introduced low-level nodes to their real conceptual parents.
+    for source, target, label in [
+        ("create2", "yul-call", "Yul CREATE2 is a low-level creation primitive"),
+        ("create", "yul-call", "Yul CREATE is a low-level creation primitive"),
+        ("init-code", "yul", "creation code is directly manipulated in low-level deployment"),
+        ("runtime-code", "yul", "runtime code is the deployed execution artifact"),
+        ("address.code", "bytes", "runtime code is exposed as bytes"),
+        ("address.codehash", "bytes32", "code hashes are bytes32 values"),
+        ("selfbalance", "yul", "selfbalance is a Yul builtin"),
+        ("caller", "yul", "caller is a Yul builtin"),
+        ("callvalue", "yul", "callvalue is a Yul builtin"),
+        ("mcopy", "yul", "mcopy is a Yul memory builtin"),
+        ("pc", "yul", "pc is a Yul builtin"),
+        ("msize", "yul", "msize is a Yul builtin"),
+        ("memoryguard", "yul", "memoryguard belongs to Yul's optimizer-oriented memory model"),
+        ("verbatim", "yul", "verbatim is a Yul low-level escape hatch"),
+        ("datasize", "yul", "datasize is a Yul object builtin"),
+        ("dataoffset", "yul", "dataoffset is a Yul object builtin"),
+        ("datacopy", "yul", "datacopy is a Yul object builtin"),
+        ("linkersymbol", "library", "linkersymbol resolves library addresses"),
+        ("erc20-pattern", "test", "token behavior is routinely exercised in tests"),
+        ("erc721-pattern", "test", "NFT behavior is routinely exercised in tests"),
+        ("permit-pattern", "test", "signature authorization needs behavioral tests"),
+        ("safe-pattern", "test", "multisig execution needs sequence/state tests"),
+    ]:
+        a, b = canonicalize(source), canonicalize(target)
+        key = tuple(sorted((a, b)))
+        if key not in existing:
+            _COMPREHENSIVE_CONNECTION_EDGES.append((a, b, label))
+            existing.add(key)
+
+
+_deep_add_edges()
+
+
+# ---------------------------------------------------------------------------
+# Production-derived micro scenes.
+# ---------------------------------------------------------------------------
+
+_COMPREHENSIVE_MICRO_SCENES.extend([
+    {
+        "keys": frozenset({"function", "visibility", "mutability", "returns", "parameter-vs-argument"}),
+        "title": "Function definition → call site → return value",
+        "story": "A function definition declares parameter slots and rules for access/state. A caller supplies arguments, and the function returns typed values.",
+        "code": """function quote(uint256 amount_)
+    external
+    view
+    returns (uint256 fee)
+{
+    fee = amount_ / 100;
+}
+
+// Call site:
+// uint256 fee = quote(10_000);""",
+        "variables": [
+            ("parameter", "uint256", "amount_", "10_000", "Named input slot in the definition."),
+            ("argument", "uint256", "10_000", "10_000", "Actual value supplied at the call site."),
+            ("return", "uint256", "fee", "100", "Typed output declared by returns."),
+        ],
+        "flow": [
+            "The definition names amount_ as a parameter.",
+            "The caller supplies 10_000 as the argument.",
+            "external/view describe the call surface and state permissions.",
+            "The calculation produces fee = 100 and returns it.",
+        ],
+        "call": "quote(10_000);",
+    },
+    {
+        "keys": frozenset({"function-overloading", "function-signature", "function-selector", "keccak256"}),
+        "title": "Overload → full signature → selector",
+        "story": "Two functions can share a name, but their parameter types make different canonical signatures and therefore normally different selectors.",
+        "code": """function set(uint256 value_) external {}
+function set(address user_) external {}
+
+// set(uint256)
+// set(address)
+// selector = bytes4(keccak256(canonicalSignature))""",
+        "variables": [
+            ("function", "set(uint256)", "first overload", "set(uint256)", "One callable shape."),
+            ("function", "set(address)", "second overload", "set(address)", "Another callable shape."),
+            ("derived", "bytes4", "selector", "keccak256(signature)[0:4]", "External dispatch identifier."),
+        ],
+        "flow": [
+            "The function name alone is not enough to identify an overload.",
+            "Parameter types produce the canonical signature.",
+            "Keccak hashes the signature.",
+            "The first four bytes identify the external entry point.",
+        ],
+        "call": "call the correct overload by supplying the matching argument type",
+    },
+    {
+        "keys": frozenset({"abi.encodeWithSignature", "function-signature", "function-selector", "calldata", "call"}),
+        "title": "Signature string → selector → raw call",
+        "story": "A low-level caller can build calldata from a canonical signature string, then pass the bytes to call().",
+        "code": """bytes memory data =
+    abi.encodeWithSignature("quote(uint256)", 100);
+
+(bool ok, bytes memory out) =
+    target.call(data);
+
+require(ok);""",
+        "variables": [
+            ("signature", "string", "signature", '"quote(uint256)"', "Canonical function signature."),
+            ("calldata", "bytes", "data", "selector + ABI(100)", "Raw call payload."),
+            ("local", "bool", "ok", "true", "External call success."),
+            ("return", "bytes", "out", "raw returndata", "Return bytes from target."),
+        ],
+        "flow": [
+            "quote(uint256) is hashed to derive the selector.",
+            "100 is ABI-encoded after the selector.",
+            "target.call(data) crosses the external boundary.",
+            "out contains raw return bytes.",
+        ],
+        "call": 'target.call(abi.encodeWithSignature("quote(uint256)", 100));',
+    },
+    {
+        "keys": frozenset({"fallback", "msg.sig", "calldata", "abi.decode", "function-selector"}),
+        "title": "Fallback dispatch → selector → decoded arguments",
+        "story": "A fallback function can inspect raw calldata, separate the four-byte selector, and decode the argument tail.",
+        "code": """fallback(bytes calldata input)
+    external
+    returns (bytes memory)
+{
+    bytes4 selector = bytes4(input[:4]);
+
+    if (selector == this.set.selector) {
+        (uint256 amount_) =
+            abi.decode(input[4:], (uint256));
+
+        // use amount_
+    }
+}""",
+        "variables": [
+            ("calldata", "bytes calldata", "input", "selector + ABI arguments", "Raw fallback input."),
+            ("selector", "bytes4", "selector", "input[:4]", "First four bytes."),
+            ("decoded", "uint256", "amount_", "abi.decode(input[4:], (uint256))", "Typed argument."),
+        ],
+        "flow": [
+            "fallback receives the raw calldata payload.",
+            "The first four bytes identify the attempted function selector.",
+            "The slice after byte 4 contains ABI-encoded arguments.",
+            "abi.decode turns those bytes into typed values.",
+        ],
+        "call": "send calldata for set(100) to the fallback",
+    },
+    {
+        "keys": frozenset({"this-call", "msg.sender", "call", "function-selector"}),
+        "title": "External self-call changes the caller context",
+        "story": "this.foo(...) is not an internal jump. It is a real external message call back into the same address, so dispatch and msg.sender change.",
+        "code": """function outer() external {
+    this.inner();
+}
+
+function inner() external {
+    // msg.sender == address(this)
+}""",
+        "variables": [
+            ("external call", "function", "this.inner()", "external message call", "Self-call through the contract address."),
+            ("global", "address", "msg.sender", "address(this)", "Caller seen inside inner()."),
+        ],
+        "flow": [
+            "outer() starts with the original external caller.",
+            "this.inner() sends a new external call to the same contract.",
+            "inner() sees address(this) as msg.sender.",
+            "The call therefore crosses the message boundary rather than staying internal.",
+        ],
+        "call": "outer();",
+    },
+    {
+        "keys": frozenset({"address", "payable", "transfer", "send", "call", "contract-balance", "msg.value"}),
+        "title": "Address → ETH transfer mechanism → balance",
+        "story": "An address identifies the recipient, while transfer/send/call differ in how ETH is sent and how failure is reported.",
+        "code": """function pay(
+    address payable to,
+    uint256 amount_
+) external payable {
+    require(msg.value >= amount_);
+
+    (bool ok, ) =
+        to.call{value: amount_}("");
+    require(ok);
+}""",
+        "variables": [
+            ("parameter", "address payable", "to", "0xBob", "ETH recipient."),
+            ("parameter", "uint256", "amount_", "1 ether", "Amount to send."),
+            ("global", "uint256", "msg.value", "1 ether", "ETH attached to this call."),
+            ("balance", "uint256", "to.balance", "old + 1 ether", "Recipient balance after success."),
+        ],
+        "flow": [
+            "to is the recipient address.",
+            "msg.value is ETH attached to the current call; it is not the recipient's total balance.",
+            "call{value: amount_} sends ETH and returns a success flag.",
+            "The recipient balance changes if the call succeeds.",
+        ],
+        "call": "pay{value: 1 ether}(alice, 1 ether);",
+    },
+    {
+        "keys": frozenset({"erc20-pattern", "mapping", "nested-mapping", "msg.sender", "events"}),
+        "title": "ERC20 shape: balance + allowance + events",
+        "story": "Fungible tokens combine one mapping for balances, a nested mapping for allowances, caller identity, and events that describe state transitions.",
+        "code": """mapping(address => uint256) public balanceOf;
+mapping(address => mapping(address => uint256)) public allowance;
+
+event Transfer(address indexed from, address indexed to, uint256 value);
+event Approval(address indexed owner, address indexed spender, uint256 value);
+
+function approve(address spender, uint256 amount_) external {
+    allowance[msg.sender][spender] = amount_;
+    emit Approval(msg.sender, spender, amount_);
+}
+
+function transfer(address to, uint256 amount_) external {
+    balanceOf[msg.sender] -= amount_;
+    balanceOf[to] += amount_;
+    emit Transfer(msg.sender, to, amount_);
+}""",
+        "variables": [
+            ("state", "mapping(address => uint256)", "balanceOf", "balanceOf[msg.sender]", "Token balances."),
+            ("state", "mapping(address => mapping(address => uint256))", "allowance", "allowance[owner][spender]", "Nested spending approvals."),
+            ("global", "address", "msg.sender", "0xAlice", "Current token caller."),
+            ("event", "Approval/Transfer", "logs", "old → new", "Off-chain state-change signal."),
+        ],
+        "flow": [
+            "msg.sender selects the owner's balance/allowance row.",
+            "allowance[msg.sender][spender] uses two keys.",
+            "transfer changes two balance entries.",
+            "Approval/Transfer events mirror those state changes.",
+        ],
+        "call": "approve(bob, 100); transfer(bob, 10);",
+    },
+    {
+        "keys": frozenset({"erc721-pattern", "mapping", "address", "events", "access-control"}),
+        "title": "ERC721 shape: tokenId → owner + approvals",
+        "story": "An NFT contract commonly maps token IDs to owners, tracks owner balances, and exposes approval/transfer events behind authorization rules.",
+        "code": """mapping(uint256 => address) internal _ownerOf;
+mapping(address => uint256) internal _balanceOf;
+mapping(uint256 => address) internal _tokenApprovals;
+
+event Transfer(
+    address indexed from,
+    address indexed to,
+    uint256 indexed tokenId
+);
+
+function ownerOf(uint256 tokenId)
+    external
+    view
+    returns (address)
+{
+    return _ownerOf[tokenId];
+}""",
+        "variables": [
+            ("state", "mapping(uint256 => address)", "_ownerOf", "_ownerOf[tokenId]", "Token ownership."),
+            ("state", "mapping(address => uint256)", "_balanceOf", "_balanceOf[owner]", "Per-owner NFT count."),
+            ("state", "mapping(uint256 => address)", "_tokenApprovals", "_tokenApprovals[tokenId]", "Approved operator for one token."),
+            ("event", "Transfer", "tokenId", "1", "Indexed NFT state change."),
+        ],
+        "flow": [
+            "tokenId selects an owner address.",
+            "Owner state is paired with owner balance state.",
+            "Approvals add another address keyed by tokenId.",
+            "Transfer events expose the ownership transition.",
+        ],
+        "call": "ownerOf(1);",
+    },
+    {
+        "keys": frozenset({"mapping", "structs", "library", "using-for", "interface", "call"}),
+        "title": "Protocol pattern: mapped struct → library operation → hook call",
+        "story": "Protocol code often stores complex state in a mapping, passes a storage reference into a library, and invokes an external hook through an interface.",
+        "code": """struct Pool {
+    uint256 liquidity;
+}
+
+mapping(bytes32 => Pool) internal pools;
+
+library PoolLib {
+    function add(Pool storage pool, uint256 amount_) internal {
+        pool.liquidity += amount_;
+    }
+}
+
+interface IHook {
+    function beforeSwap(bytes32 poolId) external;
+}
+
+using PoolLib for Pool;
+
+function swap(bytes32 poolId, uint256 amount_, IHook hook) external {
+    hook.beforeSwap(poolId);
+    Pool storage pool = pools[poolId];
+    pool.add(amount_);
+}""",
+        "variables": [
+            ("state", "mapping(bytes32 => Pool)", "pools", "pools[poolId]", "Protocol state registry."),
+            ("local", "Pool storage", "pool", "pools[poolId]", "Persistent state reference."),
+            ("library", "PoolLib", "add", "pool.add(amount_)", "Attached state operation."),
+            ("interface", "IHook", "hook", "0xHook", "External callback target."),
+        ],
+        "flow": [
+            "poolId selects a Pool struct.",
+            "The interface call crosses a contract boundary.",
+            "The storage reference points at persistent state.",
+            "using-for turns the library operation into pool.add(amount_).",
+        ],
+        "call": "swap(poolId, 100, hook);",
+    },
+    {
+        "keys": frozenset({"mapping", "bytes32", "interface", "access-control", "events", "proxy-fallback", "delegatecall", "abi.encodeWithSignature"}),
+        "title": "Registry pattern: bytes32 ID → address → proxy",
+        "story": "A protocol registry can map fixed IDs to addresses, gate updates with ownership, emit events, and create/update proxies whose initialization is encoded as calldata.",
+        "code": """mapping(bytes32 => address) internal registry;
+
+event AddressSet(bytes32 indexed id, address indexed oldAddress, address indexed newAddress);
+
+function setAddress(bytes32 id, address newAddress) external onlyOwner {
+    address oldAddress = registry[id];
+    registry[id] = newAddress;
+    emit AddressSet(id, oldAddress, newAddress);
+}
+
+// Proxy initialization data:
+// bytes memory data = abi.encodeWithSignature(
+//     "initialize(address)", address(this)
+// );
+// proxyAddress.delegatecall(data);""",
+        "variables": [
+            ("state", "mapping(bytes32 => address)", "registry", "registry[id]", "Protocol address book."),
+            ("key", "bytes32", "id", 'bytes32("POOL")', "Stable identifier."),
+            ("parameter", "address", "newAddress", "0xImpl", "New dependency/implementation."),
+            ("event", "AddressSet", "old/new", "0xOld → 0xImpl", "Auditable update record."),
+        ],
+        "flow": [
+            "A bytes32 identifier selects an address.",
+            "Access control determines who can change it.",
+            "The state change emits an indexed event.",
+            "A proxy can receive initialization bytes and execute implementation code through delegatecall.",
+        ],
+        "call": 'setAddress(bytes32("POOL"), implementation);',
+    },
+    {
+        "keys": frozenset({"permit-pattern", "structs", "mapping", "keccak256", "ecrecover", "nonce", "block.timestamp", "bytes"}),
+        "title": "Permit-style flow: struct → digest → signer → nonce",
+        "story": "Signature-authorized token actions combine structured data, hashing, recovered signer identity, per-user nonce state, deadline checks, and byte signatures.",
+        "code": """struct Permit {
+    address owner;
+    address spender;
+    uint256 value;
+    uint256 nonce;
+    uint256 deadline;
+}
+
+mapping(address => uint256) public nonces;
+
+function digest(Permit memory permit)
+    public
+    pure
+    returns (bytes32)
+{
+    return keccak256(
+        abi.encode(
+            permit.owner,
+            permit.spender,
+            permit.value,
+            permit.nonce,
+            permit.deadline
+        )
+    );
+}
+
+// address signer = ecrecover(digest(permit), v, r, s);
+""",
+        "variables": [
+            ("struct", "Permit", "permit", "owner/spender/value/nonce/deadline", "Signed structured message."),
+            ("state", "mapping(address => uint256)", "nonces", "nonces[owner]", "Replay protection."),
+            ("derived", "bytes32", "digest", "keccak256(abi.encode(...))", "Signed digest."),
+            ("signature", "bytes", "signature", "r/s/v data", "Authorization proof."),
+        ],
+        "flow": [
+            "The permit struct holds the fields the owner authorizes.",
+            "abi.encode makes deterministic bytes.",
+            "keccak256 makes the digest.",
+            "ecrecover can recover the signer address.",
+            "The nonce prevents the same authorization from being used again.",
+        ],
+        "call": "digest(permit);",
+    },
+    {
+        "keys": frozenset({"vm-prank", "vm-deal", "vm-expect-call", "msg.sender", "contract-balance", "test"}),
+        "title": "Foundry test → caller + balance + expected call",
+        "story": "One test can control who calls the contract, fund an account, then assert the external call the contract makes.",
+        "code": """function testWithdraw() public {
+    vm.deal(alice, 2 ether);
+    vm.prank(alice);
+
+    vm.expectCall(
+        address(token),
+        abi.encodeCall(IERC20.transfer, (bob, 100))
+    );
+
+    vault.withdraw(bob, 100);
+}""",
+        "variables": [
+            ("test actor", "address", "alice", "0xAlice", "Controlled caller/funded account."),
+            ("contract global", "address", "msg.sender", "alice", "What the vault sees."),
+            ("balance", "uint256", "alice.balance", "2 ether", "Provisioned test balance."),
+            ("expected payload", "bytes", "data", "abi.encodeCall(...)", "Expected external calldata."),
+        ],
+        "flow": [
+            "vm.deal provisions Alice with ETH in test state.",
+            "vm.prank makes Alice the caller.",
+            "The contract executes with msg.sender == Alice.",
+            "vm.expectCall checks the external token call and ABI payload.",
+        ],
+        "call": "vm.deal(alice, 2 ether); vm.prank(alice); vault.withdraw(bob, 100);",
+    },
+    {
+        "keys": frozenset({"fuzz-tests", "bounded-fuzz", "vm-assume", "vm-bound", "invariant-tests", "test"}),
+        "title": "Fuzz input → constraints → invariant",
+        "story": "Foundry can explore many inputs, constrain the domain, and then check a property rather than one hand-picked example.",
+        "code": """function testFuzzDeposit(uint256 raw) public {
+    vm.assume(raw != 0);
+    uint256 amount = bound(raw, 1, 1_000);
+
+    vault.deposit(amount);
+
+    assertEq(vault.total(), amount);
+}""",
+        "variables": [
+            ("fuzz input", "uint256", "raw", "many candidates", "Generated candidate."),
+            ("bounded", "uint256", "amount", "1..1000", "Meaningful input range."),
+            ("property", "uint256", "vault.total()", "amount", "Expected invariant for this test."),
+        ],
+        "flow": [
+            "The fuzzer supplies many candidate raw values.",
+            "vm.assume removes values outside the intended domain.",
+            "bound normalizes the candidate into a finite useful range.",
+            "The test checks a property for each generated case.",
+        ],
+        "call": "testFuzzDeposit(whatever the fuzzer supplies);",
+    },
+    {
+        "keys": frozenset({"script-deploy", "constructor", "new", "script-env", "script-broadcast", "address"}),
+        "title": "Deployment script → environment → constructor → address",
+        "story": "A Foundry script loads configuration, starts a broadcast, deploys a contract with constructor arguments, and captures its address.",
+        "code": """function run() external returns (address deployed) {
+    address admin = vm.envAddress("ADMIN");
+    uint256 limit = vm.envUint("LIMIT");
+
+    vm.startBroadcast();
+    Vault vault = new Vault(admin, limit);
+    vm.stopBroadcast();
+
+    deployed = address(vault);
+}""",
+        "variables": [
+            ("environment", "address", "admin", "ADMIN", "Deployment configuration."),
+            ("environment", "uint256", "limit", "LIMIT", "Deployment configuration."),
+            ("contract", "Vault", "vault", "new Vault(admin, limit)", "Fresh deployment."),
+            ("return", "address", "deployed", "address(vault)", "Created contract address."),
+        ],
+        "flow": [
+            "The script reads constructor inputs from environment variables.",
+            "startBroadcast makes subsequent operations sendable deployment transactions.",
+            "new Vault(...) runs the constructor.",
+            "address(vault) identifies the resulting deployment.",
+        ],
+        "call": "forge script script/Deploy.s.sol --broadcast",
+    },
+    {
+        "keys": frozenset({"create2", "keccak256", "init-code", "address", "constructor"}),
+        "title": "CREATE2 → deterministic address from salt + init code",
+        "story": "CREATE2 makes deployment addresses predictable from the deployer, salt, and hash of the creation bytecode.",
+        "code": """bytes memory initCode =
+    abi.encodePacked(
+        type(Child).creationCode,
+        abi.encode(100)
+    );
+
+address deployed;
+
+assembly {
+    deployed := create2(
+        callvalue(),
+        add(initCode, 0x20),
+        mload(initCode),
+        salt
+    )
+}""",
+        "variables": [
+            ("bytecode", "bytes", "initCode", "creationCode + constructor args", "Creation payload."),
+            ("value", "bytes32", "salt", "bytes32(\"A\")", "Deterministic deployment salt."),
+            ("return", "address", "deployed", "CREATE2 result", "New contract address."),
+        ],
+        "flow": [
+            "creation bytecode includes constructor arguments.",
+            "CREATE2 combines deployer, salt, and init-code hash to derive the address.",
+            "The init code runs the constructor and returns runtime code.",
+            "The resulting address can be known before deployment if the inputs are fixed.",
+        ],
+        "call": "deploy with a fixed salt and identical init code",
+    },
+    {
+        "keys": frozenset({"address.code", "address.codehash", "extcodesize", "extcodehash", "address"}),
+        "title": "Address → deployed code → code identity",
+        "story": "Solidity and Yul offer several ways to inspect whether an address has code and identify that code.",
+        "code": """function inspect(address target)
+    external
+    view
+    returns (uint256 size, bytes32 hash)
+{
+    size = target.code.length;
+
+    assembly {
+        size := extcodesize(target)
+        hash := extcodehash(target)
+    }
+}""",
+        "variables": [
+            ("parameter", "address", "target", "0xTarget", "Address under inspection."),
+            ("derived", "uint256", "size", "extcodesize(target)", "Runtime code size."),
+            ("derived", "bytes32", "hash", "extcodehash(target)", "Runtime code identity."),
+        ],
+        "flow": [
+            "The target is just an address value.",
+            "Solidity exposes its runtime code through target.code.",
+            "Yul can inspect code size and code hash directly.",
+            "Code inspection is useful for understanding call targets and account type assumptions.",
+        ],
+        "call": "inspect(target);",
+    },
+    {
+        "keys": frozenset({"events", "event-indexed", "yul", "log1", "keccak256"}),
+        "title": "Event → topic → Yul LOG",
+        "story": "High-level events compile down to EVM logging. Indexed fields become topics, while dynamic indexed values are represented by Keccak hashes.",
+        "code": """event Note(address indexed user, bytes indexed memo);
+
+function emitNote(bytes calldata memo_) external {
+    emit Note(msg.sender, memo_);
+}
+
+// Low-level shape:
+// topic0 = keccak256("Note(address,bytes)")
+// topic1 = padded msg.sender
+// topic2 = keccak256(indexed memo encoding)
+// log2(offset, size, topic1, topic2)""",
+        "variables": [
+            ("event field", "address indexed", "user", "msg.sender", "Filterable topic."),
+            ("event field", "bytes indexed", "memo", "memo_", "Dynamic value represented by a hash topic."),
+            ("Yul", "log2", "logger", "topic1/topic2", "Low-level log emission."),
+        ],
+        "flow": [
+            "The event signature contributes the first topic.",
+            "The indexed address becomes a directly filterable topic.",
+            "The indexed bytes value is represented by a Keccak hash topic.",
+            "Yul LOG instructions are the low-level mechanism underneath event emission.",
+        ],
+        "call": "emitNote(hex\"6869\");",
+    },
+    {
+        "keys": frozenset({"transient-storage", "tload", "tstore", "reentrancy", "modifier"}),
+        "title": "Transient guard → modifier → external call",
+        "story": "Transient storage can hold a transaction-scoped reentrancy guard. The modifier sets it before an external call and clears it after.",
+        "code": """uint256 transient entered;
+
+modifier nonReentrant() {
+    require(entered == 0);
+    entered = 1;
+    _;
+    entered = 0;
+}
+
+function withdraw(address payable to, uint256 amount_)
+    external
+    nonReentrant
+{
+    (bool ok, ) = to.call{value: amount_}("");
+    require(ok);
+}
+
+// Yul forms: tload(...) / tstore(...)
+""",
+        "variables": [
+            ("transient state", "uint256 transient", "entered", "0 → 1 → 0", "Transaction-scoped guard."),
+            ("parameter", "address payable", "to", "0xAlice", "Recipient."),
+            ("parameter", "uint256", "amount_", "1 ether", "Withdrawal amount."),
+        ],
+        "flow": [
+            "The guard starts clear.",
+            "The modifier checks and sets the transient value.",
+            "The external call crosses the reentrancy boundary.",
+            "The guard is cleared after the body.",
+        ],
+        "call": "withdraw(alice, 1 ether);",
+    },
+])
+
+
+# ---------------------------------------------------------------------------
+# Route-aware generic composition
+# ---------------------------------------------------------------------------
+
+def _covering_route(nodes):
+    ordered = []
+    seen = set()
+    for node in nodes:
+        canonical = canonicalize(node)
+        if canonical not in seen:
+            seen.add(canonical)
+            ordered.append(canonical)
+
+    if len(ordered) < 2:
+        return ordered
+
+    covered = {ordered[0]}
+    route = [ordered[0]]
+    remaining = set(ordered[1:])
+
+    while remaining:
+        best = None
+        for target in sorted(remaining):
+            for anchor in sorted(covered):
+                path, labels = _shortest_path(anchor, target)
+                if not path:
+                    continue
+                score = (
+                    len(path),
+                    sum(1 for n in path if n not in covered),
+                    target,
+                )
+                if best is None or score < best[0]:
+                    best = (score, anchor, target, path, labels)
+
+        if best is None:
+            target = sorted(remaining)[0]
+            route.append(target)
+            covered.add(target)
+            remaining.remove(target)
+            continue
+
+        _score, _anchor, target, path, _labels = best
+        for node in path[1:]:
+            if node not in covered:
+                route.append(node)
+                covered.add(node)
+            remaining.discard(node)
+
+    return route
+
+
+def connection_route(names):
+    """Return one compact route that covers every requested concept."""
+    return _covering_route(names)
+
+
+def _route_text(route, limit=14):
+    if len(route) <= limit:
+        return " → ".join(route)
+    return " → ".join(route[:limit]) + " → …"
+
+
+def _generic_connect_scene(nodes):
+    ordered = list(dict.fromkeys(canonicalize(node) for node in nodes))
+    route = _covering_route(ordered)
+    route_text = _route_text(route)
+
+    meanings = {
+        node: connection_meaning(node)
+        for node in ordered
+    }
+
+    # Pick the strongest small executable bridge without pretending it covers
+    # the entire arbitrary request. The complete route is shown separately.
+    requested = set(ordered)
+    if {"mapping", "abi.decode", "keccak256"} <= requested:
+        code = """mapping(bytes32 => address) public state;
+
+function bridge(bytes calldata raw) external {
+    address user_ = abi.decode(raw, (address));
+    bytes32 id = keccak256(raw);
+    state[id] = user_;
+}"""
+        focus = "raw bytes → abi.decode → typed value, while the same bytes → keccak256 → mapping key"
+        call = "bridge(abi.encode(alice));"
+    elif {"function-selector", "abi.encodeWithSignature", "calldata", "call"} <= requested:
+        code = """bytes memory data =
+    abi.encodeWithSignature("quote(uint256)", 100);
+
+(bool ok, ) = target.call(data);
+require(ok);"""
+        focus = "signature → selector/calldata → external call"
+        call = 'target.call(abi.encodeWithSignature("quote(uint256)", 100));'
+    elif {"interface", "call"} <= requested:
+        code = """interface ITarget {
+    function value() external view returns (uint256);
+}
+
+function bridge(ITarget target) external view returns (uint256) {
+    return target.value();
+}"""
+        focus = "interface type → external function → returned value"
+        call = "bridge(target);"
+    elif {"mapping", "keccak256"} <= requested:
+        code = """mapping(bytes32 => address) public state;
+
+function bridge(bytes calldata raw) external {
+    state[keccak256(raw)] = msg.sender;
+}"""
+        focus = "bytes → keccak256 → bytes32 mapping key"
+        call = 'bridge(hex"416c696365");'
+    elif {"mapping", "abi.decode"} <= requested:
+        code = """mapping(address => uint256) public state;
+
+function bridge(bytes calldata raw, uint256 value_) external {
+    address key = abi.decode(raw, (address));
+    state[key] = value_;
+}"""
+        focus = "raw bytes → abi.decode → mapping key"
+        call = "bridge(abi.encode(alice), 100);"
+    elif {"fallback", "msg.sig", "calldata"} <= requested:
+        code = """fallback(bytes calldata input) external returns (bytes memory) {
+    bytes4 selector = bytes4(input[:4]);
+    return abi.encode(selector);
+}"""
+        focus = "fallback → raw calldata → selector"
+        call = "send a raw calldata payload"
+    elif {"receive", "msg.value", "call"} <= requested:
+        code = """receive() external payable {
+    credit[msg.sender] += msg.value;
+}
+
+function withdraw(uint256 amount_) external {
+    credit[msg.sender] -= amount_;
+    (bool ok, ) = payable(msg.sender).call{value: amount_}("");
+    require(ok);
+}"""
+        focus = "ETH entry → caller accounting → external ETH call"
+        call = "send ETH, then withdraw(amount)"
+    elif {"vm-prank", "msg.sender", "test"} <= requested:
+        code = """function testAsAlice() public {
+    vm.prank(alice);
+    target.sensitiveAction();
+}"""
+        focus = "test-controlled caller → msg.sender"
+        call = "vm.prank(alice); target.sensitiveAction();"
+    elif "yul" in requested or any(node.startswith("yul-") for node in requested):
+        code = """function bridge(uint256 value_)
+    external
+    pure
+    returns (uint256 result)
+{
+    assembly {
+        result := add(value_, 1)
+    }
+}"""
+        focus = "Solidity value → Yul word → Solidity result"
+        call = "bridge(41);"
+    else:
+        code = """contract ConnectionBridge {
+    // No single Solidity idiom owns this exact combination.
+    // The full semantic route is:
+    // __ROUTE__
+}""".replace("__ROUTE__", route_text)
+        focus = route_text
+        call = "inspect the route one edge at a time"
+
+    flow = [
+        f"Requested concepts: {' + '.join(ordered)}.",
+        f"Connection route: {route_text}.",
+        f"Tiny code focuses on: {focus}.",
+        "Every remaining requested concept is still represented in the route above; use the adjacent edge as the next teaching step.",
+    ]
+
+    variables = [
+        ("requested", "concept", node, "selected", meanings[node])
+        for node in ordered
+    ]
+
+    return {
+        "keys": frozenset(ordered),
+        "title": f"Connected route: {' → '.join(ordered[:4])}" + (" → …" if len(ordered) > 4 else ""),
+        "story": (
+            "This request has no single canonical Solidity idiom. Lowkey keeps it human-sized: "
+            "it first gives one route covering every requested concept, then shows the strongest "
+            "small executable bridge instead of pretending unrelated syntax is one pattern."
+        ),
+        "code": code.strip("\n"),
+        "variables": variables,
+        "flow": flow,
+        "call": call,
+        "generic": True,
+        "route": route,
+    }
+
+
+def find_micro_scene(names):
+    ordered = []
+    seen = set()
+    for name in names:
+        node = canonicalize(name)
+        if node not in seen:
+            ordered.append(node)
+            seen.add(node)
+
+    requested = frozenset(ordered)
+
+    exact = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if frozenset(scene.get("keys", ())) == requested
+    ]
+    if exact:
+        return exact[0]
+
+    candidates = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if requested <= frozenset(scene.get("keys", ()))
+    ]
+    if candidates:
+        candidates.sort(
+            key=lambda scene: (
+                len(frozenset(scene.get("keys", ())) - requested),
+                len(frozenset(scene.get("keys", ()))),
+                scene.get("title", ""),
+            )
+        )
+        scene = candidates[0]
+        if "route" not in scene:
+            scene["route"] = _covering_route(ordered)
+        return scene
+
+    return _generic_connect_scene(ordered)
+
+
+# Rebuild the known-node set after adding the deep reference vocabulary.
+def _final_deep_nodes():
+    nodes = set(_EXTRA_CONCEPTS)
+    nodes.update(canonicalize(name) for name in _CATALOG_ALIASES.values())
+    for left, right, _label in _COMPREHENSIVE_CONNECTION_EDGES:
+        nodes.add(canonicalize(left))
+        nodes.add(canonicalize(right))
+    return nodes
+
+
+def is_known_concept(name: str) -> bool:
+    key = _norm(name)
+    if key in _COMPREHENSIVE_COMPOSITES:
+        return True
+    if key in _SEMANTIC_ALIASES:
+        return True
+    if key in _CATALOG_ALIASES:
+        return True
+    canonical = canonicalize(name)
+    return canonical in _final_deep_nodes()
+
+
+def connection_meaning(name: str) -> str:
+    canonical = canonicalize(name)
+    if canonical in _EXTRA_MEANINGS:
+        return _EXTRA_MEANINGS[canonical]
+    target = _CATALOG_ALIASES.get(_norm(name))
+    if target and target in _CATALOG_NAME_TO_MEANING:
+        return _CATALOG_NAME_TO_MEANING[target]
+    target = _CATALOG_ALIASES.get(_norm(canonical))
+    if target and target in _CATALOG_NAME_TO_MEANING:
+        return _CATALOG_NAME_TO_MEANING[target]
+    return f"{canonical} is a recognized Solidity/Foundry concept."
+
+
+# Compatibility alias for callers that inspect the graph directly.
+CONNECTION_GRAPH = _COMPREHENSIVE_CONNECTION_EDGES
+
