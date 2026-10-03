@@ -799,12 +799,38 @@ def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str,
         rpc,
         "-vvv",
     ]
-    return subprocess.run(
+    completed = subprocess.run(
         cmd,
         cwd=str(root),
         capture_output=True,
         text=True,
     )
+
+    # Generated adversarial harnesses can accumulate enough local observables to
+    # trigger Solidity's legacy stack-depth limit. Retry only that compiler failure
+    # through Foundry's IR pipeline; never alter the user's project config.
+    output = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    if completed.returncode != 0 and "Stack too deep" in output:
+        ir_cmd = [
+            forge,
+            "test",
+            "--match-path",
+            match_path,
+            "--fork-url",
+            rpc,
+            "--via-ir",
+            "--optimize",
+            "-vvv",
+        ]
+        ir_completed = subprocess.run(
+            ir_cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+        )
+        return ir_completed
+
+    return completed
 
 
 def _cast_binary(host) -> str:
