@@ -5647,3 +5647,37 @@ def is_known_concept(name: str) -> bool:
     if key in _CATALOG_ALIASES:
         return True
     return canonicalize(name) in _final_known_nodes()
+
+def find_micro_scene(names):
+    ordered = []
+    seen = set()
+    for name in names:
+        node = canonicalize(name)
+        if node not in seen:
+            ordered.append(node)
+            seen.add(node)
+
+    requested = frozenset(ordered)
+
+    exact = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if frozenset(scene.get("keys", ())) == requested
+    ]
+    if exact:
+        return exact[0]
+
+    candidates = [
+        scene for scene in COMPREHENSIVE_MICRO_SCENES
+        if requested <= frozenset(scene.get("keys", ()))
+    ]
+    if candidates:
+        candidates.sort(
+            key=lambda scene: (
+                len(frozenset(scene.get("keys", ())) - requested),
+                len(frozenset(scene.get("keys", ()))),
+                scene.get("title", ""),
+            )
+        )
+        return candidates[0]
+
+    return _generic_connect_scene(ordered)
