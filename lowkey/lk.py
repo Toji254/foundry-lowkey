@@ -1094,23 +1094,31 @@ def resolve_abi_path(config,target,path=None):
             return remember_abi_path(config,target,candidate)
     return None
 
-def auto_abi_path(target,config):
+def auto_abi_path(target,config,root=None):
+    """Resolve an ABI using only the requested project's artifact/build tree.
+
+    Passing root is mandatory for lab/protocol bootstrap paths so a target can
+    never inherit an ABI from the caller's cwd or another project's config.
+    """
     if not target or not is_address(target):
         return None
 
-    search_roots=["."]
-    remembered_root=configured_project_root(target,config)
-    if remembered_root and os.path.abspath(remembered_root)!=os.path.abspath("."):
-        search_roots.insert(0,remembered_root)
+    project_root = Path(audit_context.foundry_project_root(root)).resolve() if root is not None else Path(".").resolve()
+    search_roots = [str(project_root)]
+    preferred_root = configured_project_root(target,config)
+    if root is None and preferred_root and os.path.abspath(preferred_root)!=os.path.abspath(str(project_root)):
+        search_roots.insert(0,preferred_root)
 
     paths=[]
-    for root in search_roots:
-        paths.extend(local_artifact_paths(root))
+    for search_root in search_roots:
+        paths.extend(local_artifact_paths(search_root))
+
     preferred=config.get("target_contract")
     candidate_addresses=[target]
+    deployment_root = project_root if root is not None else Path(".")
 
     if not preferred:
-        for record in discover_deployments("."):
+        for record in discover_deployments(str(deployment_root)):
             if str(record.get("address","")).lower()==target.lower():
                 preferred=record.get("contract")
                 if preferred:
@@ -1125,7 +1133,7 @@ def auto_abi_path(target,config):
             if implementation.lower()!=target.lower():
                 candidate_addresses.insert(0,implementation)
                 if not preferred:
-                    for record in discover_deployments("."):
+                    for record in discover_deployments(str(deployment_root)):
                         if str(record.get("address","")).lower()==implementation.lower():
                             preferred=record.get("contract")
                             if preferred:
@@ -1134,27 +1142,27 @@ def auto_abi_path(target,config):
 
     if preferred:
         preferred_lower=str(preferred).lower()
-        for path in paths:
-            artifact=read_artifact(path)
-            name=artifact_contract_name(path,artifact).lower()
-            if name==preferred_lower or Path(path).stem.lower()==preferred_lower:
-                remember_abi_path(config,target,path)
-                return path
+        for artifact_path in paths:
+            artifact=read_artifact(artifact_path)
+            name=artifact_contract_name(artifact_path,artifact).lower()
+            if name==preferred_lower or Path(artifact_path).stem.lower()==preferred_lower:
+                remember_abi_path(config,target,artifact_path)
+                return artifact_path
 
     if rpc:
         for candidate in candidate_addresses:
             code,runtime,_=cast_output(["cast","code",candidate,"--rpc-url",rpc])
             if code!=0 or not runtime or not runtime.startswith("0x") or runtime=="0x":
                 continue
-            for path in paths:
-                artifact=read_artifact(path)
+            for artifact_path in paths:
+                artifact=read_artifact(artifact_path)
                 deployed=artifact.get("deployedBytecode") if isinstance(artifact,dict) else None
                 if isinstance(deployed,dict):
                     deployed=deployed.get("object")
                 if isinstance(deployed,str) and deployed.lower()==runtime.lower():
-                    remember_abi_path(config,target,path)
-                    config["target_contract"]=artifact_contract_name(path,artifact)
-                    return path
+                    remember_abi_path(config,target,artifact_path)
+                    config["target_contract"]=artifact_contract_name(artifact_path,artifact)
+                    return artifact_path
 
     return None
 
@@ -4217,6 +4225,15 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     )
 
     output = result.text
+
+    changed_sources = _project_source_mutations(root, before_sources)
+    if changed_sources:
+        return fail(
+            "Error: the project-native lab script changed first-party source files. "
+            "Lowkey aborted target selection and will not continue with a mutated source tree. "
+            "Changed: " + ", ".join(changed_sources)
+        )
+
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-50:]) if output else "forge test failed"
         return fail(
@@ -4981,7 +4998,7 @@ def _run_project_build(config, root):
     kind = str(project.get("kind") or project.get("backend") or "generic")
 
     if str(project.get("backend") or "") == "foundry" or kind in {"foundry", "mixed-foundry-vyper"}:
-        result = run_foundry(["build"], capture=True)
+        result = run_foundry(["build"], capture=True, cwd=root)
         if result.code == 0:
             print("")
             print("LOWKEY BUILD")
@@ -5384,8 +5401,96 @@ def _lab_script_environment(script, rpc, key, accounts):
     return assignments, sorted(name for name in names if name not in assignments)
 
 
+_LAB_SOURCE_OUTPUT_SENTINELS = (
+    "LOWKEY // LIVE PROTOCOL WALKTHROUGH",
+    "SYSTEM WORKFLOW",
+    "PROTOCOL STORY",
+    "ENTER = next live interaction",
+)
+
+def _project_source_files(root):
+    """Return first-party source files that a lab is allowed to observe, never mutate."""
+    root_path = Path(root).expanduser().resolve()
+    src_prefix = _configured_src_prefix(root_path)
+    src_root = root_path / src_prefix
+    if not src_root.is_dir():
+        return []
+    files = []
+    for suffix in ("*.sol", "*.vy"):
+        files.extend(src_root.rglob(suffix))
+    return sorted({path.resolve() for path in files if path.is_file()})
+
+
+def _project_source_fingerprint(root):
+    """Capture first-party source bytes so a lab script cannot silently rewrite user code."""
+    fingerprint = {}
+    for path in _project_source_files(root):
+        try:
+            fingerprint[path.relative_to(Path(root).resolve()).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except (OSError, ValueError):
+            continue
+    return fingerprint
+
+
+def _project_source_mutations(root, before):
+    after = _project_source_fingerprint(root)
+    changed = sorted(
+        set(before) | set(after)
+        - set(key for key, value in before.items() if after.get(key) == value)
+    )
+    return changed
+
+
+def _lab_source_integrity_issue(root):
+    """Detect terminal/walkthrough output accidentally inserted into application source."""
+    for path in _project_source_files(root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for sentinel in _LAB_SOURCE_OUTPUT_SENTINELS:
+            index = text.find(sentinel)
+            if index >= 0:
+                line = text.count("\n", 0, index) + 1
+                return path.relative_to(Path(root).resolve()).as_posix(), line, sentinel
+    return None
+
+
+def _validate_project_lab_target(config, root, rpc, target, requested=None):
+    """Require a live lab target to resolve to a first-party application artifact."""
+    if not is_address(target):
+        return None, None, "deployment output did not contain a valid contract address"
+
+    code_result = run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True)
+    runtime_code = str(code_result.text or "").strip()
+    if code_result.code != 0 or runtime_code in {"", "0x", "0X"}:
+        return None, None, "selected address has no live bytecode on the exact local Anvil"
+
+    original_contract = config.get("target_contract")
+    config["target_contract"] = str(requested).strip() if requested else None
+    artifact = auto_abi_path(target, config, root=root)
+    if not artifact:
+        config["target_contract"] = original_contract
+        return None, None, "selected address could not be mapped to a current-project application artifact"
+
+    artifact_data = read_artifact(artifact) or {}
+    if not artifact_is_project_application(root, artifact, artifact_data):
+        config["target_contract"] = original_contract
+        return None, None, "selected address resolves only to a dependency, test, or support artifact"
+
+    contract = artifact_contract_name(artifact, artifact_data)
+    if requested and str(contract).strip().lower() != str(requested).strip().lower():
+        config["target_contract"] = original_contract
+        return None, None, f"selected target resolves to {contract}, not requested {requested}"
+
+    return contract, artifact, None
+
+
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
+    if not path_is_within(script, root):
+        return fail("Error: selected lab script is outside the current project root.")
+    before_sources = _project_source_fingerprint(root)
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
     print(f"Project : {root}")
@@ -5452,16 +5557,16 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     if not target:
         deployments = discover_deployments(root)
-        if requested:
-            selected_record = next(
-                (
-                    item for item in deployments
-                    if str(item.get("contract") or "").lower() == str(requested).lower()
-                ),
-                None,
-            )
-        if selected_record is None and deployments:
-            selected_record = deployments[0]
+        wanted = str(requested or discover_audit_target_contract(root) or "").strip().lower()
+        if wanted:
+            matching = [
+                item for item in deployments
+                if str(item.get("contract") or "").strip().lower() == wanted
+            ]
+            if len(matching) == 1:
+                selected_record = matching[0]
+            elif len(matching) > 1:
+                selected_record = matching[0]
         if selected_record is not None:
             target = selected_record.get("address")
 
@@ -5478,18 +5583,12 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             "The script may require additional project-specific configuration."
         )
 
+    if not is_address(target):
+        return fail("Error: local project deployment did not produce a valid application target.")
+
     # Do not trust stale broadcast records from another chain/run. The selected
-    # target must have bytecode on the exact Anvil RPC used for this lab.
-    code_result = run_cast(["code", target, "--rpc-url", rpc], config={}, capture=True)
-    runtime_code = str(code_result.text or "").strip()
-    if (
-        not is_address(target)
-        or code_result.code != 0
-        or runtime_code in {"", "0x", "0X"}
-    ):
-        return fail(
-            "Error: Lowkey found a deployment record but could not verify live bytecode on the local Anvil."
-        )
+    # target must have bytecode on the exact Anvil RPC used for this lab and must
+    # map back to a first-party application artifact in this project.
 
     system = parse_lab_system(output)
     if selected_record:
@@ -5524,16 +5623,33 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             config.setdefault("aliases", {})[label] = address
             config.setdefault("targets", {})[label] = address
 
-    config["target_contract"] = None
-    artifact = auto_abi_path(effective_target, config)
-    contract = config.get("target_contract") or "auto-detected"
-    if selected_record and selected_record.get("contract"):
-        contract = str(selected_record["contract"])
-        for candidate_path in local_artifact_paths(root):
-            candidate_artifact = read_artifact(candidate_path) or {}
-            if artifact_contract_name(candidate_path, candidate_artifact).lower() == contract.lower():
-                artifact = candidate_path
-                break
+    # Resolve the effective live target exclusively against this project's artifacts.
+    if requested and system:
+        requested_lower = str(requested).strip().lower()
+        system_candidates = []
+        for alias, address in system.items():
+            if alias in {"alice", "bob"} or not is_address(address):
+                continue
+            temp_contract = config.get("target_contract")
+            config["target_contract"] = None
+            candidate_artifact = auto_abi_path(address, config, root=root)
+            config["target_contract"] = temp_contract
+            if candidate_artifact:
+                candidate_data = read_artifact(candidate_artifact) or {}
+                candidate_name = artifact_contract_name(candidate_artifact, candidate_data)
+                if candidate_name.strip().lower() == requested_lower:
+                    system_candidates.append((address, candidate_name, candidate_artifact))
+        if len(system_candidates) == 1:
+            effective_target = system_candidates[0][0]
+
+    contract, artifact, target_error = _validate_project_lab_target(
+        config, root, rpc, effective_target, requested=requested
+    )
+    if target_error:
+        return fail(
+            "Error: local project lab produced an unsafe/ambiguous target. "
+            + target_error
+        )
 
     config["actor"] = "lab-deployer"
     config.setdefault("wallets", {})["lab-deployer"] = {
@@ -6396,6 +6512,19 @@ def run_lab(config,args):
         if archived:
             print(f"  Refreshed {archived} previous generated walkthrough replay(s)")
     
+    if args and args[0].lower() == "stop":
+        return stop_project_anvil(root)
+
+    source_issue = _lab_source_integrity_issue(root)
+    if source_issue:
+        relative_source, line, sentinel = source_issue
+        return fail(
+            "Error: Lowkey source-integrity check failed. "
+            f"Found live Lowkey terminal output in {relative_source}:{line} ({sentinel}). "
+            "Lowkey will not modify, compile, or deploy a project whose first-party source "
+            "contains generated lab output. Remove the injected output and rerun 'forge build'."
+        )
+
     # A clean checkout should be enough. Build before reading artifacts so the
     # lab does not depend on a manual "lk build" step.
     if kind in {"foundry", "mixed-foundry-vyper"}:
@@ -6405,9 +6534,6 @@ def run_lab(config,args):
                 "Error: project build failed; Lowkey will not deploy stale or partial artifacts.",
                 build_code,
             )
-
-    if args and args[0].lower() == "stop":
-        return stop_project_anvil(root)
 
     mode = "auto"
     requested = None
@@ -6610,7 +6736,7 @@ def run_proof(config,args):
 def tool_path(name):
     return shutil.which(name)
 
-def run_foundry(args, capture=False):
+def run_foundry(args, capture=False, cwd=None):
     binary = tool_path("forge")
     root = audit_context.foundry_project_root()
     command_name = args[0] if args else "forge"
@@ -6624,7 +6750,7 @@ def run_foundry(args, capture=False):
         print(message, file=sys.stderr)
         return result.code
     try:
-        completed = subprocess.run([binary, *args], capture_output=capture, text=True)
+        completed = subprocess.run([binary, *args], capture_output=capture, text=True, cwd=str(root) if cwd is not None else None)
     except OSError as error:
         message = f"Error executing forge: {error}"
         audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
