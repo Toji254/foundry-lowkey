@@ -299,5 +299,80 @@ class SolidityCheatsheetTests(unittest.TestCase):
         self.assertIn("receive", output)
 
 
+    def test_new_learning_tools_exist(self):
+        result, output = self.render("keywords")
+        self.assertEqual(result, 0)
+        for token in ("contract KeywordsLab", "memory", "calldata", "storage"):
+            self.assertIn(token, output)
+
+        result, output = self.render("contract-anatomy")
+        self.assertEqual(result, 0)
+        for token in ("state", "modifier", "constructor", "receive", "fallback"):
+            self.assertIn(token.lower(), output.lower())
+
+        result, output = self.render("call-anatomy")
+        self.assertEqual(result, 0)
+        for token in ("call", "staticcall", "delegatecall"):
+            self.assertIn(token, output)
+
+        result, output = self.render("types-defaults")
+        self.assertEqual(result, 0)
+        self.assertIn("address(0)", output)
+        self.assertIn("false", output)
+        self.assertIn("delete user", output)
+
+    def test_new_learning_commands(self):
+        cases = [
+            (("compare", "for", "while", "do-while"), "LOWKEY // COMPARE"),
+            (("expression", "balances[msg.sender] += msg.value"), "LOWKEY // EXPRESSION READER"),
+            (("practice", "mapping"), "LOWKEY // PRACTICE"),
+            (("confused", "calldata"), "LOWKEY // COMMONLY CONFUSED"),
+            (("patterns",), "LOWKEY // CHEAT • PATTERNS"),
+        ]
+        for args, marker in cases:
+            result, output = self.render(*args)
+            self.assertEqual(result, 0)
+            self.assertIn(marker, output)
+
+    def test_symbols_keywords_and_version_reference(self):
+        result, output = self.render("symbols")
+        self.assertEqual(result, 0)
+        for token in ("|=", "^=", "&=", "<<=", ">>="):
+            self.assertIn(token, output)
+
+        result, output = self.render("keywords")
+        self.assertEqual(result, 0)
+        self.assertIn("unchecked", output)
+        self.assertIn("delegatecall", output.lower())
+
+        result, output = self.render("versioning")
+        self.assertEqual(result, 0)
+        self.assertIn("pragma solidity ^0.8.20", output)
+        self.assertIn("Cancun-era", output)
+
+    def test_global_reference_is_broad_and_calldata_lab_is_safe(self):
+        result, output = self.render("globals-map")
+        self.assertEqual(result, 0)
+        for token in ("block.coinbase", "block.gaslimit", "block.basefee",
+                      "block.prevrandao", "tx.gasprice",
+                      "address(this).balance"):
+            self.assertIn(token, output)
+
+        for topic in ("globals", "calldata", "calldata-deep", "call-data-layout"):
+            result, output = self.render(topic, "1")
+            self.assertEqual(result, 0)
+            self.assertNotIn("returns (bytes calldata)", output)
+
+    def test_mapping_and_struct_outputs_keep_syntax_labels(self):
+        result, output = self.render("mapping")
+        self.assertEqual(result, 0)
+        self.assertIn("SYNTAX", output)
+
+        result, output = self.render("struct-types")
+        self.assertEqual(result, 0)
+        self.assertIn("FIELD NAME", output)
+
+
+
 if __name__ == "__main__":
     unittest.main()
