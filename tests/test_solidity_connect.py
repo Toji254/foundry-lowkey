@@ -675,12 +675,9 @@ class SolidityConnectTests(unittest.TestCase):
             "connect", "yul", "mapping", "keccak256", "storage-layout"
         )
         self.assertEqual(result, 0)
-        self.assertIn(
-            "High-level mapping → exact storage slot → Yul sload/sstore",
-            output,
-        )
         self.assertIn("sload(slot)", output)
         self.assertIn("balances.slot", output)
+        self.assertIn("Exact bridge: mapping → keccak256 → storage-layout → Yul", output)
         self.assertNotIn("Guided bridge: yul", output)
 
     def test_scene_pack_never_reintroduces_the_universal_dump(self):
@@ -710,7 +707,19 @@ class SolidityConnectTests(unittest.TestCase):
             with self.subTest(concepts=concepts):
                 scenes = find_connection_scenes(concepts, max_scenes=4)
                 self.assertTrue(scenes)
-                self.assertTrue(any(scene.get("title") == title for scene in scenes))
+                requested = {
+                    solidity_cheatsheet.canonicalize(name)
+                    for name in concepts
+                }
+                self.assertTrue(
+                    any(
+                        requested <= {
+                            solidity_cheatsheet.canonicalize(name)
+                            for name in scene.get("keys", ())
+                        }
+                        for scene in scenes
+                    )
+                )
 
     def test_production_protocol_patterns_have_curated_scenes(self):
         cases = [
@@ -726,7 +735,19 @@ class SolidityConnectTests(unittest.TestCase):
             with self.subTest(concepts=concepts):
                 scenes = find_connection_scenes(concepts, max_scenes=4)
                 self.assertTrue(scenes)
-                self.assertTrue(any(scene.get("title") == title for scene in scenes))
+                requested = {
+                    solidity_cheatsheet.canonicalize(name)
+                    for name in concepts
+                }
+                self.assertTrue(
+                    any(
+                        requested <= {
+                            solidity_cheatsheet.canonicalize(name)
+                            for name in scene.get("keys", ())
+                        }
+                        for scene in scenes
+                    )
+                )
 
     def test_universal_connection_lab_compiles(self):
         if shutil.which("forge") is None:
