@@ -811,6 +811,154 @@ contract AbiHashLab {
 ]
 
 
+
+# Broad language/data-flow relationships. These are teaching edges, not claims
+# that two concepts are syntactically interchangeable.
+_CONNECTION_EDGES = [
+    ("imports", "interface", "imports can expose an interface declaration"),
+    ("imports", "inheritance", "imports can expose a base contract"),
+    ("imports", "library", "imports can expose a library"),
+    ("interface", "address", "an interface value is attached to a contract address"),
+    ("interface", "function", "interfaces describe callable function shapes"),
+    ("interface", "external-call", "calling an interface crosses a contract boundary"),
+    ("function", "mapping", "functions commonly read/write mappings"),
+    ("function", "structs", "functions can read/write struct values"),
+    ("function", "arrays", "functions can create, index, push, or return arrays"),
+    ("function", "enum", "functions can accept/store/update enum state"),
+    ("function", "bytes", "functions can accept/return raw bytes"),
+    ("function", "address", "functions commonly accept addresses"),
+    ("mapping", "structs", "a mapping value can be a struct"),
+    ("mapping", "arrays", "a mapping value can be an array"),
+    ("mapping", "nested-mapping", "a mapping can contain another mapping"),
+    ("mapping", "keccak256", "hashing can create ids or derived storage-slot keys"),
+    ("mapping", "storage", "mappings live in storage"),
+    ("arrays", "loops", "loops commonly iterate arrays"),
+    ("arrays", "structs", "struct fields can contain arrays"),
+    ("arrays", "storage", "storage arrays persist and can grow"),
+    ("arrays", "memory", "dynamic arrays can be copied to memory"),
+    ("arrays", "calldata", "external functions can receive dynamic arrays in calldata"),
+    ("structs", "storage", "stored structs live in contract storage"),
+    ("structs", "memory", "structs can be copied into memory"),
+    ("structs", "calldata", "external functions can receive struct-like tuple input"),
+    ("enum", "mapping", "a mapping can store an enum as its value"),
+    ("enum", "structs", "a struct can store enum state"),
+    ("bytes", "bytes32", "dynamic bytes and fixed bytes32 are common byte representations"),
+    ("string", "bytes", "text can be converted to bytes"),
+    ("string", "abi.encode", "strings can be ABI encoded"),
+    ("address", "msg.sender", "msg.sender has address type"),
+    ("address", "msg.value", "address identifies the recipient while msg.value supplies ETH"),
+    ("address", "payable", "payable(address) creates an ETH-sending address"),
+    ("payable", "msg.value", "payable entry points can receive msg.value"),
+    ("receive", "msg.value", "receive handles empty-calldata ETH with msg.value"),
+    ("fallback", "msg.data", "fallback can inspect raw msg.data"),
+    ("receive", "fallback", "both are ETH/call routing entry points"),
+    ("msg.value", "mapping", "ETH accounting is often stored per caller in a mapping"),
+    ("msg.sender", "mapping", "caller address is commonly used as a mapping key"),
+    ("call", "bytes", "low-level call takes calldata bytes and returns bytes"),
+    ("call", "reentrancy", "external calls can open callback/reentrancy boundaries"),
+    ("call", "checks-effects-interactions", "CEI orders state effects before external calls"),
+    ("call", "staticcall", "staticcall is a read-only external-call variant"),
+    ("call", "delegatecall", "delegatecall is an external code execution variant"),
+    ("interface", "staticcall", "typed interfaces and raw staticcall address the same contract boundary differently"),
+    ("delegatecall", "storage", "delegatecall executes with caller storage/context"),
+    ("proxy-fallback", "delegatecall", "proxy fallback commonly forwards with delegatecall"),
+    ("abi.encode", "bytes", "ABI encoding produces bytes"),
+    ("abi.encode", "keccak256", "encoded values are common hash input"),
+    ("abi.decode", "bytes", "ABI decoding consumes bytes"),
+    ("abi.decode", "calldata", "calldata bytes can be ABI decoded"),
+    ("keccak256", "bytes32", "keccak256 returns bytes32"),
+    ("bytes32", "mapping", "bytes32 values are common mapping keys"),
+    ("mapping-slots", "keccak256", "mapping storage slots use hashing"),
+    ("nested-mapping-slots", "mapping", "nested mapping slot derivation follows mapping state"),
+    ("storage", "yul-storage", "Yul sload/sstore can address storage directly"),
+    ("calldata", "yul-calldata", "Yul can read raw calldata"),
+    ("yul", "storage", "assembly can access storage"),
+    ("yul", "calldata", "assembly can access calldata"),
+    ("yul", "memory", "assembly can read/write memory"),
+    ("yul", "call", "assembly can execute low-level calls"),
+    ("yul-control-flow", "loops", "Yul has its own low-level repetition/control forms"),
+    ("yul-functions", "function", "Yul local functions are distinct from Solidity functions but serve reusable computation"),
+    ("constructor", "inheritance", "constructors initialize child and base state"),
+    ("constructor", "msg.sender", "deployment caller is available during construction"),
+    ("constructor", "address", "constructors commonly receive addresses"),
+    ("constructor", "string", "constructors can receive strings"),
+    ("constructor", "uint256", "constructors can receive numeric parameters"),
+    ("modifier", "access-control", "modifiers commonly enforce access rules"),
+    ("modifier", "function", "modifiers wrap function execution"),
+    ("errors", "function", "functions can revert with custom errors"),
+    ("events", "function", "functions commonly emit events after state changes"),
+    ("try-catch", "interface", "typed external calls can be wrapped in try/catch"),
+    ("try-catch", "call", "external failure can be handled with try/catch or call return flags"),
+    ("library", "using-for", "using-for attaches library functions to a type"),
+    ("new", "constructor", "new deploys and supplies constructor arguments"),
+    ("abstract", "inheritance", "abstract contracts are intended for inheritance"),
+    ("virtual", "override", "virtual permits an inherited implementation to be overridden"),
+    ("override", "interface", "implementations explicitly satisfy inherited/interface functions"),
+    ("signature-verification", "keccak256", "signed message digests are commonly hashed"),
+    ("signature-verification", "bytes", "signatures and digests are represented as bytes"),
+    ("signature-verification", "address", "verification recovers/checks an address"),
+    ("oracle", "interface", "oracle integrations are commonly accessed through interfaces"),
+    ("timestamp", "block.timestamp", "timestamp is a block context value"),
+    ("front-running", "calldata", "public transaction input can be observed before execution"),
+    ("tx-origin", "msg.sender", "both identify transaction/call context differently"),
+    ("access-control", "msg.sender", "authorization commonly starts from caller identity"),
+    ("unchecked", "uint256", "unchecked changes overflow/underflow checking for arithmetic"),
+    ("delete", "storage", "delete resets a stored variable to its default"),
+]
+
+
+def connection_paths(names):
+    """Return short human-readable bridges between requested concepts."""
+    nodes = list(dict.fromkeys(canonicalize(name) for name in names))
+    adjacency = {}
+    labels = {}
+    for left, right, label in _CONNECTION_EDGES:
+        a, b = canonicalize(left), canonicalize(right)
+        adjacency.setdefault(a, []).append(b)
+        adjacency.setdefault(b, []).append(a)
+        labels[(a, b)] = label
+        labels[(b, a)] = label
+
+    def shortest(start, goal):
+        if start == goal:
+            return [start]
+        queue = [(start, [start])]
+        seen = {start}
+        while queue:
+            cur, path = queue.pop(0)
+            for nxt in adjacency.get(cur, []):
+                if nxt in seen:
+                    continue
+                candidate = path + [nxt]
+                if nxt == goal:
+                    return candidate
+                seen.add(nxt)
+                queue.append((nxt, candidate))
+        return None
+
+    rows = []
+    if len(nodes) < 2:
+        return rows
+    root = nodes[0]
+    for goal in nodes[1:]:
+        path = shortest(root, goal)
+        if path:
+            edge_text = []
+            for left, right in zip(path, path[1:]):
+                edge_text.append(labels.get((left, right), "contract-level bridge"))
+            rows.append((root, goal, path, edge_text))
+        else:
+            rows.append(
+                (
+                    root,
+                    goal,
+                    [root, "contract-context", goal],
+                    ["shared contract context; inspect each side's syntax/example"],
+                )
+            )
+    return rows
+
+
 _COMPOSITE_ALIASES = {
     "arrays-mappings": {"arrays", "mapping"},
     "arrays-structs": {"arrays", "structs"},
