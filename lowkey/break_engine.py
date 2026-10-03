@@ -449,6 +449,7 @@ def _parse_args(args: list[str]):
         "function": None,
         "family": None,
         "pattern": None,
+        "catalog": False,
         "system": False,
         "auto": False,
         "until_found": False,
@@ -484,6 +485,10 @@ def _parse_args(args: list[str]):
                 raise ValueError(f"{item} needs a function name/signature.")
             opts["function"] = str(args[i + 1])
             i += 2
+            continue
+        if low in {"--catalog", "--patterns"}:
+            opts["catalog"] = True
+            i += 1
             continue
         if low in {"--pattern", "--finding"}:
             if i + 1 >= len(args):
@@ -580,6 +585,7 @@ ATTACK FAMILIES
 MODES
   --pattern ID  Attack using the family mapped from a recurring finding pattern.
                 IDs come from Lowkey's cross-language public-finding playbook.
+  --catalog      Print the public-finding logic catalog and exit.
   --system      Attack every live target Lowkey knows for this project/system.
   --until-found Continue rounds until a concrete break condition is reached
                 or you stop the process with Ctrl-C.
@@ -1599,6 +1605,15 @@ def run(config, args=None, host=None):
 
     if opts.get("help"):
         print(help_text())
+        return 0
+
+    if opts.get("catalog"):
+        print("LOWKEY // BREAK FINDING CATALOG")
+        print("===============================")
+        for item in FINDING_PATTERNS:
+            print(f"  {item.id:<12} [{item.family}] {item.title}")
+            print(f"               LOGIC: {item.logic}")
+        print(f"\\nTotal: {len(FINDING_PATTERNS)} recurring logic patterns")
         return 0
 
     project_info = _project_break_context(host)
