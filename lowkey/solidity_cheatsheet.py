@@ -62,53 +62,143 @@ def add(name, aliases, category, meaning, mental, syntax, example, steps,
 
 
 add(
-    "symbols", ["operators", "punctuation", "syntax-symbols"], "CHEATSHEET",
-    "The Solidity punctuation and keywords you will see constantly.",
-    "Read the symbols literally: choose data, access it, compare it, then update or call.",
-    """{}    block / contract / function body
-()    parameters or call
-[]    array type / array index
-;     end statement
-,     separate items
-.     member access
-:     named call option / ternary separator
-=>    mapping key -> value
-=     assignment
-+= -= *= /= %=  compound assignment
-++ -- increment / decrement
-!     NOT
-&&    AND
-||    OR
-== != equality
-< > <= >= comparisons
-+ - * / % arithmetic
-**    exponentiation
-& | ^ ~ bitwise operators
-<< >> bit shifts
-? :   ternary
-is    inheritance
-virtual / override  inheritance customization
-returns              function outputs
-emit                 write event log
-new                  create contract
-delete               reset toward default
-unchecked { }        skip arithmetic checks in that block
-assembly { }         low-level Yul/EVM code
-try / catch          handle external-call failure
-using X for Y        attach library helpers to a type
-type(T)              inspect type metadata
-payable(address)     payable address conversion
-{value: amount}      attach ETH to a call""",
-    """mapping(address => uint256) balances;
-balances[msg.sender] += msg.value;
-uint256 fee = vip ? 0 : 1 ether;
-payable(treasury).call{value: fee}("");""",
+    "symbols", ["operators", "punctuation", "syntax-symbols", "solidity-symbols"], "CHEATSHEET",
+    "Core Solidity punctuation, operators, delimiters, and syntax marks you will repeatedly see.",
+    "Do not read symbols as decoration. Each one tells Solidity how values are grouped, accessed, compared, changed, called, or routed.",
+    """STATEMENT / DELIMITERS
+;       end a statement
+,       separate items
+()      group expressions / function parameters / function calls
+{}      block of statements / contract body / call options
+[]      array type / array index / bytes or calldata slice
+.       member access
+:       ternary separator / named-argument separator / slice separator
+=>      mapping key -> value
+
+ASSIGNMENT
+=       assign
++=      add, then assign
+-=      subtract, then assign
+*=      multiply, then assign
+/=      divide, then assign
+%=      remainder, then assign
+
+ARITHMETIC
++       add
+-       subtract / unary negative
+*       multiply
+/       divide
+%       remainder
+**      exponentiation
+++      increment by 1
+--      decrement by 1
+
+COMPARISON
+==      equal
+!=      not equal
+<       less than
+<=      less than or equal
+>       greater than
+>=      greater than or equal
+
+LOGICAL
+!       NOT
+&&      AND
+||      OR
+? :     ternary: choose one of two values
+
+BITWISE
+&       bitwise AND
+|       bitwise OR
+^       bitwise XOR
+~       bitwise NOT
+<<      shift left
+>>      shift right
+
+ACCESS / RANGE
+a[i]    index element i
+a[i:j]  slice from i up to j
+a[:]    whole slice
+a.b     read member b
+f(x)    call f with x
+
+TUPLES
+(a, b)              group multiple values
+(x, , z)            ignore one returned position
+(uint a, bool ok)   declare and unpack returns
+
+CALL OPTIONS
+f{value: amount}()  attach ETH
+f{gas: 50000}()    choose forwarded gas
+f{value: 1 ether, gas: 50000}()
+
+NAMED ARGUMENTS
+f({amount: 100, user: alice})
+
+CONVERSIONS / TYPE EXPRESSIONS
+address(x)          convert to address
+payable(x)           payable address conversion
+type(T)              type information
+new T(...)           contract creation
+
+SPECIAL BLOCK SYNTAX
+unchecked { ... }   arithmetic without checked overflow/underflow
+assembly { ... }    inline Yul/EVM assembly
+try ... catch ...   handle failure from an external call/contract creation
+
+COMMENTS / NATSPEC
+// comment
+/* block comment */
+/// NatSpec line
+/** NatSpec block */
+@param              NatSpec parameter tag
+@return             NatSpec return tag
+@notice             NatSpec notice tag
+@dev                NatSpec developer note
+""",
+    """contract SymbolsLab {
+    mapping(address => uint256) public balances;
+    uint256 public count;
+
+    function deposit() external payable {
+        balances[msg.sender] += msg.value;
+    }
+
+    function demo(uint256 amount, bool vip)
+        external
+        returns (uint256 result)
+    {
+        uint256 fee = vip ? 1 ether : 0;
+
+        if (amount > fee && amount != 0) {
+            count++;
+        }
+
+        for (uint256 i = 0; i < 3; i++) {
+            result += i;
+        }
+
+        (uint256 a, bool ok) = this.check(amount);
+        return ok ? a : 0;
+    }
+
+    function check(uint256 x)
+        external
+        pure
+        returns (uint256, bool)
+    {
+        return (x, x > 0 && x < 100);
+    }
+}""",
     [
-        "mapping(address => uint256) has key type before => and value type after it.",
-        "balances[msg.sender] means look up balances using msg.sender as the key.",
-        "The dot means member access: msg.sender, address(this).balance.",
-        "Braces after a call hold call options such as value or gas.",
+        "Read punctuation by role: grouping (), indexing [], member access ., block {}, assignment =, and key/value =>.",
+        "Read comparison operators as questions that produce true or false.",
+        "Read compound assignment such as += as 'calculate, then put the result back into the left variable'.",
+        "Read ? : as a value-producing if/else.",
+        "Read call options such as {value: amount} as settings attached to that call, not as a new block statement.",
+        "When auditing, parentheses, brackets, dots, and braces often tell you exactly where a value comes from and whether a call crosses a boundary.",
     ],
+    audit="Operator precedence and call options can change behavior. Parenthesize complicated expressions instead of relying on readers remembering precedence.",
 )
 
 add(
@@ -3276,16 +3366,74 @@ address(this).balance  current contract native-coin balance""",
 )
 
 add(
+    "global-functions", ["global-functions-map", "builtin-functions", "special-functions"], "GLOBAL VALUES",
+    "Built-in functions and helpers Solidity makes available without declaring them in your contract.",
+    "Global variables give you context; global functions let you ask the EVM/Solidity to perform a built-in operation.",
+    """keccak256(data)
+sha256(data)
+ripemd160(data)
+ecrecover(hash, v, r, s)
+addmod(x, y, k)
+mulmod(x, y, k)
+blockhash(blockNumber)
+gasleft()
+type(T).max
+type(IContract).interfaceId
+abi.encode(...)
+abi.decode(...)
+abi.encodeCall(...)
+abi.encodeWithSelector(...)
+abi.encodeWithSignature(...)""",
+    """contract GlobalFunctionsLab {
+    function makeId(address user, uint256 amount)
+        external
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(user, amount));
+    }
+
+    function maxValue()
+        external
+        pure
+        returns (uint256)
+    {
+        return type(uint256).max;
+    }
+}""",
+    [
+        "keccak256 hashes bytes and is commonly used for IDs, commitments, and storage-slot formulas.",
+        "abi.encode and the related helpers turn typed values into bytes.",
+        "abi.decode turns ABI-formatted bytes back into typed values.",
+        "type(T) exposes compile-time type information and members such as max for integers.",
+        "gasleft() reports the remaining gas at the point where it is evaluated.",
+        "blockhash(n) can retrieve a recent block hash subject to the EVM's availability rules.",
+    ],
+    audit="Hashing and ABI encoding are security primitives. A small change in what is encoded can change an ID, signature, selector, or storage location.",
+)
+
+add(
     "mapping-types", ["mapping-type", "mapping-table", "mapping-reference"], "TYPES",
     "A mapping type has a key type on the left and a value type on the right.",
     "The key is the label you put inside []; the value is what the lookup gives you.",
-    """mapping(KeyType => ValueType) name;
+    """KEY TYPE        VALID?   WHAT GOES INSIDE []        EXAMPLE
+address         YES      an address                 balances[user]
+uint256         YES      a uint256                  balances[userId]
+bytes32         YES      a bytes32                  votes[id]
+bool            YES      true / false               flags[active]
+enum            YES      an enum member             status[user]
+string          NO       dynamic text               not valid as key
+bytes           NO       dynamic bytes              not valid as key
+struct          NO       struct value               not valid as key
+mapping         NO       another mapping            not valid as key
+dynamic array   NO       T[] value                  not valid as key
 
-EXAMPLE:
-mapping(address => uint256) balances;
+SYNTAX
+mapping(KeyType => ValueType) name;
 
-LOOKUP:
-balances[msg.sender]""",
+MEANING
+KeyType   = what you put inside []
+ValueType = what the lookup stores/returns""",
     """contract MappingTypesExample {
     mapping(address => uint256) public balances;
 
@@ -3318,13 +3466,22 @@ add(
     "struct-types", ["struct-type", "struct-table", "struct-fields"], "TYPES",
     "A struct groups named fields; each field has a type and an actual value.",
     "Think a form with named boxes. The type tells you what kind of thing each box accepts; the value is the data currently inside it.",
-    """struct Bounty {
+    """FIELD TYPE       WHAT IS THE VALUE?                 EXAMPLE
+address           actual address stored in field       creator = msg.sender
+uint256           actual number stored in field        amount = 100
+string            actual text stored in field          description = "bug"
+bytes32           actual 32-byte value                 solutionHash = hash
+enum              one enum member                      status = Status.Open
+
+STRUCT SYNTAX
+struct Bounty {
     address creator;
     uint256 amount;
-    string description;
-    bytes32 solutionHash;
-    Status status;
-}""",
+}
+
+VALUE MEANS
+The value is the actual data currently placed in the field.
+In amount: amount, left side = field name, right side = value.""",
     """contract StructTypesExample {
     enum Status { Open, Claimed, Paid }
 
@@ -3724,9 +3881,8 @@ _TERM_DEFINITIONS = {
 }
 
 def _render_contract_lab(topic):
-    print()
     print(f"LOWKEY // CONTRACT LAB • {topic['name']}")
-    print("=" * 76)
+    print("────────────────────────────────────────────────────────────────────────────")
     code = _CONTRACT_LABS.get(topic["name"])
     if code is None:
         raw = topic["example"].strip()
@@ -3874,37 +4030,46 @@ def render_index():
 
 def render_topic(topic):
     print()
-    print(f"LOWKEY // CHEAT • {topic['name']}")
+    print(f"LOWKEY // CHEAT • {topic['name'].upper()}")
     print("=" * 76)
-    print(f"Category : {topic['category']}")
-    print(f"Meaning  : {topic['meaning']}")
+
+    print()
+    print(topic["name"].upper())
+    print("─" * len(topic["name"]))
+    print(topic["syntax"])
+
+    print()
+    print("CONTRACT USE")
+    print("────────────")
+    _render_contract_lab(topic)
+
     print()
     print("MENTAL MODEL")
-    print("------------")
+    print("────────────")
     print(topic["mental"])
-    print()
-    print("SYNTAX")
-    print("------")
-    print(topic["syntax"])
+
     print()
     print("REAL EXAMPLE")
-    print("------------")
+    print("────────────")
     print(topic["example"])
+
     print()
     print("STEP BY STEP")
-    print("------------")
+    print("────────────")
     for index, step in enumerate(topic["steps"], 1):
         print(f"  {index}. {step}")
+
     if topic["audit"]:
         print()
         print("AUDIT LOOKOUT")
-        print("-------------")
+        print("─────────────")
         print(topic["audit"])
     if topic["gotchas"]:
         print()
         print("WATCH OUT")
-        print("---------")
+        print("─────────")
         print(topic["gotchas"])
+
     related = [
         item["name"]
         for item in TOPICS
@@ -3914,11 +4079,13 @@ def render_topic(topic):
     if related:
         print()
         print("RELATED")
-        print("-------")
+        print("───────")
         print("  " + ", ".join(related[:8]))
+
     print()
     print("Educational lookup. Verify exact details against your compiler/version.")
     _render_next_views(topic)
+
 
 
 def run(args=None):
