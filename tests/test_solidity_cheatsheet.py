@@ -384,7 +384,7 @@ class SolidityConnectCoverageTests(unittest.TestCase):
     def setUpClass(cls):
         cls.catalog = []
 
-        def capture(name, aliases, category, meaning, *args):
+        def capture(name, aliases, category, meaning, *args, **kwargs):
             cls.catalog.append((name, aliases, category, meaning))
 
         cheat.register_topics(capture)
