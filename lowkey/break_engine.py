@@ -1169,6 +1169,7 @@ def _render_reentrancy_test(
     values: list[str],
     depth: int,
     setup_signature: str | None = None,
+    seed_fund: str | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
@@ -1185,8 +1186,10 @@ def _render_reentrancy_test(
         if encoded_args else f'abi.encodeWithSignature("{signature}")'
     )
     setup_block = ""
+    if seed_fund:
+        setup_block += f'        vm.deal(TARGET, {seed_fund});\n'
     if setup_signature:
-        setup_block = f"""
+        setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
         (bool seeded, ) = address(hostile).call{{value: 2 wei}}(
             abi.encodeWithSignature("seed(bytes)", setupData)
@@ -1422,7 +1425,13 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             all_functions = _discover_functions(host, config, target)
             setup_signature = _find_setup_signature(all_functions)
             body = _render_reentrancy_test(
-                target, fn, signature, values, opts.get("depth", 3), setup_signature
+                target,
+                fn,
+                signature,
+                values,
+                opts.get("depth", 3),
+                setup_signature,
+                seed_fund=seed_fund,
             )
         except ValueError as error:
             return AttackResult(
