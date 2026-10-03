@@ -221,6 +221,9 @@ jobs:
           lk as whale s ping 8
           lk txpool
           lk probe ping 7
+          lk break --function ping --rounds 1 | tee /tmp/lowkey-break-ping.txt
+          grep -q "LOWKEY // BREAK MODE" /tmp/lowkey-break-ping.txt
+          grep -q "BREAK CAMPAIGN COMPLETE" /tmp/lowkey-break-ping.txt
           CHANGES=$(lk state-diff ping 7)
           printf '%s\n' "$CHANGES"
           grep -q "Storage:   1 change(s)" <<<"$CHANGES"
