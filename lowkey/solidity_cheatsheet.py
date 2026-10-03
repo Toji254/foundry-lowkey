@@ -71,6 +71,8 @@ from solidity_connect_data import (
     find_micro_scene,
     connection_meaning,
     connection_route,
+    find_connection_scenes,
+    render_connection_pack,
     _FINAL_GRAPH_AUDIT_RESULT,
 )
 
@@ -369,7 +371,20 @@ def _render_connect(names):
         return 0
 
     route = connection_route(requested)
-    scene = find_micro_scene(requested)
+    scenes = find_connection_scenes(requested, max_scenes=4)
+
+    # Keep the familiar single-scene view for focused requests. When several
+    # independent concepts are requested, show a small set of actual code
+    # bridges so every requested concept appears in something executable.
+    if mode != "full" and len(scenes) > 1:
+        render_connection_pack(
+            requested,
+            scenes,
+            walkthrough=(mode == "walkthrough"),
+        )
+        return 0
+
+    scene = scenes[0] if scenes else find_micro_scene(requested)
 
     print()
     print("CONNECTION ROUTE")
