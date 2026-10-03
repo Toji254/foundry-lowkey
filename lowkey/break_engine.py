@@ -1225,6 +1225,8 @@ contract LowkeyBreakReentrant {{
     uint256 public successes;
     bool public lastSeedSuccess;
     bool public lastAttackSuccess;
+    bytes public lastSeedReturndata;
+    bytes public lastAttackReturndata;
 
     constructor(address _target) {{
         target = _target;
@@ -1290,7 +1292,13 @@ contract LowkeyBreakReentrancy is Test {{
         console2.log("LOWKEY_BREAK_FAMILY", "reentrancy");
         console2.log("HOSTILE_WRAPPER_SUCCESS", outer);
         console2.log("TARGET_SETUP_SUCCESS", hostile.lastSeedSuccess());
+        console2.log("TARGET_SETUP_RETURNDATA_LENGTH", hostile.lastSeedReturndata().length);
+        console2.logBytes(hostile.lastSeedReturndata());
         console2.log("TARGET_OUTER_SUCCESS", hostile.lastAttackSuccess());
+        console2.log("TARGET_OUTER_RETURNDATA_LENGTH", hostile.lastAttackReturndata().length);
+        console2.logBytes(hostile.lastAttackReturndata());
+        console2.log("TARGET_CODE_LENGTH", TARGET.code.length);
+        console2.log("TARGET_BALANCE_AFTER_SETUP", TARGET.balance);
         console2.log("REENTRY_ATTEMPTS", hostile.attempts());
         console2.log("REENTRY_SUCCESSES", hostile.successes());
         console2.log("ATTACKER_WITHDRAW_RECEIVED", received);
