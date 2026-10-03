@@ -317,7 +317,6 @@ def language_label(info: dict[str, Any] | None) -> str:
 
 def native_probe_commands(info: dict[str, Any] | None) -> list[list[str]]:
     info = info or {}
-    root = str(info.get("root") or ".")
     native = info.get("native") or {}
     stacks = {str(x).lower() for x in (info.get("stacks") or [])}
     commands: list[list[str]] = []
@@ -331,10 +330,10 @@ def native_probe_commands(info: dict[str, Any] | None) -> list[list[str]]:
         if native.get("aptos"):
             commands.append(["aptos", "move", "test"])
     if not commands:
-        if native.get("cargo") if "native" in info else False:
-            commands.append(["cargo", "test"])
-        elif native.get("pytest"):
+        if native.get("pytest"):
             commands.append(["pytest", "-q"])
+        elif native.get("cargo"):
+            commands.append(["cargo", "test"])
     return commands
 
 
