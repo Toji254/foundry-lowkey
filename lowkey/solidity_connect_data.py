@@ -2072,6 +2072,20 @@ _EXTRA_MEANINGS = {
     "abi.encodeWithSignature": "Builds calldata from a textual function signature by hashing it to the selector and encoding its arguments.",
     "function-selector": "The first four bytes of the Keccak-256 hash of the canonical external function signature.",
     "function": "A named callable unit with parameters, visibility, mutability, a body, and optional return values.",
+    "mapping": "A key -> value lookup table.",
+    "structs": "A struct groups named fields; each field has a type and an actual value.",
+    "arrays": "An ordered list; dynamic arrays can grow while fixed arrays have a fixed length.",
+    "enum": "A fixed set of named states.",
+    "bytes": "A dynamic byte sequence.",
+    "bytesN": "A fixed-length byte value such as bytes32 or bytes4.",
+    "address": "An EVM account/contract address; payable is the ETH-receiving form.",
+    "string": "A dynamic UTF-8 text value.",
+    "uint256": "An unsigned 256-bit integer.",
+    "storage-memory-calldata": "Reference data can live in persistent storage, temporary memory, or read-only calldata.",
+    "imports": "Bring declarations from another Solidity source file into the current source unit.",
+    "inheritance": "Compose contracts through base/derived relationships.",
+    "interface": "A typed list of callable functions another contract can expose.",
+    "modifier": "A reusable wrapper that runs around a function or modifier body.",
     "address-payable": "An address value that is explicitly permitted to receive Ether through address members such as call/transfer/send.",
     "msg.sender": "The immediate caller of the current call frame.",
     "msg.value": "The amount of Wei attached to the current call frame.",
@@ -4222,6 +4236,7 @@ _EXTRA_CONCEPTS.update({
     "assignment", "compound-assignment", "abi.encodeCall", "sha256", "ripemd160", "ecrecover",
     "addmod", "mulmod", "bytes.concat", "string.concat", "selfdestruct",
     "this", "super", "nonce", "erc7201", "tload", "tstore",
+    "forge-cheatcodes", "cheatcodes", "expectrevert", "expectemit",
 })
 
 
