@@ -54,7 +54,8 @@ class ImportHelperTests(unittest.TestCase):
         rendered = out.getvalue()
         self.assertIn("LOWKEY // IMPORT HELPER", rendered)
         self.assertIn("IMPORT SYNTAX CHEAT SHEET:", rendered)
-        self.assertIn("import {ERC20, IERC20}", rendered)
+        self.assertIn('import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";', rendered)
+        self.assertIn('import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";', rendered)
 
     def test_remapping(self):
         tmp, root = self.project()
