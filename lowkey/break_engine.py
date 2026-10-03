@@ -1559,7 +1559,7 @@ def _extract_console_bytes(text_output: str, marker: str) -> str | None:
 
 def _read_telemetry_bool(text_output: str, marker: str) -> bool | None:
     match = re.search(
-        rf"{re.escape(marker)}\\s+(true|false)",
+        rf"{re.escape(marker)}\s+(true|false)",
         str(text_output or ""),
         flags=re.I,
     )
@@ -1570,7 +1570,7 @@ def _read_telemetry_bool(text_output: str, marker: str) -> bool | None:
 
 def _read_telemetry_uint(text_output: str, marker: str) -> int | None:
     match = re.search(
-        rf"{re.escape(marker)}\\s+(\\d+)",
+        rf"{re.escape(marker)}\s+(\d+)",
         str(text_output or ""),
         flags=re.I,
     )
@@ -1713,6 +1713,7 @@ def _result_from_output(
         setup_success = _read_telemetry_bool(text_output, "SETUP_SUCCESS")
         first_success = _read_telemetry_bool(text_output, "FIRST_SUCCESS")
         second_success = _read_telemetry_bool(text_output, "SECOND_SUCCESS")
+        setup_len = _read_telemetry_uint(text_output, "SETUP_RETURNDATA_LENGTH") or 0
         first_len = _read_telemetry_uint(text_output, "FIRST_RETURNDATA_LENGTH") or 0
         second_len = _read_telemetry_uint(text_output, "SECOND_RETURNDATA_LENGTH") or 0
         target_outflow = _read_telemetry_uint(text_output, "TOTAL_TARGET_OUTFLOW")
@@ -1732,8 +1733,8 @@ def _result_from_output(
         if setup_success is False:
             reason = decoded_setup or (
                 "No revert data was returned."
-                if not first_len
-                else f"Revert data length: {first_len} bytes."
+                if not setup_len
+                else f"Revert data length: {setup_len} bytes."
             )
             summary = (
                 f"Target rejected the setup call before the {family} probe could establish its intended state. "
