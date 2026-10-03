@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/system_model.py lowkey/project_tools.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/break_engine.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/system_model.py lowkey/project_tools.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/solidity_connect_data.py lowkey/break_engine.py
       - name: Solidity cheatsheet tests
         run: python -m unittest tests/test_solidity_cheatsheet.py -v
       - name: Unit tests
@@ -40,6 +40,8 @@ jobs:
         run: ./install.sh
       - name: Compile standalone Solidity cheat labs
         run: python -m unittest tests/test_solidity_cheat_labs.py -v
+      - name: Compile Solidity connection labs
+        run: python -m unittest tests/test_solidity_connect.py -v
       - name: Verify installed runtime module
         run: |
           test -f "$HOME/.lowkey/bootstrap.py"
@@ -49,6 +51,7 @@ jobs:
           test -f "$HOME/.lowkey/solidity_cheatsheet.py"
           test -f "$HOME/.lowkey/solidity_cheat_topics.py"
           test -f "$HOME/.lowkey/solidity_cheat_data.py"
+          test -f "$HOME/.lowkey/solidity_connect_data.py"
           grep -q '/bootstrap.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/import_helper.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_playbook.py":' "$HOME/.lowkey/install-manifest.json"
@@ -56,6 +59,7 @@ jobs:
           grep -q '/solidity_cheatsheet.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/solidity_cheat_topics.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/solidity_cheat_data.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/solidity_connect_data.py":' "$HOME/.lowkey/install-manifest.json"
           python3 - "$HOME/.lowkey" <<'PY'
           import pathlib
           import sys
@@ -146,9 +150,13 @@ jobs:
           grep -q 'lk break --until-found' <(lk break --h)
           grep -q 'lk break --system' <(lk break --h)
           grep -q 'lk import' <(lk -h)
+          grep -q 'lk connect' <(lk -h)
           lk import --h
           lk import mappings
           lk import contracts
+          lk connect --list
+          lk connect structs mappings arrays enums bytes addresses
+          lk connect import constructor
           grep -q 'lk poc' <(lk -h)
           lk self-test
           lk doctor
