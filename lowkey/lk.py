@@ -4358,17 +4358,69 @@ def _local_lab_script_candidates(root, requested=None):
     return [item[2] for item in sorted(candidates)]
 
 
+_LAB_SAFE_ENV_NAMES = frozenset({
+    "PRIVATE_KEY",
+    "DEPLOYER_PRIVATE_KEY",
+    "ADMIN_PRIVATE_KEY",
+    "OWNER_PRIVATE_KEY",
+    "SENDER_PRIVATE_KEY",
+    "BROADCAST_PRIVATE_KEY",
+    "IS_TESTNET",
+    "TESTNET",
+    "LOCAL_LAB",
+    "ANVIL",
+    "RPC_URL",
+    "ETH_RPC_URL",
+    "ANVIL_RPC_URL",
+    "LOCAL_RPC_URL",
+    "DEPLOYMENT_RPC_URL",
+    "DEPLOYER",
+    "DEPLOYER_ADDRESS",
+    "OWNER",
+    "OWNER_ADDRESS",
+    "ADMIN",
+    "ADMIN_ADDRESS",
+    "SENDER",
+    "SENDER_ADDRESS",
+})
+
+def _lab_script_unresolved_env_names(script):
+    try:
+        source = Path(script).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        source = ""
+    names = set(
+        re.findall(
+            r"vm\.env(?:Bool|Uint|Address|String|Or)\s*\(\s*\"([A-Za-z_][A-Za-z0-9_]*)\"",
+            source,
+        )
+    )
+    return sorted(name for name in names if name.upper() not in _LAB_SAFE_ENV_NAMES)
+
+
 def discover_local_lab_script(root=".", requested=None):
     root = audit_context.foundry_project_root(root) or root
 
+    candidates = []
     for relative in LOCAL_LAB_SCRIPTS:
         path = os.path.join(root, relative)
         if os.path.isfile(path):
-            return path
+            candidates.append(path)
 
     discovered = _local_lab_script_candidates(root, requested)
-    if discovered:
-        return discovered[0]
+    for path in discovered:
+        if path not in candidates:
+            candidates.append(path)
+
+    # Auto lab is disposable/local-only. A deployment script that requires an
+    # address, moderator, registry, token, or other project-specific environment
+    # value cannot be safely invented by Lowkey, so do not execute it implicitly.
+    # This also prevents a production-oriented Deploy.s.sol from winning merely
+    # because its filename looks deployable.
+    for path in candidates:
+        if _lab_script_unresolved_env_names(path):
+            continue
+        return path
 
     return None
 
