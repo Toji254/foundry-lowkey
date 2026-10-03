@@ -7201,3 +7201,40 @@ def connection_meaning(name: str) -> str:
 # Compatibility alias for callers that inspect the graph directly.
 CONNECTION_GRAPH = _COMPREHENSIVE_CONNECTION_EDGES
 
+# Final route primitive: keep path selection deterministic and weighted.
+def _shortest_path(start, goal):
+    if start == goal:
+        return [start], []
+
+    from collections import defaultdict
+    import heapq as _heapq
+
+    adjacency = defaultdict(list)
+    for left, right, label in _COMPREHENSIVE_CONNECTION_EDGES:
+        a, b = canonicalize(left), canonicalize(right)
+        weight = 1 if not label.startswith("family ") and not label.startswith("same ") and not label.startswith("catalog coverage") else 5
+        adjacency[a].append((b, label, weight))
+        adjacency[b].append((a, label, weight))
+
+    heap = [(0, start, (start,), ())]
+    best = {start: 0}
+
+    while heap:
+        cost, node, path, labels = _heapq.heappop(heap)
+        if node == goal:
+            return list(path), list(labels)
+        if cost != best.get(node):
+            continue
+
+        for nxt, label, weight in adjacency.get(node, ()):
+            new_cost = cost + weight
+            if new_cost >= best.get(nxt, 10**9):
+                continue
+            best[nxt] = new_cost
+            _heapq.heappush(
+                heap,
+                (new_cost, nxt, path + (nxt,), labels + (label,)),
+            )
+
+    return None, None
+
