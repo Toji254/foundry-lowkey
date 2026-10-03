@@ -67,7 +67,7 @@ class BreakEngineTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertEqual(result, 0)
         self.assertIn("ATTACK EXECUTED — NO BREAK", rendered)
-        self.assertIn("First call succeeded", rendered)
+        self.assertIn("Target rejected the attempted call(s), so replay was not demonstrated.", rendered)
         self.assertIn("Attacker gain", rendered)
         self.assertIn("The target rejected the attempted call(s), so replay was not demonstrated.", rendered)
         self.assertIn("This does NOT prove withdraw/redeem is secure", rendered)
