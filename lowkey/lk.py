@@ -5647,7 +5647,31 @@ def _validate_project_lab_target(
             if deployed and deployed.lower() == candidate_runtime.lower():
                 return artifact_name, artifact_path, None
 
-    return None, None, "selected address could not be mapped to a current-project application artifact"
+    # Preserve the fail-closed behavior, but expose the evidence chain so a
+    # repository with generated tests/POCs can be diagnosed without guessing.
+    scoped_matches = []
+    for item in provenance_records:
+        if not isinstance(item, dict):
+            continue
+        if implementation_lower and str(item.get("address") or "").lower() == implementation_lower:
+            scoped_matches.append(
+                f"{item.get('contract') or 'Unknown'} @ {item.get('address')}"
+            )
+    artifact_summary = [
+        f"{name} [{Path(path).relative_to(root_path).as_posix()}]"
+        for name, path, _ in application_artifacts
+    ]
+    details = [
+        f"target={target}",
+        f"implementation={implementation or 'unresolved'}",
+        f"provenance_script={Path(provenance_script).relative_to(root_path).as_posix() if provenance_script else 'none'}",
+        f"provenance_matches={'; '.join(scoped_matches) if scoped_matches else 'none'}",
+        f"application_artifacts={'; '.join(artifact_summary) if artifact_summary else 'none'}",
+    ]
+    return None, None, (
+        "selected address could not be mapped to a current-project application artifact "
+        "(" + " | ".join(details) + ")"
+    )
 
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
