@@ -6,9 +6,40 @@ if [[ "${1:-}" == "forge" ]]; then
     exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
 fi
 
+if [[ "${1:-}" == "slither" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/slither_tools.py" "$@"
+fi
+
+if [[ "${1:-}" == "import" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/import_helper.py" "$@"
+fi
+
 case "${1:-}" in
-    build|test|script|inspect|coverage|lint|geiger|fmt|clone|fuzz|lsp)
+    build|test|script|inspect|coverage|lint|geiger|fmt|lsp|create|verify-contract|verify-check|verify-bytecode|tree|install|remove|update|init|clean|cache|config|remappings|bind|bind-json|doc|compiler|eip712|soldeer|completions|flatten)
+        # Friendly Lowkey help must be handled by the main router.
+        for arg in "$@"; do
+            case "$arg" in
+                --h|--help|-h|help)
+                    exec python3 "$HOME/.lowkey/lk.py" "$@"
+                    ;;
+            esac
+        done
         exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
+        ;;
+    generate)
+        # Keep contextual help on the main Lowkey router; normal generation
+        # still uses the dedicated generator entrypoint for a lean path.
+        for arg in "$@"; do
+            case "$arg" in
+                --h|--help|-h|help)
+                    exec python3 "$HOME/.lowkey/lk.py" "$@"
+                    ;;
+            esac
+        done
+        shift
+        exec python3 "$HOME/.lowkey/generator.py" "${@}"
         ;;
 esac
 

@@ -1,0 +1,904 @@
+import importlib.util
+import io
+import json
+import pathlib
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+from contextlib import redirect_stdout
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE = ROOT / "lowkey" / "lk.py"
+
+spec = importlib.util.spec_from_file_location("lowkeycast_project_targeting", MODULE)
+lk = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lk)
+
+
+class ProjectTargetingTests(unittest.TestCase):
+    def _root(self, tmp):
+        root = pathlib.Path(tmp) / "project"
+        root.mkdir()
+        (root / "foundry.toml").write_text("[profile.default]\nsrc = \"src\"\n", encoding="utf-8")
+        return root
+
+    def test_stale_global_target_does_not_leak_into_current_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            old_root = pathlib.Path(tmp) / "old-project"
+            old_root.mkdir()
+            config = {
+                "target": "0x" + "1" * 40,
+                "target_contract": "EthEscrow",
+                "abi_paths": {"0x" + "1" * 40: str(old_root / "out" / "EthEscrow.json")},
+                "project_roots": {"0x" + "1" * 40: str(old_root)},
+            }
+
+            synced = lk._sync_audit_context(config, root)
+
+            self.assertIsNone(synced["target"]["address"])
+            self.assertIsNone(lk.active_project_target(config, root))
+            self.assertIsNone(lk.activate_project_target(config, root))
+            self.assertIsNone(config["target"])
+
+    def test_project_target_overrides_global_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("{}", encoding="utf-8")
+            project_target = "0x" + "2" * 40
+            global_target = "0x" + "1" * 40
+
+            lk.audit_context.set_target(
+                root,
+                address=project_target,
+                contract="ConfidencePoolFactory",
+                artifact=str(artifact),
+                source="manual",
+            )
+            config = {
+                "target": global_target,
+                "target_contract": "EthEscrow",
+                "abi_paths": {global_target: str(pathlib.Path(tmp) / "old" / "Escrow.json")},
+                "project_roots": {global_target: str(pathlib.Path(tmp) / "old")},
+            }
+
+            self.assertEqual(lk.active_project_target(config, root), project_target)
+            lk.activate_project_target(config, root)
+            self.assertEqual(config["target"], project_target)
+            self.assertEqual(config["target_contract"], "ConfidencePoolFactory")
+            self.assertEqual(config["abi_paths"][project_target], str(artifact))
+
+
+    def test_ask_uses_current_build_artifacts_without_live_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "contractName": "ConfidencePoolFactory",
+                        "abi": [
+                            {
+                                "type": "function",
+                                "name": "createPool",
+                                "stateMutability": "nonpayable",
+                                "inputs": [
+                                    {"name": "agreement", "type": "address"},
+                                    {"name": "stakeToken", "type": "address"},
+                                ],
+                                "outputs": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = {"target": None}
+            output = io.StringIO()
+            with patch_cwd(root), redirect_stdout(output):
+                result = lk.dispatch_command("ask", ["createPool"], config)
+
+            self.assertEqual(result, 0)
+            rendered = output.getvalue()
+            self.assertIn("Built-project function matches", rendered)
+            self.assertIn("ConfidencePoolFactory::createPool(address,address)", rendered)
+
+    def test_discover_audit_target_ignores_foundry_build_info_hashes(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "src").mkdir()
+            (root / "out" / "build-info").mkdir(parents=True)
+            (root / "src" / "BountyArena.sol").write_text(
+                "pragma solidity ^0.8.20; contract BountyArena {}",
+                encoding="utf-8",
+            )
+            (root / "out" / "BountyArena.sol" / "BountyArena.json").parent.mkdir(parents=True)
+            (root / "out" / "BountyArena.sol" / "BountyArena.json").write_text(
+                json.dumps({
+                    "contractName": "BountyArena",
+                    "sourceName": "src/BountyArena.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+            (root / "out" / "build-info" / "1b34406de22adaac.json").write_text(
+                json.dumps({"id": "1b34406de22adaac", "input": {}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(lk.discover_audit_target_contract(str(root)), "BountyArena")
+
+    def test_discover_audit_target_contract_prefers_higher_impact_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            for contract in ("Factory", "Helper"):
+                artifact = root / "out" / f"{contract}.sol" / f"{contract}.json"
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_text(
+                    json.dumps(
+                        {
+                            "contractName": contract,
+                            "bytecode": {"object": "0x6000"},
+                            "abi": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            lk.audit_context.add_signal(
+                {
+                    "id": "HIGH-TEST",
+                    "title": "High issue",
+                    "tool": "test",
+                    "impact": "High",
+                    "confidence": "High",
+                    "file": "src/Factory.sol",
+                    "line": 10,
+                    "status": "open",
+                },
+                root,
+            )
+            lk.audit_context.add_signal(
+                {
+                    "id": "LOW-TEST",
+                    "title": "Low issue",
+                    "tool": "test",
+                    "impact": "Low",
+                    "confidence": "High",
+                    "file": "src/Helper.sol",
+                    "line": 10,
+                    "status": "open",
+                },
+                root,
+            )
+            self.assertEqual(lk.discover_audit_target_contract(root), "Factory")
+
+    def test_auto_lab_skips_env_dependent_deployment_scripts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            script_dir = root / "script"
+            script_dir.mkdir()
+            (script_dir / "Deploy.s.sol").write_text(
+                "pragma solidity ^0.8.20;\n"
+                "import {Script} from \"forge-std/Script.sol\";\n"
+                "contract Deploy is Script {\n"
+                "    function run() external {\n"
+                "        address registry = vm.envAddress(\"SAFE_HARBOR_REGISTRY\");\n"
+                "        vm.startBroadcast();\n"
+                "        registry;\n"
+                "        vm.stopBroadcast();\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            with patch.object(lk.audit_context, "foundry_project_root", side_effect=lambda value: str(value)):
+                self.assertEqual(
+                    lk._lab_script_unresolved_env_names(script_dir / "Deploy.s.sol"),
+                    ["SAFE_HARBOR_REGISTRY"],
+                )
+                self.assertIsNone(lk.discover_local_lab_script(root))
+
+    def test_lab_deployer_can_be_replaced_by_named_user_actor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            config = {
+                "wallets": {
+                    "lab-deployer": {
+                        "source": "anvil-default",
+                        "anvil_index": 0,
+                        "address": "0x" + "1" * 40,
+                    }
+                },
+                "actor": "lab-deployer",
+            }
+            fake = {
+                "url": "http://127.0.0.1:8545",
+                "accounts": ["0x" + "1" * 40],
+            }
+            with patch.object(lk, "anvil_rpc_info", return_value=fake):
+                with patch.object(lk, "save_config"):
+                    with patch.object(lk, "derive_default_anvil_key", return_value="0x" + "a" * 64):
+                        result = lk.select_anvil_actor(config, 0, "Alice")
+            self.assertEqual(result, 0)
+            self.assertEqual(config["actor"], "Alice")
+            self.assertNotIn("lab-deployer", config["wallets"])
+            self.assertEqual(config["wallets"]["Alice"]["anvil_index"], 0)
+
+    def test_repo_clone_helpers(self):
+        self.assertEqual(
+            lk.repo_clone_url("CodeHawks-Contests/2026-07-bc-confidence-pools"),
+            "https://github.com/CodeHawks-Contests/2026-07-bc-confidence-pools.git",
+        )
+        self.assertEqual(
+            lk.repo_clone_name("https://github.com/Toji254/foundry-lowkey.git"),
+            "foundry-lowkey",
+        )
+        self.assertEqual(
+            lk.repo_clone_name("git@github.com:Toji254/foundry-lowkey.git"),
+            "foundry-lowkey",
+        )
+
+    def test_clone_requires_only_repo(self):
+        original = lk.run_clone
+        calls = []
+
+        def fake_run_clone(config, args):
+            calls.append((config, args))
+            return 0
+
+        lk.run_clone = fake_run_clone
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = self._root(tmp)
+                config = {"target": None}
+                with patch_cwd(root):
+                    result = lk.dispatch_command(
+                        "clone",
+                        ["https://example.com/repo.git"],
+                        config,
+                    )
+        finally:
+            lk.run_clone = original
+
+        self.assertEqual(result, 0)
+        self.assertEqual(calls[0][1], ["https://example.com/repo.git"])
+
+    def test_upgradeable_artifact_has_initializer(self):
+        artifact = {
+            "abi": [
+                {"type": "constructor", "inputs": []},
+                {"type": "function", "name": "initialize", "inputs": [], "outputs": []},
+            ],
+            "bytecode": {"object": "0x6000"},
+        }
+        self.assertTrue(
+            any(
+                item.get("name") == "initialize"
+                for item in artifact["abi"]
+                if isinstance(item, dict)
+            )
+        )
+
+    def test_parse_deployed_address(self):
+        self.assertEqual(
+            lk.parse_deployed_address("Deployed to: 0x" + "b" * 40),
+            "0x" + "b" * 40,
+        )
+        self.assertEqual(
+            lk.parse_deployed_address("Deployed to: 0x" + "b" * 40 + " (ConfidencePoolFactory)"),
+            "0x" + "b" * 40,
+        )
+        self.assertEqual(
+            lk.parse_deployed_address("Contract Address: 0x" + "c" * 40),
+            "0x" + "c" * 40,
+        )
+        self.assertEqual(
+            lk.parse_deployed_address('{"deployedTo":"0x' + "d" * 40 + '"}'),
+            "0x" + "d" * 40,
+        )
+        self.assertIsNone(lk.parse_deployed_address("deployment complete"))
+
+    def test_artifact_constructor_inputs(self):
+        artifact = {
+            "abi": [
+                {
+                    "type": "constructor",
+                    "inputs": [
+                        {"name": "owner", "type": "address"},
+                        {"name": "limit", "type": "uint256"},
+                    ],
+                }
+            ]
+        }
+        self.assertEqual(
+            lk.artifact_constructor_inputs(artifact),
+            [
+                {"name": "owner", "type": "address"},
+                {"name": "limit", "type": "uint256"},
+            ],
+        )
+
+    def test_run_foundry_capture_combines_stdout_and_stderr(self):
+        class Completed:
+            returncode = 0
+            stdout = "compile warning"
+            stderr = "Deployed to: 0x" + "e" * 40
+
+        class FakeSubprocess:
+            @staticmethod
+            def run(*args, **kwargs):
+                FakeSubprocess.kwargs = kwargs
+                return Completed()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            original_subprocess = lk.subprocess
+            original_tool_path = lk.tool_path
+            lk.subprocess = FakeSubprocess
+            lk.tool_path = lambda name: "/usr/bin/forge" if name == "forge" else None
+            try:
+                with patch_cwd(pathlib.Path(tmp)):
+                    result = lk.run_foundry(["create", "src/Test.sol:Test"], capture=True, cwd=root)
+            finally:
+                lk.subprocess = original_subprocess
+                lk.tool_path = original_tool_path
+
+        self.assertEqual(result.code, 0)
+        self.assertIn("compile warning", result.text)
+        self.assertIn("Deployed to: 0x" + "e" * 40, result.text)
+        self.assertEqual(FakeSubprocess.kwargs.get("cwd"), str(root))
+
+
+    def test_lab_source_integrity_rejects_walkthrough_output_in_first_party_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePool.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26;\n"
+                "contract ConfidencePool {\n"
+                "    uint256 x;\n"
+                "    // LOWKEY // LIVE PROTOCOL WALKTHROUGH\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            issue = lk._lab_source_integrity_issue(root)
+            self.assertIsNotNone(issue)
+            self.assertEqual(issue[0], "src/ConfidencePool.sol")
+            self.assertEqual(issue[1], 4)
+            self.assertEqual(issue[2], "LOWKEY // LIVE PROTOCOL WALKTHROUGH")
+
+
+    def test_auto_abi_path_with_root_never_uses_another_project_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            other = pathlib.Path(tmp) / "other"
+            other.mkdir()
+            current_artifact = root / "out" / "ConfidencePool.sol" / "ConfidencePool.json"
+            foreign_artifact = other / "out" / "Escrow.sol" / "Escrow.json"
+            current_artifact.parent.mkdir(parents=True)
+            foreign_artifact.parent.mkdir(parents=True)
+            current_artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePool",
+                    "sourceName": "src/ConfidencePool.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+            foreign_artifact.write_text(
+                json.dumps({
+                    "contractName": "Escrow",
+                    "sourceName": "src/Escrow.sol",
+                    "abi": [],
+                    "bytecode": {"object": "0x6001"},
+                }),
+                encoding="utf-8",
+            )
+            (root / "src" / "ConfidencePool.sol").write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePool {}",
+                encoding="utf-8",
+            )
+            config = {"target_contract": "ConfidencePool", "abi_paths": {}, "project_roots": {}}
+            with patch_cwd(other):
+                resolved = lk.auto_abi_path("0x" + "1" * 40, config, root=root)
+            self.assertEqual(resolved, str(current_artifact.resolve()))
+            self.assertNotEqual(resolved, str(foreign_artifact.resolve()))
+
+
+    def test_run_foundry_capture_combines_stdout_and_stderr(self):
+        class Completed:
+            returncode = 0
+            stdout = "compile warning"
+            stderr = "Deployed to: 0x" + "e" * 40
+
+        class FakeSubprocess:
+            @staticmethod
+            def run(*args, **kwargs):
+                return Completed()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            original_subprocess = lk.subprocess
+            original_tool_path = lk.tool_path
+            lk.subprocess = FakeSubprocess
+            lk.tool_path = lambda name: "/usr/bin/forge" if name == "forge" else None
+            try:
+                with patch_cwd(root):
+                    result = lk.run_foundry(["create", "src/Test.sol:Test"], capture=True)
+            finally:
+                lk.subprocess = original_subprocess
+                lk.tool_path = original_tool_path
+
+        self.assertEqual(result.code, 0)
+        self.assertIn("compile warning", result.text)
+        self.assertIn("Deployed to: 0x" + "e" * 40, result.text)
+
+    def test_parse_lab_marker(self):
+        self.assertEqual(
+            lk.parse_lab_marker("LOWKEY_TARGET 0x" + "a" * 40),
+            "0x" + "a" * 40,
+        )
+        self.assertIsNone(lk.parse_lab_marker("LOWKEY_TARGET not-an-address"))
+
+
+    def test_project_lab_validation_passes_proxy_when_implementation_is_first_party(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePoolFactory.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePoolFactory {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePoolFactory",
+                    "sourceName": "src/ConfidencePoolFactory.sol",
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0x60006000"},
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            proxy = "0x" + "1" * 40
+            implementation = "0x" + "2" * 40
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x600060", 0)
+                if args[:2] == ["implementation", proxy]:
+                    return lk.CommandResult(implementation, 0)
+                if args[:2] == ["code", implementation]:
+                    return lk.CommandResult("0x60006000", 0)
+                return lk.CommandResult("", 0)
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+                contract, resolved_artifact, error = lk._validate_project_lab_target(
+                    config,
+                    root,
+                    "http://127.0.0.1:8545",
+                    proxy,
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(contract, "ConfidencePoolFactory")
+            self.assertEqual(resolved_artifact, str(artifact))
+
+    def test_project_lab_proxy_maps_through_latest_native_deployment_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePoolFactory.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePoolFactory {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePoolFactory",
+                    "sourceName": "src/ConfidencePoolFactory.sol",
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0x6000"},
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            proxy = "0x" + "1" * 40
+            implementation = "0x" + "2" * 40
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x1234", 0)
+                if args[:2] == ["implementation", proxy]:
+                    return lk.CommandResult(implementation, 0)
+                if args[:2] == ["code", implementation]:
+                    return lk.CommandResult("0xdeadbeef", 0)
+                return lk.CommandResult("", 0)
+
+            deployments = [{
+                "contract": "ConfidencePoolFactory",
+                "address": implementation,
+                "file": str(root / "broadcast" / "LocalAudit.s.sol" / "31337" / "run-200.json"),
+                "time": 200,
+                "hash": "0x" + "3" * 64,
+                "run_timestamp": 200,
+            }]
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast),                  patch.object(lk, "discover_deployments", return_value=deployments):
+                contract, resolved_artifact, error = lk._validate_project_lab_target(
+                    config,
+                    root,
+                    "http://127.0.0.1:8545",
+                    proxy,
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(contract, "ConfidencePoolFactory")
+            self.assertEqual(resolved_artifact, str(artifact))
+
+    def test_project_lab_prefers_broadcast_records_from_executed_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePoolFactory.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePoolFactory {}",
+                encoding="utf-8",
+            )
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.26; contract LocalAudit {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePoolFactory",
+                    "sourceName": "src/ConfidencePoolFactory.sol",
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0xdeadbeef"},
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            proxy = "0x" + "1" * 40
+            implementation = "0x" + "2" * 40
+            unrelated = "0x" + "3" * 40
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x1234", 0)
+                if args[:2] == ["implementation", proxy]:
+                    return lk.CommandResult(implementation, 0)
+                if args[:2] == ["code", implementation]:
+                    return lk.CommandResult("0xnotartifact", 0)
+                return lk.CommandResult("", 0)
+
+            deployments = [
+                {
+                    "contract": "Unrelated",
+                    "address": unrelated,
+                    "file": str(root / "broadcast" / "Other.s.sol" / "31337" / "run-latest.json"),
+                    "time": 999,
+                    "run_timestamp": 999,
+                },
+                {
+                    "contract": "ConfidencePoolFactory",
+                    "address": implementation,
+                    "file": str(root / "broadcast" / "LocalAudit.s.sol" / "31337" / "run-latest.json"),
+                    "time": 100,
+                    "run_timestamp": 100,
+                },
+            ]
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast),                  patch.object(lk, "discover_deployments", return_value=deployments):
+                contract, resolved_artifact, error = lk._validate_project_lab_target(
+                    config,
+                    root,
+                    "http://127.0.0.1:8545",
+                    proxy,
+                    provenance_script=script,
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(contract, "ConfidencePoolFactory")
+            self.assertEqual(resolved_artifact, str(artifact))
+
+    def test_artifact_without_source_metadata_rejects_same_name_from_poc_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePoolFactory.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePoolFactory {}",
+                encoding="utf-8",
+            )
+
+            poc_artifact = root / "out" / "PocAttack.sol" / "ConfidencePoolFactory.json"
+            poc_artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact = {
+                "contractName": "ConfidencePoolFactory",
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+                "abi": [],
+            }
+            poc_artifact.write_text(json.dumps(artifact), encoding="utf-8")
+
+            real_artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            real_artifact.parent.mkdir(parents=True, exist_ok=True)
+            real_artifact.write_text(json.dumps(artifact), encoding="utf-8")
+
+            self.assertFalse(
+                lk.artifact_is_project_application(root, str(poc_artifact), artifact)
+            )
+            self.assertTrue(
+                lk.artifact_is_project_application(root, str(real_artifact), artifact)
+            )
+
+    def test_project_lab_provenance_can_override_discovered_target_preference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePoolFactory.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePoolFactory {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "ConfidencePoolFactory",
+                    "sourceName": "src/ConfidencePoolFactory.sol",
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0x6000"},
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            proxy = "0x" + "1" * 40
+            implementation = "0x" + "2" * 40
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x1234", 0)
+                if args[:2] == ["implementation", proxy]:
+                    return lk.CommandResult(implementation, 0)
+                return lk.CommandResult("", 0)
+
+            deployments = [{
+                "contract": "ConfidencePoolFactory",
+                "address": implementation,
+                "file": str(root / "broadcast" / "LocalAudit.s.sol" / "31337" / "run-latest.json"),
+                "time": 200,
+                "run_timestamp": 200,
+            }]
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast),                  patch.object(lk, "discover_deployments", return_value=deployments):
+                contract, resolved_artifact, error = lk._validate_project_lab_target(
+                    config,
+                    root,
+                    "http://127.0.0.1:8545",
+                    proxy,
+                    requested="ConfidencePool",
+                    provenance_script=root / "script" / "LocalAudit.s.sol",
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(contract, "ConfidencePoolFactory")
+            self.assertEqual(resolved_artifact, str(artifact))
+
+    def test_project_lab_rejects_unmatched_broadcast_deployment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePool.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePool {}",
+                encoding="utf-8",
+            )
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.26; contract LocalAudit { function run() external {} }",
+                encoding="utf-8",
+            )
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+            result = lk.CommandResult("deployment complete", 0)
+            with patch.object(lk, "run_foundry", return_value=result), \
+                 patch.object(lk, "discover_deployments", return_value=[{
+                     "contract": "Escrow",
+                     "address": "0x" + "2" * 40,
+                 }]), \
+                 patch.object(lk, "parse_lab_marker", return_value=None):
+                code = lk.run_project_lab_script(
+                    config,
+                    root,
+                    script,
+                    "http://127.0.0.1:8545",
+                    ["0x" + "1" * 40],
+                    "0x" + "a" * 64,
+                    requested="ConfidencePool",
+                )
+            self.assertNotEqual(code, 0)
+            self.assertNotEqual(config.get("target"), "0x" + "2" * 40)
+
+
+    def test_project_lab_aborts_when_native_script_changes_first_party_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "ConfidencePool.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract ConfidencePool {}",
+                encoding="utf-8",
+            )
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.26; contract LocalAudit { function run() external {} }",
+                encoding="utf-8",
+            )
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+            original = source.read_text(encoding="utf-8")
+            result = lk.CommandResult("LOWKEY_TARGET: 0x" + "3" * 40, 0)
+
+            def mutate_source(*args, **kwargs):
+                source.write_text(original + "\n// mutated by bad lab script\n", encoding="utf-8")
+                return result
+
+            with patch.object(lk, "run_foundry", side_effect=mutate_source), \
+                 patch.object(lk, "parse_lab_marker", return_value="0x" + "3" * 40):
+                code = lk.run_project_lab_script(
+                    config,
+                    root,
+                    script,
+                    "http://127.0.0.1:8545",
+                    ["0x" + "1" * 40],
+                    "0x" + "a" * 64,
+                    requested="ConfidencePool",
+                )
+            self.assertNotEqual(code, 0)
+            self.assertIsNone(config.get("target"))
+
+
+    def test_discover_local_lab_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            script_dir = root / "script"
+            script_dir.mkdir()
+            local_script = script_dir / "LocalAudit.s.sol"
+            local_script.write_text("// local lab", encoding="utf-8")
+            self.assertEqual(lk.discover_local_lab_script(root), str(local_script))
+
+    def test_fn_searches_current_build_artifacts_without_live_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            artifact = root / "out" / "ConfidencePoolFactory.sol" / "ConfidencePoolFactory.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "contractName": "ConfidencePoolFactory",
+                        "abi": [
+                            {
+                                "type": "function",
+                                "name": "createPool",
+                                "stateMutability": "nonpayable",
+                                "inputs": [
+                                    {"name": "agreement", "type": "address"},
+                                    {"name": "stakeToken", "type": "address"},
+                                    {"name": "expiry", "type": "uint256"},
+                                    {"name": "minStake", "type": "uint256"},
+                                    {"name": "recoveryAddress", "type": "address"},
+                                    {"name": "accounts", "type": "address[]"},
+                                ],
+                                "outputs": [{"name": "pool", "type": "address"}],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            interface_dir = root / "out" / "interfaces" / "IConfidencePoolFactory.sol"
+            interface_dir.mkdir(parents=True)
+            (interface_dir / "IConfidencePoolFactory.json").write_text(
+                json.dumps({
+                    "contractName": "IConfidencePoolFactory",
+                    "abi": [{
+                        "type": "function",
+                        "name": "createPool",
+                        "stateMutability": "nonpayable",
+                        "inputs": [
+                            {"name": "agreement", "type": "address"},
+                            {"name": "stakeToken", "type": "address"},
+                            {"name": "expiry", "type": "uint256"},
+                            {"name": "minStake", "type": "uint256"},
+                            {"name": "recoveryAddress", "type": "address"},
+                            {"name": "accounts", "type": "address[]"},
+                        ],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            mock_dir = root / "out" / "mocks" / "MockConfidencePoolFactoryV2.sol"
+            mock_dir.mkdir(parents=True)
+            (mock_dir / "MockConfidencePoolFactoryV2.json").write_text(
+                json.dumps({
+                    "contractName": "MockConfidencePoolFactoryV2",
+                    "abi": [{
+                        "type": "function",
+                        "name": "createPool",
+                        "stateMutability": "nonpayable",
+                        "inputs": [
+                            {"name": "agreement", "type": "address"},
+                            {"name": "stakeToken", "type": "address"},
+                            {"name": "expiry", "type": "uint256"},
+                            {"name": "minStake", "type": "uint256"},
+                            {"name": "recoveryAddress", "type": "address"},
+                            {"name": "accounts", "type": "address[]"},
+                        ],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            config = {"target": None}
+            with patch_cwd(root):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    result = lk.run_functions(
+                        config,
+                        "createPool(address,address,uint256,uint256,address,address[])",
+                    )
+
+            self.assertEqual(result, 0)
+            rendered = output.getvalue()
+            self.assertIn("LOWKEY BUILD FUNCTION", rendered)
+            self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address,uint256,uint256,address,address[])", rendered)
+            self.assertIn("Other:   IConfidencePoolFactory (interface), MockConfidencePoolFactoryV2 (test mock)", rendered)
+            self.assertIn("Live:    none", rendered)
+
+
+class patch_cwd:
+    def __init__(self, path):
+        self.path = pathlib.Path(path)
+        self.old = None
+
+    def __enter__(self):
+        self.old = pathlib.Path.cwd()
+        import os
+        os.chdir(self.path)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        import os
+        os.chdir(self.old)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,372 @@
+import importlib.util
+import io
+import json
+import pathlib
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODULE = ROOT / "lowkey" / "question_engine.py"
+
+spec = importlib.util.spec_from_file_location("lowkeycast_questions", MODULE)
+questions = importlib.util.module_from_spec(spec)
+import sys
+sys.modules[spec.name] = questions
+spec.loader.exec_module(questions)
+
+
+class QuestionEngineTests(unittest.TestCase):
+    def make_project(self, source="def main():\n    return 1\n", readme="# Demo\n"):
+        temp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(temp.name)
+        (root / "src").mkdir()
+        (root / "src" / "main.py").write_text(source, encoding="utf-8")
+        if readme:
+            (root / "README.md").write_text(readme, encoding="utf-8")
+        return temp, root
+
+    def test_stable_universe_is_bigger_than_visible_frontier(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            all_questions = questions.enabled_questions(root)
+            visible = questions.rank_questions(root, limit=3)
+        self.assertGreater(len(all_questions), 3)
+        self.assertLessEqual(len(visible), 3)
+        self.assertEqual(visible[0]["question"].id, "ARCH-001")
+
+    def test_answering_current_question_moves_frontier(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(questions.audit_context, "is_audit_project", return_value=True), \
+             patch.object(questions.audit_context, "audit_dir", return_value=root / ".audit"), \
+             patch.object(questions.audit_context, "events_path", return_value=root / ".audit" / "events.jsonl"), \
+             patch.object(questions.audit_context, "load", return_value={"project": {"root": str(root)}, "target": {}, "latest": {}, "signals": [], "tools": {}}), \
+             patch.object(questions.audit_context, "emit"):
+            first = questions.current_question(root)
+            self.assertEqual(first["question"].id, "ARCH-001")
+            self.assertEqual(questions.answer_current("ANSWERED", note="read the README", root=root), 0)
+            second = questions.current_question(root)
+            self.assertNotEqual(second["question"].id, "ARCH-001")
+
+    def test_blockchain_pack_requires_blockchain_evidence(self):
+        temp, root = self.make_project(source="contract Demo { function withdraw() public {} }\n")
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            feature = questions.detect_features(root)
+            self.assertFalse(feature["features"]["blockchain"])
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            feature = questions.detect_features(root)
+            self.assertTrue(feature["features"]["blockchain"])
+
+    def test_web_pack_is_contextual_not_always_on(self):
+        temp, root = self.make_project(source="from fastapi import FastAPI\napp = FastAPI()\n")
+        self.addCleanup(temp.cleanup)
+        (root / "pyproject.toml").write_text("[project]\ndependencies=['fastapi']\n", encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            enabled = {q.id for q in questions.enabled_questions(root)}
+        self.assertIn("WEB-001", enabled)
+        self.assertNotIn("BC-001", enabled)
+
+    def test_question_help_state_is_evidence_driven(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        (root / ".audit").mkdir()
+        (root / ".audit" / "context.json").write_text(json.dumps({
+            "project": {"root": str(root), "name": root.name},
+            "target": {"address": None, "contract": None, "artifact": None},
+            "latest": {"function": "withdraw", "tx_hash": "0x" + "1" * 64, "trace": "trace", "state_diff": "diff"},
+            "signals": [{"id": "X", "title": "authorization review", "description": "check indirect authorization"}],
+            "tools": {"trace": {"status": "completed"}},
+        }), encoding="utf-8")
+        (root / ".audit" / "events.jsonl").write_text(json.dumps({
+            "tool": "lk", "type": "lk-command", "status": "completed",
+            "data": {"command": "trace"},
+        }) + "\n", encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            first = questions.current_question(root)
+            self.assertIsNotNone(first)
+            self.assertIn("trace", " ".join(first["evidence"]).lower())
+
+    def test_current_question_screen_has_one_obvious_next_action_and_trust_legend(self):
+        temp, root = self.make_project(source="contract Demo { function withdraw() public {} }\n")
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            rendered = questions.render_current(root)
+        self.assertIn("YOUR MOVE", rendered)
+        self.assertIn("START HERE", rendered)
+        self.assertIn("lk q note", rendered)
+        self.assertIn("TRUST GUIDE", rendered)
+        self.assertIn("HIGH", rendered)
+        self.assertIn("MEDIUM", rendered)
+        self.assertIn("LOW", rendered)
+
+    def test_overview_puts_usage_recipe_before_frontier(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            rendered = questions.overview(root)
+        self.assertIn("HOW YOU USE THIS", rendered)
+        self.assertIn("START command", rendered)
+        self.assertIn("lk q note", rendered)
+        self.assertLess(rendered.index("HOW YOU USE THIS"), rendered.index("FRONTIER"))
+
+    def test_source_references_exist(self):
+        for q in questions.QUESTION_CATALOG.values():
+            for source in q.sources:
+                self.assertIn(source, questions.SOURCES)
+
+    def test_all_major_lowkey_commands_feed_the_evidence_bus(self):
+        expected = {
+            "project", "system", "functions", "read", "send", "probe", "changes",
+            "state-diff", "trace", "logs", "findings", "focus", "slither", "scan",
+            "risk", "seams", "rg", "audit", "walkthrough", "walkthrough test",
+            "matrix", "test", "generate", "fuzz", "invariant", "mutate", "symbolic",
+            "brutalize", "build", "script", "lab", "fork", "actor", "impersonate",
+        }
+        for command in expected:
+            self.assertIn(command, questions.COMMAND_EVIDENCE_MAP)
+
+    def test_question_is_deterministic_for_same_evidence(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            first = questions.rank_questions(root, limit=8)
+            second = questions.rank_questions(root, limit=8)
+        self.assertEqual(
+            [row["question"].id for row in first],
+            [row["question"].id for row in second],
+        )
+        self.assertEqual(
+            [row["score"] for row in first],
+            [row["score"] for row in second],
+        )
+
+    def test_recent_walkthrough_and_trace_evidence_can_push_proof_questions_forward(self):
+        temp, root = self.make_project(
+            source="contract Demo { function withdraw(uint256 amount) public {} }\n"
+        )
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        (root / ".audit").mkdir()
+        context = {
+            "project": {"root": str(root), "name": root.name},
+            "target": {"address": "0x" + "1" * 40, "contract": "Demo"},
+            "latest": {"function": "withdraw", "tx_hash": "0x" + "1" * 64, "trace": "trace", "state_diff": "diff"},
+            "signals": [],
+            "tools": {"walkthrough": {"status": "completed"}, "trace": {"status": "completed"}},
+        }
+        (root / ".audit" / "context.json").write_text(json.dumps(context), encoding="utf-8")
+        (root / ".audit" / "events.jsonl").write_text(
+            json.dumps({"tool": "lk", "type": "lk-command", "status": "completed",
+                        "data": {"command": "walkthrough"}}) + "\n"
+            + json.dumps({"tool": "lk", "type": "lk-command", "status": "completed",
+                          "data": {"command": "trace"}}) + "\n",
+            encoding="utf-8",
+        )
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            rows = questions.rank_questions(root, limit=8)
+        ids = [row["question"].id for row in rows]
+        self.assertTrue(any(qid.startswith("BC-") for qid in ids) or "PROOF-001" in ids)
+
+    def test_focused_signal_changes_question_relevance_without_declaring_a_finding(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        (root / ".audit").mkdir()
+        context = {
+            "project": {"root": str(root), "name": root.name},
+            "target": {},
+            "latest": {},
+            "signals": [{
+                "id": "SIG-AUTH",
+                "title": "authorization boundary review",
+                "description": "possible indirect authorization path",
+                "function": "withdraw",
+            }],
+            "focus": {"signal_id": "SIG-AUTH"},
+            "tools": {},
+        }
+        (root / ".audit" / "context.json").write_text(json.dumps(context), encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            rows = questions.rank_questions(root, limit=12)
+        auth_rows = [row for row in rows if row["question"].family == "authorization"]
+        self.assertTrue(auth_rows)
+        self.assertTrue(any("overlaps the focused signal" in " ".join(item["reasons"]) for item in auth_rows))
+        self.assertNotIn(
+            "VULNERABLE",
+            " ".join(reason for row in auth_rows for reason in row["reasons"]).upper(),
+        )
+
+    def test_source_command_uses_current_question_without_changing_history(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            current = questions.current_question(root, record=True)
+            before = questions._read_history(root)
+            questions.render_source(current["question"].id, root)
+            after = questions._read_history(root)
+        self.assertEqual(len(before), len(after))
+
+    def test_skip_is_stored_as_non_applicable_and_reset_keeps_audit_evidence(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(questions.audit_context, "is_audit_project", return_value=True), \
+             patch.object(questions.audit_context, "audit_dir", return_value=root / ".audit"), \
+             patch.object(questions.audit_context, "events_path", return_value=root / ".audit" / "events.jsonl"), \
+             patch.object(questions.audit_context, "emit"):
+            current = questions.current_question(root)
+            self.assertEqual(questions.answer_current("NOT_APPLICABLE", note="not relevant", root=root), 0)
+            saved = questions.load_state(root)
+            self.assertEqual(saved["answers"][current["question"].id]["status"], "NOT_APPLICABLE")
+            self.assertEqual(questions.reset(root), 0)
+            reset_state = questions.load_state(root)
+            self.assertEqual(reset_state["answers"], {})
+
+    def test_core_questions_apply_to_rust_project_without_blockchain_pack(self):
+        temp, root = self.make_project(source='fn main() { println!("hello"); }\n')
+        self.addCleanup(temp.cleanup)
+        (root / "Cargo.toml").write_text("[package]\nname='demo'\nversion='0.1.0'\n", encoding="utf-8")
+        (root / "src" / "main.rs").write_text('fn main() { println!("hello"); }\n', encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            feature = questions.detect_features(root)
+            enabled = {q.id for q in questions.enabled_questions(root)}
+        self.assertTrue(feature["features"]["native"])
+        self.assertIn("ARCH-001", enabled)
+        self.assertIn("NATIVE-003", enabled)
+        self.assertNotIn("BC-001", enabled)
+
+
+    def test_safe_nested_command_path_is_used(self):
+        events = [
+            {"tool": "lk", "type": "lk-command", "data": {"command": "walkthrough", "command_path": "walkthrough test"}}
+        ]
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        (root / ".audit").mkdir()
+        (root / ".audit" / "events.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in events) + "\n", encoding="utf-8"
+        )
+        context = {"project": {"root": str(root)}, "target": {}, "latest": {}, "signals": [], "tools": {}}
+        (root / ".audit" / "context.json").write_text(json.dumps(context), encoding="utf-8")
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root):
+            features = questions.detect_features(root)
+            observed = questions._event_signals(features)
+        self.assertIn("walkthrough test", observed["command_names"])
+
+    def test_skip_and_not_applicable_are_distinct_states(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(questions.audit_context, "is_audit_project", return_value=True), \
+             patch.object(questions.audit_context, "audit_dir", return_value=root / ".audit"), \
+             patch.object(questions.audit_context, "events_path", return_value=root / ".audit" / "events.jsonl"), \
+             patch.object(questions.audit_context, "emit"):
+            current = questions.current_question(root)
+            self.assertEqual(questions.answer_current("SKIPPED", note="defer", root=root), 0)
+            state = questions.load_state(root)
+            self.assertEqual(state["answers"][current["question"].id]["status"], "SKIPPED")
+
+
+    def test_answer_current_uses_stored_current_id(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        with patch.object(questions.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(questions.audit_context, "is_audit_project", return_value=True), \
+             patch.object(questions.audit_context, "audit_dir", return_value=root / ".audit"), \
+             patch.object(questions.audit_context, "events_path", return_value=root / ".audit" / "events.jsonl"), \
+             patch.object(questions.audit_context, "load", return_value={"project": {"root": str(root)}, "target": {}, "latest": {}, "signals": [], "tools": {}}), \
+             patch.object(questions.audit_context, "emit"):
+            first = questions.current_question(root)
+            questions.answer_current("ANSWERED", note="answering exactly the displayed question", root=root)
+            state = questions.load_state(root)
+        self.assertEqual(first["question"].id, "ARCH-001")
+        self.assertIn("ARCH-001", state["answers"])
+        self.assertEqual(state["answers"]["ARCH-001"]["status"], "ANSWERED")
+
+
+    def test_current_question_screen_explains_how_to_work_it(self):
+        temp, root = self.make_project(
+            source="pragma solidity ^0.8.20; contract Demo { function withdraw() external {} }\n",
+            readme="# Demo\n",
+        )
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        (root / ".audit").mkdir()
+        (root / ".audit" / "context.json").write_text(json.dumps({
+            "project": {"root": str(root), "name": "Demo"},
+            "target": {"contract": "Demo", "address": "0x" + "1" * 40},
+            "latest": {"function": "withdraw", "tx_hash": "0x" + "2" * 64, "trace": "trace"},
+            "signals": [{"title": "Replayable payout / claim path"}],
+            "tools": {"walkthrough": {"status": "completed"}},
+        }), encoding="utf-8")
+        output = questions.render_current(root)
+        self.assertIn("YOUR JOB", output)
+        self.assertIn("DO THIS NOW", output)
+        self.assertIn("HOW TO FINISH THE QUESTION", output)
+        self.assertIn("lk q note", output)
+        self.assertIn("Running a TRY command does NOT answer the question", output)
+        self.assertIn("trust:", output)
+
+    def test_current_question_explains_start_command_and_answer_shape(self):
+        temp, root = self.make_project(
+            source="pragma solidity ^0.8.20; contract Demo { function withdraw() external {} }\n",
+            readme="# Demo\n",
+        )
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        output = questions.render_current(root)
+        self.assertIn("START HERE →", output)
+        self.assertIn("[map the application scope", output)
+        self.assertIn("WHAT A GOOD ANSWER LOOKS LIKE", output)
+        self.assertIn("RULE        = what should be true", output)
+        self.assertIn("EVIDENCE    = exact code/state/trace/test", output)
+        self.assertIn("CONCLUSION  = what you can currently prove", output)
+
+    def test_observed_evidence_warns_that_local_chain_resets_can_make_it_stale(self):
+        level, meaning, trust = questions._classify_question_evidence("latest tx: 0x123")
+        self.assertEqual(level, "OBSERVED")
+        self.assertIn("recorded from a live/test execution", meaning)
+        self.assertIn("local-chain reset", trust)
+
+    def test_current_question_labels_direct_and_heuristic_evidence(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+        (root / ".audit").mkdir()
+        (root / ".audit" / "context.json").write_text(json.dumps({
+            "project": {"root": str(root)},
+            "target": {"contract": "Demo", "address": "0x" + "1" * 40},
+            "latest": {"function": "withdraw", "tx_hash": "0x" + "2" * 64, "trace": "trace"},
+            "signals": [{"title": "Replayable payout / claim path"}],
+            "tools": {},
+        }), encoding="utf-8")
+        output = questions.render_current(root)
+        self.assertIn("[CONTEXT", output)
+        self.assertIn("[OBSERVED", output)
+        self.assertIn("[HEURISTIC", output)
+        self.assertIn("trust: HIGH", output)
+        self.assertIn("trust: LOW", output)
+
+    def test_overview_explains_frontier_symbols_and_next_action(self):
+        temp, root = self.make_project()
+        self.addCleanup(temp.cleanup)
+        output = questions.overview(root)
+        self.assertIn("HOW TO READ THE FRONTIER", output)
+        self.assertIn("✓ settled", output)
+        self.assertIn("→ active", output)
+        self.assertIn("○ waiting", output)
+        self.assertIn("'live'      = worth investigating now; it does NOT mean 'vulnerable'.", output)
+        self.assertIn("'proof'     = evidence exists, but the security property still needs proof.", output)
+        self.assertIn("WHAT TO DO", output)
+        self.assertIn("lk q note", output)
+
+if __name__ == "__main__":
+    unittest.main()
