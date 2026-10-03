@@ -8603,3 +8603,256 @@ _COMPREHENSIVE_CONNECTION_EDGES.extend([
 _FINAL_GRAPH_AUDIT_RESULT = _final_graph_audit()
 
 
+
+
+# ---------------------------------------------------------------------------
+# FINAL SCENE-PACK COMPOSER
+# ---------------------------------------------------------------------------
+#
+# A graph route is useful, but a route alone is not enough: the displayed code
+# should also cover the requested concepts.  This composer performs a small
+# set-cover over curated scenes.  Exact/superset scenes still win.  When no
+# single scene can cover a request, Lowkey shows a small sequence of coherent
+# scenes rather than falling back to the giant universal notebook.
+#
+
+def _scene_keys(scene):
+    return frozenset(canonicalize(item) for item in scene.get("keys", ()))
+
+
+def _scene_pair_strength(scene, requested):
+    keys = _scene_keys(scene)
+    overlap = requested & keys
+    direct = 0
+    for left in overlap:
+        for right in overlap:
+            if left >= right:
+                continue
+            pair = tuple(sorted((left, right)))
+            if any(
+                pair == tuple(sorted((canonicalize(a), canonicalize(b))))
+                for a, b, _label in _COMPREHENSIVE_CONNECTION_EDGES
+            ):
+                direct += 1
+    return direct
+
+
+def _connection_scene_candidates():
+    # Comprehensive scenes are intentionally first: they came from the
+    # cross-check/production-pattern pass.  A legacy scene can still rescue a
+    # concept while the corpus evolves.
+    seen = set()
+    rows = []
+    for scene in list(COMPREHENSIVE_MICRO_SCENES) + list(MICRO_SCENES):
+        marker = id(scene)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        rows.append(scene)
+    return rows
+
+
+def find_connection_scenes(names, max_scenes=4):
+    """Choose a small set of teaching scenes whose union covers the request."""
+    ordered = []
+    seen = set()
+    for name in names:
+        for node in expand_name(name):
+            if node not in seen:
+                seen.add(node)
+                ordered.append(node)
+
+    requested = frozenset(ordered)
+    if len(requested) < 2:
+        return []
+
+    candidates = _connection_scene_candidates()
+
+    # First choice: one exact scene, then the smallest curated superset.
+    exact = [s for s in candidates if _scene_keys(s) == requested]
+    if exact:
+        exact.sort(key=lambda s: s.get("title", ""))
+        return [exact[0]]
+
+    supersets = [s for s in candidates if requested <= _scene_keys(s)]
+    if supersets:
+        supersets.sort(
+            key=lambda s: (
+                len(_scene_keys(s) - requested),
+                -_scene_pair_strength(s, requested),
+                len(_scene_keys(s)),
+                s.get("title", ""),
+            )
+        )
+        return [supersets[0]]
+
+    uncovered = set(requested)
+    chosen = []
+    used = set()
+
+    while uncovered and len(chosen) < max_scenes:
+        best = None
+        for index, scene in enumerate(candidates):
+            if index in used:
+                continue
+            keys = _scene_keys(scene)
+            new = uncovered & keys
+            if not new:
+                continue
+
+            # Coverage dominates.  Pair strength rewards scenes that actually
+            # explain relationships among the newly covered concepts instead of
+            # merely containing vocabulary by coincidence.
+            direct = _scene_pair_strength(scene, requested)
+            score = (
+                len(new),
+                direct,
+                len(new) / max(1, len(keys)),
+                -len(keys),
+                -index,
+            )
+            if best is None or score > best[0]:
+                best = (score, index, scene, new)
+
+        if best is None:
+            break
+
+        _score, index, scene, new = best
+        chosen.append(scene)
+        used.add(index)
+        uncovered -= new
+
+    if not uncovered:
+        # Order the selected scenes as a teaching sequence: prefer the scene
+        # that introduces the most requested concepts first, then let each next
+        # scene extend the already-established vocabulary.
+        ordered_scenes = []
+        covered = set()
+        remaining = list(chosen)
+        while remaining:
+            ranked = []
+            for scene in remaining:
+                new = set(_scene_keys(scene)) & (set(requested) - covered)
+                bridge = _scene_pair_strength(scene, requested)
+                ranked.append((len(new), bridge, -len(_scene_keys(scene)), scene.get("title", ""), scene))
+            ranked.sort(reverse=True, key=lambda row: row[:4])
+            picked = ranked[0][4]
+            ordered_scenes.append(picked)
+            covered |= set(_scene_keys(picked)) & set(requested)
+            remaining.remove(picked)
+        return ordered_scenes
+
+    # If a request is broader than the curated corpus, return the best scenes
+    # plus a compact synthetic bridge for the remainder.  This keeps the
+    # guarantee that every recognized request gets a concrete next step without
+    # ever reintroducing the universal dump into the default view.
+    if chosen:
+        remainder = sorted(uncovered)
+        synthetic = _generic_connect_scene(remainder)
+        synthetic["title"] = "Remaining bridge: " + " → ".join(remainder[:4])
+        synthetic["generic"] = True
+        chosen.append(synthetic)
+        return chosen[:max_scenes]
+
+    return [_generic_connect_scene(ordered)]
+
+
+def _scene_values(scene, limit=6):
+    return list(scene.get("variables", ()))[:limit]
+
+
+def _render_scene_compact(scene, number, walkthrough=False):
+    print()
+    print(f"BRIDGE {number} • {scene.get('title', 'Connected scene')}")
+    print("-" * 76)
+    print(scene.get("story", "").strip())
+    print()
+    print("CODE")
+    print("----")
+    print(scene.get("code", "").rstrip())
+
+    variables = scene.get("variables", [])
+    flow = scene.get("flow", [])
+
+    if walkthrough:
+        print()
+        print("VARIABLES")
+        print("---------")
+        for role, value_type, name, value, purpose in variables:
+            print(
+                f"  {role:<18} {value_type:<28} "
+                f"{name:<18} = {value:<24} {purpose}"
+            )
+        print()
+        print("FOLLOW THE VALUE")
+        print("----------------")
+        for index, step in enumerate(flow, 1):
+            print(f"  {index}. {step}")
+    else:
+        if variables:
+            print()
+            print("KEY VALUES")
+            print("----------")
+            for role, value_type, name, value, purpose in _scene_values(scene):
+                print(
+                    f"  {name:<18} {value_type:<24} = {value:<22} {purpose}"
+                )
+        if flow:
+            print()
+            print("FLOW")
+            print("----")
+            for index, step in enumerate(flow[:5], 1):
+                print(f"  {index}. {step}")
+
+    if scene.get("call"):
+        print()
+        print("TRY")
+        print("---")
+        print(f"  {scene['call']}")
+
+
+def render_connection_pack(requested, scenes, walkthrough=False):
+    """Render a multi-scene connection without changing single-scene output."""
+    route = connection_route(requested)
+    print()
+    print("CONNECTION ROUTE")
+    print("----------------")
+    print("  " + " → ".join(route))
+
+    print()
+    print("THE CONNECTION")
+    print("--------------")
+    print(
+        f"This connection is taught in {len(scenes)} small steps. "
+        "Each bridge adds real code instead of merely naming another concept."
+    )
+
+    print()
+    print("1. WHAT EACH PIECE IS")
+    print("----------------------")
+    for concept in requested:
+        print(f"  {concept}: {connection_meaning(concept)}")
+
+    print()
+    print("2. CONNECTED BRIDGES")
+    print("--------------------")
+    for index, scene in enumerate(scenes, 1):
+        _render_scene_compact(scene, index, walkthrough=walkthrough)
+
+    print()
+    print("3. HOW THE BRIDGES JOIN")
+    print("-----------------------")
+    covered = set()
+    for index, scene in enumerate(scenes, 1):
+        keys = _scene_keys(scene)
+        newly = [node for node in route if node in keys and node not in covered]
+        covered.update(newly)
+        label = " → ".join(newly) if newly else "extends the previous bridge"
+        print(f"  {index}. {label}")
+
+    print()
+    print("NEXT")
+    print("----")
+    print("  1  full contract lab")
+    print("  2  slower walkthrough")
+    print("  lk cheat <concept>")
