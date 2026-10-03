@@ -3851,7 +3851,6 @@ contract CallsLab {
 
     User public user;
 }""",
-}
     "symbols": """contract SymbolsLab {
     mapping(address => uint256) public balances;
     uint256 public count;
@@ -4088,7 +4087,7 @@ contract CallsLab {
         this.withdraw(1 ether);
     }
 }""",
-
+}
 
 _TERM_DEFINITIONS = {
     "ternary": "Compact if/else expression that produces a value.",
