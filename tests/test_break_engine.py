@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import sys
 import unittest
 
 
@@ -9,10 +10,12 @@ PLAYBOOK = ROOT / "lowkey" / "break_playbook.py"
 
 playbook_spec = importlib.util.spec_from_file_location("lowkey_break_playbook", PLAYBOOK)
 playbook = importlib.util.module_from_spec(playbook_spec)
+sys.modules[playbook_spec.name] = playbook
 playbook_spec.loader.exec_module(playbook)
 
 spec = importlib.util.spec_from_file_location("lowkey_break_engine", MODULE)
 break_engine = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = break_engine
 spec.loader.exec_module(break_engine)
 
 
