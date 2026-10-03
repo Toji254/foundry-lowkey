@@ -4101,3 +4101,509 @@ def list_connections():
         for name, description in featured
     )
     return rows
+
+
+# ---------------------------------------------------------------------------
+# FINAL COVERAGE PASS
+# ---------------------------------------------------------------------------
+#
+# Second-pass audit of the graph against the current Solidity reference
+# structure, ABI specification, storage/transient-storage rules, and recurring
+# patterns in OpenZeppelin, Uniswap, Aave, Compound, Solmate, and Foundry.
+#
+# The goal here is not to claim that every pair has a dedicated recipe.  The
+# goal is stronger: every recognized concept can enter a meaningful graph,
+# high-value multi-hop paths have tiny teaching scenes, and arbitrary requests
+# remain composable instead of becoming "no connection".
+#
+
+_SEMANTIC_ALIASES.update({
+    "assignment": "assignment",
+    "assign": "assignment",
+    "abi-encode-call": "abi.encodeCall",
+    "abi.encodecall": "abi.encodeCall",
+    "encode-call": "abi.encodeCall",
+    "function-type": "function-types",
+    "function-types": "function-types",
+    "external-function-type": "external-function-types",
+    "external-function-types": "external-function-types",
+    "contract-type": "contract-types",
+    "contract-types": "contract-types",
+    "udvt": "user-defined-value-types",
+    "user-defined-value-type": "user-defined-value-types",
+    "transient": "transient-storage",
+    "tstore": "transient-storage",
+    "tload": "transient-storage",
+    "erc7201": "erc7201",
+    "namespaced-storage": "erc7201",
+    "storage-namespace": "erc7201",
+    "storage-slot": "storage-slot",
+    "returndata": "returndata",
+    "return-data": "returndata",
+    "sha256": "sha256",
+    "ripemd160": "ripemd160",
+    "ecrecover": "ecrecover",
+    "addmod": "addmod",
+    "mulmod": "mulmod",
+    "bytes-concat": "bytes.concat",
+    "bytes.concat": "bytes.concat",
+    "string-concat": "string.concat",
+    "string.concat": "string.concat",
+    "selfdestruct": "selfdestruct",
+    "this": "this",
+    "super": "super",
+    "nonce": "nonce",
+})
+
+_EXTRA_MEANINGS.update({
+    "assignment": "Assignment stores a computed or supplied value into a variable, array element, mapping entry, or struct member.",
+    "abi.encodeCall": "Type-checks a function pointer plus arguments and produces selector-prefixed ABI calldata.",
+    "sha256": "Computes the SHA-256 digest of bytes and returns bytes32.",
+    "ripemd160": "Computes the RIPEMD-160 digest of bytes and returns bytes20.",
+    "ecrecover": "Recovers the address associated with a signed message digest and ECDSA signature values.",
+    "addmod": "Computes modular addition with arbitrary-precision intermediate arithmetic.",
+    "mulmod": "Computes modular multiplication with arbitrary-precision intermediate arithmetic.",
+    "bytes.concat": "Concatenates bytes and fixed-size byte values into one dynamic bytes value.",
+    "string.concat": "Concatenates strings into one dynamic string value.",
+    "selfdestruct": "A deprecated opcode whose current EVM behavior is version-dependent; on Cancun-or-later EVMs it normally transfers the account balance without deleting the contract, except for same-transaction-created contracts.",
+    "this": "The current contract as a contract-typed value; using this.f() performs an external call to the current address.",
+    "super": "A contract-typed reference used to call the next implementation in the inheritance hierarchy.",
+    "nonce": "A unique counter commonly used to make signed messages or state transitions single-use and prevent replay.",
+})
+
+_EXTRA_CONCEPTS.update({
+    "assignment", "abi.encodeCall", "sha256", "ripemd160", "ecrecover",
+    "addmod", "mulmod", "bytes.concat", "string.concat", "selfdestruct",
+    "this", "super", "nonce", "erc7201",
+})
+
+
+# Relationship additions that came up repeatedly in production-style code.
+_COMPREHENSIVE_CONNECTION_EDGES.extend([
+    ("contract-anatomy", "function", "functions are a core executable part of contract structure"),
+    ("contract-anatomy", "variables", "state/local values make the contract's data model"),
+    ("contract-anatomy", "events", "events expose state transitions to external observers"),
+    ("contract-anatomy", "errors", "errors describe failed execution"),
+    ("contract-anatomy", "constructor", "constructors establish initial state"),
+    ("contract-anatomy", "receive-vs-fallback", "receive/fallback form the contract's default message-routing surface"),
+
+    # Assignment / value flow
+    ("assignment", "variables", "assignment writes a new value into a named variable"),
+    ("assignment", "mapping", "mapping entries are ordinary lvalues and can be assigned"),
+    ("assignment", "arrays", "array elements can be assigned by index"),
+    ("assignment", "structs", "struct members can be assigned individually"),
+    ("assignment", "storage-memory-calldata", "reference assignments can create copies or storage references depending on types/location"),
+    ("assignment", "delete", "delete is a special form of resetting a variable to its default"),
+    ("assignment", "compound-assignment", "compound assignment combines an operation with an assignment"),
+
+    # ABI / selector family
+    ("abi.encodeCall", "function-types", "the function pointer supplies the selector and expected argument types"),
+    ("abi.encodeCall", "function-selector", "its result begins with the pointed-to function selector"),
+    ("abi.encodeCall", "calldata", "its bytes can be sent as complete external calldata"),
+    ("abi.encodeCall", "low-level-call", "raw call APIs can consume the generated bytes"),
+    ("abi.encodeWithSelector", "abi.encodeCall", "both construct selector-prefixed calldata, but encodeCall adds stronger compile-time typing"),
+    ("abi.encodeWithSignature", "abi.encodeCall", "both create selector-prefixed calldata, with different sources of the selector"),
+    ("abi.decode", "calldata-slices", "selector-prefixed calldata can be sliced before decoding arguments"),
+    ("returndata", "abi.decode", "raw returned bytes can be decoded using the expected return types"),
+    ("returndata", "calldata", "both are raw byte-oriented message-boundary data, but one is input and the other output"),
+    ("returndata", "proxy-fallback", "proxies commonly bubble implementation returndata"),
+    ("returndata", "errors", "revert payloads are returned as bytes at low-level boundaries"),
+    ("custom-errors", "function-selector", "error selectors share the first-four-byte Keccak convention"),
+    ("events", "abi.encode", "non-indexed event data uses ABI encoding"),
+    ("event-indexed", "bytes32", "log topics are 32-byte values"),
+    ("event-indexed", "keccak256", "dynamic indexed arguments use a Keccak-derived topic representation"),
+
+    # Calls / context
+    ("this", "calls", "this.f() routes through an external message call"),
+    ("this", "msg.sender", "inside the externally re-entered function msg.sender becomes the current contract"),
+    ("this", "reentrancy", "an external self-call creates a new call frame and re-entry boundary"),
+    ("super", "inheritance", "super selects the next inherited implementation"),
+    ("super", "override-virtual", "super is useful when an override extends base behavior"),
+    ("contract-types", "this", "this has the current contract type"),
+    ("contract-types", "super", "super is a contract-typed inheritance reference"),
+    ("external-function-types", "abi.encodeCall", "function pointers are accepted by encodeCall"),
+    ("function-types", "calls", "stored function values can later be invoked"),
+    ("function-types", "types", "function values are typed values"),
+    ("address-payable", "call", "value-bearing call syntax requires an Ether-capable address"),
+    ("calls", "gas", "call execution is bounded by gas and the supplied forwarding choice"),
+    ("staticcall", "gas", "static execution still consumes a gas budget"),
+    ("delegatecall", "gas", "delegated execution shares the gas context subject to call semantics"),
+
+    # Storage / transient / namespaces
+    ("erc7201", "custom-storage-layout", "ERC-7201 is a namespaced storage-layout convention with a deterministic root"),
+    ("erc7201", "structs", "a namespace is commonly represented as a dedicated struct"),
+    ("erc7201", "mapping", "namespaced structs can contain mappings"),
+    ("erc7201", "keccak256", "the ERC-7201 root formula is hash-derived"),
+    ("erc7201", "abi.encode", "the root formula uses ABI encoding around the intermediate hash value"),
+    ("erc7201", "yul-storage", "assembly is commonly used to bind a storage reference to a namespace root"),
+    ("custom-storage-layout", "storage-layout", "custom layout shifts the root used by ordinary slot assignment"),
+    ("custom-storage-layout", "mapping-slots", "shifted mapping anchor slots change derived locations"),
+    ("transient-storage", "storage-layout", "transient and normal storage have independent layouts"),
+    ("transient-storage", "contract-anatomy", "transient state is another state-bearing mechanism"),
+    ("transient-storage", "tload", "TLOAD reads transaction-scoped transient state"),
+    ("transient-storage", "tstore", "TSTORE writes transaction-scoped transient state"),
+    ("transient-storage", "reentrancy", "a transaction-scoped lock can guard against nested entry"),
+    ("yul-storage", "transient-storage", "Yul exposes transient operations separately from sload/sstore"),
+    ("storage-packing", "assignment", "packed members may require read-modify-write behavior"),
+    ("storage-packing", "yul-storage", "assembly must preserve neighboring packed bits"),
+    ("mapping-defaults", "delete", "missing/deleted mapping values read the type default"),
+    ("mapping-defaults", "types-defaults", "the observed zero value depends on the value type"),
+    ("mapping-array-value", "array-storage", "a dynamic array used as a mapping value has both mapping and array layout rules"),
+    ("mapping-struct", "storage-layout", "mapping-selected structs still follow struct member layout"),
+    ("arrays-mappings", "mapping-array-value", "the two descriptions meet when an array is itself the mapping value"),
+
+    # Crypto / identifiers
+    ("sha256", "signature-verification", "SHA-256 may be used in external signing/bridging schemes"),
+    ("ripemd160", "signature-verification", "RIPEMD-160 can identify keys in interoperability schemes"),
+    ("ecrecover", "signature-verification", "ECDSA recovery produces the address associated with a signed digest"),
+    ("ecrecover", "bytes32", "the signed digest is normally bytes32"),
+    ("ecrecover", "address", "recovery yields an address"),
+    ("ecrecover", "keccak256", "Ethereum signatures commonly sign a Keccak-derived digest"),
+    ("addmod", "mulmod", "both provide modular arithmetic with non-wrapping intermediate computation"),
+    ("keccak256", "ecrecover", "a common signature path is hash structured data then recover the signer"),
+    ("nonce", "signature-verification", "nonces prevent reuse of an otherwise valid signed message"),
+    ("nonce", "mapping", "protocols commonly store nonce state keyed by address"),
+    ("nonce", "access-control", "signed authorization often adds a nonce to prevent replay"),
+    ("encodePacked", "bytes.concat", "both are compact byte-building tools but have different semantics"),
+    ("strings-bytes", "bytes.concat", "dynamic text/bytes can be joined with concat helpers"),
+    ("strings-bytes", "string.concat", "strings can be combined without packed-ABI ambiguity"),
+    ("front-running", "nonce", "ordered transactions and replay protection interact with signed intent"),
+
+    # Code lifetime / deployment
+    ("selfdestruct", "address-payable", "the opcode takes an Ether-capable recipient"),
+    ("selfdestruct", "contract-balance", "its core effect includes sending the account balance"),
+    ("selfdestruct", "new", "same-transaction-created contracts are a version-specific exception"),
+    ("selfdestruct", "delegatecall", "delegated code can reach the opcode even when absent from the proxy source"),
+    ("selfdestruct", "poc-upgrade", "upgrade security reviews inspect destructive/deactivation mechanisms"),
+
+    # Real protocol patterns
+    ("poc-token", "low-level-call", "token PoCs often need to reason about non-standard ERC-20 return behavior"),
+    ("poc-token", "events", "token actions are observable through transfer/approval logs"),
+    ("poc-token", "mapping", "standard token accounting commonly uses balance/allowance mappings"),
+    ("poc-oracle", "staticcall", "read-only oracle queries can use a static call boundary"),
+    ("poc-oracle", "timestamp", "price freshness checks frequently compare timestamps"),
+    ("poc-signature", "nonce", "signature PoCs often probe replay"),
+    ("poc-upgrade", "storage-layout", "upgrade safety depends on preserving storage semantics"),
+    ("poc-upgrade", "erc7201", "namespaced storage is a modern upgrade-layout pattern"),
+    ("poc-dos", "gas", "denial of service can arise when work exceeds available gas"),
+    ("poc-dos", "front-running", "ordering/griefing attacks can be operationally related to denial of service"),
+])
+
+
+# Compound concepts that represent especially useful data-flow paths.
+_COMPREHENSIVE_COMPOSITES.update({
+    "abi-call": {"abi.encodeCall", "function-types", "function-selector", "calldata"},
+    "selector-path": {"function-signature", "function-selector", "calldata", "abi.decode"},
+    "error-path": {"custom-errors", "function-selector", "abi.decode", "returndata", "try-catch"},
+    "event-path": {"events", "event-indexed", "keccak256", "bytes32", "abi.encode"},
+    "mapping-array": {"mapping", "mapping-array-value", "arrays", "array-storage"},
+    "mapping-struct-storage": {"mapping", "mapping-struct", "storage-layout"},
+    "namespace-storage": {"erc7201", "custom-storage-layout", "structs", "mapping", "keccak256", "yul-storage"},
+    "transient-lock": {"transient-storage", "reentrancy", "yul-storage"},
+    "signature-path": {"abi.encode", "keccak256", "ecrecover", "address", "nonce"},
+    "token-call": {"interface", "external-call", "abi.encode", "low-level-call", "returndata", "events", "mapping"},
+})
+
+
+# High-value compact scenes from the coverage pass.  They keep the default
+# output readable while making less-obvious relationships actually teachable.
+COMPREHENSIVE_MICRO_SCENES.extend([
+    _scene(
+        keys={"mapping", "mapping-defaults", "delete", "types-defaults"},
+        title="Missing key, delete, and default value",
+        story="A mapping does not need an explicit write to have a readable value. Missing entries read as the value type's default, and delete restores that same default.",
+        code="""mapping(address => uint256) public score;
+
+function clear(address user_) external {
+    delete score[user_];
+}""",
+        variables=[
+            ("state", "mapping(address => uint256)", "score", "score[user_]", "Per-address value."),
+            ("key", "address", "user_", "0xAlice", "Selects one entry."),
+            ("default", "uint256", "score[user_]", "0", "What a missing/deleted uint256 entry reads as."),
+        ],
+        flow=[
+            "Before any write, score[alice] reads 0.",
+            "score[alice] = 100 changes the mapping entry.",
+            "delete score[alice] writes the default value back.",
+            "Reading score[alice] again returns 0.",
+        ],
+        call="clear(alice);",
+        audit="Default reads are not evidence that state was explicitly initialized. Distinguish absence/default from an intentional stored zero.",
+    ),
+    _scene(
+        keys={"mapping", "mapping-array-value", "arrays", "array-storage"},
+        title="One key selects a whole dynamic array",
+        story="A mapping value can be an array. The key selects the array, and the array index selects an element inside that array.",
+        code="""mapping(address => uint256[]) public scores;
+
+function add(address user_, uint256 score_) external {
+    scores[user_].push(score_);
+}
+
+function read(address user_, uint256 i)
+    external
+    view
+    returns (uint256)
+{
+    return scores[user_][i];
+}""",
+        variables=[
+            ("mapping key", "address", "user_", "0xAlice", "Selects Alice's array."),
+            ("array", "uint256[]", "scores[user_]", "[10, 20, 30]", "Dynamic array value of the mapping entry."),
+            ("index", "uint256", "i", "1", "Selects one array element."),
+        ],
+        flow=[
+            "scores[user_] selects the array belonging to user_.",
+            "push(score_) grows that selected array.",
+            "scores[user_][i] then indexes inside the selected array.",
+        ],
+        call="add(alice, 40);",
+        audit="Nested [] syntax can hide two distinct operations: mapping key selection first, then array indexing.",
+    ),
+    _scene(
+        keys={"mapping", "mapping-struct", "structs", "storage-layout"},
+        title="Mapping key → struct base → struct member",
+        story="A mapping can select a complete struct; accessing a member then moves through that struct's storage layout.",
+        code="""struct User {
+    uint128 points;
+    uint128 debt;
+    address owner;
+}
+
+mapping(address => User) public users;
+
+function set(address user_, uint128 points_) external {
+    users[user_].points = points_;
+}""",
+        variables=[
+            ("mapping key", "address", "user_", "0xAlice", "Selects one User struct."),
+            ("struct", "User", "users[user_]", "points/debt/owner", "Stored record."),
+            ("member", "uint128", "points", "100", "Member potentially packed with debt."),
+        ],
+        flow=[
+            "user_ selects the mapping entry.",
+            "That entry has the User struct layout.",
+            "points is located within that struct according to packing/layout rules.",
+            "The assignment writes only the relevant member bits while preserving neighboring packed data.",
+        ],
+        call="set(alice, 100);",
+        audit="Packed structs are especially important in upgrade/storage-corruption reviews; a member write may be a read-modify-write of a shared slot.",
+    ),
+    _scene(
+        keys={"function-selector", "abi.encodeWithSelector", "abi.encodeCall", "function-types", "calldata"},
+        title="Typed function pointer → selector → calldata",
+        story="Modern Solidity can derive calldata from an actual function pointer, giving the compiler the chance to type-check the arguments.",
+        code="""interface ITarget {
+    function set(uint256 amount_) external;
+}
+
+function build(address target, uint256 amount_)
+    external
+    pure
+    returns (bytes memory)
+{
+    ITarget targetContract = ITarget(target);
+
+    return abi.encodeCall(
+        targetContract.set,
+        (amount_)
+    );
+}""",
+        variables=[
+            ("interface", "ITarget", "targetContract", "0xTarget", "Typed contract/function surface."),
+            ("function value", "function", "targetContract.set", "selector + address", "External function pointer."),
+            ("argument", "uint256", "amount_", "100", "Typed call argument."),
+            ("calldata", "bytes", "return value", "selector + ABI argument", "Ready-to-send payload."),
+        ],
+        flow=[
+            "The interface supplies the callable function type.",
+            "targetContract.set contributes the target address and selector.",
+            "abi.encodeCall type-checks amount_ against the function parameter.",
+            "The result is selector-prefixed calldata.",
+        ],
+        call="build(target, 100);",
+        audit="Type-safe encoding reduces some call-construction mistakes, but verify the target address and selector still reach the intended contract.",
+    ),
+    _scene(
+        keys={"bytes", "calldata", "function-selector", "abi.decode", "calldata-slices"},
+        title="Raw calldata → first 4 bytes → arguments",
+        story="Fallback-style code can treat calldata as raw bytes, remove the selector, and decode the remaining ABI payload.",
+        code="""fallback(bytes calldata input) external returns (bytes memory) {
+    bytes4 selector = bytes4(input[:4]);
+
+    if (selector == bytes4(keccak256("set(uint256)"))) {
+        (uint256 amount_) =
+            abi.decode(input[4:], (uint256));
+        amount_;
+    }
+
+    return "";
+}""",
+        variables=[
+            ("raw", "bytes calldata", "input", "selector + argument", "Complete call data."),
+            ("selector", "bytes4", "selector", "first 4 bytes", "Dispatch key."),
+            ("payload", "bytes calldata", "input[4:]", "ABI-encoded uint256", "Argument region."),
+            ("decoded", "uint256", "amount_", "100", "Typed argument."),
+        ],
+        flow=[
+            "input contains both selector and ABI arguments.",
+            "input[:4] extracts the selector.",
+            "input[4:] removes the selector from the decoding payload.",
+            "abi.decode interprets the remaining bytes as uint256.",
+        ],
+        call="raw calldata = selector(set(uint256)) + abi.encode(100)",
+        audit="Validate length before slicing and decode the exact expected types/order. Fallback dispatch is a manual ABI implementation.",
+    ),
+    _scene(
+        keys={"new", "constructor", "address", "try-catch"},
+        title="Contract creation is an external failure boundary",
+        story="new creates a contract and runs its constructor. The creation can fail, and try/catch can handle that failure at the caller.",
+        code="""contract Child {
+    constructor(uint256 limit_) {
+        require(limit_ > 0);
+    }
+}
+
+function deploy(uint256 limit_)
+    external
+    returns (address created)
+{
+    try new Child(limit_) returns (Child child) {
+        created = address(child);
+    } catch {
+        created = address(0);
+    }
+}""",
+        variables=[
+            ("argument", "uint256", "limit_", "100", "Constructor input."),
+            ("contract", "Child", "child", "fresh instance", "Created contract reference."),
+            ("address", "address", "created", "0xNewChild", "Address of the new contract."),
+        ],
+        flow=[
+            "new Child(limit_) starts contract creation.",
+            "Child's constructor validates limit_.",
+            "Success returns a fresh contract reference.",
+            "Constructor failure is caught by the surrounding try/catch.",
+        ],
+        call="deploy(100);",
+        audit="Creation-time side effects and constructor assumptions belong to the external boundary just like normal calls.",
+    ),
+    _scene(
+        keys={"transient-storage", "reentrancy", "storage", "yul"},
+        title="Transaction-scoped lock: transient vs persistent storage",
+        story="A reentrancy lock can live in transient storage so it survives nested calls within the transaction but does not persist across transactions.",
+        code="""uint256 transient locked;
+
+modifier nonReentrant() {
+    require(locked == 0);
+    locked = 1;
+    _;
+    locked = 0;
+}
+
+function withdraw() external nonReentrant {
+    // protected work
+}""",
+        variables=[
+            ("transient state", "uint256 transient", "locked", "0 → 1", "Transaction-scoped guard."),
+            ("modifier", "modifier", "nonReentrant", "guard", "Wraps the protected function."),
+            ("global", "address", "msg.sender", "caller", "Still follows the call context."),
+        ],
+        flow=[
+            "First entry sees locked == 0.",
+            "The modifier sets the transient word to 1.",
+            "A nested entry in the same transaction sees 1 and reverts.",
+            "After normal completion, the lock is cleared.",
+        ],
+        call="withdraw();",
+        audit="Transient storage is transaction-scoped, not a replacement for all persistent state. Check chain/EVM support and reentrant paths carefully.",
+    ),
+    _scene(
+        keys={"erc7201", "custom-storage-layout", "structs", "mapping", "keccak256", "abi.encode", "yul-storage"},
+        title="Namespace → hash-derived root → struct storage",
+        story="Modern upgradeable code can put a contract's state inside a deterministic namespaced struct, then bind a storage reference to that root.",
+        code="""struct MainStorage {
+    uint256 total;
+    mapping(address => uint256) balances;
+}
+
+// Conceptual ERC-7201 root:
+// root = keccak256(
+//     abi.encode(uint256(keccak256(bytes("example.main"))) - 1)
+// ) & ~bytes32(uint256(0xff));""",
+        variables=[
+            ("namespace", "string", "id", '"example.main"', "Human-readable namespace identifier."),
+            ("root", "bytes32", "root", "hash-derived", "Namespace storage root."),
+            ("struct", "MainStorage", "store", "total + balances", "State grouped under that root."),
+            ("mapping", "mapping(address => uint256)", "balances", "balances[user]", "Normal mapping rules apply inside the namespace."),
+        ],
+        flow=[
+            "The namespace id is hashed.",
+            "The formula derives a storage root outside the standard linear storage tree.",
+            "A struct is treated as the namespace's state container.",
+            "Mappings inside the struct still derive their own child locations.",
+            "Assembly can bind a storage reference to the namespace root.",
+        ],
+        call="_getMainStorage().balances(alice);",
+        audit="Namespace uniqueness and exact root calculation are part of upgrade compatibility. Treat the annotation as documentation unless tooling validates the implementation.",
+    ),
+    _scene(
+        keys={"poc-token", "interface", "low-level-call", "abi.encode", "returndata", "events", "mapping"},
+        title="Token PoC: interface → calldata → call → return/log/state",
+        story="A token interaction touches nearly every boundary an auditor needs to trace: typed interface, ABI bytes, external call, returndata, events, and mapping-backed accounting.",
+        code="""interface IERC20Like {
+    function transfer(address to, uint256 amount)
+        external
+        returns (bool);
+}
+
+function sendToken(
+    address token,
+    address to,
+    uint256 amount
+) external returns (bool ok) {
+    return IERC20Like(token).transfer(to, amount);
+}""",
+        variables=[
+            ("address", "address", "token", "0xToken", "Target contract."),
+            ("interface", "IERC20Like", "tokenView", "typed target", "Callable ERC-20 surface."),
+            ("arguments", "address/uint256", "to/amount", "Bob/100", "Call inputs."),
+            ("return", "bool", "ok", "true", "Reported transfer result."),
+        ],
+        flow=[
+            "The interface supplies the transfer signature.",
+            "Solidity encodes the arguments into calldata and crosses the token contract boundary.",
+            "The token changes its own accounting and normally emits Transfer.",
+            "The return value is decoded according to the interface ABI.",
+        ],
+        call="sendToken(token, bob, 100);",
+        audit="Non-standard tokens can return no data or unexpected data. Production libraries often use low-level calls and explicit return-data checks.",
+    ),
+    _scene(
+        keys={"vm-expect-call", "calls", "abi.encode", "test"},
+        title="Test expected call: encode the contract boundary",
+        story="Foundry can assert not just the final state but the exact external call a function was supposed to make.",
+        code="""function testPaysReceiver() public {
+    vm.expectCall(
+        receiver,
+        abi.encodeCall(receiver.notify, (100))
+    );
+
+    contract.pay(receiver, 100);
+}""",
+        variables=[
+            ("target", "address/contract", "receiver", "0xReceiver", "Expected destination."),
+            ("payload", "bytes", "abi.encodeCall(...)", "selector + 100", "Expected calldata."),
+            ("cheatcode", "vm.expectCall", "expectation", "one matching call", "Assertion about the call boundary."),
+        ],
+        flow=[
+            "The test builds the exact expected calldata.",
+            "vm.expectCall records the expectation.",
+            "The contract executes its real call.",
+            "The test fails if the expected boundary is not observed.",
+        ],
+        call="vm.expectCall(receiver, abi.encodeCall(receiver.notify, (100)));",
+        audit="Call expectations are especially useful for authority routing, token transfers, callbacks, and proxy interactions.",
+    ),
+])
