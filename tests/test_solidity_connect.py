@@ -620,6 +620,31 @@ class SolidityConnectTests(unittest.TestCase):
                     f"No route for ABI boundary pair {left} -> {right}",
                 )
 
+
+    def test_connect_output_shows_route_not_a_universal_dump(self):
+        result, output = self.render(
+            "connect", "timelock-pattern", "keccak256",
+            "mapping", "block.timestamp", "call"
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("CONNECTION ROUTE", output)
+        self.assertNotIn("UniversalConnectionLab", output)
+
+    def test_connect_list_advertises_real_connection_families(self):
+        result, output = self.render("connect", "--list")
+        self.assertEqual(result, 0)
+        for token in (
+            "data / ABI path",
+            "call / dispatch path",
+            "error / event path",
+            "token path",
+            "authorization path",
+            "protocol lifecycle path",
+            "storage / Yul path",
+            "Foundry path",
+        ):
+            self.assertIn(token, output)
+
     def test_universal_connection_lab_compiles(self):
         if shutil.which("forge") is None:
             self.skipTest("Forge is required for connection-lab compiler coverage.")
