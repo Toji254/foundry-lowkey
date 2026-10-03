@@ -5572,7 +5572,7 @@ def _validate_project_lab_target(
         try:
             script_path = Path(provenance_script).expanduser().resolve()
             script_relative = script_path.relative_to(root_path).as_posix()
-            broadcast_root = (root_path / "broadcast" / script_relative).resolve()
+            broadcast_root = (root_path / "broadcast" / script_path.name).resolve()
             for item in deployments:
                 if not isinstance(item, dict):
                     continue
