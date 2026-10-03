@@ -1610,6 +1610,29 @@ def _error_signature(item: dict[str, Any]) -> str | None:
     return f"{name}({','.join(_canonical_abi_type(x) for x in (item.get('inputs') or []))})"
 
 
+def _selector_for_signature(host, signature: str) -> str | None:
+    """Resolve an ABI selector using Python Keccak or Foundry's cast as a fallback."""
+    digest = _keccak256(signature.encode())
+    if digest is not None:
+        return digest[:4].hex()
+
+    try:
+        cast = host.tool_path("cast") if hasattr(host, "tool_path") else "cast"
+        completed = subprocess.run(
+            [str(cast), "sig", signature],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        match = re.search(r"0x([0-9a-fA-F]{8})", completed.stdout or "")
+        if match:
+            return match.group(1).lower()
+    except Exception:
+        pass
+    return None
+
+
 def _decode_revert_data(host, config, target: Target, raw_hex: str | None) -> str | None:
     """Decode standard/custom ABI errors without assuming a specific protocol."""
     if not raw_hex or raw_hex == "0x":
@@ -1659,9 +1682,7 @@ def _decode_revert_data(host, config, target: Target, raw_hex: str | None) -> st
             expected = item_selector[2:].lower()
         else:
             signature = _error_signature(item)
-            digest = _keccak256(signature.encode()) if signature else None
-            if digest is not None:
-                expected = digest[:4].hex()
+            expected = _selector_for_signature(host, signature) if signature else None
         if expected != selector:
             continue
 
