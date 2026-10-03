@@ -617,6 +617,22 @@ def import_query(query: str, root: Path, maps) -> int:
         print('No import query provided.')
         return 2
 
+    path_query = query.strip().strip('"').strip("'")
+    if path_query.lower().endswith(".sol"):
+        path_match = find_import_path(path_query, root, maps)
+        if path_match:
+            source, import_name = path_match
+            symbols = [s for s in all_symbols(root, maps) if s.import_path == import_name]
+            if symbols:
+                show_file((source, symbols))
+            else:
+                print()
+                print(f"SOURCE:      {source}")
+                print(f"IMPORT FILE: {import_name}")
+                print("COPY:")
+                print(f'  import "{import_name}";')
+            return 0
+
     syms = all_symbols(root, maps)
     exact = [s for s in syms if s.name.lower() in tokens or s.import_path.lower() in tokens]
     if len(exact) == 1:
