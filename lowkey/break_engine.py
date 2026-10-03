@@ -748,6 +748,194 @@ def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str,
     )
 
 
+def _cast_binary(host) -> str:
+    cast = host.tool_path("cast") if hasattr(host, "tool_path") else None
+    if cast:
+        return cast
+    return "cast"
+
+
+def _cast_exec(host, args: list[str], rpc: str):
+    cmd = [_cast_binary(host), *args, "--rpc-url", rpc]
+    return subprocess.run(cmd, cwd=str(_root(host)), capture_output=True, text=True)
+
+
+def _cast_int(text_value: str) -> int:
+    raw = str(text_value or "").strip()
+    match = re.search(r"0x[0-9a-fA-F]+|\\d+", raw)
+    if not match:
+        return 0
+    token = match.group(0)
+    return int(token, 16) if token.lower().startswith("0x") else int(token)
+
+
+def _cast_snapshot(host, rpc: str):
+    result = _cast_exec(host, ["rpc", "evm_snapshot"], rpc)
+    if result.returncode != 0:
+        result = _cast_exec(host, ["rpc", "anvil_snapshot"], rpc)
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip().splitlines()[-1] if result.stdout else None
+
+
+def _cast_revert(host, rpc: str, snapshot: str | None):
+    if not snapshot:
+        return
+    _cast_exec(host, ["rpc", "evm_revert", snapshot], rpc)
+
+
+def _cast_balance(host, rpc: str, address: str) -> int:
+    result = _cast_exec(host, ["balance", address], rpc)
+    return _cast_int(result.stdout)
+
+
+def _cast_send(
+    host,
+    rpc: str,
+    target: Target,
+    calldata: str,
+    value: str,
+    actor: str,
+):
+    value_arg = value if value not in {"0", "0wei"} else "0"
+    args = [
+        "send",
+        target.address,
+        "--data", calldata,
+        "--unlocked",
+        "--from", actor,
+        "--value", value_arg,
+    ]
+    return _cast_exec(host, args, rpc)
+
+
+def _run_simple_evm_family(
+    host,
+    config,
+    rpc: str,
+    target: Target,
+    fn: dict[str, Any],
+    family: str,
+    opts,
+    rng,
+) -> AttackResult:
+    """Execute families that only require local JSON-RPC + ABI calldata.
+
+    This path is the cross-framework bridge: Vyper and Hardhat projects can use
+    it without a Forge test tree. It is still strictly local because the caller
+    must already have a detected Anvil-compatible RPC.
+    """
+    signature = _format_signature(fn, host)
+    actor_accounts = _anvil_accounts(host, config)
+    if not actor_accounts:
+        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "No unlocked local Anvil accounts were detected.")
+    actor = actor_accounts[1] if len(actor_accounts) > 1 else actor_accounts[0]
+    mode = "one" if family in {"replay", "accounting", "access"} else "zero"
+    values = _make_value(host, fn, rng, mode, config)
+    calldata, error = _encode_call(host, config, target, fn, values)
+    if not calldata:
+        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", f"Could not encode a generic call: {error}")
+    value = _payable_value(fn, opts, "small")
+
+    snapshot = _cast_snapshot(host, rpc)
+    if not snapshot:
+        return AttackResult(family, target.contract, target.address, signature, "BLOCKED", "Local RPC does not expose evm_snapshot/anvil_snapshot.")
+
+    try:
+        before_target = _cast_balance(host, rpc, target.address)
+        before_actor = _cast_balance(host, rpc, actor)
+        first = _cast_send(host, rpc, target, calldata, value, actor)
+        mid_target = _cast_balance(host, rpc, target.address)
+        mid_actor = _cast_balance(host, rpc, actor)
+
+        second = None
+        after_target = mid_target
+        after_actor = mid_actor
+        second_gain = 0
+        second_outflow = 0
+        zero_success = False
+        max_success = False
+
+        if family in {"replay", "accounting"}:
+            second = _cast_send(host, rpc, target, calldata, value, actor)
+            after_target = _cast_balance(host, rpc, target.address)
+            after_actor = _cast_balance(host, rpc, actor)
+            second_outflow = max(0, mid_target - after_target)
+            # Gas means an actor's raw balance can decrease even when they receive
+            # funds, so target-side outflow is the safer generic signal here.
+            second_gain = max(0, after_actor - mid_actor)
+        elif family == "boundary":
+            zero_values = _make_value(host, fn, rng, "zero", config)
+            max_values = _make_value(host, fn, rng, "max", config)
+            zero_data, zero_error = _encode_call(host, config, target, fn, zero_values)
+            max_data, max_error = _encode_call(host, config, target, fn, max_values)
+            if not zero_data or not max_data:
+                reason = zero_error or max_error or "could not encode edge values"
+                return AttackResult(family, target.contract, target.address, signature, "BLOCKED", reason)
+            _cast_revert(host, rpc, snapshot)
+            zero = _cast_send(host, rpc, target, zero_data, value, actor)
+            zero_success = zero.returncode == 0
+            _cast_revert(host, rpc, snapshot)
+            maximum = _cast_send(host, rpc, target, max_data, value, actor)
+            max_success = maximum.returncode == 0
+        elif family == "time":
+            # Timestamp manipulation is intentionally observational here: without a
+            # protocol-specific invariant, changed return/output is a lead, not BREAK.
+            _cast_exec(host, ["rpc", "evm_setNextBlockTimestamp", "100000"], rpc)
+            first = _cast_send(host, rpc, target, calldata, value, actor)
+            _cast_exec(host, ["rpc", "evm_setNextBlockTimestamp", "200000"], rpc)
+            second = _cast_send(host, rpc, target, calldata, value, actor)
+
+        first_success = first.returncode == 0 if first is not None else False
+        second_success = second.returncode == 0 if second is not None else False
+        is_break = (
+            family in {"replay", "accounting"}
+            and second_success
+            and second_outflow > 1
+            and second_gain > 0
+        ) or (
+            family == "access"
+            and first_success
+            and bool(PRIVILEGED_RE.search(str(fn.get("name") or "")))
+        )
+
+        lines = [
+            f"LOWKEY_BREAK_FAMILY {family}",
+            f"FIRST_SUCCESS {str(first_success).lower()}",
+            f"SECOND_SUCCESS {str(second_success).lower()}",
+            f"SECOND_ATTACKER_GAIN {second_gain}",
+            f"SECOND_TARGET_OUTFLOW {second_outflow}",
+            f"ZERO_SUCCESS {str(zero_success).lower()}",
+            f"MAX_SUCCESS {str(max_success).lower()}",
+            f"TARGET_BEFORE {before_target}",
+            f"TARGET_AFTER {after_target}",
+            f"LOWKEY_BREAK {str(is_break).lower()}",
+        ]
+        evidence = _write_json(host, f"cast_{target.contract}_{_function_name(signature)}_{family}", {
+            "backend": "evm-cast",
+            "family": family,
+            "target": asdict(target),
+            "function": signature,
+            "actor": actor,
+            "calldata": calldata,
+            "value": value,
+            "output": lines,
+        })
+        result = _result_from_output(
+            host,
+            family=family,
+            target=target,
+            function=signature,
+            output="\\n".join(lines),
+            evidence_path=str(evidence),
+        )
+        result.detail = result.detail or {}
+        result.detail.update({"backend": "evm-cast", "actor": actor, "before_actor": before_actor, "after_actor": after_actor})
+        return result
+    finally:
+        _cast_revert(host, rpc, snapshot)
+
+
 def _render_common_header() -> str:
     return """// SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.20;
@@ -1133,6 +1321,10 @@ def _record_break(host, result: AttackResult):
 def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], family: str, opts, rng, project_info: dict[str, Any] | None = None) -> AttackResult:
     signature = _format_signature(fn, host)
     name = _function_name(signature)
+    runner = _evm_runner(project_info or {}, _root(host)) if project_info is not None else "foundry"
+    if runner != "foundry" and family in {"replay", "accounting", "access", "boundary", "time"}:
+        return _run_simple_evm_family(host, config, rpc, target, fn, family, opts, rng)
+
     modes = ["normal", "one", "zero", "max"]
     mode = "one" if family in {"reentrancy", "replay", "accounting"} else modes[rng.randrange(len(modes))]
     values = _make_value(host, fn, rng, mode, config)
