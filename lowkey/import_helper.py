@@ -27,6 +27,8 @@ Usage:
   lk import mappings
   lk import common
   lk import <symbol>
+  lk import --install <symbol>
+  lk import install <symbol>
   lk import "<import declaration>"
   lk import "<import/path.sol>"
   lk import --h
@@ -45,9 +47,19 @@ IMPORT SYNTAX CHEAT SHEET:
   You can paste any of those directly into:
     lk import "..."
 
+INSTALL INTELLIGENCE:
+  lk import ERC721
+    Read the verified install command, import path, why/when, use cases,
+    example usage, and audit lens without changing the project.
+
+  lk import --install ERC721
+    Explicitly run the verified Forge install command, then re-run the
+    lookup to resolve the actual source/remapping.
+
 The helper is standalone: it does not select targets, change RPC/ABI/audit
 state, send transactions, or write project files.
 """
+
 
 COMMON = {
     "Ownable": ("Single-owner access control.", "Use for simple owner-only administration.", "@openzeppelin/contracts/access/Ownable.sol"),
@@ -66,6 +78,132 @@ COMMON = {
     "Test": ("Foundry Std test base.", "Use in Foundry tests for assertions, cheatcodes, and the vm interface.", "forge-std/Test.sol"),
     "Script": ("Foundry Std script base.", "Use for Foundry deployment/interaction scripts.", "forge-std/Script.sol"),
 }
+
+# Import Intelligence metadata is deliberately separate from COMMON so existing
+# tuple-style callers remain stable.
+IMPORT_METADATA = {
+    "Ownable": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["simple owner-only admin actions", "emergency configuration", "treasury/admin controls"],
+        "how": "Inherit from Ownable, then protect selected functions with onlyOwner.",
+        "example": "contract Vault is Ownable { constructor(address initialOwner) Ownable(initialOwner) {} }",
+        "audit": "Check every onlyOwner path, ownership-transfer flow, initialization, and whether privileged actions have the intended blast radius.",
+    },
+    "Ownable2Step": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["safer ownership handover", "admin rotation", "multisig/EOA ownership changes"],
+        "how": "Inherit from Ownable2Step and use the two-step ownership transfer flow so the recipient explicitly accepts ownership.",
+        "example": "contract Admin is Ownable2Step { constructor(address initialOwner) Ownable(initialOwner) {} }",
+        "audit": "Check pending-owner state, acceptance conditions, cancellation/overwrite behavior, and whether privileged logic still assumes a single EOA.",
+    },
+    "AccessControl": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["operator/admin separation", "role-based protocol permissions", "upgrade or parameter-management roles"],
+        "how": "Inherit from AccessControl, define role identifiers, grant roles, and gate functions with onlyRole(...).",
+        "example": "bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");",
+        "audit": "Map each role to its actual powers, inspect grant/revoke/admin-role paths, and check for accidental privilege escalation.",
+    },
+    "ReentrancyGuard": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["withdrawal functions", "ETH/token redemption", "callback-sensitive state transitions"],
+        "how": "Inherit from ReentrancyGuard and add nonReentrant to the functions that need the guard.",
+        "example": "function withdraw() external nonReentrant { /* checks-effects-interactions */ }",
+        "audit": "Do not treat the modifier as proof of safety: inspect alternate entry points, cross-function reentrancy, callbacks, and state updates around external calls.",
+    },
+    "Pausable": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["incident response", "emergency shutdowns", "pausing deposits/withdrawals/mints"],
+        "how": "Inherit from Pausable, expose authorized pause/unpause controls, and gate the intended operations with whenNotPaused/whenPaused.",
+        "example": "function deposit() external whenNotPaused { /* ... */ }",
+        "audit": "Verify who can pause/unpause, which operations are actually covered, and whether the pause path itself can be abused or permanently lock funds.",
+    },
+    "ERC20": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["fungible tokens", "protocol reward tokens", "share/accounting units"],
+        "how": "Inherit from ERC20, set the token name/symbol in the constructor, and implement your mint/burn policy in your contract.",
+        "example": "contract MyToken is ERC20 { constructor() ERC20("MyToken", "MTK") {} }",
+        "audit": "Focus on mint/burn authorization, supply/accounting invariants, decimals assumptions, hooks/extensions, and any custom transfer logic.",
+    },
+    "IERC20": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["calling an external ERC20", "token deposits/withdrawals", "generic token integrations"],
+        "how": "Declare an IERC20 reference at the token address and call the standard interface methods without inheriting the implementation.",
+        "example": "IERC20 token = IERC20(tokenAddress); token.transfer(to, amount);",
+        "audit": "Check token trust assumptions, non-standard ERC20 behavior, return-value handling, fee-on-transfer effects, and approval race/allowance logic.",
+    },
+    "SafeERC20": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["safe token transfers", "interacting with inconsistent ERC20s", "pull/payment flows"],
+        "how": "Use the library with an IERC20 token so transfer/transferFrom/approve-style operations are wrapped consistently.",
+        "example": "using SafeERC20 for IERC20; token.safeTransfer(to, amount);",
+        "audit": "Check the surrounding accounting anyway: SafeERC20 handles call semantics, not business-logic mistakes such as wrong amounts, recipients, or fee-on-transfer assumptions.",
+    },
+    "ERC721": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["NFT collections", "membership/access NFTs", "game items", "tokenized assets"],
+        "how": "Inherit from ERC721, provide name/symbol, and build your mint/burn/application authorization around the standard transfer and approval machinery.",
+        "example": "contract MyNFT is ERC721 { constructor() ERC721("MyNFT", "MNFT") {} }",
+        "audit": "Inspect mint/burn authorization, token-ID uniqueness, approvals, receiver callbacks, transfer hooks/overrides, and metadata assumptions.",
+    },
+    "IERC721": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["NFT ownership checks", "NFT-gated logic", "integrating with existing NFT collections"],
+        "how": "Cast the known NFT address to IERC721 and call ownership/approval/transfer functions through the interface.",
+        "example": "IERC721 nft = IERC721(nftAddress); address owner = nft.ownerOf(tokenId);",
+        "audit": "Treat the external NFT contract as a trust boundary; validate token IDs, ownership timing, approvals, callback behavior, and any assumptions about implementation/version.",
+    },
+    "ERC721URIStorage": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["per-token metadata URIs", "dynamic NFT metadata", "collections needing token-specific URI state"],
+        "how": "Inherit from ERC721URIStorage alongside ERC721 and use the extension's per-token URI storage helpers.",
+        "example": "contract MyNFT is ERC721, ERC721URIStorage { /* override required ERC721 hooks/functions */ }",
+        "audit": "Check URI authorization, storage growth/cost, override correctness, token existence assumptions, and whether metadata updates can create unexpected trust or gameability.",
+    },
+    "ERC1155": {
+        "package": "OpenZeppelin Contracts",
+        "forge_install": "forge install OpenZeppelin/openzeppelin-contracts",
+        "use_cases": ["multi-token game inventories", "semi-fungible assets", "batch transfers", "mixed fungible/non-fungible IDs"],
+        "how": "Inherit from ERC1155 and define your URI and mint/burn authorization around the standard multi-token balance model.",
+        "example": "contract Items is ERC1155 { constructor(string memory uri_) ERC1155(uri_) {} }",
+        "audit": "Inspect per-ID accounting, batch paths, authorization, receiver callbacks, URI assumptions, and any custom supply/transfer restrictions.",
+    },
+    "AggregatorV3Interface": {
+        "package": "Chainlink Contracts (chainlink-evm)",
+        "forge_install": "forge install smartcontractkit/chainlink-evm",
+        "use_cases": ["ETH/USD and other price feeds", "collateral valuation", "liquidation checks", "protocol pricing"],
+        "how": "Point an AggregatorV3Interface variable at a feed address and read latestRoundData(), then apply the feed's decimals and validation rules.",
+        "example": "AggregatorV3Interface priceFeed = AggregatorV3Interface(feedAddress);",
+        "audit": "Check freshness, round completeness, decimals, answer bounds, feed/address configuration, heartbeat assumptions, and how oracle failure affects protocol accounting.",
+    },
+    "Test": {
+        "package": "forge-std",
+        "forge_install": "forge install foundry-rs/forge-std",
+        "use_cases": ["unit tests", "fuzz tests", "invariant tests", "cheatcode-driven security tests"],
+        "how": "Inherit from Test in a Forge test contract to use assertions and the vm cheatcode interface.",
+        "example": "contract MyTest is Test { function testSomething() public { assertEq(1, 1); } }",
+        "audit": "Check that tests assert the security property you care about, not merely transaction success; cover attacker roles, alternate paths, and boundary states.",
+    },
+    "Script": {
+        "package": "forge-std",
+        "forge_install": "forge install foundry-rs/forge-std",
+        "use_cases": ["deployments", "on-chain interactions", "repeatable local/fork scripts"],
+        "how": "Inherit from Script, use vm.startBroadcast()/stopBroadcast(), and keep constructor/call inputs explicit.",
+        "example": "contract Deploy is Script { function run() external { vm.startBroadcast(); /* deploy */ vm.stopBroadcast(); } }",
+        "audit": "Keep deployment assumptions explicit: sender, constructor arguments, network/RPC, upgrade/admin addresses, and any post-deployment initialization.",
+    },
+}
+
 
 @dataclass(frozen=True)
 class Symbol:
@@ -203,6 +341,145 @@ def all_symbols(root: Path, maps: list[tuple[str, Path]]) -> list[Symbol]:
     for p in files:
         out += extract(p, root, maps)
     return out
+
+
+def known_metadata(name: str) -> dict:
+    return IMPORT_METADATA.get(name, {})
+
+
+def package_root_for(source: Path, root: Path) -> Path | None:
+    try:
+        rel = source.resolve().relative_to((root / "lib").resolve())
+    except ValueError:
+        return None
+    if not rel.parts:
+        return None
+    candidate = (root / "lib" / rel.parts[0]).resolve()
+    return candidate if candidate.is_dir() else None
+
+
+def git_remote(package_root: Path) -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(package_root), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if r.returncode == 0:
+            remote = r.stdout.strip()
+            return remote or None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def forge_repo_slug(remote: str | None) -> str | None:
+    if not remote:
+        return None
+    value = remote.strip()
+    value = re.sub(r"^(?:https?://|ssh://git@|git@)", "", value)
+    if value.startswith("github.com/"):
+        value = value[len("github.com/"):]
+    value = value.removesuffix(".git").strip("/")
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", value):
+        return value
+    return None
+
+
+def install_guidance(symbol: Symbol, root: Path) -> tuple[str, str]:
+    meta = known_metadata(symbol.name)
+    if meta.get("forge_install"):
+        return meta.get("package", "Known dependency"), meta["forge_install"]
+
+    package_root = package_root_for(symbol.source, root)
+    if package_root:
+        remote = git_remote(package_root)
+        slug = forge_repo_slug(remote)
+        if slug:
+            return package_root.name, f"forge install {slug}"
+        return package_root.name, "Already installed locally; no verified Forge install command was detected."
+
+    return "Current project", "No forge install needed — this symbol is in the current project's source."
+
+
+def usage_guidance(s: Symbol) -> tuple[str, list[str], str, str]:
+    meta = known_metadata(s.name)
+    if meta:
+        return (
+            meta.get("how", "Read the source/API before using it."),
+            list(meta.get("use_cases", [])),
+            meta.get("example", ""),
+            meta.get("audit", ""),
+        )
+    if s.kind == "interface":
+        return (
+            f"Declare {s.name} at a trusted contract address and call its typed external methods.",
+            ["typed integration with an existing contract", "feature-gating based on external state"],
+            f"{s.name} dependency = {s.name}(trustedAddress);",
+            "Treat the interface as a trust boundary: validate returned data, permissions, callbacks, and assumptions about the implementation behind the address.",
+        )
+    if s.kind == "library":
+        return (
+            f"Import {s.name} and use its reusable helper logic directly or with Solidity's using-for syntax when appropriate.",
+            ["reusable helper logic", "shared validation or math"],
+            f"using {s.name} for SomeType;",
+            "Review library assumptions, unsafe external calls, storage context, and whether the helper is suitable for the values and invariants in your protocol.",
+        )
+    if s.kind == "contract":
+        return (
+            f"Inherit from or instantiate {s.name} after reading its constructor, public API, and extension points.",
+            ["shared base contract behavior", "standardized implementation reuse"],
+            f"contract MyContract is {s.name} {{ }}",
+            "Inspect inherited behavior and every override/hook boundary; dependency code is part of your attack surface even when it lives under lib/.",
+        )
+    if s.kind in {"struct", "enum", "type", "error", "constant"}:
+        return (
+            f"Import {s.name} from its defining file and reuse the exact declared type/value across contracts.",
+            ["shared protocol data models", "consistent error/state definitions", "cross-file typing"],
+            f"{s.name} value = /* construct or use the imported declaration */;",
+            "Check ABI/storage compatibility, enum bounds, custom-type conversions, and whether shared definitions drift between packages or versions.",
+        )
+    return (
+        f"Read the defining source for {s.name}, then import it where the compiler can resolve the file.",
+        ["shared source-level helpers", "cross-file reuse"],
+        "",
+        "Verify the imported symbol's trust boundary, inputs/outputs, state effects, and version assumptions before relying on it.",
+    )
+
+
+def install_symbols(symbols: list[Symbol], root: Path) -> int:
+    commands: dict[str, tuple[str, str]] = {}
+    for symbol in symbols:
+        package, command = install_guidance(symbol, root)
+        if command.startswith("forge install "):
+            commands[command] = (package, command)
+
+    if not commands:
+        print()
+        print("No safe automatic install command is available for the requested symbol(s).")
+        print("They may already be local project sources or a dependency without a verified Git remote.")
+        return 2
+
+    print()
+    print("FOUNDRY INSTALL")
+    print("----------------")
+    for package, command in commands.values():
+        print(f"  {package}: {command}")
+
+    for package, command in commands.values():
+        try:
+            result = subprocess.run(command.split(), cwd=root, text=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"  FAILED: {package}: {exc}")
+            return 1
+        if result.returncode != 0:
+            print(f"  FAILED: {package} (forge exited {result.returncode})")
+            return result.returncode
+
+    print()
+    print("Install complete. Re-run lk import <symbol> to resolve the actual source/remapping.")
+    return 0
 
 
 def explain(s: Symbol) -> tuple[str, str]:
@@ -392,16 +669,31 @@ def show_copy_imports(
             print(f"NOTE: requested path was not the defining source: {requested_path}")
             print("      Lowkey used the verified source path(s) above.")
 
-def show_symbol(s: Symbol):
+def show_symbol(s: Symbol, root: Path | None = None):
+    root = root or root_for()
     why, when = explain(s)
+    how, use_cases, example, audit = usage_guidance(s)
+    package, forge_command = install_guidance(s, root)
     print()
-    print(f"NAME:   {s.name}")
-    print(f"TYPE:   {s.kind}")
-    print(f"SOURCE: {s.source}")
-    print(f"IMPORT: {s.import_stmt}")
-    print(f"WHY:    {why}")
-    print(f"WHEN:   {when}")
-    print(f"LINE:   {s.line}")
+    print(f"NAME:       {s.name}")
+    print(f"TYPE:       {s.kind}")
+    print(f"SOURCE:     {s.source}")
+    print(f"IMPORT:     {s.import_stmt}")
+    print(f"WHY:        {why}")
+    print(f"WHEN:       {when}")
+    print(f"PACKAGE:    {package}")
+    print(f"FORGE:      {forge_command}")
+    print(f"HOW:        {how}")
+    if use_cases:
+        print("USE CASES:")
+        for item in use_cases:
+            print(f"  - {item}")
+    if example:
+        print("EXAMPLE:")
+        print(f"  {example}")
+    if audit:
+        print(f"AUDIT LENS: {audit}")
+    print(f"LINE:       {s.line}")
     show_copy_imports([s])
 
 
@@ -449,7 +741,7 @@ def browse_package(p: Package, root: Path, maps):
                           key=lambda s: (s.name.lower(), s.kind, str(s.source)))
             s = choose(syms, sym_render, "symbols")
             if s:
-                show_symbol(s)
+                show_symbol(s, root)
         else:
             print("Pick 1-5 or b.")
 
@@ -460,10 +752,17 @@ def common():
     print("exist in your project and its remapping must match the path.")
     print()
     for i, (name, (why, when, path)) in enumerate(COMMON.items(), 1):
+        meta = known_metadata(name)
+        package = meta.get("package", "Unknown package")
+        install = meta.get("forge_install", "No verified Forge install command")
         print(f"{i:>2}. {name}")
-        print(f"    import: import {{{name}}} from \"{path}\";")
-        print(f"    why:    {why}")
-        print(f"    when:   {when}")
+        print(f"    package: {package}")
+        print(f"    forge:   {install}")
+        print(f"    import:  import {{{name}}} from \"{path}\";")
+        print(f"    why:     {why}")
+        print(f"    when:    {when}")
+        if meta.get("use_cases"):
+            print(f"    use:     {', '.join(meta['use_cases'])}")
         print()
 
 
@@ -549,7 +848,7 @@ def print_import_file(
     return 0
 
 
-def import_query(query: str, root: Path, maps) -> int:
+def import_query(query: str, root: Path, maps, install: bool = False) -> int:
     requested_imports, requested_path, mode, namespace_alias = parse_import_query(query)
     tokens = [name for name, _alias in requested_imports]
 
@@ -591,6 +890,8 @@ def import_query(query: str, root: Path, maps) -> int:
                 unique_found.append(symbol)
 
         if missing:
+            if install and unique_found:
+                print("Resolved symbols can be installed from their verified dependency metadata, but unresolved symbols are not installed yet.")
             print('UNRESOLVED SYMBOLS:')
             for name in missing:
                 print(f'  - {name}')
@@ -650,7 +951,7 @@ def import_query(query: str, root: Path, maps) -> int:
     syms = all_symbols(root, maps)
     exact = [s for s in syms if s.name.lower() in tokens or s.import_path.lower() in tokens]
     if len(exact) == 1:
-        show_symbol(exact[0])
+        show_symbol(exact[0], root)
         return 0
 
     matches = [
@@ -673,10 +974,17 @@ def import_query(query: str, root: Path, maps) -> int:
 
     s = choose(matches, sym_render, 'matching importable symbols')
     if s:
-        show_symbol(s)
+        show_symbol(s, root)
     return 0
 
-def run_category(category: str, root: Path, maps) -> int:
+def run_category(category: str, root: Path, maps, install: bool = False) -> int:
+    category = category.strip()
+    if category.lower().startswith("--install "):
+        install = True
+        category = category[10:].strip()
+    if category.lower().startswith("install "):
+        install = True
+        category = category[8:].strip()
     cat = category.lower()
     if cat in {"packages", "package", "deps"}:
         header("INSTALLED PACKAGES")
@@ -735,7 +1043,7 @@ def run_category(category: str, root: Path, maps) -> int:
         common()
         return 0
 
-    return import_query(category, root, maps)
+    return import_query(category, root, maps, install=install)
 
 
 def interactive(root: Path, maps) -> int:
@@ -766,15 +1074,27 @@ def main(argv=None) -> int:
     if args and args[0].lower() in {"--h", "--help", "-h", "help"}:
         print(HELP.strip())
         return 0
+
+    install = False
+    cleaned = []
+    for arg in args:
+        if arg.lower() == "--install":
+            install = True
+            continue
+        cleaned.append(arg)
+
     root = root_for()
     maps = remappings(root)
-    if not args:
+    if not cleaned:
+        if install:
+            print("Usage: lk import --install <symbol>")
+            return 2
         try:
             return interactive(root, maps)
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
-    return run_category(" ".join(args), root, maps)
+    return run_category(" ".join(cleaned), root, maps, install=install)
 
 
 if __name__ == "__main__":
