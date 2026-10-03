@@ -102,9 +102,18 @@ def remappings(root: Path) -> list[tuple[str, Path]]:
     return sorted(out.items(), key=lambda x: (-len(x[0]), x[0]))
 
 
+def usable_prefix(prefix: str) -> bool:
+    # Forge can expose nested dependency remappings such as
+    # "lib/openzeppelin-contracts/:forge-std/". Those are useful to Forge
+    # internally but are not normal user-facing import paths.
+    return not prefix.startswith("lib/") and "/:" not in prefix and not prefix.startswith(":")
+
+
 def import_path(path: Path, root: Path, maps: list[tuple[str, Path]]) -> str:
     resolved = path.resolve()
     for prefix, target in maps:
+        if not usable_prefix(prefix):
+            continue
         try:
             return prefix + resolved.relative_to(target).as_posix()
         except ValueError:
@@ -121,9 +130,17 @@ def import_path(path: Path, root: Path, maps: list[tuple[str, Path]]) -> str:
 def sol_files(base: Path):
     if not base.is_dir():
         return
-    skip = {".git", "node_modules", "out", "cache", "broadcast", "test", "tests", "script", "scripts", "mocks", "mock", "fixtures", "examples"}
+    skip = {
+        ".git", "node_modules", "out", "cache", "broadcast",
+        "test", "tests", "script", "scripts", "mocks", "mock",
+        "fixtures", "examples", "lib", "fv", "docs", "certora",
+    }
     for p in base.rglob("*.sol"):
-        if p.is_file() and not any(part in skip for part in p.parts):
+        try:
+            rel_parts = p.relative_to(base).parts
+        except ValueError:
+            continue
+        if p.is_file() and not any(part in skip for part in rel_parts[:-1]):
             yield p
 
 
@@ -194,6 +211,33 @@ def explain(s: Symbol) -> tuple[str, str]:
     return f"Importable {s.kind} {s.name}.", "Read its source/API before using it."
 
 
+def package_prefix(package: Path, maps: list[tuple[str, Path]]) -> str | None:
+    candidates = []
+    package = package.resolve()
+    for prefix, target in maps:
+        if not usable_prefix(prefix):
+            continue
+        target = target.resolve()
+        if target != package and package not in target.parents:
+            continue
+        try:
+            depth = len(target.relative_to(package).parts)
+        except ValueError:
+            continue
+        # Prefer mappings aimed closest to the package root. This prevents a
+        # nested dependency mapping from masquerading as the package prefix.
+        candidates.append((
+            depth,
+            0 if prefix.startswith("@") else 1,
+            -len(prefix),
+            prefix,
+        ))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0][3]
+
+
 def packages(root: Path, maps: list[tuple[str, Path]]) -> list[Package]:
     lib = root / "lib"
     if not lib.is_dir():
@@ -202,8 +246,7 @@ def packages(root: Path, maps: list[tuple[str, Path]]) -> list[Package]:
     for p in sorted(lib.iterdir(), key=lambda x: x.name.lower()):
         if not p.is_dir() or p.name.startswith("."):
             continue
-        prefix = next((prefix for prefix, target in maps if p.resolve() == target.resolve() or p.resolve() in target.resolve().parents), None)
-        out.append(Package(p.name, p, prefix))
+        out.append(Package(p.name, p, package_prefix(p, maps)))
     return out
 
 
