@@ -5520,7 +5520,16 @@ def _validate_project_lab_target(config, root, rpc, target, requested=None):
 
     original_contract = config.get("target_contract")
     config["target_contract"] = str(requested).strip() if requested else None
-    artifact = auto_abi_path(target, config, root=root)
+
+    # Target validation may be called immediately after a native deployment,
+    # before the caller has persisted its RPC into config. Keep the exact lab
+    # RPC in the resolver context so EIP-1967 proxies can be mapped to their
+    # live first-party implementation rather than being mistaken for an
+    # unrelated dependency artifact.
+    resolver_config = dict(config)
+    resolver_config["rpc"] = rpc
+
+    artifact = auto_abi_path(target, resolver_config, root=root)
     if not artifact:
         config["target_contract"] = original_contract
         return None, None, "selected address could not be mapped to a current-project application artifact"
