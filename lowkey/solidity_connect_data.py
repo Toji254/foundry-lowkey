@@ -1964,7 +1964,7 @@ _SEMANTIC_ALIASES = {
     "function-signature": "function-signature",
     "selector": "function-selector",
     "function-selector": "function-selector",
-    "keccak-selectors": "function-selector",
+    "keccak-selectors": "keccak-selectors",
     "keccak": "keccak256",
     "keccak256": "keccak256",
     "hash": "keccak256",
@@ -6082,6 +6082,9 @@ _DEEP_EXTRA_MEANINGS = {
     "permit-pattern": "Signature-authorized token operation combining typed data, hashing, nonces, signer recovery, and state updates.",
     "safe-pattern": "Multisignature execution pattern combining owners, threshold, transaction hashing, nonce, signatures, modules, and fallback handling.",
 }
+
+# Plain keccak should explain hashing itself. Selector derivation is a separate graph node.
+_EXTRA_MEANINGS["keccak256"] = "Keccak-256 hashes bytes and returns the digest as bytes32."
 _EXTRA_MEANINGS.update(_DEEP_EXTRA_MEANINGS)
 _EXTRA_CONCEPTS.update(_DEEP_EXTRA_MEANINGS)
 
