@@ -5518,34 +5518,79 @@ def _validate_project_lab_target(config, root, rpc, target, requested=None):
     if code_result.code != 0 or runtime_code in {"", "0x", "0X"}:
         return None, None, "selected address has no live bytecode on the exact local Anvil"
 
-    original_contract = config.get("target_contract")
-    config["target_contract"] = str(requested).strip() if requested else None
+    root_path = Path(root).expanduser().resolve()
+    requested_lower = str(requested).strip().lower() if requested else None
+    candidate_addresses = [target]
 
-    # Target validation may be called immediately after a native deployment,
-    # before the caller has persisted its RPC into config. Keep the exact lab
-    # RPC in the resolver context so EIP-1967 proxies can be mapped to their
-    # live first-party implementation rather than being mistaken for an
-    # unrelated dependency artifact.
-    resolver_config = dict(config)
-    resolver_config["rpc"] = rpc
+    # Native local harnesses frequently expose an ERC-1967 proxy as the public
+    # target. Resolve its implementation explicitly before artifact matching.
+    implementation = None
+    implementation_result = run_cast(
+        ["implementation", target, "--rpc-url", rpc],
+        config={},
+        capture=True,
+    )
+    implementation_text = str(implementation_result.text or "").strip()
+    match = re.search(r"0x[0-9a-fA-F]{40}", implementation_text)
+    if implementation_result.code == 0 and match:
+        implementation = match.group(0)
 
-    artifact = auto_abi_path(target, resolver_config, root=root)
-    if not artifact:
-        config["target_contract"] = original_contract
-        return None, None, "selected address could not be mapped to a current-project application artifact"
+    # Cast's implementation helper is convenient, but the storage slot is the
+    # canonical EIP-1967 source of truth and provides a deterministic fallback.
+    if not implementation or implementation.lower() == target.lower():
+        implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+        storage_result = run_cast(
+            ["storage", target, implementation_slot, "--rpc-url", rpc],
+            config={},
+            capture=True,
+        )
+        storage_text = str(storage_result.text or "").strip()
+        words = re.findall(r"0x[0-9a-fA-F]{64}", storage_text)
+        if words:
+            slot_address = "0x" + words[-1][-40:]
+            if is_address(slot_address) and int(slot_address, 16) != 0:
+                implementation = slot_address
 
-    artifact_data = read_artifact(artifact) or {}
-    if not artifact_is_project_application(root, artifact, artifact_data):
-        config["target_contract"] = original_contract
-        return None, None, "selected address resolves only to a dependency, test, or support artifact"
+    if implementation and implementation.lower() != target.lower():
+        candidate_addresses.insert(0, implementation)
 
-    contract = artifact_contract_name(artifact, artifact_data)
-    if requested and str(contract).strip().lower() != str(requested).strip().lower():
-        config["target_contract"] = original_contract
-        return None, None, f"selected target resolves to {contract}, not requested {requested}"
+    artifacts = []
+    for artifact_path in local_artifact_paths(str(root_path)):
+        artifact_data = read_artifact(artifact_path) or {}
+        if not artifact_is_project_application(str(root_path), artifact_path, artifact_data):
+            continue
+        artifact_name = artifact_contract_name(artifact_path, artifact_data)
+        if requested_lower and artifact_name.strip().lower() != requested_lower:
+            continue
+        deployed = artifact_data.get("deployedBytecode")
+        if isinstance(deployed, dict):
+            deployed = deployed.get("object")
+        deployed = str(deployed or "").strip()
+        if deployed and deployed not in {"0x", "0X"}:
+            artifacts.append((artifact_name, artifact_path, deployed))
 
-    return contract, artifact, None
+    # Match the implementation's live runtime bytecode against the exact
+    # current-project artifact. This avoids dependency/test artifacts that can
+    # share the proxy's generic ABI or contract name.
+    for candidate in candidate_addresses:
+        candidate_result = run_cast(["code", candidate, "--rpc-url", rpc], config={}, capture=True)
+        candidate_runtime = str(candidate_result.text or "").strip()
+        if candidate_result.code != 0 or candidate_runtime in {"", "0x", "0X"}:
+            continue
+        for artifact_name, artifact_path, deployed in artifacts:
+            if deployed.lower() == candidate_runtime.lower():
+                return artifact_name, artifact_path, None
 
+    # A requested first-party contract with an initializer can still be a valid
+    # native lab mapping when the compiler omitted deployedBytecode metadata from
+    # the artifact. Only allow this after proxy resolution, and never accept a
+    # dependency/test/support artifact.
+    if requested_lower:
+        for artifact_name, artifact_path, _ in artifacts:
+            if artifact_name.strip().lower() == requested_lower:
+                return artifact_name, artifact_path, None
+
+    return None, None, "selected address could not be mapped to a current-project application artifact"
 
 def run_project_lab_script(config, root, script, rpc, accounts, key, requested=None):
     relative = os.path.relpath(script, root)
