@@ -10088,7 +10088,7 @@ def run_audit(config, args):
     _sync_security_patterns(root, announce=True)
 
     stacks = set(info.get("stacks", []))
-    if "foundry" in stacks or not stacks:
+    if info.get("backend") == "foundry" or "foundry" in stacks:
         _sync_audit_context(config, root)
         try:
             from forge_tools import run_audit as run_forge_audit
