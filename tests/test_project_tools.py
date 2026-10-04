@@ -73,6 +73,32 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertEqual(project["sources"]["solidity"], 1)
             self.assertEqual(project["sources"]["vyper"], 1)
 
+    def test_first_party_lib_source_is_not_hidden_by_directory_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "lib/Protocol.sol", "pragma solidity ^0.8.20; contract Protocol {}")
+            files = project_tools.project_source_files(root, {"sol"})
+            self.assertEqual(
+                [path.relative_to(root).as_posix() for path in files],
+                ["lib/Protocol.sol"],
+            )
+
+    def test_remapped_lib_dependency_is_hidden_from_source_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "remappings.txt", "@openzeppelin/=lib/openzeppelin-contracts/contracts/\n")
+            self.write(
+                root,
+                "lib/openzeppelin-contracts/contracts/Ownable.sol",
+                "pragma solidity ^0.8.20; abstract contract Ownable {}",
+            )
+            self.write(root, "src/Vault.sol", "pragma solidity ^0.8.20; contract Vault {}")
+            files = project_tools.project_source_files(root, {"sol"})
+            self.assertEqual(
+                [path.relative_to(root).as_posix() for path in files],
+                ["src/Vault.sol"],
+            )
+
     def test_dependency_graph_connects_local_solidity_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
