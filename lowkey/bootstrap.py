@@ -766,6 +766,17 @@ def project_build_command(
     backend = str((info or {}).get("backend") or (info or {}).get("kind") or "").lower()
     if backend in {"foundry", "multi-stack"} and (project / "foundry.toml").is_file():
         return project, ["forge", "build"], "foundry.toml"
+    if backend == "vyper" and shutil.which("vyper"):
+        sources = sorted(
+            path for path in project.rglob("*.vy")
+            if all(part not in {".git", ".audit", "node_modules", ".venv", "venv"} for part in path.parts)
+        )
+        if len(sources) == 1:
+            rel = str(sources[0].relative_to(project))
+            return project, ["vyper", rel], "Vyper compiler"
+        if not sources:
+            return None
+
     if backend in {"hardhat", "node"} or any(
         (project / name).is_file()
         for name in ("hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts")
