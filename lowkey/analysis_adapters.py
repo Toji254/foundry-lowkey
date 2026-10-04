@@ -630,6 +630,41 @@ def _nested_project_roots(root: Path, max_depth: int = 5) -> list[Path]:
             found.append(current_path)
     return sorted(set(found))
 
+def _workspace_manifest_member(root: Path) -> Path | None:
+    package = _json_object(root / "package.json")
+    workspaces = package.get("workspaces")
+    if isinstance(workspaces, dict):
+        patterns = workspaces.get("packages") or []
+    elif isinstance(workspaces, list):
+        patterns = workspaces
+    else:
+        patterns = []
+    if not isinstance(patterns, list):
+        return None
+
+    candidates: list[Path] = []
+    project_markers = {
+        "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
+        "Cargo.toml", "go.mod", "pyproject.toml",
+        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts",
+        "ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml",
+    }
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern.strip():
+            continue
+        try:
+            matches = root.glob(pattern)
+        except (OSError, ValueError):
+            continue
+        for candidate in matches:
+            if not candidate.is_dir():
+                continue
+            if any((candidate / name).is_file() for name in project_markers):
+                candidates.append(candidate.resolve())
+
+    unique = sorted(set(candidates))
+    return unique[0] if len(unique) == 1 else None
+
 def _workspace_selected_project(root: Path) -> Path | None:
     data = _json_object(root / ".audit" / "workspace.json")
     active = data.get("active_project")
@@ -673,6 +708,10 @@ def canonical_project_root(start: str | os.PathLike[str] = ".") -> Path:
     selected = _workspace_selected_project(nearest)
     if selected is not None:
         return selected
+
+    manifest_member = _workspace_manifest_member(nearest)
+    if manifest_member is not None:
+        return manifest_member
 
     is_workspace = (
         (nearest / "pnpm-workspace.yaml").is_file()
