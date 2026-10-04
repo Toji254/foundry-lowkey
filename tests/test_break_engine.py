@@ -672,5 +672,66 @@ class BreakEngineTests(unittest.TestCase):
         self.assertTrue(broken.break_condition)
 
 
+    def test_asset_getter_discovery_and_token_tracking_renderer(self):
+        functions = [{
+            "name": "stakeToken",
+            "inputs": [],
+            "outputs": [{"type": "address"}],
+            "stateMutability": "view",
+        }]
+        self.assertEqual(
+            break_engine._find_asset_getter_signature(functions),
+            "stakeToken()",
+        )
+        target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)
+        fn = {"name": "withdraw", "inputs": [], "stateMutability": "nonpayable"}
+        body = break_engine._render_repeat_test(
+            target, fn, "withdraw()", [], "0", "accounting", "10ether",
+            entitlement_signature="balances(address)",
+            asset_signature="stakeToken()",
+        )
+        self.assertIn("deal(assetToken, ATTACKER, 1 ether)", body)
+        self.assertIn("IERC20Lowkey(assetToken).balanceOf(ATTACKER)", body)
+        self.assertIn('console2.log("TOTAL_ATTACKER_TOKEN_GAIN"', body)
+        self.assertIn("assetReadOk && totalTokenGain > entitlementBefore", body)
+
+    def test_result_parser_marks_invalid_setup_as_lab_issue(self):
+        target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)
+        output = """LOWKEY_BREAK_FAMILY accounting
+SETUP_SUCCESS false
+SETUP_RETURNDATA_LENGTH 36
+0x
+"""
+        result = break_engine._result_from_output(
+            type("Host", (), {"tool_path": lambda self, name: name})(),
+            family="accounting",
+            target=target,
+            function="withdraw()",
+            output=output,
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(result.status, "LAB_ISSUE")
+
+    def test_result_parser_marks_failed_first_probe_as_blocked(self):
+        target = break_engine.Target("ConfidencePool", "0x" + "1" * 40)
+        output = """LOWKEY_BREAK_FAMILY accounting
+FIRST_SUCCESS false
+FIRST_RETURNDATA_LENGTH 0
+SECOND_SUCCESS false
+SECOND_RETURNDATA_LENGTH 0
+"""
+        result = break_engine._result_from_output(
+            type("Host", (), {"tool_path": lambda self, name: name})(),
+            family="accounting",
+            target=target,
+            function="withdraw()",
+            output=output,
+            evidence_path=None,
+            config={},
+        )
+        self.assertEqual(result.status, "BLOCKED")
+
+
 if __name__ == "__main__":
     unittest.main()
