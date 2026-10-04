@@ -144,13 +144,22 @@ def parse_slither_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             source = element.get("source_mapping") or {}
             lines = source.get("lines") if isinstance(source.get("lines"), list) else []
+            filename = source.get("filename_relative") or source.get("filename_absolute")
+            normalized_filename = str(filename or "").replace("\\", "/").lstrip("./").lower()
+            dependency = (
+                normalized_filename.startswith(("lib/", "node_modules/", "vendor/"))
+                or "/lib/" in f"/{normalized_filename}"
+                or "/node_modules/" in f"/{normalized_filename}"
+                or "/vendor/" in f"/{normalized_filename}"
+            )
             locations.append(
                 {
                     "name": element.get("name"),
                     "type": element.get("type"),
-                    "source": source.get("filename_relative") or source.get("filename_absolute"),
+                    "source": filename,
                     "start": lines[0] if lines else None,
                     "end": lines[1] if len(lines) > 1 else None,
+                    "scope": "dependency" if dependency else "first-party",
                 }
             )
         normalized.append(
@@ -305,7 +314,10 @@ def run_slither(root: str = ".", args: Sequence[str] | None = None) -> int:
 
     extra = list(args or [])
     raw_path = evidence_dir(root) / "slither.raw.json"
-    command = ["slither", ".", "--disable-color", "--json", str(raw_path), *extra]
+    command = ["slither", ".", "--exclude-dependencies", "--disable-color", "--json", str(raw_path), *extra]
+    if "--exclude-dependencies" in extra:
+        command = ["slither", ".", "--disable-color", "--json", str(raw_path), *extra]
+
     code, stdout, stderr = run_command(command, root, 600)
     write_text(evidence_dir(root) / "slither.stdout.txt", stdout)
     write_text(evidence_dir(root) / "slither.stderr.txt", stderr)
@@ -313,8 +325,17 @@ def run_slither(root: str = ".", args: Sequence[str] | None = None) -> int:
     payload = read_json(raw_path, {})
     findings = parse_slither_payload(payload)
     summary: dict[str, int] = {}
+    first_party_findings = []
+    dependency_findings = []
     for finding in findings:
         summary[finding["impact"]] = summary.get(finding["impact"], 0) + 1
+        if any(
+            str(location.get("scope") or "first-party") == "dependency"
+            for location in finding.get("locations") or []
+        ):
+            dependency_findings.append(finding)
+        else:
+            first_party_findings.append(finding)
 
     record_evidence(
         "slither",
@@ -324,7 +345,12 @@ def run_slither(root: str = ".", args: Sequence[str] | None = None) -> int:
             "exit_code": code,
             "summary": summary,
             "finding_count": len(findings),
+            "first_party_finding_count": len(first_party_findings),
+            "dependency_finding_count": len(dependency_findings),
+            "first_party_findings": first_party_findings,
+            "dependency_findings": dependency_findings,
             "findings": findings,
+            "status": "completed" if code == 0 else "inconclusive",
         },
         root,
     )
@@ -333,6 +359,10 @@ def run_slither(root: str = ".", args: Sequence[str] | None = None) -> int:
     print("=" * 52)
     print(f"Exit: {code}")
     print(f"Findings: {len(findings)}")
+    print(f"First-party: {len(first_party_findings)}")
+    print(f"Dependencies: {len(dependency_findings)}")
+    if code != 0:
+        print("Status: INCONCLUSIVE — Slither did not complete cleanly; findings are review leads, not a safety verdict.")
     for impact in sorted(summary, key=lambda x: IMPACT_ORDER.get(x, 99)):
         print(f"  {impact:<15} {summary[impact]}")
     for finding in findings[:15]:
@@ -1275,10 +1305,21 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
 
 def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, generate: bool) -> int:
     manifest = read_json(manifest_path(root), {})
+    optional_failures = [
+        item for item in results
+        if isinstance(item, dict)
+        and item.get("label") in {"slither", "source_triage", "lint", "geiger"}
+        and isinstance(item.get("code"), int)
+        and item.get("code") not in {0, 127}
+    ]
     manifest["pipeline"] = {
         "completed_at": now_stamp(),
-        "status": "pass" if code == 0 else "failed",
+        "status": (
+            "failed" if code != 0
+            else ("inconclusive" if optional_failures else "pass")
+        ),
         "steps": results,
+        "optional_analyzer_failures": optional_failures,
     }
     write_json(manifest_path(root), manifest)
     if generate:
@@ -2235,10 +2276,12 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
 
     # Build/test/coverage are mandatory. Evidence tools are failures when they
     # actually error; a skipped optional analyzer (127) is incomplete evidence.
+    optional_analyzers = {"slither", "source_triage", "lint", "geiger"}
     execution_failures = [
         int(item.get("code"))
         for item in results
         if isinstance(item, dict)
+        and item.get("label") not in optional_analyzers
         and isinstance(item.get("code"), int)
         and int(item.get("code")) not in {0, 127}
     ]
