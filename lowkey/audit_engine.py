@@ -771,6 +771,23 @@ def run_source_triage(root: str = ".") -> int:
         from analysis_adapters import source_triage
         universal = source_triage(root)
         project_info = universal.get("project") or {}
+
+        # Keep the shared project security-pattern state synchronized even when
+        # the universal analyzer handles the repository. This is best-effort:
+        # triage evidence must survive if optional EVM artifact tooling is absent.
+        try:
+            from walkthrough import _artifact_models
+            from walkthrough_finding_patterns import scan_project, persist_security_patterns
+            universal_root = Path(project_info.get("root") or root).resolve()
+            models = _artifact_models(universal_root)
+            if models:
+                persist_security_patterns(
+                    universal_root,
+                    scan_project(universal_root, models),
+                )
+        except Exception:
+            pass
+
         record_evidence(
             "source_triage",
             {
