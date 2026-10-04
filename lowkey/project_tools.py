@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 try:
+    from analysis_adapters import inspect_repository
+except ImportError:
+    inspect_repository = None
+
+try:
     from project_detection import project_root as detected_project_root
 except ImportError:
     detected_project_root = None
@@ -319,6 +324,11 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
                 observed.append(first)
         candidate_roots = observed or ["."]
 
+    try:
+        analysis = inspect_repository(root_path) if inspect_repository is not None else {}
+    except Exception as exc:
+        analysis = {"coverage": "unknown", "analysis_status": "detection-error", "error": str(exc)}
+
     return {
         "root": str(root_path),
         "kind": kind,
@@ -347,9 +357,11 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         "submodules": _git_submodules(root_path),
         "solidity_compilers": _solidity_compiler_versions(root_path),
         "sources": {
+            **(analysis.get("languages") or {}) if isinstance(analysis, dict) else {},
             "solidity": len(sol_files),
             "vyper": len(vy_files),
         },
+        "analysis": analysis,
         "source_roots": candidate_roots,
     }
 
@@ -638,12 +650,22 @@ def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
 def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
     root_path = project_root(root)
     files = project_source_files(root_path)
+    analysis_files = []
+    try:
+        if inspect_repository is not None:
+            analysis = inspect_repository(root_path)
+            analysis_files = [root_path / item for item in (analysis.get("source_files") or [])]
+    except Exception:
+        analysis_files = []
+    if not files and analysis_files:
+        files = [path for path in analysis_files if path.is_file()]
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
 
     for path in files:
-        language = "solidity" if path.suffix.lower() == ".sol" else "vyper"
+        suffix = path.suffix.lower()
+        language = "solidity" if suffix == ".sol" else "vyper" if suffix in {".vy", ".vyi"} else suffix.lstrip(".") or "unknown"
         text = _read(path)
         rel = _relative(path, root_path)
         declarations = _declarations(text, language, path)
