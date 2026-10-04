@@ -448,25 +448,33 @@ class ProjectDetectionTests(unittest.TestCase):
             calls = []
 
             def fake_run(command, cwd):
-                calls.append((list(command), cwd))
+                calls.append(list(command))
                 return 0, "ok"
 
-            with patch.object(project_detection, "bootstrap_project", return_value=0), \
-                 patch.object(project_detection.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
-                 patch.object(project_detection, "run_native_audit") as nested, \
-                 patch.object(project_detection, "_run", side_effect=fake_run):
-                nested.side_effect = [0, 0]
-                code = project_detection.run_native_audit({
+            info = {
+                "root": str(root),
+                "backend": "multi",
+                "stacks": ["cairo-starknet", "evm-source"],
+                "native": {"scarb": True, "snforge": True},
+                "analysis": {
                     "root": str(root),
                     "backend": "multi",
                     "stacks": ["cairo-starknet", "evm-source"],
-                    "native": {"scarb": True, "snforge": True},
-                    "analysis": {"root": str(root), "backend": "multi", "stacks": ["cairo-starknet", "evm-source"], "languages": {"cairo": 1, "solidity": 1}},
-                })
+                    "languages": {"cairo": 1, "solidity": 1},
+                },
+                "_bootstrap_done": True,
+            }
+
+            with patch.object(project_detection, "bootstrap_project", return_value=0), \
+                 patch.object(project_detection.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
+                 patch.object(project_detection, "_run", side_effect=fake_run), \
+                 patch.object(project_detection, "_supplemental_native_tests", return_value=0), \
+                 patch("audit_engine.run_slither_project", return_value=0):
+                code = project_detection.run_native_audit(info)
+
             self.assertEqual(code, 0)
-            self.assertEqual(nested.call_count, 2)
-            self.assertEqual(nested.call_args_list[0].args[0]["_native_backend"], "cairo-starknet")
-            self.assertEqual(nested.call_args_list[1].args[0]["_native_backend"], "evm-source")
+            self.assertIn(["scarb", "build"], calls)
+            self.assertIn(["snforge", "test"], calls)
 
     def test_native_timeout_is_bounded_and_configurable(self):
         with patch.dict(project_detection.os.environ, {"LOWKEY_NATIVE_TIMEOUT": "45"}, clear=False):
