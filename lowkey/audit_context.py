@@ -132,6 +132,12 @@ def _is_audit_project(root: Path) -> bool:
     if _is_lowkey_source_root(root):
         return False
 
+    # An explicit Foundry manifest is sufficient to own project-scoped audit state.
+    # Detection may intentionally classify a partially bootstrapped fixture as generic,
+    # but the manifest still establishes that this directory is a user project.
+    if (root / "foundry.toml").is_file():
+        return True
+
     if detected_project is None:
         return any(
             (root / marker).exists()
