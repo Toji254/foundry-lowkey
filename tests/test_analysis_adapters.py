@@ -234,6 +234,21 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertEqual(result["results"][0]["status"], "passed")
             self.assertIn(["cargo", "audit", "--json"], [call.args[0] for call in run.call_args_list])
 
+    def test_source_only_vyper_scope_reports_partial_coverage_but_scan_completes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "contracts").mkdir()
+            (root / "contracts" / "Vault.vy").write_text(
+                "# pragma version ^0.4.0\n\n@external\ndef ping() -> uint256:\n    return 1\n",
+                encoding="utf-8",
+            )
+            info = analysis_adapters.inspect_repository(root)
+            self.assertEqual(info["backend"], "vyper")
+            self.assertEqual(info["coverage"], "partial")
+            self.assertEqual(info["analysis_status"], "ready")
+            with patch.object(analysis_adapters, "run_security_analysis", return_value={"results": []}):
+                self.assertEqual(analysis_adapters.scan_repository(root), 0)
+
     def test_scan_returns_review_exit_for_partial_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
