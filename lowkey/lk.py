@@ -4125,9 +4125,12 @@ def _fixture_state_files(root, safe_name):
     return state_dir / f"fixture_state_{safe_name}.json"
 
 
-def _generate_test_fixture_lab_script(root, candidate, state_path):
+def _generate_test_fixture_lab_script(root, candidate, state_path=None):
     """Generate a test contract so Forge executes the fixture in its native test context."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
+    if state_path is None:
+        state_path = root_path / ".audit" / "lab" / "fixture-state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
     relative = str(candidate["relative"]).replace("\\", "/")
     contract = str(candidate["contract"])
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
