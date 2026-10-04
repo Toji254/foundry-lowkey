@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -50,24 +51,83 @@ def _canonical_type(param: dict[str, Any]) -> str:
 
 def _run(root: Path, binary: str, args: list[str]) -> tuple[int, str, str]:
     command = [binary, *args]
+    process = None
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=root,
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=180,
             start_new_session=(os.name == "posix"),
         )
+        stdout, stderr = process.communicate(timeout=180)
+        return process.returncode, (stdout or "").strip(), (stderr or "").strip()
     except subprocess.TimeoutExpired as exc:
-        return (
-            124,
-            (exc.stdout or "").strip(),
-            ((exc.stderr or "").strip() + "\nLOWKEY_GENERATOR_TIMEOUT true").strip(),
-        )
+        if process is not None:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.kill()
+            except OSError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except OSError:
+                    pass
+                stdout, stderr = process.communicate()
+        else:
+            stdout, stderr = exc.stdout or "", exc.stderr or ""
+        return 124, (stdout or "").strip(), ((stderr or "").strip() + "\nLOWKEY_GENERATOR_TIMEOUT true").strip()
     except OSError as exc:
         return 127, "", str(exc)
-    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def _forge_std_available(root: Path) -> bool:
+    """Return whether this project can resolve forge-std imports."""
+    if (root / "lib" / "forge-std").is_dir():
+        return True
+    for name in ("remappings.txt", "foundry.toml"):
+        path = root / name
+        try:
+            if path.is_file() and "forge-std" in path.read_text(encoding="utf-8", errors="ignore"):
+                return True
+        except OSError:
+            continue
+    binary = shutil.which("forge")
+    if not binary:
+        return False
+    code, remappings, _err = _run(root, binary, ["remappings"])
+    return code == 0 and any(line.strip().startswith("forge-std/") for line in remappings.splitlines())
+
+
+def _write_generated_scaffold(
+    root: Path,
+    requested: Path | None,
+    default: Path,
+    content: str,
+    force: bool,
+) -> int:
+    if not _forge_std_available(root):
+        path = requested or default
+        path = path if path.is_absolute() else root / path
+        print(
+            f"Error: cannot generate {path.name}: this project cannot resolve "
+            "'forge-std/Script.sol'. Writing the scaffold would contaminate "
+            "later build/lint/coverage/test runs. Install forge-std first:"
+        )
+        print("  forge install foundry-rs/forge-std --no-commit")
+        return 2
+    _write(root, requested, default, content, force)
+    return 0
 
 
 def artifact_files(root: Path) -> list[Path]:
@@ -1143,13 +1203,10 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         if request.output is None:
             _cleanup_generated_deployments(root, request.contract or "", contract)
 
-        output = _write(
-            root,
-            request.output,
-            default_output,
-            content,
-            request.force,
-        )
+        code = _write_generated_scaffold(root, request.output, default_output, content, request.force)
+        if code != 0:
+            return code
+        output = request.output if request.output and request.output.is_absolute() else root / (request.output or default_output)
         print(f"Deployment script generated: {output}")
         for line in env_help:
             print(f"  {line}")
@@ -1239,7 +1296,10 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             )
         default = Path("test") / f"LowkeyTest_{ident}.t.sol"
 
-    output = _write(root, request.output, default, content, request.force)
+    code = _write_generated_scaffold(root, request.output, default, content, request.force)
+    if code != 0:
+        return code
+    output = request.output if request.output and request.output.is_absolute() else root / (request.output or default)
 
     brief_dir = root / ".audit" / "poc"
     brief_dir.mkdir(parents=True, exist_ok=True)
