@@ -1825,11 +1825,16 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
         reads = sorted(set(reads + [name]))
 
     events = sorted(set(re.findall(r"\bemit\s+([A-Za-z_]\w*)\s*(?:\(|;)", body)))
+    sends_eth = bool(re.search(r"\.\s*call\s*\{\s*value\s*:", body)) or bool(
+        re.search(r"\.\s*(?:send|transfer)\s*\(", body)
+    )
     calls = [
         method for method in ("delegatecall", "staticcall", "call", "send", "transfer")
         if re.search(r"\.\s*" + method + r"\s*(?:\{|\()", body)
     ]
-    sends_eth = bool(re.search(r"\.\s*call\s*\{\s*value\s*:", body)) or bool(
+    if sends_eth and "call" not in calls and re.search(r"\.\s*call\s*\{\s*value\s*:", body):
+        calls.append("call")
+    sends_eth = sends_eth or False
         re.search(r"\.\s*(?:send|transfer)\s*\(", body)
     )
     receives_eth = mutability == "payable"
