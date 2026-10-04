@@ -39,9 +39,9 @@ def _dependency_prefixes(root: Path) -> set[str]:
     gitmodules = root / ".gitmodules"
     if gitmodules.is_file():
         for line in _safe_read(gitmodules).splitlines():
-            match = re.match(r"\\s*path\\s*=\\s*(.+?)\\s*$", line)
+            match = re.match(r"\s*path\s*=\s*(.+?)\s*$", line)
             if match:
-                value = match.group(1).strip().replace("\\\\", "/").strip("./")
+                value = match.group(1).strip().replace("\\", "/").strip("./")
                 if value:
                     prefixes.add(value)
     remappings = root / "remappings.txt"
@@ -51,7 +51,7 @@ def _dependency_prefixes(root: Path) -> set[str]:
             if not value or value.startswith("#") or "=" not in value:
                 continue
             _prefix, destination = (part.strip() for part in value.split("=", 1))
-            destination = destination.replace("\\\\", "/").strip("./")
+            destination = destination.replace("\\", "/").strip("./")
             if destination:
                 prefixes.add(destination.rstrip("/"))
     return prefixes
