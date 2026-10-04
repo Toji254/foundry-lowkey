@@ -1409,6 +1409,7 @@ def combined_import(symbols: list[Symbol], aliases: dict[str, str] | None = None
 
 
 def show_copy_imports(symbols: list[Symbol], requested_path: str | None = None, aliases: dict[str, str] | None = None, copy_only: bool = False):
+    aliases = aliases or {}
     if not copy_only:
         print("\nCOPY:")
     override = str(requested_path or "").strip()
