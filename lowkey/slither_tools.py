@@ -444,6 +444,7 @@ def _summary(
     print("=" * 56)
     _print_scope(scope)
     print(f"\nFindings reported by Slither: {len(detectors)}")
+    print(f"Findings discovered: {len(detectors)}")
 
     if not detectors:
         print("\nNo Slither detector findings were reported.")
