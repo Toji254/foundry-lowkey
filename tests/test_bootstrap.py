@@ -188,7 +188,14 @@ class BootstrapTests(unittest.TestCase):
                 )
             return Result(0, stdout="Lockfile is up to date\n")
 
-        with patch.object(bootstrap.subprocess, "run", side_effect=fake_run):
+        plan = {
+            "project_root": str(action["cwd"]),
+            "workspace_root": str(action["cwd"]),
+            "dependency_root": str(action["cwd"]),
+            "runtime_requirements": {},
+            "actions": [action],
+        }
+        with patch.object(bootstrap, "bootstrap_plan", return_value=plan),              patch.object(bootstrap.subprocess, "run", side_effect=fake_run):
             code = bootstrap.run_bootstrap(
                 {
                     "root": str(action["cwd"]),
