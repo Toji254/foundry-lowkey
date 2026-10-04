@@ -825,68 +825,56 @@ interface IERC20Lowkey {{
     function balanceOf(address account) external view returns (uint256);
 }}
 
-/// @title Lowkey-generated proof of concept
-/// @notice Replays one concrete call and exposes the measurements needed for a security property.
 contract LowkeyPoC_{ident} is Script {{
     address internal constant TARGET = {_solidity_address_literal(target)};
 
-    function run() external {{
-        // SAFETY: start with Anvil or a local fork. A broadcasted script changes real chain state.
-        // Forge owns the signing identity. Pass --sender for simulation or --private-key when broadcasting;
-        // Lowkey deliberately does not invent a private-key environment variable in generated source.
-        address attacker;
+    struct TokenSnapshot {{
+        address token;
+        bool tracked;
+        uint256 targetBalance;
+        uint256 attackerBalance;
+    }}
 
-        vm.startBroadcast();
-        (, attacker, ) = vm.readCallers();
-
-        // recordLogs captures emitted events so you can inspect behavior, not just balances.
-        vm.recordLogs();
-        vm.record();
-
-        uint256 attackerBefore = attacker.balance;
-        uint256 targetBefore = TARGET.balance;
-
-        // Native ETH is only one possible asset. When the target exposes a
-        // conventional asset getter, also snapshot the ERC-20 balance.
-        address assetToken = address(0);
-        bool assetReadOk = false;
-        uint256 targetTokenBefore = 0;
-        uint256 attackerTokenBefore = 0;
-        (bool assetOk, bytes memory assetData) =
+    function _tokenSnapshot(address attacker) internal view returns (TokenSnapshot memory snapshot) {{
+        (bool ok, bytes memory data) =
             TARGET.staticcall(abi.encodeWithSignature("stakeToken()"));
-        if (!assetOk || assetData.length < 32) {{
-            (assetOk, assetData) = TARGET.staticcall(abi.encodeWithSignature("asset()"));
+        if (!ok || data.length < 32) {{
+            (ok, data) = TARGET.staticcall(abi.encodeWithSignature("asset()"));
         }}
-        if (assetOk && assetData.length >= 32) {{
-            assetToken = abi.decode(assetData, (address));
-            assetReadOk = assetToken != address(0) && assetToken.code.length > 0;
+        if (ok && data.length >= 32) {{
+            address token = abi.decode(data, (address));
+            if (token != address(0) && token.code.length > 0) {{
+                snapshot.token = token;
+                snapshot.tracked = true;
+                snapshot.targetBalance = IERC20Lowkey(token).balanceOf(TARGET);
+                snapshot.attackerBalance = IERC20Lowkey(token).balanceOf(attacker);
+            }}
         }}
-        if (assetReadOk) {{
-            targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
-            attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(attacker);
-        }}
+    }}
 
-        // Raw call is intentional: it replays exact calldata while you are still learning the ABI.
-        // Later, replace this with a typed interface call once the contract behavior is understood.
-        // forge-lint: disable-next-line(low-level-calls)
-        (bool success, bytes memory returndata) =
-            TARGET.call{{value: {_value(value)}}}(hex"{calldata}");
-
-        uint256 attackerAfter = attacker.balance;
-        uint256 targetTokenAfter = 0;
-        uint256 attackerTokenAfter = 0;
-        if (assetReadOk) {{
-            targetTokenAfter = IERC20Lowkey(assetToken).balanceOf(TARGET);
-            attackerTokenAfter = IERC20Lowkey(assetToken).balanceOf(attacker);
+    function _tokenAfter(
+        TokenSnapshot memory beforeSnapshot,
+        address attacker
+    ) internal view returns (TokenSnapshot memory afterSnapshot) {{
+        afterSnapshot = beforeSnapshot;
+        if (beforeSnapshot.tracked) {{
+            afterSnapshot.targetBalance = IERC20Lowkey(beforeSnapshot.token).balanceOf(TARGET);
+            afterSnapshot.attackerBalance = IERC20Lowkey(beforeSnapshot.token).balanceOf(attacker);
         }}
+    }}
 
-        // accesses exposes storage slots this transaction read/wrote.
-        // This is the Solidity-side counterpart to Lowkey's transaction state-diff workflow.
+    function _logEvidence(
+        bool success,
+        bytes memory returndata,
+        uint256 targetBefore,
+        uint256 targetAfter,
+        uint256 attackerBefore,
+        uint256 attackerAfter,
+        TokenSnapshot memory tokenBefore,
+        TokenSnapshot memory tokenAfter
+    ) internal {{
         (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(TARGET);
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        uint256 targetAfter = TARGET.balance;
-
-        vm.stopBroadcast();
 
         console2.log("Function:", "{function}");
         console2.log("Success:", success);
@@ -897,17 +885,53 @@ contract LowkeyPoC_{ident} is Script {{
         console2.log("Storage reads:", reads.length);
         console2.log("Storage writes:", writes.length);
         console2.log("Events emitted:", logs.length);
-        console2.log("Asset token tracked:", assetReadOk);
-        console2.log("Target token before:", targetTokenBefore);
-        console2.log("Target token after:", targetTokenAfter);
-        console2.log("Attacker token before:", attackerTokenBefore);
-        console2.log("Attacker token after:", attackerTokenAfter);
+        console2.log("Asset token tracked:", tokenBefore.tracked);
+        console2.log("Target token before:", tokenBefore.targetBalance);
+        console2.log("Target token after:", tokenAfter.targetBalance);
+        console2.log("Attacker token before:", tokenBefore.attackerBalance);
+        console2.log("Attacker token after:", tokenAfter.attackerBalance);
         console2.logBytes(returndata);
 
-        // Raw write-slot addresses are useful first evidence. Decode mapping/struct slots after that.
         for (uint256 i = 0; i < writes.length; i++) {{
             console2.logBytes32(writes[i]);
         }}
+    }}
+
+    function run() external {{
+        address attacker;
+
+        vm.startBroadcast();
+        (, attacker, ) = vm.readCallers();
+
+        vm.recordLogs();
+        vm.record();
+
+        uint256 attackerBefore = attacker.balance;
+        uint256 targetBefore = TARGET.balance;
+        TokenSnapshot memory tokenBefore = _tokenSnapshot(attacker);
+
+        // Raw call is intentional: it replays exact calldata while you are still learning the ABI.
+        // Later, replace this with a typed interface call once the contract behavior is understood.
+        // forge-lint: disable-next-line(low-level-calls)
+        (bool success, bytes memory returndata) =
+            TARGET.call{{value: {_value(value)}}}(hex"{calldata}");
+
+        uint256 attackerAfter = attacker.balance;
+        uint256 targetAfter = TARGET.balance;
+        TokenSnapshot memory tokenAfter = _tokenAfter(tokenBefore, attacker);
+
+        vm.stopBroadcast();
+
+        _logEvidence(
+            success,
+            returndata,
+            targetBefore,
+            targetAfter,
+            attackerBefore,
+            attackerAfter,
+            tokenBefore,
+            tokenAfter
+        );
 
         // A successful call only means it did not revert. It is NOT proof of a vulnerability.
         require(success, "Lowkey PoC: target call reverted");
@@ -918,7 +942,6 @@ contract LowkeyPoC_{ident} is Script {{
     }}
 }}
 '''
-
 
 def _template_test(contract: str, target: str, function: str, value: str, calldata: str) -> str:
     ident = _id(contract, "Target")
