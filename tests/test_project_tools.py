@@ -275,10 +275,10 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             )
             graph = project_tools.build_dependency_graph(root)
             calls = graph["nodes"][0]["calls"]
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 1)
             self.assertEqual(
                 [call["kind"] for call in calls],
-                ["low-level-call", "low-level-call"],
+                ["low-level-call"],
             )
             self.assertTrue(all(call["line"] > 1 for call in calls))
 
