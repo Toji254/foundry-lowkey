@@ -469,10 +469,15 @@ class ProjectDetectionTests(unittest.TestCase):
                  patch.object(project_detection.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
                  patch.object(project_detection, "_run", side_effect=fake_run), \
                  patch.object(project_detection, "_supplemental_native_tests", return_value=0), \
-                 patch("audit_engine.run_slither_project", return_value=0):
+                 patch("audit_engine.run_slither_project", return_value=0), \
+                 patch.object(project_detection, "run_native_audit", wraps=project_detection.run_native_audit) as wrapped:
                 code = project_detection.run_native_audit(info)
 
             self.assertEqual(code, 0)
+            self.assertEqual(wrapped.call_count, 3)
+            child_calls = wrapped.call_args_list[1:]
+            self.assertEqual(child_calls[0].args[0]["_native_backend"], "cairo-starknet")
+            self.assertEqual(child_calls[1].args[0]["_native_backend"], "evm-source")
             self.assertIn(["scarb", "build"], calls)
             self.assertIn(["snforge", "test"], calls)
 
