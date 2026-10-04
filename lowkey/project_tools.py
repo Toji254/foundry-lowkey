@@ -38,7 +38,6 @@ EXCLUDED_DIRS = {
     "node_modules",
     "out",
     "cache",
-    "lib",
     "broadcast",
     "artifacts",
     "build",
@@ -70,18 +69,11 @@ def project_root(root: str | Path = ".") -> Path:
 
 
 def _walk_files(root: Path, suffixes: set[str]) -> list[Path]:
-    """Walk source trees while pruning generated/dependency directories early."""
+    """Legacy fallback walker; canonical callers use analysis_adapters."""
     files: list[Path] = []
     root = root.resolve()
-
     for current, dirs, names in os.walk(root):
-        # Prune before descending. This is materially faster than rglob() plus
-        # checking excluded path components after the filesystem walk, especially
-        # after Node/Python dependency installation or in large monorepos.
-        dirs[:] = sorted(
-            name for name in dirs
-            if name not in EXCLUDED_DIRS
-        )
+        dirs[:] = sorted(name for name in dirs if name not in EXCLUDED_DIRS)
 
         current_path = Path(current)
         for name in names:
@@ -93,10 +85,15 @@ def _walk_files(root: Path, suffixes: set[str]) -> list[Path]:
 
 
 def project_source_files(root: str | Path = ".", languages: Iterable[str] | None = None) -> list[Path]:
+    """Return first-party source files through the canonical repository walker."""
     root_path = project_root(root)
     wanted = {str(item).lower().lstrip(".") for item in (languages or {"sol", "vy", "vyi"})}
     suffixes = {"." + item for item in wanted}
-    return _walk_files(root_path, suffixes)
+    try:
+        from analysis_adapters import project_source_files as universal_source_files
+        return list(universal_source_files(root_path, suffixes))
+    except (ImportError, OSError):
+        return _walk_files(root_path, suffixes)
 
 
 def _strip_source_comments(text: str, language: str) -> str:
