@@ -390,7 +390,21 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
     # visible as its own adapter instead of dropping it behind the dominant
     # manifest-backed stack.
     if "solidity" in languages and not {"foundry", "hardhat"} & set(stacks):
-        stacks.append("evm-source")
+        # Do not elevate arbitrary nested/vendor Solidity into a second audit
+        # backend. Promote only plausible first-party application roots.
+        relative_solidity = [
+            path.resolve().relative_to(root.resolve())
+            for path in sources
+            if path.suffix.lower() == ".sol"
+        ]
+        app_roots = {"src", "contracts", "solidity", "packages", "apps", "app"}
+        has_first_party_evm = any(
+            relative.parts
+            and relative.parts[0].lower() in app_roots
+            for relative in relative_solidity
+        )
+        if has_first_party_evm:
+            stacks.append("evm-source")
 
     vyper = "vyper" in languages or "vyper-interface" in languages
     if vyper or any((root / name).is_file() for name in (
