@@ -1170,7 +1170,7 @@ def _vyper_semantics(model: ContractModel, source_text: str) -> dict[str, dict[s
         name = match.group(1)
         line = text.count("\n", 0, match.start()) + 1
         start = match.end()
-        next_fn = re.search(r"(?m)^\\s*def\\s+", text[start:])
+        next_fn = re.search(r"(?m)^\s*def\s+", text[start:])
         end = start + next_fn.start() if next_fn else len(text)
         body = text[start:end]
         params = []
