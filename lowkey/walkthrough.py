@@ -26,6 +26,10 @@ from html import escape
 from urllib.parse import quote, urlsplit
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+LOWKEY_MODULE_DIR = Path(__file__).resolve().parent
+if str(LOWKEY_MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(LOWKEY_MODULE_DIR))
 from typing import Any, Iterable
 
 
