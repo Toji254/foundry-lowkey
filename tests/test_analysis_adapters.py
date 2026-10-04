@@ -104,6 +104,73 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertIn("UNSAFE", labels)
             self.assertIn("RAW_SYSCALL", labels)
 
+    def test_first_party_lib_source_is_included(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lib").mkdir()
+            source = root / "lib" / "Protocol.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Protocol { function x() external { tx.origin; } }\n",
+                encoding="utf-8",
+            )
+            result = analysis_adapters.source_triage(root)
+            self.assertEqual(result["files_scanned"], 1)
+            self.assertEqual(result["project"]["source_files"], ["lib/Protocol.sol"])
+
+    def test_lib_dependency_from_remapping_is_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "lib" / "openzeppelin-contracts" / "contracts").mkdir(parents=True)
+            (root / "remappings.txt").write_text(
+                "@openzeppelin/=lib/openzeppelin-contracts/contracts/\n",
+                encoding="utf-8",
+            )
+            dependency = root / "lib" / "openzeppelin-contracts" / "contracts" / "Ownable.sol"
+            dependency.write_text(
+                "pragma solidity ^0.8.20; abstract contract Ownable {}\n",
+                encoding="utf-8",
+            )
+            (root / "src").mkdir()
+            app = root / "src" / "Vault.sol"
+            app.write_text(
+                "pragma solidity ^0.8.20; contract Vault {}\n",
+                encoding="utf-8",
+            )
+            result = analysis_adapters.source_triage(root)
+            self.assertEqual(result["files_scanned"], 1)
+            self.assertEqual(result["project"]["source_files"], ["src/Vault.sol"])
+
+    def test_security_plan_uses_installed_native_analyzers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            info = {
+                "root": str(root),
+                "backend": "cargo",
+                "stacks": ["cargo"],
+                "languages": {"rust": 1},
+            }
+            with patch.object(
+                analysis_adapters.shutil,
+                "which",
+                side_effect=lambda name: f"/usr/bin/{name}" if name in {"cargo-audit", "cargo-geiger"} else None,
+            ):
+                plan = analysis_adapters.security_analysis_plan(info)
+            names = {item["name"] for item in plan}
+            self.assertEqual(names, {"cargo-audit", "cargo-geiger"})
+
+    def test_scan_returns_review_exit_for_partial_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "demo"\nversion = "0.1.0"\n',
+                encoding="utf-8",
+            )
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text("pub fn execute() {}\n", encoding="utf-8")
+            with patch.object(analysis_adapters, "run_security_analysis", return_value={"results": []}):
+                code = analysis_adapters.scan_repository(root)
+            self.assertEqual(code, 2)
+
     def test_support_and_audit_paths_are_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
