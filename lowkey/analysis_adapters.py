@@ -266,8 +266,14 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
         "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts"
     )):
         stacks.append("hardhat")
-    cargo_text = _safe_read(root / "Cargo.toml").lower()
-    if "cosmwasm" in cargo_text and (root / "Cargo.toml").is_file():
+    cargo_dependencies = cargo.get("dependencies", {}) if isinstance(cargo, dict) else {}
+    cargo_dev_dependencies = cargo.get("dev-dependencies", {}) if isinstance(cargo, dict) else {}
+    cargo_dep_names = []
+    for section in (cargo_dependencies, cargo_dev_dependencies):
+        if isinstance(section, dict):
+            cargo_dep_names.extend(str(name).lower() for name in section)
+    cosmwasm_dependency = any(name.startswith("cosmwasm") for name in cargo_dep_names)
+    if cosmwasm_dependency and (root / "Cargo.toml").is_file():
         stacks.append("cosmwasm")
     if (root / "Anchor.toml").is_file():
         stacks.append("solana-anchor")
