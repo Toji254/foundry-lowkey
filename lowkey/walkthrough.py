@@ -3431,7 +3431,7 @@ def _render_interaction_graph_full(
                 destination = str(edge.get("to_label") or edge.get("to_contract") or "").strip()
                 if destination:
                     edge_text = _friendly_eth(edge_value)
-                    trace_value_lines.append(f"ETH {destination}: +{edge_text.split(" [", 1)[0]}")
+                    trace_value_lines.append(f"ETH {destination}: +{edge_text.split(' [', 1)[0]}")
         event_lines = _friendly_event_lines(step)
         lines += ["  │", "  │   WHAT CHANGED"]
         changes = [
