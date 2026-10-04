@@ -18,6 +18,12 @@ spec.loader.exec_module(generator)
 
 
 class LowkeyGeneratorTests(unittest.TestCase):
+    def setUp(self):
+        self._forge_std_gate = patch.object(generator, "_forge_std_available", return_value=True)
+        self._forge_std_gate.start()
+        self.addCleanup(self._forge_std_gate.stop)
+
+
     def test_parse_send_extracts_call_without_private_key(self):
         command = (
             "cast send 0x" + "1" * 40
