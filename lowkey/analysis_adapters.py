@@ -58,19 +58,19 @@ ADAPTERS = {
         "kind": "evm",
         "languages": {"solidity", "yul", "huff", "vyper"},
         "markers": {"foundry.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True, "live_native": True},
+        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True, "live_native": False},
     },
     "hardhat": {
         "kind": "evm",
         "languages": {"solidity", "vyper", "typescript", "javascript"},
         "markers": {"hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts"},
-        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True},
+        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True, "live_native": False},
     },
     "vyper": {
         "kind": "evm",
         "languages": {"vyper", "vyper-interface"},
         "markers": {"ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml"},
-        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live": True},
+        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": True, "live_native": False},
     },
     "cosmwasm": {
         "kind": "cosmwasm",
@@ -82,13 +82,13 @@ ADAPTERS = {
         "kind": "solana",
         "languages": {"rust"},
         "markers": {"Anchor.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live": True},
+        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False, "live_native": True},
     },
     "cargo": {
         "kind": "rust",
         "languages": {"rust"},
         "markers": {"Cargo.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False},
+        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False, "live_native": True},
     },
     "cairo": {
         "kind": "cairo",
