@@ -124,12 +124,14 @@ def project_source_files(root: str | Path = ".", languages: Iterable[str] | None
 
 
 def _strip_source_comments(text: str, language: str, mask_strings: bool = False) -> str:
-    """Remove comments while preserving source line numbers."""
+    """Remove comments while preserving source line structure for triage."""
     try:
         from analysis_adapters import _strip_comments as _universal_strip
         return _universal_strip(text, language, mask_strings=mask_strings)
     except ImportError:
         pass
+    line_token = "#" if language == "vyper" else "//"
+    block_open, block_close = ("/*", "*/") if language == "solidity" else (None, None)
     chars = list(text)
     state = "code"
     quote = ""
@@ -140,38 +142,34 @@ def _strip_source_comments(text: str, language: str, mask_strings: bool = False)
         ch = chars[i]
         nxt = chars[i + 1] if i + 1 < len(chars) else ""
         if state == "code":
-            if language == "solidity" and ch == "/" and nxt == "/":
-                chars[i] = chars[i + 1] = " "; i += 2; state = "line"; continue
-            if language == "solidity" and ch == "/" and nxt == "*":
-                chars[i] = chars[i + 1] = " "; i += 2; state = "block"; continue
-            if language == "vyper" and ch == "#":
+            if block_open and ch == "/" and nxt == "*":
+                chars[i] = chars[i + 1] = " "
+                i += 2; state = "block"; continue
+            if line_token == "#" and ch == "#":
                 chars[i] = " "; i += 1; state = "line"; continue
+            if line_token == "//" and ch == "/" and nxt == "/":
+                chars[i] = chars[i + 1] = " "; i += 2; state = "line"; continue
             if ch == '"' or (ch == "'" and language in single_quotes):
                 quote = ch; escape = False; state = "string"
             i += 1; continue
         if state == "line":
-            if ch == "
-": state = "code"
-            elif ch != "
-": chars[i] = " "
+            if ch == "\n": state = "code"
+            elif ch != "\n": chars[i] = " "
             i += 1; continue
         if state == "block":
-            if language == "solidity" and ch == "*" and nxt == "/":
+            if block_close and ch == "*" and nxt == "/":
                 chars[i] = chars[i + 1] = " "; i += 2; state = "code"; continue
-            if ch != "
-": chars[i] = " "
+            if ch != "\n": chars[i] = " "
             i += 1; continue
         if escape:
             escape = False
-            if mask_strings and ch != "
-": chars[i] = " "
-        elif ch == "\":
+            if mask_strings and ch != "\n": chars[i] = " "
+        elif ch == "\\":
             escape = True
             if mask_strings: chars[i] = " "
         elif ch == quote:
-            state = "code"; quote = ""
-        elif mask_strings and ch != "
-":
+            quote = ""; state = "code"
+        elif mask_strings and ch != "\n":
             chars[i] = " "
         i += 1
     return "".join(chars)
