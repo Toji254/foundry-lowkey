@@ -170,6 +170,18 @@ class AuditEngineTests(unittest.TestCase):
         self.assertNotIn("TODO:", rendered)
         self.assertIn("forge-lint: disable-next-line low-level-calls", rendered)
 
+    def test_source_triage_returns_success_for_completed_source_only_evm_scope(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault { function f() external { tx.origin; } }",
+                encoding="utf-8",
+            )
+            with patch.object(audit_engine, "record_evidence"):
+                self.assertEqual(audit_engine.run_source_triage(str(root)), 0)
+
     def test_source_triage_returns_review_code_for_partial_native_scope(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as raw:
