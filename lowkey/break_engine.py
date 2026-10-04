@@ -893,7 +893,7 @@ def _cast_exec(host, args: list[str], rpc: str):
 
 def _cast_int(text_value: str) -> int:
     raw = str(text_value or "").strip()
-    match = re.search(r"0x[0-9a-fA-F]+|\\d+", raw)
+    match = re.search(r"0x[0-9a-fA-F]+|\d+", raw)
     if not match:
         return 0
     token = match.group(0)
@@ -1152,7 +1152,7 @@ def _render_repeat_test(
         else:
             setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
     elif setup_signature:
-        setup_arg = ", 1 ether" if re.search(r"\\(uint(?:[0-9]+)?\\)$", setup_signature) else ""
+        setup_arg = ", 1 ether" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
         setup_block += """
         bytes memory setupData = abi.encodeWithSignature("%s"%s);
         uint256 setupValue = assetReadOk ? 0 : 2 wei;
