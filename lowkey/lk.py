@@ -9632,6 +9632,7 @@ def run_audit_mode(config, args=None, interactive=None):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     stacks = set(info.get("stacks", []))
     backend = str(info.get("backend") or "").lower()
+    self_source = info.get("kind") == "lowkey-source"
     foundry_project = backend == "foundry" or "foundry" in stacks or self_source
     evm_project = self_source or backend in {"foundry", "hardhat", "vyper", "evm-source"} or bool(
         stacks & {"foundry", "hardhat", "vyper"}
