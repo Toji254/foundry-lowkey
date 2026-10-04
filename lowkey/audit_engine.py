@@ -1314,6 +1314,14 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
         "REVIEW" if security_summary["reviews"] else "INFO",
         f"{security_summary['total']} signals | {security_summary['reviews']} review | {security_summary['confirmed']} confirmed | {security_summary['candidates']} candidate",
     ))
+    # Preserve the full term outside the fixed-width table label as well; this
+    # makes logs grep-friendly without changing the compact dashboard layout.
+    print(
+        f"Security patterns: {security_summary['total']} total | "
+        f"{security_summary['reviews']} review | "
+        f"{security_summary['confirmed']} confirmed | "
+        f"{security_summary['candidates']} candidate"
+    )
 
     triage = _evidence_data(root, "source_triage")
     rows.append((
