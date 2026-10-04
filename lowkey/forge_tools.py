@@ -257,8 +257,8 @@ def has_verbosity(args: Sequence[str]) -> bool:
 
 
 LOWKEY_GENERATED_PATH_MARKERS = (
-    "test/Lowkey_",
-    "script/Lowkey_",
+    "test/Lowkey",
+    "script/Lowkey",
 )
 
 
