@@ -174,7 +174,7 @@ class AuditEngineTests(unittest.TestCase):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as raw:
             root = pathlib.Path(raw)
-            self.assertTrue((root / "src").mkdir())
+            (root / "src").mkdir()
             (root / "src" / "lib.rs").write_text(
                 "pub fn execute() {}\n",
                 encoding="utf-8",
