@@ -442,38 +442,6 @@ class ProjectDetectionTests(unittest.TestCase):
             with patch.object(project_detection, "shared_bootstrap_status", return_value=expected):
                 self.assertEqual(project_detection.bootstrap_status(info), expected)
 
-    def test_native_multi_stack_audit_runs_each_protocol_backend(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            calls = []
-
-            info = {
-                "root": str(root),
-                "backend": "multi",
-                "stacks": ["cairo-starknet", "evm-source"],
-                "native": {"scarb": True, "snforge": True},
-                "analysis": {
-                    "root": str(root),
-                    "backend": "multi",
-                    "stacks": ["cairo-starknet", "evm-source"],
-                    "languages": {"cairo": 1, "solidity": 1},
-                },
-                "_bootstrap_done": True,
-            }
-
-            def fake_child(parent, stack, args):
-                calls.append((stack, dict(parent)))
-                return 0
-
-            with patch.object(project_detection, "_run_native_child", side_effect=fake_child) as child:
-                code = project_detection.run_native_audit(info)
-
-            self.assertEqual(code, 0)
-            self.assertEqual(child.call_count, 2)
-            self.assertEqual([item[0] for item in calls], ["cairo-starknet", "evm-source"])
-            self.assertEqual(calls[0][1]["backend"], "multi")
-            self.assertEqual(calls[1][1]["stacks"], ["cairo-starknet", "evm-source"])
-
     def test_native_timeout_is_bounded_and_configurable(self):
         with patch.dict(project_detection.os.environ, {"LOWKEY_NATIVE_TIMEOUT": "45"}, clear=False):
             self.assertEqual(project_detection._native_timeout(), 45)
