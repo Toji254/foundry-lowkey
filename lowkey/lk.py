@@ -3983,6 +3983,7 @@ def _auto_target_records(config, root, records, requested=None):
 
     ranked.sort(
         key=lambda item: (
+            1 if item.get("_match_kind") == "clone-or-proxy" else 0,
             int(item.get("_score") or 0),
             int(item.get("run_timestamp") or 0),
             float(item.get("time") or 0),
