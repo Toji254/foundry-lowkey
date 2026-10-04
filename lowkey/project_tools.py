@@ -250,6 +250,28 @@ def _git_submodules(root: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _vyper_compiler_version(root: Path) -> str | None:
+    """Return the installed Vyper compiler version when available."""
+    del root  # Project-local compiler discovery can be added when needed.
+    binary = shutil.which("vyper")
+    if not binary:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = (result.stdout or result.stderr).strip().splitlines()
+    return lines[0].strip() if lines and lines[0].strip() else None
+
+
 def _solidity_compiler_versions(root: Path) -> list[str]:
     versions: set[str] = set()
     for path in project_source_files(root, {"sol"}):
@@ -499,6 +521,7 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         },
         "submodules": _git_submodules(root_path),
         "solidity_compilers": _solidity_compiler_versions(root_path),
+        "vyper_compiler": _vyper_compiler_version(root_path),
         "sources": {
             "solidity": len(sol_files),
             "vyper": len(vy_files),
@@ -1015,7 +1038,11 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             f"Analysis      : {analysis.get('analysis_status', 'unknown')} "
             f"(coverage: {analysis.get('coverage', 'unknown')})"
         )
-    print(f"Compiler      : {', '.join(project.get('solidity_compilers') or ['not detected'])}")
+    compiler_versions = list(project.get("solidity_compilers") or [])
+    vyper_compiler = project.get("vyper_compiler")
+    if vyper_compiler:
+        compiler_versions.append(f"vyper {vyper_compiler}")
+    print(f"Compiler      : {', '.join(compiler_versions or ['not detected'])}")
     print()
     print("1. WHAT IS THE PROTOCOL?")
     print("-" * 72)
