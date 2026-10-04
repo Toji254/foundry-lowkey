@@ -191,6 +191,23 @@ class ProjectDetectionTests(unittest.TestCase):
             )
             self.assertEqual(project_detection.project_root(root).resolve(), root.resolve())
 
+    def test_cargo_workspace_manifest_is_recognized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "Cargo.toml").write_text("[workspace]\nmembers = []\n", encoding="utf-8")
+            self.assertTrue(project_detection.is_workspace_root(root))
+
+    def test_inferred_workspace_detection_does_not_run_project_detection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for name in ("first", "second"):
+                project = root / name
+                project.mkdir()
+                (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+
+            with patch.object(project_detection, "detect_project", side_effect=AssertionError):
+                self.assertTrue(project_detection.is_workspace_root(root))
+
     def test_nested_detection_is_language_agnostic(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
