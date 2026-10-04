@@ -925,7 +925,7 @@ def _project_python_runner(
             "import pytest;"
             "raise SystemExit(pytest.main(sys.argv[1:]))"
         )
-        if (env_root / "pyproject.toml").is_file() and shutil.which("uv"):
+        if (env_root / "pyproject.toml").is_file():
             return ["uv", "run", "python", "-c", shim, *args]
         for candidate in (
             env_root / ".venv" / "bin" / "python",
@@ -1207,6 +1207,9 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     if forced_backend:
         backend = str(forced_backend)
         native = info.get("native", {})
+    elif str(info.get("backend") or "").lower() not in {"", "generic", "unknown", "multi"}:
+        backend = str(info.get("backend"))
+        native = info.get("native", {})
     else:
         info = detect_project(root)
         info["_bootstrap_done"] = True
@@ -1246,6 +1249,8 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                 if path.parts and path.parts[0] == "tests"
             ]
             command = _project_python_runner(root, "pytest", "-q")
+            if command[:1] == ["uv"] and not shutil.which("uv"):
+                command = [sys.executable, "-c", command[4], *command[5:]]
             for submodule in test_submodules:
                 command.extend(["--ignore", str(submodule)])
                 print(
