@@ -735,28 +735,23 @@ def _strip_source_comments(text: str, language: str, mask_strings: bool = False)
                 quote = ch; escape = False; state = "string"
             i += 1; continue
         if state == "line":
-            if ch == "
-": state = "code"
-            elif ch != "
-": chars[i] = " "
+            if ch == "\n": state = "code"
+            elif ch != "\n": chars[i] = " "
             i += 1; continue
         if state == "block":
             if block_close and ch == "*" and nxt == "/":
                 chars[i] = chars[i + 1] = " "; i += 2; state = "code"; continue
-            if ch != "
-": chars[i] = " "
+            if ch != "\n": chars[i] = " "
             i += 1; continue
         if escape:
             escape = False
-            if mask_strings and ch != "
-": chars[i] = " "
-        elif ch == "\":
+            if mask_strings and ch != "\n": chars[i] = " "
+        elif ch == "\\":
             escape = True
             if mask_strings: chars[i] = " "
         elif ch == quote:
             quote = ""; state = "code"
-        elif mask_strings and ch != "
-":
+        elif mask_strings and ch != "\n":
             chars[i] = " "
         i += 1
     return "".join(chars)
