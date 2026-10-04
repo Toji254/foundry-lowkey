@@ -520,8 +520,36 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     language_set = set(language_names)
     backend = _choose_backend(stacks, counts)
 
-    package = _json_object(project_root / "package.json")
+    package_path = project_root / "package.json"
+    package = _json_object(package_path)
     cargo = _toml_object(project_root / "Cargo.toml")
+    dependency_health: dict[str, Any] = {}
+
+    if "hardhat" in stacks:
+        sections = [package.get("dependencies", {}), package.get("devDependencies", {})]
+        direct_deps = sorted({
+            str(name) for section in sections if isinstance(section, dict) for name in section
+        })
+        if package_path.is_file() and not package and _safe_read(package_path):
+            dependency_health["hardhat"] = {"status": "broken", "reason": "invalid package.json"}
+        elif not direct_deps:
+            dependency_health["hardhat"] = {"status": "not-applicable", "missing": []}
+        elif not (project_root / "node_modules").is_dir():
+            dependency_health["hardhat"] = {"status": "not-installed", "missing": []}
+        else:
+            missing = sorted(
+                dep for dep in direct_deps
+                if not (project_root / "node_modules" / dep).exists()
+            )
+            dependency_health["hardhat"] = {"status": "broken" if missing else "ok", "missing": missing}
+
+    missing_remappings = sorted(
+        prefix for prefix in _dependency_prefixes(project_root)
+        if not (project_root / prefix).exists()
+    )
+    if missing_remappings:
+        dependency_health["foundry"] = {"status": "broken", "missing": missing_remappings}
+
     workspace = (
         nested_container
         or _package_workspace(package)
@@ -547,6 +575,10 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         if language not in {"solidity", "vyper", "vyper-interface", "cairo", "rust", "move", "yul", "huff"}
     )
 
+    dependency_broken = any(
+        isinstance(value, dict) and value.get("status") == "broken"
+        for value in dependency_health.values()
+    )
     if files and supported:
         coverage = "full" if backend not in {
             "unknown", "generic-source", "rust", "move-source", "move",
@@ -557,6 +589,9 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         coverage = "unsupported"
     else:
         coverage = "none"
+
+    if dependency_broken and coverage == "full":
+        coverage = "partial"
 
     scope_type = "single-file" if requested.is_file() else "workspace" if workspace else "repository"
     if scope_type == "single-file" and coverage == "full":
@@ -588,6 +623,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "capabilities": _capabilities(backend, stacks, language_set),
         "security_analyzers": available_security_analyzers(project_root, stacks, language_set),
         "unsupported_languages": unsupported_languages,
+        "dependency_health": dependency_health,
         "coverage": coverage,
         "analysis_status": analysis_status,
         "evidence": {
@@ -609,13 +645,19 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         },
     }
 
-def _strip_comments(text: str, language: str) -> str:
-    # Keep line numbers stable while avoiding comment-only heuristic matches.
+def _strip_comments(text: str, language: str, mask_strings: bool = False) -> str:
+    """Strip comments while optionally masking string-literal contents.
+
+    Line structure is preserved so reported source locations remain stable.
+    Solidity and Vyper accept both quote delimiters; Rust/Cairo/Move single
+    quotes are not treated as string delimiters here.
+    """
     chars = list(text)
     state = "code"
     quote = ""
     escape = False
     i = 0
+    single_quote_languages = {"solidity", "vyper", "vyper-interface"}
     while i < len(chars):
         ch = chars[i]
         nxt = chars[i + 1] if i + 1 < len(chars) else ""
@@ -630,29 +672,38 @@ def _strip_comments(text: str, language: str) -> str:
                 chars[i] = " "; state = "line"; i += 1; continue
             if language in {"cairo", "move"} and ch == "#":
                 chars[i] = " "; state = "line"; i += 1; continue
-            if ch in {"'", '"'}:
+            if ch == '"' or (ch == "'" and language in single_quote_languages):
                 quote = ch; escape = False; state = "string"
             i += 1; continue
         if state == "line":
-            if ch == "\n":
-                state = "code"
-            elif ch != "\n":
-                chars[i] = " "
+            if ch == "
+": state = "code"
+            elif ch != "
+": chars[i] = " "
             i += 1; continue
         if state == "block":
             if ch == "*" and nxt == "/":
                 chars[i] = chars[i + 1] = " "; i += 2; state = "code"; continue
-            if ch != "\n":
-                chars[i] = " "
+            if ch != "
+": chars[i] = " "
             i += 1; continue
         if escape:
             escape = False
-        elif ch == "\\":
+            if mask_strings and ch != "
+": chars[i] = " "
+            i += 1; continue
+        if ch == "\":
             escape = True
-        elif ch == quote:
+            if mask_strings: chars[i] = " "
+            i += 1; continue
+        if ch == quote:
             state = "code"; quote = ""
+            i += 1; continue
+        if mask_strings and ch != "
+": chars[i] = " "
         i += 1
     return "".join(chars)
+
 
 def _nested_project_roots(root: Path, max_depth: int = 5) -> list[Path]:
     markers = {
@@ -920,7 +971,7 @@ def source_triage(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         patterns = pattern_sets.get(language)
         if not patterns:
             continue
-        text = _strip_comments(_safe_read(path), language)
+        text = _strip_comments(_safe_read(path), language, mask_strings=True)
         if not text:
             continue
         for line_no, line in enumerate(text.splitlines(), 1):
