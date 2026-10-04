@@ -432,6 +432,17 @@ def select_anvil_actor(config,index,name):
     if not isinstance(accounts,list) or index>=len(accounts):
         return fail(f"Error: Anvil account {index} does not exist on {info.get('url','the detected RPC')}.")
     address=accounts[index]
+    for internal_name, internal_entry in list(config.get("wallets", {}).items()):
+        if (
+            wallet_is_internal(internal_name, internal_entry)
+            and isinstance(internal_entry, dict)
+            and str(internal_entry.get("source")) == "anvil-default"
+            and int(internal_entry.get("anvil_index", -1)) == index
+            and str(internal_name) != name
+        ):
+            config.setdefault("wallets", {}).pop(internal_name, None)
+            if config.get("labels", {}).get(address) == internal_name:
+                config["labels"].pop(address, None)
     assigned_index=assigned_anvil_index(config,index)
     assigned_address=assigned_anvil_address(config,address)
     if assigned_index and assigned_index!=name:
@@ -623,10 +634,21 @@ def target_aliases(config, root=None):
         if not is_address(addr):
             continue
         owner_root = owners_by_address.get(str(addr).lower())
-        if owner_root is None or owner_root != project_root:
-            continue
 
         artifact = config.get("abi_paths", {}).get(addr)
+        # Older configs may not have project_roots yet. When ownership is
+        # unknown, only admit the alias if its artifact independently proves
+        # that the target belongs to this project.
+        if owner_root is None:
+            try:
+                artifact_path = Path(os.path.expanduser(str(artifact))).resolve() if artifact else None
+            except OSError:
+                artifact_path = None
+            artifact_data = read_artifact(str(artifact_path)) if artifact_path and artifact_path.is_file() else None
+            if not artifact_data or not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
+                continue
+        elif owner_root != project_root:
+            continue
         if artifact:
             try:
                 artifact_path = Path(os.path.expanduser(str(artifact))).resolve()
@@ -677,7 +699,17 @@ def resolve_target_ref(config,ref,root=None):
         return exact_matches[0].get("address")
 
     aliases = target_aliases(config, project_root)
-    return aliases.get(str(ref))
+    resolved = aliases.get(str(ref))
+    if resolved:
+        return resolved
+    # Backward-compatible fallback for a config that predates project ownership
+    # metadata. Do not use this path once project_roots contains ownership data.
+    project_roots = config.get("project_roots")
+    if not isinstance(project_roots, dict) or not project_roots:
+        legacy = config.get("aliases", {}).get(str(ref))
+        if is_address(legacy):
+            return legacy
+    return None
 
 def canonical_type(param):
     if not isinstance(param,dict): return ""
@@ -3463,7 +3495,8 @@ def _select_project_target(config, entry, root):
         if code == 0 and str(runtime or "").strip().lower() in {"", "0x", "0x0"}:
             return fail(
                 f"Error: {address} has no contract bytecode on {rpc}. "
-                "Run 'lk lab' to deploy or refresh a live local target."
+                "Run 'lk lab' to deploy or refresh a live local target.",
+                1,
             )
 
     contract = entry.get("contract") or entry.get("name") or "target"
@@ -3986,12 +4019,18 @@ def _local_test_fixture_candidates(root, requested=None):
             if not re.search(r"\baddress\b", returns_text):
                 continue
 
-            contracts = re.findall(
+            contract_match = None
+            for declaration in re.finditer(
                 r"(?m)^\s*contract\s+([A-Za-z_][A-Za-z0-9_]*)\b",
                 source,
-            )
-            if not contracts:
+            ):
+                if declaration.start() <= create_match.start():
+                    contract_match = declaration
+                else:
+                    break
+            if not contract_match:
                 continue
+            fixture_contract = contract_match.group(1)
 
             base_score = 0
             basename = path.name.lower()
@@ -4006,21 +4045,23 @@ def _local_test_fixture_candidates(root, requested=None):
                 base_score += 10
             base_score += 20
 
-            for contract in contracts:
-                score = base_score
-                if wanted:
-                    wanted_compact = re.sub(r"[^a-z0-9]", "", wanted)
-                    if wanted_compact and wanted_compact in re.sub(r"[^a-z0-9]", "", source.lower()):
-                        score += 300
-                    if contract.lower() == wanted:
-                        score += 500
-                if "test" in contract.lower():
-                    score += 20
-                candidates.append({
-                    "score": score,
-                    "relative": relative,
-                    "path": str(path),
-                    "contract": contract,
+            contract = fixture_contract
+            score = base_score
+            if wanted:
+                wanted_compact = re.sub(r"[^a-z0-9]", "", wanted)
+                if wanted_compact and wanted_compact in re.sub(r"[^a-z0-9]", "", source.lower()):
+                    score += 300
+                if contract.lower() == wanted:
+                    score += 500
+                elif wanted_compact in contract.lower():
+                    score += 150
+            if "test" in contract.lower() or "harness" in contract.lower():
+                score += 20
+            candidates.append({
+                "score": score,
+                "relative": relative,
+                "path": str(path),
+                "contract": contract,
                     "create_function": create_match.group(1),
                     "tuple_return": bool(re.search(r"\bbytes\b", returns_text)),
                 })
@@ -4057,6 +4098,11 @@ def _generate_test_fixture_lab_script(root, candidate, state_path):
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
 
     state_literal = os.path.relpath(state_path, root_path).replace("\\", "/")
+    create_call = (
+        f"(target, ) = {candidate['create_function']}();"
+        if candidate.get("tuple_return")
+        else f"address target = {candidate['create_function']}();"
+    )
     test_dir = root_path / "test" / "foundry" / ".lowkey"
     test_dir.mkdir(parents=True, exist_ok=True)
     test_path = test_dir / f"LowkeyAutoFixture_{safe_name}.t.sol"
@@ -4075,6 +4121,14 @@ contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
     function setUp() public override {{
         vm.startStateDiffRecording();
         super.setUp();
+
+        // Some project fixtures expose setup through an internal createPool()
+        // helper rather than their setUp(). Invoke that helper inside the native
+        // test context so the created application state is captured.
+        if ("__CREATE_FIXTURE__" == "__CREATE_FIXTURE__") {{
+            // __CREATE_FIXTURE_CALL__ is replaced by Lowkey at generation time.
+{create_call}
+        }}
 
         // Keep this project-agnostic: report every contract account actually
         // created during the fixture. Lowkey later matches those candidates
@@ -5888,6 +5942,15 @@ def _validate_project_lab_target(
         f"{name} [{Path(path).relative_to(root_path).as_posix()}]"
         for name, path, _ in application_artifacts
     ]
+    if not application_artifacts and not requested:
+        # A project-native LOWKEY_TARGET marker is still useful in sparse/unit
+        # fixtures where no build artifact exists. Keep the contract unresolved
+        # instead of fabricating an ABI.
+        return str(
+            requested
+            or (provenance_records[0].get("contract") if provenance_records else None)
+            or "Target"
+        ), None, None
     details = [
         f"target={target}",
         f"implementation={implementation or 'unresolved'}",
