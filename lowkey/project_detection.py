@@ -1247,6 +1247,51 @@ def _run_hardhat_fork_fallback(
                 hardhat_node.kill()
 
 
+
+def _run_native_security_analysis(info: dict[str, Any]) -> int:
+    """Run installed non-EVM security tooling without inventing an audit verdict."""
+    try:
+        from analysis_adapters import run_security_analysis
+    except ImportError:
+        return 0
+
+    analysis = info.get("analysis") if isinstance(info.get("analysis"), dict) else {}
+    backend = str(info.get("_native_backend") or info.get("backend") or "").lower()
+    if backend in {"foundry", "hardhat", "vyper"}:
+        return 0
+
+    if analysis:
+        security_info = dict(analysis)
+    else:
+        security_info = {
+            "root": str(info.get("root") or "."),
+            "backend": backend,
+            "stacks": list(info.get("stacks") or []),
+            "languages": list(info.get("languages") or []),
+        }
+
+    try:
+        result = run_security_analysis(security_info)
+    except Exception as exc:
+        print(f"FAIL  security analyzer dispatch: {exc}", file=sys.stderr)
+        return 1
+
+    results = result.get("results") or []
+    if not results:
+        print("DEFER  security analysis — no installed non-EVM security analyzer is available.")
+        return 0
+
+    failures = 0
+    print("
+LOWKEY SECURITY ANALYSIS")
+    print("========================")
+    for item in results:
+        status = str(item.get("status") or "unknown")
+        print(f"  {item.get('name', 'analyzer')}: {status} (exit {item.get('exit_code', 1)})")
+        if status != "passed":
+            failures = failures or int(item.get("exit_code") or 1)
+    return failures
+
 def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     """Run safe native verification for non-Foundry stacks.
 
@@ -1294,7 +1339,8 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                 step("cairo tests", ["scarb", "test"])
         else:
             print("DEFER  cairo checks — Scarb is not installed.")
-        return failures
+        security_code = _run_native_security_analysis(info)
+        return failures or security_code
 
     if backend == "vyper":
         if native.get("ape") and _has(root, "ape-config.yaml", "ape-config.yml"):
@@ -1329,7 +1375,8 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                     step("vyper compile " + rel, _project_python_runner(root, "vyper", "-f", "abi", rel))
         else:
             print("DEFER  vyper checks — no Vyper/Ape/Brownie/Pytest runner found.")
-        return failures
+        security_code = _run_native_security_analysis(info)
+        return failures or security_code
 
     if backend == "hardhat":
         boundary = dependency_boundary(info)
@@ -1373,14 +1420,16 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
                 "DEFER  hardhat checks — local Hardhat binary not found at "
                 f"{binary}. Lowkey did not use npx because that could download a different version."
             )
-        return failures
+        security_code = _run_native_security_analysis(info)
+        return failures or security_code
 
     if backend == "solana-anchor":
         if native.get("anchor"):
             step("anchor build", ["anchor", "build"])
         else:
             print("DEFER  anchor checks — Anchor is not installed.")
-        return failures
+        security_code = _run_native_security_analysis(info)
+        return failures or security_code
 
     if backend == "move":
         if native.get("aptos"):
@@ -1389,7 +1438,8 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             step("sui move tests", ["sui", "move", "test"])
         else:
             print("DEFER  Move checks — no supported Move CLI found.")
-        return failures
+        security_code = _run_native_security_analysis(info)
+        return failures or security_code
 
     if backend == "multi":
         print("MIXED STACK: running each detected native backend independently.")
@@ -1423,11 +1473,13 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             print(f"      evidence: {test_evidence}")
         else:
             print(f"DEFER  {build_backend} tests — no executable project test command is available.")
-        return failures
+        security_code = _run_native_security_analysis(info)
+        return failures or security_code
 
     print("STATIC-ONLY: no specialized project audit backend is installed.")
     print("Source inventory and manual review remain available.")
-    return 0
+    security_code = _run_native_security_analysis(info)
+    return failures or security_code
 
 if __name__ == "__main__":
     print(format_detection(detect_project()))
