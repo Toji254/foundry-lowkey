@@ -4687,7 +4687,7 @@ def _configured_src_prefix(root):
     src_prefix = "src"
     try:
         foundry = (root_path / "foundry.toml").read_text(encoding="utf-8", errors="replace")
-        match = re.search(r'(?m)^\\s*src\\s*=\\s*"([^"]+)"', foundry)
+        match = re.search(r'(?m)^\s*src\s*=\s*"([^"]+)"', foundry)
         if match:
             src_prefix = match.group(1).strip().rstrip("/").replace("\\", "/")
     except OSError:
@@ -5986,7 +5986,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     if not target:
         matches = re.findall(
-            r"(?i)\\b(?:Contract Address|Deployed to)\\s*:?\\s*(0x[0-9a-fA-F]{40})",
+            r"(?i)\b(?:Contract Address|Deployed to)\s*:?\s*(0x[0-9a-fA-F]{40})",
             output or "",
         )
         target = matches[-1] if matches else None
@@ -7454,10 +7454,10 @@ def resolve_lab_value(config, signature, raw_values, value_option):
     raw=list(raw_values or [])
     for index,token in enumerate(raw):
         text=str(token).strip()
-        if re.fullmatch(r"(?i)(?:[0-9]+(?:\\.[0-9]+)?)(?:ether|gwei|wei)",text):
+        if re.fullmatch(r"(?i)(?:[0-9]+(?:\.[0-9]+)?)(?:ether|gwei|wei)",text):
             return text
         if (
-            re.fullmatch(r"[0-9]+(?:\\.[0-9]+)?",text)
+            re.fullmatch(r"[0-9]+(?:\.[0-9]+)?",text)
             and index+1<len(raw)
             and str(raw[index+1]).lower() in {"ether","gwei","wei"}
         ):
