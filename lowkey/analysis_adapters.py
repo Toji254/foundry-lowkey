@@ -548,7 +548,11 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     )
 
     if files and supported:
-        coverage = "full" if backend not in {"unknown", "generic-source", "rust", "move-source", "move", "cargo", "cosmwasm", "solana-anchor", "cairo-starknet", "multi"} else "partial"
+        coverage = "full" if backend not in {
+            "unknown", "generic-source", "rust", "move-source", "move",
+            "cargo", "cosmwasm", "solana-anchor", "cairo-starknet",
+            "evm-source", "multi",
+        } else "partial"
     elif files:
         coverage = "unsupported"
     else:
@@ -1013,6 +1017,12 @@ def scan_repository(root: str | os.PathLike[str] = ".") -> int:
         print("RESULT: REVIEW NEEDED — Lowkey did not establish complete source coverage.")
         return 2
     if info.get("coverage") == "partial":
+        # An explicitly requested source file is a complete requested scope,
+        # even though it cannot establish repository-wide build/test/dependency
+        # coverage. Repository/workspace scopes must remain review-required.
+        if info.get("scope_type") == "single-file":
+            print("RESULT: TRIAGE COMPLETE — requested single-file scope scanned; repository-wide coverage is not established.")
+            return 0
         print("RESULT: REVIEW NEEDED — coverage is partial; missing coverage is not a clean result.")
         return 2
     if any(item.get("status") == "failed" for item in security.get("results", [])):
