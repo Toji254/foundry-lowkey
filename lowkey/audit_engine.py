@@ -784,7 +784,7 @@ def run_source_triage(root: str = ".") -> int:
         path for path in files
         if not _is_under_any(path, dependency_roots)
         and not any(
-            part.lower() in {"test", "tests", "script", "scripts", "mocks"}
+            part.lower() in {"test", "tests", "script", "scripts", "mock", "mocks", "audit", "audits", "certora", "harness", "harnesses"}
             for part in path.relative_to(root_path).parts
         )
     ]
