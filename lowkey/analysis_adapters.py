@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -22,10 +24,70 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 compatibility
 IGNORED_DIRS = {
     ".git", ".hg", ".svn", ".audit", ".venv", "venv", "__pycache__",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
-    ".idea", ".vscode", "node_modules", "vendor", "vendors", "lib", "libs",
+    ".idea", ".vscode", "node_modules", "vendor", "vendors",
     "out", "cache", "broadcast", "artifacts", "build", "dist", "target",
     "coverage", "coverage-html", ".gradle", ".next", ".turbo", ".direnv",
 }
+
+
+# Dependency paths are derived from repository evidence instead of treating
+# conventional names such as `lib/` as dependencies automatically.
+DEPENDENCY_CONTAINER_DIRS = {"lib", "libs"}
+
+def _dependency_prefixes(root: Path) -> set[str]:
+    prefixes: set[str] = set()
+    gitmodules = root / ".gitmodules"
+    if gitmodules.is_file():
+        for line in _safe_read(gitmodules).splitlines():
+            match = re.match(r"\\s*path\\s*=\\s*(.+?)\\s*$", line)
+            if match:
+                value = match.group(1).strip().replace("\\\\", "/").strip("./")
+                if value:
+                    prefixes.add(value)
+    remappings = root / "remappings.txt"
+    if remappings.is_file():
+        for line in _safe_read(remappings).splitlines():
+            value = line.strip()
+            if not value or value.startswith("#") or "=" not in value:
+                continue
+            _prefix, destination = (part.strip() for part in value.split("=", 1))
+            destination = destination.replace("\\\\", "/").strip("./")
+            if destination:
+                prefixes.add(destination.rstrip("/"))
+    return prefixes
+
+def _is_dependency_path(path: Path, root: Path, prefixes: set[str] | None = None) -> bool:
+    try:
+        relative = path.resolve().relative_to(root.resolve()).as_posix().strip("./")
+    except (OSError, ValueError):
+        relative = path.as_posix().strip("./")
+    if not relative:
+        return False
+    known = prefixes if prefixes is not None else _dependency_prefixes(root)
+    for prefix in known:
+        if relative == prefix or relative.startswith(prefix + "/"):
+            return True
+        # A container such as lib/ is not itself a dependency when the
+        # repository evidence points at lib/something as the dependency root.
+        if prefix.startswith(relative + "/") and relative in DEPENDENCY_CONTAINER_DIRS:
+            continue
+    if relative in DEPENDENCY_CONTAINER_DIRS:
+        return False
+    first = relative.split("/", 1)[0]
+    if first in DEPENDENCY_CONTAINER_DIRS:
+        candidate = root / relative
+        try:
+            if (candidate / ".git").exists():
+                return True
+        except OSError:
+            pass
+    return False
+
+def _should_prune_directory(root: Path, current: Path, name: str, prefixes: set[str]) -> bool:
+    if name in IGNORED_DIRS or name.startswith(".git"):
+        return True
+    candidate = current / name
+    return _is_dependency_path(candidate, root, prefixes)
 
 SUPPORT_PATH_PARTS = {
     "test", "tests", "script", "scripts", "deploy", "deployment",
@@ -168,15 +230,16 @@ def _safe_read(path: Path) -> str:
 def _safe_walk_files(root: Path) -> Iterable[Path]:
     def onerror(_exc: OSError) -> None:
         return None
+    prefixes = _dependency_prefixes(root)
     try:
         walker = os.walk(root, onerror=onerror, followlinks=False)
     except OSError:
         return
     for current, dirs, files in walker:
+        current_path = Path(current)
         dirs[:] = sorted(
             name for name in dirs
-            if name not in IGNORED_DIRS
-            and not name.startswith(".git")
+            if not _should_prune_directory(root, current_path, name, prefixes)
         )
         current_path = Path(current)
         for name in sorted(files):
@@ -191,6 +254,15 @@ def _is_support_path(path: Path, root: Path) -> bool:
     except (OSError, ValueError):
         parts = path.parts
     return any(part.lower() in SUPPORT_PATH_PARTS for part in parts[:-1])
+
+def project_source_files(root: str | os.PathLike[str] = ".", extensions: set[str] | None = None) -> list[Path]:
+    requested = _safe_resolve(root)
+    if requested.is_file():
+        return [requested] if requested.suffix.lower() in (extensions or set(SUFFIX_LANGUAGE)) else []
+    paths = list(_safe_walk_files(requested))
+    if extensions:
+        paths = [path for path in paths if path.suffix.lower() in extensions]
+    return sorted(path for path in paths if path.suffix.lower() in set(SUFFIX_LANGUAGE) and not _is_support_path(path, requested))
 
 def _source_files(root: Path) -> list[Path]:
     recognized = set(SUFFIX_LANGUAGE)
@@ -362,7 +434,7 @@ def _capabilities(backend: str, stacks: list[str], languages: set[str]) -> dict[
 
 def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     requested = _safe_resolve(root)
-    project_root = requested.parent if requested.is_file() else requested
+    project_root = canonical_project_root(requested)
     files = _source_files(requested)
     counts = _source_counts(files)
     stacks, language_names = _manifest_stack(project_root)
@@ -430,17 +502,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "source_file_count": len(files),
         "adapters": adapters,
         "capabilities": _capabilities(backend, stacks, language_set),
-        "security_analyzers": (
-            ["slither"]
-            if (
-                "solidity" in language_set
-                or "vyper" in language_set
-                or "foundry" in stacks
-                or "hardhat" in stacks
-            )
-            and bool(__import__("shutil").which("slither"))
-            else []
-        ),
+        "security_analyzers": available_security_analyzers(project_root, stacks, language_set),
         "unsupported_languages": unsupported_languages,
         "coverage": coverage,
         "analysis_status": analysis_status,
@@ -508,6 +570,46 @@ def _strip_comments(text: str, language: str) -> str:
         i += 1
     return "".join(chars)
 
+def canonical_project_root(start: str | os.PathLike[str] = ".") -> Path:
+    """Resolve one canonical Lowkey project root without importing project_detection."""
+    path = _safe_resolve(start)
+    if path.is_file():
+        path = path.parent
+
+    if (path / "lowkey" / "lk.py").is_file() and (path / "lowkey" / "analysis_adapters.py").is_file():
+        return path
+
+    markers = (
+        "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
+        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
+        "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
+        "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
+        "requirements.txt", "requirements-dev.txt", "Pipfile", "package.json",
+        "Cargo.toml", "go.mod", "go.work", "mix.exs", "pom.xml",
+        "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+        "Package.swift", "CMakeLists.txt",
+    )
+    nearest = None
+    for parent in (path, *path.parents):
+        if any((parent / marker).is_file() for marker in markers):
+            nearest = parent
+            break
+    if nearest is None:
+        return path
+    if (nearest / "package.json").is_file() and _package_workspace(_json_object(nearest / "package.json")):
+        selected = nearest / ".audit" / "workspace.json"
+        data = _json_object(selected)
+        active = data.get("active_project")
+        if active:
+            active_path = _safe_resolve(active)
+            try:
+                active_path.relative_to(nearest)
+                if active_path.is_dir() and active_path != nearest:
+                    return active_path
+            except ValueError:
+                pass
+    return nearest
+
 def _evidence_root(path: Path) -> Path:
     """Place persisted evidence at the nearest recognizable repository root."""
     candidate = path if path.is_dir() else path.parent
@@ -546,6 +648,79 @@ def _persist_universal_evidence(project_root: Path, payload: dict[str, Any]) -> 
         # fail merely because the repository is read-only.
         return
 
+
+
+def available_security_analyzers(
+    root: Path,
+    stacks: list[str] | None = None,
+    languages: set[str] | None = None,
+) -> list[str]:
+    """Return only tools that are actually installed and relevant to this project."""
+    stacks = set(stacks or [])
+    languages = set(languages or set())
+    tools: list[str] = []
+    if ({"foundry", "hardhat", "vyper"} & stacks or {"solidity", "vyper"} & languages) and shutil.which("slither"):
+        tools.append("slither")
+    if ({"cargo", "solana-anchor", "cosmwasm"} & stacks or "rust" in languages) and shutil.which("cargo-audit"):
+        tools.append("cargo-audit")
+    if ({"cargo", "solana-anchor", "cosmwasm"} & stacks or "rust" in languages) and shutil.which("cargo-geiger"):
+        tools.append("cargo-geiger")
+    if "move" in stacks and shutil.which("aptos"):
+        tools.append("aptos-move-prove")
+    return tools
+
+def security_analysis_plan(
+    info: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build native, opt-in security-tool commands without inventing unavailable tools."""
+    root = Path(str(info.get("root") or ".")).resolve()
+    stacks = set(info.get("stacks") or [])
+    languages = set(info.get("language_names") or info.get("languages") or [])
+    plan: list[dict[str, Any]] = []
+    available = set(available_security_analyzers(root, list(stacks), languages))
+    if "slither" in available:
+        plan.append({"name": "slither", "kind": "static-security", "command": ["slither", str(root)]})
+    if "cargo-audit" in available:
+        plan.append({"name": "cargo-audit", "kind": "dependency-security", "command": ["cargo", "audit", "--json"]})
+    if "cargo-geiger" in available:
+        plan.append({"name": "cargo-geiger", "kind": "unsafe-code-audit", "command": ["cargo", "geiger", "--output-format", "Json"]})
+    if "aptos-move-prove" in available:
+        plan.append({"name": "aptos-move-prove", "kind": "formal-verification", "command": ["aptos", "move", "prove"]})
+    return plan
+
+def run_security_analysis(info: dict[str, Any], timeout: int = 900) -> dict[str, Any]:
+    """Run installed security tooling and preserve each tool's raw outcome as evidence."""
+    root = Path(str(info.get("root") or ".")).resolve()
+    plan = security_analysis_plan(info)
+    results = []
+    for item in plan:
+        try:
+            completed = subprocess.run(
+                item["command"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
+            results.append({
+                **item,
+                "exit_code": completed.returncode,
+                "status": "passed" if completed.returncode == 0 else "failed",
+                "output": output[-20000:],
+            })
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            results.append({
+                **item,
+                "exit_code": 1,
+                "status": "failed",
+                "output": str(exc),
+            })
+    return {
+        "tools_available": [item["name"] for item in plan],
+        "results": results,
+        "complete": bool(plan) and all(item["status"] == "passed" for item in results),
+    }
 
 def source_triage(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     info = inspect_repository(root)
@@ -648,15 +823,22 @@ def scan_repository(root: str | os.PathLike[str] = ".") -> int:
     print(f"Interpretation: {result['interpretation']}.")
     if info.get("coverage") in {"none", "unsupported"}:
         print("RESULT: REVIEW NEEDED — Lowkey did not establish complete source coverage.")
-    elif info.get("coverage") == "partial":
+        return 2
+    if info.get("coverage") == "partial":
         print("RESULT: REVIEW NEEDED — coverage is partial; missing coverage is not a clean result.")
-    else:
-        print("RESULT: TRIAGE COMPLETE — markers require human verification.")
+        return 2
+    print("RESULT: TRIAGE COMPLETE — markers require human verification.")
     return 0
 
 __all__ = [
     "ADAPTERS",
+    "available_security_analyzers",
+    "canonical_project_root",
     "inspect_repository",
+    "is_dependency_path",
+    "project_source_files",
+    "run_security_analysis",
+    "security_analysis_plan",
     "render_scope",
     "scan_repository",
     "source_triage",
