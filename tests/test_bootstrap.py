@@ -299,6 +299,49 @@ class BootstrapTests(unittest.TestCase):
                 ),
             )
 
+    def test_build_command_rejects_multiple_vyper_compiler_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "contracts/legacy.vy", "# pragma version 0.3.10\n")
+            self.write(root, "contracts/current.vy", "# pragma version ^0.4.0\n")
+            info = {"root": str(root), "backend": "vyper", "kind": "vyper"}
+
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/vyper" if name == "vyper" else None,
+            ), patch.object(
+                bootstrap.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stdout": "0.4.3+commit.test\n", "stderr": ""},
+                )(),
+            ):
+                self.assertIsNone(bootstrap.project_build_command(info))
+
+    def test_build_command_rejects_incompatible_vyper_compiler(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "contracts/legacy.vy", "# pragma version 0.3.10\n")
+            info = {"root": str(root), "backend": "vyper", "kind": "vyper"}
+
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/vyper" if name == "vyper" else None,
+            ), patch.object(
+                bootstrap.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stdout": "0.4.3+commit.test\n", "stderr": ""},
+                )(),
+            ):
+                self.assertIsNone(bootstrap.project_build_command(info))
+
     def test_build_command_uses_workspace_level_hardhat_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
