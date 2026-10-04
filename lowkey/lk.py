@@ -1,6 +1,7 @@
 import hashlib
 import os
 import json
+import signal
 import subprocess
 import sys
 import re
@@ -7367,6 +7368,57 @@ def run_proof(config,args):
 def tool_path(name):
     return shutil.which(name)
 
+
+def _bounded_forge_timeout(args):
+    if "--watch" in args:
+        return None
+    raw = os.environ.get("LOWKEY_FORGE_TIMEOUT", "900")
+    try:
+        requested = int(raw)
+    except (TypeError, ValueError):
+        requested = 900
+    return max(30, min(requested, 7200))
+
+
+def _run_bounded_process(command, capture, cwd, timeout):
+    process = subprocess.Popen(
+        list(command),
+        cwd=str(cwd) if cwd is not None else None,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        text=True,
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return process.returncode, stdout or "", stderr or "", False
+    except subprocess.TimeoutExpired as exc:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.kill()
+        except OSError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except OSError:
+                pass
+            stdout, stderr = process.communicate()
+        if stdout is None:
+            stdout = exc.stdout or ""
+        if stderr is None:
+            stderr = exc.stderr or ""
+        return 124, stdout or "", stderr or "", True
+
+
 def run_foundry(args, capture=False, cwd=None):
     binary = tool_path("forge")
     root = audit_context.foundry_project_root()
@@ -7380,8 +7432,11 @@ def run_foundry(args, capture=False, cwd=None):
             return result
         print(message, file=sys.stderr)
         return result.code
+    timeout = _bounded_forge_timeout(args)
     try:
-        completed = subprocess.run([binary, *args], capture_output=capture, text=True, cwd=str(root) if cwd is not None else None)
+        code, stdout, stderr, timed_out = _run_bounded_process(
+            [binary, *args], capture, cwd if cwd is not None else root, timeout
+        )
     except OSError as error:
         message = f"Error executing forge: {error}"
         audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
@@ -7391,27 +7446,35 @@ def run_foundry(args, capture=False, cwd=None):
             return result
         print(message, file=sys.stderr)
         return result.code
-
-    code = completed.returncode
-    stdout = (completed.stdout or "").strip()
-    stderr = (completed.stderr or "").strip()
-    output = "\n".join(part for part in (stdout, stderr) if part).strip()
+    if timed_out:
+        message = (
+            f"TIMEOUT: forge {command_name} exceeded {timeout}s and its process group "
+            "was terminated. No security conclusion is supported by this run. "
+            "Adjust LOWKEY_FORGE_TIMEOUT (30-7200s) if needed."
+        )
+        audit_context.emit(
+            "forge-command", root, tool="forge", status="failed",
+            summary=f"forge {command_name}",
+            data={"command": command_name, "exit_code": 124, "timeout": True},
+        )
+        record_status(124)
+        if capture:
+            return CommandResult(message, 124)
+        print(message, file=sys.stderr)
+        return 124
+    output = "\n".join(part.strip() for part in (stdout, stderr) if part).strip()
     audit_context.emit(
-        "forge-command",
-        root,
-        tool="forge",
+        "forge-command", root, tool="forge",
         status="completed" if code == 0 else "failed",
         summary=f"forge {command_name}",
-        data={"command": command_name, "exit_code": code},
+        data={"command": command_name, "exit_code": code, "timeout": False},
     )
-
     if capture:
         result = CommandResult(output, code)
         record_status(code)
         return result
+    return record_status(code)
 
-    record_status(code)
-    return code
 
 def run_tool(name, args=None):
     binary = tool_path(name)
@@ -12212,7 +12275,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
         else: run_receipt(config)
     elif cmd=="test-gen": run_test_gen(config)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
-    else: run_cast([cmd]+args,config)
+    else:
+        print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
+        print("Run 'lk --help' for the command catalog or 'lk <command> --h' for command help.", file=sys.stderr)
+        return 2
 
 
 def main():
