@@ -1424,7 +1424,7 @@ def show_copy_imports(symbols: list[Symbol], requested_path: str | None = None, 
             f"{symbol.name} as {aliases[symbol.name]}" if symbol.name in aliases else symbol.name
             for symbol in grouped_symbols
         )
-        print(f"  import {{{names}}} from "{path}";")
+        print(f'  import {{{names}}} from "{path}";')
     if requested_path and not copy_only:
         actual = sorted({s.import_path for s in symbols})
         if requested_path not in actual:
