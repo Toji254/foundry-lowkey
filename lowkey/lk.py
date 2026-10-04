@@ -1832,7 +1832,7 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
         method for method in ("delegatecall", "staticcall", "call", "send", "transfer")
         if re.search(r"\.\s*" + method + r"\s*(?:\{|\()", body)
     ]
-    if sends_eth and "call" not in calls and re.search(r"\.\s*call\s*\{\s*value\s*:", body):
+    if sends_eth and "call" not in calls:
         calls.append("call")
     receives_eth = mutability == "payable"
     eth = "RECEIVES + SENDS" if receives_eth and sends_eth else "RECEIVES" if receives_eth else "SENDS" if sends_eth else None
