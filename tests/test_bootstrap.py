@@ -271,7 +271,7 @@ class BootstrapTests(unittest.TestCase):
                 result = bootstrap.project_build_command(info)
             self.assertEqual(
                 result,
-                (root.resolve(), ["vyper", "contracts/Vault.vy"], "Vyper compiler"),
+                (root.resolve(), ["vyper", "contracts/Vault.vy"], "Vyper compiler (0.4.3+commit.test)"),
             )
 
 
