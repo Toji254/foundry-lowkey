@@ -1206,10 +1206,14 @@ def main(argv: Iterable[str] | None = None) -> int:
             return die("unsafe-cheatcode lint is unavailable in the installed Forge.")
         return run_forge_diagnostics(command_args, "geiger")
     if command in NATIVE_COMMANDS:
-        if command in {"build", "test", "coverage", "snapshot"}:
-            root = _project_root()
-            if not (root / "foundry.toml").is_file():
-                return die(f"Forge {command} requires foundry.toml in the selected project: {root}")
+        root = _project_root()
+        if command == "build" and not (root / "foundry.toml").is_file():
+            project_kind = _project_kind(root)
+            if project_kind in {"vyper", "vyper-uv", "mixed-foundry-vyper"}:
+                return run_vyper_build()
+            return die(f"Forge {command} requires foundry.toml in the selected project: {root}")
+        if command in {"test", "coverage", "snapshot"} and not (root / "foundry.toml").is_file():
+            return die(f"Forge {command} requires foundry.toml in the selected project: {root}")
         if not command_available(command):
             return die(f"Forge command '{command}' is not supported by the installed Forge.")
         return run_forge(args)
