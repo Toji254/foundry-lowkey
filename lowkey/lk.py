@@ -5508,9 +5508,8 @@ def _workspace_project_details(project):
         f"     Purpose   : {_workspace_project_description(project)}",
         f"     Stack     : {languages}",
     ]
-    if int(project.get("contract_count", 0)) > 0:
-        lines.append(f"     Contracts : {project.get('contract_count', 0)}")
-    else:
+    lines.append(f"     Contracts : {project.get('contract_count', 0)}")
+    if int(project.get("contract_count", 0)) == 0:
         lines.append(f"     Code units: {project.get('protocol_source_files', 0)}")
     lines.append(f"     Tests     : {project.get('test_files', 0)}")
     if int(project.get("setup_files", 0)) > 0:
