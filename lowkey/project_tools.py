@@ -603,7 +603,7 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
                 ],
                 "line": text.count("\n", 0, match.start()) + 1,
             })
-    else:
+    elif language == "vyper":
         for match in re.finditer(r'(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(', text):
             values.append({
                 "kind": "function",
@@ -618,26 +618,42 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
                 "inherits": [],
                 "line": text.count("\n", 0, match.start()) + 1,
             })
+    else:
+        patterns = {
+            "rust": r'(?m)^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+            "cairo": r'(?m)^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+            "move": r'(?m)^\s*(?:public\s+)?(?:entry\s+)?fun\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+        }
+        pattern = patterns.get(language)
+        if pattern:
+            for match in re.finditer(pattern, text):
+                values.append({
+                    "kind": "function",
+                    "name": match.group(1),
+                    "inherits": [],
+                    "line": text.count("\n", 0, match.start()) + 1,
+                })
     return values
 
 
 def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     text = _strip_source_comments(text, language)
-    patterns = (
-        [
+    if language == "solidity":
+        patterns = [
             ("low-level-call", re.compile(r'\.(?:call|delegatecall|staticcall)\b[^\n]*')),
             # Deliberately exclude .call/.delegatecall/.staticcall here: the
             # project map reports those separately as low-level calls.
             ("external-call", re.compile(r'\.(?!(?:call|delegatecall|staticcall)\b)[A-Za-z_][A-Za-z0-9_]*\s*\(')),
         ]
-        if language == "solidity"
-        else [
+    elif language == "vyper":
+        patterns = [
             ("raw-call", re.compile(r'\braw_call\s*\([^\n]*')),
             ("external-call", re.compile(r'\b(?:extcall|staticcall)\s*[^\n]*')),
             ("value-transfer", re.compile(r'\bsend\s*\([^\n]*')),
             ("create", re.compile(r'\bcreate_(?:minimal_proxy_to|forwarder_to|from_blueprint)\b[^\n]*')),
         ]
-    )
+    else:
+        patterns = []
     calls: list[dict[str, Any]] = []
     for label, pattern in patterns:
         for match in pattern.finditer(text):
