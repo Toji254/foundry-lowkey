@@ -9186,7 +9186,7 @@ def run_deps(args):
     inheritance = [edge for edge in edges if edge.get("kind") == "inherits"]
 
     for edge in imports:
-        relation = edge.get("to") or edge.get("statement") or "unknown"
+        relation = edge.get("raw") or edge.get("to") or edge.get("statement") or "unknown"
         print(f"  {edge.get('from')} -> imports {relation}")
     for edge in inheritance:
         print(f"  {edge.get('from')} -> inherits {edge.get('to')}")
