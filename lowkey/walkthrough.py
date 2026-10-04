@@ -160,17 +160,16 @@ class WalkthroughStory:
 
 
 def _box(title: str, lines: Iterable[str], width: int = 72, left: str = "╭", right: str = "╮") -> str:
-    inner = max(20, width - 4)
-    body = []
-    for line in lines:
-        line = str(line)
-        if len(line) > inner:
-            line = line[: inner - 1] + "…"
-        body.append("│ " + line.ljust(inner) + " │")
+    # Evidence must remain copy/pasteable. Grow a box for normal evidence lines
+    # instead of truncating security-relevant text and storage locations.
+    values = [str(line) for line in lines]
+    inner = max(20, width - 4, *(len(line) for line in values)) if values else max(20, width - 4)
+    box_width = inner + 4
+    body = ["│ " + line.ljust(inner) + " │" for line in values]
     return "\n".join(
-        [f"{left}─ {title} " + "─" * max(0, width - len(title) - 5) + right]
+        [f"{left}─ {title} " + "─" * max(0, box_width - len(title) - 5) + right]
         + body
-        + ["╰" + "─" * (width - 2) + "╯"]
+        + ["╰" + "─" * (box_width - 2) + "╯"]
     )
 
 
@@ -3112,7 +3111,7 @@ def _friendly_gas_lines(step: Step) -> list[str]:
     if step.gas_cost_wei is None:
         return []
     actor = step.actor or "caller"
-    return [f"GAS COST {actor}: -{_friendly_eth(step.gas_cost_wei)}"]
+    return [f"GAS COST {actor}: -{_friendly_eth(step.gas_cost_wei).split(" [", 1)[0]}", f"GAS DETAIL {actor}: {_friendly_eth(step.gas_cost_wei)}"]
 
 
 def _friendly_state_lines(step: Step, actors: list[Actor]) -> list[str]:
@@ -3418,11 +3417,23 @@ def _render_interaction_graph_full(
         state_lines = _friendly_state_lines(step, actors)
         gas_lines = _friendly_gas_lines(step)
         balance_lines = _friendly_token_balance_lines(step, actors) + _friendly_balance_lines(step, actors, runtime)
+        trace_value_lines = []
+        for edge in step.execution_edges:
+            if not isinstance(edge, dict) or int(edge.get("depth") or 0) <= 0:
+                continue
+            try:
+                edge_value = int(edge.get("value_wei") or 0)
+            except (TypeError, ValueError):
+                edge_value = 0
+            if edge_value > 0:
+                destination = str(edge.get("to_label") or edge.get("to_contract") or "").strip()
+                if destination:
+                    trace_value_lines.append(f"ETH {destination}: +{_friendly_eth(edge_value).split(" [", 1)[0]}")
         event_lines = _friendly_event_lines(step)
         lines += ["  │", "  │   WHAT CHANGED"]
         changes = [
             item.strip()
-            for item in gas_lines[:2] + state_lines[:7] + balance_lines[:7] + event_lines[:6]
+            for item in gas_lines[:2] + state_lines[:7] + balance_lines[:7] + trace_value_lines[:6] + event_lines[:6]
             if item.strip()
         ]
         if changes:
@@ -3469,7 +3480,7 @@ def _render_interaction_graph_full(
             lines.append(f"  │   ├─ decoded error: {decoded}")
         lines.append(f"  │   └─ raw node result: {_short_error(step.error)}")
 
-    marker = _evidence_label("INFERRED") if step.inferred else _evidence_label("LAB CONTROL")
+    marker = _evidence_label("INFERRED") if step.inferred else "[LAB CONTROL]"
     if step.status == "success":
         lines += ["  │", f"  │   RESULT  ✓  {actor} completed {contract}.{function}()"]
     elif step.status in {"blocked", "reverted"}:
@@ -5698,7 +5709,8 @@ def _render_adversarial_probe_human(
         if model.function_locations.get(function_name)
         else None
     )
-    call = _osc8(f"{model.name}.{call_expr}", call_target) if call_target else f"{model.name}.{call_expr}"
+    plain_call = f"{model.name}.{call_expr}"
+    call = _osc8(plain_call, call_target) if call_target else plain_call
     why, lesson, quality = _adversarial_probe_why(step, model, actors)
 
     lines = [
@@ -5706,7 +5718,7 @@ def _render_adversarial_probe_human(
         f"  {status}",
         f"  {step.index:02d}. {step.actor or 'Caller'} tried {call}",
         f"  ROLE     {role}",
-        f"  WHAT     {call}",
+        f"  WHAT     {plain_call}",
         f"  RESULT   {'Accepted by the chain.' if step.status == 'success' else 'Rejected by the chain.'}",
         f"  WHY      {why_simple}",
         f"  WHY TECH {why}",
@@ -5729,6 +5741,8 @@ def _render_adversarial_probe_human(
         lines.append(f"  SOURCE   {source_lines[0]}")
     elif step.failure_origin:
         lines.append(f"  ORIGIN   {step.failure_origin}")
+    if step.failure_origin and "no contract code" in str(step.failure_origin).lower():
+        lines.append("  LAB ISSUE Local dependency/target validation needs attention before blaming the protocol.")
 
     if step.tx_hash:
         lines.append(f"  TX       {step.tx_hash[:10]}…{step.tx_hash[-8:]}")
@@ -5914,6 +5928,7 @@ def _render_adversarial_probe_technical(
     why, lesson, quality = _adversarial_probe_why(step, model, actors)
 
     lines = [
+        "     ACCESS CONTROL / STATE EFFECTS",
         _paint(
             f"  {step.index:02d} {marker}  {category}",
             GREEN if step.status == "success" else RED,
@@ -5971,7 +5986,8 @@ def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> li
         "  ❓ UNKNOWN         = Lowkey could not prove why it failed.",
         "  🔧 LAB ISSUE       = the test setup looks broken; do not blame the contract yet.",
         "",
-        "  Every probe starts from the same prepared baseline and is restored after the call.",
+        "  Every probe starts from the same prepared baseline.",
+        "  The baseline is restored after each probe.",
         "  Random probes reset after each call. Stateful stories reset after the whole attack sequence.",
         "  These are randomized transaction probes — not 24 vulnerability checks.",
         "  The seed chooses the randomized order, actors, arguments, and test inputs.",
@@ -8733,7 +8749,7 @@ def _render_board(
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
         "  " + _walkthrough_board_controls(len(steps)),
-        "  REVIEW MODE: recorded evidence only; no transaction is re-run. Press ENTER to resume live execution." if reviewing else
+        "  REVIEW mode never re-runs a transaction; it shows recorded evidence only. Press ENTER to resume live execution." if reviewing else
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
         "",
