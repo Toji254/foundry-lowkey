@@ -9118,7 +9118,8 @@ def run_native_project_command(config, command_name, args):
     if not command_info:
         print(f"No safe native '{command_name}' command was detected for {root}.")
         print("Lowkey will not invoke Forge/Cast outside an applicable project backend.")
-        return 0
+        print("RESULT: REVIEW NEEDED — no executable project-native command was established.")
+        return 2
 
     cwd, command, evidence = command_info
     print("LOWKEY NATIVE COMMAND")
@@ -9127,9 +9128,9 @@ def run_native_project_command(config, command_name, args):
     print(f"Command : {' '.join(command)}")
     print(f"Source  : {evidence}")
     try:
-        timeout = max(30, min(int(os.environ.get("LOWKEY_NATIVE_TIMEOUT", "180")), 1800))
+        timeout = max(30, min(int(os.environ.get("LOWKEY_NATIVE_TIMEOUT", "120")), 1800))
     except ValueError:
-        timeout = 180
+        timeout = 120
     try:
         result = subprocess.run(
             command,
