@@ -3559,9 +3559,22 @@ def _select_project_target(config, entry, root):
     if not is_address(address):
         return fail("Error: selected target has an invalid address.")
 
-    # Target selection records project/config state only. Live bytecode validation
-    # belongs to audit bootstrap/runtime paths so choosing a remembered deployment
-    # does not depend on the current RPC node.
+    # A remembered address is not a live protocol target merely because it has
+    # an ABI/source artifact. On local EVM labs, reject EOAs and stale addresses
+    # before they can become the active audit target.
+    rpc = effective_rpc(config)
+    if rpc:
+        try:
+            code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
+        except Exception:
+            code, runtime = 1, ""
+        if code == 0 and str(runtime or "").strip().lower() in {"", "0x", "0x0"}:
+            return fail(
+                f"Error: {address} has no contract bytecode on {rpc}. "
+                "Run 'lk lab' to deploy or refresh a live local target.",
+                1,
+            )
+
     contract = entry.get("contract") or entry.get("name") or "target"
     artifact = entry.get("artifact")
     if not artifact:
@@ -8970,14 +8983,10 @@ def run_scan(args):
 
     if scan_repository is not None:
         try:
+            # scan_repository owns the adapter-specific result semantics. Do not
+            # reclassify a successful source-only/single-file EVM scan as a
+            # failure merely because repository-wide coverage is not possible.
             universal_result = scan_repository(root)
-            try:
-                from analysis_adapters import inspect_repository
-                scope_check = inspect_repository(root)
-                if universal_result == 0 and scope_check.get("coverage") != "full":
-                    universal_result = 2
-            except Exception:
-                scope_check = {}
             try:
                 audit_root = audit_context.foundry_project_root(Path(root).resolve())
                 scope = {}
