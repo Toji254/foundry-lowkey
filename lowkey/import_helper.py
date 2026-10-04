@@ -1690,8 +1690,16 @@ def print_import_file(
 ) -> int:
     resolved = find_import_path(path, root, maps)
     if not resolved:
-        print(f"No Solidity source file resolves to import path '{path}'.")
-        return 2
+        target_name = Path(str(path or "").strip().strip('"').strip("'")).name.lower()
+        candidates = importable_files(root, maps)
+        matches = [(source, resolved_name) for source, resolved_name in candidates if Path(resolved_name).name.lower() == target_name]
+        if len(matches) == 1:
+            source, _canonical = matches[0]
+            import_name = str(path).strip().strip('"').strip("'")
+            resolved = (source, import_name)
+        else:
+            print(f"No Solidity source file resolves to import path '{path}'.")
+            return 2
     source, import_name = resolved
     print()
     print(f"SOURCE:      {source}")
