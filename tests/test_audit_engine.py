@@ -2,12 +2,18 @@ import io
 import pathlib
 import json
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 from contextlib import redirect_stdout
 
 ROOT = Path(__file__).resolve().parents[1]
+# audit_engine imports sibling modules. This test loads it directly through
+# importlib, so keep the module directory on sys.path independent of test order.
+LOWKEY = ROOT / "lowkey"
+if str(LOWKEY) not in sys.path:
+    sys.path.insert(0, str(LOWKEY))
 SPEC = importlib.util.spec_from_file_location("audit_engine", ROOT / "lowkey" / "audit_engine.py")
 audit_engine = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit_engine)
