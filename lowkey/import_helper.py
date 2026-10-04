@@ -1411,8 +1411,20 @@ def combined_import(symbols: list[Symbol], aliases: dict[str, str] | None = None
 def show_copy_imports(symbols: list[Symbol], requested_path: str | None = None, aliases: dict[str, str] | None = None, copy_only: bool = False):
     if not copy_only:
         print("\nCOPY:")
-    for stmt in combined_import(symbols, aliases=aliases):
-        print(f"  {stmt}")
+    override = str(requested_path or "").strip()
+    grouped: dict[str, list[Symbol]] = {}
+    requested_name = Path(override).name.lower() if override else ""
+    for symbol in symbols:
+        path = symbol.import_path
+        if override and Path(path).name.lower() == requested_name:
+            path = override
+        grouped.setdefault(path, []).append(symbol)
+    for path, grouped_symbols in grouped.items():
+        names = ", ".join(
+            f"{symbol.name} as {aliases[symbol.name]}" if symbol.name in aliases else symbol.name
+            for symbol in grouped_symbols
+        )
+        print(f"  import {{{names}}} from "{path}";")
     if requested_path and not copy_only:
         actual = sorted({s.import_path for s in symbols})
         if requested_path not in actual:
@@ -1460,6 +1472,9 @@ def show_symbol(
     if s.line > 0 and not s.source.name.startswith("(reference only"):
         print("EDITOR: Ctrl+Click SOURCE above to open the exact file/line.")
     show_copy_imports([s])
+    package, forge_command = install_guidance(s, root)
+    if forge_command and forge_command != "No install needed — this symbol is in the current project's source.":
+        print(f"INSTALL: {forge_command}")
     if not verbose:
         return
     meta = symbol_metadata(s)
@@ -1653,9 +1668,16 @@ def importable_files(root: Path, maps) -> list[tuple[Path, str]]:
 
 def find_import_path(path_query: str, root: Path, maps):
     target = path_query.strip().strip('"').strip("'")
-    for source, resolved in importable_files(root, maps):
+    candidates = importable_files(root, maps)
+    for source, resolved in candidates:
         if resolved == target or resolved.lower() == target.lower():
             return source, resolved
+    target_name = Path(target).name.lower()
+    if target_name:
+        matches = [(source, resolved) for source, resolved in candidates if Path(resolved).name.lower() == target_name]
+        if len(matches) == 1:
+            source, _resolved = matches[0]
+            return source, target
     return None
 
 
