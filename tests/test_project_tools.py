@@ -137,6 +137,24 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.assertEqual(edge["to"], "contracts/interfaces/pool.vyi")
             self.assertTrue(edge["resolved"])
 
+    def test_dependency_graph_reports_relative_vyper_import_symbol_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "contracts/main.vy",
+                "from . import Math\\n@external\\ndef ping():\\n    return 1\\n",
+            )
+
+            graph = project_tools.build_dependency_graph(root)
+
+            self.assertEqual(graph["summary"]["unresolved_imports"], 1)
+            edge = graph["edges"][0]
+            self.assertEqual(edge["raw"], ".")
+            self.assertEqual(edge["symbols"], "Math")
+            self.assertEqual(edge["to"], "Math")
+            self.assertFalse(edge["resolved"])
+
     def test_dependency_graph_marks_installed_vyper_package_as_external_resolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
