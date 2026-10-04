@@ -8983,6 +8983,13 @@ def run_scan(args):
         try:
             universal_result = scan_repository(root)
             try:
+                from analysis_adapters import inspect_repository
+                scope_check = inspect_repository(root)
+                if universal_result == 0 and scope_check.get("coverage") != "full":
+                    universal_result = 2
+            except Exception:
+                scope_check = {}
+            try:
                 audit_root = audit_context.foundry_project_root(Path(root).resolve())
                 scope = {}
                 try:
