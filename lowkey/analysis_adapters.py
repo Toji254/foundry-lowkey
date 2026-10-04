@@ -58,7 +58,7 @@ ADAPTERS = {
         "kind": "evm",
         "languages": {"solidity", "yul", "huff", "vyper"},
         "markers": {"foundry.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live": True},
+        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True},
     },
     "hardhat": {
         "kind": "evm",
@@ -82,7 +82,7 @@ ADAPTERS = {
         "kind": "rust",
         "languages": {"rust"},
         "markers": {"Cargo.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live": False},
+        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False},
     },
     "cairo": {
         "kind": "cairo",
@@ -192,19 +192,13 @@ def _source_files(root: Path) -> list[Path]:
         path for path in _safe_walk_files(root)
         if path.suffix.lower() in recognized and not _is_support_path(path, root)
     ]
-    preferred_dirs = {
-        "src", "contracts", "programs", "sources", "packages", "apps", "crates",
-        "sources", "modules",
-    }
-    preferred = []
-    for path in paths:
-        try:
-            rel = path.relative_to(root)
-        except ValueError:
-            continue
-        if rel.parts and rel.parts[0].lower() in preferred_dirs:
-            preferred.append(path)
-    return sorted(preferred or paths)
+    # Prefer security-relevant protocol languages over general application
+    # glue (JS/TS/Python) when a repository contains multiple languages.
+    protocol_suffixes = {".sol", ".vy", ".vyi", ".cairo", ".rs", ".move", ".yul", ".huff"}
+    protocol_paths = [path for path in paths if path.suffix.lower() in protocol_suffixes]
+    if protocol_paths:
+        return sorted(protocol_paths)
+    return sorted(paths)
 
 def _source_counts(paths: Iterable[Path]) -> dict[str, int]:
     counts: dict[str, int] = {}
