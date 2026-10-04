@@ -1181,7 +1181,10 @@ def auto_abi_path(target,config,root=None):
 
     rpc=effective_rpc(config)
     if rpc:
-        code,implementation,error=cast_output(["cast","implementation",target,"--rpc-url",rpc])
+        try:
+            code,implementation,error=cast_output(["cast","implementation",target,"--rpc-url",rpc])
+        except (OSError, subprocess.SubprocessError):
+            code,implementation,error=1,"",""
         if code==0 and is_address(implementation):
             implementation=implementation.strip().splitlines()[-1].strip()
             if implementation.lower()!=target.lower():
@@ -1821,7 +1824,7 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
     events = sorted(set(re.findall(r"\bemit\s+([A-Za-z_]\w*)\s*(?:\(|;)", body)))
     calls = [
         method for method in ("delegatecall", "staticcall", "call", "send", "transfer")
-        if re.search(r"\.\s*" + method + r"\b", body)
+        if re.search(r"\.\s*" + method + r"\s*(?:\{|\()", body)
     ]
     sends_eth = bool(re.search(r"\.\s*call\s*\{\s*value\s*:", body)) or bool(
         re.search(r"\.\s*(?:send|transfer)\s*\(", body)
@@ -1986,7 +1989,7 @@ def run_functions(config, args=None):
                     label = f"{contract} (test mock)"
                 else:
                     label = contract
-                support_rows.append(label)
+                support_rows.append(f"{label}::{signature}")
         if support_rows:
             print("Other:   " + ", ".join(support_rows))
         print("Live:    none")
@@ -3931,7 +3934,7 @@ def _auto_target_records(config, root, records, requested=None):
                 artifact_path = path
                 resolved_contract = artifact_name
                 match_kind = match
-                score += 4000 if match == "runtime" else 9000
+                score += 12000 if match == "clone-or-proxy" else 4000
                 break
 
         if resolved_contract:
@@ -3948,7 +3951,7 @@ def _auto_target_records(config, root, records, requested=None):
         if record.get("deployment_kind") == "additional":
             # Nested CREATEs are often deterministic application instances (for
             # example EIP-1167 clones) rather than implementation deployments.
-            score += 250
+            score += 500
 
         # A live contract is stronger evidence than a stale broadcast record.
         if _live_runtime(config, record.get("address")):
@@ -4069,7 +4072,7 @@ def _local_test_fixture_candidates(root, requested=None):
 
             contract_match = None
             for declaration in re.finditer(
-                r"(?m)^\s*contract\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                r"\bcontract\s+([A-Za-z_][A-Za-z0-9_]*)\b",
                 source,
             ):
                 if declaration.start() <= create_match.start():
