@@ -78,7 +78,7 @@ ADAPTERS = {
         "markers": {"Cargo.toml"},
         "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False},
     },
-    "anchor": {
+    "solana-anchor": {
         "kind": "solana",
         "languages": {"rust"},
         "markers": {"Anchor.toml"},
