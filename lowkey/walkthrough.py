@@ -3111,7 +3111,9 @@ def _friendly_gas_lines(step: Step) -> list[str]:
     if step.gas_cost_wei is None:
         return []
     actor = step.actor or "caller"
-    return [f"GAS COST {actor}: -{_friendly_eth(step.gas_cost_wei).split(" [", 1)[0]}", f"GAS DETAIL {actor}: {_friendly_eth(step.gas_cost_wei)}"]
+    detailed = _friendly_eth(step.gas_cost_wei)
+    compact = detailed.split(" [", 1)[0]
+    return [f"GAS COST {actor}: -{compact}", f"GAS DETAIL {actor}: {detailed}"]
 
 
 def _friendly_state_lines(step: Step, actors: list[Actor]) -> list[str]:
@@ -3428,7 +3430,8 @@ def _render_interaction_graph_full(
             if edge_value > 0:
                 destination = str(edge.get("to_label") or edge.get("to_contract") or "").strip()
                 if destination:
-                    trace_value_lines.append(f"ETH {destination}: +{_friendly_eth(edge_value).split(" [", 1)[0]}")
+                    edge_text = _friendly_eth(edge_value)
+                    trace_value_lines.append(f"ETH {destination}: +{edge_text.split(" [", 1)[0]}")
         event_lines = _friendly_event_lines(step)
         lines += ["  │", "  │   WHAT CHANGED"]
         changes = [
