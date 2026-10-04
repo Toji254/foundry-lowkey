@@ -10071,7 +10071,8 @@ def run_audit(config, args):
     print(format_detection(info) if format_detection else f"Project : {root}")
     try:
         from analysis_adapters import inspect_repository, render_scope
-        print()\n        print(render_scope(inspect_repository(root)))
+        print()
+        print(render_scope(inspect_repository(root)))
     except Exception as exc:
         print(f"Analysis scope: unavailable ({exc})", file=sys.stderr)
 
