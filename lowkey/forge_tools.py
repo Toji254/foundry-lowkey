@@ -181,7 +181,14 @@ def run_forge(args: Sequence[str], quiet: bool = False) -> int:
     root = audit_context.foundry_project_root()
     try:
         if quiet:
-            result = subprocess.run([binary, *args], cwd=root, capture_output=True, text=True)
+            result = subprocess.run(
+                [binary, *args],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=900,
+                start_new_session=(os.name == "posix"),
+            )
             code = result.returncode
             if code != 0:
                 combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
@@ -192,7 +199,11 @@ def run_forge(args: Sequence[str], quiet: bool = False) -> int:
                         file=sys.stderr,
                     )
         else:
-            code = subprocess.run([binary, *args]).returncode
+            code = subprocess.run(
+                [binary, *args],
+                timeout=900,
+                start_new_session=(os.name == "posix"),
+            ).returncode
     except OSError as exc:
         audit_context.emit(
             "forge-command",
@@ -382,7 +393,12 @@ def run_slither_preflight(root: Path, quiet: bool = False) -> int:
             command = [sys.executable, str(helper)]
             if quiet:
                 command.append("--quiet")
-            result = subprocess.run(command, cwd=root)
+            result = subprocess.run(
+                command,
+                cwd=root,
+                timeout=900,
+                start_new_session=(os.name == "posix"),
+            )
             return result.returncode
         except OSError as exc:
             print(
@@ -400,7 +416,14 @@ def run_slither_preflight(root: Path, quiet: bool = False) -> int:
     ]
     try:
         if quiet:
-            result = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            result = subprocess.run(
+                command,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=900,
+                start_new_session=(os.name == "posix"),
+            )
             if result.returncode != 0 and result.stderr:
                 print(result.stderr.rstrip(), file=sys.stderr)
             return result.returncode
@@ -420,7 +443,13 @@ def _supports_option(command: str, option: str) -> bool:
     if not binary:
         return False
     try:
-        result = subprocess.run([binary, command, "--help"], capture_output=True, text=True)
+        result = subprocess.run(
+            [binary, command, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            start_new_session=(os.name == "posix"),
+        )
     except OSError:
         return False
     return option in ((result.stdout or "") + (result.stderr or ""))
