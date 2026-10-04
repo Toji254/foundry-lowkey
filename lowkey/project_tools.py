@@ -25,6 +25,19 @@ try:
 except ImportError:
     detected_project_root = None
 
+def _python_module_available(name: str) -> bool:
+    try:
+        result = subprocess.run(
+            [os.environ.get("PYTHON", "python3"), "-c", "import " + name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
 def _local_executable(root: Path, name: str) -> str | None:
     """Find a project-local executable before falling back to PATH."""
     candidates = [
