@@ -286,7 +286,7 @@ class LowkeyCastTests(unittest.TestCase):
                 )
         self.assertIn("Ctrl+Click", rendered)
         self.assertIn(tx_hash, rendered)
-        self.assertIn("\\x1b]8;;file://", rendered)
+        self.assertIn("\x1b]8;;file://", rendered)
 
     def test_receipt_records_audit_evidence(self):
         tx_hash = "0x" + "1" * 64
@@ -1096,7 +1096,7 @@ contract Pool {
             self.assertIn("CONFIRMED / SUCCESS", content)
             self.assertIn("cast tx " + tx_hash, content)
             link = lk.walkthrough._transaction_link(root, tx_hash)
-            self.assertIn("\\x1b]8;;file://", link)
+            self.assertIn("\x1b]8;;file://", link)
             self.assertIn("transactions/" + tx_hash + ".html", link)
 
     def test_walkthrough_empty_revert_explains_contract_argument(self):
