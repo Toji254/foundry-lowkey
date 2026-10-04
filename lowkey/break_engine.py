@@ -1052,8 +1052,7 @@ def _run_simple_evm_family(
             "value": value,
             "output": lines,
         })
-        archive_path = _archive_harness(host, harness)
-    result = _result_from_output(
+        result = _result_from_output(
             host,
             family=family,
             target=target,
@@ -1962,6 +1961,7 @@ def _result_from_output(
                     f"the {family} behavior could be tested. {reason}"
                 )
         elif first_success is False:
+            status = "BLOCKED"
             reason = decoded_first or (
                 "No revert data was returned."
                 if not first_len
@@ -2243,6 +2243,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             detail={"harness": harness},
         )
 
+    archive_path = _archive_harness(host, harness)
     evidence = {
         "family": family,
         "target": asdict(target),
@@ -2251,7 +2252,8 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         "calldata": calldata,
         "call_value": value,
         "forge_returncode": completed.returncode,
-        "harness": harness,
+        "harness": archive_path or harness,
+        "harness_archive": archive_path,
         "output_tail": "\n".join(output.splitlines()[-160:]),
         "generated_at": time.time(),
         "research_basis": ATTACK_FAMILIES.get(family, {}),
@@ -2275,20 +2277,16 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         config=config,
     )
     result.detail = result.detail or {}
-    result.detail["harness"] = harness
+    result.detail["harness"] = archive_path or harness
     result.detail["harness_archive"] = archive_path
     result.detail["forge_returncode"] = completed.returncode
 
-    # Successful break evidence is archived; every other generated harness is
-    # disposable and must not remain in the project's normal test tree.
-    if result.break_condition:
-        # Keep the original harness for an immediately reproducible confirmed break.
+    # Generated harnesses are always disposable in the project test tree. The
+    # archived copy under .audit/break/harnesses remains available for review.
+    try:
+        Path(harness).unlink(missing_ok=True)
+    except OSError:
         pass
-    else:
-        try:
-            Path(harness).unlink(missing_ok=True)
-        except OSError:
-            pass
     return result
 
 
@@ -2750,7 +2748,11 @@ def run(config, args=None, host=None):
         print(f"Rounds   : {rounds}")
         print(f"Executed : {len(campaign_results) - blocked}")
         print(f"Blocked  : {blocked}")
+        lab_issues = sum(1 for item in campaign_results if item.status == "LAB_ISSUE")
+        timeouts = sum(1 for item in campaign_results if item.status == "TIMEOUT")
         print(f"Observed : {observed}")
+        print(f"LabIssue : {lab_issues}")
+        print(f"Timeouts : {timeouts}")
         print("Breaks   : 0")
         print(f"Report   : {report}")
         lab_issues = sum(1 for item in campaign_results if item.status == "LAB_ISSUE")
