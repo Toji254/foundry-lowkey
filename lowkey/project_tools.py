@@ -357,7 +357,6 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         "submodules": _git_submodules(root_path),
         "solidity_compilers": _solidity_compiler_versions(root_path),
         "sources": {
-            **(analysis.get("languages") or {}) if isinstance(analysis, dict) else {},
             "solidity": len(sol_files),
             "vyper": len(vy_files),
         },
