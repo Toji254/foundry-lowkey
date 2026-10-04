@@ -9080,6 +9080,7 @@ def run_seams(config):
     return 0
 
 RISK_SIGNAL_HELP = {
+    "external-call": ("The function is a likely external-call boundary.", "Inspect the callee, arguments, value transfer, trust assumptions, and reentrancy surface."),
     "state-write": ("Changes stored contract data.", "Ask: what state changes, who can trigger it, and what must remain true afterward."),
     "value-flow": ("Can receive ETH with the call.", "Ask: where does the ETH go, who benefits, and can accounting become inconsistent."),
     "privileged-looking": ("The name suggests permissions, administration, pausing, or upgrades.", "Ask: who can call it and whether that authority is correctly restricted."),
@@ -9107,6 +9108,7 @@ def run_risk(config):
         if item.get("stateMutability")=="payable": signals.append("value-flow")
         if any(x in name for x in ["owner","admin","role","upgrade","pause","unpause"]): signals.append("privileged-looking")
         if any(x in name for x in ["withdraw","transfer","send","execute","call","mint","burn","sweep"]): signals.append("asset/action")
+        if any(x in name for x in ["withdraw","transfer","send","execute","call"]): signals.append("external-call")
         if any(canonical_type(i).startswith("address") for i in item.get("inputs",[])): signals.append("address-input")
         signature = format_signature(item)
         row = {"signature": signature, "signals": signals}
@@ -9577,8 +9579,8 @@ def run_audit_mode(config, args=None, interactive=None):
         if selected_scope.get("depended_on_by"):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     stacks = set(info.get("stacks", []))
-    foundry_project = "foundry" in stacks
-    evm_project = bool(stacks & {"foundry", "hardhat", "vyper"})
+    foundry_project = "foundry" in stacks or (not stacks and (Path(root) / "foundry.toml").is_file())
+    evm_project = bool(stacks & {"foundry", "hardhat", "vyper"}) or foundry_project or is_address(config.get("target"))
 
     config["audit_project"] = str(root)
     save_config(config)
@@ -10036,7 +10038,7 @@ def run_audit(config, args):
     _sync_security_patterns(root, announce=True)
 
     stacks = set(info.get("stacks", []))
-    if "foundry" in stacks:
+    if "foundry" in stacks or not stacks:
         _sync_audit_context(config, root)
         try:
             from forge_tools import run_audit as run_forge_audit

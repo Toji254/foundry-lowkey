@@ -1975,7 +1975,7 @@ def _result_from_output(
                     f"the {family} behavior could be tested. {reason}"
                 )
         elif first_success is False:
-            status = "BLOCKED"
+            status = "OBSERVED"
             reason = decoded_first or (
                 "No revert data was returned."
                 if not first_len

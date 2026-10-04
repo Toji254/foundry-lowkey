@@ -1453,12 +1453,14 @@ def show_symbol(
     why, _when = explain(s)
     how, _use_cases, _example, _audit = usage_guidance(s)
     print()
-    print(f"NAME:   {s.name}")
-    print(f"TYPE:   {kind_label(s)}")
-    print(f"SOURCE: {source_location(s)}")
-    print(f"IMPORT: {s.import_stmt}")
-    print(f"WHY:    {why}")
-    print(f"HOW:    {how}")
+    reference_only = str(source_location(s)).startswith("(reference only")
+    gap = "       " if reference_only else "   "
+    print(f"NAME:{gap}{s.name}")
+    print(f"TYPE:{gap}{kind_label(s)}")
+    print(f"SOURCE:{gap}{source_location(s)}")
+    print(f"IMPORT:{gap}{s.import_stmt}")
+    print(f"WHY:{gap}{why}")
+    print(f"HOW:{gap}{how}")
     if s.kind == "interface":
         surface = interface_surface(s)
         if surface:
@@ -1828,7 +1830,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
         path_match = find_import_path(path_query, root, maps)
         if path_match:
             source, import_name = path_match
-            symbols = [s for s in all_symbols(root, maps) if s.import_path == import_name]
+            symbols = [s for s in all_symbols(root, maps) if s.import_path == import_name or Path(s.source).resolve() == Path(source).resolve()]
             if symbols:
                 show_file((source, symbols))
             else:

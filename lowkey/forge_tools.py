@@ -325,6 +325,18 @@ def run_forge_diagnostics(args: Sequence[str], label: str, quiet: bool = False) 
     project_blocks = _strip_generated_lint_abort(non_generated_blocks)
 
     visible, filtered = _filter_generated_diagnostics(combined)
+    if result.returncode != 0 and filtered == 0:
+        # Some Forge versions print the generated-file warning without a blank
+        # line that makes the block splitter useful. Treat the explicit Lowkey
+        # generated path as scope evidence and re-evaluate the abort-only tail.
+        generated_present = any(marker in combined for marker in LOWKEY_GENERATED_PATH_MARKERS)
+        abort_only = bool(re.fullmatch(
+            r"(?s)\s*(?:.*Lowkey.*\n\s*)?Error: aborting due to \d+ linter warning\(s\)\.?\s*",
+            combined,
+        ))
+        if generated_present and abort_only:
+            filtered = 1
+            project_blocks = []
     effective_code = result.returncode
 
     # A generated Lowkey helper is outside the user's audit scope. If Forge
@@ -941,6 +953,9 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
     )
     if focused:
         print(f"Focus  : {focused.get('signal_id') or focused.get('title') or 'active'}")
+    pattern_ids = [str(item.get("pattern_id") or item.get("check")) for item in security_patterns if item.get("pattern_id") or item.get("check")]
+    if pattern_ids:
+        print("Patterns: " + ", ".join(pattern_ids))
     print(f"Overall: {overall}")
     print("\n+------------------+------------+------------------------------------------------+")
     print("| Step             | Status     | Details                                        |")
