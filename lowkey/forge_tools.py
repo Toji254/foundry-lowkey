@@ -321,7 +321,7 @@ _SOURCE_PATH_RE = re.compile(
     r"(?:sol|vy|vyi|rs|cairo|move|go|js|ts|tsx|yul|huff):\d+(?::\d+)?"
 )
 _DIAGNOSTIC_SUMMARY_FOOTERS = (
-    re.compile(r"\s*Error: aborting due to \d+ linter warning\(s)\.?\s*"),
+    re.compile(r"\s*Error: aborting due to \d+ linter warning\(s\)\.?\s*"),
     re.compile(r"\s*Error: (?:solar|forge(?: --lint)?) reported \d+ errors?(?:; see the diagnostics printed above)?\.?\s*"),
 )
 
