@@ -684,6 +684,20 @@ def _mentions_vyper(root: Path) -> bool:
     return any("vyper" in _read(root / name).lower() for name in names if (root / name).is_file())
 
 def _source_counts(root: Path) -> dict[str, int]:
+    """Compatibility source inventory backed by the canonical dependency-safe walker."""
+    if universal_is_dependency_path is not None:
+        try:
+            from analysis_adapters import project_source_files as canonical_source_files
+            paths = canonical_source_files(root, set(LANGUAGE_BY_SUFFIX) if LANGUAGE_BY_SUFFIX else None, include_support=True)
+            counts: dict[str, int] = {}
+            for path in paths:
+                language = LANGUAGE_BY_SUFFIX.get(path.suffix.lower())
+                if language:
+                    counts[language] = counts.get(language, 0) + 1
+            return dict(sorted(counts.items()))
+        except (ImportError, OSError, ValueError):
+            pass
+
     counts: dict[str, int] = {}
     for path in _walk_files(root):
         language = LANGUAGE_BY_SUFFIX.get(path.suffix.lower())
@@ -714,7 +728,10 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
             "security_analyzers": canonical.get("security_analyzers", []),
         }
 
-    source_counts = dict(canonical.get("languages") or {})
+    source_counts = _source_counts(root)
+    canonical_counts = dict(canonical.get("languages") or {})
+    for language, count in canonical_counts.items():
+        source_counts.setdefault(language, count)
     stacks = list(canonical.get("stacks") or [])
     backend = str(canonical.get("backend") or "unknown")
 
@@ -790,6 +807,8 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         legacy_backend = "cairo-starknet"
     elif backend == "move":
         legacy_backend = "move"
+    elif backend == "cairo":
+        legacy_backend = "cairo-starknet"
     else:
         legacy_backend = backend
 
