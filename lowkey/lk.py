@@ -3836,6 +3836,13 @@ def _auto_target_records(config, root, records, requested=None):
         for path, artifact, artifact_name in candidates:
             if contract_lower != "unknown" and artifact_name.lower() != contract_lower and requested_lower == "":
                 continue
+            # Preserve the local ABI/source association even when no RPC is
+            # configured. Live runtime identity is stronger evidence, but it
+            # should enrich rather than gate artifact discovery.
+            if artifact_path is None:
+                artifact_path = path
+                resolved_contract = artifact_name
+                score += 500
             match = _live_target_artifact_match(config, record.get("address"), artifact)
             if match:
                 artifact_path = path
