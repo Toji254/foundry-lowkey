@@ -8949,8 +8949,22 @@ def run_scan(args):
     root = args[0] if args else "."
     if not os.path.exists(root):
         return fail(f"Path not found: {root}")
-    if os.path.isfile(root) and not root.endswith((".sol", ".vy", ".vyi")):
-        return fail(f"Path is not a Solidity/Vyper source file: {root}")
+
+    # Universal source triage is the first-class path for every repository.
+    # Keep the legacy EVM scanner below as a compatibility fallback only.
+    try:
+        from analysis_adapters import scan_repository
+    except ImportError:
+        scan_repository = None
+
+    if scan_repository is not None:
+        try:
+            return scan_repository(root)
+        except Exception as exc:
+            print(
+                f"Warning: universal source triage could not complete: {exc}",
+                file=sys.stderr,
+            )
 
     all_sources = source_evm_files(root)
     has_vyper = bool(source_vyper_files(root))
@@ -10055,6 +10069,11 @@ def run_audit(config, args):
 
     print()
     print(format_detection(info) if format_detection else f"Project : {root}")
+    try:
+        from analysis_adapters import inspect_repository, render_scope
+        print()\n        print(render_scope(inspect_repository(root)))
+    except Exception as exc:
+        print(f"Analysis scope: unavailable ({exc})", file=sys.stderr)
 
     project_data = {
         "root": str(root),
