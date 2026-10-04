@@ -442,6 +442,38 @@ class ProjectDetectionTests(unittest.TestCase):
             with patch.object(project_detection, "shared_bootstrap_status", return_value=expected):
                 self.assertEqual(project_detection.bootstrap_status(info), expected)
 
+    def test_native_multi_stack_audit_runs_each_protocol_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            calls = []
+
+            def fake_run(command, cwd):
+                calls.append((list(command), cwd))
+                return 0, "ok"
+
+            with patch.object(project_detection, "bootstrap_project", return_value=0), \
+                 patch.object(project_detection.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
+                 patch.object(project_detection, "run_native_audit") as nested, \
+                 patch.object(project_detection, "_run", side_effect=fake_run):
+                nested.side_effect = [0, 0]
+                code = project_detection.run_native_audit({
+                    "root": str(root),
+                    "backend": "multi",
+                    "stacks": ["cairo-starknet", "evm-source"],
+                    "native": {"scarb": True, "snforge": True},
+                    "analysis": {"root": str(root), "backend": "multi", "stacks": ["cairo-starknet", "evm-source"], "languages": {"cairo": 1, "solidity": 1}},
+                })
+            self.assertEqual(code, 0)
+            self.assertEqual(nested.call_count, 2)
+            self.assertEqual(nested.call_args_list[0].args[0]["_native_backend"], "cairo-starknet")
+            self.assertEqual(nested.call_args_list[1].args[0]["_native_backend"], "evm-source")
+
+    def test_native_timeout_is_bounded_and_configurable(self):
+        with patch.dict(project_detection.os.environ, {"LOWKEY_NATIVE_TIMEOUT": "45"}, clear=False):
+            self.assertEqual(project_detection._native_timeout(), 45)
+        with patch.dict(project_detection.os.environ, {"LOWKEY_NATIVE_TIMEOUT": "99999"}, clear=False):
+            self.assertEqual(project_detection._native_timeout(), 1800)
+
     def test_project_detection_exposes_non_evm_build_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
