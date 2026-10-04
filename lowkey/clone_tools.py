@@ -117,8 +117,19 @@ def parse_clone_args(args: Sequence[str]) -> tuple[str, str | None, int, int, bo
         )
     if len(positionals) > 2:
         raise ValueError("Too many positional arguments.")
+
+    repository = positionals[0].strip()
+    # Accept the common GitHub shorthand shown in Lowkey help and onboarding
+    # docs, not just full clone URLs.
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        repository = f"https://github.com/{repository}.git"
+    elif re.fullmatch(r"(?:github\\.com/)?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        repository = "https://" + repository
+        if not repository.endswith(".git"):
+            repository += ".git"
+
     return (
-        positionals[0],
+        repository,
         positionals[1] if len(positionals) == 2 else None,
         depth,
         jobs,
