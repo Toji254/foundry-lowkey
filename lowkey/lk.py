@@ -5488,7 +5488,8 @@ def _run_project_build(config, root):
         print(f"Build system : {project.get('build_backend') or project.get('backend') or 'unknown'}")
         print("Status       : no safe native build command detected")
         print("Lowkey will not invent an install or build command.")
-        return 0
+        print("RESULT: REVIEW NEEDED — no executable project-native build command was established.")
+        return 2
 
     build_root, command, evidence = command_info
     print("")

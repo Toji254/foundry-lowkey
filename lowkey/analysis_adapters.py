@@ -89,6 +89,12 @@ def _is_dependency_path(path: Path, root: Path, prefixes: set[str] | None = None
             pass
     return False
 
+# Public alias: other Lowkey modules import this boundary check as
+# is_dependency_path (see analysis_adapters.__all__). Keep the leading
+# underscore name working for internal callers, but expose the public symbol so
+# the canonical control plane is not silently disabled by an ImportError.
+is_dependency_path = _is_dependency_path
+
 def _should_prune_directory(root: Path, current: Path, name: str, prefixes: set[str]) -> bool:
     if name in IGNORED_DIRS or name.startswith(".git"):
         return True
@@ -226,6 +232,19 @@ MOVE_MARKERS = {
     "ASSERT": re.compile(r"\bassert!\b|\babort!\b"),
 }
 
+def _is_lowkey_source_checkout(root: Path) -> bool:
+    """Recognize Lowkey's own source checkout from a stable on-disk identity."""
+    try:
+        resolved = root.resolve()
+    except OSError:
+        resolved = root
+    if not (resolved / "lowkey" / "lk.py").is_file():
+        return False
+    return (
+        (resolved / "lowkey" / "project_detection.py").is_file()
+        and (resolved / "install.sh").is_file()
+    )
+
 def _safe_resolve(root: str | os.PathLike[str]) -> Path:
     try:
         path = Path(root).expanduser().resolve()
@@ -299,17 +318,10 @@ def _source_files(root: Path) -> list[Path]:
         if root.suffix.lower() in recognized and not _is_support_path(root, root.parent):
             return [root]
         return []
-    paths = [
+    return sorted(
         path for path in _safe_walk_files(root)
         if path.suffix.lower() in recognized and not _is_support_path(path, root)
-    ]
-    # Prefer security-relevant protocol languages over general application
-    # glue (JS/TS/Python) when a repository contains multiple languages.
-    protocol_suffixes = {".sol", ".vy", ".vyi", ".cairo", ".rs", ".move", ".yul", ".huff"}
-    protocol_paths = [path for path in paths if path.suffix.lower() in protocol_suffixes]
-    if protocol_paths:
-        return sorted(protocol_paths)
-    return sorted(paths)
+    )
 
 def _source_counts(paths: Iterable[Path]) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -361,9 +373,16 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
     languages.discard(None)
 
     stacks: list[str] = []
-    if (root / "foundry.toml").is_file():
+    # An EVM build toolchain is only meaningful when the repository actually
+    # contains EVM source. A stray foundry.toml / hardhat config next to a
+    # different ecosystem must not hijack backend selection or create a
+    # no-op Forge "Nothing to compile" success.
+    evm_source = bool(
+        {"solidity", "vyper", "vyper-interface", "yul", "huff"} & languages
+    )
+    if (root / "foundry.toml").is_file() and evm_source:
         stacks.append("foundry")
-    if any((root / name).is_file() for name in (
+    if evm_source and any((root / name).is_file() for name in (
         "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts"
     )):
         stacks.append("hardhat")
@@ -412,7 +431,7 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
         if isinstance(package.get("scripts"), dict)
         else False
     )
-    if hardhat_dependency or hardhat_scripts:
+    if (hardhat_dependency or hardhat_scripts) and evm_source:
         if "hardhat" not in stacks:
             stacks.append("hardhat")
 
@@ -486,13 +505,26 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     files = _source_files(scan_root)
     counts = _source_counts(files)
     stacks, language_names = _manifest_stack(project_root)
+
+    # A directory that only contains multiple independent project roots is a
+    # workspace aggregate, not a single auditable source scope. Surface the
+    # child stacks and keep the aggregate explicitly partial.
+    nested_projects = _nested_project_roots(project_root)
+    nested_container = len(nested_projects) >= 2 and not stacks
+    if nested_container:
+        child_stacks: list[str] = []
+        for child in nested_projects:
+            child_stacks.extend(_manifest_stack(child)[0])
+        stacks = sorted(dict.fromkeys(child_stacks))
+
     language_set = set(language_names)
     backend = _choose_backend(stacks, counts)
 
     package = _json_object(project_root / "package.json")
     cargo = _toml_object(project_root / "Cargo.toml")
     workspace = (
-        _package_workspace(package)
+        nested_container
+        or _package_workspace(package)
         or _cargo_workspace(project_root, cargo)
         or (project_root / "pnpm-workspace.yaml").is_file()
         or (project_root / "go.work").is_file()
@@ -707,7 +739,7 @@ def canonical_project_root(start: str | os.PathLike[str] = ".") -> Path:
     if path.is_file():
         path = path.parent
 
-    if (path / "lowkey" / "lk.py").is_file() and (path / "lowkey" / "analysis_adapters.py").is_file():
+    if _is_lowkey_source_checkout(path):
         return path
 
     markers = (
@@ -969,6 +1001,9 @@ def scan_repository(root: str | os.PathLike[str] = ".") -> int:
         )
     print(f"\nReview markers: {result['count']}")
     print(f"Interpretation: {result['interpretation']}.")
+    if info.get("coverage") == "full":
+        print("Execution     : build/test/dependency evidence is not established by lk scan.")
+        print("Note          : this command performs source/security triage; it is not a full audit verdict.")
     if security.get("results"):
         print("\nSECURITY TOOLING")
         print("----------------")
@@ -978,14 +1013,6 @@ def scan_repository(root: str | os.PathLike[str] = ".") -> int:
         print("RESULT: REVIEW NEEDED — Lowkey did not establish complete source coverage.")
         return 2
     if info.get("coverage") == "partial":
-        # Raw EVM source triage is a valid scan result even though it cannot
-        # establish repository-wide build/test/dependency coverage.
-        if info.get("backend") == "evm-source":
-            print(
-                "RESULT: TRIAGE COMPLETE — source-only EVM scope scanned; "
-                "build/test/dependency coverage is not established."
-            )
-            return 0
         print("RESULT: REVIEW NEEDED — coverage is partial; missing coverage is not a clean result.")
         return 2
     if any(item.get("status") == "failed" for item in security.get("results", [])):

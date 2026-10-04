@@ -781,7 +781,7 @@ def project_build_command(
         if shutil.which("scarb"):
             return project, ["scarb", "build"], "Scarb.toml"
         return None
-    if backend in {"cargo", "rust"} and (project / "Cargo.toml").is_file() and shutil.which("cargo"):
+    if backend in {"cargo", "rust", "cosmwasm"} and (project / "Cargo.toml").is_file() and shutil.which("cargo"):
         return project, ["cargo", "build", "--manifest-path", str(project / "Cargo.toml")], "Cargo.toml"
     if backend == "go" and ((project / "go.mod").is_file() or (project / "go.work").is_file()) and shutil.which("go"):
         return project, ["go", "build", "./..."], "Go workspace/module"

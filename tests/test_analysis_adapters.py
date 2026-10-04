@@ -279,6 +279,69 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertIn("hardhat", info["stacks"])
             self.assertEqual(info["backend"], "hardhat")
 
+    def test_public_dependency_boundary_is_exported(self):
+        self.assertIn("is_dependency_path", analysis_adapters.__all__)
+        self.assertTrue(callable(analysis_adapters.is_dependency_path))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertFalse(analysis_adapters.is_dependency_path(root / "src", root))
+
+    def test_container_of_independent_projects_is_not_full_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("proj1", "proj2"):
+                (root / name / "src").mkdir(parents=True)
+                (root / name / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+                (root / name / "src" / "A.sol").write_text(
+                    "pragma solidity ^0.8.20; contract A {}\n", encoding="utf-8"
+                )
+            info = analysis_adapters.inspect_repository(root)
+            self.assertTrue(info["workspace"])
+            self.assertEqual(info["scope_type"], "workspace")
+            self.assertEqual(info["coverage"], "partial")
+            self.assertEqual(info["analysis_status"], "workspace-aggregate")
+            self.assertNotEqual(info["backend"], "evm-source")
+            self.assertIn("foundry", info["stacks"])
+
+    def test_marker_only_foundry_does_not_hijack_non_evm_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
+            )
+            (root / "src").mkdir()
+            (root / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+            info = analysis_adapters.inspect_repository(root)
+            self.assertNotIn("foundry", info["stacks"])
+            self.assertEqual(info["backend"], "cargo")
+
+    def test_source_only_evm_scan_requires_review_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "A.sol").write_text(
+                "pragma solidity ^0.8.20; contract A {}\n", encoding="utf-8"
+            )
+            with patch.object(analysis_adapters, "run_security_analysis", return_value={"results": []}):
+                code = analysis_adapters.scan_repository(root)
+            self.assertEqual(code, 2)
+
+    def test_multi_language_source_inventory_is_not_hidden(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "A.sol").write_text(
+                "pragma solidity ^0.8.20; contract A {}\n", encoding="utf-8"
+            )
+            (root / "helper.ts").write_text("export const x = 1;\n", encoding="utf-8")
+            (root / "tool.py").write_text("print('x')\n", encoding="utf-8")
+            info = analysis_adapters.inspect_repository(root)
+            self.assertIn("typescript", info["languages"])
+            self.assertIn("python", info["languages"])
+            self.assertIn("typescript", info["unsupported_languages"])
+            self.assertIn("python", info["unsupported_languages"])
+
     def test_render_scope_calls_partial_analysis_out_explicitly(self):
         info = {
             "root": "/tmp/x",

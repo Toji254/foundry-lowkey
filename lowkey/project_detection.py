@@ -39,20 +39,26 @@ def _load_analysis_adapters():
     spec.loader.exec_module(module)
     return module
 
-try:
-    from analysis_adapters import (
-        canonical_project_root,
-        inspect_repository as inspect_repository_canonical,
-        is_dependency_path as universal_is_dependency_path,
-    )
-except (ImportError, AttributeError):
+def _bind_analysis_symbols():
+    """Bind the canonical analysis control plane without all-or-nothing imports."""
+    module = None
     try:
-        _analysis_module = _load_analysis_adapters()
-        canonical_project_root = _analysis_module.canonical_project_root if _analysis_module else None
-        inspect_repository_canonical = _analysis_module.inspect_repository if _analysis_module else None
-        universal_is_dependency_path = _analysis_module.is_dependency_path if _analysis_module else None
-    except (ImportError, OSError, AttributeError):
-        canonical_project_root = inspect_repository_canonical = universal_is_dependency_path = None
+        import analysis_adapters as module  # type: ignore
+    except ImportError:
+        try:
+            module = _load_analysis_adapters()
+        except (ImportError, OSError):
+            module = None
+    if module is None:
+        return None, None, None
+    return (
+        getattr(module, "canonical_project_root", None),
+        getattr(module, "inspect_repository", None),
+        getattr(module, "is_dependency_path", None)
+        or getattr(module, "_is_dependency_path", None),
+    )
+
+canonical_project_root, inspect_repository_canonical, universal_is_dependency_path = _bind_analysis_symbols()
 
 try:
     from bootstrap import (
@@ -131,17 +137,14 @@ def _marker_names(root: Path, markers: Sequence[str] = PROJECT_MARKERS) -> list[
     return [marker for marker in markers if (root / marker).is_file()]
 
 def _is_lowkey_source_checkout(root: Path) -> bool:
-    """Recognize Lowkey's own source checkout without tying behavior to a target protocol."""
+    """Recognize Lowkey's own source checkout without confusing ~/.lowkey with it."""
     try:
         resolved = root.resolve()
         source_root = Path(__file__).resolve().parents[1]
-        if resolved == source_root:
+        if resolved == source_root and (source_root / "lowkey" / "lk.py").is_file():
             return True
     except OSError:
         pass
-
-    # The source tree has this stable self-identity even when the installed
-    # runtime module is being invoked from ~/.lowkey/.
     return (
         (root / "lowkey" / "lk.py").is_file()
         and (root / "lowkey" / "project_detection.py").is_file()
@@ -619,6 +622,15 @@ def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
 
 def project_root(start: str | os.PathLike[str] = ".") -> Path:
     path = Path(start).expanduser().resolve()
+    if path.is_file():
+        path = path.parent
+
+    # Lowkey's own source checkout is a development/tooling tree, not an audit
+    # workspace. Resolve this before canonical detection so an example project
+    # inside the checkout cannot become the active audit root.
+    if _is_lowkey_source_checkout(path):
+        return path
+
     if canonical_project_root is not None:
         try:
             selected = Path(canonical_project_root(path)).resolve()
@@ -638,15 +650,6 @@ def project_root(start: str | os.PathLike[str] = ".") -> Path:
             return selected
         except Exception:
             pass
-    if path.is_file():
-        path = path.parent
-
-    # Lowkey's own source checkout is a development/tooling tree, not an audit
-    # workspace. Do this before nested-project discovery so a single example
-    # project inside the checkout cannot become the active audit root merely
-    # because the user is standing at ~/foundry-lowkey.
-    if _is_lowkey_source_checkout(path):
-        return path
 
     nearest = path
     found_marker = False
@@ -662,8 +665,6 @@ def project_root(start: str | os.PathLike[str] = ".") -> Path:
             return Path(nested[0]["root"])
         return path
 
-    # A workspace marker may be above the directory where Lowkey was invoked.
-    # Honor an explicitly selected nested project anywhere inside that workspace.
     if is_workspace_root(nearest):
         selected = workspace_selection(nearest)
         if selected is not None:
@@ -674,8 +675,6 @@ def project_root(start: str | os.PathLike[str] = ".") -> Path:
                 return Path(nested[0]["root"])
 
     return nearest
-
-
 def _walk_files(root: Path) -> Iterable[Path]:
     for current, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS)

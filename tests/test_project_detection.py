@@ -442,6 +442,39 @@ class ProjectDetectionTests(unittest.TestCase):
             with patch.object(project_detection, "shared_bootstrap_status", return_value=expected):
                 self.assertEqual(project_detection.bootstrap_status(info), expected)
 
+    def test_canonical_control_plane_is_bound(self):
+        self.assertIsNotNone(project_detection.canonical_project_root)
+        self.assertIsNotNone(project_detection.inspect_repository_canonical)
+        self.assertIsNotNone(project_detection.universal_is_dependency_path)
+
+    def test_mixed_cairo_and_solidity_is_multi_stack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "Scarb.toml").write_text("[package]\nname='c'\nversion='0.1.0'\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "lib.cairo").write_text("fn f() {}\n", encoding="utf-8")
+            (root / "contracts").mkdir()
+            (root / "contracts" / "Foo.sol").write_text("pragma solidity ^0.8.20; contract Foo {}\n", encoding="utf-8")
+            info = project_detection.detect_project(root)
+            self.assertEqual(info["backend"], "multi")
+            self.assertEqual(info["kind"], "multi-stack")
+            self.assertIn("cairo-starknet", info["stacks"])
+            self.assertIn("evm-source", info["stacks"])
+
+    def test_container_of_projects_is_not_a_single_foundry_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for name in ("proj1", "proj2"):
+                (root / name / "src").mkdir(parents=True)
+                (root / name / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+                (root / name / "src" / "A.sol").write_text(
+                    "pragma solidity ^0.8.20; contract A {}\n", encoding="utf-8"
+                )
+            self.assertEqual(project_detection.project_root(root).resolve(), root.resolve())
+            analysis = project_detection.inspect_repository_canonical(root)
+            self.assertEqual(analysis["coverage"], "partial")
+            self.assertEqual(analysis["analysis_status"], "workspace-aggregate")
+
     def test_native_timeout_is_bounded_and_configurable(self):
         with patch.dict(project_detection.os.environ, {"LOWKEY_NATIVE_TIMEOUT": "45"}, clear=False):
             self.assertEqual(project_detection._native_timeout(), 45)
