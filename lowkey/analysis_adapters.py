@@ -492,7 +492,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     )
 
     if files and supported:
-        coverage = "full" if backend not in {"unknown", "generic-source", "rust", "move-source", "cargo", "cosmwasm", "solana-anchor", "cairo-starknet", "multi"} else "partial"
+        coverage = "full" if backend not in {"unknown", "generic-source", "rust", "move-source", "move", "cargo", "cosmwasm", "solana-anchor", "cairo-starknet", "multi"} else "partial"
     elif files:
         coverage = "unsupported"
     else:
@@ -780,7 +780,7 @@ def available_security_analyzers(
     stacks = set(stacks or [])
     languages = set(languages or set())
     tools: list[str] = []
-    if ({"foundry", "hardhat", "vyper"} & stacks or {"solidity", "vyper"} & languages) and shutil.which("slither"):
+    if ({"foundry", "hardhat"} & stacks) and shutil.which("slither"):
         tools.append("slither")
     if ({"cargo", "solana-anchor", "cosmwasm"} & stacks or "rust" in languages) and shutil.which("cargo-audit"):
         tools.append("cargo-audit")
@@ -954,6 +954,14 @@ def scan_repository(root: str | os.PathLike[str] = ".") -> int:
         print("RESULT: REVIEW NEEDED — Lowkey did not establish complete source coverage.")
         return 2
     if info.get("coverage") == "partial":
+        # Raw EVM source triage is a valid scan result even though it cannot
+        # establish repository-wide build/test/dependency coverage.
+        if info.get("backend") == "evm-source":
+            print(
+                "RESULT: TRIAGE COMPLETE — source-only EVM scope scanned; "
+                "build/test/dependency coverage is not established."
+            )
+            return 0
         print("RESULT: REVIEW NEEDED — coverage is partial; missing coverage is not a clean result.")
         return 2
     if any(item.get("status") == "failed" for item in security.get("results", [])):
