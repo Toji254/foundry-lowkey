@@ -291,7 +291,7 @@ class BootstrapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             self.write(root, "contracts/Vault.vy", "# pragma version 0.4.3\n")
-            self.write(root, "contracts/Token.vy", "# pragma version 0.4.0\n")
+            self.write(root, "contracts/Token.vy", "# pragma version 0.4.3\n")
             self.write(root, "contracts/interfaces/IVault.vyi", "interface IVault:\n    def ping(): view\n")
 
             info = {"root": str(root), "backend": "vyper", "kind": "vyper"}
