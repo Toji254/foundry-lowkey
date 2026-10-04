@@ -839,6 +839,22 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
             "repairable": False,
             "reason": "The diagnostics indicate an invalid or incompatible project configuration.",
         }
+    # Missing first-party source files are source/build failures. Package
+    # imports such as @openzeppelin are the dependency case.
+    missing_source = re.search(
+        r"""source\s+["']([^"']+)["']\s+not found|Source\s+["']([^"']+)["']\s+not found""",
+        text,
+        re.I,
+    )
+    if missing_source:
+        source_path = next((value for value in missing_source.groups() if value), "")
+        if source_path.startswith(("contracts/", "src/", "./contracts/", "./src/")):
+            return {
+                "category": "source_or_build_error",
+                "repairable": False,
+                "reason": "A first-party source file is missing; Lowkey will not invent or repair project source files.",
+            }
+
     if any(re.search(pattern, lowered) for pattern in DEPENDENCY_FAILURE_PATTERNS):
         return {
             "category": "dependency",
