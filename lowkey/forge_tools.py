@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,63 @@ def die(message: str, code: int = 2) -> int:
 
 def forge_path() -> str | None:
     return shutil.which("forge")
+
+
+def _forge_timeout(args: Sequence[str]) -> int | None:
+    if "--watch" in args:
+        return None
+    raw = os.environ.get("LOWKEY_FORGE_TIMEOUT", "900")
+    try:
+        requested = int(raw)
+    except (TypeError, ValueError):
+        requested = 900
+    return max(30, min(requested, 7200))
+
+
+def _run_bounded_process(
+    command: Sequence[str],
+    cwd: Path,
+    *,
+    capture_output: bool,
+    timeout: int | None,
+):
+    process = subprocess.Popen(
+        list(command),
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        text=True,
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(list(command), process.returncode, stdout, stderr), False
+    except subprocess.TimeoutExpired as exc:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.kill()
+        except OSError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except OSError:
+                pass
+            stdout, stderr = process.communicate()
+        if stdout is None:
+            stdout = exc.stdout or ""
+        if stderr is None:
+            stderr = exc.stderr or ""
+        return subprocess.CompletedProcess(list(command), 124, stdout, stderr), True
+
 
 def _project_root() -> Path:
     return Path(audit_context.foundry_project_root() or Path.cwd()).resolve()
@@ -180,57 +238,35 @@ def run_forge(args: Sequence[str], quiet: bool = False) -> int:
     if not binary:
         return die("forge was not found on PATH. Install Foundry first.")
     root = audit_context.foundry_project_root()
+    command = [binary, *args]
+    timeout = _forge_timeout(args)
     try:
-        if quiet:
-            result = subprocess.run(
-                [binary, *args],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=900,
-                start_new_session=(os.name == "posix"),
-            )
-            code = result.returncode
-            if code != 0:
-                combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-                if combined:
-                    print(
-                        f"\nForge {args[0] if args else 'command'} failed:\n"
-                        + "\n".join(combined.splitlines()[-24:]),
-                        file=sys.stderr,
-                    )
-        else:
-            code = subprocess.run(
-                [binary, *args],
-                timeout=900,
-                start_new_session=(os.name == "posix"),
-            ).returncode
-    except OSError as exc:
-        audit_context.emit(
-            "forge-command",
-            root,
-            tool="forge",
-            status="failed",
-            summary=args[0] if args else "forge",
+        result, timed_out = _run_bounded_process(
+            command, Path(root), capture_output=quiet, timeout=timeout
         )
+        code = result.returncode
+        if quiet and code != 0:
+            combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+            if combined:
+                print(
+                    f"\nForge {args[0] if args else 'command'} failed:\n"
+                    + "\n".join(combined.splitlines()[-24:]),
+                    file=sys.stderr,
+                )
+    except OSError as exc:
         return die(f"could not execute forge: {exc}", 1)
-
-    audit_context.emit(
-        "forge-command",
-        root,
-        tool="forge",
-        status="completed" if code == 0 else "failed",
-        summary=f"forge {args[0] if args else ''}".strip(),
-        data={"command": args[0] if args else None, "exit_code": code},
-    )
-    audit_context.record_tool(
-        "forge",
-        root,
-        status="completed" if code == 0 else "failed",
-        summary=f"forge {args[0] if args else ''}".strip(),
-        data={"last_command": args[0] if args else None, "last_exit_code": code},
-    )
+    if timed_out:
+        print(
+            f"TIMEOUT: forge {args[0] if args else 'command'} exceeded {timeout}s and its process group "
+            "was terminated. No security conclusion is supported by this run.",
+            file=sys.stderr,
+        )
+    data = {"command": args[0] if args else None, "exit_code": code, "timeout": bool(timed_out)}
+    status = "completed" if code == 0 else "failed"
+    audit_context.emit("forge-command", root, tool="forge", status=status, summary=f"forge {args[0] if args else ''}".strip(), data=data)
+    audit_context.record_tool("forge", root, status=status, summary=f"forge {args[0] if args else ''}".strip(), data={**data, "last_command": data["command"], "last_exit_code": code})
     return code
+
 
 def command_available(command: str) -> bool:
     binary = forge_path()
@@ -239,10 +275,13 @@ def command_available(command: str) -> bool:
     try:
         return subprocess.run(
             [binary, command, "--help"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=30,
+            start_new_session=(os.name == "posix"),
         ).returncode == 0
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 def supported_native_commands() -> set[str]:
@@ -261,9 +300,31 @@ LOWKEY_GENERATED_PATH_MARKERS = (
     "script/Lowkey",
 )
 
+_SOURCE_PATH_RE = re.compile(
+    r"(?<![\w.-])(?:[A-Za-z0-9_.@~+-]+/)+[A-Za-z0-9_.@~+-]+\."
+    r"(?:sol|vy|vyi|rs|cairo|move|go|js|ts|tsx|yul|huff):\d+(?::\d+)?"
+)
+_DIAGNOSTIC_SUMMARY_FOOTERS = (
+    re.compile(r"\s*Error: aborting due to \d+ linter warning\(s)\.?\s*"),
+    re.compile(r"\s*Error: (?:solar|forge(?: --lint)?) reported \d+ errors?(?:; see the diagnostics printed above)?\.?\s*"),
+)
+
+def _diagnostic_paths(block: str) -> list[str]:
+    return [item.replace("\\", "/") for item in _SOURCE_PATH_RE.findall(str(block or ""))]
+
+def _is_diagnostic_summary_footer(block: str) -> bool:
+    text = str(block or "").strip()
+    return bool(text) and any(pattern.fullmatch(text) for pattern in _DIAGNOSTIC_SUMMARY_FOOTERS)
+
+def _is_generated_diagnostic_block(block: str) -> bool:
+    paths = _diagnostic_paths(block)
+    if not paths:
+        return False
+    generated = [p for p in paths if any(marker in p for marker in LOWKEY_GENERATED_PATH_MARKERS)]
+    project = [p for p in paths if not any(marker in p for marker in LOWKEY_GENERATED_PATH_MARKERS)]
+    return bool(generated) and not project
 
 def _filter_generated_diagnostics(output: str) -> tuple[str, int]:
-    """Hide diagnostics emitted only by Lowkey-generated helper artifacts."""
     text = str(output or "")
     if not text.strip():
         return "", 0
@@ -271,116 +332,88 @@ def _filter_generated_diagnostics(output: str) -> tuple[str, int]:
     kept = []
     filtered = 0
     for block in blocks:
-        if any(marker in block for marker in LOWKEY_GENERATED_PATH_MARKERS):
-            filtered += len(re.findall(r"(?m)^\s*(?:warning|note|error)\[", block)) or 1
+        if _is_diagnostic_summary_footer(block):
+            continue
+        if _is_generated_diagnostic_block(block):
+            filtered += 1
             continue
         kept.append(block)
     return "\n\n".join(kept).strip(), filtered
 
-
 def _strip_generated_lint_abort(blocks: Sequence[str]) -> list[str]:
-    """Remove Forge's generic lint-abort footer when only generated files warned."""
-    cleaned = []
-    for block in blocks:
-        if re.fullmatch(r"\s*Error: aborting due to \d+ linter warning\(s\)\.?\s*", block):
-            continue
-        cleaned.append(block)
-    return cleaned
+    return [block for block in blocks if not _is_diagnostic_summary_footer(block)]
 
 
 def run_forge_diagnostics(args: Sequence[str], label: str, quiet: bool = False) -> int:
-    """Run Forge diagnostics, persist evidence, and isolate Lowkey-generated diagnostics."""
+    """Run Forge diagnostics with bounded execution and generated-only filtering."""
     binary = forge_path()
     root = audit_context.foundry_project_root()
     if not binary:
         return die("forge was not found on PATH. Install Foundry first.")
-
     try:
-        result = subprocess.run(
-            [binary, *args],
-            cwd=root,
-            capture_output=True,
-            text=True,
+        result, timed_out = _run_bounded_process(
+            [binary, *args], Path(root), capture_output=True, timeout=_forge_timeout(args)
         )
     except OSError as exc:
         return die(f"could not execute forge: {exc}", 1)
 
     combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-
     evidence_dir = root / ".audit" / "forge"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     evidence_path = evidence_dir / f"{label}.latest.txt"
-    evidence_path.write_text(
-        combined + ("\n" if combined else ""),
-        encoding="utf-8",
-    )
+    evidence_path.write_text(combined + ("\n" if combined else ""), encoding="utf-8")
 
     blocks = re.split(r"\n\s*\n", combined) if combined else []
-    non_generated_blocks = [
-        block
-        for block in blocks
-        if block.strip()
-        and not any(marker in block for marker in LOWKEY_GENERATED_PATH_MARKERS)
-    ]
-    project_blocks = _strip_generated_lint_abort(non_generated_blocks)
-
+    project_blocks = _strip_generated_lint_abort(
+        [block for block in blocks if block.strip() and not _is_generated_diagnostic_block(block)]
+    )
     visible, filtered = _filter_generated_diagnostics(combined)
-    if result.returncode != 0 and filtered == 0:
-        # Some Forge versions print the generated-file warning without a blank
-        # line that makes the block splitter useful. Treat the explicit Lowkey
-        # generated path as scope evidence and re-evaluate the abort-only tail.
-        generated_present = any(marker in combined for marker in LOWKEY_GENERATED_PATH_MARKERS)
-        abort_only = bool(re.fullmatch(
-            r"(?s)\s*(?:.*Lowkey.*\n\s*)?Error: aborting due to \d+ linter warning\(s\)\.?\s*",
-            combined,
-        ))
-        if generated_present and abort_only:
-            filtered = 1
-            project_blocks = []
-    effective_code = result.returncode
 
-    # A generated Lowkey helper is outside the user's audit scope. If Forge
-    # rejected only that generated file's lint warning, do not turn the helper
-    # into a project-audit failure.
-    if result.returncode != 0 and filtered and not project_blocks:
-        effective_code = 0
+    if timed_out:
+        effective_code = 124
+        filtered = 0
+    else:
+        effective_code = result.returncode
+        if result.returncode != 0 and filtered == 0:
+            generated_present = any(marker in combined for marker in LOWKEY_GENERATED_PATH_MARKERS)
+            abort_only = generated_present and all(
+                not _diagnostic_paths(block)
+                or _is_generated_diagnostic_block(block)
+                or _is_diagnostic_summary_footer(block)
+                for block in blocks if block.strip()
+            )
+            if abort_only:
+                filtered = 1
+                project_blocks = []
+        if result.returncode != 0 and filtered and not project_blocks:
+            effective_code = 0
 
-    if visible and (not quiet or effective_code != 0):
+    if timed_out:
         print(
-            visible,
-            file=sys.stderr if effective_code != 0 else sys.stdout,
+            f"TIMEOUT: forge {label} exceeded the configured bound. "
+            "No security conclusion is supported by this run.",
+            file=sys.stderr,
         )
+    elif visible and (not quiet or effective_code != 0):
+        print(visible, file=sys.stderr if effective_code != 0 else sys.stdout)
     if filtered and not quiet:
         print(
             f"LowkeyForge: filtered {filtered} diagnostic(s) from Lowkey-generated helper files; "
             f"evidence: {evidence_path}"
         )
 
-    status = "completed" if effective_code == 0 else "failed"
-    command_text = " ".join(str(item) for item in args)
-    evidence_data = {
+    data = {
         "command": list(args),
-        "command_text": command_text,
+        "command_text": " ".join(str(item) for item in args),
         "exit_code": effective_code,
         "raw_exit_code": result.returncode,
+        "timeout": bool(timed_out),
         "filtered": filtered,
         "evidence": str(evidence_path),
     }
-    audit_context.emit(
-        "forge-command",
-        root,
-        tool="forge",
-        status=status,
-        summary=f"forge {label}",
-        data=evidence_data,
-    )
-    audit_context.record_tool(
-        f"forge-{label}",
-        root,
-        status=status,
-        summary=f"forge {label}",
-        data=evidence_data,
-    )
+    status = "completed" if effective_code == 0 else "failed"
+    audit_context.emit("forge-command", root, tool="forge", status=status, summary=f"forge {label}", data=data)
+    audit_context.record_tool(f"forge-{label}", root, status=status, summary=f"forge {label}", data=data)
     return effective_code
 
 
@@ -1072,7 +1105,8 @@ def run_audit(args: Sequence[str]) -> int:
     print("Pipeline: " + " -> ".join(pipeline_labels))
     print()
 
-    if not _project_owned_tests(root):
+    project_owned_tests = _project_owned_tests(root)
+    if not project_owned_tests:
         print("Tests   : no project-owned Forge tests (Lowkey experiments excluded)")
 
     for label, command in steps:
@@ -1107,6 +1141,30 @@ def run_audit(args: Sequence[str]) -> int:
         else:
             code = run_forge(command, quiet=quiet)
 
+        if label == "build":
+            audit_context.record_tool(
+                "forge-build",
+                root,
+                status="completed" if code == 0 else "failed",
+                summary="forge build",
+                data={"exit_code": code},
+            )
+        elif label == "tests":
+            audit_context.record_tool(
+                "forge-tests",
+                root,
+                status="completed" if code == 0 else "failed",
+                summary=(
+                    f"forge test ({len(project_owned_tests)} project-owned test file(s))"
+                    if project_owned_tests
+                    else "forge test ran, but no project-owned test files were found"
+                ),
+                data={
+                    "exit_code": code,
+                    "project_owned_test_files": len(project_owned_tests),
+                },
+            )
+
         context = audit_context.load(root)
         detail = ""
         if label == "slither":
@@ -1122,6 +1180,8 @@ def run_audit(args: Sequence[str]) -> int:
                 filtered = state.get("filtered")
                 if filtered:
                     detail = f" — {filtered} Lowkey diagnostic(s) filtered"
+        elif label == "tests" and not project_owned_tests:
+            detail = " — no project-owned test files found"
 
         print(f"{'PASS' if code == 0 else 'FAIL':<5} {label:<9}{detail}")
 
@@ -1164,6 +1224,8 @@ def run_audit(args: Sequence[str]) -> int:
 
     if not pipeline_ok:
         result_label = "PIPELINE FAILED"
+    elif not project_owned_tests:
+        result_label = "INCOMPLETE — NO PROJECT-OWNED TESTS FOUND"
     elif not has_target:
         result_label = "STATIC BASELINE — NO LIVE TARGET"
     elif open_signals:
