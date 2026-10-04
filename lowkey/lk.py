@@ -9619,12 +9619,11 @@ def run_audit_mode(config, args=None, interactive=None):
         if selected_scope.get("depended_on_by"):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     stacks = set(info.get("stacks", []))
-    foundry_project = (
-        "foundry" in stacks
-        or (not stacks and (Path(root) / "foundry.toml").is_file())
-        or (not stacks and is_address(config.get("target")))
+    backend = str(info.get("backend") or "").lower()
+    foundry_project = backend == "foundry" or "foundry" in stacks
+    evm_project = backend in {"foundry", "hardhat", "vyper", "evm-source"} or bool(
+        stacks & {"foundry", "hardhat", "vyper"}
     )
-    evm_project = bool(stacks & {"foundry", "hardhat", "vyper"}) or foundry_project or is_address(config.get("target"))
 
     config["audit_project"] = str(root)
     save_config(config)
