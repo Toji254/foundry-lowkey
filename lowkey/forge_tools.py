@@ -2,6 +2,7 @@
 """LowkeyForge: a thin, audit-focused interface over the native Forge CLI."""
 from __future__ import annotations
 import json
+import os
 import re
 import shutil
 import subprocess
