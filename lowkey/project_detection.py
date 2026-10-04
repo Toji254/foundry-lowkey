@@ -717,6 +717,33 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
     source_counts = dict(canonical.get("languages") or {})
     stacks = list(canonical.get("stacks") or [])
     backend = str(canonical.get("backend") or "unknown")
+
+    # Compatibility fallback: the canonical control plane is authoritative,
+    # but older embedding/test environments may import this module without the
+    # sibling adapter being available. Recover only the minimum identity facts.
+    if not stacks and backend in {"unknown", ""}:
+        if (root / "foundry.toml").is_file():
+            stacks = ["foundry"]
+            backend = "foundry"
+        elif any((root / name).is_file() for name in ("hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts")):
+            stacks = ["hardhat"]
+            backend = "hardhat"
+        elif (root / "Anchor.toml").is_file():
+            stacks = ["solana-anchor"]
+            backend = "solana-anchor"
+        elif (root / "Scarb.toml").is_file():
+            stacks = ["cairo-starknet"]
+            backend = "cairo-starknet"
+        elif (root / "Move.toml").is_file():
+            stacks = ["move"]
+            backend = "move"
+        elif (root / "Cargo.toml").is_file():
+            stacks = ["cargo"]
+            backend = "cargo"
+        elif any((root / name).is_file() for name in ("ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml")):
+            stacks = ["vyper"]
+            backend = "vyper"
+
     package_path = root / "package.json"
     pyproject_path = root / "pyproject.toml"
     package = {}
@@ -863,7 +890,7 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "backend": legacy_backend,
         "build_backend": build_backend,
         "stacks": stacks,
-        "languages": languages,
+        "languages": source_counts,
         "supporting_tools": supporting,
         "native": native,
         "manifests": {
