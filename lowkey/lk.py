@@ -3562,7 +3562,10 @@ def _select_project_target(config, entry, root):
     # A remembered address is not a live protocol target merely because it has
     # an ABI/source artifact. On local EVM labs, reject EOAs and stale addresses
     # before they can become the active audit target.
-    rpc = effective_rpc(config)
+    # Only validate against an explicitly configured RPC. A discovered/default
+    # Anvil endpoint is not enough to prove that a remembered project target
+    # belongs to the current live audit session.
+    rpc = config.get("rpc")
     if rpc:
         try:
             code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
