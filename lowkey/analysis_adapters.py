@@ -598,9 +598,10 @@ def _nested_project_roots(root: Path, max_depth: int = 5) -> list[Path]:
             depth = len(current_path.relative_to(root).parts)
         except ValueError:
             continue
+        prefixes = _dependency_prefixes(root)
         dirs[:] = sorted(
             name for name in dirs
-            if name not in IGNORED_DIRS and not name.startswith(".git")
+            if not _should_prune_directory(root, current_path, name, prefixes)
         )
         if depth == 0:
             continue
