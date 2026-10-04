@@ -782,7 +782,9 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
             "source-project" if source_counts else "unknown",
         )
 
-    if backend in {"evm-source", "generic-source", "rust", "move-source", "unknown"}:
+    if backend == "evm-source":
+        legacy_backend = "vyper" if has_vyper else "generic"
+    elif backend in {"generic-source", "rust", "move-source", "unknown"}:
         legacy_backend = "generic"
     elif backend == "cairo":
         legacy_backend = "cairo-starknet"
