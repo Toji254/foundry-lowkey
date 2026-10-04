@@ -2159,6 +2159,39 @@ contract Pool {
 
 
 
+    def test_deps_refuses_unselected_multi_project_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "package.json").write_text(
+                '{"private":true,"workspaces":["packages/*"]}\n',
+                encoding="utf-8",
+            )
+            for name in ("alpha", "beta"):
+                project = root / "packages" / name
+                (project / "src").mkdir(parents=True)
+                (project / "src" / "Main.sol").write_text("contract Main {}\n", encoding="utf-8")
+                (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            old = os.getcwd()
+            try:
+                os.chdir(root)
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    code = lk.run_deps([])
+            finally:
+                os.chdir(old)
+            self.assertEqual(code, 2)
+
+    def test_lab_generic_refuses_noninteractive_constructor_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            config = {"_lowkey_active_project_root": str(root)}
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk, "is_workspace_root", return_value=False), \
+                 patch.object(lk, "project_tools", None), \
+                 patch.object(lk.sys.stdin, "isatty", return_value=False):
+                code = lk.run_lab(config, ["--generic", "Vault"])
+            self.assertEqual(code, 2)
+
     def test_deps_default_project_shows_project_imports(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
