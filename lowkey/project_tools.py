@@ -7,6 +7,7 @@ toolchain/configuration instead of assuming Foundry or a src/ directory.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -27,15 +28,8 @@ except ImportError:
 
 def _python_module_available(name: str) -> bool:
     try:
-        result = subprocess.run(
-            [os.environ.get("PYTHON", "python3"), "-c", "import " + name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
         return False
 
 def _local_executable(root: Path, name: str) -> str | None:
