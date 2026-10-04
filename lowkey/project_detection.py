@@ -1468,6 +1468,15 @@ def _run_native_security_analysis(info: dict[str, Any]) -> int:
             failures = failures or int(item.get("exit_code") or 1)
     return failures
 
+def _run_native_child(parent_info: dict[str, Any], stack: str, args: Sequence[str]) -> int:
+    """Dispatch one child backend while preserving the parent's detected scope."""
+    child = dict(parent_info)
+    child["backend"] = stack
+    child["_native_backend"] = stack
+    child["_bootstrap_done"] = True
+    return run_native_audit(child, args)
+
+
 def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     """Run safe native verification for non-Foundry stacks.
 
@@ -1642,11 +1651,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             if stack == "foundry":
                 print("  Foundry: handled by the existing Forge audit layer.")
                 continue
-            child = dict(info)
-            child["backend"] = stack
-            child["_native_backend"] = stack
-            child["_bootstrap_done"] = True
-            child_code = run_native_audit(child, args)
+            child_code = _run_native_child(info, stack, args)
             if child_code != 0:
                 failures = failures or child_code
         failures = failures or _supplemental_native_tests(info)
