@@ -29,9 +29,13 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 try:
-    from analysis_adapters import canonical_project_root, inspect_repository as inspect_repository_canonical
+    from analysis_adapters import (
+        canonical_project_root,
+        inspect_repository as inspect_repository_canonical,
+        is_dependency_path as universal_is_dependency_path,
+    )
 except ImportError:
-    canonical_project_root = inspect_repository_canonical = None
+    canonical_project_root = inspect_repository_canonical = universal_is_dependency_path = None
 
 try:
     from bootstrap import (
@@ -54,7 +58,7 @@ except ImportError:
 IGNORED_DIRS = {
     ".git", ".audit", ".venv", "venv", "__pycache__", ".pytest_cache",
     ".mypy_cache", ".ruff_cache", ".tox", ".nox", "node_modules",
-    "vendor", "vendors", "lib", "libs", "out", "cache", "broadcast",
+    "vendor", "vendors", "out", "cache", "broadcast",
     "artifacts", "target", "build", "dist", ".idea", ".vscode",
 }
 
@@ -445,7 +449,14 @@ def discover_nested_projects(
             depth = len(current_path.relative_to(root).parts)
         except ValueError:
             continue
-        dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS)
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in IGNORED_DIRS
+            and not (
+                universal_is_dependency_path is not None
+                and universal_is_dependency_path(current_path / d, root)
+            )
+        )
         if depth == 0:
             continue
         if depth > max_depth:
@@ -522,7 +533,14 @@ def _has_multiple_nested_projects(root: Path, *, max_depth: int = 3) -> bool:
             depth = len(current_path.relative_to(root).parts)
         except ValueError:
             continue
-        dirs[:] = sorted(directory for directory in dirs if directory not in IGNORED_DIRS)
+        dirs[:] = sorted(
+            directory for directory in dirs
+            if directory not in IGNORED_DIRS
+            and not (
+                universal_is_dependency_path is not None
+                and universal_is_dependency_path(current_path / directory, root)
+            )
+        )
         if depth == 0:
             continue
         if depth > max_depth:
