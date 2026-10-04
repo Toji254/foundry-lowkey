@@ -205,6 +205,16 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             )
             self.assertEqual(graph["summary"]["unresolved_imports"], 0)
 
+    def test_detect_project_reports_installed_vyper_compiler(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "contracts/Vault.vy", "# pragma version ^0.4.0\n")
+            completed = type("Completed", (), {"returncode": 0, "stdout": "0.4.3+commit.test\n", "stderr": ""})()
+            with patch.object(project_tools.shutil, "which", side_effect=lambda name: "/usr/bin/vyper" if name == "vyper" else None), \\
+                 patch.object(project_tools.subprocess, "run", return_value=completed):
+                project = project_tools.detect_project(root)
+            self.assertEqual(project["vyper_compiler"], "0.4.3+commit.test")
+
     def test_detect_project_reports_solidity_compiler_versions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
