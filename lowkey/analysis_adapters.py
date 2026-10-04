@@ -441,7 +441,8 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
             and bool(__import__("shutil").which("slither"))
             else []
         ),
-        "unsupported_languages": unsupported_languages,\n        "coverage": coverage,
+        "unsupported_languages": unsupported_languages,
+        "coverage": coverage,
         "analysis_status": analysis_status,
         "evidence": {
             "manifests": sorted(
