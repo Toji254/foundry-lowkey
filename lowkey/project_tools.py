@@ -829,6 +829,7 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                 edge = {
                     "from": rel,
                     "to": _relative(resolved, root_path) if resolved else raw,
+                    "raw": raw,
                     "kind": "import",
                     "line": line,
                     "statement": statement,
@@ -864,6 +865,7 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                     "to": _relative(resolved, root_path) if resolved else (
                         str(external_root) if external_root else raw
                     ),
+                    "raw": raw,
                     "kind": "import",
                     "line": line,
                     "statement": statement,
