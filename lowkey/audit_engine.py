@@ -818,12 +818,15 @@ def run_source_triage(root: str = ".") -> int:
             print("RESULT: REVIEW NEEDED — no complete application source scope was established.")
             return 2
         if project_info.get("coverage") == "partial":
-            print("RESULT: TRIAGE COMPLETE — source heuristics ran; repository-wide coverage is not established.")
-            # This function is an audit-pipeline evidence step. A completed
-            # source heuristic pass is not itself a failed execution; the audit
-            # dashboard separately evaluates mandatory build/test/coverage
-            # evidence before declaring PASS.
-            return 0
+            if project_info.get("backend") == "evm-source":
+                print("RESULT: TRIAGE COMPLETE — source heuristics ran; repository-wide coverage is not established.")
+                # Source-only EVM triage is a supported compatibility path: the
+                # heuristic step completed successfully, while the audit
+                # dashboard remains responsible for mandatory build/test/coverage
+                # evidence.
+                return 0
+            print("RESULT: REVIEW NEEDED — partial native/non-EVM source coverage requires review.")
+            return 2
         return 0
     except ImportError:
         pass
