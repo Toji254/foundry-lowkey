@@ -1359,8 +1359,24 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
     if backend == "solana-anchor":
         if native.get("anchor"):
             step("anchor build", ["anchor", "build"])
+            # Anchor test requires a complete local validator/program fixture;
+            # run it only when the repository has an executable test target.
+            if _has_test_files(root):
+                step("anchor tests", ["anchor", "test"])
+            else:
+                print("DEFER  anchor tests — no repository test files detected.")
         else:
             print("DEFER  anchor checks — Anchor is not installed.")
+        return failures
+
+    if backend == "cosmwasm":
+        cargo = str(native.get("cargo") or "").strip()
+        cargo_bin = cargo if cargo else shutil.which("cargo")
+        if cargo_bin:
+            step("cosmwasm build", [cargo_bin, "build", "--workspace"])
+            step("cosmwasm tests", [cargo_bin, "test", "--workspace"])
+        else:
+            print("DEFER  CosmWasm checks — Cargo is not installed.")
         return failures
 
     if backend == "move":
@@ -1388,7 +1404,20 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         return failures
 
     build_backend = str(info.get("build_backend") or "").lower()
-    if build_backend in {"node-script", "cargo", "go", "mix", "maven", "gradle", "swift"}:
+    if build_backend == "cargo":
+        cargo = shutil.which("cargo")
+        if cargo:
+            command = [cargo, "build", "--workspace"]
+            step("cargo build", command)
+            if _has_test_files(root):
+                step("cargo tests", [cargo, "test", "--workspace"])
+            else:
+                print("DEFER  cargo tests — no repository test files detected.")
+        else:
+            print("DEFER  cargo checks — Cargo is not installed.")
+        return failures
+
+    if build_backend in {"node-script", "go", "mix", "maven", "gradle", "swift"}:
         command_info = project_build_command(info)
         if command_info:
             _cwd, command, evidence = command_info
