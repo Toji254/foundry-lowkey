@@ -9292,7 +9292,7 @@ def _live_target_candidate(config, root, contract_name=None):
         if artifact_is_project_application(root, path, artifact):
             artifacts_by_name[str(name).lower()] = (str(name), path)
 
-    aliases = target_aliases(config)
+    aliases = target_aliases(config, root)
     preferred = str(contract_name or "").strip().lower()
 
     candidates = []
