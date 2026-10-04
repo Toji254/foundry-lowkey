@@ -816,6 +816,7 @@ def run_source_triage(root: str = ".") -> int:
         print(f"Interpretation: {universal.get('interpretation', 'review manually')}.")
         if project_info.get("coverage") in {"none", "unsupported", "partial"}:
             print("RESULT: REVIEW NEEDED — source coverage is not a complete security verdict.")
+            return 2
         return 0
     except ImportError:
         pass
