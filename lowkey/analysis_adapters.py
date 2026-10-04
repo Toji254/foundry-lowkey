@@ -282,7 +282,29 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
         "ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml"
     )):
         stacks.append("vyper")
-    if package.get("dependencies") and re.search(r'["\'](?:hardhat|@nomicfoundation/hardhat)[^"\']*["\']', json.dumps(package)):
+    package_sections = [
+        package.get("dependencies", {}),
+        package.get("devDependencies", {}),
+        package.get("peerDependencies", {}),
+        package.get("optionalDependencies", {}),
+    ]
+    hardhat_dependency = any(
+        isinstance(section, dict)
+        and any(
+            key == "hardhat" or key.startswith("@nomicfoundation/hardhat")
+            for key in section
+        )
+        for section in package_sections
+    )
+    hardhat_scripts = (
+        any(
+            isinstance(value, str) and "hardhat" in value.lower()
+            for value in (package.get("scripts") or {}).values()
+        )
+        if isinstance(package.get("scripts"), dict)
+        else False
+    )
+    if hardhat_dependency or hardhat_scripts:
         if "hardhat" not in stacks:
             stacks.append("hardhat")
     return sorted(dict.fromkeys(stacks)), sorted(str(x) for x in languages)
@@ -368,7 +390,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     )
 
     if files and supported:
-        coverage = "full" if backend not in {"unknown", "generic-source", "rust", "move-source", "multi"} else "partial"
+        coverage = "full" if backend not in {"unknown", "generic-source", "rust", "move-source", "cargo", "cosmwasm", "solana-anchor", "cairo-starknet", "multi"} else "partial"
     elif files:
         coverage = "unsupported"
     else:
