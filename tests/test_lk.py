@@ -2159,6 +2159,21 @@ contract Pool {
 
 
 
+    def test_build_and_test_route_to_native_project_planners(self):
+        with patch.object(lk, "detected_project_root", return_value=pathlib.Path("/tmp/demo")), \
+             patch.object(lk, "detect_project", return_value={"root": "/tmp/demo", "backend": "cargo", "stacks": ["cargo"]}), \
+             patch.object(lk, "project_build_command", return_value=(pathlib.Path("/tmp/demo"), ["cargo", "build"], "Cargo.toml")), \
+             patch.object(lk, "project_test_command", return_value=(pathlib.Path("/tmp/demo"), ["cargo", "test"], "Cargo.toml")), \
+             patch.object(lk.subprocess, "run", return_value=type("R", (), {"returncode": 0})()):
+            self.assertEqual(lk.run_native_project_command({}, "build", []), 0)
+            self.assertEqual(lk.run_native_project_command({}, "test", []), 0)
+
+    def test_native_command_without_plan_is_review_needed(self):
+        with patch.object(lk, "detected_project_root", return_value=pathlib.Path("/tmp/demo")), \
+             patch.object(lk, "detect_project", return_value={"root": "/tmp/demo", "backend": "generic", "stacks": []}), \
+             patch.object(lk, "project_build_command", return_value=None):
+            self.assertEqual(lk.run_native_project_command({}, "build", []), 2)
+
     def test_deps_refuses_unselected_multi_project_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
