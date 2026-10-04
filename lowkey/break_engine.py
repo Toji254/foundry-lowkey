@@ -813,12 +813,29 @@ def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str,
         rpc,
         "-vvv",
     ]
-    completed = subprocess.run(
-        cmd,
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            start_new_session=(os.name == "posix"),
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        timeout_message = (
+            "LOWKEY_FORGE_TIMEOUT true\n"
+            "Forge harness exceeded Lowkey's 180 second safety timeout; "
+            "the probe was stopped and cannot support a security conclusion.\n"
+        )
+        completed = subprocess.CompletedProcess(
+            cmd,
+            124,
+            stdout=stdout,
+            stderr=(stderr + "\n" if stderr else "") + timeout_message,
+        )
 
     # Generated adversarial harnesses can accumulate enough local observables to
     # trigger Solidity's legacy stack-depth limit. Retry only that compiler failure
@@ -856,7 +873,22 @@ def _cast_binary(host) -> str:
 
 def _cast_exec(host, args: list[str], rpc: str):
     cmd = [_cast_binary(host), *args, "--rpc-url", rpc]
-    return subprocess.run(cmd, cwd=str(_root(host)), capture_output=True, text=True)
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(_root(host)),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            start_new_session=(os.name == "posix"),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            cmd,
+            124,
+            stdout=exc.stdout or "",
+            stderr=(exc.stderr or "") + "\nLOWKEY_CAST_TIMEOUT true\n",
+        )
 
 
 def _cast_int(text_value: str) -> int:
@@ -1020,7 +1052,8 @@ def _run_simple_evm_family(
             "value": value,
             "output": lines,
         })
-        result = _result_from_output(
+        archive_path = _archive_harness(host, harness)
+    result = _result_from_output(
             host,
             family=family,
             target=target,
@@ -1044,6 +1077,38 @@ import {console2} from "forge-std/console2.sol";
 """
 
 
+def _find_asset_getter_signature(functions: list[dict[str, Any]]) -> str | None:
+    """Find a conventional no-argument getter exposing an ERC-20 asset address."""
+    preferred = {
+        "staketoken": 120,
+        "collateraltoken": 115,
+        "deposittoken": 110,
+        "paymenttoken": 105,
+        "underlying": 100,
+        "asset": 95,
+        "token": 90,
+    }
+    candidates: list[tuple[int, str]] = []
+    for item in functions:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("stateMutability") or "").lower() not in {"view", "pure"}:
+            continue
+        if item.get("inputs") or len(item.get("outputs") or []) != 1:
+            continue
+        if str((item.get("outputs") or [{}])[0].get("type") or "").lower() != "address":
+            continue
+        name = str(item.get("name") or "")
+        score = preferred.get(name.lower())
+        if score is None:
+            continue
+        candidates.append((score, _format_signature(item, None)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda value: (-value[0], value[1]))
+    return candidates[0][1]
+
+
 def _render_repeat_test(
     target: Target,
     fn: dict[str, Any],
@@ -1054,6 +1119,7 @@ def _render_repeat_test(
     seed_fund: str | None,
     setup_signature: str | None = None,
     entitlement_signature: str | None = None,
+    asset_signature: str | None = None,
 ):
     target_lit = f"address(uint160(0x00{target.address[2:].lower()}))"
     params = list(fn.get("inputs") or [])
@@ -1103,6 +1169,46 @@ def _render_repeat_test(
     entitlement_after_second = """
         uint256 entitlementAfterSecond = 0;
 """
+    asset_block = """
+        address assetToken = address(0);
+        bool assetReadOk = false;
+        uint256 attackerTokenBefore = 0;
+        uint256 attackerTokenMid = 0;
+        uint256 attackerTokenAfter = 0;
+        uint256 targetTokenBefore = 0;
+        uint256 targetTokenMid = 0;
+        uint256 targetTokenAfter = 0;
+"""
+    if asset_signature:
+        asset_block = f"""
+        address assetToken = address(0);
+        bool assetReadOk = false;
+        {{
+            (bool ok, bytes memory data) = TARGET.staticcall(
+                abi.encodeWithSignature("{asset_signature}")
+            );
+            assetReadOk = ok && data.length >= 32;
+            if (assetReadOk) {{
+                assetToken = abi.decode(data, (address));
+                assetReadOk = assetToken != address(0) && assetToken.code.length > 0;
+            }}
+        }}
+        uint256 attackerTokenBefore = 0;
+        uint256 attackerTokenMid = 0;
+        uint256 attackerTokenAfter = 0;
+        uint256 targetTokenBefore = 0;
+        uint256 targetTokenMid = 0;
+        uint256 targetTokenAfter = 0;
+        if (assetReadOk) {{
+            attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
+            targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
+            // Foundry's ERC20 deal is a test-environment setup primitive, not a
+            // claim that the protocol can mint or seize tokens in production.
+            deal(assetToken, ATTACKER, 1 ether);
+            vm.prank(ATTACKER);
+            IERC20Lowkey(assetToken).approve(TARGET, type(uint256).max);
+        }}
+"""
     if entitlement_signature:
         entitlement_before = f"""
         uint256 entitlementBefore = 0;
@@ -1135,6 +1241,11 @@ def _render_repeat_test(
 """
 
     return _render_common_header() + f"""
+interface IERC20Lowkey {{
+    function balanceOf(address account) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+}}
+
 contract LowkeyBreakRepeat is Test {{
     address constant TARGET = {target_lit};
     address constant ATTACKER = address(uint160(0x00BEEF000000000000000000000000000000000042));
@@ -1146,6 +1257,7 @@ contract LowkeyBreakRepeat is Test {{
         vm.deal(ATTACKER, 100 ether);
 {setup_block}
 {entitlement_before}
+{asset_block}
         bytes memory data = {payload_expr};
 
         // Measure withdrawal gains only after setup has established the attacker's entitlement.
@@ -1157,15 +1269,27 @@ contract LowkeyBreakRepeat is Test {{
 
         uint256 targetMid = TARGET.balance;
         uint256 attackerMid = ATTACKER.balance;
+        if (assetReadOk) {{
+            targetTokenMid = IERC20Lowkey(assetToken).balanceOf(TARGET);
+            attackerTokenMid = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
+        }}
 {entitlement_after_first}
         vm.prank(ATTACKER);
         (bool second, bytes memory secondReturndata) = TARGET.call{{value: {value}}}(data);
 
         uint256 targetAfter = TARGET.balance;
         uint256 attackerAfter = ATTACKER.balance;
+        if (assetReadOk) {{
+            targetTokenAfter = IERC20Lowkey(assetToken).balanceOf(TARGET);
+            attackerTokenAfter = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
+        }}
 {entitlement_after_second}
         uint256 totalGain = attackerAfter > attackerBefore ? attackerAfter - attackerBefore : 0;
         uint256 totalTargetOutflow = targetBefore > targetAfter ? targetBefore - targetAfter : 0;
+        uint256 totalTokenGain = assetReadOk && attackerTokenAfter > attackerTokenBefore
+            ? attackerTokenAfter - attackerTokenBefore : 0;
+        uint256 totalTargetTokenOutflow = assetReadOk && targetTokenBefore > targetTokenAfter
+            ? targetTokenBefore - targetTokenAfter : 0;
 
         console2.log("LOWKEY_BREAK_FAMILY", "{label}");
         console2.log("FIRST_SUCCESS", first);
@@ -1176,6 +1300,9 @@ contract LowkeyBreakRepeat is Test {{
         console2.logBytes(secondReturndata);
         console2.log("TOTAL_ATTACKER_GAIN", totalGain);
         console2.log("TOTAL_TARGET_OUTFLOW", totalTargetOutflow);
+        console2.log("ASSET_TRACKING_AVAILABLE", assetReadOk);
+        console2.log("TOTAL_ATTACKER_TOKEN_GAIN", totalTokenGain);
+        console2.log("TOTAL_TARGET_TOKEN_OUTFLOW", totalTargetTokenOutflow);
         console2.log("ENTITLEMENT_READ_OK", entitlementReadOk);
         console2.log("ENTITLEMENT_BEFORE", entitlementBefore);
         console2.log("ENTITLEMENT_AFTER_FIRST", entitlementAfterFirst);
@@ -1184,7 +1311,10 @@ contract LowkeyBreakRepeat is Test {{
         // A second successful withdrawal is normal when the attacker still has entitlement.
         // BREAK requires demonstrated payout greater than the entitlement recorded before attack.
         bool breakByEntitlement = entitlementReadOk
-            && totalGain > entitlementBefore;
+            && (
+                totalGain > entitlementBefore
+                || (assetReadOk && totalTokenGain > entitlementBefore)
+            );
         // Without an entitlement baseline, repeated value movement is only an
         // observation. Do not label a normal second payout as an accounting BREAK.
         if (breakByEntitlement) {{
@@ -1749,6 +1879,18 @@ def _result_from_output(
     config: dict[str, Any] | None = None,
 ) -> AttackResult:
     text_output = str(output or "")
+    if re.search(r"LOWKEY_FORGE_TIMEOUT\s+true", text_output, flags=re.I):
+        return AttackResult(
+            family=family,
+            contract=target.contract,
+            address=target.address,
+            function=function,
+            status="TIMEOUT",
+            summary="Generated Forge harness exceeded the safety timeout. No security conclusion is supported.",
+            evidence_path=evidence_path,
+            break_condition=False,
+            detail={"raw_tail": "\n".join(text_output.splitlines()[-80:])},
+        )
     found = re.search(r"LOWKEY_BREAK\s+(true|false)", text_output, flags=re.I)
     is_break = bool(found and found.group(1).lower() == "true")
     structured = "LOWKEY_BREAK_FAMILY" in text_output
@@ -1793,6 +1935,12 @@ def _result_from_output(
                 f"Target rejected the setup call before the {family} probe could establish its intended state. "
                 f"{reason}"
             )
+            if "invalidagreement" in str(reason).lower():
+                status = "LAB_ISSUE"
+                summary = (
+                    "Lab/fixture issue: the setup path reverted with InvalidAgreement before "
+                    f"the {family} behavior could be tested. {reason}"
+                )
         elif first_success is False:
             reason = decoded_first or (
                 "No revert data was returned."
@@ -1858,10 +2006,45 @@ def _result_from_output(
 
 
 def _write_harness(host, name: str, body: str) -> str:
-    path = _root(host) / "test" / f"Lowkey_Break_{_slug(name)}_{hashlib.sha1(body.encode()).hexdigest()[:10]}.t.sol"
+    # Generated probes live in a dedicated disposable subtree. The campaign
+    # removes them after execution so they cannot silently become part of the
+    # project's normal Forge suite.
+    path = (
+        _root(host) / "test" / ".lowkey"
+        / f"Lowkey_Break_{_slug(name)}_{hashlib.sha1(body.encode()).hexdigest()[:10]}.t.sol"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     return str(path)
+
+
+def _archive_harness(host, harness: str) -> str | None:
+    source = Path(harness)
+    if not source.is_file():
+        return None
+    archive = _break_root(host) / "harnesses"
+    archive.mkdir(parents=True, exist_ok=True)
+    destination = archive / source.name
+    try:
+        destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        return str(destination)
+    except OSError:
+        return None
+
+
+def _cleanup_generated_harnesses(host):
+    root = _root(host) / "test" / ".lowkey"
+    if not root.is_dir():
+        return
+    for path in root.glob("Lowkey_Break_*.t.sol"):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
 
 
 def _record_break(host, result: AttackResult):
@@ -1941,6 +2124,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             all_functions = _discover_functions(host, config, target)
             setup_signature = _find_setup_signature(all_functions)
             entitlement_signature = _find_entitlement_getter_signature(all_functions)
+            asset_signature = _find_asset_getter_signature(all_functions)
         except Exception:
             setup_signature = None
             entitlement_signature = None
@@ -1954,6 +2138,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             seed_fund,
             setup_signature=setup_signature,
             entitlement_signature=entitlement_signature,
+            asset_signature=asset_signature,
         )
     elif family == "access":
         body = _render_access_test(
@@ -2066,7 +2251,19 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
     )
     result.detail = result.detail or {}
     result.detail["harness"] = harness
+    result.detail["harness_archive"] = archive_path
     result.detail["forge_returncode"] = completed.returncode
+
+    # Successful break evidence is archived; every other generated harness is
+    # disposable and must not remain in the project's normal test tree.
+    if result.break_condition:
+        # Keep the original harness for an immediately reproducible confirmed break.
+        pass
+    else:
+        try:
+            Path(harness).unlink(missing_ok=True)
+        except OSError:
+            pass
     return result
 
 
@@ -2425,6 +2622,7 @@ def run(config, args=None, host=None):
     rng = random.Random(opts.get("seed", 1337))
 
     try:
+        _cleanup_generated_harnesses(host)
         known_targets = _target_from_config(host, config)
         if opts.get("system"):
             targets = known_targets
@@ -2530,7 +2728,13 @@ def run(config, args=None, host=None):
         print(f"Observed : {observed}")
         print("Breaks   : 0")
         print(f"Report   : {report}")
-        print("No concrete break condition was reached in this campaign.")
+        lab_issues = sum(1 for item in campaign_results if item.status == "LAB_ISSUE")
+        timeouts = sum(1 for item in campaign_results if item.status == "TIMEOUT")
+        incomplete = blocked > 0 or lab_issues > 0 or timeouts > 0
+        if incomplete:
+            print("Conclusion: INCOMPLETE — blocked/invalid/timeout probes mean this run cannot establish safety.")
+        else:
+            print("Conclusion: no concrete break condition was reached in this campaign; this is not a safety proof.")
         return 0
     except KeyboardInterrupt:
         summary = {
@@ -2550,8 +2754,10 @@ def run(config, args=None, host=None):
         print("Reason   : Ctrl-C")
         print(f"Rounds   : {rounds}")
         print(f"Report   : {report}")
+        _cleanup_generated_harnesses(host)
         print("No conclusion is implied by an interrupted campaign.")
         return 130
     except Exception as exc:
+        _cleanup_generated_harnesses(host)
         _emit(host, "break-error", str(exc), {"error": str(exc)})
         return host.fail(f"Break engine failed: {exc}", 1)
