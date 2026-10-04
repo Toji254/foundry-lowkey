@@ -1157,7 +1157,7 @@ def _render_repeat_test(
             setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_arg});
 {setup_value_decl}        vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{setup_value}}(setupData);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{setup_value}(setupData);
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
         console2.logBytes(setupReturndata);
@@ -1959,6 +1959,7 @@ def _result_from_output(
         )
         function_name = _function_name(function or "target call")
         if setup_success is False:
+            status = "LAB_ISSUE"
             reason = decoded_setup or (
                 "No revert data was returned."
                 if not setup_len
@@ -1975,7 +1976,7 @@ def _result_from_output(
                     f"the {family} behavior could be tested. {reason}"
                 )
         elif first_success is False:
-            status = "OBSERVED"
+            status = "BLOCKED"
             reason = decoded_first or (
                 "No revert data was returned."
                 if not first_len
