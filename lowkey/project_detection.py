@@ -28,14 +28,31 @@ MODULE_DIR = Path(__file__).resolve().parent
 if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
+def _load_analysis_adapters():
+    import importlib.util
+
+    module_path = MODULE_DIR / "analysis_adapters.py"
+    spec = importlib.util.spec_from_file_location("_lowkey_analysis_adapters", module_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 try:
     from analysis_adapters import (
         canonical_project_root,
         inspect_repository as inspect_repository_canonical,
         is_dependency_path as universal_is_dependency_path,
     )
-except ImportError:
-    canonical_project_root = inspect_repository_canonical = universal_is_dependency_path = None
+except (ImportError, AttributeError):
+    try:
+        _analysis_module = _load_analysis_adapters()
+        canonical_project_root = _analysis_module.canonical_project_root if _analysis_module else None
+        inspect_repository_canonical = _analysis_module.inspect_repository if _analysis_module else None
+        universal_is_dependency_path = _analysis_module.is_dependency_path if _analysis_module else None
+    except (ImportError, OSError, AttributeError):
+        canonical_project_root = inspect_repository_canonical = universal_is_dependency_path = None
 
 try:
     from bootstrap import (
@@ -601,12 +618,19 @@ def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
 
 
 def project_root(start: str | os.PathLike[str] = ".") -> Path:
+    path = Path(start).expanduser().resolve()
     if canonical_project_root is not None:
         try:
-            return Path(canonical_project_root(start)).resolve()
+            selected = Path(canonical_project_root(path)).resolve()
+            if selected != path:
+                return selected
+            if path.is_dir() and _is_workspace_package(path):
+                candidates = discover_nested_projects(path)
+                if len(candidates) == 1:
+                    return Path(candidates[0]["root"]).resolve()
+            return selected
         except Exception:
             pass
-    path = Path(start).expanduser().resolve()
     if path.is_file():
         path = path.parent
 
@@ -814,6 +838,9 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
 
     # Brownie/Ape are Vyper execution environments; keep their legacy kind when
     # their explicit manifest exists, while the canonical model remains authoritative.
+    if has_vyper and not has_foundry and not has_hardhat and not has_scarb and not has_anchor and not has_move:
+        kind = "vyper"
+        legacy_backend = "vyper"
     if has_foundry and has_vyper and len(stacks) >= 2:
         kind = "mixed-foundry-vyper"
         legacy_backend = "foundry"
