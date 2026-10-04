@@ -3612,12 +3612,89 @@ def run_targets(config, interactive=False, include_support=False):
         return 0
     return _select_project_target(config, visible_entries[int(choice) - 1], root)
 
+def _minimal_proxy_implementation(runtime):
+    """Extract the implementation address from a standard ERC-1167 clone runtime."""
+    raw = str(runtime or "").strip().lower()
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    patterns = (
+        r"^363d3d373d3d3d363d73([0-9a-f]{40})5af43d82803e903d91602b57fd5bf3$",
+        r"^363d3d373d3d3d363d73([0-9a-f]{40})5af43d82803e903d91602b57fd5bf3$",
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, raw)
+        if match:
+            return "0x" + match.group(1)
+    return None
+
+
+def _live_runtime(config, address):
+    rpc = effective_rpc(config)
+    if not rpc or not is_address(address):
+        return None
+    try:
+        code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
+    except Exception:
+        return None
+    if code != 0:
+        return None
+    runtime = str(runtime or "").strip()
+    if not runtime or runtime.lower() in {"0x", "0x0"}:
+        return None
+    return runtime
+
+
+def _artifact_runtime_matches(path, artifact, runtime):
+    deployed = artifact.get("deployedBytecode") if isinstance(artifact, dict) else None
+    if isinstance(deployed, dict):
+        deployed = deployed.get("object")
+    deployed = str(deployed or "").strip().lower()
+    runtime = str(runtime or "").strip().lower()
+    if deployed and deployed not in {"0x", "0x0"} and deployed == runtime:
+        return "runtime"
+    return None
+
+
+def _live_target_artifact_match(config, address, artifact):
+    """Match direct deployments and common proxy/clone instances to an artifact."""
+    runtime = _live_runtime(config, address)
+    if not runtime:
+        return None
+
+    direct = _artifact_runtime_matches("", artifact, runtime)
+    if direct:
+        return direct
+
+    implementation = _minimal_proxy_implementation(runtime)
+    if not implementation:
+        rpc = effective_rpc(config)
+        if rpc:
+            try:
+                code, impl, _ = cast_output(
+                    ["cast", "implementation", address, "--rpc-url", rpc]
+                )
+            except Exception:
+                code, impl = 1, ""
+            if code == 0 and is_address(str(impl or "").strip()):
+                implementation = str(impl).strip()
+    if implementation:
+        implementation_runtime = _live_runtime(config, implementation)
+        if implementation_runtime and _artifact_runtime_matches("", artifact, implementation_runtime):
+            return "clone-or-proxy"
+    return None
+
+
 def discover_deployments(root="."):
     records=[]
+    root_path = Path(root).resolve()
     for path in artifact_json_files(root):
-        if not path.startswith(os.path.join(root,"broadcast")): continue
         try:
-            payload=json.loads(Path(path).read_text(encoding="utf-8"))
+            path_obj = Path(path).resolve()
+            path_obj.relative_to(root_path / "broadcast")
+        except (OSError, ValueError):
+            continue
+        try:
+            payload=json.loads(path_obj.read_text(encoding="utf-8"))
         except (OSError,json.JSONDecodeError):
             continue
         txs=payload.get("transactions",[]) if isinstance(payload,dict) else []
@@ -3628,8 +3705,10 @@ def discover_deployments(root="."):
             run_timestamp=int(run_timestamp)
         except (TypeError,ValueError):
             run_timestamp=None
-        for tx in txs:
-            if not isinstance(tx,dict): continue
+
+        def collect(tx, parent=None, additional=False):
+            if not isinstance(tx, dict):
+                return
             tx_type=str(tx.get("transactionType","")).upper()
             address=tx.get("contractAddress") or tx.get("address")
             if tx_type.startswith("CREATE") and is_address(address):
@@ -3638,19 +3717,40 @@ def discover_deployments(root="."):
                     "address":address,
                     "file":path,
                     "time":mtime,
-                    "hash":tx.get("hash"),
+                    "hash":tx.get("hash") or (parent or {}).get("hash"),
                     "run_timestamp":run_timestamp,
+                    "deployment_kind":"additional" if additional else "transaction",
+                    "parent_contract":(parent or {}).get("contractName") if additional else None,
+                    "parent_hash":(parent or {}).get("hash") if additional else None,
                 })
+            children = tx.get("additionalContracts")
+            if isinstance(children, dict):
+                children = list(children.values())
+            if isinstance(children, list):
+                for child in children:
+                    collect(child, parent=tx, additional=True)
+
+        for tx in txs:
+            collect(tx)
+
+        top_additional = payload.get("additionalContracts") if isinstance(payload,dict) else None
+        if isinstance(top_additional, dict):
+            top_additional = list(top_additional.values())
+        if isinstance(top_additional, list):
+            for child in top_additional:
+                collect(child, parent=None, additional=True)
 
     # Foundry keeps run-latest.json alongside the timestamped broadcast for
     # the same run. Treat them as one deployment run, not two deployments.
     deduped={}
     for record in records:
         file_path=Path(record["file"])
+        try:
+            relative_parent = file_path.parent.relative_to(root_path).as_posix()
+        except ValueError:
+            relative_parent = str(file_path.parent)
         run_identity=(
-            str(file_path.parent.relative_to(Path(root).resolve()).as_posix())
-            if file_path.is_relative_to(Path(root).resolve())
-            else str(file_path.parent),
+            relative_parent,
             record.get("run_timestamp"),
             str(record.get("contract") or "").lower(),
             str(record.get("address") or "").lower(),
