@@ -289,5 +289,56 @@ class TargetScopingTests(unittest.TestCase):
             self.assertEqual(config["target_contract"], "curve")
 
 
+    def test_discover_deployments_includes_nested_additional_contracts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            broadcast = root / "broadcast" / "LocalAudit.s.sol" / "31337"
+            broadcast.mkdir(parents=True)
+            payload = {
+                "timestamp": 123,
+                "transactions": [{
+                    "transactionType": "CREATE",
+                    "contractName": "ConfidencePoolFactory",
+                    "contractAddress": "0x" + "1" * 40,
+                    "hash": "0x" + "a" * 64,
+                    "additionalContracts": [{
+                        "transactionType": "CREATE",
+                        "address": "0x" + "2" * 40,
+                        "contractName": "ConfidencePool",
+                    }],
+                }],
+            }
+            (broadcast / "run-123000.json").write_text(json.dumps(payload), encoding="utf-8")
+            records = lk.discover_deployments(root)
+            self.assertEqual({item["address"] for item in records}, {"0x" + "1" * 40, "0x" + "2" * 40})
+            clone = next(item for item in records if item["address"] == "0x" + "2" * 40)
+            self.assertEqual(clone["deployment_kind"], "additional")
+            self.assertEqual(clone["parent_contract"], "ConfidencePoolFactory")
+
+    def test_auto_target_prefers_live_application_clone_over_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            implementation = "0x" + "1" * 40
+            clone = "0x" + "2" * 40
+            artifact = root / "out" / "ConfidencePool.sol" / "ConfidencePool.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(json.dumps({
+                "contractName": "ConfidencePool",
+                "sourceName": "src/ConfidencePool.sol",
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+                "abi": [],
+            }), encoding="utf-8")
+            records = [
+                {"contract": "ConfidencePool", "address": implementation, "deployment_kind": "transaction", "run_timestamp": 200, "time": 200},
+                {"contract": "Unknown", "address": clone, "deployment_kind": "additional", "run_timestamp": 200, "time": 200},
+            ]
+            config = {"abi_paths": {}, "rpc": "http://127.0.0.1:8545"}
+            with patch.object(lk, "local_artifact_paths", return_value=[str(artifact)]),                  patch.object(lk, "read_artifact", return_value=json.loads(artifact.read_text())),                  patch.object(lk, "_live_target_artifact_match", side_effect=lambda cfg, addr, art: "clone-or-proxy" if addr == clone else "runtime"),                  patch.object(lk, "_live_runtime", return_value="0x6000"):
+                ranked = lk._auto_target_records(config, root, records, requested="ConfidencePool")
+            self.assertEqual(ranked[0]["address"], clone)
+            self.assertEqual(ranked[0]["_resolved_contract"], "ConfidencePool")
+
+
 if __name__ == "__main__":
     unittest.main()
