@@ -42,7 +42,7 @@ RUNTIME_FILES = (
 
 DEPENDENCY_FAILURE_PATTERNS = (
     r"node_modules[/\\]",
-    r"\\b(?:@openzeppelin|@(?:nomicfoundation|chainlink|aave|uniswap|balancer)[^\\s]*)/",
+    r"\b(?:@openzeppelin|@(?:nomicfoundation|chainlink|aave|uniswap|balancer)[^\s]*)/",
     r"library .* not found",
     r"import .* not found",
     r"cannot find module",
@@ -848,6 +848,12 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
     )
     if missing_source:
         source_path = next((value for value in missing_source.groups() if value), "")
+        if source_path.startswith("@"):
+            return {
+                "category": "dependency",
+                "repairable": True,
+                "reason": "The missing source is a namespaced package import; Lowkey treats it as dependency resolution.",
+            }
         if source_path.startswith(("contracts/", "src/", "./contracts/", "./src/")):
             return {
                 "category": "source_or_build_error",
