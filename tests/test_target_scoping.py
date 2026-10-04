@@ -216,7 +216,7 @@ class TargetScopingTests(unittest.TestCase):
 
             self.assertEqual(len(records), 2)
             self.assertEqual(
-                {Path(item["file"]).name for item in records},
+                {pathlib.Path(item["file"]).name for item in records},
                 {f"run-{timestamp * 1000}.json"},
             )
             self.assertTrue(all(item["run_timestamp"] == timestamp for item in records))
