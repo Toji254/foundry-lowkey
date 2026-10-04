@@ -48,8 +48,22 @@ def _canonical_type(param: dict[str, Any]) -> str:
 
 
 def _run(root: Path, binary: str, args: list[str]) -> tuple[int, str, str]:
+    command = [binary, *args]
     try:
-        result = subprocess.run([binary, *args], cwd=root, capture_output=True, text=True)
+        result = subprocess.run(
+            command,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            start_new_session=(os.name == "posix"),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return (
+            124,
+            (exc.stdout or "").strip(),
+            ((exc.stderr or "").strip() + "\nLOWKEY_GENERATOR_TIMEOUT true").strip(),
+        )
     except OSError as exc:
         return 127, "", str(exc)
     return result.returncode, result.stdout.strip(), result.stderr.strip()
@@ -288,6 +302,10 @@ pragma solidity ^0.8.20;
 
 import {{Script, console2}} from "forge-std/Script.sol";
 import {{Vm}} from "forge-std/Vm.sol";
+
+interface IERC20Lowkey {{
+    function balanceOf(address account) external view returns (uint256);
+}}
 import {{ {contract} }} from "{source}";
 
 /// @title Lowkey-generated deployment for {contract}
@@ -848,6 +866,11 @@ contract LowkeyPoC_{ident} is Script {{
         console2.log("Storage reads:", reads.length);
         console2.log("Storage writes:", writes.length);
         console2.log("Events emitted:", logs.length);
+        console2.log("Asset token tracked:", assetReadOk);
+        console2.log("Target token before:", targetTokenBefore);
+        console2.log("Target token after:", targetTokenAfter);
+        console2.log("Attacker token before:", attackerTokenBefore);
+        console2.log("Attacker token after:", attackerTokenAfter);
         console2.logBytes(returndata);
 
         // Raw write-slot addresses are useful first evidence. Decode mapping/struct slots after that.
@@ -900,6 +923,27 @@ contract LowkeyTest_{ident} is Test {{
         uint256 targetBefore = TARGET.balance;
         uint256 attackerBefore = attacker.balance;
 
+        // Native ETH is only one possible asset. When the target exposes a
+        // conventional asset getter, also snapshot the ERC-20 balance so a
+        // token-valued withdrawal cannot be mistaken for an ETH-valued one.
+        address assetToken = address(0);
+        bool assetReadOk = false;
+        uint256 targetTokenBefore = 0;
+        uint256 attackerTokenBefore = 0;
+        (bool assetOk, bytes memory assetData) =
+            TARGET.staticcall(abi.encodeWithSignature("stakeToken()"));
+        if (!assetOk || assetData.length < 32) {
+            (assetOk, assetData) = TARGET.staticcall(abi.encodeWithSignature("asset()"));
+        }
+        if (assetOk && assetData.length >= 32) {
+            assetToken = abi.decode(assetData, (address));
+            assetReadOk = assetToken != address(0) && assetToken.code.length > 0;
+        }
+        if (assetReadOk) {
+            targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
+            attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(attacker);
+        }
+
         // snapshot creates a rollback point so experiments do not contaminate one another.
         uint256 snapshot = vm.snapshot();
 
@@ -924,6 +968,12 @@ contract LowkeyTest_{ident} is Test {{
 
         uint256 targetAfter = TARGET.balance;
         uint256 attackerAfter = attacker.balance;
+        uint256 targetTokenAfter = 0;
+        uint256 attackerTokenAfter = 0;
+        if (assetReadOk) {
+            targetTokenAfter = IERC20Lowkey(assetToken).balanceOf(TARGET);
+            attackerTokenAfter = IERC20Lowkey(assetToken).balanceOf(attacker);
+        }
 
         (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(TARGET);
         Vm.Log[] memory logs = vm.getRecordedLogs();
