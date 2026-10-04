@@ -37,6 +37,11 @@ class LowkeyCloneTests(unittest.TestCase):
         self.assertLessEqual(jobs, 8)
         self.assertTrue(use_cache)
 
+    def test_parse_accepts_github_shorthand(self):
+        parsed = clone_tools.parse_clone_args(["CodeHawks-Contests/contest"])
+        self.assertEqual(parsed[0], "https://github.com/CodeHawks-Contests/contest.git")
+        self.assertIsNone(parsed[1])
+
     def test_parse_clone_options(self):
         parsed = clone_tools.parse_clone_args(
             [
