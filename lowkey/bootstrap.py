@@ -654,6 +654,102 @@ def _node_run_command(root: Path, script: str) -> list[str] | None:
     return None
 
 
+def project_test_command(
+    info: dict[str, Any] | None = None,
+    root: str | os.PathLike[str] = ".",
+) -> tuple[Path, list[str], str] | None:
+    """Select a repository-declared native test command without guessing."""
+    project = Path((info or {}).get("root") or root).expanduser().resolve()
+    package = _package_json(project)
+    scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+    if isinstance(scripts, dict) and scripts.get("test"):
+        command = _node_run_command(project, "test")
+        if command:
+            return project, command, "package.json scripts.test"
+
+    backend = str((info or {}).get("backend") or (info or {}).get("kind") or "").lower()
+
+    if backend in {"foundry", "multi-stack"} and (project / "foundry.toml").is_file():
+        return project, ["forge", "test"], "foundry.toml"
+
+    if backend in {"hardhat", "node"} or any(
+        (project / name).is_file()
+        for name in (
+            "hardhat.config.js",
+            "hardhat.config.cjs",
+            "hardhat.config.mjs",
+            "hardhat.config.ts",
+        )
+    ):
+        boundary = dependency_boundary(project)
+        binary = boundary / "node_modules" / ".bin" / "hardhat"
+        if os.name == "nt":
+            binary = binary.with_suffix(".cmd")
+        if binary.is_file():
+            return project, [str(binary), "test"], "local Hardhat binary"
+        return None
+
+    if backend in {"cairo", "cairo-starknet"} and (project / "Scarb.toml").is_file():
+        if shutil.which("snforge"):
+            return project, ["snforge", "test"], "snforge"
+        if shutil.which("scarb"):
+            return project, ["scarb", "test"], "Scarb.toml"
+        return None
+
+    if backend in {"cargo", "rust", "cosmwasm"} and (project / "Cargo.toml").is_file() and shutil.which("cargo"):
+        return project, ["cargo", "test", "--manifest-path", str(project / "Cargo.toml")], "Cargo.toml"
+
+    if backend == "go" and ((project / "go.mod").is_file() or (project / "go.work").is_file()) and shutil.which("go"):
+        return project, ["go", "test", "./..."], "Go workspace/module"
+
+    if backend == "solana-anchor" and (project / "Anchor.toml").is_file() and shutil.which("anchor"):
+        return project, ["anchor", "test"], "Anchor.toml"
+
+    if backend == "move" and (project / "Move.toml").is_file():
+        if shutil.which("aptos"):
+            return project, ["aptos", "move", "test"], "Aptos Move.toml"
+        if shutil.which("sui"):
+            return project, ["sui", "move", "test"], "Sui Move.toml"
+        return None
+
+    if backend in {"mix", "elixir"} and (project / "mix.exs").is_file() and shutil.which("mix"):
+        return project, ["mix", "test"], "mix.exs"
+
+    if (project / "mvnw").is_file() or (project / "pom.xml").is_file():
+        executable = project / "mvnw" if (project / "mvnw").is_file() else shutil.which("mvn")
+        if executable:
+            return project, [str(executable), "test"], "Maven project"
+
+    if (project / "gradlew").is_file() or (project / "build.gradle").is_file() or (project / "build.gradle.kts").is_file():
+        executable = project / "gradlew" if (project / "gradlew").is_file() else shutil.which("gradle")
+        if executable:
+            return project, [str(executable), "test"], "Gradle project"
+
+    if (project / "Package.swift").is_file() and shutil.which("swift"):
+        return project, ["swift", "test"], "Package.swift"
+
+    has_python_tests = any(
+        (project / name).is_dir() for name in ("tests", "test")
+    ) or any(
+        path.is_file() and (path.name.startswith("test_") or path.name.endswith("_test.py"))
+        for path in project.rglob("*.py")
+        if all(part not in {"node_modules", ".git", ".audit", ".venv", "venv"} for part in path.parts)
+    )
+    if has_python_tests:
+        if (project / "pyproject.toml").is_file() and shutil.which("uv"):
+            return project, ["uv", "run", "pytest"], "pyproject.toml + uv"
+        for python in (
+            project / ".venv" / "bin" / "python",
+            project / "venv" / "bin" / "python",
+        ):
+            if python.is_file() and os.access(python, os.X_OK):
+                return project, [str(python), "-m", "pytest"], "project Python environment"
+        if shutil.which("pytest"):
+            return project, ["pytest"], "pytest on PATH"
+
+    return None
+
+
 def project_build_command(
     info: dict[str, Any] | None = None,
     root: str | os.PathLike[str] = ".",
