@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 try:
+    from analysis_adapters import inspect_repository
+except ImportError:
+    inspect_repository = None
+
+try:
     from project_detection import project_root as detected_project_root
 except ImportError:
     detected_project_root = None
@@ -319,6 +324,11 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
                 observed.append(first)
         candidate_roots = observed or ["."]
 
+    try:
+        analysis = inspect_repository(root_path) if inspect_repository is not None else {}
+    except Exception as exc:
+        analysis = {"coverage": "unknown", "analysis_status": "detection-error", "error": str(exc)}
+
     return {
         "root": str(root_path),
         "kind": kind,
@@ -350,6 +360,7 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
             "solidity": len(sol_files),
             "vyper": len(vy_files),
         },
+        "analysis": analysis,
         "source_roots": candidate_roots,
     }
 
@@ -591,7 +602,7 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
                 ],
                 "line": text.count("\n", 0, match.start()) + 1,
             })
-    else:
+    elif language == "vyper":
         for match in re.finditer(r'(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(', text):
             values.append({
                 "kind": "function",
@@ -606,26 +617,42 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
                 "inherits": [],
                 "line": text.count("\n", 0, match.start()) + 1,
             })
+    else:
+        patterns = {
+            "rust": r'(?m)^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+            "cairo": r'(?m)^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+            "move": r'(?m)^\s*(?:public\s+)?(?:entry\s+)?fun\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(',
+        }
+        pattern = patterns.get(language)
+        if pattern:
+            for match in re.finditer(pattern, text):
+                values.append({
+                    "kind": "function",
+                    "name": match.group(1),
+                    "inherits": [],
+                    "line": text.count("\n", 0, match.start()) + 1,
+                })
     return values
 
 
 def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
     text = _strip_source_comments(text, language)
-    patterns = (
-        [
+    if language == "solidity":
+        patterns = [
             ("low-level-call", re.compile(r'\.(?:call|delegatecall|staticcall)\b[^\n]*')),
             # Deliberately exclude .call/.delegatecall/.staticcall here: the
             # project map reports those separately as low-level calls.
             ("external-call", re.compile(r'\.(?!(?:call|delegatecall|staticcall)\b)[A-Za-z_][A-Za-z0-9_]*\s*\(')),
         ]
-        if language == "solidity"
-        else [
+    elif language == "vyper":
+        patterns = [
             ("raw-call", re.compile(r'\braw_call\s*\([^\n]*')),
             ("external-call", re.compile(r'\b(?:extcall|staticcall)\s*[^\n]*')),
             ("value-transfer", re.compile(r'\bsend\s*\([^\n]*')),
             ("create", re.compile(r'\bcreate_(?:minimal_proxy_to|forwarder_to|from_blueprint)\b[^\n]*')),
         ]
-    )
+    else:
+        patterns = []
     calls: list[dict[str, Any]] = []
     for label, pattern in patterns:
         for match in pattern.finditer(text):
@@ -638,12 +665,22 @@ def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
 def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
     root_path = project_root(root)
     files = project_source_files(root_path)
+    analysis_files = []
+    try:
+        if inspect_repository is not None:
+            analysis = inspect_repository(root_path)
+            analysis_files = [root_path / item for item in (analysis.get("source_files") or [])]
+    except Exception:
+        analysis_files = []
+    if not files and analysis_files:
+        files = [path for path in analysis_files if path.is_file()]
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
 
     for path in files:
-        language = "solidity" if path.suffix.lower() == ".sol" else "vyper"
+        suffix = path.suffix.lower()
+        language = "solidity" if suffix == ".sol" else "vyper" if suffix in {".vy", ".vyi"} else suffix.lstrip(".") or "unknown"
         text = _read(path)
         rel = _relative(path, root_path)
         declarations = _declarations(text, language, path)
@@ -823,6 +860,12 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         if active:
             print(f"Active scope  : {Path(active).resolve().relative_to(Path(workspace_info['root']).resolve()).as_posix()}")
     print(f"Type          : {project['kind']}")
+    analysis = project.get("analysis") or {}
+    if isinstance(analysis, dict):
+        print(
+            f"Analysis      : {analysis.get('analysis_status', 'unknown')} "
+            f"(coverage: {analysis.get('coverage', 'unknown')})"
+        )
     print(f"Compiler      : {', '.join(project.get('solidity_compilers') or ['not detected'])}")
     print()
     print("1. WHAT IS THE PROTOCOL?")
@@ -832,8 +875,12 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             parent_text = f" (inherits {', '.join(parents)})" if parents else ""
             print(f"  {name}{parent_text}")
             print(f"    Source: {file}")
+    elif int(analysis.get("source_file_count", 0) or 0) > 0:
+        print("  Application source was detected.")
+        print("  ABI-style contract declarations are not available for this language/backend.")
+        print("  Absence of contract findings is not a clean result; see coverage above.")
     else:
-        print("  No supported application contracts detected; protocol security was not analyzed.")
+        print("  No application source detected; protocol security was not analyzed.")
 
     print()
     print("2. HOW DOES IT DEPEND ON OTHER CODE?")
@@ -890,6 +937,8 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             print(f"    ... and {len(unresolved) - 12} more")
     elif protocol_nodes:
         print("  All imports used by analyzed application code were resolved.")
+    elif int(analysis.get("source_file_count", 0) or 0) > 0:
+        print("  Dependency graph is not implemented for the detected non-EVM source language; not assessed.")
     else:
         print("  Dependency resolution was not assessed because no application code was analyzed.")
 
