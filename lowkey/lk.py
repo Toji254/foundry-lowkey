@@ -47,6 +47,7 @@ try:
         bootstrap_status,
         classify_build_failure,
         project_build_command,
+        project_test_command,
         _is_lowkey_source_checkout,
     )
 except ImportError:
@@ -54,7 +55,7 @@ except ImportError:
     discover_nested_projects = is_workspace_root = workspace_root = None
     workspace_selection = set_workspace_selection = clear_workspace_selection = None
     bootstrap_project = None
-    bootstrap_status = classify_build_failure = project_build_command = None
+    bootstrap_status = classify_build_failure = project_build_command = project_test_command = None
     _is_lowkey_source_checkout = None
     detected_project_root = lambda start=".": Path(start).resolve()
 
@@ -9096,6 +9097,50 @@ def _full_evidence_pass(config):
 
 
 
+def run_native_project_command(config, command_name, args):
+    """Run one repository-native build/test command without invoking an unrelated EVM tool."""
+    root = detected_project_root(".") if callable(detected_project_root) else Path.cwd().resolve()
+    info = detect_project(root) if detect_project else {"root": str(root), "backend": "generic"}
+    backend = str(info.get("backend") or "").lower()
+    stacks = set(info.get("stacks") or [])
+    if command_name in {"build", "test"} and (backend == "foundry" or "foundry" in stacks or info.get("kind") == "lowkey-source"):
+        return run_foundry([command_name, *args])
+
+    planner = project_build_command if command_name == "build" else project_test_command
+    if planner is None:
+        return fail(f"Error: native {command_name} planner is unavailable.")
+    command_info = planner(info)
+    if not command_info:
+        print(f"No safe native '{command_name}' command was detected for {root}.")
+        print("Lowkey will not invoke Forge/Cast outside an applicable project backend.")
+        return 0
+
+    cwd, command, evidence = command_info
+    print("LOWKEY NATIVE COMMAND")
+    print("=====================")
+    print(f"Project : {cwd}")
+    print(f"Command : {' '.join(command)}")
+    print(f"Source  : {evidence}")
+    try:
+        timeout = max(30, min(int(os.environ.get("LOWKEY_NATIVE_TIMEOUT", "180")), 1800))
+    except ValueError:
+        timeout = 180
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            env={**os.environ, "CI": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        print(f"TIMEOUT: native {command_name} command exceeded {timeout}s.", file=sys.stderr)
+        return 124
+    except OSError as exc:
+        return fail(f"Error executing native {command_name}: {exc}", 1)
+    return result.returncode
+
+
 def run_deps(args):
     requested = Path(args[0] if args else ".").expanduser().resolve()
     if not requested.exists():
@@ -11931,6 +11976,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if entry:
             return _select_project_target(config,entry,root)
         return fail("Error: target belongs to a different project context.")
+    elif cmd in {"build", "test"}: return run_native_project_command(config, cmd, args)
     elif cmd=="deployments": run_deployments(config)
     elif cmd in {"project","graph"}: return run_project_map(config,args)
     elif cmd=="projects": return run_projects(config,args)
