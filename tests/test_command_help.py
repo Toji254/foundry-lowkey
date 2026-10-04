@@ -3,6 +3,7 @@ import io
 import pathlib
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -132,6 +133,19 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
 
+
+    def test_main_contextual_help_skips_project_sync(self):
+        original_argv = lk.sys.argv
+        lk.sys.argv = ["lk", "slither", "--h"]
+        output = io.StringIO()
+        try:
+            with patch.object(lk, "_sync_audit_context", side_effect=AssertionError),                  patch.object(lk.audit_context, "foundry_project_root", side_effect=AssertionError),                  redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+                lk.main()
+        finally:
+            lk.sys.argv = original_argv
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("LOWKEY HELP  •  lk slither", output.getvalue())
 
     def test_import_is_in_main_help(self):
         script = (ROOT / "lowkey" / "lk.py").read_text(encoding="utf-8")
