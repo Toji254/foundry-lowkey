@@ -58,7 +58,7 @@ ADAPTERS = {
         "kind": "evm",
         "languages": {"solidity", "yul", "huff", "vyper"},
         "markers": {"foundry.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True},
+        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True, "live_native": True},
     },
     "hardhat": {
         "kind": "evm",
@@ -76,7 +76,7 @@ ADAPTERS = {
         "kind": "cosmwasm",
         "languages": {"rust"},
         "markers": {"Cargo.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False},
+        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False, "live_native": True},
     },
     "solana-anchor": {
         "kind": "solana",
@@ -321,6 +321,7 @@ def _capabilities(backend: str, stacks: list[str], languages: set[str]) -> dict[
         "coverage": False,
         "slither": False,
         "live_evm": False,
+        "live_native": False,
         "workspace_scope": len(stacks) > 1,
     }
     for stack in stacks:
@@ -569,7 +570,7 @@ def render_scope(info: dict[str, Any]) -> str:
         "CAPABILITIES",
         "-" * 72,
     ]
-    for key in ("build", "tests", "coverage", "slither", "live_evm"):
+    for key in ("build", "tests", "coverage", "slither", "live_evm", "live_native"):
         lines.append(f"  {key:<12}: {'available' if caps.get(key) else 'not available'}")
     unsupported = info.get("unsupported_languages") or []
     if unsupported:
