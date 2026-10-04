@@ -10138,6 +10138,12 @@ def run_audit(config, args):
     except Exception as exc:
         print(f"Analysis scope: unavailable ({exc})", file=sys.stderr)
 
+    # The outer connected-audit flow may already have prepared this exact
+    # project. Preserve that state so native audit execution does not bootstrap
+    # the same dependency tree twice.
+    if config.get("_bootstrap_done_root") == str(Path(root).resolve()):
+        info["_bootstrap_done"] = True
+
     project_data = {
         "root": str(root),
         "name": root.name,
@@ -10148,6 +10154,17 @@ def run_audit(config, args):
     }
     audit_context.update(root, project=project_data)
     _sync_security_patterns(root, announce=True)
+
+    # Every audit starts with the universal source/scope pass. This is cheap,
+    # adapter-aware, and gives non-Foundry repositories a useful result before
+    # native build/test execution begins.
+    try:
+        from analysis_adapters import scan_repository
+        scan_code = scan_repository(root)
+        if scan_code not in {0, 2}:
+            print("Warning: universal source triage failed; native checks will continue where supported.", file=sys.stderr)
+    except Exception as exc:
+        print(f"Warning: universal source triage unavailable: {exc}", file=sys.stderr)
 
     stacks = set(info.get("stacks", []))
     if info.get("backend") == "foundry" or "foundry" in stacks or info.get("kind") == "lowkey-source":
