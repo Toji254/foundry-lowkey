@@ -450,17 +450,36 @@ def discover_nested_projects(
         if depth > max_depth:
             dirs[:] = []
             continue
-        if not _is_project_candidate(current_path):
+        try:
+            candidate = _is_project_candidate(current_path)
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if not candidate:
             continue
 
-        info = detect_project(current_path)
+        try:
+            info = detect_project(current_path)
+        except Exception as exc:
+            # One malformed child must not abort discovery of the rest of the
+            # workspace. Keep the child visible as a blocked candidate.
+            info = {
+                "kind": "unknown",
+                "backend": "generic",
+                "languages": {},
+                "detection_error": str(exc),
+            }
+        try:
+            relative = current_path.relative_to(root).as_posix()
+        except ValueError:
+            relative = current_path.name
         found[str(current_path)] = {
             "root": str(current_path),
-            "relative": current_path.relative_to(root).as_posix(),
+            "relative": relative,
             "name": current_path.name,
             "kind": info.get("kind", "unknown"),
             "backend": info.get("backend", "generic"),
             "languages": info.get("languages", {}),
+            "detection_error": info.get("detection_error"),
             "score": _candidate_score(current_path),
         }
 
@@ -471,17 +490,23 @@ def discover_nested_projects(
     return _workspace_project_metadata(projects)
 
 def workspace_root(start: str | os.PathLike[str] = ".") -> Path:
-    path = Path(start).expanduser().resolve()
+    try:
+        path = Path(start).expanduser().resolve()
+    except OSError:
+        path = Path(start).expanduser().absolute()
     if path.is_file():
         path = path.parent
     for parent in (path, *path.parents):
-        if any((parent / marker).is_file() for marker in WORKSPACE_MARKERS):
-            return parent
-        if (parent / "package.json").is_file() and _is_workspace_package(parent):
-            return parent
-        cargo = parent / "Cargo.toml"
-        if cargo.is_file() and re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]", _read(cargo)):
-            return parent
+        try:
+            if any((parent / marker).is_file() for marker in WORKSPACE_MARKERS):
+                return parent
+            if (parent / "package.json").is_file() and _is_workspace_package(parent):
+                return parent
+            cargo = parent / "Cargo.toml"
+            if cargo.is_file() and re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]\s*$", _read(cargo)):
+                return parent
+        except (OSError, ValueError):
+            continue
     return path
 
 def workspace_selection(start: str | os.PathLike[str] = ".") -> Path | None:
@@ -515,7 +540,11 @@ def clear_workspace_selection(workspace: str | os.PathLike[str]) -> None:
         pass
 def _has_multiple_nested_projects(root: Path, *, max_depth: int = 3) -> bool:
     count = 0
-    for current, dirs, _files in os.walk(root):
+    try:
+        walker = os.walk(root)
+    except OSError:
+        return False
+    for current, dirs, _files in walker:
         current_path = Path(current)
         try:
             depth = len(current_path.relative_to(root).parts)
@@ -527,25 +556,38 @@ def _has_multiple_nested_projects(root: Path, *, max_depth: int = 3) -> bool:
         if depth > max_depth:
             dirs[:] = []
             continue
-        if _is_project_candidate(current_path):
+        try:
+            candidate = _is_project_candidate(current_path)
+        except (OSError, ValueError, UnicodeError):
+            candidate = False
+        if candidate:
             count += 1
             if count > 1:
                 return True
     return False
 
 def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
-    root = Path(start).expanduser().resolve()
+    try:
+        root = Path(start).expanduser().resolve()
+    except OSError:
+        root = Path(start).expanduser().absolute()
     if root.is_file():
         root = root.parent
-    if any((root / marker).is_file() for marker in WORKSPACE_MARKERS):
-        return True
-    if (root / "package.json").is_file() and _is_workspace_package(root):
-        return True
-    if (root / "Cargo.toml").is_file():
-        text = _read(root / "Cargo.toml")
-        if re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]", text):
+    try:
+        if any((root / marker).is_file() for marker in WORKSPACE_MARKERS):
             return True
-    return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and _has_multiple_nested_projects(root)
+        if (root / "package.json").is_file() and _is_workspace_package(root):
+            return True
+        if (root / "Cargo.toml").is_file():
+            text = _read(root / "Cargo.toml")
+            if re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]\s*$", text):
+                return True
+    except (OSError, ValueError, UnicodeError):
+        return False
+    try:
+        return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and _has_multiple_nested_projects(root)
+    except (OSError, ValueError, UnicodeError):
+        return False
 
 def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
     """Return one consistent workspace view for commands that need package scope."""
