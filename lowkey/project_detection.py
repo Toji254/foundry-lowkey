@@ -461,7 +461,7 @@ def workspace_root(start: str | os.PathLike[str] = ".") -> Path:
         if (parent / "package.json").is_file() and _is_workspace_package(parent):
             return parent
         cargo = parent / "Cargo.toml"
-        if cargo.is_file() and re.search(r"(?m)^\\s*\\[workspace(?:\\.[^]]+)?\\]", _read(cargo)):
+        if cargo.is_file() and re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]", _read(cargo)):
             return parent
     return path
 
@@ -504,7 +504,7 @@ def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
         return True
     if (root / "Cargo.toml").is_file():
         text = _read(root / "Cargo.toml")
-        if re.search(r"(?m)^\\s*\\[workspace(?:\\.[^]]+)?\\]", text):
+        if re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]", text):
             return True
     nested = discover_nested_projects(root, max_depth=3)
     return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and len(nested) > 1
