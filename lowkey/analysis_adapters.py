@@ -578,8 +578,55 @@ def _strip_comments(text: str, language: str) -> str:
         i += 1
     return "".join(chars)
 
+def _nested_project_roots(root: Path, max_depth: int = 5) -> list[Path]:
+    markers = {
+        "foundry.toml", "Scarb.toml", "Anchor.toml", "Move.toml",
+        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs",
+        "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
+        "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
+        "requirements.txt", "requirements-dev.txt", "Pipfile", "Cargo.toml",
+        "go.mod", "go.work", "mix.exs", "pom.xml", "build.gradle",
+        "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+        "Package.swift", "CMakeLists.txt",
+    }
+    found: list[Path] = []
+    try:
+        walker = os.walk(root, followlinks=False)
+    except OSError:
+        return []
+    for current, dirs, _files in walker:
+        current_path = Path(current)
+        try:
+            depth = len(current_path.relative_to(root).parts)
+        except ValueError:
+            continue
+        dirs[:] = sorted(
+            name for name in dirs
+            if name not in IGNORED_DIRS and not name.startswith(".git")
+        )
+        if depth == 0:
+            continue
+        if depth > max_depth:
+            dirs[:] = []
+            continue
+        if any((current_path / marker).is_file() for marker in markers):
+            found.append(current_path)
+    return sorted(set(found))
+
+def _workspace_selected_project(root: Path) -> Path | None:
+    data = _json_object(root / ".audit" / "workspace.json")
+    active = data.get("active_project")
+    if not active:
+        return None
+    active_path = _safe_resolve(active)
+    try:
+        active_path.relative_to(root)
+    except ValueError:
+        return None
+    return active_path if active_path.is_dir() and active_path != root else None
+
 def canonical_project_root(start: str | os.PathLike[str] = ".") -> Path:
-    """Resolve one canonical Lowkey project root without importing project_detection."""
+    """Resolve the canonical Lowkey project root without importing project_detection."""
     path = _safe_resolve(start)
     if path.is_file():
         path = path.parent
@@ -593,7 +640,7 @@ def canonical_project_root(start: str | os.PathLike[str] = ".") -> Path:
         "hardhat.config.ts", "ape-config.yaml", "ape-config.yml",
         "brownie-config.yaml", "brownie-config.yml", "pyproject.toml",
         "requirements.txt", "requirements-dev.txt", "Pipfile", "package.json",
-        "Cargo.toml", "go.mod", "go.work", "mix.exs", "pom.xml",
+        "pnpm-workspace.yaml", "Cargo.toml", "go.mod", "go.work", "mix.exs", "pom.xml",
         "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
         "Package.swift", "CMakeLists.txt",
     )
@@ -603,19 +650,29 @@ def canonical_project_root(start: str | os.PathLike[str] = ".") -> Path:
             nearest = parent
             break
     if nearest is None:
-        return path
-    if (nearest / "package.json").is_file() and _package_workspace(_json_object(nearest / "package.json")):
-        selected = nearest / ".audit" / "workspace.json"
-        data = _json_object(selected)
-        active = data.get("active_project")
-        if active:
-            active_path = _safe_resolve(active)
-            try:
-                active_path.relative_to(nearest)
-                if active_path.is_dir() and active_path != nearest:
-                    return active_path
-            except ValueError:
-                pass
+        nested = _nested_project_roots(path)
+        return nested[0] if len(nested) == 1 else path
+
+    selected = _workspace_selected_project(nearest)
+    if selected is not None:
+        return selected
+
+    is_workspace = (
+        (nearest / "pnpm-workspace.yaml").is_file()
+        or (nearest / "go.work").is_file()
+        or (
+            (nearest / "package.json").is_file()
+            and _package_workspace(_json_object(nearest / "package.json"))
+        )
+        or (
+            (nearest / "Cargo.toml").is_file()
+            and _cargo_workspace(nearest, _toml_object(nearest / "Cargo.toml"))
+        )
+    )
+    if is_workspace and nearest == path:
+        nested = _nested_project_roots(nearest)
+        if len(nested) == 1:
+            return nested[0]
     return nearest
 
 def _evidence_root(path: Path) -> Path:
