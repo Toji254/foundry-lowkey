@@ -1,4 +1,5 @@
 import subprocess
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,8 @@ class SolidityCheatLabCompileTests(unittest.TestCase):
     """Compile every explicit standalone cheat lab in its own tiny Foundry project."""
 
     def test_standalone_labs_compile(self):
+        if shutil.which("forge") is None:
+            self.skipTest("Forge is required for Solidity lab compilation tests")
         for name, source in CONTRACT_LABS.items():
             with self.subTest(lab=name), tempfile.TemporaryDirectory(
                 prefix=f"lowkey-cheat-{name}-"
