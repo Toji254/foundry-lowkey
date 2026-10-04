@@ -1536,7 +1536,7 @@ def show_file(item):
     line = syms[0].line if syms else 1
     print()
     print(f"SOURCE:      {path.resolve()}:{line}")
-    print(f"IMPORT FILE: {syms[0].import_path}")
+    print(f"IMPORT FILE: {syms[0].import_path if syms else path.as_posix()}")
     print("IMPORTABLE SYMBOLS:")
     for s in syms:
         print(f"  {s.name} [{kind_label(s)}] — {source_location(s)}")
@@ -1806,7 +1806,11 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
         path_match = find_import_path(query, root, maps)
         if path_match:
             source, import_name = path_match
-            symbols = [s for s in all_symbols(root, maps) if s.import_path == import_name]
+            symbols = [
+                s for s in all_symbols(root, maps)
+                if s.import_path == import_name
+                or Path(s.source).resolve() == Path(source).resolve()
+            ]
             if symbols:
                 show_file((source, symbols))
             else:
@@ -1845,6 +1849,14 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
         s for s in syms
         if any(token in s.name.lower() or token in s.import_path.lower() for token in tokens)
     ]
+    if len(matches) == 1 and tokens:
+        candidate = matches[0]
+        similarity = difflib.SequenceMatcher(None, tokens[0], candidate.name.lower()).ratio()
+        if tokens[0] != candidate.name.lower() and similarity >= 0.45:
+            print(f"No exact importable symbol matches '{query.strip()}'.")
+            print("Did you mean:")
+            print(f"  - {candidate.name}")
+            return 2
     if not matches:
         known_matches = []
         for name in list(COMMON) + list(REFERENCE_CATALOG):
