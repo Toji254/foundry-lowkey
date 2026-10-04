@@ -1812,8 +1812,10 @@ def _function_inventory_record(item, source_decls, storage_labels, getter_names,
         reads = sorted(set(reads + [name]))
 
     events = sorted(set(re.findall(r"\bemit\s+([A-Za-z_]\w*)\s*(?:\(|;)", body)))
-    calls = [method for method in ("delegatecall", "staticcall", "call", "send", "transfer")
-             if re.search(r"\.\s*" + method + r"\s*(?:\{|\()", body)]
+    calls = [
+        method for method in ("delegatecall", "staticcall", "call", "send", "transfer")
+        if re.search(r"\.\s*" + method + r"\b", body)
+    ]
     sends_eth = bool(re.search(r"\.\s*call\s*\{\s*value\s*:", body)) or bool(
         re.search(r"\.\s*(?:send|transfer)\s*\(", body)
     )
