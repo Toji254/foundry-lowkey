@@ -898,6 +898,7 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
                 adapter_languages = analysis.get("languages")
                 if adapter_backend and adapter_backend not in {"unknown"}:
                     result["backend"] = adapter_backend
+                    result["kind"] = adapter_backend if adapter_backend != "multi" else "multi-stack"
                 if isinstance(adapter_stacks, list) and adapter_stacks:
                     result["stacks"] = list(adapter_stacks)
                 if isinstance(adapter_languages, dict) and adapter_languages:
