@@ -130,6 +130,10 @@ class AuditEngineTests(unittest.TestCase):
                 "contract Replay { function f() external { block.timestamp; } }",
                 encoding="utf-8",
             )
+            (root / "audits" / "Certora" / "Harness.sol").write_text(
+                "contract Harness { function f() external { block.timestamp; } }",
+                encoding="utf-8",
+            )
             with patch.object(audit_engine, "record_evidence") as record:
                 self.assertEqual(audit_engine.run_source_triage(str(root)), 0)
                 payload = record.call_args.args[1]
