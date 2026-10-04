@@ -242,7 +242,7 @@ def _workspace_project_metadata(projects):
         project["entry_contracts"] = entry_contracts
         project["has_tests"] = test_files > 0
         project["has_setup"] = setup_files > 0
-        project["audit_capable"] = project.get("backend") not in {"generic", "unknown"} and protocol_source_files > 0
+        project["audit_capable"] = project.get("backend") not in {"generic", "unknown"}
 
         # Package-manager relationships are the strongest workspace-level signal.
         dependencies = set()
@@ -341,14 +341,15 @@ def _workspace_project_metadata(projects):
         )
         if explicit_support:
             primary_score -= 100
-        if int(project.get("protocol_source_files", 0)) == 0:
+        if int(project.get("protocol_source_files", 0)) == 0 and project.get("backend") in {"generic", "unknown"}:
             primary_score -= 100
+        if project.get("audit_capable"):
+            primary_score += 1
         project["audit_entry_score"] = primary_score
 
     eligible = [
         item for item in projects
-        if int(item.get("protocol_source_files", 0)) > 0
-        and bool(item.get("audit_capable"))
+        if bool(item.get("audit_capable"))
         and int(item.get("audit_entry_score", 0)) > 0
         and not re.search(
             r"(^|[/._-])(helper|helpers|common|toolbox|tools|benchmark|benchmarks|fixture|fixtures|mock|mocks)([/._-]|$)",
@@ -356,11 +357,18 @@ def _workspace_project_metadata(projects):
         )
     ]
     max_score = max((int(item.get("audit_entry_score", 0)) for item in eligible), default=0)
-    primary_roots = {
-        Path(item["root"]).resolve()
-        for item in eligible
-        if int(item.get("audit_entry_score", 0)) == max_score and max_score > 0
-    }
+    ranked_eligible = sorted(
+        eligible,
+        key=lambda item: (
+            -int(item.get("audit_entry_score", 0)),
+            str(item.get("relative") or "").lower(),
+        ),
+    )
+    primary_roots = (
+        {Path(ranked_eligible[0]["root"]).resolve()}
+        if ranked_eligible and max_score > 0
+        else set()
+    )
 
     for project in projects:
         root = Path(project["root"]).resolve()
@@ -1051,7 +1059,7 @@ def _hardhat_fork_spec(root: Path) -> tuple[str, int] | None:
         direct_url = re.search(r"""url\s*:\s*["']([^"']+)["']""", block)
         url = direct_url.group(1) if direct_url else None
 
-    block_match = re.search(r"(?m)^\s*blockNumber\s*:\s*(\d+)", block)
+    block_match = re.search(r"\bblockNumber\s*:\s*(\d+)", block)
     if not url or not block_match:
         return None
     return str(url), int(block_match.group(1))
