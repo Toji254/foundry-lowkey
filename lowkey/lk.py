@@ -1211,7 +1211,10 @@ def auto_abi_path(target,config,root=None):
 
     if rpc:
         for candidate in candidate_addresses:
-            code,runtime,_=cast_output(["cast","code",candidate,"--rpc-url",rpc])
+            try:
+                code,runtime,_=cast_output(["cast","code",candidate,"--rpc-url",rpc])
+            except (OSError, subprocess.SubprocessError):
+                code,runtime=1,""
             if code!=0 or not runtime or not runtime.startswith("0x") or runtime=="0x":
                 continue
             for artifact_path in paths:
