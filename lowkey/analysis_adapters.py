@@ -605,6 +605,7 @@ def _nested_project_roots(root: Path, max_depth: int = 5) -> list[Path]:
         "Package.swift", "CMakeLists.txt",
     }
     found: list[Path] = []
+    prefixes = _dependency_prefixes(root)
     try:
         walker = os.walk(root, followlinks=False)
     except OSError:
