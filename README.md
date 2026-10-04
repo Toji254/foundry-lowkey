@@ -47,7 +47,8 @@ lk poc
 The output tells you what happened, why it matters, and what source/function to inspect next. The full forensic renderer is still available with `lk walkthrough test --technical`.
 
 The teaching layer is language-neutral: it does not assume the target is Solidity or a particular protocol. It can label Solidity, Vyper, Move, Cairo, Tact, FunC, Clarity, Rust, and unknown source files without changing the underlying audit semantics. Chain execution remains adapter-specific, so a language needs a compatible build/runtime adapter before live probes can run.
-### Working inside a multi-project workspace
+### Universal repository analysis
+Lowkey first determines the repository scope and available native/security tooling before choosing a command path. A conventional directory name such as `lib/` is not automatically treated as dependency code: Lowkey prunes it only when repository evidence (for example a Git submodule or Foundry remapping) identifies it as external. First-party source under `lib/` remains auditable.\n\n`lk scan` is a coverage-aware source/security triage command. It uses installed native analyzers when they are relevant (for example Slither on EVM projects, or Rust/Move security tooling when installed) and never turns unsupported language heuristics into a clean audit verdict.\n\nScan exit codes are deliberate: `0` means the requested triage completed with full coverage, `1` means an analyzer/tool failed, and `2` means Lowkey could not establish complete coverage and the result requires review. A nonzero scan result is therefore not a vulnerability finding by itself; it means the analysis state needs attention.\n\n### Working inside a multi-project workspace
 
 Lowkey treats a monorepo as a workspace first and an audit target second. From the workspace root or a shared parent directory:
 
