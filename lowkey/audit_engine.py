@@ -764,6 +764,66 @@ def _strip_source_comments(text: str, language: str) -> str:
 
 def run_source_triage(root: str = ".") -> int:
     """Run language-aware source heuristics without assuming a src/ tree."""
+    # Use the repository-wide adapter contract first. This prevents an
+    # Anchor/Cairo/Rust/Move project from reaching the legacy Solidity-only
+    # fallback and being reported as zero files analyzed.
+    try:
+        from analysis_adapters import source_triage
+        universal = source_triage(root)
+        project_info = universal.get("project") or {}
+
+        # Keep the shared project security-pattern state synchronized even when
+        # the universal analyzer handles the repository. This is best-effort:
+        # triage evidence must survive if optional EVM artifact tooling is absent.
+        try:
+            from walkthrough import _artifact_models
+            from walkthrough_finding_patterns import scan_project, persist_security_patterns
+            universal_root = Path(project_info.get("root") or root).resolve()
+            models = _artifact_models(universal_root)
+            if models:
+                persist_security_patterns(
+                    universal_root,
+                    scan_project(universal_root, models),
+                )
+        except Exception:
+            pass
+
+        record_evidence(
+            "source_triage",
+            {
+                "project": project_info.get("backend"),
+                "languages": project_info.get("languages", {}),
+                "coverage": project_info.get("coverage"),
+                "analysis_status": project_info.get("analysis_status"),
+                "files_scanned": universal.get("files_scanned", 0),
+                "count": universal.get("count", 0),
+                "markers": universal.get("markers", []),
+                "interpretation": universal.get("interpretation"),
+            },
+            root,
+        )
+        print("SOURCE TRIAGE")
+        print("=" * 72)
+        print(f"Project : {project_info.get('backend', 'unknown')}")
+        print(f"Files   : {universal.get('files_scanned', 0)}")
+        print(f"Coverage: {project_info.get('coverage', 'unknown')}")
+        for item in universal.get("markers", []):
+            print(
+                f"{item['file']}:{item['line']}: "
+                f"[{item['language']}:{item['label']}] {item['text']}"
+            )
+        print(f"\\nReview markers: {universal.get('count', 0)}")
+        print(f"Interpretation: {universal.get('interpretation', 'review manually')}.")
+        if project_info.get("coverage") in {"none", "unsupported", "partial"}:
+            print("RESULT: REVIEW NEEDED — source coverage is not a complete security verdict.")
+        return 0
+    except ImportError:
+        pass
+    except Exception as exc:
+        print(
+            f"Warning: universal source triage unavailable; using legacy EVM scanner: {exc}",
+            file=sys.stderr,
+        )
     # Publish the shared source security-pattern layer whenever source triage runs,
     # so audit, walkthrough, findings, and system state see the same signals.
     try:
