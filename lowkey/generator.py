@@ -821,6 +821,10 @@ pragma solidity ^0.8.20;
 import {{Script, console2}} from "forge-std/Script.sol";
 import {{Vm}} from "forge-std/Vm.sol";
 
+interface IERC20Lowkey {{
+    function balanceOf(address account) external view returns (uint256);
+}}
+
 /// @title Lowkey-generated proof of concept
 /// @notice Replays one concrete call and exposes the measurements needed for a security property.
 contract LowkeyPoC_{ident} is Script {{
@@ -842,6 +846,26 @@ contract LowkeyPoC_{ident} is Script {{
         uint256 attackerBefore = attacker.balance;
         uint256 targetBefore = TARGET.balance;
 
+        // Native ETH is only one possible asset. When the target exposes a
+        // conventional asset getter, also snapshot the ERC-20 balance.
+        address assetToken = address(0);
+        bool assetReadOk = false;
+        uint256 targetTokenBefore = 0;
+        uint256 attackerTokenBefore = 0;
+        (bool assetOk, bytes memory assetData) =
+            TARGET.staticcall(abi.encodeWithSignature("stakeToken()"));
+        if (!assetOk || assetData.length < 32) {{
+            (assetOk, assetData) = TARGET.staticcall(abi.encodeWithSignature("asset()"));
+        }}
+        if (assetOk && assetData.length >= 32) {{
+            assetToken = abi.decode(assetData, (address));
+            assetReadOk = assetToken != address(0) && assetToken.code.length > 0;
+        }}
+        if (assetReadOk) {{
+            targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
+            attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(attacker);
+        }}
+
         // Raw call is intentional: it replays exact calldata while you are still learning the ABI.
         // Later, replace this with a typed interface call once the contract behavior is understood.
         // forge-lint: disable-next-line(low-level-calls)
@@ -849,6 +873,12 @@ contract LowkeyPoC_{ident} is Script {{
             TARGET.call{{value: {_value(value)}}}(hex"{calldata}");
 
         uint256 attackerAfter = attacker.balance;
+        uint256 targetTokenAfter = 0;
+        uint256 attackerTokenAfter = 0;
+        if (assetReadOk) {{
+            targetTokenAfter = IERC20Lowkey(assetToken).balanceOf(TARGET);
+            attackerTokenAfter = IERC20Lowkey(assetToken).balanceOf(attacker);
+        }}
 
         // accesses exposes storage slots this transaction read/wrote.
         // This is the Solidity-side counterpart to Lowkey's transaction state-diff workflow.
