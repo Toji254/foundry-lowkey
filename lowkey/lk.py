@@ -3781,6 +3781,101 @@ def run_deployments(config):
         if key in seen: continue
         seen.add(key); print(f"{r['contract']:<24} {r['address']}  {r['file']}")
 
+def _auto_target_records(config, root, records, requested=None):
+    """Rank broadcast targets by application provenance and live runtime identity."""
+    artifacts = []
+    for path in local_artifact_paths(root):
+        artifact = read_artifact(path) or {}
+        if artifact_is_project_application(root, path, artifact):
+            artifacts.append((path, artifact, artifact_contract_name(path, artifact)))
+
+    requested_lower = str(requested or "").strip().lower()
+    ranked = []
+
+    for raw in records:
+        record = dict(raw)
+        contract = str(record.get("contract") or "Unknown").strip()
+        contract_lower = contract.lower()
+        score = 0
+        artifact_path = None
+        resolved_contract = contract if contract_lower != "unknown" else None
+        match_kind = None
+
+        if requested_lower and contract_lower == requested_lower:
+            score += 5000
+
+        candidates = artifacts
+        if requested_lower:
+            candidates = [
+                item for item in artifacts
+                if item[2].strip().lower() == requested_lower
+            ]
+        elif contract_lower != "unknown":
+            exact = [
+                item for item in artifacts
+                if item[2].strip().lower() == contract_lower
+            ]
+            if exact:
+                candidates = exact
+
+        for path, artifact, artifact_name in candidates:
+            if contract_lower != "unknown" and artifact_name.lower() != contract_lower and requested_lower == "":
+                continue
+            match = _live_target_artifact_match(config, record.get("address"), artifact)
+            if match:
+                artifact_path = path
+                resolved_contract = artifact_name
+                match_kind = match
+                score += 4000 if match == "runtime" else 9000
+                break
+
+        if resolved_contract:
+            lowered = resolved_contract.lower()
+            if any(token in lowered for token in ("mock", "fixture", "test", "interface", "library")):
+                score -= 10000
+            if lowered.endswith("factory"):
+                score -= 150
+            else:
+                score += 150
+            if artifact_path:
+                score += 500
+
+        if record.get("deployment_kind") == "additional":
+            # Nested CREATEs are often deterministic application instances (for
+            # example EIP-1167 clones) rather than implementation deployments.
+            score += 250
+
+        # A live contract is stronger evidence than a stale broadcast record.
+        if _live_runtime(config, record.get("address")):
+            score += 100
+
+        if not requested_lower:
+            score += int(record.get("run_timestamp") or 0) // 1000000
+
+        record["_score"] = score
+        record["_artifact"] = artifact_path
+        record["_resolved_contract"] = resolved_contract or contract
+        record["_match_kind"] = match_kind
+        ranked.append(record)
+
+    if requested_lower:
+        ranked = [
+            item for item in ranked
+            if str(item.get("_resolved_contract") or "").lower() == requested_lower
+            and item.get("_score", 0) > -1000
+        ]
+
+    ranked.sort(
+        key=lambda item: (
+            int(item.get("_score") or 0),
+            int(item.get("run_timestamp") or 0),
+            float(item.get("time") or 0),
+        ),
+        reverse=True,
+    )
+    return ranked
+
+
 def run_auto_target(config,name=None):
     root=audit_context.foundry_project_root()
     records=discover_deployments(root)
@@ -3791,45 +3886,40 @@ def run_auto_target(config,name=None):
             return 0
         return fail("No deployment found in broadcast/. Build artifacts exist, but a live target still needs deployment.")
 
-    record=None
-    if name:
-        requested=str(name).strip().lower()
-        record=next(
-            (item for item in records if str(item.get("contract","")).strip().lower()==requested),
-            None,
+    ranked = _auto_target_records(config, root, records, requested=name)
+    if not ranked:
+        available=", ".join(dict.fromkeys(str(item.get("contract","Unknown")) for item in records))
+        return fail(
+            f"Error: no application deployment could be resolved for '{name or 'auto'}'."
+            + (f" Available broadcasts: {available}" if available else "")
         )
-        if record is None:
-            available=", ".join(dict.fromkeys(str(item.get("contract","Unknown")) for item in records))
-            return fail(
-                f"Error: no broadcast deployment found for '{name}'."
-                + (f" Available: {available}" if available else "")
-            )
-    else:
-        record=records[0]
 
-    alias=name or record["contract"]
+    record=ranked[0]
+    contract = record.get("_resolved_contract") or record.get("contract") or "Target"
+    alias=name or contract
     remember_project_target(config, root, alias, record["address"])
     config["target"]=record["address"]
 
-    artifact_path=None
-    for path in local_artifact_paths(root):
-        artifact=read_artifact(path) or {}
-        contract_name=artifact_contract_name(path,artifact)
-        if contract_name.lower()==str(record["contract"]).lower():
-            artifact_path=path
-            config["abi_paths"][record["address"]]=path
-            print(f"ABI auto-loaded: {path}")
-            break
+    artifact_path=record.get("_artifact")
+    if artifact_path:
+        config["abi_paths"][record["address"]]=artifact_path
+        print(f"ABI auto-loaded: {artifact_path}")
 
-    config["target_contract"]=record["contract"]
+    config["target_contract"]=contract
     save_config(config)
     audit_context.set_target(
         root,
         address=record["address"],
-        contract=record["contract"],
+        contract=contract,
         artifact=artifact_path,
         source="auto",
     )
+    match_label = record.get("_match_kind")
+    if match_label:
+        print(f"Runtime match  : {match_label}")
+    if record.get("deployment_kind") == "additional":
+        parent = record.get("parent_contract") or "deployment transaction"
+        print(f"Instance type  : nested CREATE from {parent}")
     print(f"Target selected: {alias} -> {record['address']}")
     return 0
 
