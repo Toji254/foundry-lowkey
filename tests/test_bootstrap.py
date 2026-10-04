@@ -267,7 +267,19 @@ class BootstrapTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             self.write(root, "contracts/Vault.vy", "# pragma version 0.4.0\n")
             info = {"root": str(root), "backend": "vyper", "kind": "vyper"}
-            with patch.object(bootstrap.shutil, "which", side_effect=lambda name: "/usr/bin/vyper" if name == "vyper" else None):
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/vyper" if name == "vyper" else None,
+            ), patch.object(
+                bootstrap.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stdout": "0.4.3+commit.test\n", "stderr": ""},
+                )(),
+            ):
                 result = bootstrap.project_build_command(info)
             self.assertEqual(
                 result,
@@ -287,6 +299,14 @@ class BootstrapTests(unittest.TestCase):
                 bootstrap.shutil,
                 "which",
                 side_effect=lambda name: "/usr/bin/vyper" if name == "vyper" else None,
+            ), patch.object(
+                bootstrap.subprocess,
+                "run",
+                return_value=type(
+                    "Result",
+                    (),
+                    {"returncode": 0, "stdout": "0.4.3+commit.test\n", "stderr": ""},
+                )(),
             ):
                 result = bootstrap.project_build_command(info)
 
@@ -295,7 +315,7 @@ class BootstrapTests(unittest.TestCase):
                 (
                     root.resolve(),
                     ["vyper", "contracts/Token.vy", "contracts/Vault.vy"],
-                    "Vyper compiler",
+                    "Vyper compiler (0.4.3+commit.test)",
                 ),
             )
 
