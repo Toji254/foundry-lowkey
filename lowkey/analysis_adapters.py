@@ -458,7 +458,8 @@ def _capabilities(backend: str, stacks: list[str], languages: set[str]) -> dict[
 def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     requested = _safe_resolve(root)
     project_root = canonical_project_root(requested)
-    files = _source_files(requested)
+    scan_root = requested if requested.is_file() else project_root
+    files = _source_files(scan_root)
     counts = _source_counts(files)
     stacks, language_names = _manifest_stack(project_root)
     language_set = set(language_names)
