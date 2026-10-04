@@ -1766,7 +1766,7 @@ def _function_inventory_risk_flags(record):
         flags.append("PRIVILEGED")
     if any(token in name for token in ("withdraw", "transfer", "send", "execute", "mint", "burn", "sweep", "claim", "release", "approve")):
         flags.append("ASSET/ACTION")
-    if record.get("calls"):
+    if record.get("calls") or record.get("eth") in {"SENDS", "RECEIVES + SENDS"}:
         flags.append("EXTERNAL-CALL")
     if any(token in name for token in ("callback", "hook", "flash")):
         flags.append("CALLBACK")
