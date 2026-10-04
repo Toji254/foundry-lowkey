@@ -861,6 +861,12 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
         if active:
             print(f"Active scope  : {Path(active).resolve().relative_to(Path(workspace_info['root']).resolve()).as_posix()}")
     print(f"Type          : {project['kind']}")
+    analysis = project.get("analysis") or {}
+    if isinstance(analysis, dict):
+        print(
+            f"Analysis      : {analysis.get('analysis_status', 'unknown')} "
+            f"(coverage: {analysis.get('coverage', 'unknown')})"
+        )
     print(f"Compiler      : {', '.join(project.get('solidity_compilers') or ['not detected'])}")
     print()
     print("1. WHAT IS THE PROTOCOL?")
@@ -870,8 +876,12 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             parent_text = f" (inherits {', '.join(parents)})" if parents else ""
             print(f"  {name}{parent_text}")
             print(f"    Source: {file}")
+    elif int(analysis.get("source_file_count", 0) or 0) > 0:
+        print("  Application source was detected.")
+        print("  ABI-style contract declarations are not available for this language/backend.")
+        print("  Absence of contract findings is not a clean result; see coverage above.")
     else:
-        print("  No supported application contracts detected; protocol security was not analyzed.")
+        print("  No application source detected; protocol security was not analyzed.")
 
     print()
     print("2. HOW DOES IT DEPEND ON OTHER CODE?")
@@ -928,6 +938,8 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             print(f"    ... and {len(unresolved) - 12} more")
     elif protocol_nodes:
         print("  All imports used by analyzed application code were resolved.")
+    elif int(analysis.get("source_file_count", 0) or 0) > 0:
+        print("  Dependency graph is not implemented for the detected non-EVM source language; not assessed.")
     else:
         print("  Dependency resolution was not assessed because no application code was analyzed.")
 
