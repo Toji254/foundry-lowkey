@@ -1141,8 +1141,9 @@ def _render_repeat_test(
         if setup_signature:
             setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
+        uint256 setupValue = assetReadOk ? 0 : {seed_amount};
         vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: {seed_amount}}}(setupData);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: setupValue}}(setupData);
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
         console2.logBytes(setupReturndata);
@@ -1169,7 +1170,7 @@ def _render_repeat_test(
     entitlement_after_second = """
         uint256 entitlementAfterSecond = 0;
 """
-    asset_block = """
+    asset_discovery = """
         address assetToken = address(0);
         bool assetReadOk = false;
         uint256 attackerTokenBefore = 0;
@@ -1179,8 +1180,9 @@ def _render_repeat_test(
         uint256 targetTokenMid = 0;
         uint256 targetTokenAfter = 0;
 """
+    asset_baseline = ""
     if asset_signature:
-        asset_block = f"""
+        asset_discovery = f"""
         address assetToken = address(0);
         bool assetReadOk = false;
         {{
@@ -1200,15 +1202,20 @@ def _render_repeat_test(
         uint256 targetTokenMid = 0;
         uint256 targetTokenAfter = 0;
         if (assetReadOk) {{
-            attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
-            targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
-            // Foundry's ERC20 deal is a test-environment setup primitive, not a
-            // claim that the protocol can mint or seize tokens in production.
+            // Seed the actor with the project's actual ERC-20 asset in the local
+            // Forge VM and approve the target before attempting token-valued setup.
             deal(assetToken, ATTACKER, 1 ether);
             vm.prank(ATTACKER);
             IERC20Lowkey(assetToken).approve(TARGET, type(uint256).max);
         }}
 """
+        asset_baseline = """
+        if (assetReadOk) {{
+            attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
+            targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
+        }}
+"""
+
     if entitlement_signature:
         entitlement_before = f"""
         uint256 entitlementBefore = 0;
@@ -1255,9 +1262,10 @@ contract LowkeyBreakRepeat is Test {{
         // deposit/credit path can revert for lack of ETH and masquerade as a
         // protocol-level accounting observation.
         vm.deal(ATTACKER, 100 ether);
+{asset_discovery}
 {setup_block}
 {entitlement_before}
-{asset_block}
+{asset_baseline}
         bytes memory data = {payload_expr};
 
         // Measure withdrawal gains only after setup has established the attacker's entitlement.
@@ -2128,6 +2136,7 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
         except Exception:
             setup_signature = None
             entitlement_signature = None
+            asset_signature = None
         body = _render_repeat_test(
             target,
             fn,
@@ -2212,6 +2221,10 @@ def _run_family(host, config, rpc: str, target: Target, fn: dict[str, Any], fami
             x for x in (completed.stdout or "", completed.stderr or "") if x
         )
     except Exception as exc:
+        try:
+            Path(harness).unlink(missing_ok=True)
+        except OSError:
+            pass
         return AttackResult(
             family, target.contract, target.address, signature, "BLOCKED",
             f"Forge execution failed to start: {exc}",
