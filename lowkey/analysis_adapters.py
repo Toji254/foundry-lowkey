@@ -367,13 +367,16 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     )
 
     if files and supported:
-        coverage = "full" if backend not in {"unknown", "generic-source", "rust", "move-source"} else "partial"
+        coverage = "full" if backend not in {"unknown", "generic-source", "rust", "move-source", "multi"} else "partial"
     elif files:
         coverage = "unsupported"
     else:
         coverage = "none"
 
     scope_type = "single-file" if requested.is_file() else "workspace" if workspace else "repository"
+    if scope_type == "single-file" and coverage == "full":
+        # A single file cannot establish repository-wide dependency/build/test coverage.
+        coverage = "partial"
     if scope_type == "workspace" and coverage == "full":
         # A workspace root is an aggregate scope; it does not prove that every
         # member was independently buildable or security-analyzed.
@@ -465,6 +468,31 @@ def _strip_comments(text: str, language: str) -> str:
         i += 1
     return "".join(chars)
 
+def _evidence_root(path: Path) -> Path:
+    """Place persisted evidence at the nearest recognizable repository root."""
+    candidate = path if path.is_dir() else path.parent
+    markers = (
+        ".git",
+        "foundry.toml",
+        "hardhat.config.js",
+        "hardhat.config.cjs",
+        "hardhat.config.mjs",
+        "hardhat.config.ts",
+        "Cargo.toml",
+        "Scarb.toml",
+        "Move.toml",
+        "package.json",
+        "go.mod",
+    )
+    for current in (candidate, *candidate.parents):
+        try:
+            if any((current / marker).exists() for marker in markers):
+                return current
+        except OSError:
+            continue
+    return candidate
+
+
 def _persist_universal_evidence(project_root: Path, payload: dict[str, Any]) -> None:
     try:
         evidence_dir = project_root / ".audit" / "evidence"
@@ -521,7 +549,7 @@ def source_triage(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
             "no heuristic markers were found in the analyzed source scope"
         ),
     }
-    _persist_universal_evidence(project_root, result)
+    _persist_universal_evidence(_evidence_root(project_root), result)
     return result
 
 def render_scope(info: dict[str, Any]) -> str:
