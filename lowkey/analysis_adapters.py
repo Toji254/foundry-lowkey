@@ -261,14 +261,31 @@ def _is_support_path(path: Path, root: Path) -> bool:
         parts = path.parts
     return any(part.lower() in SUPPORT_PATH_PARTS for part in parts[:-1])
 
-def project_source_files(root: str | os.PathLike[str] = ".", extensions: set[str] | None = None) -> list[Path]:
+def project_source_files(
+    root: str | os.PathLike[str] = ".",
+    extensions: set[str] | None = None,
+    *,
+    include_support: bool = True,
+) -> list[Path]:
+    """Return dependency-safe source files for graph/tooling consumers.
+
+    Support directories such as scripts/tests remain visible by default because
+    callers such as dependency-graph builders need them. Security triage uses
+    the stricter internal _source_files() path instead.
+    """
     requested = _safe_resolve(root)
     if requested.is_file():
-        return [requested] if requested.suffix.lower() in (extensions or set(SUFFIX_LANGUAGE)) else []
+        if requested.suffix.lower() not in (extensions or set(SUFFIX_LANGUAGE)):
+            return []
+        if not include_support and _is_support_path(requested, requested.parent):
+            return []
+        return [requested]
     paths = list(_safe_walk_files(requested))
     if extensions:
         paths = [path for path in paths if path.suffix.lower() in extensions]
-    return sorted(path for path in paths if path.suffix.lower() in set(SUFFIX_LANGUAGE) and not _is_support_path(path, requested))
+    if not include_support:
+        paths = [path for path in paths if not _is_support_path(path, requested)]
+    return sorted(path for path in paths if path.suffix.lower() in set(SUFFIX_LANGUAGE))
 
 def _source_files(root: Path) -> list[Path]:
     recognized = set(SUFFIX_LANGUAGE)
@@ -598,7 +615,6 @@ def _nested_project_roots(root: Path, max_depth: int = 5) -> list[Path]:
             depth = len(current_path.relative_to(root).parts)
         except ValueError:
             continue
-        prefixes = _dependency_prefixes(root)
         dirs[:] = sorted(
             name for name in dirs
             if not _should_prune_directory(root, current_path, name, prefixes)
