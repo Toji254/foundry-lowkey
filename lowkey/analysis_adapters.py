@@ -94,7 +94,7 @@ ADAPTERS = {
         "kind": "cairo",
         "languages": {"cairo"},
         "markers": {"Scarb.toml"},
-        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live": True},
+        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False, "live_native": True},
     },
     "move": {
         "kind": "move",
