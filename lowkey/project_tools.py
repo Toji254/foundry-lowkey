@@ -232,132 +232,235 @@ def _solidity_compiler_versions(root: Path) -> list[str]:
 
 
 def detect_project(root: str | Path = ".") -> dict[str, Any]:
+    """Return project metadata from the canonical repository analysis model."""
     root_path = project_root(root)
-    pyproject = root_path / "pyproject.toml"
-    package_json = root_path / "package.json"
-    foundry_toml = root_path / "foundry.toml"
-    hardhat_configs = [
-        root_path / "hardhat.config.js",
-        root_path / "hardhat.config.cjs",
-        root_path / "hardhat.config.mjs",
-        root_path / "hardhat.config.ts",
-    ]
-    brownie_config = root_path / "brownie-config.yaml"
-    scarb_toml = root_path / "Scarb.toml"
-    cairo_files = _walk_files(root_path, {".cairo"})
-
-    sol_files = project_source_files(root_path, {"sol"})
-    vy_files = project_source_files(root_path, {"vy", "vyi"})
-
-    pyproject_text = _read(pyproject)
-    package_text = _read(package_json)
-    has_uv = pyproject.exists() and shutil.which("uv") is not None
-    has_vyper = bool(vy_files) or (pyproject.exists() and _pyproject_vyper(pyproject_text))
-    has_foundry = foundry_toml.exists()
-    has_hardhat = any(path.exists() for path in hardhat_configs) or (
-        package_json.exists() and bool(re.search(r'["\']hardhat["\']', package_text))
-    )
-    has_brownie = brownie_config.exists()
-    has_scarb = scarb_toml.exists() or bool(cairo_files)
-
-    languages: list[str] = []
-    if sol_files:
-        languages.append("solidity")
-    if vy_files or has_vyper:
-        languages.append("vyper")
-    if package_json.exists():
-        languages.append("javascript/typescript")
-    if pyproject.exists():
-        languages.append("python")
-    if has_scarb:
-        languages.append("cairo")
-
-    systems: list[str] = []
-    if has_foundry:
-        systems.append("foundry")
-    if has_vyper:
-        systems.append("vyper")
-    if has_uv:
-        systems.append("uv")
-    if has_hardhat:
-        systems.append("hardhat")
-    if has_brownie:
-        systems.append("brownie")
-    if has_scarb:
-        systems.append("scarb")
-
-    if has_foundry and has_vyper:
-        kind = "mixed-foundry-vyper"
-    elif has_foundry:
-        kind = "foundry"
-    elif has_vyper and has_uv:
-        kind = "vyper-uv"
-    elif has_vyper:
-        kind = "vyper"
-    elif has_hardhat:
-        kind = "hardhat"
-    elif has_brownie:
-        kind = "brownie"
-    elif has_scarb:
-        kind = "cairo-starknet"
-    elif pyproject.exists():
-        kind = "python"
-    elif package_json.exists():
-        kind = "node"
-    else:
-        kind = "generic"
-
-    candidate_roots: list[str] = []
-    for name in ("src", "contracts", "interfaces", "script", "scripts", "vyper"):
-        path = root_path / name
-        if path.is_dir() and name not in candidate_roots:
-            candidate_roots.append(name)
-    if not candidate_roots:
-        observed = []
-        for path in [*sol_files, *vy_files]:
-            rel = Path(_relative(path.parent, root_path))
-            first = rel.parts[0] if rel.parts else "."
-            if first not in observed:
-                observed.append(first)
-        candidate_roots = observed or ["."]
 
     try:
         analysis = inspect_repository(root_path) if inspect_repository is not None else {}
     except Exception as exc:
-        analysis = {"coverage": "unknown", "analysis_status": "detection-error", "error": str(exc)}
+        analysis = {
+            "root": str(root_path),
+            "backend": "unknown",
+            "stacks": [],
+            "languages": {},
+            "source_files": [],
+            "coverage": "unknown",
+            "analysis_status": "detection-error",
+            "security_analyzers": [],
+            "error": str(exc),
+        }
 
+    source_counts = dict(analysis.get("languages") or {})
+    relative_sources = [str(item) for item in (analysis.get("source_files") or [])]
+    sol_files = [
+        root_path / item for item in relative_sources
+        if Path(item).suffix.lower() == ".sol"
+    ]
+    vy_files = [
+        root_path / item for item in relative_sources
+        if Path(item).suffix.lower() in {".vy", ".vyi"}
+    ]
+    cairo_files = [
+        root_path / item for item in relative_sources
+        if Path(item).suffix.lower() == ".cairo"
+    ]
+
+    package_json = root_path / "package.json"
+    pyproject = root_path / "pyproject.toml"
+    package = {}
+    package_text = _read(package_json)
+    if package_json.is_file():
+        try:
+            loaded = json.loads(package_text)
+            package = loaded if isinstance(loaded, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            package = {}
+
+    stacks = list(analysis.get("stacks") or [])
+    backend = str(analysis.get("backend") or "generic")
+    has_foundry = "foundry" in stacks
+    has_vyper = "vyper" in stacks or bool(source_counts.get("vyper") or source_counts.get("vyper-interface"))
+    has_hardhat = "hardhat" in stacks
+    has_anchor = "solana-anchor" in stacks
+    has_move = "move" in stacks
+    has_scarb = "cairo-starknet" in stacks or "cairo" in source_counts
+    has_ape = any((root_path / name).is_file() for name in ("ape-config.yaml", "ape-config.yml"))
+    has_brownie = any((root_path / name).is_file() for name in ("brownie-config.yaml", "brownie-config.yml"))
+    has_uv = pyproject.is_file() and shutil.which("uv") is not None
+
+    if has_foundry and has_vyper:
+        kind = "mixed-foundry-vyper"
+    elif len(stacks) > 1:
+        kind = "multi-stack"
+    elif stacks:
+        kind = stacks[0]
+    elif source_counts.get("solidity"):
+        kind = "solidity-source"
+    elif source_counts.get("vyper") or source_counts.get("vyper-interface"):
+        kind = "vyper"
+    elif source_counts.get("cairo"):
+        kind = "cairo"
+    elif source_counts.get("rust"):
+        kind = "rust"
+    elif source_counts.get("move"):
+        kind = "move-source"
+    elif source_counts:
+        kind = "source-project"
+    else:
+        kind = "unknown"
+
+    if backend in {"evm-source", "generic-source", "rust", "move-source", "unknown"}:
+        legacy_backend = "generic"
+    elif backend == "cairo":
+        legacy_backend = "cairo-starknet"
+    elif backend == "move-source":
+        legacy_backend = "move"
+    else:
+        legacy_backend = backend
+
+    if has_foundry and has_vyper:
+        legacy_backend = "foundry"
+    elif len(stacks) == 1 and has_scarb:
+        legacy_backend = "cairo-starknet"
+        kind = "cairo-starknet"
+    elif len(stacks) == 1 and has_anchor:
+        legacy_backend = "solana-anchor"
+        kind = "solana-anchor"
+    elif len(stacks) == 1 and has_move:
+        legacy_backend = "move"
+        kind = "move"
+    elif len(stacks) == 1 and has_hardhat:
+        legacy_backend = "hardhat"
+        kind = "hardhat"
+    elif len(stacks) == 1 and has_vyper:
+        legacy_backend = "vyper"
+        kind = "brownie" if has_brownie else "vyper"
+
+    systems = list(dict.fromkeys(stacks))
+    if has_uv:
+        systems.append("uv")
+    if package_json.is_file() and "node" not in systems:
+        systems.append("node")
+    if pyproject.is_file() and "python" not in systems:
+        systems.append("python")
+    if root_path.joinpath("go.mod").is_file() or root_path.joinpath("go.work").is_file():
+        systems.append("go")
+    if root_path.joinpath("mix.exs").is_file():
+        systems.append("mix")
+    if root_path.joinpath("pom.xml").is_file() or root_path.joinpath("mvnw").is_file():
+        systems.append("maven")
+    if any(root_path.joinpath(name).is_file() for name in ("build.gradle", "build.gradle.kts", "gradlew")):
+        systems.append("gradle")
+    if root_path.joinpath("Package.swift").is_file():
+        systems.append("swift")
+    if root_path.joinpath("CMakeLists.txt").is_file():
+        systems.append("cmake")
+
+    build_backend = legacy_backend
+    scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+    if isinstance(scripts, dict) and (scripts.get("build") or scripts.get("test")) and not has_hardhat:
+        build_backend = "node-script"
+    elif "cargo" in stacks or "cosmwasm" in stacks or "solana-anchor" in stacks:
+        build_backend = "cargo"
+    elif "go" in systems:
+        build_backend = "go"
+    elif "mix" in systems:
+        build_backend = "mix"
+    elif "maven" in systems:
+        build_backend = "maven"
+    elif "gradle" in systems:
+        build_backend = "gradle"
+    elif "swift" in systems:
+        build_backend = "swift"
+    elif "cmake" in systems:
+        build_backend = "cmake"
+
+    languages: list[str] = []
+    for language in sorted(source_counts):
+        if language in {"javascript", "typescript"}:
+            if "javascript/typescript" not in languages:
+                languages.append("javascript/typescript")
+        else:
+            languages.append(language)
+    if package_json.is_file() and "javascript/typescript" not in languages:
+        languages.append("javascript/typescript")
+    if pyproject.is_file() and "python" not in languages:
+        languages.append("python")
+
+    supporting = []
+    if package_json.is_file():
+        supporting.append("node")
+    if pyproject.is_file():
+        supporting.append("python")
+    if "cargo" in stacks or (root_path / "Cargo.toml").is_file():
+        supporting.append("cargo")
+    if "go" in systems:
+        supporting.append("go")
+
+    native = {
+        "git": bool(shutil.which("git")),
+        "uv": bool(shutil.which("uv")),
+        "poetry": bool(shutil.which("poetry")),
+        "pipenv": bool(shutil.which("pipenv")),
+        "npm": bool(shutil.which("npm")),
+        "pnpm": bool(shutil.which("pnpm")),
+        "yarn": bool(shutil.which("yarn")),
+        "bun": bool(shutil.which("bun")),
+        "forge": bool(shutil.which("forge")),
+        "scarb": bool(shutil.which("scarb")),
+        "snforge": bool(shutil.which("snforge")),
+        "vyper": bool(shutil.which("vyper") or _local_executable(root_path, "vyper") or _python_module_available("vyper")),
+        "pytest": bool(shutil.which("pytest") or _local_executable(root_path, "pytest") or _python_module_available("pytest")),
+        "boa": _python_module_available("boa"),
+        "ape": bool(shutil.which("ape")),
+        "brownie": bool(shutil.which("brownie")),
+        "hardhat": (root_path / "node_modules" / ".bin" / "hardhat").is_file(),
+        "anchor": bool(shutil.which("anchor")),
+        "aptos": bool(shutil.which("aptos")),
+        "sui": bool(shutil.which("sui")),
+        "cargo-audit": bool(shutil.which("cargo-audit")),
+        "cargo-geiger": bool(shutil.which("cargo-geiger")),
+    }
+
+    candidate_roots: list[str] = []
+    for relative in relative_sources:
+        parts = Path(relative).parts
+        if parts and parts[0] not in candidate_roots:
+            candidate_roots.append(parts[0])
+    candidate_roots = candidate_roots or ["."]
+    
     return {
         "root": str(root_path),
         "kind": kind,
         "languages": languages,
         "build_systems": systems,
         "configs": {
-            "foundry": _relative(foundry_toml, root_path) if foundry_toml.exists() else None,
-            "pyproject": _relative(pyproject, root_path) if pyproject.exists() else None,
-            "uv_lock": _relative(root_path / "uv.lock", root_path) if (root_path / "uv.lock").exists() else None,
-            "package_json": _relative(package_json, root_path) if package_json.exists() else None,
-            "hardhat": next((_relative(path, root_path) for path in hardhat_configs if path.exists()), None),
-            "brownie": _relative(brownie_config, root_path) if brownie_config.exists() else None,
-            "scarb": _relative(scarb_toml, root_path) if scarb_toml.exists() else None,
+            "foundry": "foundry.toml" if has_foundry else None,
+            "pyproject": "pyproject.toml" if pyproject.is_file() else None,
+            "uv_lock": "uv.lock" if (root_path / "uv.lock").exists() else None,
+            "package_json": "package.json" if package_json.is_file() else None,
+            "hardhat": next((name for name in ("hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts") if (root_path / name).is_file()), None),
+            "brownie": next((name for name in ("brownie-config.yaml", "brownie-config.yml") if (root_path / name).is_file()), None),
+            "scarb": "Scarb.toml" if (root_path / "Scarb.toml").is_file() else None,
         },
         "python": {
-            "requires_python": _python_requirement(pyproject_text) if pyproject.exists() else None,
-            "version_file": (
-                _read(root_path / ".python-version").strip()
-                if (root_path / ".python-version").exists()
-                else None
-            ),
+            "requires_python": _python_requirement(_read(pyproject)) if pyproject.is_file() else None,
+            "version_file": _read(root_path / ".python-version").strip() if (root_path / ".python-version").exists() else None,
             "uv_available": bool(shutil.which("uv")),
             "venv": str(root_path / ".venv") if (root_path / ".venv").is_dir() else None,
-            "declared_dependencies": _pyproject_dependencies(pyproject_text) if pyproject.exists() else [],
+            "declared_dependencies": _pyproject_dependencies(_read(pyproject)) if pyproject.is_file() else [],
         },
         "submodules": _git_submodules(root_path),
         "solidity_compilers": _solidity_compiler_versions(root_path),
         "sources": {
             "solidity": len(sol_files),
             "vyper": len(vy_files),
+            "cairo": len(cairo_files),
+            "rust": int(source_counts.get("rust", 0)),
+            "move": int(source_counts.get("move", 0)),
         },
         "analysis": analysis,
+        "security_analyzers": list(analysis.get("security_analyzers") or []),
         "source_roots": candidate_roots,
     }
 
