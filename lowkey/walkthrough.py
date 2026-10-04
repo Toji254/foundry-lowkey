@@ -243,64 +243,14 @@ def _foundry_out_dir(root: Path) -> str:
     return match.group(1).strip().rstrip("/") if match else "out"
 
 
-def _strip_source_comments(text: str, language: str) -> str:
-    """Remove comments while preserving strings and line structure for heuristics."""
-    chars = list(text)
-    state = "code"
-    quote = ""
-    escape = False
-    i = 0
-    while i < len(chars):
-        ch = chars[i]
-        nxt = chars[i + 1] if i + 1 < len(chars) else ""
-        if state == "code":
-            if language == "vyper" and ch == "#":
-                chars[i] = " "
-                i += 1
-                state = "line"
-                continue
-            if language != "vyper" and ch == "/" and nxt == "/":
-                chars[i] = chars[i + 1] = " "
-                i += 2
-                state = "line"
-                continue
-            if language != "vyper" and ch == "/" and nxt == "*":
-                chars[i] = chars[i + 1] = " "
-                i += 2
-                state = "block"
-                continue
-            if ch in {'"', "'"}:
-                quote = ch
-                escape = False
-                state = "string"
-            i += 1
-            continue
-        if state == "line":
-            if ch == "\n":
-                state = "code"
-            elif ch != "\n":
-                chars[i] = " "
-            i += 1
-            continue
-        if state == "block":
-            if ch == "*" and nxt == "/":
-                chars[i] = chars[i + 1] = " "
-                i += 2
-                state = "code"
-                continue
-            if ch != "\n":
-                chars[i] = " "
-            i += 1
-            continue
-        if escape:
-            escape = False
-        elif ch == "\\":
-            escape = True
-        elif ch == quote:
-            quote = ""
-            state = "code"
-        i += 1
-    return "".join(chars)
+def _strip_source_comments(text: str, language: str, mask_strings: bool = False) -> str:
+    """Remove comments while preserving line structure for heuristics."""
+    try:
+        from analysis_adapters import _strip_comments as _universal_strip
+        return _universal_strip(text, language, mask_strings=mask_strings)
+    except ImportError:
+        pass
+    return text
 
 
 def _source_kind(source_text: str, name: str) -> str:
