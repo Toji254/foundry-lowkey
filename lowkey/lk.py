@@ -5747,12 +5747,17 @@ def run_clone(config, args):
             print("Warning: connected audit did not finish cleanly.", file=sys.stderr)
 
         print("\n[3/3] Preparing local audit lab...")
-        info = ensure_project_anvil(config, root)
-        if not info:
-            print("LAB   : deferred (no local Anvil could be started).", file=sys.stderr)
-            lab_code = 1
+        evm_kinds = {"foundry", "mixed-foundry-vyper", "hardhat", "brownie", "vyper", "vyper-uv", "solidity-source", "evm-source"}
+        if project_kind not in evm_kinds:
+            print("LAB   : skipped (non-EVM project; native backend does not use Anvil).")
+            lab_code = 0
         else:
-            lab_code = run_lab(config, [])
+            info = ensure_project_anvil(config, root)
+            if not info:
+                print("LAB   : deferred (no local Anvil could be started).", file=sys.stderr)
+                lab_code = 1
+            else:
+                lab_code = run_lab(config, [])
 
         print("\nLOWKEY CLONE ONBOARDING")
         print("=======================")
