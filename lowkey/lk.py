@@ -1935,7 +1935,7 @@ def _print_function_inventory(records, contract=None, source_path=None, verbose=
         min(max(len(headers[3]), max(len(" / ".join(record["classes"])) for record in records)), 42),
     ]
     if show_risk:
-        widths.append(min(max(len(headers[4]), max(len(" / ".join(record["risk_flags"])) for record in records)), 38))
+        widths.append(min(max(len(headers[4]), max(len(" / ".join(record["risk_flags"])) for record in records)), 64))
     print()
     print("  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))))
     print("-" * (sum(widths) + 2 * (len(headers) - 1)))
