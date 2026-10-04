@@ -12158,5 +12158,48 @@ def main():
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 
+def _safe_main() -> int:
+    """Never expose a Python traceback for a CLI-level repository/runtime failure."""
+    try:
+        result = main()
+        return int(result) if isinstance(result, int) else 0
+    except KeyboardInterrupt:
+        print("\nLOWKEY: interrupted.", file=sys.stderr)
+        return 130
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else 0
+    except Exception as exc:
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = None
+
+        print("LOWKEY RUNTIME ERROR", file=sys.stderr)
+        print(f"  {type(exc).__name__}: {exc}", file=sys.stderr)
+        if root:
+            print(f"  project: {root}", file=sys.stderr)
+            try:
+                evidence = Path(root) / ".audit" / "evidence"
+                evidence.mkdir(parents=True, exist_ok=True)
+                (evidence / "lk-runtime-error.json").write_text(
+                    json.dumps({
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "project": str(root),
+                        "command": sys.argv[1:],
+                        "status": "blocked",
+                    }, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                print("  evidence: .audit/evidence/lk-runtime-error.json", file=sys.stderr)
+            except Exception as evidence_error:
+                print(f"  evidence: unavailable ({evidence_error})", file=sys.stderr)
+        print("  RESULT: REVIEW NEEDED — Lowkey could not complete this command.", file=sys.stderr)
+        print("  No security conclusion should be inferred from this failure.", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_safe_main())
