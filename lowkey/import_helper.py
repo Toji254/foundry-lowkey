@@ -1840,7 +1840,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
             source, import_name = path_match
             symbols = [s for s in all_symbols(root, maps) if s.import_path == import_name or Path(s.source).resolve() == Path(source).resolve()]
             if symbols:
-                show_file((source, symbols))
+                show_file((source, symbols), import_path_override=import_name)
             else:
                 print()
                 print(f"SOURCE:      {source}")
