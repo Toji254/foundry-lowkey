@@ -1974,20 +1974,20 @@ def run_functions(config, args=None):
         print("LOWKEY BUILD FUNCTION")
         print("====================")
         print(f"Query:   {query}")
+        support_rows = []
         for index, (contract, signature, path) in enumerate(matches[:8]):
             if index == 0:
                 print(f"Found:   {contract}::{signature}")
                 print(f"Source:  {path}")
-            elif str(contract).startswith("I"):
-                support_rows = support_rows if "support_rows" in locals() else []
-                support_rows.append(f"{contract} (interface)")
-            elif str(contract).startswith(("Mock", "Test", "Fixture")):
-                support_rows = support_rows if "support_rows" in locals() else []
-                support_rows.append(f"{contract} (test mock)")
             else:
-                support_rows = support_rows if "support_rows" in locals() else []
-                support_rows.append(contract)
-        if "support_rows" in locals() and support_rows:
+                if str(contract).startswith("I"):
+                    label = f"{contract} (interface)"
+                elif str(contract).startswith(("Mock", "Test", "Fixture")):
+                    label = f"{contract} (test mock)"
+                else:
+                    label = contract
+                support_rows.append(label)
+        if support_rows:
             print("Other:   " + ", ".join(support_rows))
         print("Live:    none")
         print("Next:    deploy a target before using lk changes/trace.")
