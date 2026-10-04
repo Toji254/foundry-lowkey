@@ -743,7 +743,21 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
     else:
         canonical = {}
 
+    requested_root = Path(start).expanduser().resolve()
     root = Path(canonical.get("root") or start).expanduser().resolve()
+
+    # A workspace may contain one unambiguous real project. The canonical
+    # aggregate detector can still report the workspace root, so resolve the
+    # sole nested member before returning the legacy project schema.
+    if root == requested_root and requested_root.is_dir() and _is_workspace_package(requested_root):
+        selected = workspace_selection(requested_root)
+        if selected is not None and selected.is_dir():
+            root = selected.resolve()
+        else:
+            candidates = discover_nested_projects(requested_root)
+            if len(candidates) == 1:
+                root = Path(candidates[0]["root"]).resolve()
+
     if _is_lowkey_source_checkout(root):
         return {
             "root": str(root),
