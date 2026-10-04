@@ -162,6 +162,7 @@ class LowkeySlitherTests(unittest.TestCase):
         run.return_value = type("Result", (), {"returncode": 0, "stdout": "noisy slither", "stderr": ""})()
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
             evidence = root / ".audit" / "slither"
             evidence.mkdir(parents=True)
             (evidence / "latest.json").write_text(json.dumps({"results": {"detectors": []}}), encoding="utf-8")
