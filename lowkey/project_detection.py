@@ -29,6 +29,11 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 try:
+    from analysis_adapters import canonical_project_root, inspect_repository as inspect_repository_canonical
+except ImportError:
+    canonical_project_root = inspect_repository_canonical = None
+
+try:
     from bootstrap import (
         bootstrap_status as shared_bootstrap_status,
         classify_build_failure as shared_classify_build_failure,
@@ -578,6 +583,11 @@ def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
 
 
 def project_root(start: str | os.PathLike[str] = ".") -> Path:
+    if canonical_project_root is not None:
+        try:
+            return Path(canonical_project_root(start)).resolve()
+        except Exception:
+            pass
     path = Path(start).expanduser().resolve()
     if path.is_file():
         path = path.parent
@@ -664,7 +674,13 @@ def _source_counts(root: Path) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
-    root = project_root(start)
+    """Return the legacy project schema backed by the canonical analysis model."""
+    if inspect_repository_canonical is not None:
+        canonical = inspect_repository_canonical(start)
+    else:
+        canonical = {}
+
+    root = Path(canonical.get("root") or start).expanduser().resolve()
     if _is_lowkey_source_checkout(root):
         return {
             "root": str(root),
@@ -676,119 +692,127 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
             "supporting_tools": [],
             "native": {},
             "manifests": {},
+            "analysis": canonical,
+            "security_analyzers": canonical.get("security_analyzers", []),
         }
-    sources = _source_counts(root)
 
-    foundry = (root / "foundry.toml").is_file()
-    scarb = (root / "Scarb.toml").is_file() or bool(sources.get("cairo"))
-    hardhat = _has(
-        root,
-        "hardhat.config.js", "hardhat.config.cjs",
-        "hardhat.config.mjs", "hardhat.config.ts",
-    )
-    anchor = (root / "Anchor.toml").is_file()
-    move = (root / "Move.toml").is_file()
-    cargo = (root / "Cargo.toml").is_file()
-    go = (root / "go.mod").is_file() or (root / "go.work").is_file()
-    mix = (root / "mix.exs").is_file()
-    maven = (root / "pom.xml").is_file() or (root / "mvnw").is_file()
-    gradle = any((root / name).is_file() for name in ("build.gradle", "build.gradle.kts", "gradlew"))
-    swift = (root / "Package.swift").is_file()
-    cmake = (root / "CMakeLists.txt").is_file()
-    ape = _has(root, "ape-config.yaml", "ape-config.yml")
-    brownie = _has(root, "brownie-config.yaml", "brownie-config.yml")
-    vyper = bool(sources.get("vyper") or sources.get("vyper-interface")) and (
-        _mentions_vyper(root) or ape or brownie or not (
-            foundry or scarb or hardhat or anchor or move
-        )
-    )
+    source_counts = dict(canonical.get("languages") or {})
+    stacks = list(canonical.get("stacks") or [])
+    backend = str(canonical.get("backend") or "unknown")
+    package_path = root / "package.json"
+    pyproject_path = root / "pyproject.toml"
+    package = {}
+    package_text = _read(package_path)
+    if package_path.is_file():
+        try:
+            loaded = json.loads(package_text)
+            package = loaded if isinstance(loaded, dict) else {}
+        except (TypeError, json.JSONDecodeError):
+            package = {}
 
-    stacks: list[str] = []
-    if foundry:
-        stacks.append("foundry")
-    if scarb:
-        stacks.append("cairo-starknet")
-    if vyper:
-        stacks.append("vyper")
-    if hardhat:
-        stacks.append("hardhat")
-    if anchor:
-        stacks.append("solana-anchor")
-    if move:
-        stacks.append("move")
+    manifests = {str(item) for item in (canonical.get("evidence") or {}).get("manifests", [])}
+    has_foundry = "foundry.toml" in manifests or "foundry" in stacks
+    has_scarb = "Scarb.toml" in manifests or "cairo-starknet" in stacks
+    has_hardhat = "hardhat" in stacks
+    has_anchor = "Anchor.toml" in manifests or "solana-anchor" in stacks
+    has_move = "Move.toml" in manifests or "move" in stacks
+    has_ape = any(name in manifests for name in ("ape-config.yaml", "ape-config.yml")) or "ape" in stacks
+    has_brownie = any(name in manifests for name in ("brownie-config.yaml", "brownie-config.yml")) or "brownie" in stacks
+    has_vyper = "vyper" in stacks or bool(source_counts.get("vyper") or source_counts.get("vyper-interface"))
 
-    supporting: list[str] = []
-    if (root / "package.json").is_file():
-        supporting.append("node")
-    if (root / "pyproject.toml").is_file() or (root / "requirements.txt").is_file():
-        supporting.append("python")
-    if (root / "Cargo.toml").is_file():
-        supporting.append("cargo")
-    if (root / "go.mod").is_file():
-        supporting.append("go")
-
+    source_kind_map = {
+        "solidity": "solidity-source",
+        "vyper": "vyper",
+        "cairo": "cairo",
+        "rust": "rust",
+        "move": "move-source",
+    }
     if len(stacks) == 1:
         kind = stacks[0]
     elif len(stacks) > 1:
         kind = "multi-stack"
-    elif sources.get("solidity"):
-        kind = "solidity-source"
-    elif sources.get("vyper") or sources.get("vyper-interface"):
+    else:
+        kind = next(
+            (value for language, value in source_kind_map.items() if source_counts.get(language)),
+            "source-project" if source_counts else "unknown",
+        )
+
+    if backend in {"evm-source", "generic-source", "rust", "move-source", "unknown"}:
+        legacy_backend = "generic"
+    elif backend == "cairo":
+        legacy_backend = "cairo-starknet"
+    elif backend == "move":
+        legacy_backend = "move"
+    else:
+        legacy_backend = backend
+
+    # Brownie/Ape are Vyper execution environments; keep their legacy kind when
+    # their explicit manifest exists, while the canonical model remains authoritative.
+    if has_foundry and has_vyper and len(stacks) >= 2:
+        kind = "mixed-foundry-vyper"
+        legacy_backend = "foundry"
+    elif has_brownie and len(stacks) == 1:
+        kind = "brownie"
+        legacy_backend = "vyper"
+    elif has_ape and len(stacks) == 1:
         kind = "vyper"
-    elif sources.get("cairo"):
-        kind = "cairo"
-    elif sources.get("rust"):
-        kind = "rust"
-    elif sources.get("move"):
-        kind = "move-source"
-    elif sources:
-        kind = "source-project"
-    else:
-        kind = "unknown"
+        legacy_backend = "vyper"
+    elif has_scarb and len(stacks) == 1:
+        kind = "cairo-starknet"
+        legacy_backend = "cairo-starknet"
+    elif has_anchor and len(stacks) == 1:
+        kind = "solana-anchor"
+        legacy_backend = "solana-anchor"
+    elif has_move and len(stacks) == 1:
+        kind = "move"
+        legacy_backend = "move"
+    elif has_hardhat and len(stacks) == 1:
+        kind = "hardhat"
+        legacy_backend = "hardhat"
 
-    if "foundry" in stacks and len(stacks) == 1:
-        backend = "foundry"
-    elif "cairo-starknet" in stacks and not {"foundry", "hardhat", "vyper"} & set(stacks):
-        backend = "cairo-starknet"
-    elif "vyper" in stacks and not {"foundry", "hardhat", "cairo-starknet"} & set(stacks):
-        backend = "vyper"
-    elif "hardhat" in stacks and len(stacks) == 1:
-        backend = "hardhat"
-    elif "solana-anchor" in stacks and len(stacks) == 1:
-        backend = "solana-anchor"
-    elif "move" in stacks and len(stacks) == 1:
-        backend = "move"
-    elif len(stacks) > 1:
-        backend = "multi"
-    else:
-        backend = "generic"
-
-    build_backend = backend
-    package = {}
-    package_path = root / "package.json"
-    if package_path.is_file():
-        try:
-            loaded = json.loads(_read(package_path))
-            package = loaded if isinstance(loaded, dict) else {}
-        except (TypeError, json.JSONDecodeError):
-            package = {}
     scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
-    if isinstance(scripts, dict) and (scripts.get("build") or scripts.get("test")) and "hardhat" not in stacks:
+    if isinstance(scripts, dict) and (scripts.get("build") or scripts.get("test")) and not has_hardhat:
         build_backend = "node-script"
-    elif cargo:
+    elif backend in {"cargo", "cosmwasm", "solana-anchor"} or "cargo" in stacks:
         build_backend = "cargo"
-    elif go:
+    elif "go" in stacks:
         build_backend = "go"
-    elif mix:
+    elif "mix" in stacks:
         build_backend = "mix"
-    elif maven:
+    elif "maven" in stacks:
         build_backend = "maven"
-    elif gradle:
+    elif "gradle" in stacks:
         build_backend = "gradle"
-    elif swift:
+    elif "swift" in stacks:
         build_backend = "swift"
-    elif cmake:
+    elif "cmake" in stacks:
         build_backend = "cmake"
+    elif backend:
+        build_backend = legacy_backend
+    else:
+        build_backend = "generic"
+
+    languages: list[str] = []
+    for language in sorted(source_counts):
+        if language in {"javascript", "typescript"}:
+            if "javascript/typescript" not in languages:
+                languages.append("javascript/typescript")
+        else:
+            languages.append(language)
+    if package_path.is_file() and "javascript/typescript" not in languages:
+        languages.append("javascript/typescript")
+    if pyproject_path.is_file() and "python" not in languages:
+        languages.append("python")
+
+    supporting = []
+    if package_path.is_file():
+        supporting.append("node")
+    if pyproject_path.is_file():
+        supporting.append("python")
+    if "cargo" in stacks or root.joinpath("Cargo.toml").is_file():
+        supporting.append("cargo")
+    if "go" in stacks or root.joinpath("go.mod").is_file():
+        supporting.append("go")
 
     native = {
         "git": bool(shutil.which("git")),
@@ -811,28 +835,32 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "anchor": bool(shutil.which("anchor")),
         "aptos": bool(shutil.which("aptos")),
         "sui": bool(shutil.which("sui")),
+        "cargo-audit": bool(shutil.which("cargo-audit")),
+        "cargo-geiger": bool(shutil.which("cargo-geiger")),
     }
 
     return {
         "root": str(root),
         "kind": kind,
-        "backend": backend,
+        "backend": legacy_backend,
         "build_backend": build_backend,
         "stacks": stacks,
-        "languages": sources,
+        "languages": languages,
         "supporting_tools": supporting,
         "native": native,
         "manifests": {
-            "foundry": foundry,
-            "scarb": (root / "Scarb.toml").is_file(),
-            "hardhat": hardhat,
-            "anchor": anchor,
-            "move": move,
-            "ape": ape,
-            "brownie": brownie,
-            "package_json": (root / "package.json").is_file(),
-            "pyproject": (root / "pyproject.toml").is_file(),
+            "foundry": has_foundry,
+            "scarb": has_scarb,
+            "hardhat": has_hardhat,
+            "anchor": has_anchor,
+            "move": has_move,
+            "ape": has_ape,
+            "brownie": has_brownie,
+            "package_json": package_path.is_file(),
+            "pyproject": pyproject_path.is_file(),
         },
+        "analysis": canonical,
+        "security_analyzers": list(canonical.get("security_analyzers") or []),
     }
 
 def project_test_command(
