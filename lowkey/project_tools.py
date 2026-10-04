@@ -118,42 +118,56 @@ def project_source_files(root: str | Path = ".", languages: Iterable[str] | None
         return _walk_files(root_path, suffixes)
 
 
-def _strip_source_comments(text: str, language: str) -> str:
-    """Remove comments while preserving strings and source line numbers."""
+def _strip_source_comments(text: str, language: str, mask_strings: bool = False) -> str:
+    """Remove comments while preserving source line numbers."""
+    try:
+        from analysis_adapters import _strip_comments as _universal_strip
+        return _universal_strip(text, language, mask_strings=mask_strings)
+    except ImportError:
+        pass
     chars = list(text)
     state = "code"
     quote = ""
     escape = False
     i = 0
+    single_quotes = {"solidity", "vyper", "vyper-interface"}
     while i < len(chars):
         ch = chars[i]
         nxt = chars[i + 1] if i + 1 < len(chars) else ""
         if state == "code":
             if language == "solidity" and ch == "/" and nxt == "/":
-                chars[i] = chars[i + 1] = " "
-                i += 2; state = "line"; continue
+                chars[i] = chars[i + 1] = " "; i += 2; state = "line"; continue
             if language == "solidity" and ch == "/" and nxt == "*":
-                chars[i] = chars[i + 1] = " "
-                i += 2; state = "block"; continue
+                chars[i] = chars[i + 1] = " "; i += 2; state = "block"; continue
             if language == "vyper" and ch == "#":
                 chars[i] = " "; i += 1; state = "line"; continue
-            if ch in {"'", '"'}:
+            if ch == '"' or (ch == "'" and language in single_quotes):
                 quote = ch; escape = False; state = "string"
             i += 1; continue
         if state == "line":
-            if ch == "\n": state = "code"
-            elif ch != "\n": chars[i] = " "
+            if ch == "
+": state = "code"
+            elif ch != "
+": chars[i] = " "
             i += 1; continue
         if state == "block":
             if language == "solidity" and ch == "*" and nxt == "/":
                 chars[i] = chars[i + 1] = " "; i += 2; state = "code"; continue
-            if ch != "\n": chars[i] = " "
+            if ch != "
+": chars[i] = " "
             i += 1; continue
         if escape:
             escape = False
-        elif ch == "\\": escape = True
+            if mask_strings and ch != "
+": chars[i] = " "
+        elif ch == "\":
+            escape = True
+            if mask_strings: chars[i] = " "
         elif ch == quote:
             state = "code"; quote = ""
+        elif mask_strings and ch != "
+":
+            chars[i] = " "
         i += 1
     return "".join(chars)
 
@@ -716,7 +730,7 @@ def _vyper_imports(text: str) -> list[tuple[str, int, str, str | None]]:
 
 def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
-    text = _strip_source_comments(text, language)
+    text = _strip_source_comments(text, language, mask_strings=True)
     if language == "solidity":
         pattern = re.compile(
             r'\b(contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+is\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*))?\s*\{'
@@ -766,7 +780,7 @@ def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
 
 
 def _call_sites(text: str, language: str) -> list[dict[str, Any]]:
-    text = _strip_source_comments(text, language)
+    text = _strip_source_comments(text, language, mask_strings=True)
     if language == "solidity":
         patterns = [
             ("low-level-call", re.compile(r'\.(?:call|delegatecall|staticcall)\b[^\n]*')),
