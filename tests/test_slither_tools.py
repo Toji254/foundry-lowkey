@@ -176,6 +176,7 @@ class LowkeySlitherTests(unittest.TestCase):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "src" / "Vault.sol").write_text("pragma solidity ^0.8.20; contract Vault {}", encoding="utf-8")
             evidence = root / ".audit" / "slither"
