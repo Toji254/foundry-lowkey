@@ -140,6 +140,47 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertEqual(result["files_scanned"], 1)
             self.assertEqual(result["project"]["source_files"], ["src/Vault.sol"])
 
+    def test_mixed_cairo_and_solidity_scope_keeps_both_adapters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scarb.toml").write_text('[package]\nname = "bridge"\n', encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "bridge.cairo").write_text(
+                "fn bridge_call() { deploy_syscall(); }\n", encoding="utf-8"
+            )
+            solidity_dir = root / "contracts" / "solidity"
+            solidity_dir.mkdir(parents=True)
+            (solidity_dir / "Bridge.sol").write_text(
+                "pragma solidity ^0.8.20; contract Bridge { function x() external { assembly {} } }\n",
+                encoding="utf-8",
+            )
+            tests_dir = root / "tests"
+            tests_dir.mkdir()
+            (tests_dir / "test_bridge.py").write_text(
+                "def test_bridge(): pass\n", encoding="utf-8"
+            )
+
+            info = analysis_adapters.inspect_repository(root)
+
+            self.assertEqual(info["backend"], "multi")
+            self.assertIn("cairo-starknet", info["stacks"])
+            self.assertIn("evm-source", info["stacks"])
+            self.assertIn("solidity", info["languages"])
+            self.assertIn("cairo", info["languages"])
+            self.assertEqual(info["source_file_count"], 2)
+
+    def test_source_only_solidity_gets_evm_source_adapter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "contracts").mkdir()
+            (root / "contracts" / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault {}\n",
+                encoding="utf-8",
+            )
+            info = analysis_adapters.inspect_repository(root)
+            self.assertEqual(info["backend"], "evm-source")
+            self.assertIn("evm-source", info["stacks"])
+
     def test_security_plan_uses_installed_native_analyzers(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
