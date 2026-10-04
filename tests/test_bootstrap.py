@@ -265,7 +265,7 @@ class BootstrapTests(unittest.TestCase):
     def test_build_command_uses_vyper_compiler_for_single_vyper_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "contracts/Vault.vy", "# pragma version 0.4.0\n")
+            self.write(root, "contracts/Vault.vy", "# pragma version 0.4.3\n")
             info = {"root": str(root), "backend": "vyper", "kind": "vyper"}
             with patch.object(
                 bootstrap.shutil,
@@ -290,7 +290,7 @@ class BootstrapTests(unittest.TestCase):
     def test_build_command_uses_vyper_compiler_for_multiple_vyper_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "contracts/Vault.vy", "# pragma version 0.4.0\n")
+            self.write(root, "contracts/Vault.vy", "# pragma version 0.4.3\n")
             self.write(root, "contracts/Token.vy", "# pragma version 0.4.0\n")
             self.write(root, "contracts/interfaces/IVault.vyi", "interface IVault:\n    def ping(): view\n")
 
