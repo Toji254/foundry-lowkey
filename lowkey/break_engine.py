@@ -1139,8 +1139,9 @@ def _render_repeat_test(
     if seed_fund:
         seed_amount = _solidity_amount_literal(seed_fund)
         if setup_signature:
+            setup_arg = ", 1 ether" if re.search(r"\\(uint(?:[0-9]+)?\\)$", setup_signature) else ""
             setup_block += f"""
-        bytes memory setupData = abi.encodeWithSignature("{setup_signature}");
+        bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_arg});
         uint256 setupValue = assetReadOk ? 0 : {seed_amount};
         vm.prank(ATTACKER);
         (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: setupValue}}(setupData);
@@ -1152,13 +1153,15 @@ def _render_repeat_test(
         else:
             setup_block += f'        vm.deal(TARGET, {seed_amount});\n'
     elif setup_signature:
+        setup_arg = ", 1 ether" if re.search(r"\\(uint(?:[0-9]+)?\\)$", setup_signature) else ""
         setup_block += """
-        bytes memory setupData = abi.encodeWithSignature("%s");
+        bytes memory setupData = abi.encodeWithSignature("%s"%s);
+        uint256 setupValue = assetReadOk ? 0 : 2 wei;
         vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{value: 2 wei}(setupData);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{value: setupValue}(setupData);
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
-        """ % setup_signature
+        """ % (setup_signature, setup_arg)
 
     entitlement_before = """
         uint256 entitlementBefore = 0;
@@ -1210,10 +1213,10 @@ def _render_repeat_test(
         }}
 """
         asset_baseline = """
-        if (assetReadOk) {{
+        if (assetReadOk) {
             attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(ATTACKER);
             targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
-        }}
+        }
 """
 
     if entitlement_signature:
@@ -1472,7 +1475,16 @@ def _find_setup_signature(functions: list[dict[str, Any]]) -> str | None:
             continue
         name = str(item.get("name") or "")
         inputs = item.get("inputs") or []
-        if SETUP_RE.search(name) and len(inputs) == 0 and str(item.get("stateMutability") or "") == "payable":
+        if not SETUP_RE.search(name):
+            continue
+        mutability = str(item.get("stateMutability") or "").lower()
+        if len(inputs) == 0 and mutability == "payable":
+            return _format_signature(item)
+        if (
+            len(inputs) == 1
+            and str(inputs[0].get("type") or "").lower().startswith("uint")
+            and mutability in {"payable", "nonpayable"}
+        ):
             return _format_signature(item)
     return None
 
