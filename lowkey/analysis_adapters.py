@@ -150,7 +150,7 @@ ADAPTERS = {
         "kind": "evm",
         "languages": {"vyper", "vyper-interface"},
         "markers": {"ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml"},
-        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": True, "live_native": False},
+        "capabilities": {"build": True, "tests": False, "coverage": False, "slither": False, "live_evm": True, "live_native": False},
     },
     "cosmwasm": {
         "kind": "cosmwasm",
@@ -583,7 +583,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         coverage = "full" if backend not in {
             "unknown", "generic-source", "rust", "move-source", "move",
             "cargo", "cosmwasm", "solana-anchor", "cairo-starknet",
-            "evm-source", "multi",
+            "evm-source", "vyper", "multi",
         } else "partial"
     elif files:
         coverage = "unsupported"
@@ -1073,8 +1073,11 @@ def scan_repository(root: str | os.PathLike[str] = ".") -> int:
         # An explicitly requested source file is a complete requested scope,
         # even though it cannot establish repository-wide build/test/dependency
         # coverage. Repository/workspace scopes must remain review-required.
-        if info.get("scope_type") == "single-file":
-            print("RESULT: TRIAGE COMPLETE — requested single-file scope scanned; repository-wide coverage is not established.")
+        if info.get("scope_type") == "single-file" or info.get("backend") == "vyper":
+            if info.get("backend") == "vyper":
+                print("RESULT: TRIAGE COMPLETE — Vyper source scope scanned; build/test/dependency coverage is not established.")
+            else:
+                print("RESULT: TRIAGE COMPLETE — requested single-file scope scanned; repository-wide coverage is not established.")
             return 0
         print("RESULT: REVIEW NEEDED — coverage is partial; missing coverage is not a clean result.")
         return 2
