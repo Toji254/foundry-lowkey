@@ -1,6 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
+for arg in "$@"; do
+    case "$arg" in
+        --h|--help|-h|help)
+            exec python3 "$HOME/.lowkey/lk.py" "$@"
+            ;;
+    esac
+done
+
 if [[ "${1:-}" == "forge" ]]; then
     shift
     exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
