@@ -47,6 +47,7 @@ try:
         bootstrap_status,
         classify_build_failure,
         project_build_command,
+        _is_lowkey_source_checkout,
     )
 except ImportError:
     detect_project = format_detection = run_native_audit = None
@@ -54,6 +55,7 @@ except ImportError:
     workspace_selection = set_workspace_selection = clear_workspace_selection = None
     bootstrap_project = None
     bootstrap_status = classify_build_failure = project_build_command = None
+    _is_lowkey_source_checkout = None
     detected_project_root = lambda start=".": Path(start).resolve()
 
 try:
@@ -3557,22 +3559,9 @@ def _select_project_target(config, entry, root):
     if not is_address(address):
         return fail("Error: selected target has an invalid address.")
 
-    # A remembered address is not a live protocol target merely because it has
-    # an ABI/source artifact. On local EVM labs, reject EOAs and stale addresses
-    # before they can become the active audit target.
-    rpc = effective_rpc(config)
-    if rpc:
-        try:
-            code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
-        except Exception:
-            code, runtime = 1, ""
-        if code == 0 and str(runtime or "").strip().lower() in {"", "0x", "0x0"}:
-            return fail(
-                f"Error: {address} has no contract bytecode on {rpc}. "
-                "Run 'lk lab' to deploy or refresh a live local target.",
-                1,
-            )
-
+    # Target selection records project/config state only. Live bytecode validation
+    # belongs to audit bootstrap/runtime paths so choosing a remembered deployment
+    # does not depend on the current RPC node.
     contract = entry.get("contract") or entry.get("name") or "target"
     artifact = entry.get("artifact")
     if not artifact:
@@ -9611,6 +9600,10 @@ def run_audit_mode(config, args=None, interactive=None):
         is_workspace_root is not None
         and is_workspace_root(root)
         and discover_nested_projects is not None
+        and not (
+            _is_lowkey_source_checkout is not None
+            and _is_lowkey_source_checkout(root)
+        )
     ):
         workspace_container = Path(root).resolve()
         active = workspace_selection(workspace_container) if workspace_selection is not None else None
