@@ -919,6 +919,9 @@ def _project_python_runner(
         ):
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return [str(candidate), "-c", shim, *args]
+        # The namespace shim is still required when uv/venv is unavailable.
+        # Fall back to the interpreter running Lowkey rather than plain pytest.
+        return [sys.executable, "-c", shim, *args]
     if (env_root / "pyproject.toml").is_file() and shutil.which("uv"):
         if dependency_root is not None:
             return ["uv", "run", "--project", str(env_root), command, *args]
@@ -1028,8 +1031,9 @@ def _hardhat_fork_spec(root: Path) -> tuple[str, int] | None:
     if not fork_path.is_file() or not network:
         return None
     fork_text = _read(fork_path)
+    # Match both multiline object formatting and compact inline fork configs.
     network_match = re.search(
-        rf"(?ms)^\s*{re.escape(network)}\s*:\s*\{{(.*?)^\s*\}},?",
+        rf"(?s){re.escape(network)}\s*:\s*\{{(.*?)\}}",
         fork_text,
     )
     if not network_match:
