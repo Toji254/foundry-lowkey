@@ -49,6 +49,37 @@ class ReliabilityRoutingTests(unittest.TestCase):
                 native.assert_called_once()
                 self.assertNotIn("connected Foundry audit pipeline", output.getvalue())
 
+    def test_unfamiliar_repository_shapes_never_crash_the_scan_entrypoint(self):
+        fixtures = (
+            ("cargo", "Cargo.toml", '[package]\nname = "demo"\nversion = "0.1.0"\n', "src/lib.rs", "pub fn execute() {}\n"),
+            ("anchor", "Anchor.toml", '[provider]\ncluster = "localnet"\n', "programs/demo/src/lib.rs", "pub fn execute() { unsafe { let _ = 1u8; } }\n"),
+            ("cairo", "Scarb.toml", '[package]\nname = "demo"\nversion = "0.1.0"\n', "src/lib.cairo", "fn execute() {}\n"),
+            ("move", "Move.toml", '[package]\nname = "demo"\nversion = "0.0.0"\n', "sources/demo.move", "module demo::demo {}\n"),
+            ("cosmwasm", "Cargo.toml", '[package]\nname = "demo"\nversion = "0.1.0"\n[dependencies]\ncosmwasm-std = "2"\n', "src/contract.rs", "pub fn execute() {}\n"),
+        )
+        for _label, manifest, manifest_text, source, source_text in fixtures:
+            with self.subTest(project=_label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    (root / manifest).parent.mkdir(parents=True, exist_ok=True)
+                    (root / manifest).write_text(manifest_text, encoding="utf-8")
+                    source_path = root / source
+                    source_path.parent.mkdir(parents=True, exist_ok=True)
+                    source_path.write_text(source_text, encoding="utf-8")
+
+                    with patch.object(lk, "sys", sys):
+                        output = io.StringIO()
+                        with patch.object(
+                            sys, "argv", [str(ROOT / "lowkey" / "lk.py"), "scan", str(root)]
+                        ), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                            code = lk._safe_main()
+
+                    self.assertEqual(code, 0)
+                    rendered = output.getvalue()
+                    self.assertNotIn("Traceback", rendered)
+                    self.assertRegex(rendered, r"(Coverage|unsupported|partial|REVIEW NEEDED)")
+                    self.assertTrue((root / ".audit" / "evidence" / "universal_analysis.json").is_file())
+
     def test_cli_failure_boundary_returns_review_needed_instead_of_traceback(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
