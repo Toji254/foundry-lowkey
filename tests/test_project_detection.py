@@ -490,7 +490,7 @@ class ProjectDetectionTests(unittest.TestCase):
                 calls,
                 [
                     (
-                        ["uv", "run", "pytest", "-q", "--ignore", "tests/scrvusd/contracts/scrvusd"],
+                        project_detection._project_python_runner(root, "pytest", "-q") + ["--ignore", "tests/scrvusd/contracts/scrvusd"],
                         root,
                     )
                 ],
