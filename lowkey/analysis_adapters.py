@@ -72,6 +72,12 @@ ADAPTERS = {
         "markers": {"ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml"},
         "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live": True},
     },
+    "cosmwasm": {
+        "kind": "cosmwasm",
+        "languages": {"rust"},
+        "markers": {"Cargo.toml"},
+        "capabilities": {"build": True, "tests": True, "coverage": False, "slither": False, "live_evm": False},
+    },
     "anchor": {
         "kind": "solana",
         "languages": {"rust"},
@@ -256,13 +262,16 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
         "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts"
     )):
         stacks.append("hardhat")
+    cargo_text = _safe_read(root / "Cargo.toml").lower()
+    if "cosmwasm" in cargo_text and (root / "Cargo.toml").is_file():
+        stacks.append("cosmwasm")
     if (root / "Anchor.toml").is_file():
         stacks.append("solana-anchor")
     if (root / "Move.toml").is_file() or "move" in languages:
         stacks.append("move")
     if (root / "Scarb.toml").is_file() or "cairo" in languages:
         stacks.append("cairo-starknet")
-    if (root / "Cargo.toml").is_file() or "rust" in languages:
+    if ((root / "Cargo.toml").is_file() or "rust" in languages) and "cosmwasm" not in stacks and "solana-anchor" not in stacks:
         stacks.append("cargo")
     vyper = "vyper" in languages or "vyper-interface" in languages
     if vyper or any((root / name).is_file() for name in (
@@ -282,7 +291,7 @@ def _choose_backend(stacks: list[str], sources: dict[str, int]) -> str:
         return stack
     if len(stacks) > 1:
         # Prefer explicit protocol tooling over generic package-manager signals.
-        for candidate in ("foundry", "hardhat", "cairo-starknet", "solana-anchor", "move", "vyper", "cargo"):
+        for candidate in ("foundry", "hardhat", "cairo-starknet", "solana-anchor", "cosmwasm", "move", "vyper", "cargo"):
             if candidate in stacks and candidate != "cargo":
                 return candidate if len([x for x in stacks if x != "cargo"]) == 1 else "multi"
         return "multi"
