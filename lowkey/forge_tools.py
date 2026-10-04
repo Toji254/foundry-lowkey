@@ -233,35 +233,51 @@ def _run_native_project(command: list[str], root: Path, label: str) -> int:
 
 
 def run_forge(args: Sequence[str], quiet: bool = False) -> int:
-    """Run Forge, optionally hiding successful command output for compound audits."""
+    """Run Forge with a bounded non-interactive timeout."""
     binary = forge_path()
     if not binary:
         return die("forge was not found on PATH. Install Foundry first.")
     root = audit_context.foundry_project_root()
-    command = [binary, *args]
     timeout = _forge_timeout(args)
     try:
-        result, timed_out = _run_bounded_process(
-            command, Path(root), capture_output=quiet, timeout=timeout
-        )
-        code = result.returncode
-        if quiet and code != 0:
-            combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-            if combined:
-                print(
-                    f"\nForge {args[0] if args else 'command'} failed:\n"
-                    + "\n".join(combined.splitlines()[-24:]),
-                    file=sys.stderr,
-                )
-    except OSError as exc:
-        return die(f"could not execute forge: {exc}", 1)
-    if timed_out:
+        if quiet:
+            result = subprocess.run(
+                [binary, *args],
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                start_new_session=(os.name == "posix"),
+            )
+            code = result.returncode
+            if code != 0:
+                combined = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+                if combined:
+                    print(
+                        f"\nForge {args[0] if args else 'command'} failed:\n"
+                        + "\n".join(combined.splitlines()[-24:]),
+                        file=sys.stderr,
+                    )
+        else:
+            code = subprocess.run(
+                [binary, *args],
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout,
+                start_new_session=(os.name == "posix"),
+            ).returncode
+    except subprocess.TimeoutExpired:
+        code = 124
         print(
-            f"TIMEOUT: forge {args[0] if args else 'command'} exceeded {timeout}s and its process group "
-            "was terminated. No security conclusion is supported by this run.",
+            f"TIMEOUT: forge {args[0] if args else 'command'} exceeded {timeout}s. "
+            "No security conclusion is supported by this run.",
             file=sys.stderr,
         )
-    data = {"command": args[0] if args else None, "exit_code": code, "timeout": bool(timed_out)}
+    except OSError as exc:
+        return die(f"could not execute forge: {exc}", 1)
+
+    data = {"command": args[0] if args else None, "exit_code": code, "timeout": code == 124}
     status = "completed" if code == 0 else "failed"
     audit_context.emit("forge-command", root, tool="forge", status=status, summary=f"forge {args[0] if args else ''}".strip(), data=data)
     audit_context.record_tool("forge", root, status=status, summary=f"forge {args[0] if args else ''}".strip(), data={**data, "last_command": data["command"], "last_exit_code": code})
@@ -345,15 +361,25 @@ def _strip_generated_lint_abort(blocks: Sequence[str]) -> list[str]:
 
 
 def run_forge_diagnostics(args: Sequence[str], label: str, quiet: bool = False) -> int:
-    """Run Forge diagnostics with bounded execution and generated-only filtering."""
+    """Run Forge diagnostics with a hard timeout and generated-only filtering."""
     binary = forge_path()
     root = audit_context.foundry_project_root()
     if not binary:
         return die("forge was not found on PATH. Install Foundry first.")
     try:
-        result, timed_out = _run_bounded_process(
-            [binary, *args], Path(root), capture_output=True, timeout=_forge_timeout(args)
+        result = subprocess.run(
+            [binary, *args],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_forge_timeout(args),
+            start_new_session=(os.name == "posix"),
         )
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        result = subprocess.CompletedProcess([binary, *args], 124, "", "")
+        timed_out = True
     except OSError as exc:
         return die(f"could not execute forge: {exc}", 1)
 
