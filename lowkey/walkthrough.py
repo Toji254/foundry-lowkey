@@ -3450,6 +3450,16 @@ def _render_interaction_graph_full(
         ]
         if changes:
             lines.extend(f"  │   ├─ {item}" for item in changes)
+            runtime_value = sum(
+                int(edge.get("value_wei") or 0)
+                for edge in step.execution_edges
+                if isinstance(edge, dict) and int(edge.get("depth") or 0) > 0
+            )
+            if runtime_value and not balance_lines:
+                lines.append(
+                    f"  │   ⚠ runtime call trace carried {_friendly_eth(runtime_value)}, "
+                    "but no tracked native-balance delta was recorded"
+                )
         else:
             if step.storage_before or step.storage_after:
                 lines.append("  │   ├─ storage: no change in the slots Lowkey tracked")
