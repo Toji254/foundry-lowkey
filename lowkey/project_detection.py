@@ -625,6 +625,13 @@ def project_root(start: str | os.PathLike[str] = ".") -> Path:
             if selected != path:
                 return selected
             if path.is_dir() and _is_workspace_package(path):
+                try:
+                    from analysis_adapters import _workspace_manifest_member
+                    member = _workspace_manifest_member(path)
+                    if member is not None:
+                        return Path(member).resolve()
+                except (ImportError, OSError, ValueError):
+                    pass
                 candidates = discover_nested_projects(path)
                 if len(candidates) == 1:
                     return Path(candidates[0]["root"]).resolve()
