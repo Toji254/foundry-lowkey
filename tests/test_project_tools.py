@@ -143,7 +143,7 @@ dependencies = ["vyper>=0.4.0", "snekmate==0.1.0"]
             self.write(
                 root,
                 "contracts/main.vy",
-                "from . import Math\\n@external\\ndef ping():\\n    return 1\\n",
+                "from . import Math\n@external\ndef ping():\n    return 1\n",
             )
 
             graph = project_tools.build_dependency_graph(root)
