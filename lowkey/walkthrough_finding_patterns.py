@@ -364,10 +364,11 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
         if calls:
             first_call = calls[0].start()
             readonly_call = re.search(
-                r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                r"\.(?:get|quote|price|rate|balance|total|debt|share|value|preview)[A-Za-z_0-9]*\s*\(",
                 body[first_call + 1:],
+                re.I,
             )
-            if readonly_call and re.search(r"(?:^|_)(?:get|quote|price|rate|balance|total|debt|share|value|preview)", readonly_call.group(1), re.I):
+            if readonly_call:
                 results.append(_result(
                     "READONLY-001",
                     _pattern("READONLY-001")["title"],
