@@ -1138,7 +1138,7 @@ def _render_repeat_test(
     if seed_fund:
         seed_amount = _solidity_amount_literal(seed_fund)
         if setup_signature:
-            setup_arg = ", 1 ether" if re.search(r"\\(uint(?:[0-9]+)?\\)$", setup_signature) else ""
+            setup_arg = ", 1 ether" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
             setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_arg});
         uint256 setupValue = assetReadOk ? 0 : {seed_amount};
@@ -1954,7 +1954,7 @@ def _result_from_output(
                 f"Target rejected the setup call before the {family} probe could establish its intended state. "
                 f"{reason}"
             )
-            if "invalidagreement" in str(reason).lower():
+            if re.search(r"invalidagreement", text_output, re.I) or "invalidagreement" in str(reason).lower():
                 status = "LAB_ISSUE"
                 summary = (
                     "Lab/fixture issue: the setup path reverted with InvalidAgreement before "
