@@ -676,31 +676,33 @@ def _strip_comments(text: str, language: str, mask_strings: bool = False) -> str
                 quote = ch; escape = False; state = "string"
             i += 1; continue
         if state == "line":
-            if ch == "
-": state = "code"
-            elif ch != "
-": chars[i] = " "
+            if ch == "\n":
+                state = "code"
+            elif ch != "\n":
+                chars[i] = " "
             i += 1; continue
         if state == "block":
             if ch == "*" and nxt == "/":
-                chars[i] = chars[i + 1] = " "; i += 2; state = "code"; continue
-            if ch != "
-": chars[i] = " "
+                chars[i] = chars[i + 1] = " "
+                i += 2; state = "code"; continue
+            if ch != "\n":
+                chars[i] = " "
             i += 1; continue
         if escape:
             escape = False
-            if mask_strings and ch != "
-": chars[i] = " "
+            if mask_strings and ch != "\n":
+                chars[i] = " "
             i += 1; continue
-        if ch == "\":
+        if ch == "\\":
             escape = True
-            if mask_strings: chars[i] = " "
+            if mask_strings:
+                chars[i] = " "
             i += 1; continue
         if ch == quote:
             state = "code"; quote = ""
             i += 1; continue
-        if mask_strings and ch != "
-": chars[i] = " "
+        if mask_strings and ch != "\n":
+            chars[i] = " "
         i += 1
     return "".join(chars)
 
