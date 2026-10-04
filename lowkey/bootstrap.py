@@ -771,11 +771,13 @@ def project_build_command(
             path for path in project.rglob("*.vy")
             if all(part not in {".git", ".audit", "node_modules", ".venv", "venv"} for part in path.parts)
         )
-        if len(sources) == 1:
-            rel = str(sources[0].relative_to(project))
-            return project, ["vyper", rel], "Vyper compiler"
-        if not sources:
-            return None
+        if sources:
+            rel_sources = [
+                str(path.relative_to(project))
+                for path in sources
+            ]
+            return project, ["vyper", *rel_sources], "Vyper compiler"
+        return None
 
     if backend in {"hardhat", "node"} or any(
         (project / name).is_file()
