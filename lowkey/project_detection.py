@@ -33,13 +33,14 @@ try:
         bootstrap_status as shared_bootstrap_status,
         classify_build_failure as shared_classify_build_failure,
         project_build_command as shared_project_build_command,
+        project_test_command as shared_project_test_command,
         dependency_boundary as shared_dependency_boundary,
         run_bootstrap as run_shared_bootstrap,
         runtime_environment,
     )
 except ImportError:
     shared_bootstrap_status = shared_classify_build_failure = run_shared_bootstrap = None
-    shared_project_build_command = shared_dependency_boundary = None
+    shared_project_build_command = shared_project_test_command = shared_dependency_boundary = None
 
     def runtime_environment(root: str | os.PathLike[str] = ".") -> tuple[dict[str, str], str | None]:
         return dict(os.environ), None
@@ -772,7 +773,7 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
         except (TypeError, json.JSONDecodeError):
             package = {}
     scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
-    if isinstance(scripts, dict) and scripts.get("build") and "hardhat" not in stacks:
+    if isinstance(scripts, dict) and (scripts.get("build") or scripts.get("test")) and "hardhat" not in stacks:
         build_backend = "node-script"
     elif cargo:
         build_backend = "cargo"
@@ -833,6 +834,16 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
             "pyproject": (root / "pyproject.toml").is_file(),
         },
     }
+
+def project_test_command(
+    info: dict[str, Any] | None = None,
+    root: str | os.PathLike[str] = ".",
+) -> tuple[Path, list[str], str] | None:
+    """Expose the shared native test planner to the detection/routing layer."""
+    if shared_project_test_command is not None:
+        return shared_project_test_command(info or detect_project(root), root)
+    return None
+
 
 def format_detection(info: dict[str, Any]) -> str:
     languages = info.get("languages", {})
@@ -1376,6 +1387,14 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             print(f"      evidence: {evidence}")
         else:
             print(f"DEFER  {build_backend} build — no executable project build command is available.")
+
+        test_info = project_test_command(info)
+        if test_info:
+            _cwd, test_command, test_evidence = test_info
+            step("project tests", test_command)
+            print(f"      evidence: {test_evidence}")
+        else:
+            print(f"DEFER  {build_backend} tests — no executable project test command is available.")
         return failures
 
     print("STATIC-ONLY: no specialized project audit backend is installed.")
