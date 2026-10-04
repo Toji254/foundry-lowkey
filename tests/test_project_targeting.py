@@ -330,11 +330,22 @@ class ProjectTargetingTests(unittest.TestCase):
             stdout = "compile warning"
             stderr = "Deployed to: 0x" + "e" * 40
 
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = Completed.returncode
+                self.pid = 0
+
+            def communicate(self, timeout=None):
+                return Completed.stdout, Completed.stderr
+
         class FakeSubprocess:
+            DEVNULL = -3
+            PIPE = -1
+
             @staticmethod
-            def run(*args, **kwargs):
+            def Popen(*args, **kwargs):
                 FakeSubprocess.kwargs = kwargs
-                return Completed()
+                return FakeProcess()
 
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
@@ -353,6 +364,7 @@ class ProjectTargetingTests(unittest.TestCase):
         self.assertIn("compile warning", result.text)
         self.assertIn("Deployed to: 0x" + "e" * 40, result.text)
         self.assertEqual(FakeSubprocess.kwargs.get("cwd"), str(root))
+        self.assertIsNotNone(FakeSubprocess.kwargs.get("stdin"))
 
 
     def test_lab_source_integrity_rejects_walkthrough_output_in_first_party_source(self):
@@ -420,10 +432,21 @@ class ProjectTargetingTests(unittest.TestCase):
             stdout = "compile warning"
             stderr = "Deployed to: 0x" + "e" * 40
 
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = Completed.returncode
+                self.pid = 0
+
+            def communicate(self, timeout=None):
+                return Completed.stdout, Completed.stderr
+
         class FakeSubprocess:
+            DEVNULL = -3
+            PIPE = -1
+
             @staticmethod
-            def run(*args, **kwargs):
-                return Completed()
+            def Popen(*args, **kwargs):
+                return FakeProcess()
 
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
