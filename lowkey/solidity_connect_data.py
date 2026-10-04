@@ -2920,6 +2920,8 @@ _COMPREHENSIVE_CONNECTION_EDGES = _flatten_connection_hubs()
 
 # Explicit high-value relationships that are tiny but easy to miss.
 _COMPREHENSIVE_CONNECTION_EDGES.extend([
+    ("yul-not", "yul", "Yul not is a low-level logical/bitwise operation inside Yul expressions"),
+    ("yul-not", "yul-iszero", "not and iszero are neighboring Yul unary operations with different semantics"),
     ("mapping", "keccak256", "the mapping key is not stored; Keccak is used to locate its value"),
     ("mapping", "abi.decode", "decoded bytes can produce the key/value that drive a mapping update"),
     ("abi.decode", "keccak256", "the same raw bytes can be decoded and independently hashed"),
