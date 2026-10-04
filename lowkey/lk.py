@@ -57,6 +57,11 @@ except ImportError:
     detected_project_root = lambda start=".": Path(start).resolve()
 
 try:
+    from analysis_adapters import is_dependency_path as universal_is_dependency_path
+except ImportError:
+    universal_is_dependency_path = None
+
+try:
     import system_model
 except ImportError:
     system_model = None
@@ -3523,13 +3528,24 @@ def _target_entry_is_protocol(root, entry):
             relative = artifact_path.resolve().relative_to(Path(root).resolve()).as_posix().lower()
             support_parts = (
                 "/test/", "/tests/", "/mock/", "/mocks/", "/fixture/", "/fixtures/",
-                "/script/", "/scripts/", "/lib/", "/node_modules/",
+                "/script/", "/scripts/", "/node_modules/",
             )
             if relative.startswith((
                 "test/", "tests/", "mock/", "mocks/", "fixture/", "fixtures/",
-                "script/", "scripts/", "lib/", "node_modules/",
+                "script/", "scripts/", "node_modules/",
             )) or any(part in relative for part in support_parts):
                 return False
+
+            source_file = entry.get("source_file")
+            if source_file and universal_is_dependency_path is not None:
+                source_path = Path(str(source_file))
+                if not source_path.is_absolute():
+                    source_path = Path(root) / source_path
+                try:
+                    if universal_is_dependency_path(source_path, Path(root)):
+                        return False
+                except (OSError, ValueError):
+                    pass
         except (OSError, ValueError):
             pass
 
@@ -4908,7 +4924,7 @@ def source_contract_fallback(root, contract_name):
     if not candidates:
         ignored = {
             ".git", ".audit", ".venv", ".tox", "__pycache__", "node_modules",
-            "out", "artifacts", "build", "cache", "lib", "dist",
+            "out", "artifacts", "build", "cache", "dist",
         }
         for path in root_path.rglob("*"):
             if path.is_file() and path.suffix.lower() in {".sol", ".vy"}:
@@ -4917,7 +4933,7 @@ def source_contract_fallback(root, contract_name):
 
     excluded_parts = {
         ".git", ".audit", ".venv", ".tox", "__pycache__", "node_modules",
-        "out", "artifacts", "build", "cache", "lib", "dist", "tests", "test",
+        "out", "artifacts", "build", "cache", "dist", "tests", "test",
         "fixtures", "mocks", "mock",
     }
     for candidate in sorted(set(candidates)):
@@ -4980,12 +4996,18 @@ def artifact_is_project_application(root, path, artifact):
     # Keep application ownership project-local without requiring any particular
     # directory name. Common dependency/source locations are excluded below.
     excluded_prefixes = {
-        "node_modules", "lib", "vendor", ".git", ".audit", "build-info",
+        "node_modules", "vendor", ".git", ".audit", "build-info",
         "tests", "test", "fixtures", "mocks", "mock",
     }
     parts = Path(normalized).parts
     if any(part in excluded_prefixes for part in parts):
         return False
+    if universal_is_dependency_path is not None:
+        try:
+            if universal_is_dependency_path(source_path, root_path):
+                return False
+        except (OSError, ValueError):
+            pass
 
     try:
         source_text = source_path.read_text(encoding="utf-8", errors="replace")
@@ -8859,7 +8881,7 @@ def source_sol_files(root):
             pass
     paths=[]
     for path,dirs,files in os.walk(root):
-        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib","node_modules","artifacts","build",".audit"}]
+        dirs[:]=[d for d in dirs if d not in {".git","out","cache","node_modules","artifacts","build",".audit"}]
         for filename in files:
             if filename.endswith(".sol"): paths.append(os.path.join(path,filename))
     return sorted(paths)
@@ -8876,7 +8898,7 @@ def source_vyper_files(root):
             pass
     paths=[]
     for path,dirs,files in os.walk(root):
-        dirs[:]=[d for d in dirs if d not in {".git","out","cache","lib","node_modules","artifacts","build",".audit"}]
+        dirs[:]=[d for d in dirs if d not in {".git","out","cache","node_modules","artifacts","build",".audit"}]
         for filename in files:
             if filename.endswith((".vy",".vyi")): paths.append(os.path.join(path,filename))
     return sorted(paths)
