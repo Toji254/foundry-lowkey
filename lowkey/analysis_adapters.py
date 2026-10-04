@@ -71,8 +71,6 @@ def _is_dependency_path(path: Path, root: Path, prefixes: set[str] | None = None
         # a known dependency. This keeps first-party lib/*.sol source visible.
         if prefix.startswith(relative + "/") and relative in DEPENDENCY_CONTAINER_DIRS:
             continue
-        if relative.startswith(tuple(prefix + "/" for prefix in ())):
-            pass
     if any(
         relative.startswith(prefix + "/") and
         relative.split("/", 1)[0] in DEPENDENCY_CONTAINER_DIRS
