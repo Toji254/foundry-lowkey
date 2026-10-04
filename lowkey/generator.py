@@ -616,7 +616,7 @@ def _value(value: str) -> str:
     value = (value or "0").strip()
     match = re.fullmatch(r"(\d+(?:\.\d+)?)(ether|gwei|wei)", value, re.IGNORECASE)
     if not match:
-        return re.sub(r"(?i)(\d)(ether|gwei|wei)\b", r"\\1 \\2", value)
+        return re.sub(r"(?i)(\d)(ether|gwei|wei)\b", r"\1 \2", value)
     amount, unit = match.groups()
     unit = unit.lower()
     if "." not in amount:
