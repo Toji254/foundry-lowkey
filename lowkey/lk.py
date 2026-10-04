@@ -8949,8 +8949,46 @@ def run_scan(args):
     root = args[0] if args else "."
     if not os.path.exists(root):
         return fail(f"Path not found: {root}")
-    if os.path.isfile(root) and not root.endswith((".sol", ".vy", ".vyi")):
-        return fail(f"Path is not a Solidity/Vyper source file: {root}")
+
+    # Universal source triage is the first-class path for every repository.
+    # Keep the legacy EVM scanner below as a compatibility fallback only.
+    try:
+        from analysis_adapters import scan_repository
+    except ImportError:
+        scan_repository = None
+
+    if scan_repository is not None:
+        try:
+            universal_result = scan_repository(root)
+            try:
+                audit_root = audit_context.foundry_project_root(Path(root).resolve())
+                scope = {}
+                try:
+                    from analysis_adapters import inspect_repository
+                    scope = inspect_repository(root)
+                except Exception:
+                    scope = {}
+                audit_context.record_tool(
+                    "source-triage",
+                    audit_root,
+                    status="completed",
+                    summary="universal repository source triage",
+                    data={
+                        "exit_code": universal_result,
+                        "coverage": scope.get("coverage", "unknown"),
+                        "analysis_status": scope.get("analysis_status", "unknown"),
+                        "backend": scope.get("backend", "unknown"),
+                        "files_scanned": scope.get("source_file_count", 0),
+                    },
+                )
+            except Exception:
+                pass
+            return universal_result
+        except Exception as exc:
+            print(
+                f"Warning: universal source triage could not complete: {exc}",
+                file=sys.stderr,
+            )
 
     all_sources = source_evm_files(root)
     has_vyper = bool(source_vyper_files(root))
@@ -9605,12 +9643,12 @@ def run_audit_mode(config, args=None, interactive=None):
         if selected_scope.get("depended_on_by"):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     stacks = set(info.get("stacks", []))
-    foundry_project = (
-        "foundry" in stacks
-        or (not stacks and (Path(root) / "foundry.toml").is_file())
-        or (not stacks and is_address(config.get("target")))
+    backend = str(info.get("backend") or "").lower()
+    self_source = info.get("kind") == "lowkey-source"
+    foundry_project = backend == "foundry" or "foundry" in stacks or self_source
+    evm_project = self_source or backend in {"foundry", "hardhat", "vyper", "evm-source"} or bool(
+        stacks & {"foundry", "hardhat", "vyper"}
     )
-    evm_project = bool(stacks & {"foundry", "hardhat", "vyper"}) or foundry_project or is_address(config.get("target"))
 
     config["audit_project"] = str(root)
     save_config(config)
@@ -10055,6 +10093,12 @@ def run_audit(config, args):
 
     print()
     print(format_detection(info) if format_detection else f"Project : {root}")
+    try:
+        from analysis_adapters import inspect_repository, render_scope
+        print()
+        print(render_scope(inspect_repository(root)))
+    except Exception as exc:
+        print(f"Analysis scope: unavailable ({exc})", file=sys.stderr)
 
     project_data = {
         "root": str(root),
@@ -10068,7 +10112,7 @@ def run_audit(config, args):
     _sync_security_patterns(root, announce=True)
 
     stacks = set(info.get("stacks", []))
-    if "foundry" in stacks or not stacks:
+    if info.get("backend") == "foundry" or "foundry" in stacks or info.get("kind") == "lowkey-source":
         _sync_audit_context(config, root)
         try:
             from forge_tools import run_audit as run_forge_audit
@@ -12139,5 +12183,48 @@ def main():
     if isinstance(result,int): raise SystemExit(result)
     if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
 
+def _safe_main() -> int:
+    """Never expose a Python traceback for a CLI-level repository/runtime failure."""
+    try:
+        result = main()
+        return int(result) if isinstance(result, int) else 0
+    except KeyboardInterrupt:
+        print("\nLOWKEY: interrupted.", file=sys.stderr)
+        return 130
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else 0
+    except Exception as exc:
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = None
+
+        print("LOWKEY RUNTIME ERROR", file=sys.stderr)
+        print(f"  {type(exc).__name__}: {exc}", file=sys.stderr)
+        if root:
+            print(f"  project: {root}", file=sys.stderr)
+            try:
+                evidence = Path(root) / ".audit" / "evidence"
+                evidence.mkdir(parents=True, exist_ok=True)
+                (evidence / "lk-runtime-error.json").write_text(
+                    json.dumps({
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "project": str(root),
+                        "command": sys.argv[1:],
+                        "status": "blocked",
+                    }, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                print("  evidence: .audit/evidence/lk-runtime-error.json", file=sys.stderr)
+            except Exception as evidence_error:
+                print(f"  evidence: unavailable ({evidence_error})", file=sys.stderr)
+        print("  RESULT: REVIEW NEEDED — Lowkey could not complete this command.", file=sys.stderr)
+        print("  No security conclusion should be inferred from this failure.", file=sys.stderr)
+        return 2
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_safe_main())
