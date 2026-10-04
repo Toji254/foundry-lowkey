@@ -4182,6 +4182,7 @@ contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
         if ("__CREATE_FIXTURE__" == "__CREATE_FIXTURE__") {{
             // __CREATE_FIXTURE_CALL__ is replaced by Lowkey at generation time.
 {create_call}
+            console2.log("LOWKEY_TARGET:", target);
         }}
 
         // Keep this project-agnostic: report every contract account actually
