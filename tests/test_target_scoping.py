@@ -322,6 +322,11 @@ class TargetScopingTests(unittest.TestCase):
             clone = "0x" + "2" * 40
             artifact = root / "out" / "ConfidencePool.sol" / "ConfidencePool.json"
             artifact.parent.mkdir(parents=True)
+            (root / "src").mkdir(parents=True)
+            (root / "src" / "ConfidencePool.sol").write_text(
+                "pragma solidity ^0.8.20; contract ConfidencePool {}",
+                encoding="utf-8",
+            )
             artifact.write_text(json.dumps({
                 "contractName": "ConfidencePool",
                 "sourceName": "src/ConfidencePool.sol",
