@@ -1425,7 +1425,8 @@ def show_copy_imports(symbols: list[Symbol], requested_path: str | None = None, 
             f"{symbol.name} as {aliases[symbol.name]}" if symbol.name in aliases else symbol.name
             for symbol in grouped_symbols
         )
-        print(f'  import {{{names}}} from "{path}";')
+        prefix = "  " if copy_only else "  "
+        print(f'{prefix}import {{{names}}} from "{path}";')
     if requested_path and not copy_only:
         actual = sorted({s.import_path for s in symbols})
         if requested_path not in actual:
@@ -1454,13 +1455,20 @@ def show_symbol(
     how, _use_cases, _example, _audit = usage_guidance(s)
     print()
     reference_only = str(source_location(s)).startswith("(reference only")
-    gap = "       " if reference_only else "   "
-    print(f"NAME:{gap}{s.name}")
-    print(f"TYPE:{gap}{kind_label(s)}")
-    print(f"SOURCE:{gap}{source_location(s)}")
-    print(f"IMPORT:{gap}{s.import_stmt}")
-    print(f"WHY:{gap}{why}")
-    print(f"HOW:{gap}{how}")
+    if reference_only:
+        print(f"NAME:       {s.name}")
+        print(f"TYPE:       {kind_label(s)}")
+        print(f"SOURCE:     {source_location(s)}")
+        print(f"IMPORT:     {s.import_stmt}")
+        print(f"WHY:        {why}")
+        print(f"HOW:        {how}")
+    else:
+        print(f"NAME:   {s.name}")
+        print(f"TYPE:   {kind_label(s)}")
+        print(f"SOURCE: {source_location(s)}")
+        print(f"IMPORT: {s.import_stmt}")
+        print(f"WHY:    {why}")
+        print(f"HOW:    {how}")
     if s.kind == "interface":
         surface = interface_surface(s)
         if surface:
@@ -1533,12 +1541,12 @@ def show_symbol(
         for item in questions[:12]:
             print(f"    ? {item}")
 
-def show_file(item):
+def show_file(item, import_path_override=None):
     path, syms = item
     line = syms[0].line if syms else 1
     print()
     print(f"SOURCE:      {path.resolve()}:{line}")
-    print(f"IMPORT FILE: {syms[0].import_path if syms else path.as_posix()}")
+    print(f"IMPORT FILE: {import_path_override or (syms[0].import_path if syms else path.as_posix())}")
     print("IMPORTABLE SYMBOLS:")
     for s in syms:
         print(f"  {s.name} [{kind_label(s)}] — {source_location(s)}")
@@ -1814,7 +1822,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
                 or Path(s.source).resolve() == Path(source).resolve()
             ]
             if symbols:
-                show_file((source, symbols))
+                show_file((source, symbols), import_path_override=path_query or import_name)
             else:
                 print()
                 print(f'SOURCE:      {source}')
