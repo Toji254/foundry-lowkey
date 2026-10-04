@@ -1997,7 +1997,7 @@ def run_functions(config, args=None):
                     label = f"{contract} (test mock)"
                 else:
                     label = contract
-                support_rows.append(f"{label}::{signature}")
+                support_rows.append(f"{contract}::{signature}")
         if support_rows:
             print("Other:   " + ", ".join(support_rows))
         print("Live:    none")
