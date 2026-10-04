@@ -8961,13 +8961,25 @@ def run_scan(args):
         try:
             universal_result = scan_repository(root)
             try:
-                audit_root = audit_context.foundry_project_root()
+                audit_root = audit_context.foundry_project_root(Path(root).resolve())
+                scope = {}
+                try:
+                    from analysis_adapters import inspect_repository
+                    scope = inspect_repository(root)
+                except Exception:
+                    scope = {}
                 audit_context.record_tool(
                     "source-triage",
                     audit_root,
                     status="completed",
                     summary="universal repository source triage",
-                    data={"coverage": "adapter-reported", "exit_code": universal_result},
+                    data={
+                        "exit_code": universal_result,
+                        "coverage": scope.get("coverage", "unknown"),
+                        "analysis_status": scope.get("analysis_status", "unknown"),
+                        "backend": scope.get("backend", "unknown"),
+                        "files_scanned": scope.get("source_file_count", 0),
+                    },
                 )
             except Exception:
                 pass
