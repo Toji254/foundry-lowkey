@@ -1020,7 +1020,9 @@ def run_audit(args: Sequence[str]) -> int:
     # This module is the native Forge execution layer. The outer lk audit
     # router already selected the Foundry backend, so do not rediscover the
     # project here and reject isolated/unit-test callers.
-    checks = "--no-checks" not in args
+    foundry_project = (root / "foundry.toml").is_file()
+    checks_requested = "--no-checks" not in args
+    checks = checks_requested and foundry_project
     verbose = "--verbose" in args
     quiet = not verbose
     forwarded = [
