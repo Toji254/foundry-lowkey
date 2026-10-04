@@ -4134,7 +4134,7 @@ def _generate_test_fixture_lab_script(root, candidate, state_path):
 
     state_literal = os.path.relpath(state_path, root_path).replace("\\", "/")
     create_call = (
-        f"(target, ) = {candidate['create_function']}();"
+        f"address target;\n        (target, ) = {candidate['create_function']}();"
         if candidate.get("tuple_return")
         else f"address target = {candidate['create_function']}();"
     )
