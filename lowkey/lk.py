@@ -6254,14 +6254,9 @@ def _normalize_human_numeric_input(value, ptype, label=''):
         return value
 
     raw = str(value or '').strip()
-    text = raw.replace(' ETH', ' ether').replace(' eth', ' ether')
-
-    # Human-friendly grouping is presentation, not part of a Solidity integer.
-    # Accept commas and underscores between digits while preserving hex values.
-    grouped = re.sub(r'(?<=\d)[,_](?=\d)', '', text)
-
+    grouped = re.sub(r'(?<=\d)[,_](?=\d)', '', raw)
     unit_match = re.fullmatch(
-        r'([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|ether)',
+        r'([0-9]+(?:\.[0-9]+)?)\s*(wei|gwei|eth|ether)',
         grouped,
         re.I,
     )
@@ -6272,7 +6267,12 @@ def _normalize_human_numeric_input(value, ptype, label=''):
             )
         number = Decimal(unit_match.group(1))
         unit = unit_match.group(2).lower()
-        scale = {"wei": Decimal(1), "gwei": Decimal(10**9), "ether": Decimal(10**18)}[unit]
+        scale = {
+            "wei": Decimal(1),
+            "gwei": Decimal(10**9),
+            "eth": Decimal(10**18),
+            "ether": Decimal(10**18),
+        }[unit]
         scaled = number * scale
         if scaled != scaled.to_integral_value():
             raise ValueError(f"non-integer value '{value}' cannot be passed to {ptype}")
@@ -6282,9 +6282,6 @@ def _normalize_human_numeric_input(value, ptype, label=''):
         return grouped
 
     return value
-
-
-
 def _lab_address_choices(config, accounts):
     choices = []
 
@@ -10582,7 +10579,11 @@ def run_project_map(config, args):
         return fail("Error: Lowkey could not resolve the current project root.")
 
     try:
-        result = project_tools.render_project_map(root)
+        if json_mode:
+            with redirect_stdout(io.StringIO()):
+                result = project_tools.render_project_map(root)
+        else:
+            result = project_tools.render_project_map(root)
         _sync_security_patterns(root)
         result["security_patterns"] = _security_pattern_summary(root)
         if workspace_container and len(candidates) > 1:
@@ -12044,6 +12045,14 @@ def main():
         return
 
     command = sys.argv[1]
+    if command.lower() in HELP_FLAGS or any(
+        str(argument).strip().lower() in HELP_FLAGS for argument in sys.argv[2:]
+    ):
+        result = dispatch_command(command, sys.argv[2:], config)
+        if isinstance(result, int):
+            raise SystemExit(result)
+        return
+
     if command.lower() in {"cheat", "cheats", "cheatsheet"}:
         result = run_cheat(sys.argv[2:])
         if isinstance(result, int):
