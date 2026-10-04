@@ -8959,7 +8959,19 @@ def run_scan(args):
 
     if scan_repository is not None:
         try:
-            return scan_repository(root)
+            universal_result = scan_repository(root)
+            try:
+                audit_root = audit_context.foundry_project_root()
+                audit_context.record_tool(
+                    "source-triage",
+                    audit_root,
+                    status="completed",
+                    summary="universal repository source triage",
+                    data={"coverage": "adapter-reported", "exit_code": universal_result},
+                )
+            except Exception:
+                pass
+            return universal_result
         except Exception as exc:
             print(
                 f"Warning: universal source triage could not complete: {exc}",
@@ -9620,8 +9632,8 @@ def run_audit_mode(config, args=None, interactive=None):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     stacks = set(info.get("stacks", []))
     backend = str(info.get("backend") or "").lower()
-    foundry_project = backend == "foundry" or "foundry" in stacks
-    evm_project = backend in {"foundry", "hardhat", "vyper", "evm-source"} or bool(
+    foundry_project = backend == "foundry" or "foundry" in stacks or self_source
+    evm_project = self_source or backend in {"foundry", "hardhat", "vyper", "evm-source"} or bool(
         stacks & {"foundry", "hardhat", "vyper"}
     )
 
@@ -10087,7 +10099,7 @@ def run_audit(config, args):
     _sync_security_patterns(root, announce=True)
 
     stacks = set(info.get("stacks", []))
-    if info.get("backend") == "foundry" or "foundry" in stacks:
+    if info.get("backend") == "foundry" or "foundry" in stacks or info.get("kind") == "lowkey-source":
         _sync_audit_context(config, root)
         try:
             from forge_tools import run_audit as run_forge_audit
