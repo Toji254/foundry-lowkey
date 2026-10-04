@@ -3032,7 +3032,7 @@ contract Pool {
                 result=lk.run_audit_mode(config,[],interactive=True)
         self.assertEqual(result,0)
         scan.assert_called_once_with([])
-        audit.assert_called_once_with(config,[])
+        audit.assert_called_once_with(config,["--checks"])
         rendered=output.getvalue()
         self.assertIn("7) full evidence pass   8) generate PoC   0) exit",rendered)
 
@@ -3067,7 +3067,7 @@ contract Pool {
         config={"target":None,"session_active":True,"actor":None,"wallets":{},"labels":{}}
         info={"url":"http://127.0.0.1:8545","accounts":["0x"+"3"*40]}
         choices=iter(["0"])
-        with patch.object(lk,"save_config"),              patch.object(lk,"run_workspace"),              patch.object(lk,"run_matrix"),              patch.object(lk,"run_checklist"),              patch.object(lk,"run_session_lifecycle"),              patch.object(lk,"anvil_rpc_info",return_value=None),              patch.object(lk,"ensure_project_anvil",return_value=info) as ensure,              patch.object(lk,"_bootstrap_audit_target",return_value=None),              patch.object(lk,"run_scan",return_value=0),              patch.object(lk,"run_audit",return_value=0),              patch("builtins.input",side_effect=lambda prompt: next(choices)),              patch.object(lk.audit_context,"load",return_value={}):
+        with patch.object(lk,"save_config"),              patch.object(lk,"run_workspace"),              patch.object(lk,"run_matrix"),              patch.object(lk,"run_checklist"),              patch.object(lk,"run_session_lifecycle"),              patch.object(lk,"anvil_rpc_info",return_value=None),              patch.object(lk,"detect_project",return_value={"stacks":["foundry"]}),              patch.object(lk,"ensure_project_anvil",return_value=info) as ensure,              patch.object(lk,"_bootstrap_audit_target",return_value=None),              patch.object(lk,"run_scan",return_value=0),              patch.object(lk,"run_audit",return_value=0),              patch("builtins.input",side_effect=lambda prompt: next(choices)),              patch.object(lk.audit_context,"load",return_value={}):
             result=lk.run_audit_mode(config,["auto"],interactive=True)
         self.assertEqual(result,0)
         ensure.assert_called_once_with(config, lk.audit_context.foundry_project_root())
