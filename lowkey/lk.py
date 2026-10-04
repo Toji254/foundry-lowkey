@@ -9698,6 +9698,7 @@ def run_audit_mode(config, args=None, interactive=None):
         bootstrap_code = bootstrap_project(info, args, reason="audit")
         if bootstrap_code == 0:
             info["_bootstrap_done"] = True
+            config["_bootstrap_done_root"] = str(Path(root).resolve())
 
     info_anvil = anvil_rpc_info(config) if evm_project else None
     started = False
