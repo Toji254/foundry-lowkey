@@ -463,14 +463,14 @@ def _render_expression(expr):
     print()
     print("TOKENS / HOW TO READ")
     print("--------------------")
-    match = re.match(r"^(.*)\\[(.*)\\](\\s*\\+=\\s*)(.*)$", expression)
+    match = re.match(r"^(.*)\[(.*)\](\s*\+=\s*)(.*)$", expression)
     if match:
         print(f"  BASE          {match.group(1)}")
         print(f"  KEY / INDEX   {match.group(2)}  -> choose one mapping key/index")
         print(f"  OPERATOR      {match.group(3).strip()}  -> calculate, then store back")
         print(f"  RIGHT SIDE    {match.group(4)}  -> value being added")
         return 0
-    match = re.match(r"^(.*)\\{value\\s*:\\s*(.*)\\}\\((.*)\\)$", expression)
+    match = re.match(r"^(.*)\{value\s*:\s*(.*)\}\((.*)\)$", expression)
     if match:
         print(f"  TARGET        {match.group(1)}")
         print(f"  CALL OPTION   value: {match.group(2)} -> send ETH with the call")
