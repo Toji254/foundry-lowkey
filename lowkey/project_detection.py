@@ -508,6 +508,26 @@ def clear_workspace_selection(workspace: str | os.PathLike[str]) -> None:
         (Path(workspace).expanduser().resolve() / ".audit" / "workspace.json").unlink()
     except OSError:
         pass
+def _has_multiple_nested_projects(root: Path, *, max_depth: int = 3) -> bool:
+    count = 0
+    for current, dirs, _files in os.walk(root):
+        current_path = Path(current)
+        try:
+            depth = len(current_path.relative_to(root).parts)
+        except ValueError:
+            continue
+        dirs[:] = sorted(directory for directory in dirs if directory not in IGNORED_DIRS)
+        if depth == 0:
+            continue
+        if depth > max_depth:
+            dirs[:] = []
+            continue
+        if _is_project_candidate(current_path):
+            count += 1
+            if count > 1:
+                return True
+    return False
+
 def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
     root = Path(start).expanduser().resolve()
     if root.is_file():
@@ -520,8 +540,7 @@ def is_workspace_root(start: str | os.PathLike[str] = ".") -> bool:
         text = _read(root / "Cargo.toml")
         if re.search(r"(?m)^\s*\[workspace(?:\.[^]]+)?\]", text):
             return True
-    nested = discover_nested_projects(root, max_depth=3)
-    return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and len(nested) > 1
+    return not any((root / marker).is_file() for marker in PRIMARY_PROJECT_MARKERS) and _has_multiple_nested_projects(root)
 
 def workspace_context(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
     """Return one consistent workspace view for commands that need package scope."""
