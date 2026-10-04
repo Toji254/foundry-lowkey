@@ -23,6 +23,36 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertEqual(info["source_file_count"], 0)
             self.assertTrue(info["capabilities"]["project_detection"])
 
+    def test_single_file_scope_does_not_expand_to_entire_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            first = root / "src" / "A.sol"
+            second = root / "src" / "B.sol"
+            first.write_text("pragma solidity ^0.8.20; contract A { function x() external { tx.origin; } }\n", encoding="utf-8")
+            second.write_text("pragma solidity ^0.8.20; contract B { function y() external { tx.origin; } }\n", encoding="utf-8")
+            info = analysis_adapters.inspect_repository(first)
+            self.assertEqual(info["scope_type"], "single-file")
+            self.assertEqual(info["source_file_count"], 1)
+            self.assertEqual(info["source_files"], ["A.sol"])
+
+    def test_workspace_scope_is_never_reported_as_full(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["a", "b"]\n',
+                encoding="utf-8",
+            )
+            (root / "a" / "src").mkdir(parents=True)
+            (root / "b" / "src").mkdir(parents=True)
+            (root / "a" / "src" / "lib.rs").write_text("pub fn a() {}\n", encoding="utf-8")
+            (root / "b" / "src" / "lib.rs").write_text("pub fn b() {}\n", encoding="utf-8")
+            info = analysis_adapters.inspect_repository(root)
+            self.assertTrue(info["workspace"])
+            self.assertEqual(info["scope_type"], "workspace")
+            self.assertEqual(info["coverage"], "partial")
+            self.assertEqual(info["analysis_status"], "workspace-aggregate")
+
     def test_cargo_workspace_regex_is_strict_and_does_not_crash(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
