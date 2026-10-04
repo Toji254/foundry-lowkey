@@ -750,6 +750,109 @@ def project_test_command(
     return None
 
 
+
+def _vyper_version_specs(project: Path) -> dict[str, list[Path]]:
+    """Group Vyper source files by their declared compiler version specification."""
+    specs: dict[str, list[Path]] = {}
+    for path in sorted(project.rglob("*.vy")):
+        if any(part in {".git", ".audit", "node_modules", ".venv", "venv"} for part in path.parts):
+            continue
+        text = _read(path)
+        match = re.search(r"(?m)^\s*#\s*pragma\s+version\s+(.+?)\s*$", text)
+        spec = re.sub(r"\s+", "", match.group(1)) if match else "<undeclared>"
+        specs.setdefault(spec, []).append(path)
+    return specs
+
+
+def _vyper_version_tuple(value: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", value.strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _vyper_spec_allows(spec: str, compiler: str) -> bool:
+    """Conservatively decide whether an installed Vyper can satisfy a pragma."""
+    if spec == "<undeclared>":
+        return True
+    version = _vyper_version_tuple(compiler)
+    if version is None:
+        return False
+
+    exact = _vyper_version_tuple(spec)
+    if exact is not None:
+        return version == exact
+
+    if spec.startswith("^"):
+        base = _vyper_version_tuple(spec[1:])
+        if base is None:
+            return False
+        if base[0] == 0:
+            return version[0] == base[0] and version[1] == base[1] and version >= base
+        return version[0] == base[0] and version >= base
+
+    comparisons = [item for item in spec.split(",") if item]
+    if comparisons and all(
+        re.fullmatch(r"(?:>=|<=|>|<|==)\d+\.\d+\.\d+", item)
+        for item in comparisons
+    ):
+        for item in comparisons:
+            match = re.fullmatch(r"(>=|<=|>|<|==)(\d+\.\d+\.\d+)", item)
+            assert match is not None
+            operator, raw_version = match.groups()
+            bound = _vyper_version_tuple(raw_version)
+            assert bound is not None
+            if operator == ">=" and not version >= bound:
+                return False
+            if operator == "<=" and not version <= bound:
+                return False
+            if operator == ">" and not version > bound:
+                return False
+            if operator == "<" and not version < bound:
+                return False
+            if operator == "==" and not version == bound:
+                return False
+        return True
+
+    return False
+
+
+def _vyper_build_sources(project: Path) -> tuple[list[Path], str] | None:
+    """Return Vyper sources safe to bulk-compile with one installed compiler."""
+    specs = _vyper_version_specs(project)
+    if not specs:
+        return None
+
+    explicit_specs = {spec for spec in specs if spec != "<undeclared>"}
+    if len(explicit_specs) > 1:
+        return None
+
+    binary = shutil.which("vyper")
+    if not binary:
+        return None
+
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    lines = (result.stdout or result.stderr).strip().splitlines()
+    compiler = lines[0].strip() if lines else ""
+    if explicit_specs and not _vyper_spec_allows(next(iter(explicit_specs)), compiler):
+        return None
+
+    sources = sorted(path for paths in specs.values() for path in paths)
+    return sources, compiler
+
+
 def project_build_command(
     info: dict[str, Any] | None = None,
     root: str | os.PathLike[str] = ".",
@@ -766,17 +869,12 @@ def project_build_command(
     backend = str((info or {}).get("backend") or (info or {}).get("kind") or "").lower()
     if backend in {"foundry", "multi-stack"} and (project / "foundry.toml").is_file():
         return project, ["forge", "build"], "foundry.toml"
-    if backend == "vyper" and shutil.which("vyper"):
-        sources = sorted(
-            path for path in project.rglob("*.vy")
-            if all(part not in {".git", ".audit", "node_modules", ".venv", "venv"} for part in path.parts)
-        )
-        if sources:
-            rel_sources = [
-                str(path.relative_to(project))
-                for path in sources
-            ]
-            return project, ["vyper", *rel_sources], "Vyper compiler"
+    if backend == "vyper":
+        build_sources = _vyper_build_sources(project)
+        if build_sources:
+            sources, compiler = build_sources
+            rel_sources = [str(path.relative_to(project)) for path in sources]
+            return project, ["vyper", *rel_sources], f"Vyper compiler ({compiler})"
         return None
 
     if backend in {"hardhat", "node"} or any(
