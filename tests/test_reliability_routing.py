@@ -49,6 +49,22 @@ class ReliabilityRoutingTests(unittest.TestCase):
                 native.assert_called_once()
                 self.assertNotIn("connected Foundry audit pipeline", output.getvalue())
 
+    def test_cli_failure_boundary_returns_review_needed_instead_of_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence = root / ".audit" / "evidence" / "lk-runtime-error.json"
+            with patch.object(lk, "main", side_effect=RuntimeError("adapter exploded")), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+                 patch.object(lk.sys, "argv", ["lk", "scan"]):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    code = lk._safe_main()
+            self.assertEqual(code, 2)
+            rendered = err.getvalue()
+            self.assertIn("LOWKEY RUNTIME ERROR", rendered)
+            self.assertIn("REVIEW NEEDED", rendered)
+            self.assertNotIn("Traceback", rendered)
+            self.assertTrue(evidence.is_file())
+
     def test_generic_source_project_has_explicit_partial_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
