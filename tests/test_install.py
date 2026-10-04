@@ -56,6 +56,18 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk q", help_result.stdout)
             self.assertIn("lk questions", help_result.stdout)
             self.assertIn("lk cheat", help_result.stdout)
+            for command in ("forge", "slither"):
+                contextual_help = subprocess.run(
+                    [str(installed_lk), command, "--h"],
+                    cwd=ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(contextual_help.returncode, 0, contextual_help.stderr)
+                self.assertIn(f"lk {command}", contextual_help.stdout)
+                self.assertNotIn("LOWKEY SLITHER", contextual_help.stdout)
+
 
 
 if __name__ == "__main__":
