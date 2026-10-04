@@ -833,7 +833,7 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             print(f"  {name}{parent_text}")
             print(f"    Source: {file}")
     else:
-        print("  No application contracts detected in the configured source roots.")
+        print("  No supported application contracts detected; protocol security was not analyzed.")
 
     print()
     print("2. HOW DOES IT DEPEND ON OTHER CODE?")
@@ -888,8 +888,10 @@ def render_project_map(root: str | Path = ".") -> dict[str, Any]:
             print(f"    FIX ME: {edge['from']}:{edge['line']} -> {edge['to']}")
         if len(unresolved) > 12:
             print(f"    ... and {len(unresolved) - 12} more")
+    elif protocol_nodes:
+        print("  All imports used by analyzed application code were resolved.")
     else:
-        print("  All imports used by application code were resolved.")
+        print("  Dependency resolution was not assessed because no application code was analyzed.")
 
     print()
     print("5. FILES LOWKEY IS NOT CALLING 'PROTOCOL CODE'")
