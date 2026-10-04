@@ -12096,7 +12096,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         else: run_matrix(config,args)
     elif cmd=="risk": run_risk(config)
     elif cmd in {"seams","hotspots"}: return run_seams(config)
-    elif cmd=="scan": run_scan(args)
+    elif cmd=="scan": return run_scan(args)
     elif cmd=="rg": return run_audit_rg(config,args)
     elif cmd=="poc": return run_audit_poc(config,args)
     elif cmd=="deps": run_deps(args)
