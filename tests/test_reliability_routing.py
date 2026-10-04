@@ -99,8 +99,6 @@ class ReliabilityRoutingTests(unittest.TestCase):
     def test_lk_scan_propagates_runtime_review_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch.object(lk, "analysis_adapters", None, create=True):
-                pass
             with patch(
                 "analysis_adapters.scan_repository",
                 return_value=2,
