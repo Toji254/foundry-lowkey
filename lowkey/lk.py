@@ -4931,9 +4931,9 @@ def artifact_is_project_application(root, path, artifact):
     root_path = Path(root).expanduser().resolve()
     path_obj = Path(path).expanduser().resolve()
     # When Foundry stripped sourceName, the artifact directory is still strong
-    # provenance evidence. A ConfidencePoolFactory artifact under
-    # out/PocAttack.sol must not become the project's production artifact merely
-    # because a same-named src contract exists.
+    # provenance evidence. An artifact under a helper/Poc output directory must
+    # not become the project's production artifact merely because a same-named
+    # source contract exists.
     contract_name_hint = artifact_contract_name(path_obj, artifact)
     parent_stem = path_obj.parent.name
     if parent_stem.lower().endswith(".sol"):
