@@ -2218,6 +2218,37 @@ contract Pool {
             self.assertEqual(result, 0)
             render.assert_called_once_with((root / "packages" / "app").resolve())
 
+    def test_project_map_does_not_claim_coverage_without_application_units(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk.project_tools.render_project_map(root)
+            report = output.getvalue()
+            self.assertIn("protocol security was not analyzed", report)
+            self.assertIn("Dependency resolution was not assessed", report)
+            self.assertNotIn("All imports used by analyzed application code were resolved", report)
+
+    def test_project_map_json_mode_emits_only_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            src = root / "src"
+            src.mkdir()
+            (src / "Vault.sol").write_text("contract Vault {}\n", encoding="utf-8")
+            old = os.getcwd()
+            output = io.StringIO()
+            try:
+                os.chdir(root)
+                with redirect_stdout(output):
+                    result = lk.run_project_map({}, ["--json"])
+            finally:
+                os.chdir(old)
+            self.assertEqual(result, 0)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["project"]["root"], str(root))
+
     def test_project_map_explicit_workspace_project_selector_ignores_active_project(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
