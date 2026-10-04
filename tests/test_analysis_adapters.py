@@ -158,6 +158,28 @@ class AnalysisAdapterTests(unittest.TestCase):
             names = {item["name"] for item in plan}
             self.assertEqual(names, {"cargo-audit", "cargo-geiger"})
 
+    def test_security_runner_records_native_tool_results(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            info = {
+                "root": str(root),
+                "backend": "cargo",
+                "stacks": ["cargo"],
+                "languages": {"rust": 1},
+            }
+            completed = SimpleNamespace(returncode=0, stdout="audit ok", stderr="")
+            with patch.object(
+                analysis_adapters.shutil,
+                "which",
+                side_effect=lambda name: f"/usr/bin/{name}" if name == "cargo-audit" else None,
+            ), patch.object(analysis_adapters.subprocess, "run", return_value=completed) as run:
+                result = analysis_adapters.run_security_analysis(info)
+            self.assertEqual(result["tools_available"], ["cargo-audit"])
+            self.assertEqual(result["results"][0]["status"], "passed")
+            self.assertIn(["cargo", "audit", "--json"], [call.args[0] for call in run.call_args_list])
+
     def test_scan_returns_review_exit_for_partial_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
