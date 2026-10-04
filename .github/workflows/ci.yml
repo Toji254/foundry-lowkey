@@ -163,7 +163,10 @@ jobs:
           lk self-test
           lk doctor
           lk scan src
+          set +e
           lk scan src/Fixture.sol
+          test $? -eq 2
+          set -e
           lk project
           lk graph
           lk system
