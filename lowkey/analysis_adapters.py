@@ -430,7 +430,17 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "source_file_count": len(files),
         "adapters": adapters,
         "capabilities": _capabilities(backend, stacks, language_set),
-        "security_analyzers": (\n            ["slither"]\n            if ("solidity" in language_set or "vyper" in language_set or "foundry" in stacks or "hardhat" in stacks)\n            and bool(__import__("shutil").which("slither"))\n            else []\n        ),\n        "unsupported_languages": unsupported_languages,\n        "coverage": coverage,
+        "security_analyzers": (
+            ["slither"]
+            if (
+                "solidity" in language_set
+                or "vyper" in language_set
+                or "foundry" in stacks
+                or "hardhat" in stacks
+            )
+            and bool(__import__("shutil").which("slither"))
+            else []
+        ),\n        "unsupported_languages": unsupported_languages,\n        "coverage": coverage,
         "analysis_status": analysis_status,
         "evidence": {
             "manifests": sorted(
