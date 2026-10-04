@@ -64,7 +64,7 @@ ADAPTERS = {
         "kind": "evm",
         "languages": {"solidity", "vyper", "typescript", "javascript"},
         "markers": {"hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts"},
-        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live": True},
+        "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True},
     },
     "vyper": {
         "kind": "evm",
@@ -128,7 +128,7 @@ VYPER_MARKERS = {
 RUST_MARKERS = {
     "UNSAFE": re.compile(r"\bunsafe\s*\{"),
     "RAW_POINTER": re.compile(r"\b(?:std::ptr|core::ptr|from_raw|as\s+\*mut|as\s+\*const)\b"),
-    "FFI": re.compile(r"\bextern\s+"C"\b"),
+    "FFI": re.compile(r"\bextern\s+\"C\"\b"),
     "POTENTIAL_PANIC": re.compile(r"\bunwrap\s*\(|\bexpect\s*\("),
     "RAW_SYSCALL": re.compile(r"\bsyscall\b|\binvoke_signed\b"),
 }
