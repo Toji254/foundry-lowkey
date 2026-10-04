@@ -888,6 +888,20 @@ def detect_project(start: str | os.PathLike[str] = ".") -> dict[str, Any]:
             result["coverage"] = analysis.get("coverage", "unknown")
             result["analysis_status"] = analysis.get("analysis_status", "unknown")
             result["source_files"] = analysis.get("source_files", [])
+
+            # The adapter layer is the canonical project identity. Preserve
+            # Lowkey's self-checkout identity, but synchronize ordinary
+            # repositories so every command routes from the same backend.
+            if result.get("kind") != "lowkey-source":
+                adapter_backend = str(analysis.get("backend") or "").strip()
+                adapter_stacks = analysis.get("stacks")
+                adapter_languages = analysis.get("languages")
+                if adapter_backend and adapter_backend not in {"unknown"}:
+                    result["backend"] = adapter_backend
+                if isinstance(adapter_stacks, list) and adapter_stacks:
+                    result["stacks"] = list(adapter_stacks)
+                if isinstance(adapter_languages, dict) and adapter_languages:
+                    result["languages"] = dict(adapter_languages)
         except Exception as exc:
             result["analysis"] = {
                 "coverage": "unknown",
