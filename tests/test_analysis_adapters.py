@@ -39,6 +39,25 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertEqual(info["backend"], "cargo")
             self.assertFalse(info["workspace"])
 
+    def test_cosmwasm_is_distinguished_from_generic_cargo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "cw-demo"\nversion = "0.1.0"\n'
+                '[dependencies]\ncosmwasm-std = "2"\n',
+                encoding="utf-8",
+            )
+            (root / "src").mkdir()
+            (root / "src" / "contract.rs").write_text(
+                "pub fn execute() { let _ = cosmwasm_std::Addr::unchecked(\"x\"); }\n",
+                encoding="utf-8",
+            )
+            info = analysis_adapters.inspect_repository(root)
+            self.assertIn("cosmwasm", info["stacks"])
+            self.assertEqual(info["backend"], "cosmwasm")
+            self.assertIn("cosmwasm", info["adapters"])
+            self.assertEqual(info["coverage"], "partial")
+
     def test_anchor_rust_sources_are_analyzed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
