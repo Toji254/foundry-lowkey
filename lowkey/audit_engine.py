@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import hashlib
 import shlex
 import shutil
@@ -83,25 +84,100 @@ def run_command(
     timeout: int | None = None,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
+    process = None
     try:
         process_env = os.environ.copy()
         if env:
             process_env.update(env)
-        completed = subprocess.run(
+        process = subprocess.Popen(
             list(command),
             cwd=str(Path(root).resolve()),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=process_env,
+            start_new_session=(os.name == "posix"),
         )
+        stdout, stderr = process.communicate(timeout=timeout)
     except FileNotFoundError:
         return 127, "", f"{command[0]} not found on PATH"
     except subprocess.TimeoutExpired as exc:
-        return 124, exc.stdout or "", f"command timed out after {timeout}s"
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if process is not None:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.kill()
+            except OSError:
+                pass
+            try:
+                remaining_out, remaining_err = process.communicate(timeout=5)
+                stdout = stdout or remaining_out or ""
+                stderr = stderr or remaining_err or ""
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except OSError:
+                    pass
+                remaining_out, remaining_err = process.communicate()
+                stdout = stdout or remaining_out or ""
+                stderr = stderr or remaining_err or ""
+        return (
+            124,
+            stdout,
+            (stderr or "") + f"\ncommand timed out after {timeout}s; child process group terminated",
+        )
     except OSError as exc:
         return 1, "", str(exc)
-    return completed.returncode, completed.stdout or "", completed.stderr or ""
+    return process.returncode, stdout or "", stderr or ""
+
+
+def _forge_config(root: str, args: Sequence[str] = ()) -> dict[str, Any]:
+    command = ["forge", "config", "--json"]
+    for index, arg in enumerate(args):
+        if arg == "--profile" and index + 1 < len(args):
+            command.extend(["--profile", str(args[index + 1])])
+            break
+        if str(arg).startswith("--profile="):
+            command.extend(["--profile", str(arg).split("=", 1)[1]])
+            break
+    code, stdout, _ = run_command(command, root, 30)
+    if code != 0:
+        return {}
+    try:
+        payload = json.loads(stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _forge_supports_option(root: str, command: str, option: str) -> bool:
+    code, stdout, stderr = run_command(["forge", command, "--help"], root, 30)
+    return code == 0 and option in (stdout + stderr)
+
+
+def _forge_coverage_run(root: str, args: Sequence[str]) -> tuple[int, str, str, list[str]]:
+    command = ["forge", "coverage", *args]
+    attempts = [command]
+    effective = _forge_config(root, args)
+    if bool(effective.get("via_ir")) and not any(
+        str(arg) in {"--ir-minimum", "--via-ir", "--no-via-ir"} for arg in args
+    ) and _forge_supports_option(root, "coverage", "--ir-minimum"):
+        command = [*command, "--ir-minimum"]
+        attempts = [command]
+
+    code, stdout, stderr = run_command(command, root, 600)
+    if code != 0 and _is_stack_too_deep(stdout + "\n" + stderr) and "--ir-minimum" not in command:
+        if _forge_supports_option(root, "coverage", "--ir-minimum"):
+            retry = [*command, "--ir-minimum"]
+            attempts.append(retry)
+            code, stdout, stderr = run_command(retry, root, 600)
+    return code, stdout, stderr, attempts
 
 
 def manifest_path(root: str = ".") -> Path:
@@ -2047,18 +2123,25 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
     is_vyper = "vyper" in build_systems
 
     if is_foundry:
+        forwarded_args = []
         for name, command, timeout in (
             ("build", ["forge", "build"], 300),
             ("tests", [
                 "forge", "test", "-vvvv",
                 "--no-match-path", "test/Lowkey_*",
             ], 600),
-            ("coverage", ["forge", "coverage"], 600),
+            ("coverage", [], 600),
         ):
             print(f"\n=== LOWKEY EVIDENCE: FORGE {name.upper()} ===")
-            code, stdout, stderr = run_command(command, root, timeout)
+            if name == "coverage":
+                code, stdout, stderr, coverage_attempts = _forge_coverage_run(root, forwarded_args if "forwarded_args" in locals() else [])
+                command_for_evidence = coverage_attempts[-1]
+            else:
+                code, stdout, stderr = run_command(command, root, timeout)
+                coverage_attempts = [command]
+                command_for_evidence = command
             evidence_name = f"forge_{name}"
-            _write_step_evidence(root, evidence_name, command, code, stdout, stderr)
+            _write_step_evidence(root, evidence_name, command_for_evidence, code, stdout, stderr)
             print(stdout.rstrip())
             if stderr:
                 print(stderr.rstrip())
