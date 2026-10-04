@@ -700,8 +700,13 @@ def _body(mode: str) -> str:
 ''')
 
 
-def _strip_source_comments(text: str, language: str) -> str:
-    """Remove comments while preserving strings and line structure for triage."""
+def _strip_source_comments(text: str, language: str, mask_strings: bool = False) -> str:
+    """Remove comments while preserving source line structure for triage."""
+    try:
+        from analysis_adapters import _strip_comments as _universal_strip
+        return _universal_strip(text, language, mask_strings=mask_strings)
+    except ImportError:
+        pass
     line_token = "#" if language == "vyper" else "//"
     block_open, block_close = ("/*", "*/") if language == "solidity" else (None, None)
     chars = list(text)
@@ -709,55 +714,45 @@ def _strip_source_comments(text: str, language: str) -> str:
     quote = ""
     escape = False
     i = 0
+    single_quotes = {"solidity", "vyper", "vyper-interface"}
     while i < len(chars):
         ch = chars[i]
         nxt = chars[i + 1] if i + 1 < len(chars) else ""
         if state == "code":
             if block_open and ch == "/" and nxt == "*":
                 chars[i] = chars[i + 1] = " "
-                i += 2
-                state = "block"
-                continue
+                i += 2; state = "block"; continue
             if line_token == "#" and ch == "#":
-                chars[i] = " "
-                i += 1
-                state = "line"
-                continue
+                chars[i] = " "; i += 1; state = "line"; continue
             if line_token == "//" and ch == "/" and nxt == "/":
-                chars[i] = chars[i + 1] = " "
-                i += 2
-                state = "line"
-                continue
-            if ch in {"'", '"'}:
-                quote = ch
-                escape = False
-                state = "string"
-            i += 1
-            continue
+                chars[i] = chars[i + 1] = " "; i += 2; state = "line"; continue
+            if ch == '"' or (ch == "'" and language in single_quotes):
+                quote = ch; escape = False; state = "string"
+            i += 1; continue
         if state == "line":
-            if ch == "\n":
-                state = "code"
-            elif ch != "\n":
-                chars[i] = " "
-            i += 1
-            continue
+            if ch == "
+": state = "code"
+            elif ch != "
+": chars[i] = " "
+            i += 1; continue
         if state == "block":
             if block_close and ch == "*" and nxt == "/":
-                chars[i] = chars[i + 1] = " "
-                i += 2
-                state = "code"
-                continue
-            if ch != "\n":
-                chars[i] = " "
-            i += 1
-            continue
+                chars[i] = chars[i + 1] = " "; i += 2; state = "code"; continue
+            if ch != "
+": chars[i] = " "
+            i += 1; continue
         if escape:
             escape = False
-        elif ch == "\\":
+            if mask_strings and ch != "
+": chars[i] = " "
+        elif ch == "\":
             escape = True
+            if mask_strings: chars[i] = " "
         elif ch == quote:
-            quote = ""
-            state = "code"
+            quote = ""; state = "code"
+        elif mask_strings and ch != "
+":
+            chars[i] = " "
         i += 1
     return "".join(chars)
 
@@ -897,7 +892,7 @@ def run_source_triage(root: str = ".") -> int:
         text = read_text(path)
         if not text:
             continue
-        scan_text = _strip_source_comments(text, language)
+        scan_text = _strip_source_comments(text, language, mask_strings=True)
         for number, line in enumerate(scan_text.splitlines(), 1):
             for label, pattern in patterns:
                 if pattern.search(line):
