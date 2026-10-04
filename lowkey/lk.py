@@ -1967,8 +1967,13 @@ def run_functions(config, args=None):
         print("LOWKEY BUILD FUNCTION")
         print("====================")
         print(f"Query:   {query}")
-        for contract, signature, path in matches[:8]:
-            print(f"  {contract}::{signature}")
+        for index, (contract, signature, path) in enumerate(matches[:8]):
+            label = "Found" if index == 0 else "Other"
+            print(f"{label}:   {contract}::{signature}")
+            if index == 0:
+                print(f"Source:  {path}")
+            elif str(contract).startswith(("I", "Mock", "Test", "Fixture")):
+                print("         support/interface artifact")
         print("Live:    none")
         print("Next:    deploy a target before using lk changes/trace.")
         return 0
@@ -4924,6 +4929,17 @@ def artifact_is_project_application(root, path, artifact):
         return False
 
     root_path = Path(root).expanduser().resolve()
+    path_obj = Path(path).expanduser().resolve()
+    # When Foundry stripped sourceName, the artifact directory is still strong
+    # provenance evidence. A ConfidencePoolFactory artifact under
+    # out/PocAttack.sol must not become the project's production artifact merely
+    # because a same-named src contract exists.
+    contract_name_hint = artifact_contract_name(path_obj, artifact)
+    parent_stem = path_obj.parent.name
+    if parent_stem.lower().endswith(".sol"):
+        parent_contract = parent_stem[:-4]
+        if parent_contract and contract_name_hint and parent_contract.lower() != contract_name_hint.lower():
+            return False
     source = artifact_source_name(artifact, path, root) or source_contract_fallback(
         root, artifact_contract_name(path, artifact)
     )
