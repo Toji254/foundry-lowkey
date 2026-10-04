@@ -645,6 +645,16 @@ def target_aliases(config, root=None):
             except OSError:
                 artifact_path = None
             artifact_data = read_artifact(str(artifact_path)) if artifact_path and artifact_path.is_file() else None
+            if not artifact_data:
+                # Legacy configs often only have aliases. Recover ownership from
+                # the alias name and a first-party artifact in this project.
+                alias_name = str(name).strip().lower()
+                for candidate in local_artifact_paths(project_root):
+                    candidate_data = read_artifact(candidate) or {}
+                    if artifact_contract_name(candidate, candidate_data).strip().lower() == alias_name:
+                        artifact_path = Path(candidate).resolve()
+                        artifact_data = candidate_data
+                        break
             if not artifact_data or not artifact_is_project_application(project_root, str(artifact_path), artifact_data):
                 continue
         elif owner_root != project_root:
@@ -2612,8 +2622,26 @@ def run_finding(config, note):
 
     print("Finding recorded.")
 
+def project_root_for_scope(base, workspace_root_path):
+    try:
+        from project_detection import workspace_selection
+        selected = workspace_selection(workspace_root_path)
+    except Exception:
+        selected = None
+    return Path(selected or base).resolve()
+
 def workspace_paths(root=None):
-    project_root = Path(root or audit_context.foundry_project_root()).expanduser().resolve()
+    base = Path(root or Path.cwd()).expanduser().resolve()
+    if root is None:
+        try:
+            from project_detection import workspace_root, workspace_selection
+            ws_root = workspace_root(base)
+            selected = workspace_selection(ws_root)
+            project_root = Path(selected or project_root_for_scope(base, ws_root)).resolve()
+        except Exception:
+            project_root = Path(audit_context.foundry_project_root(base)).expanduser().resolve()
+    else:
+        project_root = Path(audit_context.foundry_project_root(base)).expanduser().resolve()
     workspace_dir = project_root / ".audit"
     return {
         "root": str(workspace_dir),
