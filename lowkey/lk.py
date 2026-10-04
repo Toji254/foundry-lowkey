@@ -7167,6 +7167,11 @@ def run_lab(config,args):
             return fail("Usage: lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop")
         if mode == "artifact" and not requested:
             return fail("Usage: lk lab --artifact <Contract>")
+        if mode == "generic" and not sys.stdin.isatty():
+            return fail(
+                "Error: 'lk lab --generic' needs interactive constructor input. "
+                "Run it from a terminal, or use 'lk lab --artifact <Contract>' for a non-interactive lab."
+            )
     
     auto_selected = requested or discover_audit_target_contract(root)
     script = discover_local_lab_script(root, auto_selected) if mode == "auto" else None
@@ -9092,41 +9097,55 @@ def _full_evidence_pass(config):
 
 
 def run_deps(args):
-    root=args[0] if args else "."
-    if not os.path.exists(root):
-        return fail(f"Path not found: {root}")
-    if os.path.isfile(root) and not root.endswith((".sol",".vy",".vyi")):
-        return fail(f"Path is not a Solidity/Vyper source file: {root}")
+    requested = Path(args[0] if args else ".").expanduser().resolve()
+    if not requested.exists():
+        return fail(f"Path not found: {requested}")
+    if requested.is_file() and requested.suffix.lower() not in {".sol", ".vy", ".vyi"}:
+        return fail(f"Path is not a Solidity/Vyper source file: {requested}")
 
-    files=source_evm_files(root)
-    if not files:
-        print(f"No Solidity/Vyper files found under {root}.")
-        return 0
+    # Resolve the dependency graph from the same selected project scope used by
+    # Lowkey's workspace controls. Never silently jump to another sibling project
+    # or a previously selected EVM fork.
+    root = requested.parent if requested.is_file() else requested
+    if requested.is_dir() and is_workspace_root is not None and is_workspace_root(root):
+        active = workspace_selection(root) if workspace_selection is not None else None
+        candidates = discover_nested_projects(root) if discover_nested_projects is not None else []
+        if active is not None and active.is_dir():
+            root = active
+        elif len(candidates) == 1:
+            root = Path(candidates[0]["root"]).resolve()
+        elif len(candidates) > 1:
+            return fail(
+                "Error: 'lk deps' was run from a multi-project workspace without an "
+                "active project. Run 'lk projects <number>' first or cd into the project."
+            )
 
-    display_root=os.path.dirname(root) if os.path.isfile(root) else root
-    matches=0
+    if project_tools is None or not hasattr(project_tools, "build_dependency_graph"):
+        return fail("Error: dependency graph engine is unavailable.")
+
+    try:
+        graph = project_tools.build_dependency_graph(root)
+    except Exception as exc:
+        return fail(f"Error: dependency analysis failed for {root}: {exc}")
+
     print("Dependency / inheritance map:")
-    for path in files:
-        try:
-            text_content=Path(path).read_text(encoding="utf-8")
-        except OSError:
-            continue
-        rel=os.path.relpath(path,display_root)
-        if path.endswith((".vy",".vyi")):
-            for imported in re.findall(r"(?m)^\s*(?:from\s+([^\s]+)\s+import|import\s+([^\s#]+))",text_content):
-                dep=imported[0] or imported[1]
-                matches+=1
-                print(f"  {rel} -> imports {dep}")
-            continue
-        for imported in re.findall(r'import\s+(?:[^;]*from\s+)?["\']([^"\']+)["\']\s*;',text_content):
-            matches+=1
-            print(f"  {rel} -> imports {imported}")
-        for contract in re.finditer(r"\b(contract|interface|library)\s+(\w+)(?:\s+is\s+([^{]+))?",text_content):
-            for parent in [p.strip().split()[0] for p in (contract.group(3) or "").split(",") if p.strip()]:
-                matches+=1
-                print(f"  {contract.group(2)} -> inherits {parent} [{rel}]")
-    if matches==0:
+    print(f"Project scope: {root}")
+    edges = graph.get("edges") or []
+    imports = [edge for edge in edges if edge.get("kind") == "import"]
+    inheritance = [edge for edge in edges if edge.get("kind") == "inherits"]
+
+    for edge in imports:
+        relation = edge.get("to") or edge.get("statement") or "unknown"
+        print(f"  {edge.get('from')} -> imports {relation}")
+    for edge in inheritance:
+        print(f"  {edge.get('from')} -> inherits {edge.get('to')}")
+
+    if not edges:
         print("No imports or inheritance relationships detected.")
+    unresolved = graph.get("unresolved") or []
+    if unresolved:
+        print(f"Unresolved imports: {len(unresolved)}")
+        print("These are dependency-resolution leads, not vulnerability findings.")
     return 0
 
 def run_seams(config):
