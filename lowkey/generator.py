@@ -898,6 +898,10 @@ pragma solidity ^0.8.20;
 import {{Test, console2}} from "forge-std/Test.sol";
 import {{Vm}} from "forge-std/Vm.sol";
 
+interface IERC20Lowkey {{
+    function balanceOf(address account) external view returns (uint256);
+}}
+
 /// @title Lowkey-generated reproduction test for {contract}
 /// @notice Deterministic setup + concrete call + obvious places for security assertions.
 contract LowkeyTest_{ident} is Test {{
@@ -935,14 +939,14 @@ contract LowkeyTest_{ident} is Test {{
         if (!assetOk || assetData.length < 32) {
             (assetOk, assetData) = TARGET.staticcall(abi.encodeWithSignature("asset()"));
         }
-        if (assetOk && assetData.length >= 32) {
+        if (assetOk && assetData.length >= 32) {{
             assetToken = abi.decode(assetData, (address));
             assetReadOk = assetToken != address(0) && assetToken.code.length > 0;
-        }
-        if (assetReadOk) {
+        }}
+        if (assetReadOk) {{
             targetTokenBefore = IERC20Lowkey(assetToken).balanceOf(TARGET);
             attackerTokenBefore = IERC20Lowkey(assetToken).balanceOf(attacker);
-        }
+        }}
 
         // snapshot creates a rollback point so experiments do not contaminate one another.
         uint256 snapshot = vm.snapshot();
@@ -970,10 +974,10 @@ contract LowkeyTest_{ident} is Test {{
         uint256 attackerAfter = attacker.balance;
         uint256 targetTokenAfter = 0;
         uint256 attackerTokenAfter = 0;
-        if (assetReadOk) {
+        if (assetReadOk) {{
             targetTokenAfter = IERC20Lowkey(assetToken).balanceOf(TARGET);
             attackerTokenAfter = IERC20Lowkey(assetToken).balanceOf(attacker);
-        }
+        }}
 
         (bytes32[] memory reads, bytes32[] memory writes) = vm.accesses(TARGET);
         Vm.Log[] memory logs = vm.getRecordedLogs();
