@@ -402,6 +402,7 @@ class ProjectTargetingTests(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
+            (root / "src").mkdir(parents=True, exist_ok=True)
             (root / "src" / "ConfidencePool.sol").write_text(
                 "pragma solidity ^0.8.26; contract ConfidencePool {}",
                 encoding="utf-8",
@@ -880,7 +881,7 @@ class ProjectTargetingTests(unittest.TestCase):
             rendered = output.getvalue()
             self.assertIn("LOWKEY BUILD FUNCTION", rendered)
             self.assertIn("Found:   ConfidencePoolFactory::createPool(address,address,uint256,uint256,address,address[])", rendered)
-            self.assertIn("Other:   IConfidencePoolFactory (interface), MockConfidencePoolFactoryV2 (test mock)", rendered)
+            self.assertIn("Other:   IConfidencePoolFactory::createPool(address,address,uint256,uint256,address,address[]), MockConfidencePoolFactoryV2::createPool(address,address,uint256,uint256,address,address[])", rendered)
             self.assertIn("Live:    none", rendered)
 
 
