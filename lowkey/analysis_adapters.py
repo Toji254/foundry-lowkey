@@ -385,27 +385,6 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
     if ((root / "Cargo.toml").is_file() or "rust" in languages) and "cosmwasm" not in stacks and "solana-anchor" not in stacks:
         stacks.append("cargo")
 
-    # A repository can contain Solidity without Foundry/Hardhat (for example
-    # a Cairo project with a Solidity bridge component). Keep that EVM scope
-    # visible as its own adapter instead of dropping it behind the dominant
-    # manifest-backed stack.
-    if "solidity" in languages and not {"foundry", "hardhat"} & set(stacks):
-        # Do not elevate arbitrary nested/vendor Solidity into a second audit
-        # backend. Promote only plausible first-party application roots.
-        relative_solidity = [
-            path.resolve().relative_to(root.resolve())
-            for path in sources
-            if path.suffix.lower() == ".sol"
-        ]
-        app_roots = {"src", "contracts", "solidity", "packages", "apps", "app"}
-        has_first_party_evm = any(
-            relative.parts
-            and relative.parts[0].lower() in app_roots
-            for relative in relative_solidity
-        )
-        if has_first_party_evm:
-            stacks.append("evm-source")
-
     vyper = "vyper" in languages or "vyper-interface" in languages
     if vyper or any((root / name).is_file() for name in (
         "ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml"
@@ -436,6 +415,23 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
     if hardhat_dependency or hardhat_scripts:
         if "hardhat" not in stacks:
             stacks.append("hardhat")
+
+    # Add source-only EVM as a secondary adapter only after all manifest-backed
+    # stacks have been discovered. This prevents a Hardhat dependency/script
+    # from being classified as mixed merely because Solidity is present.
+    if "solidity" in languages and not {"foundry", "hardhat"} & set(stacks):
+        relative_solidity = [
+            path.resolve().relative_to(root.resolve())
+            for path in sources
+            if path.suffix.lower() == ".sol"
+        ]
+        app_roots = {"src", "contracts", "solidity", "packages", "apps", "app"}
+        if any(
+            relative.parts and relative.parts[0].lower() in app_roots
+            for relative in relative_solidity
+        ):
+            stacks.append("evm-source")
+
     return sorted(dict.fromkeys(stacks)), sorted(str(x) for x in languages)
 
 def _choose_backend(stacks: list[str], sources: dict[str, int]) -> str:
