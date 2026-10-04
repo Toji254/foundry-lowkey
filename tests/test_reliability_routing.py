@@ -74,7 +74,7 @@ class ReliabilityRoutingTests(unittest.TestCase):
                         ), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                             code = lk._safe_main()
 
-                    self.assertEqual(code, 0)
+                    self.assertEqual(code, 2)
                     rendered = output.getvalue()
                     self.assertNotIn("Traceback", rendered)
                     self.assertRegex(rendered, r"(Coverage|unsupported|partial|REVIEW NEEDED)")
@@ -96,6 +96,20 @@ class ReliabilityRoutingTests(unittest.TestCase):
             self.assertNotIn("Traceback", rendered)
             self.assertTrue(evidence.is_file())
 
+    def test_lk_scan_propagates_runtime_review_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(lk, "analysis_adapters", None, create=True):
+                pass
+            with patch(
+                "analysis_adapters.scan_repository",
+                return_value=2,
+            ):
+                output = io.StringIO()
+                with patch.object(lk.audit_context, "foundry_project_root", return_value=root),                      contextlib.redirect_stdout(output):
+                    code = lk.run_scan([str(root)])
+            self.assertEqual(code, 2)
+
     def test_generic_source_project_has_explicit_partial_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -106,7 +120,7 @@ class ReliabilityRoutingTests(unittest.TestCase):
             )
             with contextlib.redirect_stdout(io.StringIO()) as output:
                 code = lk.run_scan([str(root)])
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 2)
             rendered = output.getvalue()
             self.assertIn("Coverage", rendered)
             self.assertIn("partial", rendered.lower())
