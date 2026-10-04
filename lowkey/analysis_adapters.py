@@ -157,7 +157,7 @@ def _safe_resolve(root: str | os.PathLike[str]) -> Path:
         path = Path(root).expanduser().resolve()
     except OSError:
         path = Path(root).expanduser().absolute()
-    return path.parent if path.is_file() else path
+    return path
 
 def _safe_read(path: Path) -> str:
     try:
@@ -194,6 +194,10 @@ def _is_support_path(path: Path, root: Path) -> bool:
 
 def _source_files(root: Path) -> list[Path]:
     recognized = set(SUFFIX_LANGUAGE)
+    if root.is_file():
+        if root.suffix.lower() in recognized and not _is_support_path(root, root.parent):
+            return [root]
+        return []
     paths = [
         path for path in _safe_walk_files(root)
         if path.suffix.lower() in recognized and not _is_support_path(path, root)
@@ -328,8 +332,9 @@ def _capabilities(backend: str, stacks: list[str], languages: set[str]) -> dict[
     return caps
 
 def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
-    project_root = _safe_resolve(root)
-    files = _source_files(project_root)
+    requested = _safe_resolve(root)
+    project_root = requested.parent if requested.is_file() else requested
+    files = _source_files(requested)
     counts = _source_counts(files)
     stacks, language_names = _manifest_stack(project_root)
     language_set = set(language_names)
@@ -368,11 +373,25 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     else:
         coverage = "none"
 
+    scope_type = "single-file" if requested.is_file() else "workspace" if workspace else "repository"
+    if scope_type == "workspace" and coverage == "full":
+        # A workspace root is an aggregate scope; it does not prove that every
+        # member was independently buildable or security-analyzed.
+        coverage = "partial"
+    analysis_status = (
+        "single-file" if scope_type == "single-file" and files else
+        "workspace-aggregate" if scope_type == "workspace" and files else
+        "ready" if coverage in {"full", "partial"} else
+        "unsupported" if coverage == "unsupported" else
+        "no-application-source"
+    )
+
     return {
         "root": str(project_root),
         "backend": backend,
         "stacks": stacks,
         "workspace": workspace,
+        "scope_type": scope_type,
         "languages": counts,
         "language_names": language_names,
         "source_files": [str(path.relative_to(project_root)) for path in files],
@@ -381,11 +400,7 @@ def inspect_repository(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
         "capabilities": _capabilities(backend, stacks, language_set),
         "unsupported_languages": unsupported_languages,
         "coverage": coverage,
-        "analysis_status": (
-            "ready" if coverage in {"full", "partial"} else
-            "unsupported" if coverage == "unsupported" else
-            "no-application-source"
-        ),
+        "analysis_status": analysis_status,
         "evidence": {
             "manifests": sorted(
                 name for name in (
@@ -450,6 +465,20 @@ def _strip_comments(text: str, language: str) -> str:
         i += 1
     return "".join(chars)
 
+def _persist_universal_evidence(project_root: Path, payload: dict[str, Any]) -> None:
+    try:
+        evidence_dir = project_root / ".audit" / "evidence"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "universal_analysis.json").write_text(
+            json.dumps(payload, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        # Evidence persistence is best-effort; repository inspection must never
+        # fail merely because the repository is read-only.
+        return
+
+
 def source_triage(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
     info = inspect_repository(root)
     project_root = Path(info["root"])
@@ -480,7 +509,7 @@ def source_triage(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
                         "label": label,
                         "text": line.strip(),
                     })
-    return {
+    result = {
         "project": info,
         "files_scanned": len(info["source_files"]),
         "markers": markers,
@@ -492,6 +521,8 @@ def source_triage(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
             "no heuristic markers were found in the analyzed source scope"
         ),
     }
+    _persist_universal_evidence(project_root, result)
+    return result
 
 def render_scope(info: dict[str, Any]) -> str:
     caps = info.get("capabilities") or {}
