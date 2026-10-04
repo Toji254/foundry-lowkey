@@ -1053,7 +1053,7 @@ def _has_test_files(root: Path, ignored_roots: Sequence[Path] = ()) -> bool:
             return True
     return False
 
-def _native_timeout(default: int = 180) -> int:
+def _native_timeout(default: int = 120) -> int:
     """Return a bounded timeout for native project commands.
     
     Unfamiliar-repository audits must not hang indefinitely on a broken or
