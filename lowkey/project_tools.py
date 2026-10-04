@@ -359,6 +359,14 @@ def detect_project(root: str | Path = ".") -> dict[str, Any]:
         kind = "brownie" if has_brownie else "vyper"
 
     systems = list(dict.fromkeys(stacks))
+    if has_scarb and "scarb" not in systems:
+        systems.append("scarb")
+    if has_anchor and "anchor" not in systems:
+        systems.append("anchor")
+    if has_ape and "ape" not in systems:
+        systems.append("ape")
+    if has_brownie and "brownie" not in systems:
+        systems.append("brownie")
     if has_uv:
         systems.append("uv")
     if package_json.is_file() and "node" not in systems:
