@@ -3434,9 +3434,18 @@ def _render_interaction_graph_full(
                     trace_value_lines.append(f"ETH {destination}: +{edge_text.split(' [', 1)[0]}")
         event_lines = _friendly_event_lines(step)
         lines += ["  │", "  │   WHAT CHANGED"]
+        observation_lines = []
+        if not (step.storage_before or step.storage_after):
+            observation_lines.append("storage: not observed (no usable storage layout/data was available)")
+        if not (step.balance_before and step.balance_after):
+            observation_lines.append("native balances: not observed")
+        if not (step.token_balance_before and step.token_balance_after):
+            observation_lines.append("token balances: not observed")
+        if not step.events:
+            observation_lines.append("events: none recorded in the receipt")
         changes = [
             item.strip()
-            for item in gas_lines[:2] + state_lines[:7] + balance_lines[:7] + trace_value_lines[:6] + event_lines[:6]
+            for item in observation_lines[:4] + gas_lines[:2] + state_lines[:7] + balance_lines[:7] + trace_value_lines[:6] + event_lines[:6]
             if item.strip()
         ]
         if changes:
@@ -3483,7 +3492,7 @@ def _render_interaction_graph_full(
             lines.append(f"  │   ├─ decoded error: {decoded}")
         lines.append(f"  │   └─ raw node result: {_short_error(step.error)}")
 
-    marker = _evidence_label("INFERRED") if step.inferred else "[LAB CONTROL]"
+    marker = _evidence_label("INFERRED") if step.inferred else _evidence_label("LAB CONTROL")
     if step.status == "success":
         lines += ["  │", f"  │   RESULT  ✓  {actor} completed {contract}.{function}()"]
     elif step.status in {"blocked", "reverted"}:
@@ -5989,8 +5998,7 @@ def _render_adversarial_intro(total_cases: int, baseline_notes: list[str]) -> li
         "  ❓ UNKNOWN         = Lowkey could not prove why it failed.",
         "  🔧 LAB ISSUE       = the test setup looks broken; do not blame the contract yet.",
         "",
-        "  Every probe starts from the same prepared baseline.",
-        "  The baseline is restored after each probe.",
+        "  Every probe starts from the same prepared baseline and is restored after the call.",
         "  Random probes reset after each call. Stateful stories reset after the whole attack sequence.",
         "  These are randomized transaction probes — not 24 vulnerability checks.",
         "  The seed chooses the randomized order, actors, arguments, and test inputs.",
@@ -8752,7 +8760,7 @@ def _render_board(
         _paint("LOWKEY // LIVE PROTOCOL WALKTHROUGH", BOLD + CYAN, enabled),
         f"  {model.name}   •   {success} successful   •   {blocked} blocked   •   {len(steps)} observed",
         "  " + _walkthrough_board_controls(len(steps)),
-        "  REVIEW mode never re-runs a transaction; it shows recorded evidence only. Press ENTER to resume live execution." if reviewing else
+        "  REVIEW MODE: recorded evidence only; no transaction is re-run." if reviewing else
         "  the story is live: no future step is rendered before it is observed",
         "  arrows = observed workflow/call flow   boxes = state   function names = Ctrl+Click source",
         "",
