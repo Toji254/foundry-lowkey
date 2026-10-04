@@ -134,6 +134,12 @@ ADAPTERS = {
         "markers": {"hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts"},
         "capabilities": {"build": True, "tests": True, "coverage": True, "slither": True, "live_evm": True, "live_native": False},
     },
+    "evm-source": {
+        "kind": "evm",
+        "languages": {"solidity", "vyper", "vyper-interface", "yul", "huff"},
+        "markers": set(),
+        "capabilities": {"build": False, "tests": False, "coverage": False, "slither": True, "live_evm": False, "live_native": False},
+    },
     "vyper": {
         "kind": "evm",
         "languages": {"vyper", "vyper-interface"},
@@ -378,6 +384,14 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
         stacks.append("cairo-starknet")
     if ((root / "Cargo.toml").is_file() or "rust" in languages) and "cosmwasm" not in stacks and "solana-anchor" not in stacks:
         stacks.append("cargo")
+
+    # A repository can contain Solidity without Foundry/Hardhat (for example
+    # a Cairo project with a Solidity bridge component). Keep that EVM scope
+    # visible as its own adapter instead of dropping it behind the dominant
+    # manifest-backed stack.
+    if "solidity" in languages and not {"foundry", "hardhat"} & set(stacks):
+        stacks.append("evm-source")
+
     vyper = "vyper" in languages or "vyper-interface" in languages
     if vyper or any((root / name).is_file() for name in (
         "ape-config.yaml", "ape-config.yml", "brownie-config.yaml", "brownie-config.yml"
@@ -418,7 +432,7 @@ def _choose_backend(stacks: list[str], sources: dict[str, int]) -> str:
         return stack
     if len(stacks) > 1:
         # Prefer explicit protocol tooling over generic package-manager signals.
-        for candidate in ("foundry", "hardhat", "cairo-starknet", "solana-anchor", "cosmwasm", "move", "vyper", "cargo"):
+        for candidate in ("foundry", "hardhat", "cairo-starknet", "solana-anchor", "cosmwasm", "move", "vyper", "evm-source", "cargo"):
             if candidate in stacks and candidate != "cargo":
                 return candidate if len([x for x in stacks if x != "cargo"]) == 1 else "multi"
         return "multi"
@@ -780,7 +794,7 @@ def available_security_analyzers(
     stacks = set(stacks or [])
     languages = set(languages or set())
     tools: list[str] = []
-    if ({"foundry", "hardhat"} & stacks) and shutil.which("slither"):
+    if ({"foundry", "hardhat", "evm-source"} & stacks) and shutil.which("slither"):
         tools.append("slither")
     if ({"cargo", "solana-anchor", "cosmwasm"} & stacks or "rust" in languages) and shutil.which("cargo-audit"):
         tools.append("cargo-audit")
