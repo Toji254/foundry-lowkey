@@ -115,12 +115,14 @@ class LowkeyForgeTests(unittest.TestCase):
         import types
         fake_generator = types.ModuleType("generator")
         fake_generator.run_generate = lambda config, args: 0
-        with patch.object(forge_tools, "run_forge", return_value=0):
-            with patch.object(forge_tools, "run_slither_preflight", return_value=0):
-                with patch.object(forge_tools, "run_coverage_audit", return_value=0):
-                    with patch.object(forge_tools, "render_audit_dashboard", return_value=0):
-                        with patch.dict("sys.modules", {"generator": fake_generator}):
-                            result = forge_tools.run_audit(["--checks"])
+        with patch.object(forge_tools, "run_forge", return_value=0), \
+             patch.object(forge_tools, "run_slither_preflight", return_value=0), \
+             patch.object(forge_tools, "run_forge_diagnostics", return_value=0), \
+             patch.object(forge_tools, "command_available", return_value=False), \
+             patch.object(forge_tools, "run_coverage_audit", return_value=0), \
+             patch.object(forge_tools, "render_audit_dashboard", return_value=0), \
+             patch.dict("sys.modules", {"generator": fake_generator}):
+            result = forge_tools.run_audit(["--checks"])
         self.assertEqual(result, 0)
 
     def test_native_commands(self):
@@ -500,9 +502,12 @@ after
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_coverage_audit", return_value=0)
+    @patch("forge_tools.run_forge_diagnostics", return_value=0)
+    @patch("forge_tools.run_slither_preflight", return_value=0)
+    @patch("forge_tools.command_available", return_value=False)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, _compat, coverage, run):
+    def test_audit_keeps_default_verbosity_with_unrelated_v_flag_prefix(self, _supports, _compat, available, slither, diagnostics, coverage, run):
         self.assertEqual(forge_tools.run_audit(["--via-ir"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
@@ -515,9 +520,12 @@ after
 
     @patch("forge_tools.run_forge", return_value=0)
     @patch("forge_tools.run_coverage_audit", return_value=0)
+    @patch("forge_tools.run_forge_diagnostics", return_value=0)
+    @patch("forge_tools.run_slither_preflight", return_value=0)
+    @patch("forge_tools.command_available", return_value=False)
     @patch("forge_tools._coverage_compatibility_flags", return_value=[])
     @patch("forge_tools._supports_option", return_value=True)
-    def test_audit_respects_explicit_verbosity(self, _supports, _compat, coverage, run):
+    def test_audit_respects_explicit_verbosity(self, _supports, _compat, available, slither, diagnostics, coverage, run):
         self.assertEqual(forge_tools.run_audit(["--verbosity", "4"]), 0)
         self.assertEqual(
             run.call_args_list[1].args[0],
