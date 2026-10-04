@@ -1282,8 +1282,7 @@ def _run_native_security_analysis(info: dict[str, Any]) -> int:
         return 0
 
     failures = 0
-    print("
-LOWKEY SECURITY ANALYSIS")
+    print("\nLOWKEY SECURITY ANALYSIS")
     print("========================")
     for item in results:
         status = str(item.get("status") or "unknown")
