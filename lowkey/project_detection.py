@@ -409,6 +409,12 @@ def _workspace_project_metadata(projects):
             project["scope_reason"] = "No protocol source units were detected; treated as supporting workspace code."
 
         project["entrypoint"] = project.get("entry_contracts", [None])[0] if project.get("entry_contracts") else None
+        project["scope_hint"] = {
+            "primary audit candidate": "primary audit candidate",
+            "important dependency": "shared dependency",
+            "component / library": "component / library",
+            "support / tooling": "shared dependency" if project.get("depended_on_by") else "support / tooling",
+        }.get(str(project.get("scope_role") or ""), str(project.get("scope_role") or ""))
 
     # Replace internal absolute dependency roots with stable data for callers.
     for project in projects:
