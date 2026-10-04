@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+import sys
 import hashlib
 import shlex
 import shutil
