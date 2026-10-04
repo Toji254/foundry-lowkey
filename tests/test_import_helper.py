@@ -369,7 +369,7 @@ class ImportHelperTests(unittest.TestCase):
                 result = helper.run_category("ERC721", root, [], copy_only=True)
             rendered = out.getvalue().strip()
             self.assertEqual(result, 0)
-            self.assertEqual(rendered, '  import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";')
+            self.assertEqual(rendered, 'import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";')
         finally:
             tmp.cleanup()
 
