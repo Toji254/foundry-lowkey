@@ -447,10 +447,6 @@ class ProjectDetectionTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             calls = []
 
-            def fake_run(command, cwd):
-                calls.append(list(command))
-                return 0, "ok"
-
             info = {
                 "root": str(root),
                 "backend": "multi",
@@ -465,21 +461,18 @@ class ProjectDetectionTests(unittest.TestCase):
                 "_bootstrap_done": True,
             }
 
-            with patch.object(project_detection, "bootstrap_project", return_value=0), \
-                 patch.object(project_detection.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
-                 patch.object(project_detection, "_run", side_effect=fake_run), \
-                 patch.object(project_detection, "_supplemental_native_tests", return_value=0), \
-                 patch("audit_engine.run_slither_project", return_value=0), \
-                 patch.object(project_detection, "run_native_audit", wraps=project_detection.run_native_audit) as wrapped:
+            def fake_child(parent, stack, args):
+                calls.append((stack, dict(parent)))
+                return 0
+
+            with patch.object(project_detection, "_run_native_child", side_effect=fake_child) as child:
                 code = project_detection.run_native_audit(info)
 
             self.assertEqual(code, 0)
-            self.assertEqual(wrapped.call_count, 3)
-            child_calls = wrapped.call_args_list[1:]
-            self.assertEqual(child_calls[0].args[0]["_native_backend"], "cairo-starknet")
-            self.assertEqual(child_calls[1].args[0]["_native_backend"], "evm-source")
-            self.assertIn(["scarb", "build"], calls)
-            self.assertIn(["snforge", "test"], calls)
+            self.assertEqual(child.call_count, 2)
+            self.assertEqual([item[0] for item in calls], ["cairo-starknet", "evm-source"])
+            self.assertEqual(calls[0][1]["backend"], "multi")
+            self.assertEqual(calls[1][1]["stacks"], ["cairo-starknet", "evm-source"])
 
     def test_native_timeout_is_bounded_and_configurable(self):
         with patch.dict(project_detection.os.environ, {"LOWKEY_NATIVE_TIMEOUT": "45"}, clear=False):
