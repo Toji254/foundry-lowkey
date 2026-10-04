@@ -1287,7 +1287,7 @@ def _special_value_entries(model: ContractModel) -> list[dict[str, Any]]:
         result.append(entry)
     return result
 
-_ADMIN_TOKENS = ("upgrade","setadmin","transferownership","renounceownership","selfdestruct","pause","unpause","acceptownership")
+_ADMIN_TOKENS = ("upgrade","setadmin","transferownership","renounceownership","selfdestruct","pause","unpause","acceptownership","set")
 
 def _lifecycle_candidate(name: str) -> bool:
     low=name.lower()
@@ -3393,7 +3393,7 @@ def _render_interaction_graph_full(
             if int(edge.get("depth") or 0) > 0
         )
         label = "native ETH flow" if nested_native else "asset flow"
-        lines.append(f"  │   {label}: {contract} ──▶ {actor}")
+        lines.append(f"  │   {label}: {contract} ──▶ {actor}  [token flow if ERC-20-backed]")
 
     if step.discovered_contracts:
         lines += ["  │", "  │   NEW CONTRACTS DISCOVERED"]
