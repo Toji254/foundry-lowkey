@@ -853,12 +853,22 @@ def _forge_run(host, config, source_path: str, rpc: str, project_info: dict[str,
             "--optimize",
             "-vvv",
         ]
-        ir_completed = subprocess.run(
-            ir_cmd,
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-        )
+        try:
+            ir_completed = subprocess.run(
+                ir_cmd,
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=180,
+                start_new_session=(os.name == "posix"),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return subprocess.CompletedProcess(
+                ir_cmd,
+                124,
+                stdout=exc.stdout or "",
+                stderr=(exc.stderr or "") + "\nLOWKEY_FORGE_TIMEOUT true\n",
+            )
         return ir_completed
 
     return completed
@@ -1139,11 +1149,15 @@ def _render_repeat_test(
         seed_amount = _solidity_amount_literal(seed_fund)
         if setup_signature:
             setup_arg = ", 1" if re.search(r"\(uint(?:[0-9]+)?\)$", setup_signature) else ""
+            setup_value = f"{{value: setupValue}}" if asset_signature else f"{{value: {seed_amount}}}"
+            setup_value_decl = (
+                f"        uint256 setupValue = assetReadOk ? 0 : {seed_amount};\n"
+                if asset_signature else ""
+            )
             setup_block += f"""
         bytes memory setupData = abi.encodeWithSignature("{setup_signature}"{setup_arg});
-        uint256 setupValue = assetReadOk ? 0 : {seed_amount};
-        vm.prank(ATTACKER);
-        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{value: setupValue}}(setupData);
+{setup_value_decl}        vm.prank(ATTACKER);
+        (bool setupSuccess, bytes memory setupReturndata) = TARGET.call{{setup_value}}(setupData);
         console2.log("SETUP_SUCCESS", setupSuccess);
         console2.log("SETUP_RETURNDATA_LENGTH", setupReturndata.length);
         console2.logBytes(setupReturndata);
@@ -2512,11 +2526,11 @@ def _explain_evidence(path: str, root: Path | None = None) -> int:
     is_break = bool(found and found.group(1).lower() == "true")
 
     def read_bool(label: str):
-        match = re.search(rf"(?mi)^\\s*{re.escape(label)}\\s+(true|false)\\s*$", raw)
+        match = re.search(rf"(?mi)^\s*{re.escape(label)}\s+(true|false)\s*$", raw)
         return match.group(1).lower() == "true" if match else None
 
     def read_uint(label: str):
-        match = re.search(rf"(?mi)^\\s*{re.escape(label)}\\s+([0-9]+)\\s*$", raw)
+        match = re.search(rf"(?mi)^\s*{re.escape(label)}\s+([0-9]+)\s*$", raw)
         return int(match.group(1)) if match else None
 
     first_success = read_bool("FIRST_SUCCESS")
