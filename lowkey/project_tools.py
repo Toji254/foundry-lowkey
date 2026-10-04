@@ -756,6 +756,16 @@ def _vyper_imports(text: str) -> list[tuple[str, int, str, str | None]]:
     return records
 
 
+def _vyper_import_label(raw: str, imported_names: str | None) -> str:
+    """Give relative Vyper imports a useful unresolved target label."""
+    clean = raw.strip()
+    if clean in {".", ".."} and imported_names:
+        symbols = _imported_symbols(imported_names)
+        if symbols:
+            return ", ".join(symbols)
+    return clean
+
+
 def _declarations(text: str, language: str, path: Path) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     text = _strip_source_comments(text, language, mask_strings=True)
@@ -905,7 +915,7 @@ def build_dependency_graph(root: str | Path = ".") -> dict[str, Any]:
                 edge = {
                     "from": rel,
                     "to": _relative(resolved, root_path) if resolved else (
-                        str(external_root) if external_root else raw
+                        str(external_root) if external_root else _vyper_import_label(raw, imported_names)
                     ),
                     "raw": raw,
                     "kind": "import",
