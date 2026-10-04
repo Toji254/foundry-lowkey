@@ -8993,7 +8993,11 @@ def run_scan(args):
                 audit_context.record_tool(
                     "source-triage",
                     audit_root,
-                    status="completed",
+                    status=(
+                        "completed" if universal_result == 0
+                        else "review_needed" if universal_result == 2
+                        else "failed"
+                    ),
                     summary="universal repository source triage",
                     data={
                         "exit_code": universal_result,
