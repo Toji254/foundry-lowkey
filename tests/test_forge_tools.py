@@ -136,6 +136,13 @@ class LowkeyForgeTests(unittest.TestCase):
                 self.assertEqual(forge_tools.main(["debug"]), 2)
                 run.assert_not_called()
 
+    def test_build_without_foundry_config_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            with patch.object(forge_tools, "_project_root", return_value=root),                  patch.object(forge_tools, "forge_path", return_value="/usr/bin/forge"),                  patch.object(forge_tools, "command_available", return_value=True),                  patch.object(forge_tools.subprocess, "run") as run:
+                self.assertEqual(forge_tools.main(["build"]), 2)
+                run.assert_not_called()
+
     @patch("forge_tools.forge_path", return_value="/usr/bin/forge")
     @patch("forge_tools.subprocess.run")
     def test_main_geiger_uses_unsafe_cheatcode_lint(self, run, _path):
