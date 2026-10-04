@@ -25,6 +25,21 @@ try:
 except ImportError:
     detected_project_root = None
 
+def _local_executable(root: Path, name: str) -> str | None:
+    """Find a project-local executable before falling back to PATH."""
+    candidates = [
+        root / ".venv" / "bin" / name,
+        root / "venv" / "bin" / name,
+        root / "node_modules" / ".bin" / name,
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
 EXCLUDED_DIRS = {
     ".git",
     ".audit",
@@ -91,7 +106,7 @@ def project_source_files(root: str | Path = ".", languages: Iterable[str] | None
     suffixes = {"." + item for item in wanted}
     try:
         from analysis_adapters import project_source_files as universal_source_files
-        return list(universal_source_files(root_path, suffixes))
+        return list(universal_source_files(root_path, suffixes, include_support=True))
     except (ImportError, OSError):
         return _walk_files(root_path, suffixes)
 
