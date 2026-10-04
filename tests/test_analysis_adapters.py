@@ -181,6 +181,19 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertEqual(info["backend"], "evm-source")
             self.assertIn("evm-source", info["stacks"])
 
+    def test_nested_cairo_dependency_solidity_does_not_create_evm_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Scarb.toml").write_text('[package]\nname = "demo"\n', encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "main.cairo").write_text("fn main() {}\n", encoding="utf-8")
+            nested = root / "workspace" / "apps" / "staking" / "contracts" / "L1" / "starkware" / "solidity"
+            nested.mkdir(parents=True)
+            (nested / "ProxySupport.sol").write_text("pragma solidity ^0.8.20; contract ProxySupport {}\n", encoding="utf-8")
+            info = analysis_adapters.inspect_repository(root)
+            self.assertEqual(info["backend"], "cairo-starknet")
+            self.assertNotIn("evm-source", info["stacks"])
+
     def test_security_plan_uses_installed_native_analyzers(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
