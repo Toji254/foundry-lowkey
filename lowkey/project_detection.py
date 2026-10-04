@@ -1053,6 +1053,62 @@ def _has_test_files(root: Path, ignored_roots: Sequence[Path] = ()) -> bool:
             return True
     return False
 
+def _native_timeout(default: int = 180) -> int:
+    """Return a bounded timeout for native project commands.
+    
+    Unfamiliar-repository audits must not hang indefinitely on a broken or
+    incompatible toolchain. Users can raise/lower this per environment.
+    """
+    try:
+        value = int(os.environ.get("LOWKEY_NATIVE_TIMEOUT", str(default)))
+    except ValueError:
+        value = default
+    return max(30, min(value, 1800))
+
+
+def _python_test_paths(root: Path) -> list[Path]:
+    paths = []
+    for path in _walk_files(root):
+        if path.suffix.lower() != ".py":
+            continue
+        relative = path.resolve().relative_to(root.resolve())
+        if any(part in {"node_modules", ".git", ".audit", ".venv", "venv", "target", "build", "dist"} for part in relative.parts):
+            continue
+        if path.name.startswith("test_") or path.name.endswith("_test.py") or "tests" in {part.lower() for part in relative.parts[:-1]}:
+            paths.append(path)
+    return sorted(paths)
+
+
+def _supplemental_native_tests(info: dict[str, Any]) -> int:
+    """Run first-party Python/shell test suites that the protocol adapter cannot own."""
+    root = Path(info["root"]).resolve()
+    failures = 0
+
+    python_tests = _python_test_paths(root)
+    if python_tests:
+        if shutil.which("pytest") or (root / "pyproject.toml").is_file() and shutil.which("uv") or _local_executable(root, "pytest"):
+            command = _project_python_runner(root, "pytest", "-q")
+            code, output = _run(command, root)
+            _report_step("python tests", command, code, output)
+            if code != 0:
+                failures = failures or code
+        else:
+            print("DEFER  python tests — pytest/uv is not available.")
+    
+    for relative in ("tests.sh", "test.sh", "scripts/tests.sh", "scripts/test.sh"):
+        script = root / relative
+        if not script.is_file():
+            continue
+        command = ["bash", relative]
+        code, output = _run(command, root)
+        _report_step("script tests", command, code, output)
+        if code != 0:
+            failures = failures or code
+        break
+
+    return failures
+
+
 def _run(command: Sequence[str], root: Path) -> tuple[int, str]:
     try:
         runtime_env, _node_pin = runtime_environment(root)
@@ -1061,16 +1117,18 @@ def _run(command: Sequence[str], root: Path) -> tuple[int, str]:
             cwd=root,
             capture_output=True,
             text=True,
-            timeout=900,
+            timeout=_native_timeout(),
             env=runtime_env,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        return 124, f"command timed out after {_native_timeout()}s"
+    except OSError as exc:
         return 1, str(exc)
     output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
     return result.returncode, output.strip()
 
 def _report_step(label: str, command: Sequence[str], code: int, output: str) -> None:
-    status = "PASS" if code == 0 else "FAIL"
+    status = "PASS" if code == 0 else "TIMEOUT" if code == 124 else "FAIL"
     print(f"{status:<5} {label:<22} {' '.join(command)}")
     if output:
         print("\n".join(output.splitlines()[-12:]))
@@ -1147,8 +1205,13 @@ def bootstrap_project(
         print("DEFER  shared bootstrap engine is unavailable.")
         return 0
     # The shared bootstrap engine derives its plan from info and
-    # intentionally does not consume audit CLI arguments.
-    return run_shared_bootstrap(info, force=force, reason=reason)
+    # intentionally does not consume audit CLI arguments. Keep native audit
+    # preparation bounded so an unfamiliar repository cannot hang the console.
+    try:
+        timeout = _native_timeout()
+    except NameError:
+        timeout = 180
+    return run_shared_bootstrap(info, force=force, reason=reason, timeout=timeout)
 
 
 def bootstrap_status(info: dict[str, Any]) -> dict[str, Any]:
@@ -1443,6 +1506,22 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         if code != 0:
             failures = failures or code
 
+    if backend == "evm-source":
+        print("SOURCE-ONLY EVM: static Solidity analysis is available, but no EVM build/test harness was detected.")
+        if shutil.which("slither"):
+            try:
+                from audit_engine import run_slither_project
+                code = run_slither_project(str(root), info)
+            except Exception as exc:
+                print(f"FAIL  source Slither dispatch: {exc}", file=sys.stderr)
+                code = 1
+        else:
+            print("DEFER  source Solidity checks — Slither is not installed.")
+            code = 0
+        failures = failures or code
+        failures = failures or _supplemental_native_tests(info)
+        return failures
+
     if backend == "cairo-starknet":
         if native.get("scarb"):
             step("cairo build", ["scarb", "build"])
@@ -1453,6 +1532,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         else:
             print("DEFER  cairo checks — Scarb is not installed.")
         security_code = _run_native_security_analysis(info)
+        failures = failures or _supplemental_native_tests(info)
         return failures or security_code
 
     if backend == "vyper":
@@ -1542,6 +1622,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         else:
             print("DEFER  anchor checks — Anchor is not installed.")
         security_code = _run_native_security_analysis(info)
+        failures = failures or _supplemental_native_tests(info)
         return failures or security_code
 
     if backend == "move":
@@ -1552,6 +1633,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         else:
             print("DEFER  Move checks — no supported Move CLI found.")
         security_code = _run_native_security_analysis(info)
+        failures = failures or _supplemental_native_tests(info)
         return failures or security_code
 
     if backend == "multi":
@@ -1567,6 +1649,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
             child_code = run_native_audit(child, args)
             if child_code != 0:
                 failures = failures or child_code
+        failures = failures or _supplemental_native_tests(info)
         return failures
 
     build_backend = str(info.get("build_backend") or "").lower()
@@ -1587,6 +1670,7 @@ def run_native_audit(info: dict[str, Any], args: Sequence[str] = ()) -> int:
         else:
             print(f"DEFER  {build_backend} tests — no executable project test command is available.")
         security_code = _run_native_security_analysis(info)
+        failures = failures or _supplemental_native_tests(info)
         return failures or security_code
 
     print("STATIC-ONLY: no specialized project audit backend is installed.")
