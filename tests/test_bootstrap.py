@@ -262,6 +262,19 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(toolchain["category"], "toolchain_mismatch")
         self.assertFalse(toolchain["repairable"])
 
+    def test_build_command_uses_vyper_compiler_for_single_vyper_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "contracts/Vault.vy", "# pragma version 0.4.0\n")
+            info = {"root": str(root), "backend": "vyper", "kind": "vyper"}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda name: "/usr/bin/vyper" if name == "vyper" else None):
+                result = bootstrap.project_build_command(info)
+            self.assertEqual(
+                result,
+                (root.resolve(), ["vyper", "contracts/Vault.vy"], "Vyper compiler"),
+            )
+
+
     def test_build_command_uses_workspace_level_hardhat_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
