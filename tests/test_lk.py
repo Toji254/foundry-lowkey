@@ -3065,7 +3065,7 @@ contract Pool {
         scan.assert_called_once_with([])
         audit.assert_called_once_with(config,["--checks"])
         rendered=output.getvalue()
-        self.assertIn("7) full evidence pass   8) generate PoC   0) exit",rendered)
+        self.assertIn("7) full evidence pass   8) generate PoC   9) protocol walkthrough   0) exit",rendered)
 
     def test_dispatch_uses_audit_session_commands(self):
         config = {"target": None}
