@@ -696,6 +696,13 @@ def resolve_target_ref(config,ref,root=None):
         index = int(ref) - 1
         if 0 <= index < len(protocol_entries):
             return protocol_entries[index].get("address")
+        project_roots = config.get("project_roots")
+        if not isinstance(project_roots, dict) or not project_roots:
+            legacy_aliases = config.get("aliases", {})
+            if isinstance(legacy_aliases, dict):
+                values = [value for value in legacy_aliases.values() if is_address(value)]
+                if 0 <= index < len(values):
+                    return values[index]
         return None
 
     if is_address(ref):
@@ -1968,12 +1975,20 @@ def run_functions(config, args=None):
         print("====================")
         print(f"Query:   {query}")
         for index, (contract, signature, path) in enumerate(matches[:8]):
-            label = "Found" if index == 0 else "Other"
-            print(f"{label}:   {contract}::{signature}")
             if index == 0:
+                print(f"Found:   {contract}::{signature}")
                 print(f"Source:  {path}")
-            elif str(contract).startswith(("I", "Mock", "Test", "Fixture")):
-                print("         support/interface artifact")
+            elif str(contract).startswith("I"):
+                support_rows = support_rows if "support_rows" in locals() else []
+                support_rows.append(f"{contract} (interface)")
+            elif str(contract).startswith(("Mock", "Test", "Fixture")):
+                support_rows = support_rows if "support_rows" in locals() else []
+                support_rows.append(f"{contract} (test mock)")
+            else:
+                support_rows = support_rows if "support_rows" in locals() else []
+                support_rows.append(contract)
+        if "support_rows" in locals() and support_rows:
+            print("Other:   " + ", ".join(support_rows))
         print("Live:    none")
         print("Next:    deploy a target before using lk changes/trace.")
         return 0
@@ -4051,8 +4066,6 @@ def _local_test_fixture_candidates(root, requested=None):
             declaration = create_match.group(0)
             returns_match = re.search(r"\breturns\s*\(([^)]*)\)", declaration, re.S)
             returns_text = returns_match.group(1) if returns_match else ""
-            if not re.search(r"\baddress\b", returns_text):
-                continue
 
             contract_match = None
             for declaration in re.finditer(
@@ -6254,7 +6267,13 @@ def _normalize_human_numeric_input(value, ptype, label=''):
             raise ValueError(
                 f"'{label}' is a raw integer field; enter the integer directly without ETH/gwei/wei units."
             )
-        return normalize_numeric_argument(grouped, ptype)
+        number = Decimal(unit_match.group(1))
+        unit = unit_match.group(2).lower()
+        scale = {"wei": Decimal(1), "gwei": Decimal(10**9), "ether": Decimal(10**18)}[unit]
+        scaled = number * scale
+        if scaled != scaled.to_integral_value():
+            raise ValueError(f"non-integer value '{value}' cannot be passed to {ptype}")
+        return str(int(scaled))
 
     if re.fullmatch(r'(?:0x[0-9a-fA-F]+|[-+]?[0-9]+(?:\.[0-9]+)?)', grouped):
         return grouped
@@ -9579,7 +9598,11 @@ def run_audit_mode(config, args=None, interactive=None):
         if selected_scope.get("depended_on_by"):
             print(f"Used by    : {', '.join(selected_scope['depended_on_by'])}")
     stacks = set(info.get("stacks", []))
-    foundry_project = "foundry" in stacks or (not stacks and (Path(root) / "foundry.toml").is_file())
+    foundry_project = (
+        "foundry" in stacks
+        or (not stacks and (Path(root) / "foundry.toml").is_file())
+        or (not stacks and is_address(config.get("target")))
+    )
     evm_project = bool(stacks & {"foundry", "hardhat", "vyper"}) or foundry_project or is_address(config.get("target"))
 
     config["audit_project"] = str(root)
@@ -10960,6 +10983,13 @@ COMMAND_HELP = {
         "Use it to exercise state-changing behavior in a local lab or selected RPC.",
         options=[("--preview", "Encode/check without sending.", "lk send release --preview"), ("--confirm", "Preview first, then ask before sending.", "lk send release --confirm")],
         related=["lk changes", "lk trace", "lk receipt"],
+    ),
+    "import": _help_entry(
+        "Resolve importable packages, symbols, and source files.",
+        "lk import <symbol|path>",
+        "lk import ERC721",
+        "Use it to locate importable packages and verify exact source/import paths.",
+        related=["lk project", "lk audit"],
     ),
     "functions": _help_entry(
         "List the selected contract's ABI functions, with optional audit metadata and compact filters.",
