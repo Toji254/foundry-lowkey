@@ -67,10 +67,18 @@ def _is_dependency_path(path: Path, root: Path, prefixes: set[str] | None = None
     for prefix in known:
         if relative == prefix or relative.startswith(prefix + "/"):
             return True
-        # A container such as lib/ is not itself a dependency when the
-        # repository evidence points at lib/something as the dependency root.
+        # Never prune the container itself just because one of its children is
+        # a known dependency. This keeps first-party lib/*.sol source visible.
         if prefix.startswith(relative + "/") and relative in DEPENDENCY_CONTAINER_DIRS:
             continue
+        if relative.startswith(tuple(prefix + "/" for prefix in ())):
+            pass
+    if any(
+        relative.startswith(prefix + "/") and
+        relative.split("/", 1)[0] in DEPENDENCY_CONTAINER_DIRS
+        for prefix in known
+    ):
+        return True
     if relative in DEPENDENCY_CONTAINER_DIRS:
         return False
     first = relative.split("/", 1)[0]
@@ -806,6 +814,9 @@ def render_scope(info: dict[str, Any]) -> str:
 def scan_repository(root: str | os.PathLike[str] = ".") -> int:
     result = source_triage(root)
     info = result["project"]
+    security = run_security_analysis(info)
+    result["security"] = security
+    _persist_universal_evidence(_evidence_root(Path(info.get("root") or root)), result)
     print("SOURCE TRIAGE")
     print("=" * 72)
     print(f"Project       : {info.get('backend')}")
@@ -821,12 +832,20 @@ def scan_repository(root: str | os.PathLike[str] = ".") -> int:
         )
     print(f"\nReview markers: {result['count']}")
     print(f"Interpretation: {result['interpretation']}.")
+    if security.get("results"):
+        print("\nSECURITY TOOLING")
+        print("----------------")
+        for item in security["results"]:
+            print(f"  {item['name']:<18} {item['status']} (exit {item['exit_code']})")
     if info.get("coverage") in {"none", "unsupported"}:
         print("RESULT: REVIEW NEEDED — Lowkey did not establish complete source coverage.")
         return 2
     if info.get("coverage") == "partial":
         print("RESULT: REVIEW NEEDED — coverage is partial; missing coverage is not a clean result.")
         return 2
+    if any(item.get("status") == "failed" for item in security.get("results", [])):
+        print("RESULT: REVIEW NEEDED — an installed security analyzer reported a failure.")
+        return 1
     print("RESULT: TRIAGE COMPLETE — markers require human verification.")
     return 0
 
