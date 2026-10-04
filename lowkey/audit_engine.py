@@ -13,6 +13,10 @@ import subprocess
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+LOWKEY_MODULE_DIR = Path(__file__).resolve().parent
+if str(LOWKEY_MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(LOWKEY_MODULE_DIR))
 from typing import Any, Sequence
 
 try:
