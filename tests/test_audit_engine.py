@@ -117,6 +117,7 @@ class AuditEngineTests(unittest.TestCase):
             (root / "src").mkdir()
             (root / "test").mkdir()
             (root / "script").mkdir()
+            (root / "audits" / "Certora").mkdir(parents=True)
             (root / "src" / "Vault.sol").write_text(
                 "pragma solidity ^0.8.20; contract Vault { function f() external { block.timestamp; } }",
                 encoding="utf-8",
