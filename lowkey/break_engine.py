@@ -1976,7 +1976,9 @@ def _result_from_output(
                     f"the {family} behavior could be tested. {reason}"
                 )
         elif first_success is False:
-            status = "BLOCKED"
+            # A rejected call with concrete revert evidence was executed and observed.
+            # Keep BLOCKED only when the probe produced no evidence that the target handled it.
+            status = "OBSERVED" if (decoded_first or first_len or target_revert_data) else "BLOCKED"
             reason = decoded_first or (
                 "No revert data was returned."
                 if not first_len
