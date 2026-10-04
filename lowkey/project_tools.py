@@ -149,7 +149,7 @@ def _read(path: Path) -> str:
 
 
 def _pyproject_vyper(content: str) -> bool:
-    return bool(re.search(r"(?im)(?:^|\\s)(?:[\"'])?vyper(?:[\"']?)(?:[<>=!~\\s]|$)", content))
+    return bool(re.search(r"(?im)(?:^|\s)(?:[\"'])?vyper(?:[\"']?)(?:[<>=!~\s]|$)", content))
 
 
 def _pyproject_dependencies(content: str) -> list[str]:
