@@ -251,8 +251,10 @@ def _git_submodules(root: Path) -> list[dict[str, Any]]:
 
 
 def _vyper_compiler_version(root: Path) -> str | None:
-    """Return the installed Vyper compiler version when available."""
-    del root  # Project-local compiler discovery can be added when needed.
+    """Return the installed Vyper compiler version for Vyper source scopes."""
+    root = Path(root)
+    if not project_source_files(root, {"vy"}):
+        return None
     binary = shutil.which("vyper")
     if not binary:
         return None
