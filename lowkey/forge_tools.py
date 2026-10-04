@@ -931,6 +931,7 @@ def render_audit_dashboard(root: Path, pipeline_code: int = 0) -> int:
     print(f"Target : {target_label}")
     if not has_target:
         print("         No live project target is connected; run 'lk lab' or 'lk audit auto' for local reproduction.")
+        print("         Static baseline: run 'lk audit --checks'")
     print(f"Actor  : {context.get('actor') or 'none'}")
     print(f"Signals: {open_signals} open")
     print(
@@ -1001,14 +1002,9 @@ def run_inspect_audit(args: Sequence[str]) -> int:
 def run_audit(args: Sequence[str]) -> int:
     """Run the complete Foundry audit baseline, including static checks by default."""
     root = _project_root()
-    profile = project_tools.detect_project(root) if project_tools is not None else {}
-    kind = str(profile.get("kind") or "foundry")
-    stacks = set(profile.get("stacks") or [])
-    foundry_kind = "foundry" in stacks or kind in {"foundry", "mixed-foundry-vyper"}
-
-    if not foundry_kind:
-        return die(f"no Foundry project is available at {root} (detected {kind}).", 1)
-
+    # This module is the native Forge execution layer. The outer lk audit
+    # router already selected the Foundry backend, so do not rediscover the
+    # project here and reject isolated/unit-test callers.
     checks = "--no-checks" not in args
     verbose = "--verbose" in args
     quiet = not verbose
