@@ -327,6 +327,17 @@ class AnalysisAdapterTests(unittest.TestCase):
                 code = analysis_adapters.scan_repository(root)
             self.assertEqual(code, 2)
 
+    def test_single_file_source_only_evm_scan_can_succeed_for_requested_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "A.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20; contract A {}\n", encoding="utf-8"
+            )
+            with patch.object(analysis_adapters, "run_security_analysis", return_value={"results": []}):
+                code = analysis_adapters.scan_repository(source)
+            self.assertEqual(code, 0)
+
     def test_multi_language_source_inventory_is_not_hidden(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
