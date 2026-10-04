@@ -3334,6 +3334,21 @@ def _project_target_entries(config, root=None):
 
         if not entry.get("artifact"):
             entry["artifact"] = resolve_artifact(contract, address)
+        if (
+            (not entry.get("artifact") or str(contract or "").strip().lower() == "unknown")
+            and is_address(address)
+        ):
+            for candidate_path in local_artifact_paths(project_root):
+                candidate_artifact = read_artifact(candidate_path) or {}
+                candidate_name = artifact_contract_name(candidate_path, candidate_artifact)
+                if not artifact_is_project_application(project_root, candidate_path, candidate_artifact):
+                    continue
+                if _live_target_artifact_match(config, address, candidate_artifact):
+                    entry["artifact"] = candidate_path
+                    entry["contract"] = candidate_name
+                    entry["name"] = candidate_name
+                    contract = candidate_name
+                    break
         if not entry.get("source_file"):
             entry["source_file"] = source_from_artifact(entry.get("artifact"), contract)
         if not entry.get("deployment_file"):
