@@ -937,9 +937,9 @@ contract LowkeyTest_{ident} is Test {{
         uint256 attackerTokenBefore = 0;
         (bool assetOk, bytes memory assetData) =
             TARGET.staticcall(abi.encodeWithSignature("stakeToken()"));
-        if (!assetOk || assetData.length < 32) {
+        if (!assetOk || assetData.length < 32) {{
             (assetOk, assetData) = TARGET.staticcall(abi.encodeWithSignature("asset()"));
-        }
+        }}
         if (assetOk && assetData.length >= 32) {{
             assetToken = abi.decode(assetData, (address));
             assetReadOk = assetToken != address(0) && assetToken.code.length > 0;
