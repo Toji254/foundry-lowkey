@@ -188,12 +188,12 @@ def _function_blocks(source: str, language: str = "solidity") -> list[tuple[str,
         decorators: list[str] = []
         for index, line in enumerate(lines):
             stripped_line = line.strip()
-            match = re.match(r"^([ \\t]*)def\\s+(\\w+)\\s*\\([^)]*\\)\\s*:\\s*(?:#.*)?$", line.rstrip("\\n"))
+            match = re.match(r"^([ \t]*)def\s+(\w+)\s*\([^)]*\)\s*:\s*(?:#.*)?$", line.rstrip("\n"))
             if match:
                 if current:
                     name, start, indent, header = current
                     blocks.append((name, start, header, "".join(body_lines)))
-                header = "\\n".join(decorators + [line.rstrip("\\n")])
+                header = "\\n".join(decorators + [line.rstrip("\n")])
                 current = (match.group(2), index + 1, len(match.group(1)), header)
                 body_lines = []
                 decorators = []
@@ -207,7 +207,7 @@ def _function_blocks(source: str, language: str = "solidity") -> list[tuple[str,
                 else:
                     body_lines.append(line)
             elif stripped_line.startswith("@"):
-                decorators.append(line.rstrip("\\n"))
+                decorators.append(line.rstrip("\n"))
             elif stripped_line:
                 decorators = []
         if current:
