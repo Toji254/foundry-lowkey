@@ -280,6 +280,7 @@ def scan_model(root: Path, model: core.ContractModel) -> list[PatternObservation
     stripped = core._strip_source_comments(
         source,
         "vyper" if str(model.source).lower().endswith((".vy", ".vyi")) else "solidity",
+        mask_strings=True,
     )
     results: list[PatternObservation] = []
 
