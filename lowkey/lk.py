@@ -762,8 +762,16 @@ def format_output_signature(item):
 def abi_functions(abi): return [item for item in abi if item.get("type")=="function"]
 
 def matching_functions(abi,func_name):
-    if "(" in func_name: return [item for item in abi_functions(abi) if format_signature(item)==func_name]
-    return [item for item in abi_functions(abi) if item.get("name")==func_name]
+    query = str(func_name or "").strip()
+    if "(" in query:
+        return [
+            item for item in abi_functions(abi)
+            if format_signature(item).lower() == query.lower()
+        ]
+    return [
+        item for item in abi_functions(abi)
+        if str(item.get("name") or "").lower() == query.lower()
+    ]
 
 def resolve_function(func_name,target,config):
     abi=load_abi(target,config)
@@ -12306,7 +12314,11 @@ def _recommended_next_commands(command, args=None):
     rendered = []
     for item in items:
         command_text = str(item).strip()
-        if not command_text or command_text == normalized_current:
+        if (
+            not command_text
+            or command_text == normalized_current
+            or command_text.startswith(normalized_current + " ")
+        ):
             continue
         reason = _recommendation_reason(command_text)
         pair = (command_text, reason)
@@ -12537,7 +12549,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="replay": run_replay(config,args)
     elif cmd=="fork": return run_fork(args,config)
     elif cmd=="ask":
-        if not args: return fail("Usage: lk ask <function>")
+        if len(args) != 1:
+            return fail("Usage: lk ask <function>  (this command only inspects the function's parameters)")
         query=args[0]
         root=audit_context.foundry_project_root()
         target=active_project_target(config,root)
@@ -12552,14 +12565,19 @@ def dispatch_command(cmd,args,config,from_batch=False):
             print("Use a deployed project target when you need live-chain details.")
             return 0
         matches=matching_functions(funcs,query)
-        if len(matches)!=1:
-            for item in sorted(funcs,key=lambda x:function_score(x,query),reverse=True)[:8]:
-                print(" ",format_signature(item))
-        else:
-            item=matches[0]
-            print(f"Function: {format_signature(item)}")
-            for index,param in enumerate(item.get("inputs",[]),1):
-                print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
+        if len(matches) != 1:
+            suggestions = sorted(funcs,key=lambda x:function_score(x,query),reverse=True)[:8]
+            print(f"No exact function match for '{query}'.")
+            if suggestions:
+                print("Did you mean:")
+                for item in suggestions:
+                    print(f"  {format_signature(item)}")
+            print("Use 'lk functions' to list the full contract interface.")
+            return 2
+        item=matches[0]
+        print(f"Function: {format_signature(item)}")
+        for index,param in enumerate(item.get("inputs",[]),1):
+            print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
     elif cmd=="info": run_info(config)
     elif cmd=="status": run_status(config)
     elif cmd in {"project", "detect-project", "detect"}:
