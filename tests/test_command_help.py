@@ -288,6 +288,88 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("lk receipt", send_commands)
         self.assertIn("lk trace", send_commands)
 
+    def test_read_recommendations_follow_abi_relationships(self):
+        target = "0x" + "1" * 40
+        owner = "0x" + "2" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "balanceOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "account", "type": "address"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+            {
+                "type": "function",
+                "name": "ownerOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "tokenId", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "address"}],
+            },
+            {
+                "type": "function",
+                "name": "getApproved",
+                "stateMutability": "view",
+                "inputs": [{"name": "tokenId", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "address"}],
+            },
+            {
+                "type": "function",
+                "name": "tokenURI",
+                "stateMutability": "view",
+                "inputs": [{"name": "tokenId", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "string"}],
+            },
+            {
+                "type": "function",
+                "name": "approve",
+                "stateMutability": "nonpayable",
+                "inputs": [
+                    {"name": "to", "type": "address"},
+                    {"name": "tokenId", "type": "uint256"},
+                ],
+                "outputs": [],
+            },
+        ]
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=abi):
+            items = lk._recommended_next_commands("read", ["balanceOf", owner], config)
+
+        commands = [command for command, _ in items]
+        self.assertIn("lk read ownerOf [args]", commands)
+        self.assertIn("lk read getApproved [args]", commands)
+        self.assertIn("lk read tokenURI [args]", commands)
+        self.assertNotIn("lk send <function> [args] --preview", commands)
+        self.assertNotIn("lk functions", commands)
+
+    def test_write_function_recommendations_include_state_verification_reads(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "buyNft",
+                "stateMutability": "nonpayable",
+                "inputs": [{"name": "amount", "type": "uint256"}],
+                "outputs": [],
+            },
+            {
+                "type": "function",
+                "name": "balanceOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "account", "type": "address"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+        ]
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=abi):
+            items = lk._recommended_next_commands("send", ["buyNft", "5"], config)
+
+        commands = [command for command, _ in items]
+        self.assertIn("lk receipt", commands)
+        self.assertIn("lk trace", commands)
+        self.assertIn("lk read balanceOf [args]", commands)
+        self.assertNotIn("lk send <function> [args] --preview", commands)
+
     def test_recommended_next_commands_use_function_query(self):
         items = lk._recommended_next_commands("fn", ["buyNft"])
         commands = [command for command, _ in items]
