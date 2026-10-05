@@ -12833,6 +12833,12 @@ def dispatch_command(cmd,args,config,from_batch=False):
             config.pop("_config_dirty",None)
             print(f"ABI override saved: {path}")
     elif cmd in {"read"}:
+        if len(args) == 1 and is_address(args[0]):
+            return fail(
+                "Usage: lk read <function> [args]\n"
+                "       lk read <target> <function> [args]\n"
+                "A bare address is a contract target, not a function call."
+            )
         return run_cast(["call",*args],config)
     elif cmd in {"send"}:
         return run_cast(["send",*args],config)
