@@ -54,6 +54,47 @@ class CommandHelpTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("LOWKEY HELP  •  lk walkthrough", output)
 
+    def test_misspelled_help_suggests_the_correct_command(self):
+        code, output = self.capture_dispatch("walet", "-h")
+        self.assertEqual(code, 2)
+        self.assertIn("No dedicated Lowkey help page matches 'walet'.", output)
+        self.assertIn("lk wallet --h", output)
+        self.assertIn("lk --h", output)
+
+    def test_every_dispatch_root_command_has_help(self):
+        import inspect
+        import re
+
+        source = inspect.getsource(lk.dispatch_command)
+        expressions = re.findall(
+            r"(?:if|elif) cmd(?:\s+in|\s*==)\s*(?:\{([^}]+)\}|\"([^\"]+)\"|\'([^\']+)\')",
+            source,
+        )
+        commands = set()
+        for group_set, double_quoted, single_quoted in expressions:
+            if double_quoted or single_quoted:
+                commands.add(double_quoted or single_quoted)
+                continue
+            commands.update(re.findall(r"[\"']([^\"']+)[\"']", group_set))
+
+        commands.difference_update({"--version", "-V", "version"})
+        commands = {
+            command for command in commands
+            if command not in {"try", "map", "walk", "graph", "signals", "signal",
+                               "investigate", "investigation", "statediff", "state_diff",
+                               "hotspots", "target-list", "actor-list", "erc20",
+                               "resolve", "lookup", "decode-event", "decode-calldata",
+                               "returns", "error", "cheats", "cheatsheet", "cheatcode"}
+        }
+
+        missing = []
+        for command in sorted(commands):
+            canonical = lk._canonical_help_command(command)
+            if canonical not in lk.COMMAND_HELP:
+                missing.append(command)
+
+        self.assertEqual(missing, [])
+
     def test_nested_target_help(self):
         code, output = self.capture_dispatch("target", "list", "--h")
         self.assertEqual(code, 0)
