@@ -2546,6 +2546,29 @@ contract Pool {
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
+    def test_human_abi_return_explains_zero_addresses_and_status_fields(self):
+        item = {
+            "type": "function",
+            "name": "escrow",
+            "outputs": [
+                {"name": "creator", "type": "address"},
+                {"name": "recipient", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+                {"name": "currentStatus", "type": "uint8"},
+            ],
+        }
+        decoded = (
+            "0x0000000000000000000000000000000000000000\n"
+            "0x0000000000000000000000000000000000000000\n"
+            "0\n"
+            "0"
+        )
+        rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
+        self.assertIn("creator=zero address (not set) (Ethereum address; address)", rendered)
+        self.assertIn("recipient=zero address (not set) (Ethereum address; address)", rendered)
+        self.assertIn("amount=0 (integer; uint256)", rendered)
+        self.assertIn("current status=0 (status/state code) (integer; uint8)", rendered)
+
     def test_human_abi_return_preserves_multi_value_lines(self):
         item = {
             "type": "function",
@@ -2559,6 +2582,19 @@ contract Pool {
         rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
         self.assertIn("amount=1 (integer; uint256)", rendered)
         self.assertIn("recipient=0x2222222222222222222222222222222222222222 (Ethereum address; address)", rendered)
+
+    def test_function_recommendations_use_parameter_names(self):
+        abi = [{
+            "type": "function",
+            "name": "ownerOf",
+            "stateMutability": "view",
+            "inputs": [{"name": "tokenId", "type": "uint256"}],
+            "outputs": [{"name": "", "type": "address"}],
+        }]
+        self.assertEqual(
+            lk._function_recommendation_command("read", abi[0], abi),
+            "lk read ownerOf <tokenId>",
+        )
 
     def test_custom_balance_of_does_not_claim_token_kind_without_evidence(self):
         item = {
