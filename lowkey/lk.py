@@ -12302,13 +12302,10 @@ def _recommended_next_commands(command, args=None):
             "lk changes '<signature>' <values...>",
         ]
 
-    # If a new command lacks a curated workflow, reuse its documented related
-    # commands before falling back to the core audit loop.
+    # Recommendations are deliberately opt-in. A command without a curated
+    # workflow is better served by no footer than by generic/unrelated advice.
     if not items:
-        entry = COMMAND_HELP.get(canonical)
-        items = list(entry.get("related") or [])[:4] if entry else []
-    if not items:
-        items = ["lk status", "lk functions", "lk context"]
+        return []
 
     normalized_current = f"lk {command_key}".strip()
     rendered = []
