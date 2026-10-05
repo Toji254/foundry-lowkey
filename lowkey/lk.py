@@ -11812,6 +11812,7 @@ START HERE
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
   lk audit                           Run the interactive audit workflow.
+  lk benchmark                       Run deterministic source-triage regression checks.
   lk break                           Aggressively attack the current target/function in a local Anvil/Forge lab.
   lk q                              Get the next auditor-mindset question from current evidence.
   lk questions                      See the compact question frontier across the project.
@@ -11895,7 +11896,7 @@ UNDERSTAND THE PROJECT
   lk fn [query]                    Find/list functions. Example: lk fn release
   lk fn -h                         Explain function-search syntax.
   lk ask <function>                Show function inputs. Example: lk ask createEscrow
-  lk wizard <function> [mode]     Interactive argument helper.
+  lk wizard <function> [values...] [call|send|encode] Interactive argument helper.
   lk layout <Contract>             Show Forge storage layout.
   lk deps [src]                    Show imports/inheritance. Example: lk deps
   lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
