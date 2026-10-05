@@ -2294,7 +2294,7 @@ def _human_type_label(type_name):
     """Translate Solidity ABI types into labels a learner can understand."""
     value=str(type_name or "").strip()
     lowered=value.lower()
-    if re.fullmatch(r"u?int\\d*", lowered):
+    if re.fullmatch(r"u?int\d*", lowered):
         return "integer"
     if lowered=="bool":
         return "true/false value"
@@ -2304,7 +2304,7 @@ def _human_type_label(type_name):
         return "text"
     if lowered=="bytes":
         return "raw bytes"
-    if re.fullmatch(r"bytes\\d+", lowered):
+    if re.fullmatch(r"bytes\d+", lowered):
         return "fixed-size bytes"
     if lowered.startswith("tuple"):
         return "structured value"
@@ -2362,7 +2362,7 @@ def format_human_abi_return(item, decoded, config, abi=None):
         rendered=value
         if type_name.lower().startswith("uint") or type_name.lower().startswith("int"):
             try:
-                if re.fullmatch(r"-?\\d+", rendered):
+                if re.fullmatch(r"-?\d+", rendered):
                     rendered=f"{int(rendered):,}"
             except ValueError:
                 pass
