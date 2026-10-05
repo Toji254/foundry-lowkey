@@ -2542,7 +2542,7 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("Return: balance (uint256) = 0", rendered)
+        self.assertIn("Return: balance = 0 tokens  (integer; uint256)", rendered)
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
