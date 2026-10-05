@@ -1514,8 +1514,8 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
     write_json(manifest_path(root), manifest)
     if generate:
         generate_poc(root)
-    render_audit_dashboard(root, pipeline_code=code)
-    return code
+    render_audit_dashboard(root, pipeline_code=final_code)
+    return final_code
 
 
 def _write_step_evidence(root: str, label: str, command: Sequence[str], code: int,
