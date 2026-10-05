@@ -17,6 +17,7 @@ class IntegratedCommandSurfaceTests(unittest.TestCase):
             "lk lab",
             "lk walkthrough --auto",
             "lk audit run",
+            "lk benchmark",
             "lk poc",
             "lk project",
             "lk system",
