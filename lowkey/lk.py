@@ -539,7 +539,8 @@ def list_anvil_actors(config):
         owner=assigned_anvil_address(config,address)
         marker="*" if owner==config.get("actor") else " "
         label=f" -> {owner}" if owner else ""
-        print(f"{marker} {index:>2}: {address}{label}")
+        display = apply_labels(address, config)
+        print(f"{marker} {index:>2}: {display}")
 
 def resolve_wallet_key(config,wallet_name=None):
     name=wallet_name or config.get("actor")
@@ -582,9 +583,10 @@ def actor_display(config):
     if isinstance(entry,dict) and entry.get("source")=="anvil-default":
         index=entry.get("anvil_index","?")
         address=entry.get("address","?")
-        return f"{actor} (Anvil #{index}, {address})"
+        return f"{actor} ({address}) [Anvil #{index}]"
     if isinstance(entry,dict) and entry.get("source")=="anvil-impersonated":
-        return f"{actor} (impersonated, {entry.get('address','?')})"
+        address = entry.get("address", "?")
+        return f"{actor} ({address}) [impersonated]"
     if isinstance(entry,dict) and entry.get("env"):
         return f"{actor} (env:{entry['env']})"
     if isinstance(entry,dict) and entry.get("private_key"):
@@ -2089,7 +2091,7 @@ def run_info(config):
     target = config.get("target")
     if not target:
         return fail("Error: Set target first.")
-    print(f"Target: {target}")
+    print(f"Target: {apply_labels(target, config)}")
     run_chain(config)
     code = run_cast(["code", target], config, capture=True) or ""
     print(f"Code:   {'YES' if code.startswith('0x') and len(code) > 2 else 'NO'}")
@@ -2935,7 +2937,7 @@ def run_recon(config):
     target=config.get("target")
     if not target:
         return fail("Error: Set target first.")
-    print(f"CONTRACT RECON: {target}\n" + "="*52)
+    print(f"CONTRACT RECON: {apply_labels(target, config)}\n" + "="*52)
     balance=run_cast(["balance",target],config,capture=True)
     code=run_cast(["code",target],config,capture=True) or ""
     codehash=run_cast(["codehash",target],config,capture=True)
@@ -4031,7 +4033,7 @@ def _select_project_target(config, entry, root):
         artifact=artifact,
         source=entry.get("source") or "project",
     )
-    print(f"Target selected: {entry.get('name') or contract} -> {address}")
+    print(f"Target selected: {entry.get('name') or contract} -> {apply_labels(address, config)}")
     if entry.get("source_file"):
         print(f"  Source       : {entry.get('source_file')}")
     if entry.get("artifact"):
@@ -4454,7 +4456,8 @@ def run_auto_target(config,name=None):
     if not records:
         existing=project_context_target(root)
         if existing:
-            print(f"Target already remembered for this project: {existing.get('contract') or 'unknown'} -> {existing.get('address')}")
+            existing_address = apply_labels(existing.get("address"), config)
+            print(f"Target already remembered for this project: {existing.get('contract') or 'unknown'} -> {existing_address}")
             return 0
         return fail("No deployment found in broadcast/. Build artifacts exist, but a live target still needs deployment.")
 
@@ -4491,8 +4494,8 @@ def run_auto_target(config,name=None):
         print(f"Runtime match  : {match_label}")
     if record.get("deployment_kind") == "additional":
         parent = record.get("parent_contract") or "deployment transaction"
-        print(f"Instance type  : nested CREATE from {parent}")
-    print(f"Target selected: {alias} -> {record['address']}")
+        print(f"Instance type  : nested CREATE from {apply_labels(parent, config)}")
+    print(f"Target selected: {alias} -> {apply_labels(record['address'], config)}")
     return 0
 
 
@@ -12937,8 +12940,13 @@ def dispatch_command(cmd,args,config,from_batch=False):
         else: return fail("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
     elif cmd=="actor":
         if args and args[0]=="reset":
-            config["actor"]=None
+            previous = config.get("actor")
+            config["actor"] = None
             save_config(config)
+            if previous:
+                print(f"Actor reset: no active actor (profile '{previous}' was kept).")
+            else:
+                print("Actor reset: no active actor.")
         elif len(args)>=2 and args[0].isdigit():
             return select_anvil_actor(config,args[0],args[1])
         elif len(args)==1 and args[0] in config.get("wallets",{}):
