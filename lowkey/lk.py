@@ -11799,7 +11799,16 @@ COMMAND_HELP = {
         "Use it when a fork already contains the account whose behavior you want to reproduce.",
         related=["lk impersonate", "lk fork"],
     ),
-    "actor": _help_entry("Name/select a local Anvil account.", "lk actor <index> <name> | lk actor <name> | lk actor reset", "lk actor 0 Alice", "Use it when you want readable role names instead of anonymous Anvil slots.", related=["lk actors", "lk impersonate"]),
+    "actor": _help_entry(
+        "Name/select a local Anvil account.",
+        "lk actor <index> <name> | lk actor <name> | lk actor reset",
+        "lk actor 0 Alice",
+        "Use it when you want readable role names instead of anonymous Anvil slots.",
+        forms=[
+            ("lk actor <index> <name>", "Give an Anvil account a readable role name.", "lk actor 0 Alice"),
+            ("lk actor <name>", "Switch to an actor profile you already created.", "lk actor Alice"),
+            ("lk actor reset", "Clear the active actor without deleting the saved profile.", "lk actor reset"),
+        ],
         children={
             "reset": _help_entry(
                 "Clear the active actor without deleting its saved profile.",
@@ -11808,13 +11817,8 @@ COMMAND_HELP = {
                 "Use it when you want Lowkey to have no active actor while keeping the profile.",
             ),
         },
-
-        forms=[
-            ("lk actor <index> <name>", "Give an Anvil account a readable role name.", "lk actor 0 Alice"),
-            ("lk actor <name>", "Switch to an actor profile you already created.", "lk actor Alice"),
-            ("lk actor reset", "Clear the active actor without deleting the saved profile.", "lk actor reset"),
-        ],
-
+        related=["lk actors", "lk impersonate"],
+    ),
     "actors": _help_entry("List available local Anvil accounts.", "lk actors", "lk actors", "Use it when you need to know which local addresses are available.", related=["lk actor", "lk impersonate"]),
     "impersonate": _help_entry("Impersonate an address on local Anvil/a fork.", "lk impersonate <address> [name]", "lk impersonate 0x... Whale", "Use it when the account you care about already exists on a local fork.", related=["lk fork", "lk actor"]),
     "as": _help_entry("Run one command as another configured actor, then restore your previous actor.", "lk as <actor> <command> [args...]", "lk as Bob send approve 0x... 1000", "Use it when one investigation needs several protocol roles.", related=["lk actor", "lk wallet"]),
