@@ -11641,7 +11641,7 @@ COMMAND_HELP = {
 }
 
 
-def _native_forge_help(command: str, summary: str, example: str) -> dict[str, Any]:
+def _native_forge_help(command: str, summary: str, example: str) -> dict:
     return _help_entry(
         summary,
         f"lk {command} [forge-options...]",
