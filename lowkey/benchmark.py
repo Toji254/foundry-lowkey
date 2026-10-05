@@ -21,9 +21,12 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from analysis_adapters import source_triage
+    from .analysis_adapters import source_triage
 except ImportError:  # pragma: no cover
-    source_triage = None
+    try:
+        from analysis_adapters import source_triage
+    except ImportError:
+        source_triage = None
 
 
 CASES: tuple[dict[str, Any], ...] = (
