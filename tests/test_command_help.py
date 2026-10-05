@@ -2,7 +2,7 @@ import importlib.util
 import io
 import pathlib
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
 
