@@ -12411,7 +12411,7 @@ def main():
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
-        "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions","benchmark"
+        "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
     if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks","break"}:
         try:
