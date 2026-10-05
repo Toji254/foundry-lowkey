@@ -2517,6 +2517,52 @@ contract Pool {
         self.assertEqual(lk.humanize_value(raw), raw)
         self.assertIn("1.0000 ETH", lk.humanize_value(raw, assume_wei=True))
 
+    def test_actor_identity_is_used_in_anvil_and_common_display(self):
+        alice = "0x" + "1" * 40
+        config = {
+            "actor": "Alice",
+            "wallets": {
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": alice,
+                }
+            },
+            "labels": {},
+        }
+        self.assertEqual(lk.actor_display(config), f"Alice ({alice}) [Anvil #0]")
+
+        with patch.object(
+            lk,
+            "anvil_rpc_info",
+            return_value={"url": "http://127.0.0.1:8545", "accounts": [alice]},
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                lk.list_anvil_actors(config)
+        rendered = output.getvalue()
+        self.assertIn(f"Alice ({alice})", rendered)
+        self.assertNotIn(f"{alice} -> Alice", rendered)
+
+    def test_actor_reset_deselects_without_deleting_profile(self):
+        alice = "0x" + "1" * 40
+        config = {
+            "actor": "Alice",
+            "wallets": {
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": alice,
+                }
+            },
+            "labels": {},
+        }
+        with patch.object(lk, "save_config"):
+            result = lk.dispatch_command("actor", ["reset"], config)
+        self.assertEqual(result, 0)
+        self.assertIsNone(config["actor"])
+        self.assertIn("Alice", config["wallets"])
+
     def test_known_actor_addresses_render_as_name_with_address(self):
         address = "0x" + "a" * 40
         config = {
