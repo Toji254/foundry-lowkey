@@ -11640,6 +11640,46 @@ COMMAND_HELP = {
     "st": _help_entry("Short low-level/state helper alias.", "lk st ...", "lk st storage 0", "Use it when you want the compact forensic form.", related=["lk raw", "lk state-diff"]),
 }
 
+
+def _native_forge_help(command: str, summary: str, example: str) -> dict[str, Any]:
+    return _help_entry(
+        summary,
+        f"lk {command} [forge-options...]",
+        example,
+        f"Use it when you need Forge's native '{command}' capability while keeping Lowkey's project routing and command surface.",
+        options=[
+            ("Forge options", "Pass any options supported by the installed Forge command.", f"lk {command} --help"),
+            ("Forwarding", "Lowkey forwards the remaining arguments to the native Forge command; behavior depends on the installed Forge version.", f"lk {command} --help"),
+        ],
+        related=["lk forge", "lk doctor"],
+    )
+
+
+# Native Forge commands routed through bin/lk deserve first-class Lowkey help too.
+COMMAND_HELP.update({
+    "bind": _native_forge_help("bind", "Generate Rust bindings from the current Forge project interfaces.", "lk bind --help"),
+    "bind-json": _native_forge_help("bind-json", "Generate JSON-form binding output from the current Forge project.", "lk bind-json --help"),
+    "cache": _native_forge_help("cache", "Manage Forge's compiler/build cache.", "lk cache --help"),
+    "clean": _native_forge_help("clean", "Remove Forge build artifacts and generated output.", "lk clean --help"),
+    "compiler": _native_forge_help("compiler", "Inspect or use Forge compiler-related tooling.", "lk compiler --help"),
+    "completions": _native_forge_help("completions", "Generate shell completion scripts for Forge.", "lk completions --help"),
+    "config": _native_forge_help("config", "Inspect or work with Forge configuration.", "lk config --help"),
+    "doc": _native_forge_help("doc", "Generate or inspect Forge documentation output.", "lk doc --help"),
+    "eip712": _native_forge_help("eip712", "Work with Forge's EIP-712 tooling.", "lk eip712 --help"),
+    "flatten": _native_forge_help("flatten", "Flatten Solidity imports into a single Forge output file.", "lk flatten --help"),
+    "init": _native_forge_help("init", "Initialize a new Forge project.", "lk init --help"),
+    "install": _native_forge_help("install", "Install Forge project dependencies.", "lk install --help"),
+    "lsp": _native_forge_help("lsp", "Run Forge's language-server tooling.", "lk lsp --help"),
+    "remappings": _native_forge_help("remappings", "Inspect or generate Solidity import remappings.", "lk remappings --help"),
+    "remove": _native_forge_help("remove", "Remove Forge project dependencies.", "lk remove --help"),
+    "soldeer": _native_forge_help("soldeer", "Manage Solidity dependencies through Forge's Soldeer integration.", "lk soldeer --help"),
+    "tree": _native_forge_help("tree", "Show the Forge dependency/project tree.", "lk tree --help"),
+    "update": _native_forge_help("update", "Update Forge project dependencies.", "lk update --help"),
+    "verify-bytecode": _native_forge_help("verify-bytecode", "Verify deployed bytecode with Forge tooling.", "lk verify-bytecode --help"),
+    "verify-check": _native_forge_help("verify-check", "Check whether contract verification configuration is valid.", "lk verify-check --help"),
+    "verify-contract": _native_forge_help("verify-contract", "Verify a deployed contract through Forge tooling.", "lk verify-contract --help"),
+})
+
 HELP_ALIASES = {
     "cheats": "cheat",
     "cheatsheet": "cheat",
