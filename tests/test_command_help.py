@@ -299,6 +299,45 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(lk._recommended_next_commands("benchmark", ["--json"]), [])
         self.assertEqual(lk._recommended_next_commands("project", ["json"]), [])
 
+    def test_function_lookup_is_case_insensitive(self):
+        abi = [
+            {"type": "function", "name": "balanceOf", "inputs": [{"name": "account", "type": "address"}]}
+        ]
+        self.assertEqual(len(lk.matching_functions(abi, "balanceof")), 1)
+        self.assertEqual(len(lk.matching_functions(abi, "BALANCEOF")), 1)
+        self.assertEqual(len(lk.matching_functions(abi, "balanceOf(address)")), 1)
+
+    def test_recommendation_footer_does_not_repeat_current_command_with_arguments(self):
+        items = lk._recommended_next_commands("ask", ["balanceof"])
+        commands = [command for command, _ in items]
+        self.assertNotIn("lk ask balanceof", commands)
+        self.assertNotIn("lk ask <function>", commands)
+
+    def test_ask_rejects_extra_arguments(self):
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            result = lk.dispatch_command("ask", ["balanceof", "0x" + "1" * 40], {})
+        self.assertEqual(result, 2)
+        self.assertIn("Usage: lk ask <function>", output.getvalue())
+
+    def test_ask_reports_no_exact_match_instead_of_dumping_fuzzy_results(self):
+        root = pathlib.Path(".")
+        abi = [
+            {"type": "function", "name": "balanceOf", "inputs": [{"name": "account", "type": "address"}]},
+            {"type": "function", "name": "ownerOf", "inputs": [{"name": "tokenId", "type": "uint256"}]},
+        ]
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=root), \
+             patch.object(lk, "active_project_target", return_value="0x" + "2" * 40), \
+             patch.object(lk, "load_abi", return_value=abi):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.dispatch_command("ask", ["unknownFunction"], {})
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertIn("No exact function match", rendered)
+        self.assertIn("Did you mean:", rendered)
+        self.assertIn("balanceOf(address)", rendered)
+
     def test_recommendation_footer_skips_failed_commands(self):
         output = io.StringIO()
         with redirect_stdout(output):
