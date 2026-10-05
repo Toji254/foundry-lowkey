@@ -12225,7 +12225,6 @@ _NEXT_COMMANDS = {
     "export": ["lk findings", "lk workspace", "lk session end"],
     "doctor": ["lk self-test", "lk build", "lk status"],
     "self-test": ["lk doctor", "lk status"],
-    "version": ["lk doctor", "lk self-test"],
     "clone": ["lk doctor", "lk project", "lk build"],
     "deps": ["lk project", "lk risk", "lk scan src"],
     "layout": ["lk mapping <slot> <key>", "lk storage <slot>", "lk changes '<signature>' <values...>"],
