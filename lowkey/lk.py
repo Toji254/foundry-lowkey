@@ -10542,37 +10542,67 @@ def run_status(config):
             print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
 def run_wizard(config,args):
     if not args:
-        return fail("Usage: lk wizard <function> [call|send|encode]")
-    mode=args[1].lower() if len(args)>1 else "call"
-    if mode not in {"call","send","encode"}:
-        return fail("Mode must be call, send, or encode.")
+        return fail("Usage: lk wizard <function> [values...] [call|send|encode]")
+
     target=config.get("target")
     if not target:
         return fail("Error: Set target first.")
+
     funcs=abi_functions(load_abi(target,config))
     matches=matching_functions(funcs,args[0])
     if len(matches)!=1:
         return fail("Error: Function must resolve to exactly one ABI entry.")
-        for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]:
-            print(" ",format_signature(item))
-        return
-    item=matches[0]; signature=format_signature(item); values=[]
+
+    item=matches[0]
+    signature=format_signature(item)
+    params=item.get("inputs", [])
+
+    # Preserve the explicit mode spelling while treating positional values as
+    # actual function arguments. Without a mode, view/pure functions default to
+    # call and state-changing functions default to a confirmed send.
+    remaining=list(args[1:])
+    explicit_mode=None
+    if remaining and remaining[0].lower() in {"call","send","encode"}:
+        explicit_mode=remaining.pop(0).lower()
+    mode=explicit_mode or (
+        "call" if item.get("stateMutability") in {"view","pure"} else "send"
+    )
+
+    if len(remaining) > len(params):
+        return fail(
+            f"Error: {signature} expects {len(params)} argument(s), "
+            f"but {len(remaining)} value(s) were provided."
+        )
+
+    values=[]
     print(f"Function: {signature}")
-    for index,param in enumerate(item.get("inputs",[]),1):
+    for index,param in enumerate(params,1):
         label=param.get("name") or f"arg{index}"
         ptype=canonical_type(param)
-        if ptype.startswith(('uint', 'int')):
-            _print_numeric_unit_reference(label, ptype)
-        try: value=input(f"{label} ({ptype}): ").strip()
-        except EOFError: print("Wizard cancelled."); return 0
+
+        if index <= len(remaining):
+            value=str(remaining[index-1]).strip()
+            print(f"{label} ({ptype}): {value}")
+        else:
+            if ptype.startswith(('uint', 'int')):
+                _print_numeric_unit_reference(label, ptype)
+            try:
+                value=input(f"{label} ({ptype}): ").strip()
+            except EOFError:
+                print("Wizard cancelled.")
+                return 0
+
         if value and ptype.startswith(('uint', 'int')):
             value=_normalize_human_numeric_input(value, ptype, label)
         if not value:
             return fail("Argument values are required.")
         values.append(value)
-    if mode=="encode": run_cast(["calldata",signature,*values],config)
-    elif mode=="send": run_cast(["send",signature,*values,"--confirm"],config)
-    else: run_cast(["call",signature,*values],config)
+
+    if mode=="encode":
+        return run_cast(["calldata",signature,*values],config)
+    if mode=="send":
+        return run_cast(["send",signature,*values,"--confirm"],config)
+    return run_cast(["call",signature,*values],config)
 
 
 
@@ -11343,7 +11373,19 @@ COMMAND_HELP = {
         related=["lk functions", "lk ask"]
     ),
     "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createbounty", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
-    "wizard": _help_entry("Interactively collect arguments for a function, then call, send, or encode it.", "lk wizard <function> [call|send|encode]", "lk wizard release call", "Use it when manual ABI argument entry is getting annoying.", related=["lk ask", "lk read", "lk send"]),
+    "wizard": _help_entry(
+        "Interactively collect arguments for a function, then call, send, or encode it. "
+        "Without an explicit mode, view/pure functions use call and state-changing functions "
+        "use a confirmed send.",
+        "lk wizard <function> [values...] [call|send|encode]",
+        "lk wizard buyNft 5",
+        "Use it as the Remix-like interactive path: pass values directly when you have them, "
+        "or omit them and Lowkey will prompt.",
+        options=[
+            ("call|send|encode", "Optional explicit action. Without it, Lowkey infers call for view/pure and send for state-changing functions.", "lk wizard buyNft send"),
+        ],
+        related=["lk ask", "lk read", "lk send"]
+    ),
     "probe": _help_entry("Try a function as local actors and record success/revert behavior without assertions.", "lk probe <function> [args...]", "lk probe withdraw 1000 --actor Attacker", "Use it for a quick behavioral experiment before writing a full proof.", related=["lk walkthrough test", "lk generate test"]),
     "changes": _help_entry("Show storage changes caused by a function call in an isolated context.", "lk changes '<name(parameter TYPES...)>' <VALUES...>", "lk changes 'createbounty(address,uint256)' 0x... 100 ether", "Use it to connect function behavior to concrete state changes.", related=["lk mapping", "lk layout", "lk trace"]),
     "state-diff": _help_entry("Alias for the storage-change reproduction workflow.", "lk state-diff '<name(parameter TYPES...)>' <VALUES...>", "lk state-diff 'deposit(uint256)' 1000", "Use it when the state-diff terminology makes more sense to you.", related=["lk changes", "lk snapshot", "lk diff"]),
