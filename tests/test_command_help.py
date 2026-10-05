@@ -395,6 +395,16 @@ class CommandHelpTests(unittest.TestCase):
         self.assertNotIn("lk ask balanceof", commands)
         self.assertNotIn("lk ask <function>", commands)
 
+    def test_read_rejects_bare_target_address(self):
+        output = io.StringIO()
+        target = "0x" + "1" * 40
+        with redirect_stdout(output), redirect_stderr(output):
+            result = lk.dispatch_command("read", [target], {})
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertIn("Usage: lk read <function> [args]", rendered)
+        self.assertIn("A bare address is a contract target, not a function call.", rendered)
+
     def test_ask_rejects_extra_arguments(self):
         output = io.StringIO()
         with redirect_stdout(output), redirect_stderr(output):
