@@ -69,10 +69,13 @@ try:
         dependency_boundary as shared_dependency_boundary,
         run_bootstrap as run_shared_bootstrap,
         runtime_environment,
+        command_uses_node,
+        node_runtime_status,
     )
 except ImportError:
     shared_bootstrap_status = shared_classify_build_failure = run_shared_bootstrap = None
     shared_project_build_command = shared_project_test_command = shared_dependency_boundary = None
+    command_uses_node = node_runtime_status = None
 
     def runtime_environment(root: str | os.PathLike[str] = ".") -> tuple[dict[str, str], str | None]:
         return dict(os.environ), None

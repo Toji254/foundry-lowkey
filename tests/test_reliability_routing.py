@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -107,6 +108,67 @@ class ReliabilityRoutingTests(unittest.TestCase):
                 with patch.object(lk.audit_context, "foundry_project_root", return_value=root),                      contextlib.redirect_stdout(output):
                     code = lk.run_scan([str(root)])
             self.assertEqual(code, 2)
+
+    def test_native_build_without_safe_command_returns_review_needed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(lk, "detected_project_root", return_value=root), \
+                 patch.object(lk, "detect_project", return_value={
+                     "root": str(root), "backend": "hardhat", "stacks": ["hardhat"],
+                 }), \
+                 patch.object(lk, "project_build_command", return_value=None):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = lk.run_native_project_command(lk.fresh_config(), "build", [])
+            self.assertEqual(code, 2)
+            self.assertIn("REVIEW NEEDED", output.getvalue())
+
+    def test_native_node_command_with_unsatisfied_pin_returns_review_needed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".nvmrc").write_text("18.18.0\n", encoding="utf-8")
+            command = [str(root / "node_modules" / ".bin" / "hardhat"), "compile"]
+            with patch.object(lk, "detected_project_root", return_value=root), \
+                 patch.object(lk, "detect_project", return_value={
+                     "root": str(root), "backend": "hardhat", "stacks": ["hardhat"],
+                 }), \
+                 patch.object(lk, "project_build_command", return_value=(root, command, "local Hardhat binary")), \
+                 patch.object(lk, "runtime_environment", return_value=(dict(os.environ), "18.18.0")), \
+                 patch.object(lk, "node_runtime_status", return_value={
+                     "required": "18.18.0", "matched": False, "path": None,
+                 }):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = lk.run_native_project_command(lk.fresh_config(), "build", [])
+            self.assertEqual(code, 2)
+            rendered = output.getvalue()
+            self.assertIn("REVIEW NEEDED", rendered)
+            self.assertIn("18.18.0", rendered)
+
+    def test_native_build_failure_is_classified_without_auto_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command = ["hardhat", "compile"]
+
+            class Result:
+                returncode = 1
+                stdout = ""
+                stderr = "Error HH12: Config file is invalid; parse error"
+
+            with patch.object(lk, "detected_project_root", return_value=root), \
+                 patch.object(lk, "detect_project", return_value={
+                     "root": str(root), "backend": "hardhat", "stacks": ["hardhat"],
+                 }), \
+                 patch.object(lk, "project_build_command", return_value=(root, command, "local Hardhat binary")), \
+                 patch.object(lk, "runtime_environment", return_value=(dict(os.environ), None)), \
+                 patch.object(lk.subprocess, "run", return_value=Result()):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    code = lk.run_native_project_command(lk.fresh_config(), "build", [])
+            self.assertEqual(code, 1)
+            rendered = err.getvalue()
+            self.assertIn("NATIVE FAILURE : configuration", rendered)
+            self.assertIn("REVIEW NEEDED", rendered)
 
     def test_generic_source_project_has_explicit_partial_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:

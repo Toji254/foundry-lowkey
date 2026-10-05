@@ -244,6 +244,18 @@ class ProjectDetectionTests(unittest.TestCase):
                 info = project_detection.detect_project(root)
             self.assertEqual(info["backend"], "generic")
 
+    def test_go_module_selects_go_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "go.mod").write_text("module example.com/demo\n\ngo 1.22\n", encoding="utf-8")
+            (root / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+
+            info = project_detection.detect_project(root)
+
+            self.assertEqual(info["backend"], "go")
+            self.assertEqual(info["build_backend"], "go")
+            self.assertIn("go", info["stacks"])
+
     def test_cairo_manifest_wins_over_nested_solidity_dependency(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

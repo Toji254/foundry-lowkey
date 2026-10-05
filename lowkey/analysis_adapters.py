@@ -403,6 +403,8 @@ def _manifest_stack(root: Path) -> tuple[list[str], list[str]]:
         stacks.append("cairo-starknet")
     if ((root / "Cargo.toml").is_file() or "rust" in languages) and "cosmwasm" not in stacks and "solana-anchor" not in stacks:
         stacks.append("cargo")
+    if (root / "go.mod").is_file() or (root / "go.work").is_file() or "go" in languages:
+        stacks.append("go")
 
     vyper = "vyper" in languages or "vyper-interface" in languages
     if vyper or any((root / name).is_file() for name in (
@@ -884,6 +886,24 @@ def _persist_universal_evidence(project_root: Path, payload: dict[str, Any]) -> 
 
 
 
+def _move_framework_evidence(root: Path) -> str | None:
+    """Return the Move framework a repository declares, or None when ambiguous."""
+    text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (root / "Move.toml", root / "Move.lock")
+        if path.is_file()
+    ).lower()
+    if not text.strip():
+        return None
+    aptos = bool(re.search(r"aptos-labs/aptos|aptos-framework|aptosframework", text))
+    sui = bool(re.search(r"mystenlabs/sui|sui-framework|\bsui\s*=", text))
+    if aptos and not sui:
+        return "aptos"
+    if sui and not aptos:
+        return "sui"
+    return None
+
+
 def available_security_analyzers(
     root: Path,
     stacks: list[str] | None = None,
@@ -899,7 +919,7 @@ def available_security_analyzers(
         tools.append("cargo-audit")
     if ({"cargo", "solana-anchor", "cosmwasm"} & stacks or "rust" in languages) and shutil.which("cargo-geiger"):
         tools.append("cargo-geiger")
-    if "move" in stacks and shutil.which("aptos"):
+    if "move" in stacks and _move_framework_evidence(root) == "aptos" and shutil.which("aptos"):
         tools.append("aptos-move-prove")
     return tools
 

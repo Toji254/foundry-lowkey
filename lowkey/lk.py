@@ -49,6 +49,9 @@ try:
         classify_build_failure,
         project_build_command,
         project_test_command,
+        runtime_environment,
+        command_uses_node,
+        node_runtime_status,
         _is_lowkey_source_checkout,
     )
 except ImportError:
@@ -57,6 +60,7 @@ except ImportError:
     workspace_selection = set_workspace_selection = clear_workspace_selection = None
     bootstrap_project = None
     bootstrap_status = classify_build_failure = project_build_command = project_test_command = None
+    runtime_environment = command_uses_node = node_runtime_status = None
     _is_lowkey_source_checkout = None
     detected_project_root = lambda start=".": Path(start).resolve()
 
@@ -5399,6 +5403,35 @@ def _foundry_native_bootstrap_commands(root, build_output=""):
     return [list(action.get("command") or []) for action in plan.get("actions", []) if action.get("command")]
 
 
+def _native_command_runtime(cwd, command):
+    """Return (env, review_message) for a native command honoring a Node pin.
+
+    If the project declares a Node pin that cannot be satisfied by an
+    already-installed runtime, the caller must stop and report REVIEW NEEDED
+    rather than run under an incompatible runtime. Lowkey never downloads a
+    runtime automatically.
+    """
+    env = dict(os.environ)
+    if runtime_environment is None or command_uses_node is None or not command_uses_node(command):
+        return env, None
+    try:
+        env, required = runtime_environment(cwd)
+    except Exception:
+        return dict(os.environ), None
+    if not required:
+        return env, None
+    try:
+        status = node_runtime_status(cwd) if node_runtime_status is not None else {"matched": True}
+    except Exception:
+        return env, None
+    if status.get("matched"):
+        return env, None
+    return env, (
+        f"RESULT: REVIEW NEEDED — project declares Node {required}, but no "
+        "already-installed matching runtime was found. Lowkey will not download a runtime."
+    )
+
+
 def _run_project_build(config, root):
     """Build through the shared repository-aware bootstrap/recovery layer."""
     root_path = Path(root)
@@ -5499,6 +5532,10 @@ def _run_project_build(config, root):
     print(f"Build system : {' '.join(command)}")
     print(f"Project      : {build_root}")
     print(f"Evidence     : {evidence}")
+    native_env, runtime_review = _native_command_runtime(build_root, command)
+    if runtime_review:
+        print(runtime_review)
+        return 2
     print("Status       : running...")
 
     def run_native_build():
@@ -5508,7 +5545,7 @@ def _run_project_build(config, root):
                 cwd=str(build_root),
                 capture_output=True,
                 text=True,
-                env={**os.environ, "CI": "1"},
+                env={**native_env, "CI": "1"},
                 timeout=900,
             )
         except subprocess.TimeoutExpired as error:
@@ -9191,6 +9228,10 @@ def run_native_project_command(config, command_name, args):
     print(f"Project : {cwd}")
     print(f"Command : {' '.join(command)}")
     print(f"Source  : {evidence}")
+    native_env, runtime_review = _native_command_runtime(cwd, command)
+    if runtime_review:
+        print(runtime_review)
+        return 2
     try:
         timeout = max(30, min(int(os.environ.get("LOWKEY_NATIVE_TIMEOUT", "120")), 1800))
     except ValueError:
@@ -9200,15 +9241,38 @@ def run_native_project_command(config, command_name, args):
             command,
             cwd=str(cwd),
             stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             timeout=timeout,
-            env={**os.environ, "CI": "1"},
+            env={**native_env, "CI": "1"},
         )
     except subprocess.TimeoutExpired:
         print(f"TIMEOUT: native {command_name} command exceeded {timeout}s.", file=sys.stderr)
         return 124
     except OSError as exc:
         return fail(f"Error executing native {command_name}: {exc}", 1)
-    return result.returncode
+
+    stdout = getattr(result, "stdout", "") or ""
+    stderr = getattr(result, "stderr", "") or ""
+    if stdout:
+        print(stdout, end="" if stdout.endswith("\n") else "\n")
+    if stderr:
+        print(stderr, end="" if stderr.endswith("\n") else "\n", file=sys.stderr)
+
+    returncode = getattr(result, "returncode", 0)
+    if returncode != 0 and classify_build_failure is not None:
+        classification = classify_build_failure(f"{stdout}\n{stderr}", command)
+        print(
+            f"NATIVE FAILURE : {classification.get('category', 'unknown')}",
+            file=sys.stderr,
+        )
+        print(f"Reason         : {classification.get('reason', '')}", file=sys.stderr)
+        if not classification.get("repairable"):
+            print(
+                "RESULT: REVIEW NEEDED — Lowkey will not auto-repair this native failure.",
+                file=sys.stderr,
+            )
+    return returncode
 
 
 def run_deps(args):
