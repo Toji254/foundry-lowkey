@@ -2542,7 +2542,7 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("Return: balance = 0 units  (integer; uint256)", rendered)
+        self.assertIn("Return: balance = 0 units (unit not specified by ABI)  [uint256]", rendered)
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
@@ -2564,10 +2564,10 @@ contract Pool {
             "0"
         )
         rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
-        self.assertIn("creator=zero address (not set) (Ethereum address; address)", rendered)
-        self.assertIn("recipient=zero address (not set) (Ethereum address; address)", rendered)
-        self.assertIn("amount=0 (integer; uint256)", rendered)
-        self.assertIn("current status=0 (status/state code) (integer; uint8)", rendered)
+        self.assertIn("creator=zero address (not set) [address]", rendered)
+        self.assertIn("recipient=zero address (not set) [address]", rendered)
+        self.assertIn("amount=0 units (unit not specified by ABI) [uint256]", rendered)
+        self.assertIn("current status=0 (status/state code) [uint8]", rendered)
 
     def test_human_abi_return_preserves_multi_value_lines(self):
         item = {
@@ -2580,8 +2580,8 @@ contract Pool {
         }
         decoded = "1\n0x2222222222222222222222222222222222222222"
         rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
-        self.assertIn("amount=1 (integer; uint256)", rendered)
-        self.assertIn("recipient=0x2222222222222222222222222222222222222222 (Ethereum address; address)", rendered)
+        self.assertIn("amount=1 units (unit not specified by ABI) [uint256]", rendered)
+        self.assertIn("recipient=0x2222222222222222222222222222222222222222 [address]", rendered)
 
     def test_function_recommendations_use_parameter_names(self):
         abi = [{
@@ -2603,7 +2603,7 @@ contract Pool {
             "outputs": [{"name": "balance", "type": "uint256"}],
         }
         rendered = lk.format_human_abi_return(item, "7", {"labels": {}}, [item])
-        self.assertIn("7 units", rendered)
+        self.assertIn("7 units (unit not specified by ABI)", rendered)
         self.assertNotIn("7 tokens", rendered)
 
     def test_run_cast_labels_raw_return_data_when_abi_decode_fails(self):
