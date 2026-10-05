@@ -322,6 +322,43 @@ class AuditEngineTests(unittest.TestCase):
             self.assertEqual(code, 2)
             render_dashboard.assert_called_once_with(str(root), pipeline_code=2)
 
+    def test_aggregate_pipeline_marks_no_tests_as_review(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence = root / ".audit" / "evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "forge_tests.json").write_text(
+                json.dumps(
+                    {
+                        "data": {
+                            "exit_code": 0,
+                            "stdout": "Warning: No tests found in project! Forge looks for functions that start with test",
+                            "stderr": "",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            outcomes = [
+                {
+                    "tool": "foundry",
+                    "code": 0,
+                    "evidence": "forge_tests",
+                }
+            ]
+            with patch.object(audit_engine, "record_evidence") as record:
+                audit_engine._aggregate_pipeline_step(str(root), "tests", outcomes)
+                payload = record.call_args.args[1]
+
+            self.assertEqual(outcomes[0]["code"], 2)
+            self.assertEqual(outcomes[0]["status"], "review")
+            self.assertEqual(payload["exit_code"], 2)
+            self.assertEqual(payload["status"], "review")
+            self.assertIn("No tests found", outcomes[0]["reason"])
+
     def test_finalize_pipeline_marks_analyzer_failure_as_failed(self):
         from tempfile import TemporaryDirectory
 
