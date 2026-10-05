@@ -101,6 +101,37 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk target list", output)
         self.assertIn("List remembered targets", output)
 
+    def test_accepted_nested_command_aliases_have_help(self):
+        cases = (
+            ("audit", "pipeline", "lk audit pipeline"),
+            ("q", "next", "lk q next"),
+            ("q", "not-applicable", "lk q not-applicable"),
+        )
+        for root, child, title in cases:
+            code, output = self.capture_dispatch(root, child, "--h")
+            self.assertEqual(code, 0)
+            self.assertIn(f"LOWKEY HELP  •  {title}", output)
+            self.assertNotIn("Unknown subcommand", output)
+            self.assertIn("Example:", output)
+
+    def test_every_help_entry_has_required_documentation_fields(self):
+        def validate(entries, path="lk"):
+            problems = []
+            for name, entry in entries.items():
+                current = f"{path} {name}"
+                for field in ("summary", "usage", "example", "use"):
+                    if not str(entry.get(field) or "").strip():
+                        problems.append(f"{current}: missing {field}")
+                children = entry.get("children") or {}
+                if not isinstance(children, dict):
+                    problems.append(f"{current}: children is not a mapping")
+                    continue
+                problems.extend(validate(children, current))
+            return problems
+
+        problems = validate(lk.COMMAND_HELP)
+        self.assertEqual(problems, [])
+
     def test_wizard_help_explains_remix_workflow_and_modes(self):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
