@@ -313,7 +313,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
         self.assertIn("lk ask buyNft", rendered)
         self.assertIn("lk wizard buyNft [values...]", rendered)
-        self.assertIn("See the exact parameter names and types", rendered)
+        self.assertIn("Use it before read/send/changes when you are unsure what values a function expects.", rendered)
 
     def test_main_appends_recommendations_after_successful_command(self):
         original_argv = lk.sys.argv
