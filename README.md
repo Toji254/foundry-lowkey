@@ -772,6 +772,30 @@ Research notes and the reasoning behind each pattern are documented in `docs/wal
 
 The evidence is stored in `.audit/walkthrough/test.json` under `finding_patterns`, `finding_pattern_stories`, and `finding_pattern_steps`.
 
+## Release / reliability gate
+
+Before treating a Lowkey checkout as ready for real audit work, run:
+
+~~~bash
+lk benchmark
+lk self-test
+lk doctor
+~~~
+
+`lk benchmark` is a deterministic source-triage regression suite. It verifies that the documented review-marker detectors still fire on representative Solidity/Vyper/Rust/Cairo/Move inputs and that comments/strings do not create false markers. **It is a regression gate, not a real-world vulnerability-recall or audit-quality score.**
+
+For the integrated audit pipeline:
+
+~~~text
+exit 0  = required execution evidence completed
+exit 1  = an audit/tool step failed
+exit 2  = review required because security coverage is incomplete
+~~~
+
+For Solidity projects, an unavailable Slither installation now keeps the pipeline non-clean instead of silently producing exit 0. Likewise, universal source triage returning `REVIEW NEEDED` is propagated as exit 2.
+
+This is intentional: **absence of a finding is never treated as evidence of safety when Lowkey did not establish the relevant coverage.**
+
 ## Install
 
 From a machine that already has Foundry:
