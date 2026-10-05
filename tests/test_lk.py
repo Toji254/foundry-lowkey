@@ -2517,6 +2517,55 @@ contract Pool {
         self.assertEqual(lk.humanize_value(raw), raw)
         self.assertIn("1.0000 ETH", lk.humanize_value(raw, assume_wei=True))
 
+    def test_known_actor_addresses_render_as_name_with_address(self):
+        address = "0x" + "a" * 40
+        config = {
+            "actor": "Alice",
+            "wallets": {
+                "lab-deployer": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": address,
+                    "internal": True,
+                },
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": address,
+                },
+            },
+            "labels": {},
+        }
+        rendered = lk.apply_labels(
+            f"From: {address}\nTo: {address}\nAlready: Alice ({address})",
+            config,
+        )
+        self.assertIn(f"From: Alice ({address})", rendered)
+        self.assertIn(f"To: Alice ({address})", rendered)
+        self.assertIn(f"Already: Alice ({address})", rendered)
+        self.assertNotIn(f"Alice (Alice ({address}))", rendered)
+
+    def test_human_abi_return_uses_actor_identity_for_addresses(self):
+        address = "0x" + "b" * 40
+        item = {
+            "type": "function",
+            "name": "ownerOf",
+            "outputs": [{"name": "owner", "type": "address"}],
+        }
+        config = {
+            "actor": "Alice",
+            "wallets": {
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": address,
+                },
+            },
+            "labels": {},
+        }
+        rendered = lk.format_human_abi_return(item, address, config, [item])
+        self.assertIn(f"Return: owner = Alice ({address})", rendered)
+
     def test_run_cast_decodes_abi_return_data_for_humans(self):
         target = "0x" + "1" * 40
         owner = "0x" + "2" * 40
