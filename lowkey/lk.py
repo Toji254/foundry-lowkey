@@ -11372,17 +11372,21 @@ COMMAND_HELP = {
     ),
     "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createbounty", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
     "wizard": _help_entry(
-        "Interactively collect arguments for a function, then call, send, or encode it. "
-        "Without an explicit mode, view/pure functions use call and state-changing functions "
-        "use a confirmed send.",
+        "Remix-like contract interaction from the terminal. Pick one ABI function, give it the "
+        "argument values, and Lowkey handles the function signature and action for you. "
+        "A target must already be selected with 'lk lab' or 'lk target'.",
         "lk wizard <function> [values...] [call|send|encode]",
         "lk wizard buyNft 5",
-        "Use it as the Remix-like interactive path: pass values directly when you have them, "
-        "or omit them and Lowkey will prompt.",
+        "Use it when you want one guided command instead of manually choosing between lk read, "
+        "lk send, and lk encode. Omit values to be prompted interactively.",
         options=[
-            ("call|send|encode", "Optional explicit action. Without it, Lowkey infers call for view/pure and send for state-changing functions.", "lk wizard buyNft send"),
+            ("call", "Simulate a read-only call with eth_call; it does not change blockchain state.", "lk wizard balanceOf 0x..."),
+            ("send", "Send a state-changing transaction using the current actor; Lowkey asks for confirmation.", "lk wizard buyNft 5 send"),
+            ("encode", "Only build the ABI calldata; do not call or send the transaction.", "lk wizard buyNft 5 encode"),
+            ("actor", "Transactions use the current actor. Use 'lk actor' or 'lk actors' to see/select the named Anvil account and its address.", "lk actor 0 Alice"),
+            ("no values", "Leave the argument values out and Lowkey prompts for each ABI input and type.", "lk wizard buyNft"),
         ],
-        related=["lk ask", "lk read", "lk send"]
+        related=["lk ask", "lk read", "lk send", "lk encode"]
     ),
     "probe": _help_entry("Try a function as local actors and record success/revert behavior without assertions.", "lk probe <function> [args...]", "lk probe withdraw 1000 --actor Attacker", "Use it for a quick behavioral experiment before writing a full proof.", related=["lk walkthrough test", "lk generate test"]),
     "changes": _help_entry("Show storage changes caused by a function call in an isolated context.", "lk changes '<name(parameter TYPES...)>' <VALUES...>", "lk changes 'createbounty(address,uint256)' 0x... 100 ether", "Use it to connect function behavior to concrete state changes.", related=["lk mapping", "lk layout", "lk trace"]),
