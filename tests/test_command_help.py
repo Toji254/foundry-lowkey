@@ -132,6 +132,27 @@ class CommandHelpTests(unittest.TestCase):
         problems = validate(lk.COMMAND_HELP)
         self.assertEqual(problems, [])
 
+    def test_launcher_routed_commands_also_have_lowkey_help(self):
+        import re
+
+        script = (ROOT / "bin" / "lk").read_text(encoding="utf-8")
+        match = re.search(
+            r"script\|inspect\|coverage\|lint\|geiger\|fmt\|lsp\|create\|"
+            r"verify-contract\|verify-check\|verify-bytecode\|tree\|install\|"
+            r"remove\|update\|init\|clean\|cache\|config\|remappings\|bind\|"
+            r"bind-json\|doc\|compiler\|eip712\|soldeer\|completions\|flatten",
+            script,
+        )
+        self.assertIsNotNone(match)
+        native_commands = set(match.group(0).split("|"))
+        native_commands.add("generate")
+
+        missing = [
+            command for command in sorted(native_commands)
+            if lk._canonical_help_command(command) not in lk.COMMAND_HELP
+        ]
+        self.assertEqual(missing, [])
+
     def test_wizard_help_explains_remix_workflow_and_modes(self):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
