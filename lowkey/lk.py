@@ -2495,23 +2495,22 @@ def format_human_abi_return(item, decoded, config, abi=None):
     labels=[_human_field_label(output.get("name")) or f"value{index}" for index,output in enumerate(outputs,1)]
     decoded_parts=[line.strip() for line in str(value).splitlines() if line.strip()]
     if len(decoded_parts)==len(outputs):
-        details=", ".join(
-            f"{label}={_humanize_abi_scalar(value_part,type_name,output.get('name'),config)}"
-            + (
-                f" {_human_return_unit(item,abi,output)}"
-                if _human_return_unit(item,abi,output) and (type_name.lower().startswith("uint") or type_name.lower().startswith("int"))
-                else ""
+        rendered_parts=[]
+        for label,value_part,type_name,output in zip(labels,decoded_parts,types,outputs):
+            rendered_value=_humanize_abi_scalar(
+                value_part,type_name,output.get('name'),config
             )
-            + (
-                f" ({_human_numeric_annotation(item,output,abi)})"
-                if _human_numeric_annotation(item,output,abi)
-                and _human_numeric_annotation(item,output,abi) not in _humanize_abi_scalar(value_part,type_name,output.get('name'),config)
-                else ""
-            )
-            + f" [{type_name}]"
-            for label,value_part,type_name,output in zip(labels,decoded_parts,types,outputs)
-        )
-        return f"Returns: {details}"
+            is_numeric=type_name.lower().startswith(("uint","int"))
+            unit=_human_return_unit(item,abi,output) if is_numeric else None
+            annotation=_human_numeric_annotation(item,output,abi) if is_numeric else None
+            if unit:
+                rendered_value=f"{rendered_value} {unit}"
+            elif annotation and annotation not in rendered_value:
+                rendered_value=f"{rendered_value} ({annotation})"
+            elif is_numeric:
+                rendered_value=f"{rendered_value} units (unit not specified by ABI)"
+            rendered_parts.append(f"{label}={rendered_value} [{type_name}]")
+        return f"Returns: {', '.join(rendered_parts)}"
     return f"Returns: {value}  [ABI output: {', '.join(types)}]"
 
 def _function_tokens(name):
