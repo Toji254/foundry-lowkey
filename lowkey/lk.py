@@ -2305,7 +2305,7 @@ def format_human_abi_return(item, decoded, config):
 
 def _function_tokens(name):
     text_value=str(name or "")
-    parts=re.findall(r"[A-Z]+(?=[A-Z][a-z]|\\b)|[A-Z]?[a-z]+|\\d+",text_value)
+    parts=re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+",text_value)
     return {part.lower() for part in parts if part}
 
 _FUNCTION_CONCEPTS=(
@@ -2317,7 +2317,7 @@ _FUNCTION_CONCEPTS=(
 
 def _function_type_family(type_name):
     value=str(type_name or "").lower()
-    return re.sub(r"\\[\\d*\\]", "[]", value)
+    return re.sub(r"\[\d*\]", "[]", value)
 
 def _function_relatedness(current,candidate):
     """Score ABI functions by semantic and type relationships, contract-agnostically."""
