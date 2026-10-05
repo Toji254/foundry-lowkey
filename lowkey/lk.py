@@ -85,6 +85,11 @@ except ImportError:
     solidity_cheatsheet = None
 
 try:
+    import benchmark
+except ImportError:
+    benchmark = None
+
+try:
     from audit_engine import run_rg as audit_run_rg, run_slither as audit_run_slither, run_audit_pipeline as audit_run_pipeline, generate_poc as audit_generate_poc, run_source_triage as audit_run_source_triage
 except ImportError:
     audit_run_rg = audit_run_slither = audit_run_pipeline = audit_generate_poc = None
@@ -11052,6 +11057,17 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
     }
 
 COMMAND_HELP = {
+    "benchmark": _help_entry(
+        "Run deterministic Lowkey source-triage regression cases before trusting a release. This verifies detector behavior and language-boundary handling; it is not a real-world audit-accuracy score.",
+        "lk benchmark [--json] [--verbose]",
+        "lk benchmark",
+        "Use it as the final regression gate after changing the audit engine, adapters, or source-triage rules.",
+        options=[
+            ("--json", "Emit machine-readable benchmark results.", "lk benchmark --json"),
+            ("--verbose", "Show case-level error details.", "lk benchmark --verbose"),
+        ],
+        related=["lk self-test", "lk doctor", "lk audit run"],
+    ),
     "q": _help_entry(
         "Drive a deterministic auditor-mindset question frontier from project evidence. The screen explains what the question means, what to inspect, and how strongly to trust the evidence.",
         "lk q [current|why|evidence|path|done|note|skip|na|source|reset]",
@@ -12233,6 +12249,10 @@ def dispatch_command(cmd,args,config,from_batch=False):
             return run_external_audit(config,args)
         return run_audit_mode(config,args)
     elif cmd=="break": return run_break(config,args)
+    elif cmd=="benchmark":
+        if benchmark is None:
+            return fail("Benchmark module is not installed. Re-run install.sh from this checkout.")
+        return benchmark.run(args)
     elif cmd=="q":
         if question_engine is None:
             return fail("Question engine is not installed. Re-run install.sh from this checkout.")
@@ -12391,7 +12411,7 @@ def main():
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
-        "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
+        "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions","benchmark"
     }
     if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks","break"}:
         try:
