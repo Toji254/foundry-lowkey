@@ -2517,6 +2517,51 @@ contract Pool {
         self.assertEqual(lk.humanize_value(raw), raw)
         self.assertIn("1.0000 ETH", lk.humanize_value(raw, assume_wei=True))
 
+    def test_actor_addresses_are_humanized_across_shared_output_renderer(self):
+        alice = "0x" + "1" * 40
+        config = {
+            "actor": "Alice",
+            "wallets": {
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": alice,
+                }
+            },
+            "labels": {},
+        }
+        rendered = lk.apply_labels(f"from={alice} to={alice}", config)
+        self.assertEqual(
+            rendered,
+            f"from=Alice ({alice}) to=Alice ({alice})",
+        )
+
+    def test_multi_value_abi_status_annotation_does_not_get_generic_unit_suffix(self):
+        item = {
+            "type": "function",
+            "name": "escrow",
+            "outputs": [
+                {"name": "amount", "type": "uint256"},
+                {"name": "currentStatus", "type": "uint8"},
+            ],
+        }
+        decoded = "0\n0"
+        rendered = lk.format_human_abi_return(
+            item, decoded, {"labels": {}}, [item]
+        )
+        self.assertIn(
+            "amount=0 units (unit not specified by ABI) [uint256]",
+            rendered,
+        )
+        self.assertIn(
+            "current status=0 (status/state code) [uint8]",
+            rendered,
+        )
+        self.assertNotIn(
+            "current status=0 (status/state code) units",
+            rendered,
+        )
+
     def test_actor_identity_is_used_in_anvil_and_common_display(self):
         alice = "0x" + "1" * 40
         config = {
