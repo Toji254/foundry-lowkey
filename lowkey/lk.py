@@ -4988,6 +4988,13 @@ def artifact_is_project_application(root, path, artifact):
 
     root_path = Path(root).expanduser().resolve()
     path_obj = Path(path).expanduser().resolve()
+    explicit_source = artifact_source_name(artifact, path, root)
+    source = explicit_source or source_contract_fallback(
+        root, artifact_contract_name(path, artifact)
+    )
+    if not source:
+        return False
+
     # When Foundry stripped sourceName, use the artifact directory only to
     # confirm that the fallback source file belongs to the same artifact stem.
     # The old check compared the artifact directory to the *contract name*,
@@ -4999,10 +5006,6 @@ def artifact_is_project_application(root, path, artifact):
             parent_stem = parent_stem[:-4]
         if Path(normalized).stem.lower() != parent_stem.lower():
             return False
-    explicit_source = artifact_source_name(artifact, path, root)
-    source = explicit_source or source_contract_fallback(
-        root, artifact_contract_name(path, artifact)
-    )
     if not source:
         return False
 
