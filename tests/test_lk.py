@@ -309,6 +309,51 @@ class LowkeyCastTests(unittest.TestCase):
             "1000000000000000000",
         )
 
+    def test_wizard_treats_positional_value_as_argument_and_infers_send(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "buyNft",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "amount", "type": "uint256"}],
+            "outputs": [],
+        }]
+        config = {"target": target}
+
+        with patch.object(lk, "load_abi", return_value=abi), patch.object(
+            lk, "run_cast", return_value=0
+        ) as run_cast:
+            result = lk.run_wizard(config, ["buyNft", "5"])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(
+            ["send", "buyNft(uint256)", "5", "--confirm"],
+            config,
+        )
+
+    def test_wizard_infers_call_for_view_function_with_positional_value(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "balanceOf",
+            "stateMutability": "view",
+            "inputs": [{"name": "owner", "type": "address"}],
+            "outputs": [{"name": "", "type": "uint256"}],
+        }]
+        owner = "0x" + "2" * 40
+        config = {"target": target}
+
+        with patch.object(lk, "load_abi", return_value=abi), patch.object(
+            lk, "run_cast", return_value=0
+        ) as run_cast:
+            result = lk.run_wizard(config, ["balanceOf", owner])
+
+        self.assertEqual(result, 0)
+        run_cast.assert_called_once_with(
+            ["call", "balanceOf(address)", owner],
+            config,
+        )
+
     def test_lab_wizard_handles_fixed_and_nested_arrays_generically(self):
         config = {"wallets": {}}
         accounts = ["0x" + "1" * 40]
