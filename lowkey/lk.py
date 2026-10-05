@@ -12021,7 +12021,17 @@ COMMAND_HELP = {
         related=["lk findings", "lk focus"],
     ),
     "findings": _help_entry("Show stored audit signals and their evidence.", "lk findings [status]", "lk findings open", "Use it to move from broad scanning into individual issues that need manual verification.", related=["lk focus", "lk finding"]),
-    "focus": _help_entry("Set one audit signal as the investigation focus.", "lk focus <SIGNAL_ID> | lk focus clear", "lk focus SEC-0007", "Use it when one review lead becomes the main investigation thread.", related=["lk findings", "lk changes"]),
+    "focus": _help_entry(
+        "Set one audit signal as the investigation focus.",
+        "lk focus <SIGNAL_ID> | lk focus clear",
+        "lk focus SEC-0007",
+        "Use it when one review lead becomes the main investigation thread.",
+        forms=[
+            ("lk focus <SIGNAL_ID>", "Choose one finding/signal as the active investigation thread.", "lk focus SEC-0007"),
+            ("lk focus clear", "Remove the current investigation focus without deleting the finding.", "lk focus clear"),
+        ],
+        related=["lk findings", "lk changes"],
+    ),
     "checklist": _help_entry(
         "Track the standard audit questions you want to cover.",
         "lk checklist | lk checklist done <item> | lk checklist reset",
