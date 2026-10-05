@@ -274,6 +274,45 @@ class CommandHelpTests(unittest.TestCase):
 
 
 
+    def test_command_variations_are_explicit_in_help(self):
+        cases = {
+            "actor": (
+                "lk actor reset",
+                "Clear the active actor without deleting the saved profile.",
+            ),
+            "rpc": ("lk rpc reset", "Return to automatic RPC detection."),
+            "abi": ("lk abi auto", "Auto-discover and load an ABI for the selected target."),
+            "mapping": (
+                "lk mapping <key_type> <slot> <key>",
+                "Specify the mapping key type explicitly.",
+            ),
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                self.assertIn("COMMAND VARIATIONS", output)
+                self.assertIn(expected[0], output)
+                self.assertIn(expected[1], output)
+                self.assertIn("Example:", output)
+
+    def test_multiform_help_entries_have_variations_or_children(self):
+        import re
+        source = pathlib.Path(MODULE).read_text(encoding="utf-8")
+        blocks = re.findall(
+            r'^    "([^"]+)": _help_entry\(([\s\S]*?)(?=^    "[^"]+": _help_entry|\n\}\n\n)',
+            source,
+            flags=re.MULTILINE,
+        )
+        exempt = {"q", "send", "import", "wizard", "ens"}
+        missing = []
+        for name, block in blocks:
+            usage_lines = [line for line in block.splitlines() if '"lk ' in line and '|' in line]
+            if usage_lines and name not in exempt:
+                if "children=" not in block and "forms=" not in block:
+                    missing.append(name)
+        self.assertEqual(missing, [])
+
     def test_recommended_next_commands_are_contextual(self):
         items = lk._recommended_next_commands("functions", [])
         commands = [command for command, _ in items]
