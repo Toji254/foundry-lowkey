@@ -2312,6 +2312,32 @@ def _human_type_label(type_name):
         return f"list of {_human_type_label(lowered[:-2])}"
     return value or "value"
 
+def _human_field_label(name):
+    value=str(name or "").strip()
+    if not value:
+        return ""
+    value=value.replace("_"," ")
+    value=re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    return re.sub(r"\s+"," ",value).strip()
+
+def _humanize_abi_scalar(value,type_name,field_name="",config=None):
+    rendered=apply_labels(str(value or "").strip(),config or {})
+    lowered=str(type_name or "").strip().lower()
+    field=str(field_name or "").strip().lower()
+    if lowered=="address" and is_address(rendered):
+        if rendered.lower()=="0x"+"0"*40:
+            return "zero address (not set)"
+        return rendered
+    if lowered.startswith("uint") or lowered.startswith("int"):
+        if re.fullmatch(r"-?\d+",rendered):
+            number=int(rendered)
+            if field in {"status","state","currentstatus","currentstate"}:
+                return f"{number:,} (status/state code)"
+            return f"{number:,}"
+    if lowered=="bool" and rendered.lower() in {"true","false"}:
+        return rendered.lower()
+    return rendered
+
 def _function_display_name(item):
     name=str(item.get("name") or "").strip()
     if not name:
@@ -2354,38 +2380,21 @@ def format_human_abi_return(item, decoded, config, abi=None):
     if len(outputs)==1:
         output=outputs[0]
         type_name=canonical_type(output)
-        label=str(output.get("name") or "").strip() or _function_display_name(item)
+        label=_human_field_label(output.get("name")) or _function_display_name(item)
         unit=_human_return_unit(item,abi)
-        human_type=_human_type_label(type_name)
-
-        # Cast already decoded the ABI value. Make common scalar values especially
-        # readable without hiding the Solidity type auditors may still need.
-        rendered=value
-        if type_name.lower().startswith("uint") or type_name.lower().startswith("int"):
-            try:
-                if re.fullmatch(r"-?\d+", rendered):
-                    rendered=f"{int(rendered):,}"
-            except ValueError:
-                pass
-        if type_name.lower()=="bool":
-            lowered=rendered.lower()
-            if lowered in {"true","false"}:
-                rendered=lowered
+        rendered=_humanize_abi_scalar(value,type_name,output.get("name"),config)
         if unit:
             rendered=f"{rendered} {unit}"
-
-        return f"Return: {label} = {rendered}  ({human_type}; {type_name})"
+        return f"Return: {label} = {rendered}  ({_human_type_label(type_name)}; {type_name})"
 
     types=[canonical_type(output) for output in outputs]
-    labels=[
-        str(output.get("name") or "").strip() or f"value{index}"
-        for index,output in enumerate(outputs,1)
-    ]
+    labels=[_human_field_label(output.get("name")) or f"value{index}" for index,output in enumerate(outputs,1)]
     decoded_parts=[line.strip() for line in str(value).splitlines() if line.strip()]
     if len(decoded_parts)==len(outputs):
         details=", ".join(
-            f"{label}={value_part} ({_human_type_label(type_name)}; {type_name})"
-            for label,value_part,type_name in zip(labels,decoded_parts,types)
+            f"{label}={_humanize_abi_scalar(value_part,type_name,output.get('name'),config)} "
+            f"({_human_type_label(type_name)}; {type_name})"
+            for label,value_part,type_name,output in zip(labels,decoded_parts,types,outputs)
         )
         return f"Returns: {details}"
     return f"Returns: {value}"
