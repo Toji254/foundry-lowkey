@@ -1299,6 +1299,8 @@ def _format_step_status(root: str, name: str, detail: str = "") -> tuple[str, st
         return "N/A", detail or str(data.get("reason") or "not applicable to project")
     if explicit in {"skipped", "skip"}:
         return "SKIPPED", detail or str(data.get("reason") or "skipped")
+    if explicit in {"review", "review-needed", "review_needed"}:
+        return "REVIEW", detail or str(data.get("reason") or "review required")
     code = data.get("exit_code")
     if code == 0:
         status = "PASS"
@@ -1506,12 +1508,10 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
         coverage_gaps.append("slither: unavailable for Solidity sources")
 
     tests_evidence = _evidence_data(root, "tests")
-    tests_output = (
-        str(tests_evidence.get("stdout", ""))
-        + "\n"
-        + str(tests_evidence.get("stderr", ""))
-    )
-    if re.search(r"(?i)No tests found in project", tests_output):
+    if (
+        str(tests_evidence.get("status") or "").lower() in {"review", "review-needed", "review_needed"}
+        and int(tests_evidence.get("exit_code", 0) or 0) == 2
+    ):
         coverage_gaps.append("forge tests: no tests found")
 
     final_code = code
@@ -2141,17 +2141,37 @@ def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]
         )
         return
 
+    # A Forge test command can exit successfully while reporting that the
+    # repository contains no tests. That is execution success, but it is
+    # incomplete security evidence and must be surfaced as review-required.
+    if name == "tests":
+        for item in applicable:
+            evidence_name = str(item.get("evidence") or "")
+            if not evidence_name:
+                continue
+            evidence = _evidence_data(root, evidence_name)
+            output = (
+                str(evidence.get("stdout", ""))
+                + "\n"
+                + str(evidence.get("stderr", ""))
+            )
+            if re.search(r"(?i)No tests found in project", output):
+                item["code"] = 2
+                item["status"] = "review"
+                item["reason"] = "No tests found in project; security test coverage is incomplete."
+
     failures = [item for item in applicable if item.get("code") != 0]
     code = failures[0].get("code", 1) if failures else 0
     summary = "; ".join(
         f"{item.get('tool')}: {item.get('code')}"
         for item in applicable
     )
+    status = "review" if any(item.get("status") == "review" for item in failures) else ("failed" if failures else "passed")
     record_evidence(
         name,
         {
             "exit_code": code,
-            "status": "failed" if failures else "passed",
+            "status": status,
             "summary": summary,
             "substeps": outcomes,
         },
