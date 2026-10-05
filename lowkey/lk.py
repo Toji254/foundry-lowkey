@@ -4995,6 +4995,8 @@ def artifact_is_project_application(root, path, artifact):
     if not source:
         return False
 
+    normalized = str(source).replace("\\", "/").lstrip("./")
+
     # When Foundry stripped sourceName, use the artifact directory only to
     # confirm that the fallback source file belongs to the same artifact stem.
     # The old check compared the artifact directory to the *contract name*,
@@ -5006,10 +5008,6 @@ def artifact_is_project_application(root, path, artifact):
             parent_stem = parent_stem[:-4]
         if Path(normalized).stem.lower() != parent_stem.lower():
             return False
-    if not source:
-        return False
-
-    normalized = str(source).replace("\\", "/").lstrip("./")
     source_path = root_path / normalized
     if not source_path.is_file():
         return False
