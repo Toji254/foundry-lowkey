@@ -336,9 +336,9 @@ class CommandHelpTests(unittest.TestCase):
             items = lk._recommended_next_commands("read", ["balanceOf", owner], config)
 
         commands = [command for command, _ in items]
-        self.assertIn("lk read ownerOf [args]", commands)
-        self.assertIn("lk read getApproved [args]", commands)
-        self.assertIn("lk read tokenURI [args]", commands)
+        self.assertIn("lk read ownerOf <tokenId>", commands)
+        self.assertIn("lk read getApproved <tokenId>", commands)
+        self.assertIn("lk read tokenURI <tokenId>", commands)
         self.assertNotIn("lk send <function> [args] --preview", commands)
         self.assertNotIn("lk functions", commands)
 
@@ -367,7 +367,7 @@ class CommandHelpTests(unittest.TestCase):
         commands = [command for command, _ in items]
         self.assertIn("lk receipt", commands)
         self.assertIn("lk trace", commands)
-        self.assertIn("lk read balanceOf [args]", commands)
+        self.assertIn("lk read balanceOf <account>", commands)
         self.assertNotIn("lk send <function> [args] --preview", commands)
 
     def test_recommended_next_commands_use_function_query(self):
