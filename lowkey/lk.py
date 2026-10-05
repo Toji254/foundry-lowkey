@@ -12138,20 +12138,132 @@ SAFETY / EXPECTATIONS
   • The goal is RECON → ATTACK → PROVE: understand the system, reproduce behavior, then prove impact.
 """)
 
+# Root commands with a deliberate workflow. Reasons are sourced from COMMAND_HELP
+# so the recommendation UX stays aligned with the command documentation.
+_NEXT_COMMANDS = {
+    "status": ["lk functions", "lk actors", "lk recon", "lk abi"],
+    "lab": ["lk status", "lk functions", "lk actors", "lk walkthrough --auto"],
+    "target": ["lk status", "lk functions", "lk abi", "lk recon"],
+    "target list": ["lk target auto", "lk status", "lk functions"],
+    "target auto": ["lk status", "lk functions", "lk recon"],
+    "functions": ["lk fn <function>", "lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]"],
+    "fn": ["lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]", "lk changes '<signature>' <values...>"],
+    "ask": ["lk read <function> [args]", "lk wizard <function> [values...]", "lk changes '<signature>' <values...>"],
+    "abi": ["lk functions", "lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]"],
+    "read": ["lk functions", "lk send <function> [args] --preview", "lk wizard <function> [values...]"],
+    "send": ["lk receipt", "lk trace", "lk last tx", "lk changes '<signature>' <values...>"],
+    "wizard": ["lk last tx", "lk receipt", "lk trace", "lk changes '<signature>' <values...>"],
+    "project": ["lk targets", "lk recon", "lk deps", "lk risk"],
+    "projects": ["lk project", "lk targets", "lk doctor"],
+    "system": ["lk project", "lk doctor", "lk lab"],
+    "rpc": ["lk status", "lk chain", "lk doctor"],
+    "wallet": ["lk actors", "lk actor", "lk wizard <function> [values...]"],
+    "actor": ["lk actors", "lk wizard <function> [values...]", "lk as <actor> <command>"],
+    "actors": ["lk actor 0 Alice", "lk wizard <function> [values...]", "lk as <actor> <command>"],
+    "as": ["lk status", "lk functions", "lk actors"],
+    "deployments": ["lk targets", "lk target auto", "lk status"],
+    "recon": ["lk functions", "lk risk", "lk scan src", "lk slither"],
+    "risk": ["lk seams", "lk fn <function>", "lk slither"],
+    "seams": ["lk fn <function>", "lk scan src", "lk findings"],
+    "scan": ["lk findings", "lk focus <id>", "lk rg \"<marker>\" src"],
+    "rg": ["lk focus <id>", "lk fn <function>", "lk changes '<signature>' <values...>"],
+    "slither": ["lk findings", "lk focus <id>", "lk build"],
+    "build": ["lk test", "lk functions", "lk audit run"],
+    "test": ["lk coverage", "lk fuzz", "lk audit run"],
+    "coverage": ["lk test", "lk fuzz", "lk audit run"],
+    "audit": ["lk findings", "lk checklist", "lk q next", "lk context"],
+    "audit run": ["lk findings", "lk focus <id>", "lk test-gen", "lk poc"],
+    "audit pipeline": ["lk findings", "lk focus <id>", "lk test-gen"],
+    "findings": ["lk focus <id>", "lk q next", "lk context", "lk checklist"],
+    "focus": ["lk fn <function>", "lk changes '<signature>' <values...>", "lk trace", "lk finding <note>"],
+    "probe": ["lk changes '<signature>' <values...>", "lk trace", "lk finding <note>"],
+    "changes": ["lk trace", "lk findings", "lk finding <note>", "lk mapping <slot> <key>"],
+    "trace": ["lk changes '<signature>' <values...>", "lk tx <tx>", "lk findings"],
+    "tx": ["lk receipt", "lk trace", "lk logs"],
+    "receipt": ["lk trace", "lk tx", "lk logs"],
+    "logs": ["lk tx", "lk receipt", "lk event <sig> <data>"],
+    "chain": ["lk status", "lk recon", "lk actors"],
+    "mapping": ["lk storage <slot>", "lk changes '<signature>' <values...>", "lk snapshot <slot>"],
+    "storage": ["lk mapping <slot> <key>", "lk snapshot <slot>", "lk diff"],
+    "slots": ["lk mapping <slot> <key>", "lk snapshot <slot>", "lk diff"],
+    "snapshot": ["lk diff", "lk mapping <slot> <key>", "lk storage <slot>"],
+    "diff": ["lk mapping <slot> <key>", "lk changes '<signature>' <values...>", "lk finding <note>"],
+    "encode": ["lk calldata <data>", "lk sig <function>", "lk send <function> [args] --preview"],
+    "calldata": ["lk decode-calldata <data>", "lk sig <function>", "lk tx <tx>"],
+    "sig": ["lk calldata <data>", "lk 4byte <selector>", "lk fn <function>"],
+    "selectors": ["lk calldata <data>", "lk sig <function>", "lk disasm <address>"],
+    "proxy": ["lk implementation", "lk admin", "lk storage <slot>"],
+    "implementation": ["lk proxy", "lk admin", "lk functions"],
+    "admin": ["lk proxy", "lk implementation", "lk findings"],
+    "gas": ["lk send <function> [args] --preview", "lk changes '<signature>' <values...>", "lk trace"],
+    "generate": ["lk generate test '<signature>' <values...>", "lk poc", "lk test"],
+    "generate test": ["lk test", "lk trace", "lk findings"],
+    "poc": ["lk test", "lk findings", "lk generate test '<signature>' <values...>"],
+    "test-gen": ["lk test", "lk fuzz", "lk findings"],
+    "fuzz": ["lk findings", "lk test-gen", "lk trace"],
+    "invariant": ["lk findings", "lk test-gen", "lk trace"],
+    "mutate": ["lk findings", "lk test-gen", "lk test"],
+    "symbolic": ["lk findings", "lk trace", "lk test-gen"],
+    "brutalize": ["lk findings", "lk test-gen", "lk trace"],
+    "q": ["lk q next", "lk q why", "lk q evidence"],
+    "q next": ["lk q why", "lk q evidence", "lk q source"],
+    "questions": ["lk q next", "lk q skip", "lk q reset"],
+    "checklist": ["lk findings", "lk q next", "lk context"],
+    "finding": ["lk findings", "lk focus <id>", "lk checklist"],
+    "note": ["lk findings", "lk context", "lk todo <text>"],
+    "todo": ["lk findings", "lk context", "lk checklist"],
+    "session": ["lk context", "lk findings", "lk workspace"],
+    "workspace": ["lk findings", "lk context", "lk export"],
+    "export": ["lk findings", "lk workspace", "lk session end"],
+    "doctor": ["lk self-test", "lk build", "lk status"],
+    "self-test": ["lk doctor", "lk status"],
+    "version": ["lk doctor", "lk self-test"],
+    "clone": ["lk doctor", "lk project", "lk build"],
+    "deps": ["lk project", "lk risk", "lk scan src"],
+    "layout": ["lk mapping <slot> <key>", "lk storage <slot>", "lk changes '<signature>' <values...>"],
+    "namespace": ["lk storage <slot>", "lk proof <slot>", "lk layout <Contract>"],
+    "proof": ["lk storage <slot>", "lk snapshot <slot>", "lk diff"],
+    "fork": ["lk status", "lk target auto", "lk actors"],
+    "impersonate": ["lk actors", "lk status", "lk wizard <function> [values...]"],
+    "disasm": ["lk selectors", "lk storage <slot>", "lk findings"],
+    "txpool": ["lk tx <tx>", "lk receipt", "lk trace"],
+    "ens": ["lk token <address>", "lk status", "lk read <function> [args]"],
+    "token": ["lk read <function> [args]", "lk actors", "lk status"],
+    "info": ["lk functions", "lk proxy", "lk recon"],
+    "label": ["lk actors", "lk status", "lk recon"],
+    "matrix": ["lk matrix list", "lk matrix test <name>", "lk matrix add <name> <text>"],
+    "matrix list": ["lk matrix test <name>", "lk matrix add <name> <text>"],
+    "matrix test": ["lk test", "lk findings"],
+    "walkthrough": ["lk functions", "lk changes '<signature>' <values...>", "lk trace"],
+    "walkthrough test": ["lk findings", "lk test-gen", "lk trace"],
+}
+
+
+def _recommendation_reason(command_text):
+    """Use the command's own help page as the explanation for why to try it."""
+    tokens = str(command_text or "").strip().split()
+    if not tokens or tokens[0].lower() != "lk":
+        return "Continue exploring from here."
+    path = [token for token in tokens[1:3] if not token.startswith("<") and not token.startswith("[")]
+    entry, _, _ = _help_entry_for_path(path[:2] or [])
+    if entry:
+        return str(entry.get("use") or entry.get("summary") or "Continue exploring from here.")
+    return "Continue exploring from here."
+
+
 def _recommended_next_commands(command, args=None):
     """Return a small, contextual next-step menu for an interactive CLI user."""
     raw_command = str(command or "").strip().lower()
     raw_args = [str(item).strip() for item in (args or [])]
     canonical = _canonical_help_command(raw_command)
 
-    # Never contaminate machine-readable output with human guidance.
+    # Machine-readable commands must remain machine-readable.
     if any(item.lower() == "--json" or item.lower() == "json" for item in raw_args):
         return []
     if canonical in {"raw", "batch"}:
         return []
 
     command_key = canonical
-    first_arg = raw_args[0].lower() if raw_args else ""
     nested = {
         "audit": {"run", "pipeline", "auto"},
         "walkthrough": {"test", "seed"},
@@ -12167,459 +12279,42 @@ def _recommended_next_commands(command, args=None):
         "actor": {"reset"},
         "q": {"current", "next", "why", "evidence", "path", "done", "note", "skip", "na", "not-applicable", "source", "reset"},
     }
+    first_arg = raw_args[0].lower() if raw_args else ""
     if first_arg in nested.get(canonical, set()):
         command_key = f"{canonical} {first_arg}"
 
-    menus = {
-        "status": [
-            ("lk functions", "See what the selected contract exposes"),
-            ("lk actors", "See who can interact with the local chain"),
-            ("lk recon", "Get a quick live-contract reconnaissance pass"),
-            ("lk abi", "Inspect the ABI behind the selected target"),
-        ],
-        "lab": [
-            ("lk status", "Confirm target, RPC, actor, and ABI"),
-            ("lk functions", "List the contract surface you can call"),
-            ("lk actors", "Choose/name the caller accounts"),
-            ("lk walkthrough --auto", "Exercise a realistic local protocol flow"),
-        ],
-        "target": [
-            ("lk status", "Confirm the newly selected target"),
-            ("lk functions", "List its callable interface"),
-            ("lk abi", "Inspect the ABI Lowkey is using"),
-            ("lk recon", "Check live bytecode, balance, and nonce"),
-        ],
-        "target list": [
-            ("lk target auto", "Select the latest usable deployment"),
-            ("lk status", "Confirm the active target"),
-            ("lk functions", "Inspect the selected contract"),
-        ],
-        "target auto": [
-            ("lk status", "Confirm which deployment Lowkey selected"),
-            ("lk functions", "Inspect the selected contract surface"),
-            ("lk recon", "Check the live target"),
-        ],
-        "functions": [
-            ("lk fn <function>", "Zoom in on one function"),
-            ("lk ask <function>", "See parameter names and types"),
-            ("lk read <function> [args]", "Try a read-only contract call"),
-            ("lk wizard <function> [values...]", "Interact with a function from the terminal"),
-        ],
-        "fn": [
-            ("lk ask <function>", "See the exact parameter names and types"),
-            ("lk read <function> [args]", "Call it without changing state"),
-            ("lk wizard <function> [values...]", "Interact with it with guided arguments"),
-            ("lk changes '<signature>' <values...>", "Measure the storage changes it causes"),
-        ],
-        "ask": [
-            ("lk read <function> [args]", "Try the function as a read-only call"),
-            ("lk wizard <function> [values...]", "Interactively supply its arguments"),
-            ("lk changes '<signature>' <values...>", "Reproduce and inspect state changes"),
-        ],
-        "abi": [
-            ("lk functions", "List the functions in the ABI"),
-            ("lk ask <function>", "Inspect one function's parameters"),
-            ("lk read <function> [args]", "Call a view/pure function"),
-            ("lk wizard <function> [values...]", "Interact with the contract"),
-        ],
-        "read": [
-            ("lk functions", "Choose another contract function to inspect"),
-            ("lk send <function> [args] --preview", "Preview a state-changing call safely"),
-            ("lk wizard <function> [values...]", "Interact using the guided terminal flow"),
-        ],
-        "send": [
-            ("lk receipt", "Inspect the transaction receipt"),
-            ("lk trace", "Trace what the transaction actually executed"),
-            ("lk last tx", "Re-open the latest transaction"),
-            ("lk changes '<signature>' <values...>", "Compare state before and after the call"),
-        ],
-        "wizard": [
-            ("lk last tx", "Inspect the transaction you just sent"),
-            ("lk receipt", "Read its receipt and status"),
-            ("lk trace", "See the execution path"),
-            ("lk changes '<signature>' <values...>", "Inspect storage changes from the call"),
-        ],
-        "project": [
-            ("lk targets", "See the deployed audit targets"),
-            ("lk recon", "Recon the currently selected live contract"),
-            ("lk deps", "Map imports and inheritance"),
-            ("lk risk", "See ABI-level review-surface hints"),
-        ],
-        "projects": [
-            ("lk project", "Inspect the selected project in detail"),
-            ("lk targets", "List known audit targets"),
-            ("lk doctor", "Check the detected project/toolchain"),
-        ],
-        "system": [
-            ("lk project", "See the project and dependency map"),
-            ("lk doctor", "Validate the local toolchain"),
-            ("lk lab", "Prepare a disposable local interaction lab"),
-        ],
-        "rpc": [
-            ("lk status", "Confirm the active RPC and target"),
-            ("lk chain", "Inspect chain ID and latest block"),
-            ("lk doctor", "Check the local tooling and RPC dependencies"),
-        ],
-        "wallet": [
-            ("lk actors", "See the local actors available to test with"),
-            ("lk actor", "Select a current actor"),
-            ("lk wizard <function> [values...]", "Use the selected signer to interact"),
-        ],
-        "actor": [
-            ("lk actors", "See all available actors and labels"),
-            ("lk wizard <function> [values...]", "Use this actor in a guided interaction"),
-            ("lk as <actor> <command>", "Run one command as another actor"),
-        ],
-        "actors": [
-            ("lk actor 0 Alice", "Give a local Anvil account a readable name"),
-            ("lk wizard <function> [values...]", "Interact using the current actor"),
-            ("lk as <actor> <command>", "Try the same action from another caller"),
-        ],
-        "deployments": [
-            ("lk targets", "See deployments grouped by run"),
-            ("lk target auto", "Select a recent usable deployment"),
-            ("lk status", "Confirm the active target"),
-        ],
-        "recon": [
-            ("lk functions", "Map the contract's callable surface"),
-            ("lk risk", "Find ABI-level review hotspots"),
-            ("lk scan src", "Look for high-signal source markers"),
-            ("lk slither", "Run static analysis through Lowkey"),
-        ],
-        "risk": [
-            ("lk seams", "Inspect concentrated audit hotspots"),
-            ("lk fn <function>", "Zoom into a risky function"),
-            ("lk slither", "Run static-analysis checks"),
-        ],
-        "seams": [
-            ("lk fn <function>", "Inspect a hotspot's function surface"),
-            ("lk scan src", "Search source for related review markers"),
-            ("lk findings", "Review stored audit signals"),
-        ],
-        "scan": [
-            ("lk findings", "See signals saved from analysis"),
-            ("lk focus <id>", "Investigate one interesting signal"),
-            ("lk rg "<marker>" src", "Search the source around a marker"),
-        ],
-        "rg": [
-            ("lk focus <id>", "Investigate a saved signal"),
-            ("lk fn <function>", "Inspect a function related to the match"),
-            ("lk changes '<signature>' <values...>", "Reproduce a state transition"),
-        ],
-        "slither": [
-            ("lk findings", "Review the resulting audit signals"),
-            ("lk focus <id>", "Investigate one detector result"),
-            ("lk build", "Make sure the project still builds cleanly"),
-        ],
-        "build": [
-            ("lk test", "Run the project's tests"),
-            ("lk functions", "Inspect the compiled contract surface"),
-            ("lk audit run", "Run the evidence pipeline"),
-        ],
-        "test": [
-            ("lk coverage", "See what the tests exercise"),
-            ("lk fuzz", "Try broader input exploration"),
-            ("lk audit run", "Run the complete audit pipeline"),
-        ],
-        "coverage": [
-            ("lk test", "Re-run tests after reviewing coverage"),
-            ("lk fuzz", "Push beyond the existing test cases"),
-            ("lk audit run", "Combine tests with static/recon evidence"),
-        ],
-        "audit": [
-            ("lk findings", "Review what Lowkey discovered"),
-            ("lk checklist", "Continue the manual audit checklist"),
-            ("lk q next", "Get the next auditor-mindset question"),
-            ("lk context", "See the current evidence/context snapshot"),
-        ],
-        "audit run": [
-            ("lk findings", "Review the evidence produced by the pipeline"),
-            ("lk focus <id>", "Investigate the strongest signal"),
-            ("lk test-gen", "Turn an interaction into a reusable test"),
-            ("lk poc", "Build a focused proof-of-concept scaffold"),
-        ],
-        "audit pipeline": [
-            ("lk findings", "Review the pipeline findings"),
-            ("lk focus <id>", "Investigate a concrete signal"),
-            ("lk test-gen", "Turn evidence into a reusable test"),
-        ],
-        "findings": [
-            ("lk focus <id>", "Investigate one finding in context"),
-            ("lk q next", "Get the next reasoning question"),
-            ("lk context", "Review the evidence Lowkey has recorded"),
-            ("lk checklist", "Track what still needs manual review"),
-        ],
-        "focus": [
-            ("lk fn <function>", "Inspect the function named by the signal"),
-            ("lk changes '<signature>' <values...>", "Try to reproduce its state change"),
-            ("lk trace", "Trace the latest relevant execution"),
-            ("lk finding <note>", "Record a concrete observation"),
-        ],
-        "probe": [
-            ("lk changes '<signature>' <values...>", "Measure what the call changes"),
-            ("lk trace", "Trace the execution path"),
-            ("lk finding <note>", "Record what the probe showed"),
-        ],
-        "changes": [
-            ("lk trace", "See the execution path behind the state change"),
-            ("lk findings", "Review whether the change supports a finding"),
-            ("lk finding <note>", "Record a useful observation"),
-            ("lk mapping <slot> <key>", "Inspect a mapping slot when storage is involved"),
-        ],
-        "trace": [
-            ("lk changes '<signature>' <values...>", "Measure the state transition you just traced"),
-            ("lk tx <tx>", "Inspect the transaction at a higher level"),
-            ("lk findings", "Record/review a security-relevant observation"),
-        ],
-        "tx": [
-            ("lk receipt", "Read the transaction result and gas"),
-            ("lk trace", "Trace its execution"),
-            ("lk logs", "Inspect emitted events"),
-        ],
-        "receipt": [
-            ("lk trace", "Trace the execution behind the receipt"),
-            ("lk tx", "Inspect the decoded transaction"),
-            ("lk logs", "Inspect events emitted by the transaction"),
-        ],
-        "logs": [
-            ("lk tx", "Inspect the transaction that emitted the logs"),
-            ("lk receipt", "Check transaction status and gas"),
-            ("lk event <sig> <data>", "Decode a specific event payload"),
-        ],
-        "chain": [
-            ("lk status", "Confirm the target and RPC context"),
-            ("lk recon", "Check the live contract against the chain"),
-            ("lk actors", "See local accounts for interactions"),
-        ],
-        "mapping": [
-            ("lk storage <slot>", "Inspect raw storage at a calculated slot"),
-            ("lk changes '<signature>' <values...>", "See whether a mapping value changes"),
-            ("lk snapshot <slot>", "Save a storage point for later comparison"),
-        ],
-        "storage": [
-            ("lk mapping <slot> <key>", "Calculate a mapping storage slot"),
-            ("lk snapshot <slot>", "Save the current value"),
-            ("lk diff", "Compare saved storage state later"),
-        ],
-        "slots": [
-            ("lk mapping <slot> <key>", "Calculate a mapping storage slot"),
-            ("lk snapshot <slot>", "Save the current value"),
-            ("lk diff", "Compare saved storage state later"),
-        ],
-        "snapshot": [
-            ("lk diff", "Compare the saved state against a later snapshot"),
-            ("lk mapping <slot> <key>", "Inspect mapping-backed storage"),
-            ("lk storage <slot>", "Read a raw storage slot"),
-        ],
-        "diff": [
-            ("lk mapping <slot> <key>", "Investigate a changed mapping slot"),
-            ("lk changes '<signature>' <values...>", "Reproduce the state transition"),
-            ("lk finding <note>", "Record an important state change"),
-        ],
-        "encode": [
-            ("lk calldata <data>", "Inspect the encoded selector and arguments"),
-            ("lk sig <function>", "Check the canonical function signature"),
-            ("lk send <function> [args] --preview", "Preview a real transaction without sending"),
-        ],
-        "calldata": [
-            ("lk decode-calldata <data>", "Decode calldata into function arguments"),
-            ("lk sig <function>", "Check the selector/signature relationship"),
-            ("lk tx <tx>", "Compare the calldata with an actual transaction"),
-        ],
-        "sig": [
-            ("lk calldata <data>", "Inspect calldata built from the selector"),
-            ("lk 4byte <selector>", "Look up selector candidates"),
-            ("lk fn <function>", "Find the matching ABI function"),
-        ],
-        "selectors": [
-            ("lk calldata <data>", "Decode a selector from real calldata"),
-            ("lk sig <function>", "Check canonical signatures"),
-            ("lk disasm <address>", "Inspect runtime bytecode around selectors"),
-        ],
-        "proxy": [
-            ("lk implementation", "Resolve the implementation contract"),
-            ("lk admin", "Inspect proxy administration"),
-            ("lk storage <slot>", "Inspect proxy storage slots directly"),
-        ],
-        "implementation": [
-            ("lk proxy", "Inspect the proxy relationship"),
-            ("lk admin", "Check who can administer the proxy"),
-            ("lk functions", "Inspect the implementation's callable surface"),
-        ],
-        "admin": [
-            ("lk proxy", "See the proxy and implementation relationship"),
-            ("lk implementation", "Resolve the current implementation"),
-            ("lk findings", "Record any privilege boundary concerns"),
-        ],
-        "gas": [
-            ("lk send <function> [args] --preview", "Preview the transaction using the gas estimate"),
-            ("lk changes '<signature>' <values...>", "Measure the state effect of the call"),
-            ("lk trace", "Inspect where execution spends work"),
-        ],
-        "generate": [
-            ("lk generate test '<signature>' <values...>", "Create a reusable Forge test"),
-            ("lk poc", "Create an evidence-backed PoC scaffold"),
-            ("lk test", "Run the generated/relevant tests"),
-        ],
-        "generate test": [
-            ("lk test", "Run the generated Forge test"),
-            ("lk trace", "Inspect a transaction used by the test"),
-            ("lk findings", "Capture the security observation the test proves"),
-        ],
-        "poc": [
-            ("lk test", "Run the generated proof-of-concept"),
-            ("lk findings", "Connect the PoC to an audit signal"),
-            ("lk generate test '<signature>' <values...>", "Turn the PoC behavior into a reusable test"),
-        ],
-        "test-gen": [
-            ("lk test", "Run the generated test"),
-            ("lk fuzz", "Generalize the case with fuzzing"),
-            ("lk findings", "Capture what the test demonstrates"),
-        ],
-        "fuzz": [
-            ("lk findings", "Review interesting fuzz outcomes"),
-            ("lk test-gen", "Turn an interesting case into a regression test"),
-            ("lk trace", "Trace a concrete transaction from the result"),
-        ],
-        "invariant": [
-            ("lk findings", "Review invariant failures/observations"),
-            ("lk test-gen", "Turn a concrete case into a regression test"),
-            ("lk trace", "Trace a concrete execution"),
-        ],
-        "mutate": [
-            ("lk findings", "See which mutants survived or broke expectations"),
-            ("lk test-gen", "Promote a useful case into a regression test"),
-            ("lk test", "Re-run the baseline tests"),
-        ],
-        "symbolic": [
-            ("lk findings", "Review symbolic execution results"),
-            ("lk trace", "Trace a concrete case"),
-            ("lk test-gen", "Capture a useful counterexample as a test"),
-        ],
-        "brutalize": [
-            ("lk findings", "Review stress-test results"),
-            ("lk test-gen", "Turn a useful case into a regression test"),
-            ("lk trace", "Trace concrete behavior"),
-        ],
-        "q": [
-            ("lk q next", "Get the next unanswered auditor-mindset question"),
-            ("lk q why", "Understand why the current question matters"),
-            ("lk q evidence", "See what evidence supports the question"),
-        ],
-        "q next": [
-            ("lk q why", "Understand why this question matters"),
-            ("lk q evidence", "Inspect the evidence behind it"),
-            ("lk q source", "Jump toward the source that can answer it"),
-        ],
-        "questions": [
-            ("lk q next", "Start working through the question frontier"),
-            ("lk q skip", "Skip a question that is not applicable"),
-            ("lk q reset", "Reset the question state for a fresh pass"),
-        ],
-        "checklist": [
-            ("lk findings", "Review concrete issues alongside the checklist"),
-            ("lk q next", "Keep the manual reasoning moving"),
-            ("lk context", "Review the current evidence snapshot"),
-        ],
-        "note": [
-            ("lk findings", "Review notes alongside audit signals"),
-            ("lk context", "See the current audit context"),
-            ("lk todo <text>", "Turn the next action into a tracked TODO"),
-        ],
-        "todo": [
-            ("lk findings", "Review the audit state"),
-            ("lk context", "See current context and evidence"),
-            ("lk checklist", "Track the remaining manual review"),
-        ],
-        "session": [
-            ("lk context", "Review the current audit session state"),
-            ("lk findings", "Continue from the recorded evidence"),
-            ("lk workspace", "Inspect generated audit artifacts"),
-        ],
-        "workspace": [
-            ("lk findings", "Review findings saved in the workspace"),
-            ("lk context", "Inspect the shared audit state"),
-            ("lk export", "Package the audit workspace"),
-        ],
-        "export": [
-            ("lk findings", "Review the report inputs before sharing"),
-            ("lk workspace", "Inspect the exported workspace artifacts"),
-            ("lk session end", "Close the audit session cleanly"),
-        ],
-        "doctor": [
-            ("lk self-test", "Run Lowkey's regression checks"),
-            ("lk build", "Verify the current project compiles"),
-            ("lk status", "Check the active target/RPC after repairs"),
-        ],
-        "self-test": [
-            ("lk doctor", "Check the installed toolchain and dependencies"),
-            ("lk status", "Verify normal project state"),
-        ],
-        "version": [
-            ("lk doctor", "Check the installed runtime and dependencies"),
-            ("lk self-test", "Run the local regression checks"),
-        ],
-        "clone": [
-            ("lk doctor", "Check the cloned project's toolchain"),
-            ("lk project", "Understand the cloned project structure"),
-            ("lk build", "Compile before interacting with it"),
-        ],
-        "deps": [
-            ("lk project", "Put the dependency edges in project context"),
-            ("lk risk", "Review likely interaction boundaries"),
-            ("lk scan src", "Search for relevant source patterns"),
-        ],
-        "layout": [
-            ("lk mapping <slot> <key>", "Inspect mapping-backed storage"),
-            ("lk storage <slot>", "Read raw storage directly"),
-            ("lk changes '<signature>' <values...>", "See which slots a call changes"),
-        ],
-        "finding": [
-            ("lk findings", "Review the finding you just recorded"),
-            ("lk focus <id>", "Investigate a related signal"),
-            ("lk checklist", "Track the next manual review step"),
-        ],
-        "matrix": [
-            ("lk matrix list", "See the attacker-state scenarios"),
-            ("lk matrix test <name>", "Turn a scenario into a Forge test"),
-            ("lk matrix add <name> <text>", "Add another scenario"),
-        ],
-        "matrix list": [
-            ("lk matrix test <name>", "Generate a Forge test for a scenario"),
-            ("lk matrix add <name> <text>", "Add another attacker/state case"),
-        ],
-        "matrix test": [
-            ("lk test", "Run the generated scenario test"),
-            ("lk findings", "Record what the scenario demonstrates"),
-        ],
-    }
+    items = list(_NEXT_COMMANDS.get(command_key, _NEXT_COMMANDS.get(canonical, [])))
 
-    # A few aliases intentionally share the canonical menu.
-    items = list(menus.get(command_key, menus.get(canonical, [])))
+    if canonical in {"fn", "ask"} and raw_args and not raw_args[0].startswith("-"):
+        query = shlex.quote(raw_args[0])
+        items = [
+            f"lk ask {query}",
+            f"lk read {query} [args]",
+            f"lk wizard {query} [values...]",
+            "lk changes '<signature>' <values...>",
+        ]
 
-    # Make function-oriented suggestions use the user's actual query when it is
-    # unambiguous, so "lk fn buyNft" leads naturally to "lk ask buyNft".
-    if canonical in {"fn", "ask"} and raw_args:
-        query = raw_args[0]
-        if query and not query.startswith("-"):
-            items = [
-                (f"lk ask {shlex.quote(query)}", "See the exact parameter names and types"),
-                (f"lk read {shlex.quote(query)} [args]", "Call it without changing state"),
-                (f"lk wizard {shlex.quote(query)} [values...]", "Interact with guided arguments"),
-                ("lk changes '<signature>' <values...>", "Measure the storage changes it causes"),
-            ]
+    # If a new command lacks a curated workflow, reuse its documented related
+    # commands before falling back to the core audit loop.
+    if not items:
+        entry = COMMAND_HELP.get(canonical)
+        items = list(entry.get("related") or [])[:4] if entry else []
+    if not items:
+        items = ["lk status", "lk functions", "lk context"]
 
-    # Do not suggest the command the user just ran as the first step.
     normalized_current = f"lk {command_key}".strip()
-    filtered = []
+    rendered = []
     for item in items:
-        if item[0].strip() == normalized_current:
+        command_text = str(item).strip()
+        if not command_text or command_text == normalized_current:
             continue
-        if item not in filtered:
-            filtered.append(item)
-        if len(filtered) >= 4:
+        reason = _recommendation_reason(command_text)
+        pair = (command_text, reason)
+        if pair not in rendered:
+            rendered.append(pair)
+        if len(rendered) >= 4:
             break
-    return filtered
+    return rendered
 
 
 def _print_recommended_next_commands(command, args=None, result=0):
