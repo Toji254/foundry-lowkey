@@ -114,6 +114,10 @@ class CommandHelpTests(unittest.TestCase):
             self.assertNotIn("Unknown subcommand", output)
             self.assertIn("Example:", output)
 
+    def test_every_help_variation_has_description_and_example(self):
+        problems = lk._validate_help_variations(lk.COMMAND_HELP)
+        self.assertEqual(problems, [])
+
     def test_every_help_entry_has_required_documentation_fields(self):
         def validate(entries, path="lk"):
             problems = []
