@@ -12633,7 +12633,7 @@ def _recommended_next_commands(command, args=None, config=None):
 def _print_recommended_next_commands(command, args=None, result=0, config=None):
     """Render contextual next steps without breaking failed or machine-readable commands."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
-    if result_code not in {None, 0} or _COMMAND_STATUS:
+    if result_code not in {None, 0}:
         return
     items = _recommended_next_commands(command, args, config)
     if not items:
@@ -13034,7 +13034,10 @@ def main():
 
     if command.lower() in {"cheat", "cheats", "cheatsheet"}:
         result = run_cheat(sys.argv[2:])
-        _print_recommended_next_commands(command, sys.argv[2:], result, config)
+        footer_status = result
+        if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
+            footer_status = _COMMAND_STATUS
+        _print_recommended_next_commands(command, sys.argv[2:], footer_status, config)
         if isinstance(result, int):
             raise SystemExit(result)
         return
@@ -13073,7 +13076,15 @@ def main():
         save_config(config)
     final_root = audit_context.foundry_project_root()
     _sync_audit_context(config, final_root)
-    _print_recommended_next_commands(command_name if 'command_name' in locals() else command, sys.argv[2:], result, config)
+    footer_status = result
+    if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
+        footer_status = _COMMAND_STATUS
+    _print_recommended_next_commands(
+        command_name if 'command_name' in locals() else command,
+        sys.argv[2:],
+        footer_status,
+        config,
+    )
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
