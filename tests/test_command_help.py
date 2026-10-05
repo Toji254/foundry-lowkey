@@ -324,8 +324,10 @@ class CommandHelpTests(unittest.TestCase):
                  patch.object(lk, "_sync_audit_context"), \
                  patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(".")), \
                  patch.object(lk.audit_context, "emit"), \
-                 redirect_stdout(output):
+                 redirect_stdout(output), \
+                 self.assertRaises(SystemExit) as raised:
                 lk.main()
+            self.assertEqual(raised.exception.code, 0)
         finally:
             lk.sys.argv = original_argv
 
