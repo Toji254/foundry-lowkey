@@ -307,7 +307,7 @@ class AuditEngineTests(unittest.TestCase):
                 with patch.object(audit_engine, "read_json", return_value={}):
                     with patch.object(audit_engine, "write_json"):
                         with patch.object(audit_engine, "generate_poc"):
-                            with patch.object(audit_engine, "render_audit_dashboard"):
+                            with patch.object(audit_engine, "render_audit_dashboard") as render_dashboard:
                                 code = audit_engine._finalize_pipeline(
                                     str(root),
                                     [
@@ -315,6 +315,74 @@ class AuditEngineTests(unittest.TestCase):
                                         {"label": "tests", "code": 0},
                                         {"label": "coverage", "code": 0},
                                         {"label": "slither", "code": 127},
+                                    ],
+                                    0,
+                                    False,
+                                )
+            self.assertEqual(code, 2)
+            render_dashboard.assert_called_once_with(str(root), pipeline_code=2)
+
+    def test_finalize_pipeline_marks_analyzer_failure_as_failed(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            with patch.object(audit_engine, "_evidence_data", side_effect=lambda _root, name: {
+                "context": {
+                    "project": {
+                        "sources": {"solidity": 1}
+                    }
+                },
+                "tests": {
+                    "stdout": "Suite result: ok. 3 passed",
+                    "stderr": "",
+                },
+            }.get(name, {})):
+                with patch.object(audit_engine, "read_json", return_value={}):
+                    with patch.object(audit_engine, "write_json"):
+                        with patch.object(audit_engine, "generate_poc"):
+                            with patch.object(audit_engine, "render_audit_dashboard") as render_dashboard:
+                                code = audit_engine._finalize_pipeline(
+                                    str(root),
+                                    [
+                                        {"label": "build", "code": 0},
+                                        {"label": "tests", "code": 0},
+                                        {"label": "coverage", "code": 0},
+                                        {"label": "slither", "code": 1},
+                                    ],
+                                    0,
+                                    False,
+                                )
+            self.assertEqual(code, 1)
+            render_dashboard.assert_called_once_with(str(root), pipeline_code=1)
+
+    def test_finalize_pipeline_marks_missing_tests_as_inconclusive(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            with patch.object(audit_engine, "_evidence_data", side_effect=lambda _root, name: {
+                "context": {
+                    "project": {
+                        "sources": {"solidity": 1}
+                    }
+                },
+                "tests": {
+                    "stdout": "Warning: No tests found in project!",
+                    "stderr": "",
+                },
+            }.get(name, {})):
+                with patch.object(audit_engine, "read_json", return_value={}):
+                    with patch.object(audit_engine, "write_json"):
+                        with patch.object(audit_engine, "generate_poc"):
+                            with patch.object(audit_engine, "render_audit_dashboard"):
+                                code = audit_engine._finalize_pipeline(
+                                    str(root),
+                                    [
+                                        {"label": "build", "code": 0},
+                                        {"label": "tests", "code": 0},
+                                        {"label": "coverage", "code": 0},
+                                        {"label": "slither", "code": 0},
                                     ],
                                     0,
                                     False,
