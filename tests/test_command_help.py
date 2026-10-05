@@ -338,6 +338,18 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Did you mean:", rendered)
         self.assertIn("balanceOf(address)", rendered)
 
+    def test_recommendations_require_a_curated_workflow(self):
+        audit_commands = [command for command, _ in lk._recommended_next_commands("audit", [])]
+        self.assertIn("lk findings", audit_commands)
+        self.assertIn("lk checklist", audit_commands)
+        self.assertNotIn("lk cheat", audit_commands)
+
+        self.assertEqual(lk._recommended_next_commands("cheat", ["mapping"]), [])
+        self.assertEqual(lk._recommended_next_commands("version", []), [])
+
+    def test_recommendations_do_not_fall_back_to_help_related_commands(self):
+        self.assertEqual(lk._recommended_next_commands("some-new-command", []), [])
+
     def test_recommendation_footer_skips_failed_commands(self):
         output = io.StringIO()
         with redirect_stdout(output):
