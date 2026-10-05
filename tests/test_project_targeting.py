@@ -679,6 +679,31 @@ class ProjectTargetingTests(unittest.TestCase):
                 lk.artifact_is_project_application(root, str(real_artifact), artifact)
             )
 
+    def test_artifact_provenance_allows_contract_name_different_from_source_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "PurchaseNFT2.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract PurchaseNFT {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "PurchaseNFT2.sol" / "PurchaseNFT.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact_data = {
+                "contractName": "PurchaseNFT",
+                "sourceName": "src/PurchaseNFT2.sol",
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+                "abi": [],
+            }
+            artifact.write_text(json.dumps(artifact_data), encoding="utf-8")
+
+            self.assertTrue(
+                lk.artifact_is_project_application(root, str(artifact), artifact_data)
+            )
+
+
     def test_project_lab_provenance_can_override_discovered_target_preference(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
