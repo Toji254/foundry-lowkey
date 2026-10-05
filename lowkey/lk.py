@@ -12709,6 +12709,7 @@ def main():
 
     if command.lower() in {"cheat", "cheats", "cheatsheet"}:
         result = run_cheat(sys.argv[2:])
+        _print_recommended_next_commands(command, sys.argv[2:], result)
         if isinstance(result, int):
             raise SystemExit(result)
         return
