@@ -292,5 +292,34 @@ class AuditEngineTests(unittest.TestCase):
                 self.assertEqual(evidence["data"]["hits"], [])
 
 
+    def test_finalize_pipeline_marks_missing_slither_for_solidity_as_inconclusive(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            with patch.object(audit_engine, "_evidence_data", side_effect=lambda _root, name: {
+                "context": {
+                    "project": {
+                        "sources": {"solidity": 1}
+                    }
+                },
+            }.get(name, {})):
+                with patch.object(audit_engine, "read_json", return_value={}):
+                    with patch.object(audit_engine, "write_json"):
+                        with patch.object(audit_engine, "generate_poc"):
+                            with patch.object(audit_engine, "render_audit_dashboard"):
+                                code = audit_engine._finalize_pipeline(
+                                    str(root),
+                                    [
+                                        {"label": "build", "code": 0},
+                                        {"label": "tests", "code": 0},
+                                        {"label": "coverage", "code": 0},
+                                        {"label": "slither", "code": 127},
+                                    ],
+                                    0,
+                                    False,
+                                )
+            self.assertEqual(code, 2)
+
 if __name__ == "__main__":
     unittest.main()
