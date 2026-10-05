@@ -2517,6 +2517,64 @@ contract Pool {
         self.assertEqual(lk.humanize_value(raw), raw)
         self.assertIn("1.0000 ETH", lk.humanize_value(raw, assume_wei=True))
 
+    def test_run_cast_decodes_abi_return_data_for_humans(self):
+        target = "0x" + "1" * 40
+        owner = "0x" + "2" * 40
+        raw = "0x" + "0" * 64
+        abi = [
+            {
+                "type": "function",
+                "name": "balanceOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "owner", "type": "address"}],
+                "outputs": [{"name": "balance", "type": "uint256"}],
+            }
+        ]
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=abi), patch.object(
+            lk,
+            "cast_output",
+            side_effect=[(0, raw, ""), (0, "0", "")],
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_cast(["call", "balanceOf", owner], config)
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("Return: balance (uint256) = 0", rendered)
+        self.assertNotIn(raw, rendered)
+        self.assertNotIn("ABI encoded", rendered)
+
+    def test_run_cast_labels_raw_return_data_when_abi_decode_fails(self):
+        target = "0x" + "1" * 40
+        owner = "0x" + "2" * 40
+        raw = "0x" + "0" * 64
+        abi = [
+            {
+                "type": "function",
+                "name": "balanceOf",
+                "stateMutability": "view",
+                "inputs": [{"name": "owner", "type": "address"}],
+                "outputs": [{"name": "balance", "type": "uint256"}],
+            }
+        ]
+        config = {"target": target, "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=abi), patch.object(
+            lk,
+            "cast_output",
+            side_effect=[(0, raw, ""), (1, "", "decode failed")],
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(output):
+                result = lk.run_cast(["call", "balanceOf", owner], config)
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("Return: ABI decoding failed", rendered)
+        self.assertIn("Raw return data:", rendered)
+        self.assertIn(raw, rendered)
+
     def test_abi_selector_uses_three_tuple(self):
         with patch.object(lk, "cast_output", return_value=(0, "0x12345678\n", "")):
             self.assertEqual(lk.abi_selector("foo(uint256)"), "0x12345678")
