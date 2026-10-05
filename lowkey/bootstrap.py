@@ -340,6 +340,11 @@ def _node_install_command(root: Path) -> tuple[Path, list[str], str] | None:
                 return boundary, ["corepack", f"pnpm@{major}", "install", "--frozen-lockfile"], f"pnpm-lockfile v{major}"
         if shutil.which("pnpm"):
             return boundary, ["pnpm", "install", "--frozen-lockfile"], f"pnpm-lockfile v{major or 'unknown'}"
+        # Never fall back to npm: the repository's lockfile declares pnpm.
+        return boundary, [], (
+            f"pnpm-lock.yaml declares pnpm (lockfile v{major or 'unknown'}) but neither "
+            "Corepack nor pnpm is available; Lowkey will not substitute npm"
+        )
 
     yarn_lock = boundary / "yarn.lock"
     if yarn_lock.is_file():
@@ -348,10 +353,15 @@ def _node_install_command(root: Path) -> tuple[Path, list[str], str] | None:
             if re.search(r"^# yarn lockfile v1", yarn_text):
                 return boundary, ["yarn", "install", "--frozen-lockfile"], "Yarn classic lockfile"
             return boundary, ["yarn", "install", "--immutable"], "Yarn modern lockfile"
+        return boundary, [], (
+            "yarn.lock declares Yarn but neither Corepack nor yarn is available; "
+            "Lowkey will not substitute npm"
+        )
 
     if (boundary / "bun.lockb").is_file() or (boundary / "bun.lock").is_file():
         if shutil.which("bun"):
             return boundary, ["bun", "install", "--frozen-lockfile"], "Bun lockfile"
+        return boundary, [], "Bun lockfile declares Bun but Bun is not installed"
 
     if (boundary / "package-lock.json").is_file() and shutil.which("npm"):
         return boundary, ["npm", "ci"], "package-lock.json"
@@ -487,12 +497,112 @@ def _workspace_commands(
 
     return actions
 
+def _parse_version(value: str) -> tuple[int, int, int] | None:
+    match = re.match(r"^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?", str(value).strip())
+    if not match:
+        return None
+    return tuple(int(part) if part is not None else 0 for part in match.groups())  # type: ignore[return-value]
+
+
+def _coerce_node_spec(value: str) -> str | None:
+    """Normalize a declared Node version/range to a comparable spec."""
+    value = str(value).strip().strip("\"'")
+    if not value or not re.search(r"\d", value):
+        return None
+    if not re.fullmatch(r"[vV0-9.xX*^~<>=|,\s-]+", value):
+        return None
+    if re.fullmatch(r"[vV]?\d+(?:\.\d+){0,2}", value):
+        return value.lstrip("vV")
+    return value
+
+
+def _node_satisfies_clause(installed: tuple[int, int, int], clause: str) -> bool:
+    clause = clause.strip()
+    if not clause:
+        return True
+    if clause.startswith("^"):
+        base = _parse_version(clause[1:])
+        if base is None:
+            return False
+        if base[0] != 0:
+            return installed[0] == base[0] and installed >= base
+        return installed[:2] == base[:2] and installed >= base
+    if clause.startswith("~"):
+        base = _parse_version(clause[1:])
+        if base is None:
+            return False
+        return installed[:2] == base[:2] and installed >= base
+
+    wildcard = re.fullmatch(r"[vV]?(\d+(?:\.\d+)*)\.?[xX*]", clause)
+    if wildcard:
+        base = _parse_version(wildcard.group(1))
+        if base is None:
+            return False
+        parts = wildcard.group(1).split(".")
+        return installed[: len(parts)] == base[: len(parts)]
+
+    match = re.fullmatch(r"(>=|<=|>|<|=|==)?\s*[vV]?(\d+(?:\.\d+){0,2})", clause)
+    if not match:
+        return False
+    operator = match.group(1) or "="
+    raw = match.group(2)
+    base = _parse_version(raw)
+    if base is None:
+        return False
+    if operator in {"=", "=="}:
+        parts = raw.split(".")
+        if len(parts) == 1:
+            return installed[0] == base[0]
+        if len(parts) == 2:
+            return installed[:2] == base[:2]
+        return installed == base
+    if operator == ">=":
+        return installed >= base
+    if operator == "<=":
+        return installed <= base
+    if operator == ">":
+        return installed > base
+    if operator == "<":
+        return installed < base
+    return False
+
+
+def _node_satisfies(version: str, spec: str) -> bool:
+    """Conservatively decide whether an installed Node version meets a pin."""
+    installed = _parse_version(version)
+    if installed is None:
+        return False
+    for group in re.split(r"\|\|", str(spec)):
+        clauses = [c for c in re.split(r"[\s,]+", group) if c and c.lower() not in {"node", "nodejs", "v"}]
+        if clauses and all(_node_satisfies_clause(installed, c) for c in clauses):
+            return True
+    return False
+
+
 def _node_runtime_requirement(root: Path) -> str | None:
-    """Return an exact Node runtime pin when the project declares one."""
+    """Return a declared Node runtime pin (exact or range) when present."""
     for filename in (".nvmrc", ".node-version"):
         value = _read(root / filename).strip()
-        if re.fullmatch(r"v?\d+\.\d+\.\d+", value):
-            return value.lstrip("v")
+        if value:
+            spec = _coerce_node_spec(value)
+            if spec:
+                return spec
+
+    for line in _read(root / ".tool-versions").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].lower() in {"node", "nodejs"}:
+            spec = _coerce_node_spec(parts[1])
+            if spec:
+                return spec
+
+    package = _package_json(root)
+    engines = package.get("engines") if isinstance(package, dict) else None
+    if isinstance(engines, dict):
+        node_spec = engines.get("node")
+        if isinstance(node_spec, str):
+            spec = _coerce_node_spec(node_spec)
+            if spec:
+                return spec
     return None
 
 
@@ -508,7 +618,7 @@ def _node_runtime_bin(root: Path) -> Path | None:
             result = subprocess.run(
                 [current, "--version"], capture_output=True, text=True, timeout=5
             )
-            if result.returncode == 0 and result.stdout.strip().lstrip("v") == required:
+            if result.returncode == 0 and _node_satisfies(result.stdout.strip(), required):
                 return Path(current).resolve().parent
         except (OSError, subprocess.SubprocessError):
             pass
@@ -536,7 +646,7 @@ def _node_runtime_bin(root: Path) -> Path | None:
                         text=True,
                         timeout=5,
                     )
-                    if version.returncode == 0 and version.stdout.strip().lstrip("v") == required:
+                    if version.returncode == 0 and _node_satisfies(version.stdout.strip(), required):
                         return node.parent
         except (OSError, subprocess.SubprocessError):
             pass
@@ -580,7 +690,7 @@ def _node_runtime_bin(root: Path) -> Path | None:
             )
         except (OSError, subprocess.SubprocessError):
             continue
-        if result.returncode == 0 and result.stdout.strip().lstrip("v") == required:
+        if result.returncode == 0 and _node_satisfies(result.stdout.strip(), required):
             return candidate
     return None
 
@@ -603,6 +713,25 @@ def runtime_environment(root: str | os.PathLike[str] = ".") -> tuple[dict[str, s
         return env, required
     env["PATH"] = str(runtime_bin) + os.pathsep + env.get("PATH", "")
     return env, required
+
+
+def node_runtime_status(root: str | os.PathLike[str] = ".") -> dict[str, Any]:
+    """Report whether a declared Node pin can be satisfied locally.
+
+    ``matched`` is False when a pin is declared but no already-installed runtime
+    satisfies it. Callers must surface that as REVIEW NEEDED; Lowkey never
+    downloads a runtime to force a match.
+    """
+    path = Path(root).expanduser().resolve()
+    required = _node_runtime_requirement(path)
+    if not required:
+        return {"required": None, "matched": True, "path": None}
+    runtime_bin = _node_runtime_bin(path)
+    return {
+        "required": required,
+        "matched": runtime_bin is not None,
+        "path": str(runtime_bin) if runtime_bin else None,
+    }
 
 
 def runtime_requirements(root: str | os.PathLike[str] = ".") -> dict[str, str]:
@@ -643,14 +772,108 @@ def _node_run_command(root: Path, script: str) -> list[str] | None:
             version = declared.split("@", 1)[1]
             return ["corepack", f"{manager}@{version}", "run", script]
         return None
-    if (manager_root / "pnpm-lock.yaml").is_file() and shutil.which("pnpm"):
-        return ["pnpm", "run", script]
-    if (manager_root / "yarn.lock").is_file() and shutil.which("yarn"):
-        return ["yarn", script]
-    if ((manager_root / "bun.lockb").is_file() or (manager_root / "bun.lock").is_file()) and shutil.which("bun"):
-        return ["bun", "run", script]
+    # A repository that declares a package manager through its lockfile must
+    # not silently run the script under a different, globally installed one.
+    if (manager_root / "pnpm-lock.yaml").is_file():
+        if shutil.which("pnpm"):
+            return ["pnpm", "run", script]
+        return None
+    if (manager_root / "yarn.lock").is_file():
+        if shutil.which("yarn"):
+            return ["yarn", script]
+        return None
+    if (manager_root / "bun.lockb").is_file() or (manager_root / "bun.lock").is_file():
+        if shutil.which("bun"):
+            return ["bun", "run", script]
+        return None
     if shutil.which("npm"):
         return ["npm", "run", script]
+    return None
+
+
+HARDHAT_CONFIG_NAMES = (
+    "hardhat.config.js",
+    "hardhat.config.cjs",
+    "hardhat.config.mjs",
+    "hardhat.config.ts",
+)
+
+
+def _hardhat_config_present(project: Path) -> bool:
+    return any((project / name).is_file() for name in HARDHAT_CONFIG_NAMES)
+
+
+def _package_dependency_names(project: Path) -> set[str]:
+    package = _package_json(project)
+    names: set[str] = set()
+    for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        values = package.get(section) if isinstance(package, dict) else None
+        if isinstance(values, dict):
+            names.update(str(name).lower() for name in values)
+    return names
+
+
+def _hardhat_declared_dependency(project: Path) -> bool:
+    return any(
+        name == "hardhat" or name.startswith("@nomicfoundation/hardhat")
+        for name in _package_dependency_names(project)
+    )
+
+
+def _is_hardhat_scope(info: dict[str, Any] | None, project: Path) -> bool:
+    """Return whether repository evidence makes Hardhat the native build authority.
+
+    A stray ``hardhat.config.*`` file is weak evidence. It must never suppress a
+    stronger, concrete backend (Cargo/Cairo/Go/Move/...) that the detector found.
+    """
+    backend = str((info or {}).get("backend") or (info or {}).get("kind") or "").lower()
+    stacks = {str(stack).lower() for stack in ((info or {}).get("stacks") or [])}
+    declares = _hardhat_config_present(project) or _hardhat_declared_dependency(project)
+    if "hardhat" in stacks or backend == "hardhat":
+        return declares
+    if backend in {"", "unknown", "generic", "node", "multi", "multi-stack"}:
+        return declares
+    return False
+
+
+def _local_hardhat_binary(project: Path) -> Path | None:
+    """Return the repository-local Hardhat executable; never a global one."""
+    def candidate(binary: Path) -> Path | None:
+        if os.name == "nt":
+            binary = binary.with_suffix(".cmd")
+        return binary if binary.is_file() else None
+
+    boundary = dependency_boundary(project)
+    found = candidate(boundary / "node_modules" / ".bin" / "hardhat")
+    if found is not None:
+        return found
+    return candidate(project / "node_modules" / ".bin" / "hardhat")
+
+
+def _node_script_text(project: Path, script_name: str) -> str:
+    package = _package_json(project)
+    scripts = package.get("scripts") if isinstance(package, dict) else None
+    if isinstance(scripts, dict):
+        return str(scripts.get(script_name) or "")
+    return ""
+
+
+def _move_framework_evidence(project: Path) -> str | None:
+    """Return the Move framework a repository itself declares, or None.
+
+    A bare ``Move.toml`` says nothing about Aptos vs Sui. Guessing the installed
+    tool in that case would run an incompatible compiler, so callers must treat
+    ``None`` as REVIEW NEEDED rather than selecting a framework.
+    """
+    text = ("\n".join((_read(project / "Move.toml"), _read(project / "Move.lock")))).lower()
+    if not text.strip():
+        return None
+    aptos = bool(re.search(r"aptos-labs/aptos|aptos-framework|aptosframework", text))
+    sui = bool(re.search(r"mystenlabs/sui|sui-framework|\bsui\s*=", text))
+    if aptos and not sui:
+        return "aptos"
+    if sui and not aptos:
+        return "sui"
     return None
 
 
@@ -662,30 +885,29 @@ def project_test_command(
     project = Path((info or {}).get("root") or root).expanduser().resolve()
     package = _package_json(project)
     scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+
+    hardhat_scope = _is_hardhat_scope(info, project)
+    if hardhat_scope and _local_hardhat_binary(project) is None:
+        # Without the repository's own binary, a script that invokes Hardhat
+        # would resolve a globally installed Hardhat. Refuse rather than guess.
+        test_script = _node_script_text(project, "test")
+        if not test_script or "hardhat" in test_script.lower():
+            return None
+
     if isinstance(scripts, dict) and scripts.get("test"):
         command = _node_run_command(project, "test")
         if command:
             return project, command, "package.json scripts.test"
 
     backend = str((info or {}).get("backend") or (info or {}).get("kind") or "").lower()
+    stacks = {str(stack).lower() for stack in ((info or {}).get("stacks") or [])}
 
-    if backend in {"foundry", "multi-stack"} and (project / "foundry.toml").is_file():
+    if (backend in {"foundry", "multi-stack", "multi"} or "foundry" in stacks) and (project / "foundry.toml").is_file():
         return project, ["forge", "test"], "foundry.toml"
 
-    if backend in {"hardhat", "node"} or any(
-        (project / name).is_file()
-        for name in (
-            "hardhat.config.js",
-            "hardhat.config.cjs",
-            "hardhat.config.mjs",
-            "hardhat.config.ts",
-        )
-    ):
-        boundary = dependency_boundary(project)
-        binary = boundary / "node_modules" / ".bin" / "hardhat"
-        if os.name == "nt":
-            binary = binary.with_suffix(".cmd")
-        if binary.is_file():
+    if hardhat_scope:
+        binary = _local_hardhat_binary(project)
+        if binary:
             return project, [str(binary), "test"], "local Hardhat binary"
         return None
 
@@ -706,10 +928,15 @@ def project_test_command(
         return project, ["anchor", "test"], "Anchor.toml"
 
     if backend == "move" and (project / "Move.toml").is_file():
-        if shutil.which("aptos"):
-            return project, ["aptos", "move", "test"], "Aptos Move.toml"
-        if shutil.which("sui"):
-            return project, ["sui", "move", "test"], "Sui Move.toml"
+        framework = _move_framework_evidence(project)
+        if framework == "aptos":
+            if shutil.which("aptos"):
+                return project, ["aptos", "move", "test"], "Move.toml declares Aptos"
+            return None
+        if framework == "sui":
+            if shutil.which("sui"):
+                return project, ["sui", "move", "test"], "Move.toml declares Sui"
+            return None
         return None
 
     if backend in {"mix", "elixir"} and (project / "mix.exs").is_file() and shutil.which("mix"):
@@ -728,14 +955,26 @@ def project_test_command(
     if (project / "Package.swift").is_file() and shutil.which("swift"):
         return project, ["swift", "test"], "Package.swift"
 
-    has_python_tests = any(
-        (project / name).is_dir() for name in ("tests", "test")
-    ) or any(
-        path.is_file() and (path.name.startswith("test_") or path.name.endswith("_test.py"))
+    # A bare ``tests/`` directory is not Python evidence: Anchor/Cairo/Foundry
+    # projects commonly keep TypeScript or native tests there. Require an actual
+    # Python test file before selecting pytest.
+    python_test_files = [
+        path
         for path in project.rglob("*.py")
-        if all(part not in {"node_modules", ".git", ".audit", ".venv", "venv"} for part in path.parts)
-    )
-    if has_python_tests:
+        if path.is_file()
+        and all(part not in {"node_modules", ".git", ".audit", ".venv", "venv"} for part in path.parts)
+        and (
+            path.name.startswith("test_")
+            or path.name.endswith("_test.py")
+            or any(part in {"tests", "test"} for part in path.relative_to(project).parts[:-1])
+        )
+    ]
+    non_python_stacks = {
+        "foundry", "hardhat", "cairo-starknet", "solana-anchor",
+        "cosmwasm", "move", "vyper", "go",
+    }
+    backend_indicates_native = backend in non_python_stacks or bool(non_python_stacks & stacks)
+    if python_test_files and not backend_indicates_native:
         if (project / "pyproject.toml").is_file() and shutil.which("uv"):
             return project, ["uv", "run", "pytest"], "pyproject.toml + uv"
         for python in (
@@ -864,10 +1103,19 @@ def project_build_command(
     if isinstance(scripts, dict) and scripts.get("build"):
         command = _node_run_command(project, "build")
         if command:
+            build_script = _node_script_text(project, "build")
+            if (
+                _is_hardhat_scope(info, project)
+                and "hardhat" in build_script.lower()
+                and _local_hardhat_binary(project) is None
+            ):
+                # Do not let npm/pnpm resolve a globally installed Hardhat.
+                return None
             return project, command, "package.json scripts.build"
 
     backend = str((info or {}).get("backend") or (info or {}).get("kind") or "").lower()
-    if backend in {"foundry", "multi-stack"} and (project / "foundry.toml").is_file():
+    stacks = {str(stack).lower() for stack in ((info or {}).get("stacks") or [])}
+    if (backend in {"foundry", "multi-stack", "multi"} or "foundry" in stacks) and (project / "foundry.toml").is_file():
         return project, ["forge", "build"], "foundry.toml"
     if backend == "vyper":
         build_sources = _vyper_build_sources(project)
@@ -877,15 +1125,9 @@ def project_build_command(
             return project, ["vyper", *rel_sources], f"Vyper compiler ({compiler})"
         return None
 
-    if backend in {"hardhat", "node"} or any(
-        (project / name).is_file()
-        for name in ("hardhat.config.js", "hardhat.config.cjs", "hardhat.config.mjs", "hardhat.config.ts")
-    ):
-        boundary = dependency_boundary(project)
-        binary = boundary / "node_modules" / ".bin" / "hardhat"
-        if os.name == "nt":
-            binary = binary.with_suffix(".cmd")
-        if binary.is_file():
+    if _is_hardhat_scope(info, project):
+        binary = _local_hardhat_binary(project)
+        if binary:
             return project, [str(binary), "compile"], "local Hardhat binary"
         return None
     if backend in {"cairo", "cairo-starknet"} and (project / "Scarb.toml").is_file():
@@ -897,10 +1139,16 @@ def project_build_command(
     if backend == "go" and ((project / "go.mod").is_file() or (project / "go.work").is_file()) and shutil.which("go"):
         return project, ["go", "build", "./..."], "Go workspace/module"
     if backend == "move":
-        if shutil.which("aptos") and (project / "Move.toml").is_file():
-            return project, ["aptos", "move", "compile"], "Aptos Move.toml"
-        if shutil.which("sui") and (project / "Move.toml").is_file():
-            return project, ["sui", "move", "build"], "Sui Move.toml"
+        if (project / "Move.toml").is_file():
+            framework = _move_framework_evidence(project)
+            if framework == "aptos":
+                if shutil.which("aptos"):
+                    return project, ["aptos", "move", "compile"], "Move.toml declares Aptos"
+                return None
+            if framework == "sui":
+                if shutil.which("sui"):
+                    return project, ["sui", "move", "build"], "Move.toml declares Sui"
+                return None
         return None
     if backend == "solana-anchor" and shutil.which("anchor"):
         return project, ["anchor", "build"], "Anchor.toml"

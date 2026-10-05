@@ -405,13 +405,18 @@ class BootstrapTests(unittest.TestCase):
     def test_build_command_supports_aptos_move(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "Move.toml", "[package]\nname=\"demo\"\nversion=\"1.0.0\"\n")
+            self.write(
+                root,
+                "Move.toml",
+                "[package]\nname=\"demo\"\nversion=\"1.0.0\"\n\n[dependencies]\n"
+                "AptosFramework = { git = \"https://github.com/aptos-labs/aptos-core.git\" }\n",
+            )
             with patch.object(bootstrap.shutil, "which", side_effect=lambda name: name == "aptos"):
                 command = bootstrap.project_build_command(
                     {"root": str(root), "backend": "move", "build_backend": "move"}
                 )
             self.assertEqual(command[1], ["aptos", "move", "compile"])
-            self.assertEqual(command[2], "Aptos Move.toml")
+            self.assertEqual(command[2], "Move.toml declares Aptos")
 
     def test_build_command_supports_cargo_and_go(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -434,6 +439,258 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(cargo[1][0], "cargo")
             self.assertIn("build", cargo[1])
             self.assertEqual(go[1], ["go", "build", "./..."])
+
+
+class NativeRoutingSafetyRegressionTests(unittest.TestCase):
+    """Regression tests for unsafe native-command routing on unfamiliar repos.
+
+    Each test encodes an invariant: a repository that does not actually declare
+    a toolchain must never have that toolchain's command invented for it, and an
+    unavailable local toolchain must produce REVIEW NEEDED (None) rather than a
+    global/`npx` fallback.
+    """
+
+    def write(self, root, relative, text):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def local_binary(self, root, name="hardhat"):
+        binary = root / "node_modules" / ".bin" / name
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        return binary
+
+    def test_stray_hardhat_config_does_not_hijack_cargo_build_or_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "Cargo.toml", '[package]\nname="demo"\nversion="0.1.0"\n')
+            self.write(root, "src/lib.rs", "pub fn x() {}\n")
+            self.write(root, "hardhat.config.ts", "export default {}\n")
+            info = {"root": str(root), "backend": "cargo", "build_backend": "cargo", "stacks": ["cargo"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/cargo" if n == "cargo" else None):
+                build = bootstrap.project_build_command(info)
+                test = bootstrap.project_test_command(info, root)
+            self.assertIsNotNone(build)
+            self.assertEqual(build[1][0], "cargo")
+            self.assertIsNotNone(test)
+            self.assertEqual(test[1][:2], ["cargo", "test"])
+
+    def test_stray_hardhat_config_does_not_hijack_cairo_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "Scarb.toml", '[package]\nname="demo"\nversion="0.1.0"\n')
+            self.write(root, "src/lib.cairo", "fn x() {}\n")
+            self.write(root, "hardhat.config.js", "module.exports = {}\n")
+            info = {"root": str(root), "backend": "cairo-starknet", "stacks": ["cairo-starknet"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/scarb" if n == "scarb" else None):
+                build = bootstrap.project_build_command(info)
+            self.assertIsNotNone(build)
+            self.assertEqual(build[1], ["scarb", "build"])
+
+    def test_hardhat_missing_local_binary_returns_review_needed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.ts", "export default {}\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"hh","devDependencies":{"hardhat":"^2"},'
+                '"scripts":{"build":"hardhat compile","test":"hardhat test"}}\n',
+            )
+            # node_modules exists, but the local Hardhat binary does not.
+            (root / "node_modules").mkdir()
+            info = {"root": str(root), "backend": "hardhat", "stacks": ["hardhat"]}
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda n: "/usr/bin/npm" if n == "npm" else None,
+            ):
+                self.assertIsNone(bootstrap.project_build_command(info))
+                self.assertIsNone(bootstrap.project_test_command(info, root))
+
+    def test_hardhat_uses_repository_local_binary_and_never_npx(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "hardhat.config.ts", "export default {}\n")
+            self.write(
+                root,
+                "package.json",
+                '{"name":"hh","devDependencies":{"hardhat":"^2"}}\n',
+            )
+            binary = self.local_binary(root)
+            info = {"root": str(root), "backend": "hardhat", "stacks": ["hardhat"]}
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda n: "/usr/bin/npm" if n == "npm" else None,
+            ):
+                build = bootstrap.project_build_command(info)
+                test = bootstrap.project_test_command(info, root)
+            self.assertEqual(build[1], [str(binary), "compile"])
+            self.assertEqual(test[1], [str(binary), "test"])
+            self.assertNotIn("npx", build[1] + test[1])
+
+    def test_pnpm_lockfile_never_falls_back_to_npm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"name":"app","scripts":{"test":"hardhat test"}}\n')
+            self.write(root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+            info = {"root": str(root), "backend": "hardhat", "stacks": ["hardhat"]}
+            # Corepack and pnpm are unavailable; only npm is installed.
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/npm" if n == "npm" else None):
+                self.assertIsNone(bootstrap.project_test_command(info, root))
+                plan = bootstrap.bootstrap_plan(info, root)
+            node_actions = [a for a in plan["actions"] if a["kind"] == "node"]
+            self.assertEqual(node_actions, [])
+            self.assertNotIn("npm", " ".join(a["command"] for a in plan["actions"]))
+
+    def test_yarn_lockfile_never_falls_back_to_npm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"name":"app","scripts":{"test":"hardhat test"}}\n')
+            self.write(root, "yarn.lock", "# yarn lockfile v1\n")
+            info = {"root": str(root), "backend": "hardhat", "stacks": ["hardhat"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/npm" if n == "npm" else None):
+                self.assertIsNone(bootstrap.project_test_command(info, root))
+
+    def test_declared_pnpm_without_corepack_does_not_use_global_pnpm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "package.json",
+                '{"name":"app","packageManager":"pnpm@9.0.0","scripts":{"test":"hardhat test"}}\n',
+            )
+            info = {"root": str(root), "backend": "hardhat", "stacks": ["hardhat"]}
+            # A random global pnpm must not be used to satisfy a declared pin.
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/" + n if n in {"pnpm", "npm"} else None):
+                self.assertIsNone(bootstrap.project_test_command(info, root))
+                plan = bootstrap.bootstrap_plan(info, root)
+            self.assertEqual([a for a in plan["actions"] if a["kind"] == "node"], [])
+
+    def test_sui_move_project_is_not_routed_to_aptos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "Move.toml",
+                '[package]\nname="s"\n\n[dependencies]\n'
+                'Sui = { git = "https://github.com/MystenLabs/sui.git" }\n',
+            )
+            info = {"root": str(root), "backend": "move", "stacks": ["move"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/" + n if n in {"aptos", "sui"} else None):
+                build = bootstrap.project_build_command(info)
+                test = bootstrap.project_test_command(info, root)
+            self.assertEqual(build[1], ["sui", "move", "build"])
+            self.assertEqual(test[1], ["sui", "move", "test"])
+
+    def test_ambiguous_move_project_is_review_needed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "Move.toml", '[package]\nname="demo"\nversion="0.0.1"\n')
+            info = {"root": str(root), "backend": "move", "stacks": ["move"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/" + n if n in {"aptos", "sui"} else None):
+                self.assertIsNone(bootstrap.project_build_command(info))
+                self.assertIsNone(bootstrap.project_test_command(info, root))
+
+    def test_move_framework_mismatch_is_review_needed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                "Move.toml",
+                '[dependencies]\nAptosFramework = { git = "https://github.com/aptos-labs/aptos-core.git" }\n',
+            )
+            info = {"root": str(root), "backend": "move", "stacks": ["move"]}
+            # The declared framework is Aptos, but only Sui is installed.
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/sui" if n == "sui" else None):
+                self.assertIsNone(bootstrap.project_build_command(info))
+
+    def test_tests_dir_without_python_files_does_not_select_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "Anchor.toml", '[provider]\ncluster = "localnet"\n')
+            self.write(root, "Cargo.toml", '[package]\nname="demo"\nversion="0.1.0"\n')
+            self.write(root, "tests/demo.ts", "describe('x', () => {});\n")
+            info = {"root": str(root), "backend": "multi", "stacks": ["solana-anchor", "cargo"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/" + n if n in {"pytest", "cargo", "anchor"} else None):
+                self.assertIsNone(bootstrap.project_test_command(info, root))
+
+    def test_python_tests_directory_with_python_file_selects_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "tests/test_smoke.py", "def test_smoke(): pass\n")
+            info = {"root": str(root), "backend": "python", "stacks": ["python"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/pytest" if n == "pytest" else None):
+                result = bootstrap.project_test_command(info, root)
+            self.assertEqual(result[1], ["pytest"])
+
+    def test_go_project_selects_go_native_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "go.mod", "module example.com/demo\n\ngo 1.22\n")
+            self.write(root, "main.go", "package main\n\nfunc main() {}\n")
+            info = {"root": str(root), "backend": "go", "build_backend": "go", "stacks": ["go"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda n: "/usr/bin/go" if n == "go" else None):
+                build = bootstrap.project_build_command(info)
+                test = bootstrap.project_test_command(info, root)
+            self.assertEqual(build[1], ["go", "build", "./..."])
+            self.assertEqual(test[1], ["go", "test", "./..."])
+
+    def test_node_satisfies_handles_ranges(self):
+        cases = (
+            ("26.8.1", ">=20", True),
+            ("18.18.0", "18.18.0", True),
+            ("16.0.0", "18.18.0", False),
+            ("18.5.0", "18.x", True),
+            ("18.5.0", "^18.0.0", True),
+            ("26.8.1", ">=18 <21", False),
+            ("20.1.0", ">=18 <21", True),
+        )
+        for version, spec, expected in cases:
+            with self.subTest(version=version, spec=spec):
+                self.assertEqual(bootstrap._node_satisfies(version, spec), expected)
+
+    def test_node_engines_range_is_collected_as_requirement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"engines":{"node":">=18 <21"}}\n')
+            self.assertEqual(bootstrap._node_runtime_requirement(root), ">=18 <21")
+
+    def test_node_tool_versions_pin_is_collected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, ".tool-versions", "nodejs 18.18.0\n")
+            self.assertEqual(bootstrap._node_runtime_requirement(root), "18.18.0")
+
+    def test_node_runtime_status_flags_unsatisfied_pin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, ".nvmrc", "18.18.0\n")
+            with patch.object(bootstrap.shutil, "which", return_value="/usr/bin/node"), patch.object(
+                bootstrap.subprocess,
+                "run",
+                return_value=type("R", (), {"returncode": 0, "stdout": "v26.8.1\n", "stderr": ""})(),
+            ), patch.object(bootstrap.Path, "home", return_value=pathlib.Path(tmp)):
+                status = bootstrap.node_runtime_status(root)
+            self.assertEqual(status["required"], "18.18.0")
+            self.assertFalse(status["matched"])
+            self.assertIsNone(status["path"])
+
+    def test_node_runtime_status_matches_satisfied_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "package.json", '{"engines":{"node":">=18"}}\n')
+            with patch.object(bootstrap.shutil, "which", return_value="/usr/bin/node"), patch.object(
+                bootstrap.subprocess,
+                "run",
+                return_value=type("R", (), {"returncode": 0, "stdout": "v26.8.1\n", "stderr": ""})(),
+            ):
+                status = bootstrap.node_runtime_status(root)
+            self.assertEqual(status["required"], ">=18")
+            self.assertTrue(status["matched"])
 
 
 if __name__ == "__main__":
