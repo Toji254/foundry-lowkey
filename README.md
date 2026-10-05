@@ -1,5 +1,11 @@
 # Foundry LowkeyCast
 
+> **An auditor-oriented CLI for contract research, storage inspection, transaction forensics, and repeatable audit workflows — built around Foundry instead of replacing it.**
+
+**portfolio:** lowkeycast is an eng/tooling project built alongside my sc audit learning. it reduces repetitive audit workflow while keeping native foundry behavior visible.
+
+**tags:** `sc sec | evm | foundry | cli | audit tooling | security`
+
 LowkeyCast (lk) is a small auditor-oriented command line tool that sits on top of Foundry. It keeps the repetitive parts of contract research, Anvil interaction, storage inspection, transaction forensics, and test reproduction behind one workflow.
 
 The core idea is simple:
