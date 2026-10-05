@@ -12477,7 +12477,11 @@ def _recommended_next_commands(command, args=None, config=None):
     if not items:
         return []
 
-    normalized_current = f"lk {command_key}".strip()
+    current_query=_function_query_for_command(command, raw_args)
+    if current_query and canonical in {"read","send","wizard","fn","ask"}:
+        normalized_current=f"lk {canonical} {str(current_query).strip()}".strip().lower()
+    else:
+        normalized_current=f"lk {command_key}".strip().lower()
     rendered = []
     for item in items:
         command_text = str(item).strip()
