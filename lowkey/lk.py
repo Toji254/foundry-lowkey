@@ -4988,17 +4988,19 @@ def artifact_is_project_application(root, path, artifact):
 
     root_path = Path(root).expanduser().resolve()
     path_obj = Path(path).expanduser().resolve()
-    # When Foundry stripped sourceName, the artifact directory is still strong
-    # provenance evidence. An artifact under a helper/Poc output directory must
-    # not become the project's production artifact merely because a same-named
-    # source contract exists.
-    contract_name_hint = artifact_contract_name(path_obj, artifact)
-    parent_stem = path_obj.parent.name
-    if parent_stem.lower().endswith(".sol"):
-        parent_contract = parent_stem[:-4]
-        if parent_contract and contract_name_hint and parent_contract.lower() != contract_name_hint.lower():
+    # When Foundry stripped sourceName, use the artifact directory only to
+    # confirm that the fallback source file belongs to the same artifact stem.
+    # The old check compared the artifact directory to the *contract name*,
+    # which incorrectly rejected valid layouts such as PurchaseNFT2.sol -> PurchaseNFT.
+    # Explicit sourceName metadata is stronger provenance and needs no basename check.
+    if not explicit_source:
+        parent_stem = path_obj.parent.name
+        if parent_stem.lower().endswith(".sol"):
+            parent_stem = parent_stem[:-4]
+        if Path(normalized).stem.lower() != parent_stem.lower():
             return False
-    source = artifact_source_name(artifact, path, root) or source_contract_fallback(
+    explicit_source = artifact_source_name(artifact, path, root)
+    source = explicit_source or source_contract_fallback(
         root, artifact_contract_name(path, artifact)
     )
     if not source:
