@@ -11709,6 +11709,31 @@ def _help_parent_path(path):
         return [parent_root]
     return None
 
+
+def _help_suggestions(command, limit=3):
+    """Return likely Lowkey command names for a misspelled help request."""
+    raw = str(command or "").strip().lower()
+    if not raw:
+        return []
+    candidates = set(COMMAND_HELP)
+    candidates.update(HELP_ALIASES)
+    scored = []
+    for candidate in candidates:
+        canonical = _canonical_help_command(candidate)
+        if candidate != canonical:
+            # Prefer canonical names in suggestions; aliases remain valid but
+            # should not crowd the result list.
+            continue
+        if candidate == raw:
+            continue
+        ratio = SequenceMatcher(None, raw, candidate).ratio()
+        if candidate.startswith(raw) or raw.startswith(candidate):
+            ratio += 0.15
+        if ratio >= 0.55:
+            scored.append((ratio, candidate))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [candidate for _, candidate in scored[:limit]]
+
 def _render_command_help(path):
     entry, resolved, unknown = _help_entry_for_path(path)
     shown_path = " ".join(resolved or [str(item) for item in path])
@@ -11727,11 +11752,21 @@ def _render_command_help(path):
         return 2
 
     if not entry:
-        command = _canonical_help_command(path[0] if path else "")
-        print(f"What it does : Lowkey has no dedicated help page for '{command}' yet.")
-        print("Try          : lk --h")
-        print(f"Native help  : lk {command} --help")
-        return 0
+        command = str(path[0] if path else "").strip().lower()
+        suggestions = _help_suggestions(command)
+        print(f"No dedicated Lowkey help page matches '{command}'.")
+        if suggestions:
+            print("")
+            print("DID YOU MEAN")
+            print("------------")
+            for suggestion in suggestions:
+                print(f"  lk {suggestion} --h")
+        print("")
+        print("ALL COMMANDS")
+        print("------------")
+        print("  lk --h")
+        print("  Help forms: --h | --help | -h | help")
+        return 2
 
     if alias:
         print(f"Alias: 'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'.")
