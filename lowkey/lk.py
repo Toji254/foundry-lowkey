@@ -2451,7 +2451,7 @@ def _human_return_unit(item,abi,output=None):
 def _human_numeric_annotation(item, output, abi):
     """Add meaning where a numeric ABI value has a recognizable convention."""
     function_name=str(item.get("name") or "").strip().lower()
-    field_name=str((output or {}).get("name") or "").strip().lower()
+    field_name=_human_field_label((output or {}).get("name")).replace(" ","").lower()
     if function_name=="decimals":
         return None
     if field_name in {"timestamp","deadline","createdat","updatedat","expiresat","expiry"}:
@@ -2503,11 +2503,11 @@ def format_human_abi_return(item, decoded, config, abi=None):
             is_numeric=type_name.lower().startswith(("uint","int"))
             unit=_human_return_unit(item,abi,output) if is_numeric else None
             annotation=_human_numeric_annotation(item,output,abi) if is_numeric else None
-            if unit:
-                rendered_value=f"{rendered_value} {unit}"
-            elif annotation:
+            if annotation:
                 if annotation not in rendered_value:
                     rendered_value=f"{rendered_value} ({annotation})"
+            elif unit:
+                rendered_value=f"{rendered_value} {unit}"
             elif is_numeric:
                 rendered_value=f"{rendered_value} units (unit not specified by ABI)"
             rendered_parts.append(f"{label}={rendered_value} [{type_name}]")
@@ -11503,7 +11503,7 @@ def run_break(config, args):
 
 HELP_FLAGS = {"--h", "--help", "-h", "help"}
 
-def _help_entry(summary, usage, example, use_case, *, children=None, options=None, related=None):
+def _help_entry(summary, usage, example, use_case, *, children=None, options=None, forms=None, related=None):
     return {
         "summary": summary,
         "usage": usage,
@@ -11511,6 +11511,7 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
         "use": use_case,
         "children": children or {},
         "options": options or [],
+        "forms": forms or [],
         "related": related or [],
     }
 
@@ -11606,6 +11607,11 @@ COMMAND_HELP = {
         "lk break [function] [options] | lk break --system [options]",
         "lk break --function withdraw --until-found",
         "Use it when you want Lowkey to attack assumptions and collect reproducible evidence rather than just report static warnings.",
+        forms=[
+            ("lk break [function] [options]", "Attack the current target or one named function.", "lk break withdraw"),
+            ("lk break --system [options]", "Run the campaign across every live project target Lowkey can resolve.", "lk break --system"),
+        ],
+
         options=[
             ("--system", "Attack every live project target Lowkey can resolve.", "lk break --system"),
             ("--function <name|signature>", "Constrain the campaign to one state-changing function.", "lk break --function 'withdraw(address,uint256)'"),
@@ -11636,6 +11642,12 @@ COMMAND_HELP = {
         "lk target <address> | lk target <name> <address> | lk target auto",
         "lk target escrow 0x1111111111111111111111111111111111111111",
         "Use it when no target is selected or Lowkey is pointing at the wrong contract.",
+        forms=[
+            ("lk target <address>", "Select a contract directly by address.", "lk target 0x1111111111111111111111111111111111111111"),
+            ("lk target <name> <address>", "Save/select a friendly target name for the address.", "lk target escrow 0x1111111111111111111111111111111111111111"),
+            ("lk target auto", "Reconnect to a usable deployment Lowkey can discover.", "lk target auto"),
+        ],
+
         children={
             "list": _help_entry("List remembered targets.", "lk target list", "lk target list", "Use it before switching when several targets exist."),
             "auto": _help_entry("Reconnect to a usable current-project deployment.", "lk target auto [name]", "lk target auto Escrow", "Use it after local deployment when you do not want to copy an address by hand."),
@@ -11648,6 +11660,13 @@ COMMAND_HELP = {
         "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop",
         "lk lab Escrow",
         "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
+        forms=[
+            ("lk lab [Contract]", "Use the project’s native deployment path when available.", "lk lab Escrow"),
+            ("lk lab --generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic Escrow"),
+            ("lk lab --artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact Escrow"),
+            ("lk lab stop", "Stop the project-local Anvil started by Lowkey.", "lk lab stop"),
+        ],
+
         children={
             "stop": _help_entry("Stop the project-local Anvil that Lowkey started.", "lk lab stop", "lk lab stop", "Use it when the disposable lab is no longer needed."),
         },
@@ -11676,6 +11695,12 @@ COMMAND_HELP = {
         "lk audit [auto|run] [options]",
         "lk audit auto --checks",
         "Use it when you want Lowkey to coordinate the audit workflow instead of invoking each inspection tool yourself.",
+        forms=[
+            ("lk audit [options]", "Run the normal audit workflow.", "lk audit --checks"),
+            ("lk audit auto [options]", "Bootstrap safe local state and run the audit automatically.", "lk audit auto --checks"),
+            ("lk audit run [--poc]", "Run the repeatable evidence pipeline.", "lk audit run --poc"),
+        ],
+
         children={
             "auto": _help_entry("Run the audit in autonomous mode and allow safe local target provisioning.", "lk audit auto [options]", "lk audit auto --checks", "Use it when you want the audit session to bootstrap itself."),
             "run": _help_entry("Run the full evidence pipeline, with optional PoC generation.", "lk audit run [--poc]", "lk audit run --poc", "Use it for a repeatable baseline pass that leaves evidence in the audit workspace.", options=[("--poc", "Generate a connected PoC scaffold after the evidence pass.", "lk audit run --poc")]),
@@ -11707,6 +11732,12 @@ COMMAND_HELP = {
         "lk projects | lk projects <number|path> | lk projects reset",
         "lk projects 2",
         "Use it when Lowkey finds several packages and you need one primary audit scope.",
+        forms=[
+            ("lk projects", "List the projects Lowkey discovered.", "lk projects"),
+            ("lk projects <number|path>", "Select one project as the primary audit scope.", "lk projects 2"),
+            ("lk projects reset", "Clear the current workspace project selection.", "lk projects reset"),
+        ],
+
         children={
             "reset": _help_entry("Clear the active workspace project.", "lk projects reset", "lk projects reset", "Use it to make Lowkey ask for the workspace scope again."),
         },
@@ -11725,6 +11756,13 @@ COMMAND_HELP = {
         "lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset",
         "lk rpc http://127.0.0.1:8545",
         "Use it when switching between local nodes, forks, or other RPC endpoints.",
+        forms=[
+            ("lk rpc <url>", "Use one RPC directly without creating a profile.", "lk rpc http://127.0.0.1:8545"),
+            ("lk rpc set <name> <url>", "Save an RPC profile for later use.", "lk rpc set anvil http://127.0.0.1:8545"),
+            ("lk rpc use <name>", "Switch to a saved RPC profile.", "lk rpc use anvil"),
+            ("lk rpc reset", "Return to automatic RPC detection.", "lk rpc reset"),
+        ],
+
         children={
             "set": _help_entry("Save an RPC profile.", "lk rpc set <name> <url>", "lk rpc set anvil http://127.0.0.1:8545", "Use it when you have several endpoints."),
             "use": _help_entry("Select a saved RPC profile.", "lk rpc use <name>", "lk rpc use anvil", "Use it to switch RPCs without retyping URLs."),
@@ -11737,6 +11775,14 @@ COMMAND_HELP = {
         "lk wallet list | set | set-env | use | remove",
         "lk wallet set-env Alice ALICE_PRIVATE_KEY",
         "Use it when you need repeatable actor identities.",
+        forms=[
+            ("lk wallet list", "List signer profiles without printing secrets.", "lk wallet list"),
+            ("lk wallet set <name> <private-key>", "Save a private key locally.", "lk wallet set Alice 0x..."),
+            ("lk wallet set-env <name> <ENV_VAR>", "Use an environment variable instead of storing the key.", "lk wallet set-env Alice ALICE_PRIVATE_KEY"),
+            ("lk wallet use <name>", "Select a saved signer profile.", "lk wallet use Alice"),
+            ("lk wallet remove <name>", "Delete a signer profile.", "lk wallet remove Alice"),
+        ],
+
         children={
             "list": _help_entry("List signer profiles without printing secrets.", "lk wallet list", "lk wallet list", "Use it to see available signers."),
             "set": _help_entry("Save a private key locally.", "lk wallet set <name> <private-key>", "lk wallet set Alice 0x...", "Use it only for local/non-production keys you deliberately want persisted."),
@@ -11754,6 +11800,21 @@ COMMAND_HELP = {
         related=["lk impersonate", "lk fork"],
     ),
     "actor": _help_entry("Name/select a local Anvil account.", "lk actor <index> <name> | lk actor <name> | lk actor reset", "lk actor 0 Alice", "Use it when you want readable role names instead of anonymous Anvil slots.", related=["lk actors", "lk impersonate"]),
+        children={
+            "reset": _help_entry(
+                "Clear the active actor without deleting its saved profile.",
+                "lk actor reset",
+                "lk actor reset",
+                "Use it when you want Lowkey to have no active actor while keeping the profile.",
+            ),
+        },
+
+        forms=[
+            ("lk actor <index> <name>", "Give an Anvil account a readable role name.", "lk actor 0 Alice"),
+            ("lk actor <name>", "Switch to an actor profile you already created.", "lk actor Alice"),
+            ("lk actor reset", "Clear the active actor without deleting the saved profile.", "lk actor reset"),
+        ],
+
     "actors": _help_entry("List available local Anvil accounts.", "lk actors", "lk actors", "Use it when you need to know which local addresses are available.", related=["lk actor", "lk impersonate"]),
     "impersonate": _help_entry("Impersonate an address on local Anvil/a fork.", "lk impersonate <address> [name]", "lk impersonate 0x... Whale", "Use it when the account you care about already exists on a local fork.", related=["lk fork", "lk actor"]),
     "as": _help_entry("Run one command as another configured actor, then restore your previous actor.", "lk as <actor> <command> [args...]", "lk as Bob send approve 0x... 1000", "Use it when one investigation needs several protocol roles.", related=["lk actor", "lk wallet"]),
@@ -11762,6 +11823,12 @@ COMMAND_HELP = {
         "lk abi | lk abi auto | lk abi <file>",
         "lk abi auto",
         "Use it when Lowkey needs help identifying the target's callable interface.",
+        forms=[
+            ("lk abi", "Show the ABI currently loaded for the selected target.", "lk abi"),
+            ("lk abi auto", "Auto-discover and load an ABI for the selected target.", "lk abi auto"),
+            ("lk abi <file>", "Use a specific ABI file or artifact.", "lk abi out/Escrow.json"),
+        ],
+
         related=["lk functions", "lk ask"],
     ),
     "read": _help_entry("Call a contract without intentionally changing state.", "lk read <function> [args...]", "lk read balanceOf <address>", "Use it for getters and state observation.", related=["lk ask", "lk send"]),
@@ -11837,6 +11904,12 @@ COMMAND_HELP = {
         "lk last tx | lk last trace | lk last logs",
         "lk last trace",
         "Use it right after a transaction-producing command.",
+        forms=[
+            ("lk last tx", "Inspect the latest transaction.", "lk last tx"),
+            ("lk last trace", "Trace the latest transaction.", "lk last trace"),
+            ("lk last logs", "Show the latest transaction’s logs.", "lk last logs"),
+        ],
+
         children={
             "tx": _help_entry("Inspect the latest transaction.", "lk last tx", "lk last tx", "Use it after a send."),
             "trace": _help_entry("Trace the latest transaction.", "lk last trace", "lk last trace", "Use it when you want the latest call chain."),
@@ -11875,6 +11948,12 @@ COMMAND_HELP = {
         "lk generate <test|poc|deployment> ...",
         "lk generate test 'withdraw(address,uint256)' 0x... 1000",
         "Use it after observing behavior you want to turn into repeatable evidence.",
+        forms=[
+            ("lk generate test ...", "Create a reusable Forge test from observed behavior.", "lk generate test 'withdraw(address,uint256)' 0x... 1000"),
+            ("lk generate poc ...", "Create a PoC scaffold connected to current evidence.", "lk generate poc withdraw"),
+            ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment Escrow"),
+        ],
+
         children={
             "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<name(parameter TYPES...)>' <VALUES...>", "lk generate test 'withdraw(address,uint256)' 0x... 1000", "Use it to turn an observed transition into regression evidence."),
             "poc": _help_entry("Generate a PoC scaffold connected to current evidence.", "lk generate poc <function>", "lk generate poc withdraw", "Use it as a starting point for exploit reproduction."),
@@ -11887,6 +11966,11 @@ COMMAND_HELP = {
         "lk finding <note> | lk finding add <severity> <title> <description>",
         "lk finding add medium withdraw lacks caller restriction",
         "Use it while manually reviewing source or reproducing behavior you want to track.",
+        forms=[
+            ("lk finding <note>", "Save a quick free-form observation.", "lk finding withdraw path lacks authorization"),
+            ("lk finding add <severity> <title> <description>", "Save a structured finding with severity and description.", "lk finding add medium withdraw lacks caller restriction"),
+        ],
+
         children={
             "add": _help_entry("Record a structured finding.", "lk finding add <high|medium|low|info> <title> <description>", "lk finding add medium unexpected withdraw access", "Use it when you have a concrete observation."),
             "list": _help_entry("List findings/signals.", "lk finding list", "lk finding list", "Use it as a friendly shortcut to the findings list."),
@@ -11901,6 +11985,12 @@ COMMAND_HELP = {
         "lk checklist | lk checklist done <item> | lk checklist reset",
         "lk checklist",
         "Use it so an interesting exploit idea does not make you skip routine review areas.",
+        forms=[
+            ("lk checklist", "Show the audit checklist and current progress.", "lk checklist"),
+            ("lk checklist done <item>", "Mark a reviewed checklist item complete.", "lk checklist done 3"),
+            ("lk checklist reset", "Reset the checklist for a fresh review.", "lk checklist reset"),
+        ],
+
         children={
             "done": _help_entry("Mark a checklist item complete.", "lk checklist done <item>", "lk checklist done 3", "Use it after you have actually reviewed the item."),
             "reset": _help_entry("Reset the checklist.", "lk checklist reset", "lk checklist reset", "Use it when starting a fresh review."),
@@ -11915,6 +12005,12 @@ COMMAND_HELP = {
         "lk session start | lk session resume | lk session end",
         "lk session resume",
         "Use it when an investigation spans multiple terminal sessions.",
+        forms=[
+            ("lk session start", "Start a new audit session.", "lk session start"),
+            ("lk session resume", "Continue a saved audit session.", "lk session resume"),
+            ("lk session end", "Close the current audit session.", "lk session end"),
+        ],
+
         children={
             "start": _help_entry("Start a session.", "lk session start", "lk session start", "Use it when beginning an investigation."),
             "resume": _help_entry("Resume a session.", "lk session resume", "lk session resume", "Use it when returning to an existing audit."),
@@ -11929,6 +12025,15 @@ COMMAND_HELP = {
         "lk matrix init | actor | state | add | list | test",
         "lk matrix add badRelease release Attacker revert",
         "Use it when the same security question needs testing across several callers or states.",
+        forms=[
+            ("lk matrix init", "Create matrix files before adding scenarios.", "lk matrix init"),
+            ("lk matrix actor <name> <address>", "Add a named actor/address to the scenario matrix.", "lk matrix actor Attacker 0x..."),
+            ("lk matrix state <name> <description>", "Define a scenario precondition.", "lk matrix state funded escrow holds 1 ETH"),
+            ("lk matrix add <name> <function> <actor> <expected>", "Record one testable security scenario.", "lk matrix add badRelease release Attacker revert"),
+            ("lk matrix list", "List saved scenarios.", "lk matrix list"),
+            ("lk matrix test <name>", "Generate/run a Forge test for one scenario.", "lk matrix test badRelease"),
+        ],
+
         children={
             "init": _help_entry("Create matrix files.", "lk matrix init", "lk matrix init", "Use it before adding scenarios."),
             "actor": _help_entry("Add a named actor/address.", "lk matrix actor <name> <address>", "lk matrix actor Attacker 0x...", "Use it when a scenario needs a specific caller."),
@@ -11944,6 +12049,14 @@ COMMAND_HELP = {
         "lk fork <rpc-url> [block] [--port PORT] | lk fork status | stop | dump | load",
         "lk fork https://rpc.example 20000000",
         "Use it when you need realistic chain state but still want local control and safe mutations.",
+        forms=[
+            ("lk fork <rpc-url> [block] [--port PORT]", "Start a local Anvil fork.", "lk fork https://rpc.example 20000000"),
+            ("lk fork status", "Check whether the fork is running.", "lk fork status"),
+            ("lk fork stop", "Stop the Lowkey-managed fork.", "lk fork stop"),
+            ("lk fork dump [file]", "Checkpoint the current local fork state.", "lk fork dump fork-state.json"),
+            ("lk fork load <file>", "Restore a saved fork state.", "lk fork load fork-state.json"),
+        ],
+
         children={
             "status": _help_entry("Show whether the fork is running.", "lk fork status", "lk fork status", "Use it before relying on the fork RPC."),
             "stop": _help_entry("Stop the Lowkey-managed fork.", "lk fork stop", "lk fork stop", "Use it when finished with fork testing."),
@@ -11963,6 +12076,11 @@ COMMAND_HELP = {
     "chisel": _help_entry("Launch/use Foundry Chisel for tiny Solidity experiments.", "lk chisel [args...]", "lk chisel", "Use it for quick Solidity/EVM experiments without creating a full contract."),
     "ens": _help_entry("Resolve ENS names or reverse-resolve addresses.", "lk ens <name|address>", "lk ens vitalik.eth", "Use it when human-readable names help identify addresses.", related=["lk label"]),
     "token": _help_entry("Read basic ERC-20 metadata or a holder balance.", "lk token <token> | lk token balance <token> <holder>", "lk token balance 0xToken 0xHolder", "Use it for quick token/accounting checks.", related=["lk read", "lk logs"]),
+        forms=[
+            ("lk token <token>", "Inspect basic ERC-20 metadata.", "lk token 0xToken"),
+            ("lk token balance <token> <holder>", "Check a holder’s token balance.", "lk token balance 0xToken 0xHolder"),
+        ],
+
     "fuzz": _help_entry("Run Forge fuzz tests through Lowkey.", "lk fuzz [args...]", "lk fuzz test --match-test test_withdraw", "Use it when one fixed input is not enough.", related=["lk invariant", "lk brutalize"]),
     "invariant": _help_entry("Run Forge invariant tests.", "lk invariant [args...]", "lk invariant test", "Use it when a property should remain true across many state transitions.", related=["lk fuzz", "lk matrix"]),
     "mutate": _help_entry("Run mutation testing when configured.", "lk mutate [args...]", "lk mutate", "Use it to check whether your tests notice meaningful code changes.", related=["lk test", "lk fuzz"]),
@@ -11973,6 +12091,12 @@ COMMAND_HELP = {
         "lk cheat [topic] | lk cheat symbols | lk cheat search <word>",
         "lk cheat mapping",
         "Use it whenever a Solidity concept is fuzzy. It gives a mental model, syntax, real example, step-by-step explanation, and audit lookout without touching project state.",
+        forms=[
+            ("lk cheat [topic]", "Explain one Solidity concept.", "lk cheat mapping"),
+            ("lk cheat symbols", "Show common Solidity symbols/operators.", "lk cheat symbols"),
+            ("lk cheat search <word>", "Search the learning dictionary.", "lk cheat search mapping"),
+        ],
+
         related=["lk import", "lk functions", "lk ask"],
     ),
     "compare": _help_entry(
@@ -11987,6 +12111,11 @@ COMMAND_HELP = {
         "lk connect <conceptA> <conceptB> [conceptC...] | lk connect --list",
         "lk connect structs mappings arrays enums bytes addresses",
         "Use it when you understand individual pieces but need to see how their variables, values, calls, and state updates fit together.",
+        forms=[
+            ("lk connect <conceptA> <conceptB> [conceptC...]", "Build one connected explanation/lab from the supplied concepts.", "lk connect structs mappings arrays"),
+            ("lk connect --list", "List concepts available to connect.", "lk connect --list"),
+        ],
+
         related=["lk cheat", "lk compare", "lk expression"],
     ),
     "expression": _help_entry(
@@ -12245,6 +12374,16 @@ def _render_command_help(path):
     print(f"When to use: {entry['use']}")
     print(f"Usage: {entry['usage']}")
     print(f"Example: {entry['example']}")
+
+    forms = entry.get("forms") or []
+    if forms:
+        print("")
+        print("COMMAND VARIATIONS")
+        print("------------------")
+        for form, description, example in forms:
+            print(f"  {form}")
+            print(f"      {description}")
+            print(f"      Example: {example}")
 
     children = entry.get("children") or {}
     if children:
