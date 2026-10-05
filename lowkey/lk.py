@@ -2290,18 +2290,102 @@ def decode_abi_output(signature,data):
         return None, err or out or "ABI decoding failed"
     return out.strip(), None
 
-def format_human_abi_return(item, decoded, config):
-    """Render decoded function output with its Solidity type instead of ABI words."""
+def _human_type_label(type_name):
+    """Translate Solidity ABI types into labels a learner can understand."""
+    value=str(type_name or "").strip()
+    lowered=value.lower()
+    if re.fullmatch(r"u?int\\d*", lowered):
+        return "integer"
+    if lowered=="bool":
+        return "true/false value"
+    if lowered=="address":
+        return "Ethereum address"
+    if lowered=="string":
+        return "text"
+    if lowered=="bytes":
+        return "raw bytes"
+    if re.fullmatch(r"bytes\\d+", lowered):
+        return "fixed-size bytes"
+    if lowered.startswith("tuple"):
+        return "structured value"
+    if lowered.endswith("[]"):
+        return f"list of {_human_type_label(lowered[:-2])}"
+    return value or "value"
+
+def _function_display_name(item):
+    name=str(item.get("name") or "").strip()
+    if not name:
+        return "value"
+    spaced=re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name)
+    spaced=spaced.replace("_"," ").strip().lower()
+    aliases={
+        "balance of": "balance",
+        "owner of": "owner",
+        "get approved": "approved address",
+        "is approved for all": "operator approval",
+        "token uri": "token URI",
+        "total supply": "total supply",
+    }
+    return aliases.get(spaced, spaced)
+
+def _human_return_unit(item,abi):
+    """Add a unit only where the ABI gives Lowkey enough context to justify it."""
+    name=str(item.get("name") or "").strip().lower()
+    names={str(entry.get("name") or "").strip().lower() for entry in abi_functions(abi)}
+    if name=="balanceof":
+        if {"ownerof","tokenuri"} <= names:
+            return "NFTs"
+        if {"decimals","symbol"} <= names:
+            return "token units"
+        return "tokens"
+    if name=="decimals":
+        return "decimal places"
+    return None
+
+def format_human_abi_return(item, decoded, config, abi=None):
+    """Render ABI return data as a human value while retaining useful type context."""
     outputs=item.get("outputs",[]) if isinstance(item,dict) else []
     value=apply_labels(str(decoded or "").strip(),config)
     if not outputs:
         return "Return: no data"
-    types=[canonical_type(output) for output in outputs]
+
+    abi=abi or [item]
     if len(outputs)==1:
-        name=str(outputs[0].get("name") or "").strip()
-        label=f"{name} ({types[0]})" if name else types[0]
-        return f"Return: {label} = {value}"
-    return f"Returns ({', '.join(types)}): {value}"
+        output=outputs[0]
+        type_name=canonical_type(output)
+        label=str(output.get("name") or "").strip() or _function_display_name(item)
+        unit=_human_return_unit(item,abi)
+        human_type=_human_type_label(type_name)
+
+        # Cast already decoded the ABI value. Make common scalar values especially
+        # readable without hiding the Solidity type auditors may still need.
+        rendered=value
+        if type_name.lower().startswith("uint") or type_name.lower().startswith("int"):
+            try:
+                if re.fullmatch(r"-?\\d+", rendered):
+                    rendered=f"{int(rendered):,}"
+            except ValueError:
+                pass
+        if type_name.lower()=="bool":
+            lowered=rendered.lower()
+            if lowered in {"true","false"}:
+                rendered=lowered
+        if unit:
+            rendered=f"{rendered} {unit}"
+
+        return f"Return: {label} = {rendered}  ({human_type}; {type_name})"
+
+    types=[canonical_type(output) for output in outputs]
+    labels=[
+        str(output.get("name") or "").strip() or f"value{index}"
+        for index,output in enumerate(outputs,1)
+    ]
+    details=", ".join(
+        f"{label}={value_part} ({_human_type_label(type_name)})"
+        for label,value_part,type_name in zip(labels,str(value).split(),types)
+    )
+    return f"Returns: {details}"
+
 
 def _function_tokens(name):
     text_value=str(name or "")
@@ -2402,23 +2486,29 @@ def _function_interaction_recommendations(command,args,config):
     if canonical=="read":
         rendered=[]
         for item in related_reads[:3]:
-            rendered.append(_function_recommendation_command("read",item,abi))
-        if current.get("inputs") and len(rendered)<4:
-            rendered.append(f"lk ask {shlex.quote(current_name)}")
-        return [item for item in rendered if item]
+            command_text=_function_recommendation_command("read",item,abi)
+            if command_text:
+                rendered.append((command_text,_function_recommendation_reason(item)))
+        # Once the user has successfully supplied arguments, the more useful
+        # next step is another related state observation rather than re-asking
+        # for parameters they just supplied.
+        return rendered
 
     if canonical in {"send","wizard"} and current.get("stateMutability") not in {"view","pure"}:
-        rendered=["lk receipt","lk trace"]
+        rendered=[("lk receipt","Confirm the transaction status and decoded receipt."),
+                   ("lk trace","See what the transaction actually executed and which contracts it touched.")]
         for item in related_reads[:2]:
-            rendered.append(_function_recommendation_command("read",item,abi))
+            command_text=_function_recommendation_command("read",item,abi)
+            if command_text:
+                rendered.append((command_text,_function_recommendation_reason(item)))
         return rendered[:4]
 
     if canonical=="wizard":
         rendered=[]
         for item in related_reads[:3]:
-            rendered.append(_function_recommendation_command("read",item,abi))
-        if current.get("inputs") and len(rendered)<4:
-            rendered.append(f"lk ask {shlex.quote(current_name)}")
+            command_text=_function_recommendation_command("read",item,abi)
+            if command_text:
+                rendered.append((command_text,_function_recommendation_reason(item)))
         return rendered[:4]
 
     return []
@@ -2431,7 +2521,37 @@ def _function_recommendation_command(verb,item,abi):
         return None
     same_name=[candidate for candidate in abi_functions(abi) if str(candidate.get("name") or "").lower()==name.lower()]
     query=format_signature(item) if len(same_name)>1 else name
-    return f"lk {verb} {query}" + (" [args]" if item.get("inputs") else "")
+    inputs=[]
+    for index,param in enumerate(item.get("inputs",[]),1):
+        label=str(param.get("name") or "").strip() or f"arg{index}"
+        label=re.sub(r"[^A-Za-z0-9_]+","_",label).strip("_") or f"arg{index}"
+        inputs.append(f"<{label}>")
+    suffix=(" " + " ".join(inputs)) if inputs else ""
+    return f"lk {verb} {query}{suffix}"
+
+def _function_recommendation_reason(item):
+    name=str(item.get("name") or "").strip()
+    lowered=name.lower()
+    reasons={
+        "balanceof": "Check how many tokens/NFTs an address holds.",
+        "ownerof": "Check which address owns a specific NFT.",
+        "getapproved": "Check which address is approved to transfer a specific NFT.",
+        "isapprovedforall": "Check whether an operator can manage an owner's NFTs.",
+        "tokenuri": "Inspect the metadata URI for a specific NFT.",
+        "name": "Identify the asset or contract name.",
+        "symbol": "Identify the asset ticker/symbol.",
+        "decimals": "See how many decimal places the token uses.",
+        "totalsupply": "See the current token supply.",
+        "allowance": "Check how much one address can spend on another address's tokens.",
+        "getreserves": "Inspect the pool reserves and current token balances.",
+    }
+    if lowered in reasons:
+        return reasons[lowered]
+    display=_function_display_name(item)
+    if item.get("stateMutability") in {"view","pure"}:
+        return f"Inspect {display} without changing contract state."
+    return f"Use it to inspect the state related to {display}."
+
 
 def humanize_value(text, assume_wei=False):
     if text is None:
@@ -2658,7 +2778,7 @@ def run_cast(args,config,capture=False):
                 signature=format_output_signature(function_item)
                 decoded,decode_error=decode_abi_output(signature,output_payload)
                 if decode_error is None:
-                    print(format_human_abi_return(function_item,decoded,config))
+                    print(format_human_abi_return(function_item,decoded,config,abi))
                 else:
                     print(
                         f"Return: ABI decoding failed for {signature}.",
@@ -12484,14 +12604,20 @@ def _recommended_next_commands(command, args=None, config=None):
         normalized_current=f"lk {command_key}".strip().lower()
     rendered = []
     for item in items:
-        command_text = str(item).strip()
+        if isinstance(item,(tuple,list)) and len(item)==2:
+            command_text=str(item[0]).strip()
+            reason=str(item[1]).strip()
+        else:
+            command_text = str(item).strip()
+            reason = _recommendation_reason(command_text)
         if (
             not command_text
             or command_text == normalized_current
             or command_text.startswith(normalized_current + " ")
         ):
             continue
-        reason = _recommendation_reason(command_text)
+        if not reason:
+            reason = _recommendation_reason(command_text)
         pair = (command_text, reason)
         if pair not in rendered:
             rendered.append(pair)
