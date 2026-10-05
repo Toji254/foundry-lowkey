@@ -2337,7 +2337,8 @@ def _human_return_unit(item,abi):
             return "NFTs"
         if {"decimals","symbol"} <= names:
             return "token units"
-        return "tokens"
+        # A custom balanceOf() is not necessarily an ERC20/721 balance.
+        return "units"
     if name=="decimals":
         return "decimal places"
     return None
@@ -2380,11 +2381,14 @@ def format_human_abi_return(item, decoded, config, abi=None):
         str(output.get("name") or "").strip() or f"value{index}"
         for index,output in enumerate(outputs,1)
     ]
-    details=", ".join(
-        f"{label}={value_part} ({_human_type_label(type_name)})"
-        for label,value_part,type_name in zip(labels,str(value).split(),types)
-    )
-    return f"Returns: {details}"
+    decoded_parts=[line.strip() for line in str(value).splitlines() if line.strip()]
+    if len(decoded_parts)==len(outputs):
+        details=", ".join(
+            f"{label}={value_part} ({_human_type_label(type_name)}; {type_name})"
+            for label,value_part,type_name in zip(labels,decoded_parts,types)
+        )
+        return f"Returns: {details}"
+    return f"Returns: {value}"
 
 
 def _function_tokens(name):
