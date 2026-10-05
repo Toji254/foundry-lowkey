@@ -145,7 +145,7 @@ CASES: tuple[dict[str, Any], ...] = (
         "language": "rust",
         "label": "UNSAFE",
         "source": "fn probe() { unsafe { std::ptr::read(0 as *const u8); } }",
-        "expected": {"UNSAFE"},
+        "expected": {"RAW_POINTER", "UNSAFE"},
     },
     {
         "id": "RUST-002",
