@@ -2278,6 +2278,161 @@ def apply_labels(text, config):
         text = text.replace(addr, f"{label} ({addr})")
     return text
 
+def decode_abi_output(signature,data):
+    """Decode ABI-encoded return data using the loaded function output signature."""
+    payload=str(data or "").strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]*", payload):
+        return None, "return data is not hex"
+    if not payload or payload == "0x":
+        return "", None
+    code,out,err=cast_output(["cast","abi-decode",signature,payload])
+    if code != 0:
+        return None, err or out or "ABI decoding failed"
+    return out.strip(), None
+
+def format_human_abi_return(item, decoded, config):
+    """Render decoded function output with its Solidity type instead of ABI words."""
+    outputs=item.get("outputs",[]) if isinstance(item,dict) else []
+    value=apply_labels(str(decoded or "").strip(),config)
+    if not outputs:
+        return "Return: no data"
+    types=[canonical_type(output) for output in outputs]
+    if len(outputs)==1:
+        name=str(outputs[0].get("name") or "").strip()
+        label=f"{name} ({types[0]})" if name else types[0]
+        return f"Return: {label} = {value}"
+    return f"Returns ({', '.join(types)}): {value}"
+
+def _function_tokens(name):
+    text_value=str(name or "")
+    parts=re.findall(r"[A-Z]+(?=[A-Z][a-z]|\\b)|[A-Z]?[a-z]+|\\d+",text_value)
+    return {part.lower() for part in parts if part}
+
+_FUNCTION_CONCEPTS=(
+    {"balance","owner","holder","approved","approval","operator","allowance","transfer","safe"},
+    {"name","symbol","uri","tokenuri","metadata","decimals","supply","total"},
+    {"price","cost","fee","amount","value","rate","quote","payment","buy","sell","deposit","withdraw","redeem","claim"},
+    {"admin","owner","role","grant","revoke","pause","unpause","upgrade","implementation"},
+)
+
+def _function_type_family(type_name):
+    value=str(type_name or "").lower()
+    return re.sub(r"\\[\\d*\\]", "[]", value)
+
+def _function_relatedness(current,candidate):
+    """Score ABI functions by semantic and type relationships, contract-agnostically."""
+    if not isinstance(current,dict) or not isinstance(candidate,dict):
+        return -1
+    if current is candidate or format_signature(current).lower()==format_signature(candidate).lower():
+        return -1
+
+    current_in=[_function_type_family(canonical_type(p)) for p in current.get("inputs",[])]
+    current_out=[_function_type_family(canonical_type(p)) for p in current.get("outputs",[])]
+    candidate_in=[_function_type_family(canonical_type(p)) for p in candidate.get("inputs",[])]
+    candidate_out=[_function_type_family(canonical_type(p)) for p in candidate.get("outputs",[])]
+
+    score=0
+    score += 8*len(set(current_out) & set(candidate_in))
+    score += 5*len(set(current_in) & set(candidate_out))
+    score += 3*len(set(current_in) & set(candidate_in))
+    score += 2*len(set(current_out) & set(candidate_out))
+
+    current_tokens=_function_tokens(current.get("name"))
+    candidate_tokens=_function_tokens(candidate.get("name"))
+    score += 5*sum(1 for concept in _FUNCTION_CONCEPTS if current_tokens & concept and candidate_tokens & concept)
+    score += 2*len(current_tokens & candidate_tokens)
+    if len(current_in)==len(candidate_in):
+        score += 1
+    if str(current.get("stateMutability"))==str(candidate.get("stateMutability")):
+        score += 1
+    return score
+
+def _related_read_functions(current,abi):
+    candidates=[
+        item for item in abi_functions(abi)
+        if item is not current and item.get("stateMutability") in {"view","pure"}
+    ]
+    ranked=[]
+    for item in candidates:
+        score=_function_relatedness(current,item)
+        if score > 0:
+            ranked.append((score,format_signature(item),item))
+    ranked.sort(key=lambda entry:(-entry[0],entry[1].lower()))
+    return [item for _,_,item in ranked]
+
+def _function_query_for_command(command,args):
+    canonical=_canonical_help_command(str(command or "").strip().lower())
+    values=[str(value).strip() for value in (args or [])]
+    if canonical in {"read","send"}:
+        if values and is_address(values[0]):
+            return values[1] if len(values)>1 else None
+        return values[0] if values else None
+    if canonical in {"fn","ask","wizard","changes"}:
+        return values[0] if values else None
+    return None
+
+def _function_item_for_command(command,args,config):
+    if not isinstance(config,dict):
+        config={}
+    query=_function_query_for_command(command,args)
+    if not query:
+        return None,[]
+    target=config.get("target")
+    canonical=_canonical_help_command(str(command or "").strip().lower())
+    values=[str(value).strip() for value in (args or [])]
+    if canonical in {"read","send"} and values and is_address(values[0]):
+        target=values[0]
+    abi=load_abi(target,config) if target else []
+    if not abi:
+        return None,[]
+    matches=matching_functions(abi,query)
+    return (matches[0] if len(matches)==1 else None),abi
+
+def _function_interaction_recommendations(command,args,config):
+    """Build recommendations from the actual ABI function just used."""
+    canonical=_canonical_help_command(str(command or "").strip().lower())
+    current,abi=_function_item_for_command(command,args,config)
+    if not current:
+        return []
+
+    current_query=_function_query_for_command(command,args)
+    current_name=str(current.get("name") or current_query or "").strip()
+    related_reads=_related_read_functions(current,abi)
+
+    if canonical=="read":
+        rendered=[]
+        for item in related_reads[:3]:
+            rendered.append(_function_recommendation_command("read",item,abi))
+        if current.get("inputs") and len(rendered)<4:
+            rendered.append(f"lk ask {shlex.quote(current_name)}")
+        return [item for item in rendered if item]
+
+    if canonical in {"send","wizard"} and current.get("stateMutability") not in {"view","pure"}:
+        rendered=["lk receipt","lk trace"]
+        for item in related_reads[:2]:
+            rendered.append(_function_recommendation_command("read",item,abi))
+        return rendered[:4]
+
+    if canonical=="wizard":
+        rendered=[]
+        for item in related_reads[:3]:
+            rendered.append(_function_recommendation_command("read",item,abi))
+        if current.get("inputs") and len(rendered)<4:
+            rendered.append(f"lk ask {shlex.quote(current_name)}")
+        return rendered[:4]
+
+    return []
+
+def _function_recommendation_command(verb,item,abi):
+    if not isinstance(item,dict):
+        return None
+    name=str(item.get("name") or "").strip()
+    if not name:
+        return None
+    same_name=[candidate for candidate in abi_functions(abi) if str(candidate.get("name") or "").lower()==name.lower()]
+    query=format_signature(item) if len(same_name)>1 else name
+    return f"lk {verb} {query}" + (" [args]" if item.get("inputs") else "")
+
 def humanize_value(text, assume_wei=False):
     if text is None:
         return text
@@ -2405,6 +2560,7 @@ def run_cast(args,config,capture=False):
             print(str(result),file=sys.stderr); return result.code
         cmd=["cast",cast_cmd,target]
     else: cmd=["cast",cast_cmd]
+    function_item=None
     if cast_cmd in {"call","send"} and remaining:
         if "(" not in remaining[0] or ")" not in remaining[0]:
             try: remaining[0]=resolve_function(remaining[0],target,config)
@@ -2417,6 +2573,7 @@ def run_cast(args,config,capture=False):
             abi=load_abi(target,config)
             matches=matching_functions(abi,remaining[0]) if abi else []
             if len(matches)==1:
+                function_item=matches[0]
                 remaining[1:]=prepare_argument_values(config,matches[0],remaining[1:])
         except ValueError as error:
             result=CommandResult(f"Error: {error}",2)
@@ -2496,6 +2653,19 @@ def run_cast(args,config,capture=False):
             if cast_cmd=="send":
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 print(format_send_summary(out,config,call))
+            elif cast_cmd=="call" and function_item and function_item.get("outputs"):
+                output_payload=str(out).strip()
+                signature=format_output_signature(function_item)
+                decoded,decode_error=decode_abi_output(signature,output_payload)
+                if decode_error is None:
+                    print(format_human_abi_return(function_item,decoded,config))
+                else:
+                    print(
+                        f"Return: ABI decoding failed for {signature}.",
+                        file=sys.stderr,
+                    )
+                    print(f"  Reason: {decode_error}", file=sys.stderr)
+                    print(f"  Raw return data: {apply_labels(output_payload,config)}")
             else:
                 print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
         if err:
@@ -12258,7 +12428,7 @@ def _recommendation_reason(command_text):
     return "Continue exploring from here."
 
 
-def _recommended_next_commands(command, args=None):
+def _recommended_next_commands(command, args=None, config=None):
     """Return a small, contextual next-step menu for an interactive CLI user."""
     raw_command = str(command or "").strip().lower()
     raw_args = [str(item).strip() for item in (args or [])]
@@ -12290,7 +12460,8 @@ def _recommended_next_commands(command, args=None):
     if first_arg in nested.get(canonical, set()):
         command_key = f"{canonical} {first_arg}"
 
-    items = list(_NEXT_COMMANDS.get(command_key, _NEXT_COMMANDS.get(canonical, [])))
+    dynamic_items = _function_interaction_recommendations(command, raw_args, config or {}) if canonical in {"read","send","wizard"} else []
+    items = dynamic_items or list(_NEXT_COMMANDS.get(command_key, _NEXT_COMMANDS.get(canonical, [])))
 
     if canonical in {"fn", "ask"} and raw_args and not raw_args[0].startswith("-"):
         query = shlex.quote(raw_args[0])
@@ -12325,12 +12496,12 @@ def _recommended_next_commands(command, args=None):
     return rendered
 
 
-def _print_recommended_next_commands(command, args=None, result=0):
+def _print_recommended_next_commands(command, args=None, result=0, config=None):
     """Render contextual next steps without breaking failed or machine-readable commands."""
     result_code = result if isinstance(result, int) else getattr(result, "code", 0)
     if result_code not in {None, 0} or _COMMAND_STATUS:
         return
-    items = _recommended_next_commands(command, args)
+    items = _recommended_next_commands(command, args, config)
     if not items:
         return
     print("")
@@ -12723,7 +12894,7 @@ def main():
 
     if command.lower() in {"cheat", "cheats", "cheatsheet"}:
         result = run_cheat(sys.argv[2:])
-        _print_recommended_next_commands(command, sys.argv[2:], result)
+        _print_recommended_next_commands(command, sys.argv[2:], result, config)
         if isinstance(result, int):
             raise SystemExit(result)
         return
@@ -12762,7 +12933,7 @@ def main():
         save_config(config)
     final_root = audit_context.foundry_project_root()
     _sync_audit_context(config, final_root)
-    _print_recommended_next_commands(command_name if 'command_name' in locals() else command, sys.argv[2:], result)
+    _print_recommended_next_commands(command_name if 'command_name' in locals() else command, sys.argv[2:], result, config)
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
