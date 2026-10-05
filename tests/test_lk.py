@@ -2546,6 +2546,30 @@ contract Pool {
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
+    def test_human_abi_return_preserves_multi_value_lines(self):
+        item = {
+            "type": "function",
+            "name": "quote",
+            "outputs": [
+                {"name": "amount", "type": "uint256"},
+                {"name": "recipient", "type": "address"},
+            ],
+        }
+        decoded = "1\n0x2222222222222222222222222222222222222222"
+        rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
+        self.assertIn("amount=1 (integer; uint256)", rendered)
+        self.assertIn("recipient=0x2222222222222222222222222222222222222222 (Ethereum address; address)", rendered)
+
+    def test_custom_balance_of_does_not_claim_token_kind_without_evidence(self):
+        item = {
+            "type": "function",
+            "name": "balanceOf",
+            "outputs": [{"name": "balance", "type": "uint256"}],
+        }
+        rendered = lk.format_human_abi_return(item, "7", {"labels": {}}, [item])
+        self.assertIn("7 units", rendered)
+        self.assertNotIn("7 tokens", rendered)
+
     def test_run_cast_labels_raw_return_data_when_abi_decode_fails(self):
         target = "0x" + "1" * 40
         owner = "0x" + "2" * 40
