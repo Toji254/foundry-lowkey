@@ -17,9 +17,11 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/system_model.py lowkey/project_tools.py lowkey/analysis_adapters.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/solidity_connect_data.py lowkey/break_engine.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/benchmark.py lowkey/system_model.py lowkey/project_tools.py lowkey/analysis_adapters.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/solidity_connect_data.py lowkey/break_engine.py
       - name: Solidity cheatsheet tests
         run: python -m unittest tests/test_solidity_cheatsheet.py -v
+      - name: Security regression benchmark
+        run: python -m unittest tests/test_benchmark.py -v
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Shell syntax
@@ -48,6 +50,7 @@ jobs:
           test -f "$HOME/.lowkey/import_helper.py"
           test -f "$HOME/.lowkey/break_playbook.py"
           test -f "$HOME/.lowkey/break_engine.py"
+          test -f "$HOME/.lowkey/benchmark.py"
           test -f "$HOME/.lowkey/analysis_adapters.py"
           test -f "$HOME/.lowkey/solidity_cheatsheet.py"
           test -f "$HOME/.lowkey/solidity_cheat_topics.py"
@@ -161,6 +164,7 @@ jobs:
           lk connect import constructor
           grep -q 'lk poc' <(lk -h)
           lk self-test
+          lk benchmark
           lk doctor
           lk scan src
           set +e
