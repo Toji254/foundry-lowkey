@@ -12088,11 +12088,25 @@ COMMAND_HELP = {
     "txpool": _help_entry("Inspect the local transaction pool.", "lk txpool [args...]", "lk txpool status", "Use it when debugging pending local transactions.", related=["lk chain", "lk trace"]),
     "chisel": _help_entry("Launch/use Foundry Chisel for tiny Solidity experiments.", "lk chisel [args...]", "lk chisel", "Use it for quick Solidity/EVM experiments without creating a full contract."),
     "ens": _help_entry("Resolve ENS names or reverse-resolve addresses.", "lk ens <name|address>", "lk ens vitalik.eth", "Use it when human-readable names help identify addresses.", related=["lk label"]),
-    "token": _help_entry("Read basic ERC-20 metadata or a holder balance.", "lk token <token> | lk token balance <token> <holder>", "lk token balance 0xToken 0xHolder", "Use it for quick token/accounting checks.", related=["lk read", "lk logs"]),
+    "token": _help_entry(
+        "Read basic ERC-20 metadata or a holder balance.",
+        "lk token <token> | lk token balance <token> <holder>",
+        "lk token balance 0xToken 0xHolder",
+        "Use it for quick token/accounting checks.",
         forms=[
             ("lk token <token>", "Inspect basic ERC-20 metadata.", "lk token 0xToken"),
             ("lk token balance <token> <holder>", "Check a holder’s token balance.", "lk token balance 0xToken 0xHolder"),
         ],
+        children={
+            "balance": _help_entry(
+                "Check one holder’s ERC-20 balance.",
+                "lk token balance <token> <holder>",
+                "lk token balance 0xToken 0xHolder",
+                "Use it when checking token accounting for a particular address.",
+            ),
+        },
+        related=["lk read", "lk logs"],
+    ),
 
     "fuzz": _help_entry("Run Forge fuzz tests through Lowkey.", "lk fuzz [args...]", "lk fuzz test --match-test test_withdraw", "Use it when one fixed input is not enough.", related=["lk invariant", "lk brutalize"]),
     "invariant": _help_entry("Run Forge invariant tests.", "lk invariant [args...]", "lk invariant test", "Use it when a property should remain true across many state transitions.", related=["lk fuzz", "lk matrix"]),
