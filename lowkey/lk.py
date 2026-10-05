@@ -11103,11 +11103,13 @@ COMMAND_HELP = {
     ),
     "q": _help_entry(
         "Drive a deterministic auditor-mindset question frontier from project evidence. The screen explains what the question means, what to inspect, and how strongly to trust the evidence.",
-        "lk q [current|why|evidence|path|done|note|skip|na|source|reset]",
+        "lk q [current|next|why|evidence|path|done|note|skip|na|not-applicable|source|reset]",
         "lk q",
         "Use it when you want Lowkey to turn project evidence into the next useful auditing question without giving you the finding.",
         children={
             "current": _help_entry("Show the current best auditor question plus the beginner workflow for answering it.", "lk q current", "lk q current", "Use it when you need a concrete next step, not just another question."),
+            "next": _help_entry("Advance to or display the next applicable auditor question.", "lk q next", "lk q next", "Use it when the current question is settled or you want to move the investigation frontier forward.", related=["lk q done", "lk q current"]),
+
             "why": _help_entry("Explain which concrete evidence, learner state, and project context pushed the question forward.", "lk q why", "lk q why", "Use it when the chosen question feels surprising."),
             "evidence": _help_entry("Show the current question's evidence and its trust level.", "lk q evidence", "lk q evidence", "Use it to separate direct observations from source facts, derived interpretations, and weak heuristics."),
             "path": _help_entry("Show the question thread recorded so far.", "lk q path", "lk q path", "Use it to see how your investigation has narrowed."),
@@ -11116,6 +11118,8 @@ COMMAND_HELP = {
             "skip": _help_entry("Record that you are not pursuing the current question right now.", "lk q skip \"...\"", "lk q skip \"defer until the state review\"", "Use it for an intentional deferral; use na when the entire branch genuinely does not apply."),
             "na": _help_entry("Record that the current question genuinely does not apply to this project.", "lk q na \"...\"", "lk q na \"this project has no web/API layer\"", "Use it only when project evidence shows the whole branch is irrelevant."),
             "source": _help_entry("Show the research sources attached to a question.", "lk q source <QUESTION_ID>", "lk q source ARCH-001", "Use it to inspect the provenance behind a question."),
+            "not-applicable": _help_entry("Alias for marking the current question not applicable.", "lk q not-applicable \"...\"", "lk q not-applicable \"no oracle exists in this protocol\"", "Use it as the fully spelled-out form of 'lk q na'.", related=["lk q na"]),
+
             "reset": _help_entry("Reset question-learning state without deleting audit evidence.", "lk q reset", "lk q reset", "Use it when starting a fresh reasoning pass on the same project."),
         },
         related=["lk questions", "lk project", "lk system", "lk findings", "lk walkthrough"],
@@ -11250,6 +11254,8 @@ COMMAND_HELP = {
         children={
             "auto": _help_entry("Run the audit in autonomous mode and allow safe local target provisioning.", "lk audit auto [options]", "lk audit auto --checks", "Use it when you want the audit session to bootstrap itself."),
             "run": _help_entry("Run the full evidence pipeline, with optional PoC generation.", "lk audit run [--poc]", "lk audit run --poc", "Use it for a repeatable baseline pass that leaves evidence in the audit workspace.", options=[("--poc", "Generate a connected PoC scaffold after the evidence pass.", "lk audit run --poc")]),
+            "pipeline": _help_entry("Compatibility spelling for the full audit evidence pipeline.", "lk audit pipeline [--poc]", "lk audit pipeline --poc", "Use it when an older workflow or script calls the pipeline by name; new usage should normally prefer 'lk audit run'.", related=["lk audit run"]),
+
         },
         options=[
             ("--checks", "Request the default static-check baseline.", "lk audit --checks"),
