@@ -2566,6 +2566,37 @@ contract Pool {
         rendered = lk.format_human_abi_return(item, address, config, [item])
         self.assertIn(f"Return: owner = Alice ({address})", rendered)
 
+
+    def test_format_call_display_uses_actor_identity_for_address_arguments(self):
+        address = "0x" + "c" * 40
+        target = "0x" + "d" * 40
+        item = {
+            "type": "function",
+            "name": "getBalance",
+            "stateMutability": "view",
+            "inputs": [{"name": "user", "type": "address"}],
+            "outputs": [{"name": "balance", "type": "uint256"}],
+        }
+        config = {
+            "target": target,
+            "actor": "Alice",
+            "wallets": {
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": address,
+                }
+            },
+            "labels": {},
+        }
+        with patch.object(lk, "load_abi", return_value=[item]):
+            rendered = lk.format_call_display(
+                config,
+                "getBalance(address)",
+                [address],
+            )
+        self.assertEqual(rendered, f"getBalance(Alice ({address}))")
+
     def test_run_cast_decodes_abi_return_data_for_humans(self):
         target = "0x" + "1" * 40
         owner = "0x" + "2" * 40
