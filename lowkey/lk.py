@@ -2505,8 +2505,9 @@ def format_human_abi_return(item, decoded, config, abi=None):
             annotation=_human_numeric_annotation(item,output,abi) if is_numeric else None
             if unit:
                 rendered_value=f"{rendered_value} {unit}"
-            elif annotation and annotation not in rendered_value:
-                rendered_value=f"{rendered_value} ({annotation})"
+            elif annotation:
+                if annotation not in rendered_value:
+                    rendered_value=f"{rendered_value} ({annotation})"
             elif is_numeric:
                 rendered_value=f"{rendered_value} units (unit not specified by ABI)"
             rendered_parts.append(f"{label}={rendered_value} [{type_name}]")
@@ -10485,7 +10486,7 @@ def _signal_evidence(signal):
     evidence = signal.get("evidence", []) if isinstance(signal, dict) else []
     return [item for item in evidence if isinstance(item, dict)] if isinstance(evidence, list) else []
 
-def _render_signal_evidence(signal, prefix="   "):
+def _render_signal_evidence(signal, prefix="   ", config=None):
     evidence = _signal_evidence(signal)
     if not evidence:
         return
@@ -10498,7 +10499,7 @@ def _render_signal_evidence(signal, prefix="   "):
         print(f"{prefix}  {index}. {kind} — {function} — {status}")
         caller = item.get("caller") or item.get("actor")
         if caller:
-            print(f"{prefix}     Caller      : {apply_labels(caller, config)}")
+            print(f"{prefix}     Caller      : {apply_labels(caller, config or {})}")
         if item.get("eth_sent_wei") is not None:
             try:
                 wei = int(item.get("eth_sent_wei"))
@@ -10587,7 +10588,7 @@ def run_investigate(config, args):
     if isinstance(actions, list) and actions:
         print("Suggested  : " + " -> ".join(str(item) for item in actions))
 
-    _render_signal_evidence(signal)
+    _render_signal_evidence(signal, config=config)
     print("\nUseful commands:")
     function = signal.get("function")
     if function:
@@ -10924,7 +10925,7 @@ def run_signals(config, args):
         evidence = _signal_evidence(signal)
         if evidence:
             print(f"   Evidence   : {len(evidence)} captured")
-            _render_signal_evidence(signal, prefix="      ")
+            _render_signal_evidence(signal, prefix="      ", config=config)
     return 0
 
 def run_status(config):
