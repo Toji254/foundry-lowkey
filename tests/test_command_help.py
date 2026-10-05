@@ -449,10 +449,15 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
 
     def test_recommendation_footer_renders_for_successful_commands(self):
+        previous_status = lk._COMMAND_STATUS
+        lk._COMMAND_STATUS = 0
         output = io.StringIO()
-        with redirect_stdout(output):
-            lk._print_recommended_next_commands("fn", ["buyNft"], result=0)
-        rendered = output.getvalue()
+        try:
+            with redirect_stdout(output):
+                lk._print_recommended_next_commands("fn", ["buyNft"], result=0)
+            rendered = output.getvalue()
+        finally:
+            lk._COMMAND_STATUS = previous_status
         self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
         self.assertIn("lk ask buyNft", rendered)
         self.assertIn("lk wizard buyNft [values...]", rendered)
