@@ -2354,24 +2354,46 @@ def _function_display_name(item):
     }
     return aliases.get(spaced, spaced)
 
-def _human_return_unit(item,abi):
-    """Add a unit only where the ABI gives Lowkey enough context to justify it."""
+def _human_return_unit(item,abi,output=None):
+    """Infer a safe display unit from standard ABI/function conventions."""
     name=str(item.get("name") or "").strip().lower()
+    output_name=str((output or {}).get("name") or "").strip().lower()
     names={str(entry.get("name") or "").strip().lower() for entry in abi_functions(abi)}
+
     if name=="balanceof":
         if {"ownerof","tokenuri"} <= names:
             return "NFTs"
-        if {"decimals","symbol"} <= names:
-            return "token units"
-        # A balanceOf() ABI return is normally a token/NFT count. Prefer
-        # the concrete noun "tokens" when the ABI cannot prove ERC721.
-        return "tokens"
+        if {"decimals","symbol"} <= names and "transfer" in names:
+            return "tokens"
+        return "units"
+    if name=="allowance" and {"decimals","symbol","transfer"} <= names:
+        return "token units"
+    if name=="totalsupply" and {"decimals","symbol","transfer"} <= names:
+        return "token units"
     if name=="decimals":
         return "decimal places"
     return None
 
+
+def _human_numeric_annotation(item, output, abi):
+    """Add meaning where a numeric ABI value has a recognizable convention."""
+    function_name=str(item.get("name") or "").strip().lower()
+    field_name=str((output or {}).get("name") or "").strip().lower()
+    if function_name=="decimals":
+        return None
+    if field_name in {"timestamp","deadline","createdat","updatedat","expiresat","expiry"}:
+        return "Unix timestamp"
+    if field_name in {"blocknumber","block"}:
+        return "block number"
+    if field_name in {"nonce"}:
+        return "transaction nonce"
+    if field_name in {"status","state","currentstatus","currentstate"}:
+        return "status/state code"
+    return None
+
+
 def format_human_abi_return(item, decoded, config, abi=None):
-    """Render ABI return data as a human value while retaining useful type context."""
+    """Render ABI return data for humans while retaining concise Solidity type evidence."""
     outputs=item.get("outputs",[]) if isinstance(item,dict) else []
     value=apply_labels(str(decoded or "").strip(),config)
     if not outputs:
@@ -2382,24 +2404,42 @@ def format_human_abi_return(item, decoded, config, abi=None):
         output=outputs[0]
         type_name=canonical_type(output)
         label=_human_field_label(output.get("name")) or _function_display_name(item)
-        unit=_human_return_unit(item,abi)
         rendered=_humanize_abi_scalar(value,type_name,output.get("name"),config)
-        if unit:
-            rendered=f"{rendered} {unit}"
-        return f"Return: {label} = {rendered}  ({_human_type_label(type_name)}; {type_name})"
+
+        if (type_name.lower().startswith("uint") or type_name.lower().startswith("int")):
+            unit=_human_return_unit(item,abi,output)
+            if unit:
+                rendered=f"{rendered} {unit}"
+            annotation=_human_numeric_annotation(item,output,abi)
+            if annotation and annotation not in rendered:
+                rendered=f"{rendered} ({annotation})"
+            elif not unit and not annotation:
+                rendered=f"{rendered} units (unit not specified by ABI)"
+
+        return f"Return: {label} = {rendered}  [{type_name}]"
 
     types=[canonical_type(output) for output in outputs]
     labels=[_human_field_label(output.get("name")) or f"value{index}" for index,output in enumerate(outputs,1)]
     decoded_parts=[line.strip() for line in str(value).splitlines() if line.strip()]
     if len(decoded_parts)==len(outputs):
         details=", ".join(
-            f"{label}={_humanize_abi_scalar(value_part,type_name,output.get('name'),config)} "
-            f"({_human_type_label(type_name)}; {type_name})"
+            f"{label}={_humanize_abi_scalar(value_part,type_name,output.get('name'),config)}"
+            + (
+                f" {_human_return_unit(item,abi,output)}"
+                if _human_return_unit(item,abi,output) and (type_name.lower().startswith("uint") or type_name.lower().startswith("int"))
+                else ""
+            )
+            + (
+                f" ({_human_numeric_annotation(item,output,abi)})"
+                if _human_numeric_annotation(item,output,abi)
+                and _human_numeric_annotation(item,output,abi) not in _humanize_abi_scalar(value_part,type_name,output.get('name'),config)
+                else ""
+            )
+            + f" [{type_name}]"
             for label,value_part,type_name,output in zip(labels,decoded_parts,types,outputs)
         )
         return f"Returns: {details}"
-    return f"Returns: {value}"
-
+    return f"Returns: {value}  [ABI output: {', '.join(types)}]"
 
 def _function_tokens(name):
     text_value=str(name or "")
@@ -12472,7 +12512,7 @@ _NEXT_COMMANDS = {
     "rpc": ["lk status", "lk chain", "lk doctor"],
     "wallet": ["lk actors", "lk actor", "lk wizard <function> [values...]"],
     "actor": ["lk actors", "lk wizard <function> [values...]", "lk as <actor> <command>"],
-    "actors": ["lk actor 0 Alice", "lk wizard <function> [values...]", "lk as <actor> <command>"],
+    "actors": ["lk actor <index> <name>", "lk wizard <function> [values...]", "lk as <actor> <command>"],
     "as": ["lk status", "lk functions", "lk actors"],
     "deployments": ["lk targets", "lk target auto", "lk status"],
     "recon": ["lk functions", "lk risk", "lk scan src", "lk slither"],
@@ -12596,7 +12636,18 @@ def _recommended_next_commands(command, args=None, config=None):
         command_key = f"{canonical} {first_arg}"
 
     dynamic_items = _function_interaction_recommendations(command, raw_args, config or {}) if canonical in {"read","send","wizard"} else []
-    items = dynamic_items or list(_NEXT_COMMANDS.get(command_key, _NEXT_COMMANDS.get(canonical, [])))
+    if canonical == "actors" and isinstance(config,dict):
+        actor_name=str(config.get("actor") or "").strip()
+        actor_entry=(config.get("wallets") or {}).get(actor_name) if actor_name else None
+        if actor_name and isinstance(actor_entry,dict) and actor_entry.get("source")=="anvil-default":
+            first_index=actor_entry.get("anvil_index")
+            items_override=list(_NEXT_COMMANDS.get("actors",[]))
+            items_override=[item for item in items_override if not str(item).startswith(f"lk actor {first_index} ")]
+        else:
+            items_override=None
+    else:
+        items_override=None
+    items = dynamic_items or (items_override if items_override is not None else list(_NEXT_COMMANDS.get(command_key, _NEXT_COMMANDS.get(canonical, []))))
 
     if canonical in {"fn", "ask"} and raw_args and not raw_args[0].startswith("-"):
         query = shlex.quote(raw_args[0])
