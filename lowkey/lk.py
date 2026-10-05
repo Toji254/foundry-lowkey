@@ -4997,7 +4997,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"Fixture : {fixture['relative']}::{fixture['contract']}")
     print(f"Test    : {relative_test}")
     print(f"RPC     : {rpc_display(rpc)}")
-    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print(f"Actor   : {apply_labels(accounts[0], config)}")
     print("Mode    : promoted project test fixture")
     print("Action  : running the fixture through Forge's native test runner, then materializing its full state into local Anvil...")
     print("Helper  : no broadcast; Forge invokes the fixture setUp() normally.")
@@ -8794,15 +8794,11 @@ def format_call_display(config, signature, raw_values):
     prepared=prepare_argument_values(config,matches[0],raw_values)
     inputs=matches[0].get("inputs",[])
     rendered=[]
-    address_map={}
-    for name,entry in config.get("wallets",{}).items():
-        if isinstance(entry,dict) and is_address(entry.get("address")):
-            address_map[entry["address"].lower()]=name
     for item,value in zip(inputs,prepared):
         item_type=canonical_type(item)
         shown=str(value)
         if item_type=="address":
-            shown=address_map.get(shown.lower(),shown)
+            shown=apply_labels(shown, config)
         rendered.append(shown)
     return f"{matches[0].get('name','<function>')}({', '.join(rendered)})"
 
