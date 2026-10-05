@@ -519,7 +519,7 @@ def select_anvil_actor(config,index,name):
     config.setdefault("labels",{})[address]=name
     config["actor"]=name
     save_config(config)
-    print(f"Actor selected: {name} -> Anvil account {index} ({address})")
+    print(f"Actor selected: {name} ({address}) -> Anvil account {index}")
     print("Private key: derived only when a send is needed; not stored in Lowkey config.")
     return 0
 
@@ -2269,14 +2269,85 @@ def run_logs(config,args):
     if not isinstance(logs,list): print(output); return
     if not logs: print("No logs found."); return
     for log in logs:
-        print(json.dumps(log,indent=2))
+        print(apply_labels(json.dumps(log,indent=2), config))
         event=decode_event_log(config,log)
-        if event: print(f"Event: {event[0]}\nDecoded: {event[1]}")
+        if event:
+            print(
+                f"Event: {event[0]}\nDecoded: {apply_labels(event[1],config)}"
+            )
+def _known_address_identities(config):
+    """Return known address -> human identity mappings for interactive output."""
+    config = config if isinstance(config, dict) else {}
+    identities = {}
+
+    # The currently selected actor has highest priority. This avoids showing
+    # an internal name such as "lab-deployer" when the user explicitly named
+    # that same Anvil address "Alice".
+    actor_name = str(config.get("actor") or "").strip()
+    actor_entry = (config.get("wallets") or {}).get(actor_name)
+    if actor_name and isinstance(actor_entry, dict):
+        actor_address_value = actor_entry.get("address")
+        if is_address(actor_address_value):
+            identities[str(actor_address_value).lower()] = (actor_name, str(actor_address_value))
+
+    # Other named wallet/actor profiles are also useful identities.
+    for name, entry in (config.get("wallets") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        address = entry.get("address")
+        if not is_address(address):
+            continue
+        lowered = str(address).lower()
+        if lowered in identities:
+            continue
+        if wallet_is_internal(name, entry):
+            continue
+        identities[lowered] = (str(name), str(address))
+
+    # Explicit labels remain useful when no actor/wallet name owns the address.
+    for address, label in (config.get("labels") or {}).items():
+        if not is_address(address) or not str(label).strip():
+            continue
+        lowered = str(address).lower()
+        identities.setdefault(lowered, (str(label).strip(), str(address)))
+
+    return identities
+
+
 def apply_labels(text, config):
-    labels = config.get("labels", {})
-    for addr, label in labels.items():
-        text = text.replace(addr, f"{label} ({addr})")
-    return text
+    """Replace known addresses with Name (0x...) in human-facing output."""
+    if text is None:
+        return text
+
+    rendered = str(text)
+    identities = _known_address_identities(config)
+    if not identities:
+        return rendered
+
+    pattern = re.compile(r"0x[0-9a-fA-F]{40}", re.IGNORECASE)
+
+    def replace(match):
+        address = match.group(0)
+        identity = identities.get(address.lower())
+        if not identity:
+            return address
+
+        name, canonical_address = identity
+
+        # Do not recursively wrap an address that is already displayed as
+        # Name (0x...).
+        start, end = match.span()
+        if (
+            start >= 2
+            and rendered[start - 2:start] == " ("
+            and end < len(rendered)
+            and rendered[end] == ")"
+        ):
+            return address
+
+        return f"{name} ({canonical_address})"
+
+    return pattern.sub(replace, rendered)
 
 def decode_abi_output(signature,data):
     """Decode ABI-encoded return data using the loaded function output signature."""
@@ -2905,8 +2976,8 @@ def run_proxy(config):
     if not detected: return
     implementation=run_cast(["implementation",target],config,capture=True)
     admin=run_cast(["admin",target],config,capture=True)
-    print(f"Implementation: {implementation or 'Unknown'}")
-    print(f"Admin:         {admin or 'Unknown'}")
+    print(f"Implementation: {apply_labels(implementation or 'Unknown',config)}")
+    print(f"Admin:         {apply_labels(admin or 'Unknown',config)}")
 def run_mapping(config,*args):
     if not config.get("target"): return fail("Error: Set target first.")
     if len(args)==2: slot,key=args; key_type="address" if is_address(key) else "uint256"
@@ -4270,7 +4341,9 @@ def run_deployments(config):
     for r in records:
         key=(r["contract"],r["address"])
         if key in seen: continue
-        seen.add(key); print(f"{r['contract']:<24} {r['address']}  {r['file']}")
+        seen.add(key); print(
+            f"{r['contract']:<24} {apply_labels(r['address'], config)}  {r['file']}"
+        )
 
 def _auto_target_records(config, root, records, requested=None):
     """Rank broadcast targets by application provenance and live runtime identity."""
@@ -8898,7 +8971,7 @@ contract LowkeyStateDiff is Test {{
         print("CHANGES")
         print("=======")
         print(f"Call:      {format_call_display(config,signature,raw_args)}")
-        print(f"Caller:    {selected_actor or address}")
+        print(f"Caller:    {apply_labels(selected_actor or address, config)}")
         eth_sent=parsed["eth_sent"]
         print(f"ETH sent:  {eth_sent/10**18:g} ETH" if eth_sent%10**18==0 else f"ETH sent:  {eth_sent} wei")
         status="SUCCESS" if parsed["success"] else "REVERTED"
