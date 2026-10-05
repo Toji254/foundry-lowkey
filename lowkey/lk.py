@@ -2528,7 +2528,8 @@ def _function_recommendation_command(verb,item,abi):
     inputs=[]
     for index,param in enumerate(item.get("inputs",[]),1):
         label=str(param.get("name") or "").strip() or f"arg{index}"
-        label=re.sub(r"[^A-Za-z0-9_]+","_",label).strip("_") or f"arg{index}"
+        label=re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", label).replace("_"," ").strip()
+        label=label or f"arg{index}"
         inputs.append(f"<{label}>")
     suffix=(" " + " ".join(inputs)) if inputs else ""
     return f"lk {verb} {query}{suffix}"
