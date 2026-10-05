@@ -60,6 +60,18 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk target list", output)
         self.assertIn("List remembered targets", output)
 
+    def test_wizard_help_explains_remix_workflow_and_modes(self):
+        code, output = self.capture_dispatch("wizard", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Remix-like contract interaction from the terminal", output)
+        self.assertIn("lk wizard buyNft 5", output)
+        self.assertIn("Simulate a read-only call with eth_call", output)
+        self.assertIn("Send a state-changing transaction using the current actor", output)
+        self.assertIn("Only build the ABI calldata", output)
+        self.assertIn("Transactions use the current actor", output)
+        self.assertIn("lk actor 0 Alice", output)
+        self.assertIn("A target must already be selected", output)
+
     def test_leaf_help_has_parent_navigation(self):
         code, output = self.capture_dispatch("generate", "test", "--h")
         self.assertEqual(code, 0)
