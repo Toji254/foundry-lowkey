@@ -5068,7 +5068,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     }
     set_lab_target(config, root, target, contract_name, artifact)
 
-    print(f"Target  : {contract_name} -> {target}")
+    print(f"Target  : {contract_name} -> {apply_labels(target, config)}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     print(f"Harness : {fixture['relative']}::{fixture['contract']}")
     _print_security_scope(root)
@@ -6729,7 +6729,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     config.setdefault("labels", {})[accounts[0]] = "lab-deployer"
     set_lab_target(config, root, effective_target, contract, artifact)
 
-    print(f"Target  : {contract} -> {effective_target}")
+    print(f"Target  : {contract} -> {apply_labels(effective_target, config)}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
@@ -10498,7 +10498,7 @@ def _render_signal_evidence(signal, prefix="   "):
         print(f"{prefix}  {index}. {kind} — {function} — {status}")
         caller = item.get("caller") or item.get("actor")
         if caller:
-            print(f"{prefix}     Caller      : {caller}")
+            print(f"{prefix}     Caller      : {apply_labels(caller, config)}")
         if item.get("eth_sent_wei") is not None:
             try:
                 wei = int(item.get("eth_sent_wei"))
@@ -11049,7 +11049,7 @@ def run_impersonate(config,args):
     config["actor"]=name
     config.setdefault("labels",{})[address]=name
     save_config(config)
-    print(f"Actor selected: {name} -> impersonated {address}")
+    print(f"Actor selected: {name} -> impersonated {apply_labels(address, config)}")
     return 0
 
 def run_as(config,args):
@@ -12806,9 +12806,9 @@ def dispatch_command(cmd,args,config,from_batch=False):
         if not args:
             project=project_context_target(root)
             if project:
-                print(f"Current project target: {project.get('contract') or 'unknown'} -> {project.get('address')}")
+                print(f"Current project target: {project.get('contract') or 'unknown'} -> {apply_labels(project.get('address'), config)}")
             else:
-                print(f"Current project target: {current or 'none'}")
+                print(f"Current project target: {apply_labels(current, config) if current else 'none'}")
             return
         if args[0]=="reset":
             config["target"]=None
