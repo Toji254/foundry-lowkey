@@ -2438,7 +2438,7 @@ def _human_return_unit(item,abi,output=None):
             return "NFTs"
         if {"decimals","symbol"} <= names and "transfer" in names:
             return "tokens"
-        return "units"
+        return None
     if name=="allowance" and {"decimals","symbol","transfer"} <= names:
         return "token units"
     if name=="totalsupply" and {"decimals","symbol","transfer"} <= names:
@@ -4124,7 +4124,7 @@ def run_targets(config, interactive=False, include_support=False):
             print(
                 f" {marker} {index:>2}. "
                 f"{entry.get('name') or entry.get('contract') or 'target':<28} "
-                f"{entry.get('address')}"
+                f"{apply_labels(entry.get('address'), config)}"
             )
             source_file = entry.get("source_file")
             deployment_file = entry.get("deployment_file")
@@ -10933,7 +10933,7 @@ def run_status(config):
     if target:
         load_abi(target,config)
     rpc=effective_rpc(config)
-    print(f"Target : {target or 'none'}")
+    print(f"Target : {apply_labels(target, config) if target else 'none'}")
     if rpc:
         mode="manual" if config.get("rpc") else "auto Anvil"
         print(f"RPC    : {rpc} ({mode})")
@@ -12947,6 +12947,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 print(f"Actor reset: no active actor (profile '{previous}' was kept).")
             else:
                 print("Actor reset: no active actor.")
+            return 0
         elif len(args)>=2 and args[0].isdigit():
             return select_anvil_actor(config,args[0],args[1])
         elif len(args)==1 and args[0] in config.get("wallets",{}):
