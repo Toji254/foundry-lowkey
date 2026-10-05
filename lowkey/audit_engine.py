@@ -395,6 +395,14 @@ def run_slither(root: str = ".", args: Sequence[str] | None = None) -> int:
 
     extra = list(args or [])
     raw_path = evidence_dir(root) / "slither.raw.json"
+    # Findings are review evidence, not process failures. Preserve an explicit
+    # caller-selected --fail-* policy, otherwise ask Slither not to fail merely
+    # because it found detectors.
+    if not any(
+        str(item).startswith("--fail-") or str(item) == "--no-fail-pedantic"
+        for item in extra
+    ):
+        extra.append("--fail-none")
     command = ["slither", ".", "--exclude-dependencies", "--disable-color", "--json", str(raw_path), *extra]
     if "--exclude-dependencies" in extra:
         command = ["slither", ".", "--disable-color", "--json", str(raw_path), *extra]
@@ -1497,9 +1505,20 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
     ):
         coverage_gaps.append("slither: unavailable for Solidity sources")
 
+    tests_evidence = _evidence_data(root, "tests")
+    tests_output = (
+        str(tests_evidence.get("stdout", ""))
+        + "\n"
+        + str(tests_evidence.get("stderr", ""))
+    )
+    if re.search(r"(?i)No tests found in project", tests_output):
+        coverage_gaps.append("forge tests: no tests found")
+
     final_code = code
     if final_code == 0 and coverage_gaps:
         final_code = 2
+    elif final_code == 0 and optional_failures:
+        final_code = 1
 
     manifest["pipeline"] = {
         "completed_at": now_stamp(),
@@ -1514,8 +1533,8 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
     write_json(manifest_path(root), manifest)
     if generate:
         generate_poc(root)
-    render_audit_dashboard(root, pipeline_code=code)
-    return code
+    render_audit_dashboard(root, pipeline_code=final_code)
+    return final_code
 
 
 def _write_step_evidence(root: str, label: str, command: Sequence[str], code: int,
