@@ -274,5 +274,65 @@ class CommandHelpTests(unittest.TestCase):
 
 
 
+    def test_recommended_next_commands_are_contextual(self):
+        items = lk._recommended_next_commands("functions", [])
+        commands = [command for command, _ in items]
+        self.assertEqual(len(items), 4)
+        self.assertIn("lk fn <function>", commands)
+        self.assertIn("lk ask <function>", commands)
+        self.assertIn("lk read <function> [args]", commands)
+        self.assertIn("lk wizard <function> [values...]", commands)
+
+        send_items = lk._recommended_next_commands("send", [])
+        send_commands = [command for command, _ in send_items]
+        self.assertIn("lk receipt", send_commands)
+        self.assertIn("lk trace", send_commands)
+
+    def test_recommended_next_commands_use_function_query(self):
+        items = lk._recommended_next_commands("fn", ["buyNft"])
+        commands = [command for command, _ in items]
+        self.assertIn("lk ask buyNft", commands)
+        self.assertIn("lk read buyNft [args]", commands)
+        self.assertIn("lk wizard buyNft [values...]", commands)
+
+    def test_recommended_next_commands_skip_machine_output(self):
+        self.assertEqual(lk._recommended_next_commands("benchmark", ["--json"]), [])
+        self.assertEqual(lk._recommended_next_commands("project", ["json"]), [])
+
+    def test_recommendation_footer_skips_failed_commands(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk._print_recommended_next_commands("functions", [], result=1)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_recommendation_footer_renders_for_successful_commands(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk._print_recommended_next_commands("fn", ["buyNft"], result=0)
+        rendered = output.getvalue()
+        self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertIn("lk ask buyNft", rendered)
+        self.assertIn("lk wizard buyNft [values...]", rendered)
+        self.assertIn("See the exact parameter names and types", rendered)
+
+    def test_main_appends_recommendations_after_successful_command(self):
+        original_argv = lk.sys.argv
+        lk.sys.argv = ["lk", "fn", "buyNft"]
+        output = io.StringIO()
+        try:
+            with patch.object(lk, "dispatch_command", return_value=0), \
+                 patch.object(lk, "_sync_audit_context"), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(".")), \
+                 patch.object(lk.audit_context, "emit"), \
+                 redirect_stdout(output):
+                lk.main()
+        finally:
+            lk.sys.argv = original_argv
+
+        rendered = output.getvalue()
+        self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
+        self.assertIn("lk ask buyNft", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()
