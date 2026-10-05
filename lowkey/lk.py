@@ -2318,7 +2318,7 @@ def _human_field_label(name):
         return ""
     value=value.replace("_"," ")
     value=re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
-    return re.sub(r"\s+"," ",value).strip()
+    return re.sub(r"\s+"," ",value).strip().lower()
 
 def _humanize_abi_scalar(value,type_name,field_name="",config=None):
     rendered=apply_labels(str(value or "").strip(),config or {})
@@ -2363,8 +2363,9 @@ def _human_return_unit(item,abi):
             return "NFTs"
         if {"decimals","symbol"} <= names:
             return "token units"
-        # A custom balanceOf() is not necessarily an ERC20/721 balance.
-        return "units"
+        # A balanceOf() ABI return is normally a token/NFT count. Prefer
+        # the concrete noun "tokens" when the ABI cannot prove ERC721.
+        return "tokens"
     if name=="decimals":
         return "decimal places"
     return None
@@ -2536,9 +2537,9 @@ def _function_recommendation_command(verb,item,abi):
     query=format_signature(item) if len(same_name)>1 else name
     inputs=[]
     for index,param in enumerate(item.get("inputs",[]),1):
+        # Keep ABI parameter identifiers verbatim in command hints. These are
+        # code-facing names that help the user map the placeholder to the ABI.
         label=str(param.get("name") or "").strip() or f"arg{index}"
-        label=re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", label).replace("_"," ").strip()
-        label=label or f"arg{index}"
         inputs.append(f"<{label}>")
     suffix=(" " + " ".join(inputs)) if inputs else ""
     return f"lk {verb} {query}{suffix}"
