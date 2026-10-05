@@ -11515,6 +11515,27 @@ def _help_entry(summary, usage, example, use_case, *, children=None, options=Non
         "related": related or [],
     }
 
+def _validate_help_variations(entries):
+    """Validate structured help variants without changing runtime behavior."""
+    problems = []
+    for command, entry in entries.items():
+        for field_name in ("forms", "options"):
+            for index, item in enumerate(entry.get(field_name) or [], 1):
+                if not isinstance(item, (list, tuple)) or len(item) != 3:
+                    problems.append(f"lk {command}: {field_name}[{index}] must be (command, description, example)")
+                    continue
+                command_text, description, example = item
+                if not str(command_text or "").strip():
+                    problems.append(f"lk {command}: {field_name}[{index}] missing command")
+                if not str(description or "").strip():
+                    problems.append(f"lk {command}: {field_name}[{index}] missing description")
+                if not str(example or "").strip():
+                    problems.append(f"lk {command}: {field_name}[{index}] missing example")
+        children = entry.get("children") or {}
+        if not isinstance(children, dict):
+            problems.append(f"lk {command}: children must be a mapping")
+    return problems
+
 COMMAND_HELP = {
     "benchmark": _help_entry(
         "Run deterministic Lowkey source-triage regression cases before trusting a release. This verifies detector behavior and language-boundary handling; it is not a real-world audit-accuracy score.",
@@ -11635,6 +11656,10 @@ COMMAND_HELP = {
         "lk use <name|number>",
         "lk use Escrow",
         "Use it when several targets are available and you want to change focus without retyping an address.",
+        forms=[
+            ("lk use <name>", "Switch to a saved target by its friendly name.", "lk use Escrow"),
+            ("lk use <number>", "Switch to a saved target by its numbered position.", "lk use 2"),
+        ],
         related=["lk targets", "lk target"],
     ),
     "target": _help_entry(
@@ -11849,6 +11874,10 @@ COMMAND_HELP = {
         "lk import <symbol|path>",
         "lk import ERC721",
         "Use it to locate importable packages and verify exact source/import paths.",
+        forms=[
+            ("lk import <symbol>", "Look up an importable package or symbol.", "lk import ERC721"),
+            ("lk import <path>", "Inspect or resolve a source/import path.", "lk import @openzeppelin/contracts/token/ERC721/IERC721.sol"),
+        ],
         related=["lk project", "lk audit"],
     ),
     "functions": _help_entry(
