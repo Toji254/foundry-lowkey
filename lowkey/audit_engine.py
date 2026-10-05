@@ -1390,11 +1390,18 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
     )
 
     triage = _evidence_data(root, "source_triage")
-    rows.append((
-        "Source triage",
-        "PASS" if triage else "NOT RUN",
-        f"{triage.get('count', 0)} review markers" if triage else "no evidence recorded",
-    ))
+    if triage:
+        triage_code = triage.get("exit_code", 0)
+        triage_status = "PASS" if triage_code == 0 else "REVIEW" if triage_code == 2 else "FAIL"
+        triage_detail = f"{triage.get('count', 0)} review markers"
+        if triage_code == 2:
+            triage_detail += " | coverage incomplete"
+        elif triage_code not in (0, 2):
+            triage_detail += " | triage failed"
+    else:
+        triage_status = "NOT RUN"
+        triage_detail = "no evidence recorded"
+    rows.append(("Source triage", triage_status, triage_detail))
 
     graph = _evidence_data(root, "dependency_graph")
     if graph:
@@ -1462,14 +1469,47 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
         and isinstance(item.get("code"), int)
         and item.get("code") not in {0, 127}
     ]
+
+    # A skipped analyzer is not a successful security pass when it is relevant
+    # to the source under review. Likewise, source triage exit 2 explicitly
+    # means Lowkey could not establish complete coverage. Preserve that
+    # distinction instead of returning a misleading clean exit code.
+    context = _evidence_data(root, "context")
+    project = context.get("project", {}) if isinstance(context.get("project"), dict) else {}
+    solidity_sources = int((project.get("sources") or {}).get("solidity", 0) or 0)
+    coverage_gaps = []
+
+    triage_step = next(
+        (item for item in results if isinstance(item, dict) and item.get("label") == "source_triage"),
+        None,
+    )
+    if isinstance(triage_step, dict) and triage_step.get("code") == 2:
+        coverage_gaps.append("source_triage: incomplete coverage")
+
+    slither_step = next(
+        (item for item in results if isinstance(item, dict) and item.get("label") == "slither"),
+        None,
+    )
+    if (
+        solidity_sources > 0
+        and isinstance(slither_step, dict)
+        and slither_step.get("code") == 127
+    ):
+        coverage_gaps.append("slither: unavailable for Solidity sources")
+
+    final_code = code
+    if final_code == 0 and coverage_gaps:
+        final_code = 2
+
     manifest["pipeline"] = {
         "completed_at": now_stamp(),
         "status": (
-            "failed" if code != 0
+            "failed" if final_code != 0
             else ("inconclusive" if optional_failures else "pass")
         ),
         "steps": results,
         "optional_analyzer_failures": optional_failures,
+        "coverage_gaps": coverage_gaps,
     }
     write_json(manifest_path(root), manifest)
     if generate:
