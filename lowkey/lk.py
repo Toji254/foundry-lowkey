@@ -2120,6 +2120,52 @@ def decode_abi_input(signature,data):
     payload=data[10:] if data.startswith("0x") and len(data)>=10 else data
     _,out,err=cast_output(["cast","decode-abi","--input",signature,"0x"+payload])
     return out or err
+def _wizard_transaction_return(config, tx_hash, item):
+    """Read and decode top-level transaction return data when RPC tracing exposes it."""
+    outputs = item.get("outputs") or []
+    if not outputs or not is_tx_hash(tx_hash):
+        return None
+
+    rpc = effective_rpc(config)
+    if not rpc:
+        return None
+
+    code, raw, _err = cast_output([
+        "cast", "rpc", "debug_traceTransaction", tx_hash, "--rpc-url", rpc
+    ])
+    if code != 0 or not raw:
+        return None
+
+    try:
+        trace = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    if isinstance(trace, dict) and isinstance(trace.get("result"), dict):
+        trace = trace["result"]
+    if not isinstance(trace, dict):
+        return None
+
+    return_data = trace.get("returnValue")
+    if return_data is None:
+        return_data = trace.get("output")
+    if not isinstance(return_data, str) or not return_data:
+        return None
+    if not return_data.startswith("0x"):
+        return_data = "0x" + return_data
+
+    output_types = ",".join(canonical_type(output) for output in outputs)
+    signature = f"{format_signature(item)}({output_types})"
+    code, decoded, error = cast_output([
+        "cast", "abi-decode", signature, return_data
+    ])
+    return {
+        "raw": return_data,
+        "decoded": decoded if code == 0 and decoded else None,
+        "decode_error": error if code != 0 else None,
+    }
+
+
 def run_decode_error(config,args):
     if not args: return fail("Usage: lk decode-error <revert-data>")
     data=args[0]
@@ -10537,38 +10583,67 @@ def run_status(config):
             print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
 def run_wizard(config,args):
     if not args:
-        return fail("Usage: lk wizard <function> [call|send|encode]")
-    mode=args[1].lower() if len(args)>1 else "call"
-    if mode not in {"call","send","encode"}:
-        return fail("Mode must be call, send, or encode.")
+        return fail("Usage: lk wizard <function> [values...] | lk wizard <function> [call|send|encode] [values...]")
+
+    function_name = args[0]
+    extras = list(args[1:])
+    mode = "send"
+
+    # Keep the older explicit-mode form while allowing a value-first form.
+    if extras and extras[0].lower() in {"call", "send", "encode"}:
+        mode = extras.pop(0).lower()
+
     target=config.get("target")
     if not target:
         return fail("Error: Set target first.")
     funcs=abi_functions(load_abi(target,config))
-    matches=matching_functions(funcs,args[0])
+    matches=matching_functions(funcs,function_name)
     if len(matches)!=1:
         return fail("Error: Function must resolve to exactly one ABI entry.")
-        for item in sorted(funcs,key=lambda x:function_score(x,args[0]),reverse=True)[:8]:
-            print(" ",format_signature(item))
-        return
-    item=matches[0]; signature=format_signature(item); values=[]
+    item=matches[0]
+    signature=format_signature(item)
+    parameters=item.get("inputs",[])
+    if len(extras) > len(parameters):
+        return fail(f"Error: Too many argument values for {signature}. Expected {len(parameters)}.")
+
+    values=[]
     print(f"Function: {signature}")
-    for index,param in enumerate(item.get("inputs",[]),1):
+    for index,param in enumerate(parameters,1):
         label=param.get("name") or f"arg{index}"
         ptype=canonical_type(param)
-        if ptype.startswith(('uint', 'int')):
+        if ptype.startswith(("uint", "int")):
             _print_numeric_unit_reference(label, ptype)
-        try: value=input(f"{label} ({ptype}): ").strip()
-        except EOFError: print("Wizard cancelled."); return 0
-        if value and ptype.startswith(('uint', 'int')):
+        if index <= len(extras):
+            value=extras[index-1]
+        else:
+            try:
+                value=input(f"{label} ({ptype}): ").strip()
+            except EOFError:
+                print("Wizard cancelled.")
+                return 0
+        if value and ptype.startswith(("uint", "int")):
             value=_normalize_human_numeric_input(value, ptype, label)
         if not value:
             return fail("Argument values are required.")
         values.append(value)
-    if mode=="encode": run_cast(["calldata",signature,*values],config)
-    elif mode=="send": run_cast(["send",signature,*values,"--confirm"],config)
-    else: run_cast(["call",signature,*values],config)
 
+    if mode=="encode":
+        return run_cast(["calldata",signature,*values],config)
+    if mode=="send":
+        code = run_cast(["send",signature,*values,"--confirm"],config)
+        if code == 0 and item.get("outputs"):
+            tx_hash = config.get("last_tx")
+            result = _wizard_transaction_return(config, tx_hash, item) if tx_hash else None
+            if result:
+                print("RETURN VALUES")
+                print("==============")
+                print(f"Raw:     {result['raw']}")
+                if result.get("decoded"):
+                    print(result["decoded"])
+                elif result.get("decode_error"):
+                    print(f"Decoded: unavailable ({result['decode_error']})")
+        return code
+    return run_cast(["call",signature,*values],config)
 
 
 def run_impersonate(config,args):
