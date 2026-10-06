@@ -1808,6 +1808,80 @@ contract Pool {
             self.assertEqual(lk.resolve_wallet_key(config), "0x"+"b"*64)
         self.assertNotIn("private_key", config["wallets"]["Alice"])
 
+    def test_stale_anvil_actor_rebinds_to_current_account(self):
+        old_address = "0x" + "2" * 40
+        actual_address = "0x" + "1" * 40
+        config = {
+            "wallets": {
+                "lab-deployer": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": old_address,
+                    "internal": True,
+                }
+            },
+            "actor": "lab-deployer",
+            "labels": {old_address: "lab-deployer"},
+        }
+        info = {
+            "url": "http://127.0.0.1:8545",
+            "accounts": [actual_address],
+        }
+        with patch.object(lk, "save_config") as save:
+            self.assertTrue(lk._sync_current_anvil_actor(config, info))
+
+        self.assertEqual(
+            config["wallets"]["lab-deployer"]["address"],
+            actual_address,
+        )
+        self.assertNotIn(old_address, config["labels"])
+        self.assertNotIn(actual_address, config["labels"])
+        save.assert_called_once()
+
+    def test_send_path_repairs_stale_anvil_actor_before_resolving_key(self):
+        old_address = "0x" + "2" * 40
+        actual_address = "0x" + "1" * 40
+        target = "0x" + "3" * 40
+        key = "0x" + "a" * 64
+        config = {
+            "target": target,
+            "wallets": {
+                "lab-deployer": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": old_address,
+                    "internal": True,
+                }
+            },
+            "actor": "lab-deployer",
+            "labels": {},
+            "aliases": {},
+            "targets": {},
+            "rpc": None,
+        }
+        info = {
+            "url": "http://127.0.0.1:8545",
+            "accounts": [actual_address],
+        }
+
+        def fake_cast(args):
+            if args[:3] == ["cast", "wallet", "address"]:
+                return 0, actual_address, ""
+            return 0, "ok", ""
+
+        with patch.object(lk, "anvil_rpc_info", return_value=info),              patch.object(lk, "derive_default_anvil_key", return_value=key),              patch.object(lk, "cast_output", side_effect=fake_cast),              patch.object(lk, "save_config"):
+            result = lk.run_cast(
+                ["send", target, "ping()"],
+                config,
+                capture=True,
+            )
+
+        self.assertEqual(result.code, 0)
+        self.assertEqual(
+            config["wallets"]["lab-deployer"]["address"],
+            actual_address,
+        )
+
     def test_anvil_actor_rejects_custom_account_for_default_key(self):
         recorded="0x"+"1"*40
         actual="0x"+"2"*40

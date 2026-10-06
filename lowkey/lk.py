@@ -593,6 +593,63 @@ def actor_display(config):
         return "<raw private key configured>"
     return str(actor)
 
+def _sync_current_anvil_actor(config, info=None):
+    """Repair a stale Anvil-derived actor against the currently detected node.
+
+    Anvil's default accounts are deterministic, so the account at a saved
+    anvil_index is the identity Lowkey intends to use. The address is metadata;
+    refresh it when a restarted/replaced Anvil reports a different account at
+    that same slot. Explicit key/env and impersonated actors are untouched.
+    """
+    actor = config.get("actor")
+    if not actor:
+        return False
+
+    entry = config.get("wallets", {}).get(actor)
+    if not isinstance(entry, dict) or entry.get("source") != "anvil-default":
+        return False
+
+    if info is None:
+        info = anvil_rpc_info(config)
+    if not isinstance(info, dict):
+        return False
+
+    accounts = info.get("accounts", [])
+    if not isinstance(accounts, list) or not accounts:
+        return False
+
+    try:
+        index = int(entry.get("anvil_index", -1))
+    except (TypeError, ValueError):
+        return False
+    if index < 0 or index >= len(accounts):
+        return False
+
+    actual = str(accounts[index])
+    recorded = str(entry.get("address", "")).lower()
+    if recorded == actual.lower():
+        return False
+
+    old_address = str(entry.get("address", "") or "")
+    entry["address"] = actual
+
+    labels = config.setdefault("labels", {})
+    if old_address and labels.get(old_address) == actor:
+        labels.pop(old_address, None)
+    if old_address and labels.get(old_address.lower()) == actor:
+        labels.pop(old_address.lower(), None)
+
+    # Internal lab-deployer identities are intentionally not exposed as
+    # user-facing address labels.
+    if wallet_is_internal(actor, entry):
+        labels.pop(actual, None)
+        labels.pop(actual.lower(), None)
+    else:
+        labels[actual] = actor
+
+    save_config(config)
+    return True
+
 def actor_address(config, name=None):
     name = name or config.get("actor")
     if not name:
@@ -2425,6 +2482,10 @@ def run_cast(args,config,capture=False):
     active_rpc=effective_rpc(config)
     if cast_cmd in rpc_commands and active_rpc and "--rpc-url" not in cmd: cmd.extend(["--rpc-url",active_rpc])
     actor=actor_override or config.get("actor")
+    if cast_cmd=="send":
+        # Anvil account addresses are runtime metadata. Repair a stale saved
+        # address before resolving the deterministic default private key.
+        _sync_current_anvil_actor(config)
     actor_entry=config.get("wallets",{}).get(actor) if actor else None
     actor_key=resolve_wallet_key(config,actor) if cast_cmd=="send" else None
     if cast_cmd=="send" and isinstance(actor_entry,dict) and actor_entry.get("source")=="anvil-impersonated":
