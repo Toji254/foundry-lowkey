@@ -298,7 +298,7 @@ class CommandHelpTests(unittest.TestCase):
         with redirect_stdout(output):
             lk.print_help()
         rendered = output.getvalue()
-        for term in ("transaction", "receipt", "storage", "revert", "payable", "msg.value", "trace", "Anvil"):
+        for term in ("transaction", "receipt", "storage", "revert", "payable", "msg.value", "trace", "identifier", "Anvil"):
             self.assertIn(term, rendered)
 
     def test_wizard_help_explains_workflow_and_modes(self):
