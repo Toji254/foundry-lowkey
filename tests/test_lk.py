@@ -452,7 +452,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Raw return data:", rendered)
         self.assertIn("Decoded:", rendered)
         self.assertIn(
-            "Return: id = 0x" + "aa" * 32 + "  [bytes32]",
+            "id = 0x" + "aa" * 32 + " [bytes32]",
             rendered,
         )
 
@@ -2778,7 +2778,7 @@ contract Pool {
             return_value={"url": "http://127.0.0.1:8545", "accounts": [actual]},
         ):
             rendered = lk.format_human_abi_return(item, actual, config, [item])
-        self.assertIn(f"Return: creator = lab-deployer ({actual})", rendered)
+        self.assertIn(f"Returns:\n  creator = lab-deployer ({actual}) [address]", rendered)
 
     def test_human_abi_return_uses_actor_identity_for_addresses(self):
         address = "0x" + "b" * 40
@@ -2857,7 +2857,7 @@ contract Pool {
 
         self.assertEqual(result, 0)
         rendered = output.getvalue()
-        self.assertIn("Return: balance = 0 units (unit not specified by ABI)  [uint256]", rendered)
+        self.assertIn("balance = 0 units (unit not specified by ABI) [uint256]", rendered)
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
