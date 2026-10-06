@@ -222,17 +222,17 @@ class CommandHelpTests(unittest.TestCase):
         for term in ("transaction", "receipt", "storage", "revert", "payable", "msg.value", "trace", "Anvil"):
             self.assertIn(term, rendered)
 
-    def test_wizard_help_explains_remix_workflow_and_modes(self):
+    def test_wizard_help_explains_workflow_and_modes(self):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
-        self.assertIn("Remix-like contract interaction from the terminal", output)
-        self.assertIn("lk wizard buyNft 5", output)
-        self.assertIn("Simulate a read-only call with eth_call", output)
-        self.assertIn("Send a state-changing transaction using the current actor", output)
-        self.assertIn("Only build the ABI calldata", output)
-        self.assertIn("Transactions use the current actor", output)
-        self.assertIn("lk actor 0 Alice", output)
-        self.assertIn("A target must already be selected", output)
+        self.assertIn("Interact with one contract function without having to build the full command yourself.", output)
+        self.assertIn("lk wizard createescrow 1", output)
+        self.assertIn("Force a read-only call. The contract is not changed.", output)
+        self.assertIn("Force a state-changing transaction.", output)
+        self.assertIn("Only build the call data. Nothing is sent.", output)
+        self.assertIn("Send the function as a transaction using the current actor.", output)
+        self.assertIn("Wizard does not have an ETH-value flag.", output)
+        self.assertIn("lk send", output)
 
     def test_leaf_help_has_parent_navigation(self):
         code, output = self.capture_dispatch("generate", "test", "--h")
