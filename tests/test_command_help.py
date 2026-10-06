@@ -276,7 +276,7 @@ class CommandHelpTests(unittest.TestCase):
         trace = f"    └─ ← [Return] {identifier}"
         with patch.object(lk, "_trace_function_item", return_value=(item, [item])):
             rendered, candidates = lk._trace_identifier_info({}, {}, trace)
-        self.assertIn(f"  Identifier: {identifier} [bytes32]", rendered)
+        self.assertIn(f"  Contract identifier #1: {identifier} [bytes32]", rendered)
         self.assertEqual(candidates[0]["value"], identifier.lower())
 
         with tempfile.TemporaryDirectory() as temp_dir:
