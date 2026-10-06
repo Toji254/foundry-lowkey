@@ -2415,15 +2415,15 @@ def run_trace(config,args=None):
 
     print("TRANSACTION TRACE")
     print("=================")
-    print(f"Tx ID:     {walkthrough._transaction_link(root, tx_hash)}")
+    print(f"Transaction ID: {walkthrough._transaction_link(root, tx_hash)}")
     if returned_lines:
         print("Returned values:")
         for line in returned_lines:
-            print(line)
+            print(line.replace("Contract identifier #", "Returned contract identifier #", 1) if "Contract identifier #" in line else line)
     if duplicate_warnings:
         print("")
-        print("REPEATED CONTRACT IDENTIFIER REVIEW")
-        print("--------------------------------")
+        print("REPEATED CONTRACT IDENTIFIER")
+        print("----------------------------")
         for warning in duplicate_warnings:
             print(warning)
     print("")
@@ -3075,8 +3075,12 @@ def _identifier_name(name):
     )
 
 def _creation_function_name(name):
-    tokens = set(_function_tokens(str(name or "")))
-    return bool(tokens & {"create", "new", "register", "open", "mint", "issue", "spawn"})
+    text = str(name or "").strip().lower()
+    tokens = set(_function_tokens(text))
+    creation_words = {"create", "new", "register", "open", "mint", "issue", "spawn"}
+    if tokens & creation_words:
+        return True
+    return any(word in text for word in creation_words)
 
 def _trace_root_return(trace_text):
     """Extract the top-level EVM return line from Cast's trace output."""
