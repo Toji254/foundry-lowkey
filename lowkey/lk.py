@@ -3231,7 +3231,7 @@ def format_send_summary(output, config, call=None):
     if tx_hash:
         root = audit_context.foundry_project_root()
         tx_label = walkthrough._transaction_link(root, tx_hash)
-        lines.append(f"Tx hash:   {tx_label}")
+        lines.append(f"Tx ID:     {tx_label}")
         evidence = walkthrough._transaction_evidence_path(root, tx_hash)
         if evidence.is_file():
             lines.append("Confirm:   Ctrl+Click the tx hash to open Lowkey's on-chain evidence page")
@@ -12569,7 +12569,7 @@ COMMAND_HELP = {
         "Show the steps a transaction took inside the EVM, including calls to other contracts.",
         "lk trace [tx] [options]",
         "lk trace 0x871fecf8d5d88863f191016cae8f994eb8e2143521764948684d1468a7948957",
-        "Use it when a transaction's final result is not enough and you need to see where execution went or where it failed.",
+        "Use it when a transaction's final result is not enough and you need to see where execution went or where it failed. When the top-level call returns a value that looks like an identifier, Lowkey shows it clearly and warns when the same probable identifier appears again.",
         forms=[
             ("lk trace", "Show the trace for the last transaction Lowkey remembers.", "lk trace"),
             ("lk trace <tx>", "Show the trace for a specific transaction.", "lk trace 0x871f..."),
