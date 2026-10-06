@@ -2343,7 +2343,7 @@ def run_receipt(config, tx_hash=None, args=None):
     if gas_used is not None:
         lines.append(f"Gas used:  {gas_used:,}")
     tx_link = walkthrough._transaction_link(root, tx_hash)
-    lines.append(f"Tx ID:     {tx_link}")
+    lines.append(f"Transaction ID: {tx_link}")
 
     logs = receipt.get("logs") or []
     if logs:
