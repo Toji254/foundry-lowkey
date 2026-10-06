@@ -359,10 +359,11 @@ class LowkeyCastTests(unittest.TestCase):
 
         self.assertEqual(result["raw"], "0x" + "aa" * 32)
         self.assertEqual(result["decoded"], decoded)
-        cast.assert_called_once_with([
+        self.assertEqual(cast.call_args_list[0].args[0], [
             "cast", "rpc", "debug_traceTransaction", config["last_tx"],
             "--rpc-url", config["rpc"],
         ])
+        self.assertEqual(cast.call_count, 2)
 
     def test_wizard_value_first_form_defaults_to_send_and_surfaces_return(self):
         target = "0x" + "1" * 40
