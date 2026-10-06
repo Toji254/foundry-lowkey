@@ -12136,24 +12136,25 @@ COMMAND_HELP = {
     ),
     "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createbounty", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
     "wizard": _help_entry(
-        "Remix-like contract interaction from the terminal. Pick one ABI function, give it the "
-        "argument values, and Lowkey handles the function signature and action for you. "
-        "A target must already be selected with 'lk lab' or 'lk target'.",
+        "Interact with one contract function without having to build the full command yourself.",
         "lk wizard <function> [values...] [call|send|encode]",
-        "lk wizard buyNft 5",
-        "Use it when you want one guided command instead of manually choosing between lk read, "
-        "lk send, and lk encode. Omit values to be prompted interactively. Successful sends also "
-        "show decoded return values when the RPC exposes transaction trace return data.",
-        options=[
-            ("call", "Simulate a read-only call with eth_call; it does not change blockchain state.", "lk wizard balanceOf 0x..."),
-            ("send", "Send a state-changing transaction using the current actor; Lowkey asks for confirmation and shows return values when available.", "lk wizard buyNft 5 send"),
-            ("encode", "Only build the ABI calldata; do not call or send the transaction.", "lk wizard buyNft 5 encode"),
-            ("actor", "Transactions use the current actor. Use 'lk actor' or 'lk actors' to see/select the named Anvil account and its address.", "lk actor 0 Alice"),
-            ("no values", "Leave the argument values out and Lowkey prompts for each ABI input and type.", "lk wizard buyNft"),
+        "lk wizard createescrow 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "Use it when you know which function you want but want Lowkey to handle the function signature and argument prompts. A state-changing function is sent by default; a read-only function is only read.",
+        forms=[
+            ("lk wizard <function> [values...]", "Give Lowkey the function name and any values you already know. It asks for anything still missing.", "lk wizard release 0xd9c5..."),
+            ("lk wizard <function> [values...] call", "Force a read-only call. The contract is not changed.", "lk wizard balanceOf 0x7099... call"),
+            ("lk wizard <function> [values...] send", "Force a state-changing transaction.", "lk wizard release 0xd9c5... send"),
+            ("lk wizard <function> [values...] encode", "Only build the call data. Nothing is sent.", "lk wizard release 0xd9c5... encode"),
         ],
-        related=["lk ask", "lk read", "lk send", "lk encode"]
-    ),
-    "probe": _help_entry(
+        options=[
+            ("call", "Read the function without changing contract data.", "lk wizard balanceOf 0x7099... call"),
+            ("send", "Send the function as a transaction using the current actor.", "lk wizard release 0xd9c5... send"),
+            ("encode", "Build the data for the function call without sending it.", "lk wizard release 0xd9c5... encode"),
+            ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard createescrow"),
+            ("ATTACH ETH", "Wizard does not have an ETH-value flag. To send ETH with a function call, use lk send --value or for a local test use lk probe --value.", "lk send createescrow 1 0x7099... --value 1ether"),
+        ],
+        related=["lk ask", "lk read", "lk send", "lk probe"],
+    ),    "probe": _help_entry(
         "Try a state-changing function with local test accounts and record whether each call succeeds or reverts.",
         "lk probe <function> [args...] [options]",
         "lk probe createescrow 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether",
@@ -12911,16 +12912,24 @@ FIRST 10 MINUTES
  10. Inspect what happened:         lk trace
 
 COMMON TERMS
-  <address>   Contract/wallet address, e.g. 0x1111...1111
-  <name>      Friendly name, e.g. Alice or escrow
+  <address>   20-byte contract or wallet address, e.g. 0x1111...1111
+  <name>      Friendly name you gave to an actor or target, e.g. Alice or escrow
   <Contract>  Solidity contract name, e.g. Escrow
   <function>  Solidity function name, e.g. release
   <file>      Source file, e.g. src/EthEscrow.sol
   <dir>       Folder, e.g. src
-  <slot>      Storage slot number, e.g. 3
-  <key>       Mapping key, e.g. an address
-  <tx>        Transaction hash
-  <rpc>       RPC URL, e.g. http://127.0.0.1:8545
+  <slot>      Number used to locate saved contract data, e.g. 3
+  <key>       Value used to look up one mapping entry, often an address
+  <tx>        64-character transaction ID
+  <rpc>       Address of the Ethereum node Lowkey talks to, e.g. http://127.0.0.1:8545
+  transaction An action sent to a contract that can change its saved data or move ETH
+  receipt     A record showing whether a transaction worked, how much gas it used, and what events it produced
+  storage     Data saved inside the contract
+  revert      The contract rejected the call; its state changes were undone
+  payable     A function marked so it can receive ETH
+  msg.value   The amount of ETH attached to the current call
+  trace       A step-by-step record of what the transaction did inside the Ethereum virtual machine
+  Anvil       A local Ethereum test network used for safe experiments
 
 PROJECT / TARGET SETUP
   lk target <address>               Select a contract. Example: lk target 0x...
