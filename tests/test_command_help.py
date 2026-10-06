@@ -207,6 +207,21 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("what happened to a transaction", output.lower())
         self.assertNotIn("mined", output.lower())
 
+    def test_wizard_help_explains_how_to_attach_eth(self):
+        code, output = self.capture_dispatch("wizard", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("does not have an ETH-value flag", output)
+        self.assertIn("lk send", output)
+        self.assertIn("--value 1ether", output)
+
+    def test_main_help_defines_beginner_transaction_terms(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        for term in ("transaction", "receipt", "storage", "revert", "payable", "msg.value", "trace", "Anvil"):
+            self.assertIn(term, rendered)
+
     def test_wizard_help_explains_remix_workflow_and_modes(self):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
