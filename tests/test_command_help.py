@@ -157,6 +157,56 @@ class CommandHelpTests(unittest.TestCase):
         ]
         self.assertEqual(missing, [])
 
+    def test_transaction_help_documents_beginner_critical_options(self):
+        cases = {
+            "send": (
+                "--value <amount>",
+                "--actor <name>",
+                "--as <name>",
+                "--preview",
+                "--dry-run",
+                "--confirm",
+                "--yes",
+                "Solidity receives that ETH as msg.value",
+            ),
+            "probe": (
+                "--value <amount>",
+                "--eth <amount>",
+                "--actor <name>",
+                "--as <name>",
+                "msg.value is 1 ETH",
+            ),
+            "changes": (
+                "--value <amount>",
+                "--eth <amount>",
+                "--actor <name>",
+                "--as <name>",
+                "msg.value",
+            ),
+            "trace": (
+                "--grep <text>",
+                "--quick",
+                "--decode-internal",
+                "--trace-printer <value>",
+            ),
+            "snapshot": (
+                "--block <block>",
+            ),
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                self.assertIn("Example:", output)
+                for item in expected:
+                    self.assertIn(item, output)
+
+    def test_receipt_help_uses_plain_words(self):
+        code, output = self.capture_dispatch("receipt", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("what happened to a transaction", output.lower())
+        self.assertNotIn("mined", output.lower())
+
     def test_wizard_help_explains_remix_workflow_and_modes(self):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
