@@ -3066,14 +3066,14 @@ def _trace_root_return(trace_text):
     """Extract the top-level EVM return line from Cast's trace output."""
     lines = str(trace_text or "").splitlines()
     for pattern in (
-        r"^    └─ ← \\[Return\\] (.+)$",
-        r"^\s{4}└─ ← \\[Return\\] (.+)$",
+        r"^    └─ ← \[Return\] (.+)$",
+        r"^\s{4}└─ ← \[Return\] (.+)$",
     ):
         for line in lines:
             match = re.match(pattern, line)
             if match:
                 return match.group(1).strip()
-    matches = re.findall(r"← \\[Return\\] (.+)", str(trace_text or ""))
+    matches = re.findall(r"← \[Return\] (.+)", str(trace_text or ""))
     return matches[0].strip() if matches else None
 
 def _trace_function_item(config, tx):
