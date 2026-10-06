@@ -2799,7 +2799,7 @@ contract Pool {
             "labels": {},
         }
         rendered = lk.format_human_abi_return(item, address, config, [item])
-        self.assertIn(f"Return: owner = Alice ({address})", rendered)
+        self.assertIn(f"Returns:\n  owner = Alice ({address}) [address]", rendered)
 
 
     def test_format_call_display_uses_actor_identity_for_address_arguments(self):
