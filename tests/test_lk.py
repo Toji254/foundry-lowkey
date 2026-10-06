@@ -1791,6 +1791,12 @@ contract Pool {
             ["st", slot],
         )
 
+    def test_creation_name_detection_handles_lowercase_names(self):
+        self.assertTrue(lk._creation_function_name("createescrow"))
+        self.assertTrue(lk._creation_function_name("createEscrow"))
+        self.assertTrue(lk._creation_function_name("registerPool"))
+        self.assertFalse(lk._creation_function_name("withdraw"))
+
     def test_read_recovers_from_cast_fixed_bytes_error(self):
         target = "0x" + "1" * 40
         identifier = "0x" + "a" * 64
