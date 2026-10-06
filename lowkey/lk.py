@@ -2353,6 +2353,24 @@ def _known_address_identities(config):
         if is_address(actor_address_value):
             identities[str(actor_address_value).lower()] = (actor_name, str(actor_address_value))
 
+    # The active actor is always a human-facing identity, including the
+    # internal lab-deployer profile. It is intentionally handled first above.
+    # Keep internal profiles out of the fallback wallet loop so they do not
+    # shadow explicitly named user actors.
+    #
+    # If an internal actor was selected but its profile was recreated with a
+    # stale/missing address, also recover lab-deployer directly from its wallet
+    # entry instead of falling back to a bare address.
+    if not actor_name:
+        internal_entry = (config.get("wallets") or {}).get("lab-deployer")
+        if isinstance(internal_entry, dict):
+            internal_address = internal_entry.get("address")
+            if is_address(internal_address):
+                identities[str(internal_address).lower()] = (
+                    "lab-deployer",
+                    str(internal_address),
+                )
+
     # Other named wallet/actor profiles are also useful identities.
     for name, entry in (config.get("wallets") or {}).items():
         if not isinstance(entry, dict):
@@ -2637,20 +2655,23 @@ def format_human_abi_return(item, decoded, config, abi=None):
             config,
         )
 
+        # Enum values are already semantically rendered (for example,
+        # "waiting (enum value 0)"). Never append generic numeric units to an
+        # enum; doing so makes the result misleading.
         if (
             not enum_rendered
             and (type_name.lower().startswith("uint") or type_name.lower().startswith("int"))
         ):
             unit=_human_return_unit(item,abi,output)
-            if unit:
-                rendered=f"{rendered} {unit}"
             annotation=_human_numeric_annotation(item,output,abi)
             if annotation and annotation not in rendered:
                 rendered=f"{rendered} ({annotation})"
-            elif not unit and not annotation:
+            elif unit:
+                rendered=f"{rendered} {unit}"
+            else:
                 rendered=f"{rendered} units (unit not specified by ABI)"
 
-        return f"Return: {label} = {rendered}  [{type_name}]"
+        return "Returns:\n" + f"  {label} = {rendered} [{type_name}]"
 
     types=[canonical_type(output) for output in outputs]
     labels=[_human_field_label(output.get("name")) or f"value{index}" for index,output in enumerate(outputs,1)]
