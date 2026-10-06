@@ -2342,8 +2342,8 @@ def run_receipt(config, tx_hash=None, args=None):
                     clean = detail.strip()
                     if clean.startswith("Event:"):
                         continue
-                    clean = re.sub(r"^Indexed\\s+", "", clean)
-                    clean = re.sub(r"^Data:\\s*", "", clean)
+                    clean = re.sub(r"^Indexed\s+", "", clean)
+                    clean = re.sub(r"^Data:\s*", "", clean)
                     if clean:
                         lines.append(f"       {clean}")
             else:
