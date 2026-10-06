@@ -2774,7 +2774,35 @@ def _human_return_unit(item,abi,output=None):
         return "token units"
     if name=="decimals":
         return "decimal places"
+
+    # An ABI does not encode whether a uint256 is wei, tokens, shares, etc.
+    # When a getter returns an amount-like field and the contract exposes a
+    # payable function, show the native-ETH equivalent as an explicit
+    # inference while keeping the exact integer value visible.
+    amount_fields={"amount","value","deposit","ethamount","depositamount"}
+    has_payable=any(
+        str(entry.get("stateMutability") or "").lower()=="payable"
+        for entry in abi_functions(abi)
+    )
+    token_surface={"transfer","approve","allowance","balanceof","totalsupply"}
+    looks_token_like=len(token_surface & names) >= 3
+    if output_name.replace("_","").lower() in {
+        field.replace("_","").lower() for field in amount_fields
+    } and has_payable and not looks_token_like:
+        return "native ETH"
+
     return None
+
+def _human_native_eth_render(value, rendered):
+    """Show an inferred ETH equivalent without hiding the exact integer."""
+    try:
+        wei=int(str(value).replace(",","").strip())
+    except (TypeError,ValueError):
+        return None
+    if wei < 0:
+        return None
+    eth=_wei_to_eth(wei)
+    return f"{eth} ETH ({rendered} wei, inferred)"
 
 
 def _human_numeric_annotation(item, output, abi):
@@ -2825,6 +2853,9 @@ def format_human_abi_return(item, decoded, config, abi=None):
             annotation=_human_numeric_annotation(item,output,abi)
             if annotation and annotation not in rendered:
                 rendered=f"{rendered} ({annotation})"
+            elif unit == "native ETH":
+                native_rendered = _human_native_eth_render(value, rendered)
+                rendered = native_rendered or f"{rendered} units (unit not specified by ABI)"
             elif unit:
                 rendered=f"{rendered} {unit}"
             else:
@@ -2851,6 +2882,9 @@ def format_human_abi_return(item, decoded, config, abi=None):
             if annotation:
                 if annotation not in rendered_value:
                     rendered_value=f"{rendered_value} ({annotation})"
+            elif unit == "native ETH":
+                native_rendered = _human_native_eth_render(value_part, rendered_value)
+                rendered_value = native_rendered or f"{rendered_value} units (unit not specified by ABI)"
             elif unit:
                 rendered_value=f"{rendered_value} {unit}"
             elif is_numeric and not enum_rendered:
