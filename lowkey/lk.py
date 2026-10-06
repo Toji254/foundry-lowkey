@@ -2257,41 +2257,171 @@ def run_tx(config,args):
             print(f"Selector: {selector} (unknown to loaded ABI)")
             _,fourbyte,_=cast_output(["cast","4byte",selector])
             if fourbyte: print(f"4byte:   {fourbyte}")
-def run_receipt(config, tx_hash=None):
+def run_receipt(config, tx_hash=None, args=None):
+    values = list(args or [])
+    raw = "--raw" in values
+    values = [value for value in values if value != "--raw"]
+    if tx_hash and tx_hash.startswith("--"):
+        values.insert(0, tx_hash)
+        tx_hash = None
+    if values:
+        if len(values) > 1:
+            return fail("Usage: lk receipt [tx] [--raw]")
+        tx_hash = tx_hash or values[0]
     tx_hash = tx_hash or last_transaction(config)
-    if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
-    if not is_tx_hash(tx_hash): return fail("Error: invalid transaction hash")
-    code = run_cast(["receipt", tx_hash, "--async"], config)
+    if not tx_hash:
+        return fail("Error: No transaction ID supplied or saved. Run lk receipt <tx> or send a transaction first.")
+    if not is_tx_hash(tx_hash):
+        return fail("Error: invalid transaction ID")
     root = audit_context.foundry_project_root()
     audit_context.set_latest(root, tx_hash=tx_hash)
+
+    if raw:
+        code = run_cast(["receipt", tx_hash, "--async"], config)
+        audit_context.record_tool(
+            "receipt",
+            root,
+            status="completed" if code == 0 else "failed",
+            summary=f"raw transaction receipt {tx_hash[:10]}...",
+            data={"tx_hash": tx_hash, "exit_code": code, "raw": True},
+        )
+        return code
+
+    rpc = effective_rpc(config)
+    receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash]) if rpc else None
+    tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash]) if rpc else None
+    if not isinstance(receipt, dict):
+        return fail("Error: Transaction receipt is not available yet. The transaction may still be waiting to be included.")
+    if not isinstance(tx, dict):
+        tx = {}
+
+    status_raw = receipt.get("status")
+    if status_raw in ("0x1", 1):
+        status = "SUCCESS"
+    elif status_raw in ("0x0", 0):
+        status = "REVERTED"
+    else:
+        status = "UNKNOWN"
+
+    block = _hex_to_int(receipt.get("blockNumber"))
+    gas_used = _hex_to_int(receipt.get("gasUsed"))
+    sender = apply_labels(str(tx.get("from") or "unknown"), config)
+    target = apply_labels(str(tx.get("to") or "unknown"), config)
+    value_wei = _hex_to_int(tx.get("value", "0")) or 0
+
+    function_item, abi = _trace_function_item(config, tx)
+    function_text = format_signature(function_item) if function_item else "unknown"
+
+    lines = [
+        "TRANSACTION RECEIPT",
+        "===================",
+        f"Result:    {status}",
+        f"From:      {sender}",
+        f"To:        {target}",
+        f"ETH sent:  {_wei_to_eth(value_wei)} ETH",
+    ]
+    if function_item:
+        lines.append(f"Call:      {function_text}")
+    if block is not None:
+        lines.append(f"Block:     {block}")
+    if gas_used is not None:
+        lines.append(f"Gas used:  {gas_used:,}")
+    tx_link = walkthrough._transaction_link(root, tx_hash)
+    lines.append(f"Tx ID:     {tx_link}")
+
+    logs = receipt.get("logs") or []
+    if logs:
+        lines.append("")
+        lines.append(f"Events:    {len(logs)}")
+        for index, log in enumerate(logs, 1):
+            decoded = decode_event_log(config, log) if isinstance(log, dict) else None
+            if decoded:
+                signature, details = decoded
+                lines.append(f"  {index}. {signature}")
+                for detail in str(details or "").splitlines():
+                    clean = detail.strip()
+                    if clean.startswith("Event:"):
+                        continue
+                    clean = re.sub(r"^Indexed\\s+", "", clean)
+                    clean = re.sub(r"^Data:\\s*", "", clean)
+                    if clean:
+                        lines.append(f"       {clean}")
+            else:
+                lines.append(f"  {index}. Undecoded event")
+    else:
+        lines.append("")
+        lines.append("Events:    none")
+
+    print("\n".join(lines))
     audit_context.record_tool(
         "receipt",
         root,
-        status="completed" if code == 0 else "failed",
+        status="completed",
         summary=f"transaction receipt {tx_hash[:10]}...",
-        data={"tx_hash": tx_hash, "exit_code": code},
+        data={
+            "tx_hash": tx_hash,
+            "status": status,
+            "block": block,
+            "gas_used": gas_used,
+            "value_wei": value_wei,
+            "function": function_text,
+            "event_count": len(logs),
+        },
     )
-    return code
+    return 0
 
 def run_trace(config,args=None):
     args=list(args or [])
     tx_hash=args.pop(0) if args and args[0].startswith("0x") else last_transaction(config)
-    if not tx_hash: return fail("Error: No transaction hash supplied or saved.")
+    if not tx_hash: return fail("Error: No transaction ID supplied or saved.")
+    if not is_tx_hash(tx_hash): return fail("Error: invalid transaction ID")
     grep=None
     if "--grep" in args:
         i=args.index("--grep")
         if i+1>=len(args): return fail("Usage: lk trace [tx] [--quick] [--decode-internal] [--trace-printer] [--grep text]")
         grep=args[i+1]; del args[i:i+2]
-    output=run_cast(["run",tx_hash]+args,config,capture=True) if grep else None
     if grep:
-        matched=[line for line in (output or "").splitlines() if grep.lower() in line.lower()]
+        output=run_cast(["run",tx_hash]+args,config,capture=True)
+        text_output=getattr(output, "text", str(output or ""))
+        matched=[line for line in text_output.splitlines() if grep.lower() in line.lower()]
         print("\n".join(matched) if matched else f"No trace lines matched '{grep}'.")
-    else:
-        result=run_cast(["run",tx_hash]+args,config)
-        root=audit_context.foundry_project_root()
-        audit_context.set_latest(root,tx_hash=tx_hash,trace=tx_hash)
-        audit_context.record_tool("trace",root,status="completed",summary=f"transaction trace {tx_hash[:10]}...",data={"tx_hash":tx_hash})
-        return result
+        return getattr(output, "code", 0)
+
+    result=run_cast(["run",tx_hash]+args,config,capture=True)
+    result_code=getattr(result, "code", result if isinstance(result, int) else 1)
+    trace_text=getattr(result, "text", str(result or ""))
+
+    root=audit_context.foundry_project_root()
+    rpc=effective_rpc(config)
+    tx=rpc_json(rpc, "eth_getTransactionByHash", [tx_hash]) if rpc else None
+    returned_lines, candidates=_trace_identifier_info(config, tx, trace_text)
+    duplicate_warnings=_record_identifier_candidates(root, tx_hash, candidates)
+
+    print("TRANSACTION TRACE")
+    print("=================")
+    print(f"Tx ID:     {walkthrough._transaction_link(root, tx_hash)}")
+    if returned_lines:
+        print("Returned values:")
+        for line in returned_lines:
+            print(line)
+    if duplicate_warnings:
+        print("")
+        print("REPEATED IDENTIFIER REVIEW")
+        print("---------------------------")
+        for warning in duplicate_warnings:
+            print(warning)
+    print("")
+    print(trace_text)
+
+    audit_context.set_latest(root,tx_hash=tx_hash,trace=tx_hash)
+    audit_context.record_tool(
+        "trace",
+        root,
+        status="completed" if result_code == 0 else "failed",
+        summary=f"transaction trace {tx_hash[:10]}...",
+        data={"tx_hash":tx_hash, "returned_values": returned_lines or []},
+    )
+    return result_code
 def decode_event_log(config,log):
     topics=log.get("topics",[]) if isinstance(log,dict) else []
     data=log.get("data","0x") if isinstance(log,dict) else "0x"
@@ -2892,9 +3022,148 @@ def humanize_value(text, assume_wei=False):
             raw = int(match.group(2))
         except ValueError:
             return match.group(0)
-        eth_val = raw / 10**18
+        eth_val = Decimal(raw) / Decimal(10**18)
         return f"{match.group(0)} [~{eth_val:.4f} ETH]"
     return re.sub(wei_pattern, replace_wei, value)
+
+def _wei_to_eth(value):
+    """Render a wei amount exactly enough for a learner without float rounding."""
+    try:
+        wei = int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
+    except (TypeError, ValueError):
+        return str(value or "0")
+    eth = Decimal(wei) / Decimal(10**18)
+    rendered = f"{eth:.18f}".rstrip("0").rstrip(".")
+    return rendered or "0"
+
+def _hex_to_int(value):
+    try:
+        return int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
+    except (TypeError, ValueError):
+        return None
+
+def _identifier_name(name):
+    """Return True for common Solidity names that usually represent identifiers/keys."""
+    value = str(name or "").strip().replace("_", "").lower()
+    if not value:
+        return False
+    return (
+        value in {"id", "key", "hash", "nonce"}
+        or value.endswith("id")
+        or value.endswith("key")
+        or value.endswith("hash")
+        or "tokenid" in value
+        or "requestid" in value
+        or "orderid" in value
+        or "escrowid" in value
+    )
+
+def _creation_function_name(name):
+    tokens = set(_function_tokens(str(name or "")))
+    return bool(tokens & {"create", "new", "register", "open", "mint", "issue", "spawn"})
+
+def _trace_root_return(trace_text):
+    """Extract the top-level EVM return line from Cast's trace output."""
+    lines = str(trace_text or "").splitlines()
+    for pattern in (
+        r"^    └─ ← \\[Return\\] (.+)$",
+        r"^\s{4}└─ ← \\[Return\\] (.+)$",
+    ):
+        for line in lines:
+            match = re.match(pattern, line)
+            if match:
+                return match.group(1).strip()
+    matches = re.findall(r"← \\[Return\\] (.+)", str(trace_text or ""))
+    return matches[0].strip() if matches else None
+
+def _trace_function_item(config, tx):
+    if not isinstance(tx, dict):
+        return None, []
+    target = tx.get("to") if is_address(tx.get("to")) else config.get("target")
+    abi = load_abi(target, config) if target else []
+    input_data = tx.get("input") or tx.get("data") or "0x"
+    if not isinstance(input_data, str) or len(input_data) < 10:
+        return None, abi
+    selector = input_data[:10].lower()
+    for item in abi_functions(abi):
+        if (abi_selector(format_signature(item)) or "").lower() == selector:
+            return item, abi
+    return None, abi
+
+def _trace_identifier_info(config, tx, trace_text):
+    """Render probable identifier-like return values and register repeats locally."""
+    function_item, abi = _trace_function_item(config, tx)
+    returned = _trace_root_return(trace_text)
+    if not function_item or not returned:
+        return None, []
+
+    outputs = function_item.get("outputs", []) or []
+    if not outputs:
+        return None, []
+
+    values = [part.strip() for part in returned.split(",")] if len(outputs) > 1 else [returned]
+    rendered = []
+    candidates = []
+    for index, output in enumerate(outputs):
+        raw = values[index] if index < len(values) else returned
+        type_name = canonical_type(output)
+        name = str(output.get("name") or "").strip()
+        looks_like_id = _identifier_name(name) or (
+            len(outputs) == 1 and type_name.lower() == "bytes32" and _creation_function_name(function_item.get("name"))
+        )
+        label = "Identifier" if looks_like_id else f"Return value #{index + 1}"
+        rendered.append(f"  {label}: {raw} [{type_name}]")
+        if looks_like_id and re.fullmatch(r"0x[0-9a-fA-F]{64}", raw):
+            candidates.append({
+                "value": raw.lower(),
+                "type": type_name,
+                "label": label,
+                "function": format_signature(function_item),
+            })
+    return rendered, candidates
+
+def _record_identifier_candidates(root, tx_hash, candidates):
+    """Persist probable identifiers so repeated values become visible across traces."""
+    if not candidates:
+        return []
+    evidence_dir = Path(root) / ".audit" / "evidence"
+    try:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return []
+    path = evidence_dir / "returned-identifiers.json"
+    registry = read_json_file(path, {})
+    if not isinstance(registry, dict):
+        registry = {}
+    warnings = []
+    for item in candidates:
+        key = str(item.get("value") or "").lower()
+        if not key:
+            continue
+        history = registry.get(key, [])
+        if not isinstance(history, list):
+            history = []
+        duplicate = next((entry for entry in history if entry.get("tx_hash") != tx_hash), None)
+        if duplicate:
+            warnings.append(
+                "  Value already returned by another transaction: "
+                f"{apply_labels(key, {})}"
+                f"\n    Previous tx: {duplicate.get('tx_hash', '?')}"
+                f"\n    Current tx:  {tx_hash}"
+                "\n    Review: check whether this value is supposed to be unique."
+            )
+        if not any(entry.get("tx_hash") == tx_hash for entry in history if isinstance(entry, dict)):
+            history.append({
+                "tx_hash": tx_hash,
+                "function": item.get("function"),
+                "type": item.get("type"),
+            })
+        registry[key] = history[-8:]
+    try:
+        write_json_file(path, registry)
+    except OSError:
+        pass
+    return warnings
 def is_address(value):
     return isinstance(value,str) and bool(re.fullmatch(r"0x[0-9a-fA-F]{40}",value))
 def is_nonzero_slot(value):
@@ -3132,6 +3401,38 @@ def run_cast(args,config,capture=False):
         if capture: return result
         print(str(result),file=sys.stderr)
         return result.code
+def run_balance(config,args=None):
+    args=list(args or [])
+    if len(args)>1:
+        return fail("Usage: lk balance [address|name]")
+    root=audit_context.foundry_project_root()
+    ref=args[0] if args else config.get("target")
+    if not ref:
+        return fail("Error: No address or target selected. Use lk balance <address> or select a target first.")
+    address=None
+    if is_address(ref):
+        address=ref
+    elif str(ref) in (config.get("wallets") or {}):
+        address=actor_address(config, str(ref))
+    else:
+        address=resolve_target_ref(config, ref, root=root)
+    if not address or not is_address(address):
+        return fail(f"Error: Could not resolve '{ref}' to an address. Use a full address, actor name, or target name.")
+    rpc=effective_rpc(config)
+    if not rpc:
+        return fail("Error: No RPC is configured. Start Anvil or set an RPC with lk rpc <url>.")
+    raw=rpc_json(rpc, "eth_getBalance", [address, "latest"])
+    if raw is None:
+        return fail("Error: Could not read the ETH balance from the current RPC.")
+    wei=_hex_to_int(raw)
+    if wei is None:
+        return fail("Error: RPC returned an invalid ETH balance.")
+    print("ETH BALANCE")
+    print("===========")
+    print(f"Address:  {apply_labels(address, config)}")
+    print(f"Balance:  {_wei_to_eth(wei)} ETH")
+    return 0
+
 def run_recon(config):
     target=config.get("target")
     if not target:
@@ -12251,15 +12552,19 @@ COMMAND_HELP = {
     ),
     "tx": _help_entry("Inspect and decode a transaction.", "lk tx [tx]", "lk tx 0x...", "Use it when you have a transaction hash and want call/receipt context.", related=["lk receipt", "lk trace", "lk logs"]),
     "receipt": _help_entry(
-        "Check what happened to a transaction you already sent.",
-        "lk receipt [tx]",
-        "lk receipt 0x871fecf8d5d88863f191016cae8f994eb8e2143521764948684d1468a7948957",
-        "Use it after sending a transaction when you want to know whether it succeeded, how much gas it used, and what events the contract reported.",
+        "Show the important result of a transaction without dumping the full raw receipt.",
+        "lk receipt [tx] [--raw]",
+        "lk receipt",
+        "Use it after sending a transaction when you want the answer first: did it succeed, who sent it, how much ETH moved, and what events were emitted. Use --raw only when you need the full Cast receipt.",
         forms=[
-            ("lk receipt", "Use the last transaction Lowkey remembers.", "lk receipt"),
-            ("lk receipt <tx>", "Check a specific transaction by its transaction hash.", "lk receipt 0x871f..."),
+            ("lk receipt", "Show the last transaction Lowkey remembers in a simple summary.", "lk receipt"),
+            ("lk receipt <tx>", "Show a specific transaction's simple summary.", "lk receipt 0x871f..."),
+            ("lk receipt <tx> --raw", "Show the full low-level receipt when detailed debugging is needed.", "lk receipt 0x871f... --raw"),
         ],
-        related=["lk tx", "lk trace"],
+        options=[
+            ("--raw", "Show the original detailed Cast receipt instead of Lowkey's simple summary.", "lk receipt --raw"),
+        ],
+        related=["lk tx", "lk trace", "lk logs"],
     ),    "trace": _help_entry(
         "Show the steps a transaction took inside the EVM, including calls to other contracts.",
         "lk trace [tx] [options]",
@@ -12280,6 +12585,18 @@ COMMAND_HELP = {
     ),    "replay": _help_entry("Explicit alias for transaction replay/tracing.", "lk replay <tx> [trace flags...]", "lk replay 0x...", "Use it when you want the intent to be explicit in a script or note.", related=["lk trace"]),
     "logs": _help_entry("Query logs and optionally decode events.", "lk logs [args...]", "lk logs --decode", "Use it when events are part of behavior or security evidence.", options=[("--decode", "Decode matching events with the current ABI.", "lk logs --decode")], related=["lk event", "lk tx"]),
     "chain": _help_entry("Show chain ID, current block, and RPC.", "lk chain", "lk chain", "Use it to verify exactly which local chain/fork you are talking to.", related=["lk rpc", "lk fork"]),
+    "balance": _help_entry(
+        "Show how much native ETH an address holds.",
+        "lk balance [address|name]",
+        "lk balance escrow",
+        "Use it when checking ETH held by a contract or wallet. With no argument, Lowkey checks the current target. You can use a full address, a saved target name, or a saved actor name.",
+        forms=[
+            ("lk balance", "Check the current target's ETH balance.", "lk balance"),
+            ("lk balance <address>", "Check a specific Ethereum address.", "lk balance 0x5FbDB2315678afecb367f032d93F642f64180aa3"),
+            ("lk balance <name>", "Check a saved target or actor by name.", "lk balance escrow"),
+        ],
+        related=["lk recon", "lk actor", "lk target"],
+    ),
     "label": _help_entry("Give an address a readable label in Lowkey output.", "lk label <address> <name>", "lk label 0x... Treasury", "Use it when traces and balances are easier to read with protocol role names.", related=["lk actor", "lk walkthrough"]),
     "encode": _help_entry("Build ABI calldata for a function and its values.", "lk encode <function> [args...]", "lk encode transfer 0x... 1000", "Use it for calldata debugging or low-level calls.", related=["lk decode", "lk sig", "lk calldata"]),
     "decode": _help_entry("Decode return data using the current target ABI.", "lk decode <function> <return-data>", "lk decode balanceOf 0x...", "Use it when a low-level call returned encoded bytes.", related=["lk encode", "lk decode-error"]),
@@ -12922,7 +13239,8 @@ COMMON TERMS
   <dir>       Folder, e.g. src
   <slot>      Number used to locate saved contract data, e.g. 3
   <key>       Value used to look up one mapping entry, often an address
-  <tx>        64-character transaction ID
+  <tx>        64-character transaction ID (transaction hash)
+  identifier  A value a contract uses to distinguish one record from another, such as an ID or mapping key. Solidity does not make an identifier unique automatically.
   <rpc>       Address of the Ethereum node Lowkey talks to, e.g. http://127.0.0.1:8545
   transaction An action sent to a contract that can change its saved data or move ETH
   receipt     A record showing whether a transaction worked, how much gas it used, and what events it produced
@@ -12982,6 +13300,7 @@ UNDERSTAND THE PROJECT
 
 INTERACT WITH CONTRACTS
   lk read <function> [args]        Read without changing state. Example: lk read balanceOf <address>
+  lk balance [address|name]        Check native ETH held by a contract or wallet. Example: lk balance escrow
   lk send <function> [args]        Send a transaction. Example: lk send release --preview
   lk send ... --preview            Encode/check without sending.
   lk send ... --confirm            Preview, then ask before sending.
@@ -13013,9 +13332,10 @@ STORAGE / STATE FORENSICS
   lk storage / slots               Use raw Cast storage tools through lk raw when needed.
 
 TRANSACTION FORENSICS
+  lk balance [address|name]        Show how much native ETH an address holds.
   lk tx [tx]                       Inspect/decode a transaction.
-  lk receipt [tx]                  Read a transaction receipt.
-  lk trace [tx] [flags]            Replay/trace execution.
+  lk receipt [tx] [--raw]          Show a simple result first; use --raw for full receipt details.
+  lk trace [tx] [flags]            Replay/trace execution and show returned identifiers when Lowkey can identify them.
   lk replay <tx> [flags]           Explicit transaction replay alias.
   lk logs [args...]                Query logs.
   lk logs --decode [args...]       Query and ABI-decode events.
@@ -13622,6 +13942,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
     elif cmd in {"findings", "signals", "signal"}: return run_signals(config,args)
     elif cmd=="chain": run_chain(config)
+    elif cmd=="balance": return run_balance(config,args)
     elif cmd=="encode": run_encode(config,args)
     elif cmd=="sig": run_signature(args)
     elif cmd in {"decode-error","error"}: run_decode_error(config,args)
@@ -13704,8 +14025,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="batch": run_batch(config,args)
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
-    elif cmd=="receipt": run_receipt(config,args[0] if args else None)
-    elif cmd=="trace": run_trace(config,args)
+    elif cmd=="receipt": return run_receipt(config, args=args)
+    elif cmd=="trace": return run_trace(config,args)
     elif cmd=="logs": run_logs(config,args)
     elif cmd=="last":
         action=args[0] if args else "receipt"
