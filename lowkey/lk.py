@@ -12139,7 +12139,7 @@ COMMAND_HELP = {
         "Interact with one contract function without having to build the full command yourself.",
         "lk wizard <function> [values...] [call|send|encode]",
         "lk wizard createescrow 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-        "Use it when you know which function you want but want Lowkey to handle the function signature and argument prompts. A state-changing function is sent by default; a read-only function is only read.",
+        "Use it when you know which function you want but want Lowkey to handle the function signature and argument prompts. A target must already be selected. Transactions use the current actor. A state-changing function is sent by default; a read-only function is only read.",
         forms=[
             ("lk wizard <function> [values...]", "Give Lowkey the function name and any values you already know. It asks for anything still missing.", "lk wizard release 0xd9c5..."),
             ("lk wizard <function> [values...] call", "Force a read-only call. The contract is not changed.", "lk wizard balanceOf 0x7099... call"),
@@ -12151,6 +12151,8 @@ COMMAND_HELP = {
             ("send", "Send the function as a transaction using the current actor.", "lk wizard release 0xd9c5... send"),
             ("encode", "Build the data for the function call without sending it.", "lk wizard release 0xd9c5... encode"),
             ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard createescrow"),
+            ("TARGET", "A target must already be selected before wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
+            ("ACTOR", "Transactions use the current actor. For example, select Anvil account 0 as Alice with lk actor 0 Alice.", "lk actor 0 Alice"),
             ("ATTACH ETH", "Wizard does not have an ETH-value flag. To send ETH with a function call, use lk send --value or for a local test use lk probe --value.", "lk send createescrow 1 0x7099... --value 1ether"),
         ],
         related=["lk ask", "lk read", "lk send", "lk probe"],
