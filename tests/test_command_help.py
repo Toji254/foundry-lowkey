@@ -277,7 +277,7 @@ class CommandHelpTests(unittest.TestCase):
         identifier = "0x" + "a" * 64
         item = {
             "type": "function",
-            "name": "createEscrow",
+            "name": "createescrow",
             "stateMutability": "payable",
             "inputs": [],
             "outputs": [{"name": "", "type": "bytes32"}],
