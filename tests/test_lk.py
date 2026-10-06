@@ -2712,12 +2712,16 @@ contract Pool {
                 {"name": "currentStatus", "type": "uint8"},
             ],
         }
-        decoded = "0\n0"
+        abi = [
+            item,
+            {"type": "function", "name": "createescrow", "stateMutability": "payable", "inputs": [], "outputs": []},
+        ]
+        decoded = "2000000000000000000\n0"
         rendered = lk.format_human_abi_return(
-            item, decoded, {"labels": {}}, [item]
+            item, decoded, {"labels": {}}, abi
         )
         self.assertIn(
-            "  amount = 0 units (unit not specified by ABI) [uint256]",
+            "  amount = 2 ETH (2000000000000000000 wei, inferred) [uint256]",
             rendered,
         )
         self.assertIn(
@@ -2959,17 +2963,21 @@ contract Pool {
                 {"name": "currentStatus", "type": "uint8"},
             ],
         }
+        abi = [
+            item,
+            {"type": "function", "name": "createescrow", "stateMutability": "payable", "inputs": [], "outputs": []},
+        ]
         decoded = (
             "0x0000000000000000000000000000000000000000\n"
             "0x0000000000000000000000000000000000000000\n"
             "0\n"
             "0"
         )
-        rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
+        rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, abi)
         self.assertIn("Returns:\n", rendered)
         self.assertIn("  creator = zero address (not set) [address]", rendered)
         self.assertIn("  recipient = zero address (not set) [address]", rendered)
-        self.assertIn("  amount = 0 units (unit not specified by ABI) [uint256]", rendered)
+        self.assertIn("  amount = 0 ETH (0 wei, inferred) [uint256]", rendered)
         self.assertIn("  current status = 0 (status/state code) [uint8]", rendered)
         self.assertNotIn(", recipient=", rendered)
 
