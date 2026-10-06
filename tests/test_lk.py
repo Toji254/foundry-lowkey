@@ -1791,6 +1791,44 @@ contract Pool {
             ["st", slot],
         )
 
+    def test_read_recovers_from_cast_fixed_bytes_error(self):
+        target = "0x" + "1" * 40
+        identifier = "0x" + "a" * 64
+        item = {
+            "type": "function",
+            "name": "escrow",
+            "inputs": [{"name": "id", "type": "bytes32"}],
+            "outputs": [{"name": "result", "type": "bytes32"}],
+            "stateMutability": "view",
+        }
+        encoded = "0x1234"
+        config = {"target": target, "target_contract": "Escrow", "wallets": {}, "labels": {}}
+        with patch.object(lk, "load_abi", return_value=[item]), \\
+             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
+             patch.object(
+                 lk,
+                 "cast_output",
+                 side_effect=[
+                     (1, "", "parser error: invalid string length"),
+                     (0, encoded, ""),
+                 ],
+             ) as cast_output, \\
+             patch.object(lk, "rpc_json", return_value="0x" + "00" * 32) as rpc_json, \\
+             patch.object(lk, "decode_abi_output", return_value=(identifier, None)), \\
+             redirect_stdout(io.StringIO()) as output:
+            result = lk.run_cast(["call", "escrow", identifier], config)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(cast_output.call_args_list[1].args[0], [
+            "cast", "calldata", "escrow(bytes32)", identifier,
+        ])
+        rpc_json.assert_called_once_with(
+            "http://127.0.0.1:8545",
+            "eth_call",
+            [{"to": target, "data": encoded}, "latest"],
+        )
+        self.assertIn("Returns:", output.getvalue())
+
     def test_receipt_uses_async(self):
         tx_hash = "0x" + "1" * 64
         config = {"last_tx": tx_hash}
