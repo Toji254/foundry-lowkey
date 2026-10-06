@@ -11840,6 +11840,7 @@ START HERE
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
   lk audit                           Run the interactive audit workflow.
+  lk benchmark                      Run deterministic security regression benchmarks.
   lk break                           Aggressively attack the current target/function in a local Anvil/Forge lab.
   lk q                              Get the next auditor-mindset question from current evidence.
   lk questions                      See the compact question frontier across the project.
