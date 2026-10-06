@@ -2352,6 +2352,19 @@ def _known_address_identities(config):
         actor_address_value = actor_entry.get("address")
         if is_address(actor_address_value):
             identities[str(actor_address_value).lower()] = (actor_name, str(actor_address_value))
+        # Anvil accounts are deterministic by slot, but a saved profile's
+        # address can be stale after Anvil restarts. Resolve the live address
+        # by index for display without mutating configuration.
+        if actor_entry.get("source") == "anvil-default" and actor_entry.get("anvil_index") is not None:
+            try:
+                info = anvil_rpc_info(config)
+                index = int(actor_entry.get("anvil_index"))
+                accounts = info.get("accounts", []) if isinstance(info, dict) else []
+                if 0 <= index < len(accounts) and is_address(accounts[index]):
+                    live_address = str(accounts[index])
+                    identities[live_address.lower()] = (actor_name, live_address)
+            except (TypeError, ValueError):
+                pass
 
     # The active actor is always a human-facing identity, including the
     # internal lab-deployer profile. It is intentionally handled first above.
