@@ -930,6 +930,20 @@ def project_context_target(root=None):
         return None
     return target
 
+def _remembered_deployment_target(project_root, target):
+    """Return a project-scoped deployment target when its address is still in broadcast history."""
+    address = target.get("address") if isinstance(target, dict) else None
+    source = target.get("source") if isinstance(target, dict) else None
+    if source not in {"broadcast", "auto"} or not is_address(address):
+        return None
+    try:
+        for record in discover_deployments(project_root):
+            if str(record.get("address") or "").lower() == str(address).lower():
+                return target
+    except Exception:
+        pass
+    return None
+
 def active_project_target(config, root=None):
     """Resolve a target for the current Foundry project before using global config."""
     project_root = audit_context.foundry_project_root(root)
@@ -966,6 +980,10 @@ def activate_project_target(config, root=None):
     """Hydrate legacy command config from the current project's target memory."""
     project_root = audit_context.foundry_project_root(root)
     target = project_context_target(project_root)
+    if not target:
+        context = audit_context.load(project_root)
+        context_target = context.get("target") if isinstance(context, dict) else None
+        target = _remembered_deployment_target(project_root, context_target)
     if not target:
         if not active_project_target(config, project_root):
             config["target"] = None
