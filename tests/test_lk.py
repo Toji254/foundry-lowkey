@@ -1797,7 +1797,11 @@ contract Pool {
         with patch.object(lk, "run_cast") as run_cast:
             with patch.object(lk, "audit_context") as audit_context:
                 lk.run_receipt(config)
-            run_cast.assert_called_once_with(["receipt", tx_hash, "--async"], config)
+            run_cast.assert_called_once()
+            call_args = run_cast.call_args.args
+            self.assertEqual(call_args[0], ["receipt", tx_hash, "--async"])
+            self.assertEqual(call_args[1], {"last_tx": tx_hash})
+            self.assertIsNot(call_args[1], config)
             audit_context.set_latest.assert_called_once()
             audit_context.record_tool.assert_called_once()
 
