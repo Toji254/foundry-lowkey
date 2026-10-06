@@ -974,6 +974,18 @@ def active_project_target(config, root=None):
                     artifact_contract = artifact_contract_name(str(artifact_path), artifact_data)
                     if not contract or str(contract).lower() == str(artifact_contract).lower():
                         return global_target
+
+    # A target selected from this project's deployment history remains valid
+    # even when ABI/artifact validation is temporarily unavailable (for example
+    # after a rebuild moved an artifact). Keep the ownership boundary strict by
+    # requiring the address to still exist in this project's broadcast history.
+    if configured_root and Path(configured_root).resolve() == Path(project_root).resolve():
+        try:
+            for record in discover_deployments(project_root):
+                if str(record.get("address") or "").lower() == str(global_target).lower():
+                    return global_target
+        except Exception:
+            pass
     return None
 
 def activate_project_target(config, root=None):
