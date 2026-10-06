@@ -2571,8 +2571,8 @@ def format_human_abi_return(item, decoded, config, abi=None):
                 rendered_value=f"{rendered_value} {unit}"
             elif is_numeric:
                 rendered_value=f"{rendered_value} units (unit not specified by ABI)"
-            rendered_parts.append(f"{label}={rendered_value} [{type_name}]")
-        return f"Returns: {', '.join(rendered_parts)}"
+            rendered_parts.append(f"  {label} = {rendered_value} [{type_name}]")
+        return "Returns:\n" + "\n".join(rendered_parts)
     return f"Returns: {value}  [ABI output: {', '.join(types)}]"
 
 def _function_tokens(name):
@@ -11092,9 +11092,18 @@ def run_wizard(config,args):
             if result:
                 print("RETURN VALUES")
                 print("==============")
-                print(f"Raw:     {result['raw']}")
+                print("Raw return data:")
+                print(f"  {result['raw']}")
                 if result.get("decoded"):
-                    print(result["decoded"])
+                    decoded_display = format_human_abi_return(
+                        item,
+                        result["decoded"],
+                        config,
+                        [item],
+                    )
+                    print("Decoded:")
+                    for line in str(decoded_display).splitlines():
+                        print(f"  {line}")
                 elif result.get("decode_error"):
                     print(f"Decoded: unavailable ({result['decode_error']})")
         return code

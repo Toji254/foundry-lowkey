@@ -447,8 +447,14 @@ class LowkeyCastTests(unittest.TestCase):
             ["send", "createEscrow(address)", "0x" + "3" * 40, "--confirm"],
             config,
         )
-        self.assertIn("RETURN VALUES", output.getvalue())
-        self.assertIn("0x" + "aa" * 32, output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn("RETURN VALUES", rendered)
+        self.assertIn("Raw return data:", rendered)
+        self.assertIn("Decoded:", rendered)
+        self.assertIn(
+            "Return: id = 0x" + "aa" * 32 + "  [bytes32]",
+            rendered,
+        )
 
     def test_tuple_canonicalization(self):
         self.assertEqual(
@@ -2845,10 +2851,12 @@ contract Pool {
             "0"
         )
         rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
-        self.assertIn("creator=zero address (not set) [address]", rendered)
-        self.assertIn("recipient=zero address (not set) [address]", rendered)
-        self.assertIn("amount=0 units (unit not specified by ABI) [uint256]", rendered)
-        self.assertIn("current status=0 (status/state code) [uint8]", rendered)
+        self.assertIn("Returns:\n", rendered)
+        self.assertIn("  creator = zero address (not set) [address]", rendered)
+        self.assertIn("  recipient = zero address (not set) [address]", rendered)
+        self.assertIn("  amount = 0 units (unit not specified by ABI) [uint256]", rendered)
+        self.assertIn("  current status = 0 (status/state code) [uint8]", rendered)
+        self.assertNotIn(", recipient=", rendered)
 
     def test_human_abi_return_preserves_multi_value_lines(self):
         item = {
@@ -2861,8 +2869,9 @@ contract Pool {
         }
         decoded = "1\n0x2222222222222222222222222222222222222222"
         rendered = lk.format_human_abi_return(item, decoded, {"labels": {}}, [item])
-        self.assertIn("amount=1 units (unit not specified by ABI) [uint256]", rendered)
-        self.assertIn("recipient=0x2222222222222222222222222222222222222222 [address]", rendered)
+        self.assertIn("Returns:\n", rendered)
+        self.assertIn("  amount = 1 units (unit not specified by ABI) [uint256]", rendered)
+        self.assertIn("  recipient = 0x2222222222222222222222222222222222222222 [address]", rendered)
 
     def test_function_recommendations_use_parameter_names(self):
         abi = [{
