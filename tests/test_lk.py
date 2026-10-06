@@ -1803,19 +1803,22 @@ contract Pool {
         }
         encoded = "0x1234"
         config = {"target": target, "target_contract": "Escrow", "wallets": {}, "labels": {}}
-        with patch.object(lk, "load_abi", return_value=[item]), \\
-             patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
-             patch.object(
-                 lk,
-                 "cast_output",
-                 side_effect=[
-                     (1, "", "parser error: invalid string length"),
-                     (0, encoded, ""),
-                 ],
-             ) as cast_output, \\
-             patch.object(lk, "rpc_json", return_value="0x" + "00" * 32) as rpc_json, \\
-             patch.object(lk, "decode_abi_output", return_value=(identifier, None)), \\
-             redirect_stdout(io.StringIO()) as output:
+        patches = [
+            patch.object(lk, "load_abi", return_value=[item]),
+            patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"),
+            patch.object(
+                lk,
+                "cast_output",
+                side_effect=[
+                    (1, "", "parser error: invalid string length"),
+                    (0, encoded, ""),
+                ],
+            ),
+            patch.object(lk, "rpc_json", return_value="0x" + "00" * 32),
+            patch.object(lk, "decode_abi_output", return_value=(identifier, None)),
+        ]
+        output = io.StringIO()
+        with patches[0], patches[1], patches[2] as cast_output, patches[3] as rpc_json, patches[4], redirect_stdout(output):
             result = lk.run_cast(["call", "escrow", identifier], config)
 
         self.assertEqual(result, 0)
