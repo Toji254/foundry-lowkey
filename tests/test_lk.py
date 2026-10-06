@@ -348,12 +348,17 @@ class LowkeyCastTests(unittest.TestCase):
             "failed": False,
             "returnValue": "aa" * 32,
         })
+        decoded = "0x" + "aa" * 32
         with patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
-             patch.object(lk, "cast_output", return_value=(0, trace, "")) as cast:
+             patch.object(
+                 lk,
+                 "cast_output",
+                 side_effect=[(0, trace, ""), (0, decoded, "")],
+             ) as cast:
             result = lk._wizard_transaction_return(config, config["last_tx"], item)
 
         self.assertEqual(result["raw"], "0x" + "aa" * 32)
-        self.assertEqual(result["decoded"], trace)
+        self.assertEqual(result["decoded"], decoded)
         cast.assert_called_once_with([
             "cast", "rpc", "debug_traceTransaction", config["last_tx"],
             "--rpc-url", config["rpc"],
