@@ -3256,7 +3256,7 @@ def format_send_summary(output, config, call=None):
     if tx_hash:
         root = audit_context.foundry_project_root()
         tx_label = walkthrough._transaction_link(root, tx_hash)
-        lines.append(f"Tx ID:     {tx_label}")
+        lines.append(f"Transaction ID: {tx_label}")
         evidence = walkthrough._transaction_evidence_path(root, tx_hash)
         if evidence.is_file():
             lines.append("Confirm:   Ctrl+Click the tx hash to open Lowkey's on-chain evidence page")
