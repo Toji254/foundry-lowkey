@@ -327,6 +327,76 @@ class LowkeyCastTests(unittest.TestCase):
             )
         self.assertEqual(rendered, '[["alpha","beta"]]')
 
+    def test_wizard_extracts_and_decodes_transaction_return_value(self):
+        config = {
+            "target": "0x" + "1" * 40,
+            "target_contract": "Example",
+            "rpc": "http://127.0.0.1:8545",
+            "last_tx": "0x" + "2" * 64,
+            "wallets": {},
+        }
+        item = {
+            "type": "function",
+            "name": "createEscrow",
+            "inputs": [
+                {"name": "amount", "type": "uint256"},
+                {"name": "recipient", "type": "address"},
+            ],
+            "outputs": [{"name": "id", "type": "bytes32"}],
+        }
+        trace = json.dumps({
+            "failed": False,
+            "returnValue": "aa" * 32,
+        })
+        with patch.object(lk, "effective_rpc", return_value=config["rpc"]), \
+             patch.object(lk, "cast_output", return_value=(0, trace, "")) as cast:
+            result = lk._wizard_transaction_return(config, config["last_tx"], item)
+
+        self.assertEqual(result["raw"], "0x" + "aa" * 32)
+        self.assertEqual(result["decoded"], trace)
+        cast.assert_called_once_with([
+            "cast", "rpc", "debug_traceTransaction", config["last_tx"],
+            "--rpc-url", config["rpc"],
+        ])
+
+    def test_wizard_value_first_form_defaults_to_send_and_surfaces_return(self):
+        target = "0x" + "1" * 40
+        config = {
+            "target": target,
+            "target_contract": "Example",
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+        }
+        abi = [{
+            "type": "function",
+            "name": "createEscrow",
+            "inputs": [{"name": "recipient", "type": "address"}],
+            "outputs": [{"name": "id", "type": "bytes32"}],
+        }]
+        tx_hash = "0x" + "2" * 64
+        config["last_tx"] = tx_hash
+        trace_result = {
+            "raw": "0x" + "aa" * 32,
+            "decoded": "0x" + "aa" * 32,
+            "decode_error": None,
+        }
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "run_cast", return_value=0) as send, \
+             patch.object(lk, "_wizard_transaction_return", return_value=trace_result), \
+             redirect_stdout(io.StringIO()) as output:
+            code = lk.run_wizard(
+                config,
+                ["createEscrow", "0x" + "3" * 40],
+            )
+
+        self.assertEqual(code, 0)
+        send.assert_called_once_with(
+            ["send", "createEscrow(address)", "0x" + "3" * 40, "--confirm"],
+            config,
+        )
+        self.assertIn("RETURN VALUES", output.getvalue())
+        self.assertIn("0x" + "aa" * 32, output.getvalue())
+
     def test_tuple_canonicalization(self):
         self.assertEqual(
             lk.canonical_type({
