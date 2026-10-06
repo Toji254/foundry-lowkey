@@ -2666,11 +2666,11 @@ contract Pool {
             item, decoded, {"labels": {}}, [item]
         )
         self.assertIn(
-            "amount=0 units (unit not specified by ABI) [uint256]",
+            "  amount = 0 units (unit not specified by ABI) [uint256]",
             rendered,
         )
         self.assertIn(
-            "current status=0 (status/state code) [uint8]",
+            "  current status = 0 (status/state code) [uint8]",
             rendered,
         )
         self.assertNotIn(
@@ -2863,10 +2863,11 @@ contract Pool {
                 )
 
         self.assertIn(
-            "  current status = waiting (enum value 0) [uint8]",
+            "Returns:\n  current status = waiting (enum value 0) [uint8]",
             rendered,
         )
         self.assertNotIn("status/state code", rendered)
+        self.assertNotIn("units", rendered)
 
     def test_human_abi_return_explains_zero_addresses_and_status_fields(self):
         item = {
@@ -4417,6 +4418,23 @@ def withdraw(amount: uint256):
         self.assertNotIn(old, config.get('labels', {}))
         self.assertEqual(lk.assigned_anvil_address(config, new), 'Alice')
         self.assertIsNone(lk.assigned_anvil_address(config, old))
+
+    def test_internal_lab_deployer_is_still_used_for_address_labels(self):
+        address = "0x" + "1" * 40
+        config = {
+            "actor": "lab-deployer",
+            "wallets": {
+                "lab-deployer": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": address,
+                    "internal": True,
+                }
+            },
+            "labels": {},
+        }
+        rendered = lk.apply_labels(f"creator = {address} [address]", config)
+        self.assertEqual(rendered, f"creator = lab-deployer ({address}) [address]")
 
     def test_internal_lab_deployer_does_not_shadow_public_actor(self):
         address = '0x' + '1' * 40
