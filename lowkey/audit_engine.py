@@ -1508,9 +1508,18 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
         coverage_gaps.append("slither: unavailable for Solidity sources")
 
     tests_evidence = _evidence_data(root, "tests")
+    tests_status = str(tests_evidence.get("status") or "").lower()
+    tests_exit_code = int(tests_evidence.get("exit_code", 0) or 0)
+    tests_output = "\n".join(
+        str(tests_evidence.get(key) or "") for key in ("stdout", "stderr")
+    ).lower()
+    no_tests_warning = "no tests found in project" in tests_output
     if (
-        str(tests_evidence.get("status") or "").lower() in {"review", "review-needed", "review_needed"}
-        and int(tests_evidence.get("exit_code", 0) or 0) == 2
+        (
+            tests_status in {"review", "review-needed", "review_needed"}
+            and tests_exit_code == 2
+        )
+        or no_tests_warning
     ):
         coverage_gaps.append("forge tests: no tests found")
 
