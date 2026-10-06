@@ -72,6 +72,23 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertEqual(config["abi_paths"][project_target], str(artifact))
 
 
+    def test_broadcast_target_survives_missing_or_unusable_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            target = "0x" + "3" * 40
+            config = {
+                "target": target,
+                "target_contract": "Escrow",
+                "abi_paths": {target: str(root / "out" / "missing" / "Escrow.json")},
+                "project_roots": {target: str(root)},
+            }
+            with patch.object(
+                lk,
+                "discover_deployments",
+                return_value=[{"address": target, "contract": "Escrow"}],
+            ):
+                self.assertEqual(lk.active_project_target(config, root), target)
+
     def test_ask_uses_current_build_artifacts_without_live_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
