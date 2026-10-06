@@ -205,7 +205,7 @@ class CommandHelpTests(unittest.TestCase):
     def test_receipt_help_uses_plain_words(self):
         code, output = self.capture_dispatch("receipt", "--h")
         self.assertEqual(code, 0)
-        self.assertIn("TRANSACTION RECEIPT", output)
+        self.assertIn("Show the important result of a transaction", output)
         self.assertIn("--raw", output)
         self.assertNotIn("mined", output.lower())
 
