@@ -2833,6 +2833,41 @@ contract Pool {
         self.assertNotIn(raw, rendered)
         self.assertNotIn("ABI encoded", rendered)
 
+    def test_human_abi_return_resolves_enum_member_names_from_source(self):
+        item = {
+            "type": "function",
+            "name": "escrow",
+            "outputs": [
+                {
+                    "name": "currentStatus",
+                    "type": "uint8",
+                    "internalType": "enum Escrow.status",
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "Escrow.sol"
+            source.write_text(
+                "contract Escrow {\n"
+                "    enum status { waiting, funded, rejected, released }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            with patch.object(lk, "source_sol_files", return_value=[str(source)]),                  patch.object(lk.audit_context, "foundry_project_root", return_value=str(root)):
+                rendered = lk.format_human_abi_return(
+                    item,
+                    "0",
+                    {"labels": {}},
+                    [item],
+                )
+
+        self.assertIn(
+            "  current status = waiting (enum value 0) [uint8]",
+            rendered,
+        )
+        self.assertNotIn("status/state code", rendered)
+
     def test_human_abi_return_explains_zero_addresses_and_status_fields(self):
         item = {
             "type": "function",

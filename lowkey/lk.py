@@ -2454,6 +2454,97 @@ def _human_field_label(name):
     value=re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
     return re.sub(r"\s+"," ",value).strip().lower()
 
+def _enum_members_for_output(output):
+    """Resolve enum member names from Solidity source using ABI internalType metadata."""
+    if not isinstance(output, dict):
+        return None
+
+    internal_type = str(output.get("internalType") or "").strip()
+    match = re.fullmatch(
+        r"enum\s+([A-Za-z_]\w*)\.([A-Za-z_]\w*)",
+        internal_type,
+    )
+    if not match:
+        return None
+
+    contract_name, enum_name = match.groups()
+    try:
+        root = audit_context.foundry_project_root()
+    except Exception:
+        root = "."
+    if not root:
+        return None
+
+    contract_pattern = re.compile(
+        rf"\b(?:abstract\s+)?(?:contract|interface|library)\s+{re.escape(contract_name)}\b[^{{]*\{{"
+    )
+    enum_pattern = re.compile(
+        rf"\benum\s+{re.escape(enum_name)}\s*\{{([^}}]*)\}}",
+        re.S,
+    )
+
+    for path in source_sol_files(root):
+        try:
+            source = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        stripped = _source_comment_strip(source)
+        contract_match = contract_pattern.search(stripped)
+        if not contract_match:
+            continue
+
+        open_index = stripped.find("{", contract_match.start())
+        if open_index < 0:
+            continue
+
+        depth = 0
+        close_index = None
+        for index in range(open_index, len(stripped)):
+            char = stripped[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    close_index = index
+                    break
+        if close_index is None:
+            continue
+
+        contract_body = stripped[open_index + 1:close_index]
+        enum_match = enum_pattern.search(contract_body)
+        if not enum_match:
+            continue
+
+        members = [
+            member.strip()
+            for member in enum_match.group(1).split(",")
+            if member.strip()
+        ]
+        if members and all(
+            re.fullmatch(r"[A-Za-z_]\w*", member) for member in members
+        ):
+            return members
+
+    return None
+
+
+def _humanize_enum_scalar(value, output):
+    """Render an enum value by its Solidity member name when source confirms it."""
+    members = _enum_members_for_output(output)
+    if not members:
+        return None
+
+    rendered = str(value or "").strip()
+    if not re.fullmatch(r"-?\d+", rendered):
+        return None
+
+    number = int(rendered)
+    if number < 0 or number >= len(members):
+        return f"{number:,} (unknown enum value; valid values: 0-{len(members) - 1})"
+    return f"{members[number]} (enum value {number})"
+
+
 def _humanize_abi_scalar(value,type_name,field_name="",config=None):
     rendered=apply_labels(str(value or "").strip(),config or {})
     lowered=str(type_name or "").strip().lower()
@@ -2538,9 +2629,18 @@ def format_human_abi_return(item, decoded, config, abi=None):
         output=outputs[0]
         type_name=canonical_type(output)
         label=_human_field_label(output.get("name")) or _function_display_name(item)
-        rendered=_humanize_abi_scalar(value,type_name,output.get("name"),config)
+        enum_rendered = _humanize_enum_scalar(value, output)
+        rendered = enum_rendered or _humanize_abi_scalar(
+            value,
+            type_name,
+            output.get("name"),
+            config,
+        )
 
-        if (type_name.lower().startswith("uint") or type_name.lower().startswith("int")):
+        if (
+            not enum_rendered
+            and (type_name.lower().startswith("uint") or type_name.lower().startswith("int"))
+        ):
             unit=_human_return_unit(item,abi,output)
             if unit:
                 rendered=f"{rendered} {unit}"
@@ -2558,12 +2658,16 @@ def format_human_abi_return(item, decoded, config, abi=None):
     if len(decoded_parts)==len(outputs):
         rendered_parts=[]
         for label,value_part,type_name,output in zip(labels,decoded_parts,types,outputs):
-            rendered_value=_humanize_abi_scalar(
-                value_part,type_name,output.get('name'),config
+            enum_rendered = _humanize_enum_scalar(value_part, output)
+            rendered_value = enum_rendered or _humanize_abi_scalar(
+                value_part,
+                type_name,
+                output.get("name"),
+                config,
             )
             is_numeric=type_name.lower().startswith(("uint","int"))
-            unit=_human_return_unit(item,abi,output) if is_numeric else None
-            annotation=_human_numeric_annotation(item,output,abi) if is_numeric else None
+            unit=_human_return_unit(item,abi,output) if is_numeric and not enum_rendered else None
+            annotation=_human_numeric_annotation(item,output,abi) if is_numeric and not enum_rendered else None
             if annotation:
                 if annotation not in rendered_value:
                     rendered_value=f"{rendered_value} ({annotation})"
