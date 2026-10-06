@@ -2290,8 +2290,23 @@ def run_receipt(config, tx_hash=None, args=None):
     rpc = effective_rpc(config)
     receipt = rpc_json(rpc, "eth_getTransactionReceipt", [tx_hash]) if rpc else None
     tx = rpc_json(rpc, "eth_getTransactionByHash", [tx_hash]) if rpc else None
+
+    # Keep the old Cast-backed path as a safe fallback for environments where
+    # Lowkey cannot read JSON-RPC receipt data directly (and for lightweight
+    # integrations that stub run_cast). The normal live path remains concise.
     if not isinstance(receipt, dict):
+        code = run_cast(["receipt", tx_hash, "--async"], config)
+        audit_context.record_tool(
+            "receipt",
+            root,
+            status="completed" if code == 0 else "failed",
+            summary=f"transaction receipt {tx_hash[:10]}...",
+            data={"tx_hash": tx_hash, "exit_code": code, "fallback": True},
+        )
+        if code == 0:
+            return 0
         return fail("Error: Transaction receipt is not available yet. The transaction may still be waiting to be included.")
+
     if not isinstance(tx, dict):
         tx = {}
 
