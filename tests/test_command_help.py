@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import pathlib
+import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
@@ -204,8 +205,86 @@ class CommandHelpTests(unittest.TestCase):
     def test_receipt_help_uses_plain_words(self):
         code, output = self.capture_dispatch("receipt", "--h")
         self.assertEqual(code, 0)
-        self.assertIn("what happened to a transaction", output.lower())
+        self.assertIn("TRANSACTION RECEIPT", output)
+        self.assertIn("--raw", output)
         self.assertNotIn("mined", output.lower())
+
+    def test_receipt_is_concise_by_default(self):
+        tx_hash = "0x" + "1" * 64
+        from_address = "0x" + "2" * 40
+        to_address = "0x" + "3" * 40
+        tx = {
+            "hash": tx_hash,
+            "from": from_address,
+            "to": to_address,
+            "value": "0xde0b6b3a7640000",
+            "input": "0x12345678",
+        }
+        receipt = {
+            "status": "0x1",
+            "blockNumber": "0x6",
+            "gasUsed": "0x128db",
+            "logs": [],
+        }
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "rpc_json", side_effect=[receipt, tx]), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=ROOT), \
+             patch.object(lk.audit_context, "set_latest"), \
+             patch.object(lk.audit_context, "record_tool"), \
+             patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash), \
+             redirect_stdout(output):
+            code = lk.run_receipt({"target": to_address, "wallets": {}, "labels": {}}, tx_hash=tx_hash)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("Result:    SUCCESS", rendered)
+        self.assertIn("ETH sent:  1 ETH", rendered)
+        self.assertIn("Block:     6", rendered)
+        self.assertIn("Tx ID:", rendered)
+        self.assertNotIn("logsBloom", rendered)
+        self.assertNotIn("effectiveGasPrice", rendered)
+
+    def test_balance_help_and_command_are_native_lowkey(self):
+        code, output = self.capture_dispatch("balance", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Show how much native ETH an address holds.", output)
+        self.assertIn("lk balance", output)
+        self.assertIn("target or actor", output.lower())
+
+        target = "0x" + "4" * 40
+        output = io.StringIO()
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \
+             patch.object(lk, "rpc_json", return_value="0xde0b6b3a7640000"), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=ROOT), \
+             redirect_stdout(output):
+            code = lk.run_balance({"target": target, "wallets": {}, "labels": {}}, [])
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("ETH BALANCE", rendered)
+        self.assertIn("Balance:  1 ETH", rendered)
+        self.assertIn(target, rendered)
+
+    def test_trace_surfaces_probable_identifier_and_repeats(self):
+        identifier = "0x" + "a" * 64
+        item = {
+            "type": "function",
+            "name": "createEscrow",
+            "stateMutability": "payable",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "bytes32"}],
+        }
+        trace = f"    └─ ← [Return] {identifier}"
+        with patch.object(lk, "_trace_function_item", return_value=(item, [item])):
+            rendered, candidates = lk._trace_identifier_info({}, {}, trace)
+        self.assertIn(f"  Identifier: {identifier} [bytes32]", rendered)
+        self.assertEqual(candidates[0]["value"], identifier.lower())
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = lk._record_identifier_candidates(temp_dir, "0x" + "1" * 64, candidates)
+            second = lk._record_identifier_candidates(temp_dir, "0x" + "2" * 64, candidates)
+        self.assertEqual(first, [])
+        self.assertTrue(second)
+        self.assertIn("supposed to be unique", second[0])
 
     def test_wizard_help_explains_how_to_attach_eth(self):
         code, output = self.capture_dispatch("wizard", "--h")
