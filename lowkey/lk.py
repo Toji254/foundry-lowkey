@@ -2406,8 +2406,8 @@ def run_trace(config,args=None):
             print(line)
     if duplicate_warnings:
         print("")
-        print("REPEATED IDENTIFIER REVIEW")
-        print("---------------------------")
+        print("REPEATED CONTRACT IDENTIFIER REVIEW")
+        print("--------------------------------")
         for warning in duplicate_warnings:
             print(warning)
     print("")
@@ -3104,6 +3104,7 @@ def _trace_identifier_info(config, tx, trace_text):
     values = [part.strip() for part in returned.split(",")] if len(outputs) > 1 else [returned]
     rendered = []
     candidates = []
+    identifier_count = 0
     for index, output in enumerate(outputs):
         raw = values[index] if index < len(values) else returned
         type_name = canonical_type(output)
@@ -3111,7 +3112,11 @@ def _trace_identifier_info(config, tx, trace_text):
         looks_like_id = _identifier_name(name) or (
             len(outputs) == 1 and type_name.lower() == "bytes32" and _creation_function_name(function_item.get("name"))
         )
-        label = "Identifier" if looks_like_id else f"Return value #{index + 1}"
+        if looks_like_id:
+            identifier_count += 1
+            label = f"Contract identifier #{identifier_count}"
+        else:
+            label = f"Return value #{index + 1}"
         rendered.append(f"  {label}: {raw} [{type_name}]")
         if looks_like_id and re.fullmatch(r"0x[0-9a-fA-F]{64}", raw):
             candidates.append({
