@@ -11413,7 +11413,7 @@ COMMAND_HELP = {
         related=["lk functions", "lk ask"]
     ),
     "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createbounty", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
-    "wizard": _help_entry("Interactively collect arguments for a function, then call, send, or encode it.", "lk wizard <function> [call|send|encode]", "lk wizard release call", "Use it when manual ABI argument entry is getting annoying.", related=["lk ask", "lk read", "lk send"]),
+    "wizard": _help_entry("Collect function arguments interactively, send by default, or explicitly call/encode.", "lk wizard <function> [values...] | lk wizard <function> [call|send|encode] [values...]", "lk wizard createEscrow 1 0x...", "Use it for one guided interaction; successful sends also show decoded return values when the RPC exposes them.", related=["lk ask", "lk read", "lk send"]),
     "probe": _help_entry("Try a function as local actors and record success/revert behavior without assertions.", "lk probe <function> [args...]", "lk probe withdraw 1000 --actor Attacker", "Use it for a quick behavioral experiment before writing a full proof.", related=["lk walkthrough test", "lk generate test"]),
     "changes": _help_entry("Show storage changes caused by a function call in an isolated context.", "lk changes '<name(parameter TYPES...)>' <VALUES...>", "lk changes 'createbounty(address,uint256)' 0x... 100 ether", "Use it to connect function behavior to concrete state changes.", related=["lk mapping", "lk layout", "lk trace"]),
     "state-diff": _help_entry("Alias for the storage-change reproduction workflow.", "lk state-diff '<name(parameter TYPES...)>' <VALUES...>", "lk state-diff 'deposit(uint256)' 1000", "Use it when the state-diff terminology makes more sense to you.", related=["lk changes", "lk snapshot", "lk diff"]),
@@ -11923,7 +11923,7 @@ UNDERSTAND THE PROJECT
   lk fn [query]                    Find/list functions. Example: lk fn release
   lk fn -h                         Explain function-search syntax.
   lk ask <function>                Show function inputs. Example: lk ask createEscrow
-  lk wizard <function> [mode]     Interactive argument helper.
+  lk wizard <function> [values...] Interactive argument helper; sends by default.
   lk layout <Contract>             Show Forge storage layout.
   lk deps [src]                    Show imports/inheritance. Example: lk deps
   lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
