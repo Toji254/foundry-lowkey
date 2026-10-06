@@ -202,6 +202,15 @@ class CommandHelpTests(unittest.TestCase):
                 for item in expected:
                     self.assertIn(item, output)
 
+    def test_read_help_explains_common_argument_types(self):
+        code, output = self.capture_dispatch("read", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk read", output)
+        self.assertIn("bytes32", output)
+        self.assertIn("exactly 64 hex characters", output)
+        self.assertIn("lk read escrow 0xd9c5115d...d86f2a", output)
+        self.assertIn("does not intentionally change contract data", output)
+
     def test_receipt_help_uses_plain_words(self):
         code, output = self.capture_dispatch("receipt", "--h")
         self.assertEqual(code, 0)
