@@ -2707,7 +2707,7 @@ def format_human_abi_return(item, decoded, config, abi=None):
                     rendered_value=f"{rendered_value} ({annotation})"
             elif unit:
                 rendered_value=f"{rendered_value} {unit}"
-            elif is_numeric:
+            elif is_numeric and not enum_rendered:
                 rendered_value=f"{rendered_value} units (unit not specified by ABI)"
             rendered_parts.append(f"  {label} = {rendered_value} [{type_name}]")
         return "Returns:\n" + "\n".join(rendered_parts)
