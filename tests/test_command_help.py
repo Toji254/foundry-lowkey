@@ -231,6 +231,9 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Force a state-changing transaction.", output)
         self.assertIn("Only build the call data. Nothing is sent.", output)
         self.assertIn("Send the function as a transaction using the current actor.", output)
+        self.assertIn("A target must already be selected.", output)
+        self.assertIn("Transactions use the current actor.", output)
+        self.assertIn("lk actor 0 Alice", output)
         self.assertIn("Wizard does not have an ETH-value flag.", output)
         self.assertIn("lk send", output)
 
