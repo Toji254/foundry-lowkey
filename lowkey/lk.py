@@ -3259,6 +3259,20 @@ def format_send_summary(output, config, call=None):
 
     return "\n".join(lines)
 
+def _rpc_read_fallback(config, target, function_item, values):
+    """Retry a read through JSON-RPC when Cast rejects a valid fixed-bytes argument."""
+    rpc = effective_rpc(config)
+    if not rpc or not isinstance(function_item, dict):
+        return None
+    signature = format_signature(function_item)
+    code, calldata, _error = cast_output(["cast", "calldata", signature, *[str(value) for value in values]])
+    if code != 0 or not calldata:
+        return None
+    result = rpc_json(rpc, "eth_call", [{"to": target, "data": calldata}, "latest"])
+    if not isinstance(result, str):
+        return None
+    return result
+
 def run_cast(args,config,capture=False):
     if not args:
         result=CommandResult("",2)
@@ -3354,7 +3368,17 @@ def run_cast(args,config,capture=False):
         except EOFError: answer=""
         if answer not in {"y","yes"}: print("Transaction cancelled."); return 0
     try:
-        code,out,err=cast_output(cmd); final=out or err; log_session(safe_cmd,final)
+        code,out,err=cast_output(cmd)
+        if (
+            cast_cmd == "call"
+            and code != 0
+            and function_item
+            and "invalid string length" in str(err or "").lower()
+        ):
+            fallback = _rpc_read_fallback(config, target, function_item, remaining[1:])
+            if fallback is not None:
+                out, err, code = fallback, "", 0
+        final=out or err; log_session(safe_cmd,final)
         if cast_cmd=="send" and out:
             match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
             if match:
@@ -12402,7 +12426,23 @@ COMMAND_HELP = {
 
         related=["lk functions", "lk ask"],
     ),
-    "read": _help_entry("Call a contract without intentionally changing state.", "lk read <function> [args...]", "lk read balanceOf <address>", "Use it for getters and state observation.", related=["lk ask", "lk send"]),
+    "read": _help_entry(
+        "Call a contract without intentionally changing state. Lowkey uses the selected target and understands common Solidity argument types, including addresses, numbers, and fixed-size bytes such as bytes32 IDs.",
+        "lk read <function> [args...]",
+        "lk read escrow 0xd9c5115d8ca09413513b0348ccd4aa5d5d2b8183823763b527bfd81f40d86f2a",
+        "Use it for getters and state observation. It does not intentionally change contract data.",
+        forms=[
+            ("lk read <function>", "Read a getter with no arguments.", "lk read totalSupply"),
+            ("lk read <function> <args...>", "Pass the real values the getter expects. Lowkey uses the ABI to interpret their types.", "lk read balanceOf 0x7099..."),
+            ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x5fbdb231... escrow 0xd9c5..."),
+        ],
+        options=[
+            ("address", "Pass an Ethereum address directly or use a configured actor name where supported.", "lk read balanceOf 0x7099..."),
+            ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read amount 1 ether"),
+            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as an escrow ID.", "lk read escrow 0xd9c5115d...d86f2a"),
+        ],
+        related=["lk ask", "lk send", "lk changes"],
+    ),
     "send": _help_entry(
         "Send a transaction that can change contract data or move ETH or tokens.",
         "lk send <function> [args...] [options]",
