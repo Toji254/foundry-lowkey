@@ -249,7 +249,7 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("Result:    SUCCESS", rendered)
         self.assertIn("ETH sent:  1 ETH", rendered)
         self.assertIn("Block:     6", rendered)
-        self.assertIn("Tx ID:", rendered)
+        self.assertIn("Transaction ID:", rendered)
         self.assertNotIn("logsBloom", rendered)
         self.assertNotIn("effectiveGasPrice", rendered)
 
