@@ -1931,9 +1931,10 @@ contract Pool {
             self.assertEqual(lk.resolve_wallet_key(config), "0x"+"b"*64)
         self.assertNotIn("private_key", config["wallets"]["Alice"])
 
-    def test_anvil_actor_rejects_custom_account_for_default_key(self):
+    def test_stale_anvil_actor_is_rebound_to_current_account(self):
         recorded="0x"+"1"*40
         actual="0x"+"2"*40
+        key="0x"+"b"*64
         config={
             "wallets":{
                 "Alice":{
@@ -1943,10 +1944,41 @@ contract Pool {
                 }
             },
             "actor":"Alice",
+            "labels":{recorded:"Alice"},
         }
         info={"url":"http://127.0.0.1:8545","accounts":[actual]}
-        with patch.object(lk, "anvil_rpc_info", return_value=info):
-            self.assertIsNone(lk.resolve_wallet_key(config))
+        with patch.object(lk, "anvil_rpc_info", return_value=info),              patch.object(lk, "derive_default_anvil_key", return_value=key),              patch.object(lk, "cast_output", return_value=(0, actual, "")),              patch.object(lk, "save_config") as save_config:
+            self.assertEqual(lk.resolve_wallet_key(config), key)
+
+        self.assertEqual(config["wallets"]["Alice"]["address"], actual)
+        self.assertNotIn(recorded, config["labels"])
+        self.assertEqual(config["labels"][actual], "Alice")
+        save_config.assert_called_once()
+
+    def test_stale_internal_anvil_actor_is_rebound_without_public_label(self):
+        recorded="0x"+"1"*40
+        actual="0x"+"2"*40
+        key="0x"+"b"*64
+        config={
+            "wallets":{
+                "lab-deployer":{
+                    "source":"anvil-default",
+                    "anvil_index":0,
+                    "address":recorded,
+                    "internal":True,
+                }
+            },
+            "actor":"lab-deployer",
+            "labels":{recorded:"lab-deployer"},
+        }
+        info={"url":"http://127.0.0.1:8545","accounts":[actual]}
+        with patch.object(lk, "anvil_rpc_info", return_value=info),              patch.object(lk, "derive_default_anvil_key", return_value=key),              patch.object(lk, "cast_output", return_value=(0, actual, "")),              patch.object(lk, "save_config") as save_config:
+            self.assertEqual(lk.resolve_wallet_key(config), key)
+
+        self.assertEqual(config["wallets"]["lab-deployer"]["address"], actual)
+        self.assertNotIn(recorded, config["labels"])
+        self.assertNotIn(actual, config["labels"])
+        save_config.assert_called_once()
 
     def test_load_abi_auto_from_local_artifact(self):
         artifact = {

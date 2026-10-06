@@ -555,10 +555,25 @@ def resolve_wallet_key(config,wallet_name=None):
             accounts=info.get("accounts",[])
             if index<0 or index>=len(accounts):
                 return None
-            recorded=str(entry.get("address","")).lower()
-            actual=str(accounts[index]).lower()
-            if recorded and recorded!=actual:
-                return None
+            recorded=str(entry.get("address","")).strip()
+            actual=str(accounts[index]).strip()
+            if recorded and recorded.lower()!=actual.lower():
+                # Anvil's default accounts are deterministic by index, while
+                # the stored address is runtime metadata. Anvil may have been
+                # restarted since the actor profile was created, so refresh the
+                # metadata instead of making a valid actor unusable.
+                labels=config.setdefault("labels",{})
+                if labels.get(recorded)==name:
+                    labels.pop(recorded,None)
+                if labels.get(recorded.lower())==name:
+                    labels.pop(recorded.lower(),None)
+                entry["address"]=actual
+                if wallet_is_internal(name,entry):
+                    labels.pop(actual,None)
+                    labels.pop(actual.lower(),None)
+                else:
+                    labels[actual]=name
+                save_config(config)
             key=derive_default_anvil_key(index)
             if not key:
                 return None
