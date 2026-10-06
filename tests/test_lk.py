@@ -2721,7 +2721,7 @@ contract Pool {
             item, decoded, {"labels": {}}, abi
         )
         self.assertIn(
-            "  amount = 2 ETH (2000000000000000000 wei, inferred) [uint256]",
+            "  amount = 2 ETH (2,000,000,000,000,000,000 wei, inferred) [uint256]",
             rendered,
         )
         self.assertIn(
