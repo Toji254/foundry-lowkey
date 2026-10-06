@@ -552,8 +552,7 @@ def resolve_wallet_key(config,wallet_name=None):
             info=anvil_rpc_info(config)
             if not info:
                 return None
-            if not _sync_current_anvil_actor(config, info):
-                entry=config.get("wallets",{}).get(name)
+            _sync_current_anvil_actor(config, info, name)
             entry=config.get("wallets",{}).get(name)
             index=int(entry.get("anvil_index",-1))
             accounts=info.get("accounts",[])
@@ -576,9 +575,9 @@ def resolve_wallet_key(config,wallet_name=None):
     if isinstance(name,str) and name.startswith("env:"): return normalize_private_key(os.environ.get(name[4:]))
     return normalize_private_key(name)
 
-def _sync_current_anvil_actor(config, info=None):
+def _sync_current_anvil_actor(config, info=None, name=None):
     """Refresh a saved Anvil actor address from the live account at its index."""
-    actor=config.get("actor")
+    actor=name or config.get("actor")
     if not actor:
         return False
     entry=config.get("wallets",{}).get(actor)
