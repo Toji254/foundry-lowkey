@@ -2037,6 +2037,63 @@ contract Pool {
         self.assertNotIn(actual, config["labels"])
         save_config.assert_called_once()
 
+    def test_status_repairs_stale_anvil_actor_before_display(self):
+        recorded="0x"+"1"*40
+        actual="0x"+"2"*40
+        config={
+            "wallets":{
+                "lab-deployer":{
+                    "source":"anvil-default",
+                    "anvil_index":0,
+                    "address":recorded,
+                    "internal":True,
+                }
+            },
+            "actor":"lab-deployer",
+            "target":None,
+            "rpc":None,
+            "labels":{recorded:"lab-deployer"},
+        }
+        info={"url":"http://127.0.0.1:8545","accounts":[actual]}
+        with patch.object(lk, "effective_rpc", return_value=info["url"]), \
+             patch.object(lk, "anvil_rpc_info", return_value=info), \
+             patch.object(lk, "save_config"), \
+             patch.object(lk, "_sync_security_patterns"), \
+             patch.object(lk, "_security_pattern_summary", return_value={"total":0,"reviews":0,"confirmed":0,"candidates":0}), \
+             patch("builtins.print") as printed:
+            result=lk.run_status(config)
+
+        self.assertIsNone(result)
+        rendered="\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn(actual, rendered)
+        self.assertNotIn(recorded, rendered)
+
+    def test_actor_listing_repairs_stale_anvil_actor_before_display(self):
+        recorded="0x"+"1"*40
+        actual="0x"+"2"*40
+        config={
+            "wallets":{
+                "lab-deployer":{
+                    "source":"anvil-default",
+                    "anvil_index":0,
+                    "address":recorded,
+                    "internal":True,
+                }
+            },
+            "actor":"lab-deployer",
+            "labels":{recorded:"lab-deployer"},
+        }
+        info={"url":"http://127.0.0.1:8545","accounts":[actual]}
+        with patch.object(lk, "anvil_rpc_info", return_value=info), \
+             patch.object(lk, "save_config"), \
+             patch("builtins.print") as printed:
+            result=lk.list_anvil_actors(config)
+
+        self.assertIsNone(result)
+        rendered="\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn(actual, rendered)
+        self.assertNotIn(recorded, rendered)
+
     def test_load_abi_auto_from_local_artifact(self):
         artifact = {
             "contractName": "Escrow",
