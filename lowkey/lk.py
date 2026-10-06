@@ -525,6 +525,7 @@ def select_anvil_actor(config,index,name):
 
 def list_anvil_actors(config):
     info=anvil_rpc_info(config)
+    _sync_current_anvil_actor(config, info)
     print(f"Actor: {actor_display(config)}")
     if not info:
         print("Anvil: not detected")
@@ -551,29 +552,14 @@ def resolve_wallet_key(config,wallet_name=None):
             info=anvil_rpc_info(config)
             if not info:
                 return None
-            index=int(entry["anvil_index"])
+            if not _sync_current_anvil_actor(config, info):
+                entry=config.get("wallets",{}).get(name)
+            entry=config.get("wallets",{}).get(name)
+            index=int(entry.get("anvil_index",-1))
             accounts=info.get("accounts",[])
             if index<0 or index>=len(accounts):
                 return None
-            recorded=str(entry.get("address","")).strip()
             actual=str(accounts[index]).strip()
-            if recorded and recorded.lower()!=actual.lower():
-                # Anvil's default accounts are deterministic by index, while
-                # the stored address is runtime metadata. Anvil may have been
-                # restarted since the actor profile was created, so refresh the
-                # metadata instead of making a valid actor unusable.
-                labels=config.setdefault("labels",{})
-                if labels.get(recorded)==name:
-                    labels.pop(recorded,None)
-                if labels.get(recorded.lower())==name:
-                    labels.pop(recorded.lower(),None)
-                entry["address"]=actual
-                if wallet_is_internal(name,entry):
-                    labels.pop(actual,None)
-                    labels.pop(actual.lower(),None)
-                else:
-                    labels[actual]=name
-                save_config(config)
             key=derive_default_anvil_key(index)
             if not key:
                 return None
@@ -589,6 +575,45 @@ def resolve_wallet_key(config,wallet_name=None):
     if isinstance(entry,str): return normalize_private_key(entry)
     if isinstance(name,str) and name.startswith("env:"): return normalize_private_key(os.environ.get(name[4:]))
     return normalize_private_key(name)
+
+def _sync_current_anvil_actor(config, info=None):
+    """Refresh a saved Anvil actor address from the live account at its index."""
+    actor=config.get("actor")
+    if not actor:
+        return False
+    entry=config.get("wallets",{}).get(actor)
+    if not isinstance(entry,dict) or entry.get("source")!="anvil-default":
+        return False
+    if info is None:
+        info=anvil_rpc_info(config)
+    if not isinstance(info,dict):
+        return False
+    accounts=info.get("accounts",[])
+    if not isinstance(accounts,list) or not accounts:
+        return False
+    try:
+        index=int(entry.get("anvil_index",-1))
+    except (TypeError,ValueError):
+        return False
+    if index<0 or index>=len(accounts):
+        return False
+    actual=str(accounts[index]).strip()
+    recorded=str(entry.get("address","")).strip()
+    if recorded.lower()==actual.lower():
+        return False
+    labels=config.setdefault("labels",{})
+    if recorded and labels.get(recorded)==actor:
+        labels.pop(recorded,None)
+    if recorded and labels.get(recorded.lower())==actor:
+        labels.pop(recorded.lower(),None)
+    entry["address"]=actual
+    if wallet_is_internal(actor,entry):
+        labels.pop(actual,None)
+        labels.pop(actual.lower(),None)
+    else:
+        labels[actual]=actor
+    save_config(config)
+    return True
 
 def actor_display(config):
     actor=config.get("actor")
@@ -11516,6 +11541,7 @@ def run_status(config):
     if target:
         load_abi(target,config)
     rpc=effective_rpc(config)
+    _sync_current_anvil_actor(config)
     print(f"Target : {apply_labels(target, config) if target else 'none'}")
     if rpc:
         mode="manual" if config.get("rpc") else "auto Anvil"
