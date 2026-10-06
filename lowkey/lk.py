@@ -2275,9 +2275,10 @@ def run_receipt(config, tx_hash=None, args=None):
         return fail("Error: invalid transaction ID")
     root = audit_context.foundry_project_root()
     audit_context.set_latest(root, tx_hash=tx_hash)
+    original_config = dict(config)
 
     if raw:
-        code = run_cast(["receipt", tx_hash, "--async"], config)
+        code = run_cast(["receipt", tx_hash, "--async"], original_config)
         audit_context.record_tool(
             "receipt",
             root,
@@ -2295,7 +2296,7 @@ def run_receipt(config, tx_hash=None, args=None):
     # Lowkey cannot read JSON-RPC receipt data directly (and for lightweight
     # integrations that stub run_cast). The normal live path remains concise.
     if not isinstance(receipt, dict):
-        code = run_cast(["receipt", tx_hash, "--async"], config)
+        code = run_cast(["receipt", tx_hash, "--async"], original_config)
         audit_context.record_tool(
             "receipt",
             root,
