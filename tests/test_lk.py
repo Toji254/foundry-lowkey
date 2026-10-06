@@ -2752,6 +2752,34 @@ contract Pool {
         self.assertIn(f"Already: Alice ({address})", rendered)
         self.assertNotIn(f"Alice (Alice ({address}))", rendered)
 
+    def test_human_abi_return_uses_stale_internal_anvil_actor_identity(self):
+        actual = "0x" + "b" * 40
+        stale = "0x" + "c" * 40
+        item = {
+            "type": "function",
+            "name": "escrow",
+            "outputs": [{"name": "creator", "type": "address"}],
+        }
+        config = {
+            "actor": "lab-deployer",
+            "wallets": {
+                "lab-deployer": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": stale,
+                    "internal": True,
+                },
+            },
+            "labels": {},
+        }
+        with patch.object(
+            lk,
+            "anvil_rpc_info",
+            return_value={"url": "http://127.0.0.1:8545", "accounts": [actual]},
+        ):
+            rendered = lk.format_human_abi_return(item, actual, config, [item])
+        self.assertIn(f"Return: creator = lab-deployer ({actual})", rendered)
+
     def test_human_abi_return_uses_actor_identity_for_addresses(self):
         address = "0x" + "b" * 40
         item = {
