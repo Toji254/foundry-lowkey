@@ -584,6 +584,7 @@ def list_anvil_actors(config):
         accounts=info.get("accounts",[])
         if isinstance(accounts, list) and accounts:
             _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
+            save_config(config)
     _sync_current_anvil_actor(config, info)
     print(f"Actor: {actor_display(config)}")
     if not info:
@@ -8872,6 +8873,14 @@ def local_foundry_test_args(config, path):
 def configured_actor_addresses(config):
     result=[]
     for name,entry in config.get("wallets",{}).items():
+        if wallet_is_internal(name, entry):
+            continue
+        if (
+            isinstance(entry, dict)
+            and entry.get("source") == "anvil-default"
+            and str(entry.get("anvil_index")) == "0"
+        ):
+            continue
         address=entry.get("address") if isinstance(entry,dict) else None
         if not address:
             address=actor_address(config,name)
@@ -8881,7 +8890,7 @@ def configured_actor_addresses(config):
         return result
     info=anvil_rpc_info(config)
     accounts=info.get("accounts",[]) if info else []
-    return [(f"actor{index}",address) for index,address in enumerate(accounts[:5])]
+    return [(f"actor{index}",address) for index,address in enumerate(accounts[1:6], start=1)]
 
 def run_probe(config,args):
     if not args:
@@ -11620,7 +11629,13 @@ def run_status(config):
     if target:
         load_abi(target,config)
     rpc=effective_rpc(config)
-    _sync_current_anvil_actor(config)
+    info=anvil_rpc_info(config)
+    if info:
+        accounts=info.get("accounts",[])
+        if isinstance(accounts, list) and accounts:
+            _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
+            save_config(config)
+    _sync_current_anvil_actor(config, info)
     print(f"Target : {apply_labels(target, config) if target else 'none'}")
     if rpc:
         mode="manual" if config.get("rpc") else "auto Anvil"
@@ -14043,7 +14058,22 @@ def dispatch_command(cmd,args,config,from_batch=False):
         elif len(args)>=2 and args[0].isdigit():
             return select_anvil_actor(config,args[0],args[1])
         elif len(args)==1 and args[0] in config.get("wallets",{}):
-            config["actor"]=args[0]
+            name = args[0]
+            entry = config.get("wallets", {}).get(name)
+            if (
+                isinstance(entry, dict)
+                and entry.get("source") == "anvil-default"
+                and int(entry.get("anvil_index", -1)) == 0
+                and not wallet_is_internal(name, entry)
+            ):
+                return fail(
+                    f"Error: actor profile '{name}' is bound to reserved Anvil account 0. "
+                    f"Reassign it with 'lk actor <index> {name}' using account 1 or higher."
+                )
+            config["actor"]=name
+            if isinstance(entry, dict) and entry.get("source") == "anvil-default":
+                info=anvil_rpc_info(config)
+                _sync_current_anvil_actor(config, info, name)
             save_config(config)
             print(f"Actor selected: {actor_display(config)}")
         elif not args:
