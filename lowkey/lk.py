@@ -9368,6 +9368,7 @@ def fallback_storage_labels(config, changed_slots):
 
     changed = {}
     observed_values = {}
+    labels = {}
 
     for item in changed_slots or []:
         if isinstance(item, dict):
@@ -9439,18 +9440,12 @@ def fallback_storage_labels(config, changed_slots):
         if info.get("encoding") != "mapping":
             if base in changed.values():
                 target_slot = "0x" + format(base, "064x")
-                labels = globals().get("_fallback_state_labels")
-                if labels is None:
-                    labels = {}
                 labels.setdefault(target_slot, (entry_label, entry_type))
             members = info.get("members", [])
             for member in members if isinstance(members, list) else []:
                 target_number = base + member_slot(member)
                 target_slot = "0x" + format(target_number, "064x")
                 if target_slot.lower() in changed:
-                    labels = globals().get("_fallback_state_labels")
-                    if labels is None:
-                        labels = {}
                     labels.setdefault(
                         target_slot,
                         (f"{entry_label}.{member.get('label', 'field')}", member.get('type')),
@@ -9478,15 +9473,12 @@ def fallback_storage_labels(config, changed_slots):
 
                 member_name = str(member.get("label") or "field")
                 member_type = member.get("type")
-                state = candidate_matches.setdefault(
-                    candidate_base,
-                    {"members": {}},
+                state = candidate_matches.setdefault(candidate_base, {"members": {}})
+
+                member_score = (
+                    100
+                    + type_match_score(raw_value, member_type)
                 )
-
-                slot_score = 100
-                type_score = type_match_score(raw_value, member_type)
-                member_score = slot_score + type_score
-
                 existing = state["members"].get(member_name)
                 if existing is None or member_score > existing["score"]:
                     state["members"][member_name] = {
@@ -9525,16 +9517,12 @@ def fallback_storage_labels(config, changed_slots):
             ):
                 continue
 
-            # Local function scope keeps the labels deterministic even when
-            # several mappings are inspected in the same storage layout.
-            if "_fallback_state_labels" not in locals():
-                _fallback_state_labels = {}
-            _fallback_state_labels[target_slot.lower()] = (
+            labels[target_slot.lower()] = (
                 f"{entry_label}[unresolved key].{member.get('label', 'field')} [inferred]",
                 member.get("type"),
             )
 
-    return locals().get("_fallback_state_labels", {})
+    return labels
 
 
 def display_storage_key(config, value):
