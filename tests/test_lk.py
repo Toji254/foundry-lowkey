@@ -3377,8 +3377,9 @@ contract Pool {
             self.assertEqual(lk.run_state_diff(config, ["ping"]), 0)
         self.assertIn("vm.startStateDiffRecording()", captured["content"])
         self.assertIn("vm.stopAndReturnStateDiff()", captured["content"])
-        self.assertIn("Vm.AccountAccess[] memory accesses", captured["content"])
-        self.assertIn("Vm.StorageAccess memory access", captured["content"])
+        self.assertIn("vm.getStorageAccesses()", captured["content"])
+        self.assertIn("Vm.StorageAccess[] memory storage_accesses", captured["content"])
+        self.assertIn("if (access.account != TARGET)", captured["content"])
         self.assertIn('console2.log("STORAGE_CHANGES", changed);', captured["content"])
 
     def test_state_diff_parser_accepts_recorded_state_write(self):
