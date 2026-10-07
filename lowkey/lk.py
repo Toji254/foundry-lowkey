@@ -9781,7 +9781,7 @@ contract LowkeyStateDiff is Test {{
         vm.stopAndReturnStateDiff();
 
         console2.log("CALL", "{signature}");
-        console2.log("REPEAT_COUNT", {repeat});
+        console2.log("REPEAT_COUNT", uint256({repeat}));
         console2.log("SUCCESS", all_success);
         console2.log("ETH_SENT", VALUE);
 
