@@ -3336,6 +3336,7 @@ contract Pool {
             ["release", "1", "0x" + "1" * 40, "--actor", "Alice", "--value", "1ether", "--keep"]
         )
         self.assertEqual(values, ["release", "1", "0x" + "1" * 40])
+        self.assertEqual(repeat, 1)
         self.assertEqual(actor, "Alice")
         self.assertEqual(value, "1ether")
         self.assertTrue(keep)
