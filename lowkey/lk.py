@@ -392,6 +392,8 @@ def assigned_anvil_index(config,index):
         if wallet_is_internal(name, entry):
             continue
         if isinstance(entry,dict) and entry.get('source')=='anvil-default' and str(entry.get('anvil_index'))==str(index):
+            if str(index) == "0":
+                continue
             return name
     return None
 
@@ -400,10 +402,15 @@ def assigned_anvil_address(config,address):
         if wallet_is_internal(name, entry):
             continue
         if isinstance(entry,dict) and str(entry.get('address','')).lower()==str(address).lower():
+            try:
+                if int(entry.get('anvil_index', -1)) == 0:
+                    continue
+            except (TypeError, ValueError):
+                pass
             return name
     return None
 
-def _ensure_lab_deployer(config, address, index=0):
+def _ensure_lab_deployer(config, address, index=0, select_if_empty=True):
     '''Keep the deployment signer separate from user-facing actor profiles.'''
     address = str(address or '')
     current = config.get('actor')
@@ -411,27 +418,73 @@ def _ensure_lab_deployer(config, address, index=0):
     for name, entry in (config.get('wallets', {}) or {}).items():
         if wallet_is_internal(name, entry) or not isinstance(entry, dict):
             continue
-        if str(entry.get('address', '')).lower() == address.lower():
+        try:
+            entry_index = int(entry.get('anvil_index', -1))
+        except (TypeError, ValueError):
+            entry_index = -1
+        if entry_index == int(index) and str(entry.get('address', '')).lower() == address.lower():
             public_same_address = name
             break
     config.setdefault('wallets', {})['lab-deployer'] = {
-        'source': 'anvil-default',
-        'anvil_index': int(index),
-        'address': address,
-        'internal': True,
+        'source': 'anvil-default', 'anvil_index': int(index),
+        'address': address, 'internal': True,
     }
-    if config.get('labels', {}).get(address) == 'lab-deployer':
-        config['labels'].pop(address, None)
-    if config.get('labels', {}).get(address.lower()) == 'lab-deployer':
-        config['labels'].pop(address.lower(), None)
+    labels = config.setdefault('labels', {})
+    if public_same_address:
+        for key in (address, address.lower()):
+            if labels.get(key) == public_same_address:
+                labels.pop(key, None)
+    if labels.get(address) == 'lab-deployer':
+        labels.pop(address, None)
+    if labels.get(address.lower()) == 'lab-deployer':
+        labels.pop(address.lower(), None)
     current_entry = config.get('wallets', {}).get(current) if current else None
-    if (
-        not current
-        or not isinstance(current_entry, dict)
-        or wallet_is_internal(current, current_entry)
+    current_is_reserved_public = False
+    if current and isinstance(current_entry, dict) and not wallet_is_internal(current, current_entry):
+        try:
+            current_is_reserved_public = int(current_entry.get('anvil_index', -1)) == int(index)
+        except (TypeError, ValueError):
+            current_is_reserved_public = False
+    if current_is_reserved_public:
+        config['actor'] = 'lab-deployer'
+    elif select_if_empty and (
+        not current or not isinstance(current_entry, dict) or wallet_is_internal(current, current_entry)
     ):
-        config['actor'] = public_same_address or 'lab-deployer'
+        config['actor'] = 'lab-deployer'
     return public_same_address
+
+def select_existing_anvil_actor(config, index):
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        return fail("Error: Anvil account index must be a number.")
+    if index < 0:
+        return fail("Error: Anvil account index cannot be negative.")
+    info = anvil_rpc_info(config)
+    if not info:
+        return fail("Error: no Anvil node detected. Start 'anvil' or set an Anvil RPC with lk rpc <url>.")
+    accounts = info.get("accounts", [])
+    if not isinstance(accounts, list) or index >= len(accounts):
+        return fail(f"Error: Anvil account {index} does not exist on {info.get('url','the detected RPC')}.")
+    if index == 0:
+        address = str(accounts[0]).strip()
+        _ensure_lab_deployer(config, address, 0, select_if_empty=False)
+        config["actor"] = "lab-deployer"
+        save_config(config)
+        print(f"Actor selected: lab-deployer ({address}) -> Anvil account 0")
+        return 0
+    owner = assigned_anvil_index(config, index)
+    if not owner:
+        return fail(
+            f"Error: Anvil account {index} has no actor profile. "
+            f"Use 'lk actor {index} <name>' to assign one."
+        )
+    config["actor"] = owner
+    _sync_current_anvil_actor(config, info, owner)
+    save_config(config)
+    address = accounts[index]
+    print(f"Actor selected: {owner} ({address}) -> Anvil account {index}")
+    return 0
 
 def select_anvil_actor(config,index,name):
     try:
@@ -441,6 +494,8 @@ def select_anvil_actor(config,index,name):
     name=str(name or "").strip()
     if index<0:
         return fail("Error: Anvil account index cannot be negative.")
+    if index == 0:
+        return fail("Error: Anvil account 0 is reserved for Lowkey's lab deployer. Use account 1+ for user actors.")
     if not name:
         return fail("Error: actor name cannot be empty.")
     info=anvil_rpc_info(config)
@@ -525,6 +580,10 @@ def select_anvil_actor(config,index,name):
 
 def list_anvil_actors(config):
     info=anvil_rpc_info(config)
+    if info:
+        accounts=info.get("accounts",[])
+        if isinstance(accounts, list) and accounts:
+            _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
     _sync_current_anvil_actor(config, info)
     print(f"Actor: {actor_display(config)}")
     if not info:
@@ -536,11 +595,20 @@ def list_anvil_actors(config):
         print("No Anvil accounts reported by this RPC.")
         return
     print("Accounts:")
+    internal = config.get("wallets", {}).get("lab-deployer", {})
     for index,address in enumerate(accounts):
-        owner=assigned_anvil_address(config,address)
-        marker="*" if owner==config.get("actor") else " "
-        label=f" -> {owner}" if owner else ""
+        is_internal = (
+            isinstance(internal, dict)
+            and wallet_is_internal("lab-deployer", internal)
+            and str(internal.get("anvil_index", -1)) == str(index)
+            and str(internal.get("address", "")).lower() == str(address).lower()
+        )
+        owner=None if is_internal else assigned_anvil_address(config,address)
+        identity="lab-deployer" if is_internal else owner
+        marker="*" if identity and identity==config.get("actor") else " "
         display = apply_labels(address, config)
+        if is_internal:
+            display = f"lab-deployer ({address})"
         print(f"{marker} {index:>2}: {display}")
 
 def resolve_wallet_key(config,wallet_name=None):
@@ -555,6 +623,8 @@ def resolve_wallet_key(config,wallet_name=None):
             _sync_current_anvil_actor(config, info, name)
             entry=config.get("wallets",{}).get(name)
             index=int(entry.get("anvil_index",-1))
+            if index == 0 and not wallet_is_internal(name, entry):
+                return None
             accounts=info.get("accounts",[])
             if index<0 or index>=len(accounts):
                 return None
@@ -640,6 +710,12 @@ def actor_address(config, name=None):
         return None
     entry = config.get("wallets", {}).get(name)
     if isinstance(entry, dict) and entry.get("address"):
+        if entry.get("source") == "anvil-default":
+            try:
+                if int(entry.get("anvil_index", -1)) == 0 and not wallet_is_internal(name, entry):
+                    return None
+            except (TypeError, ValueError):
+                pass
         return entry["address"]
     key = resolve_wallet_key(config, name)
     if not key:
@@ -9363,6 +9439,20 @@ def parse_state_diff_output(output):
     slots=_extract_state_diff_json_slots(clean_output)
     lines=[line.strip() for line in clean_output.splitlines()]
     for index,line in enumerate(lines):
+        if line=="STATE_SLOT" and index+5<len(lines):
+            slot=lines[index+1]
+            if lines[index+2]=="STATE_FROM" and lines[index+4]=="STATE_TO":
+                before=lines[index+3]
+                after=lines[index+5]
+                if (
+                    re.fullmatch(r"0x[0-9a-fA-F]{64}",slot)
+                    and re.fullmatch(r"0x[0-9a-fA-F]{64}",before)
+                    and re.fullmatch(r"0x[0-9a-fA-F]{64}",after)
+                    and before.lower()!=after.lower()
+                ):
+                    slots.append({"slot":slot,"from":before,"to":after})
+
+    for index,line in enumerate(lines):
         if line=="SLOT" and index+5<len(lines):
             slot=lines[index+1]
             if lines[index+2]=="FROM" and lines[index+4]=="TO":
@@ -9494,11 +9584,12 @@ def run_state_diff(config,args):
 
         target_literal=solidity_address_literal(target)
         actor_literal=solidity_address_literal(address)
-        body=f'''// Generated by LowkeyCast. Snapshots candidate storage slots around a concrete call.
+        body=f'''// Generated by LowkeyCast. Records the target's real storage writes during a concrete call.
 pragma solidity ^0.8.20;
 
 import {{Test}} from "forge-std/Test.sol";
 import {{console2}} from "forge-std/console2.sol";
+import {{Vm}} from "forge-std/Vm.sol";
 
 contract LowkeyStateDiff is Test {{
     address constant TARGET = {target_literal};
@@ -9508,47 +9599,36 @@ contract LowkeyStateDiff is Test {{
     function test_state_diff() public {{
         vm.deal(ACTOR, 100 ether);
 
-        uint256 candidateCount = {len(candidate_storage_slots(config, signature, values[1:], address))};
-        require(candidateCount > 0, "Lowkey: no candidate storage slots");
-
-        bytes32[] memory slots = new bytes32[](candidateCount);
-        bytes32[] memory beforeValues = new bytes32[](candidateCount);
-        bytes32[] memory afterValues = new bytes32[](candidateCount);
-
-{chr(10).join(f"        slots[{i}] = bytes32(uint256({slot}));" for i,slot in enumerate(candidate_storage_slots(config, signature, values[1:], address)) )}
-
-        for (uint256 i = 0; i < slots.length; i++) {{
-            beforeValues[i] = vm.load(TARGET, slots[i]);
-        }}
-
+        vm.startStateDiffRecording();
         vm.prank(ACTOR);
         (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
-
-        for (uint256 i = 0; i < slots.length; i++) {{
-            afterValues[i] = vm.load(TARGET, slots[i]);
-        }}
+        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
 
         console2.log("CALL", "{signature}");
         console2.log("SUCCESS", success);
         console2.log("ETH_SENT", VALUE);
-        console2.log("SLOTS_SCANNED", slots.length);
 
         if (!success) {{
             console2.log("REVERT_DATA");
             console2.logBytes(data);
-            return;
         }}
 
         uint256 changed = 0;
-        for (uint256 i = 0; i < slots.length; i++) {{
-            if (beforeValues[i] != afterValues[i]) {{
-                changed++;
-                console2.log("SLOT");
-                console2.logBytes32(slots[i]);
-                console2.log("FROM");
-                console2.logBytes32(beforeValues[i]);
-                console2.log("TO");
-                console2.logBytes32(afterValues[i]);
+        for (uint256 i = 0; i < accesses.length; i++) {{
+            if (accesses[i].account != TARGET) {{
+                continue;
+            }}
+            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
+                Vm.StorageAccess memory access = accesses[i].storageAccesses[j];
+                if (access.isWrite && !access.reverted && access.previousValue != access.newValue) {{
+                    changed++;
+                    console2.log("STATE_SLOT");
+                    console2.logBytes32(access.slot);
+                    console2.log("STATE_FROM");
+                    console2.logBytes32(access.previousValue);
+                    console2.log("STATE_TO");
+                    console2.logBytes32(access.newValue);
+                }}
             }}
         }}
 
@@ -13958,6 +14038,8 @@ def dispatch_command(cmd,args,config,from_batch=False):
             else:
                 print("Actor reset: no active actor.")
             return 0
+        elif len(args)==1 and args[0].isdigit():
+            return select_existing_anvil_actor(config,args[0])
         elif len(args)>=2 and args[0].isdigit():
             return select_anvil_actor(config,args[0],args[1])
         elif len(args)==1 and args[0] in config.get("wallets",{}):
@@ -13967,7 +14049,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
         elif not args:
             list_anvil_actors(config)
         else:
-            return fail("Usage: lk actor <index> <name> | lk actor [existing-name] | lk actor reset")
+            return fail("Usage: lk actor <index> [name] | lk actor [existing-name] | lk actor reset")
     elif cmd=="abi":
         target=config.get("target")
         if not target: return fail("Error: Set target first.")
