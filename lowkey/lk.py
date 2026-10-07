@@ -5684,7 +5684,8 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"Fixture : {fixture['relative']}::{fixture['contract']}")
     print(f"Test    : {relative_test}")
     print(f"RPC     : {rpc_display(rpc)}")
-    print(f"Actor   : {apply_labels(accounts[0], config)}")
+    _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
+    print(f"Actor   : {actor_display(config)}")
     print("Mode    : promoted project test fixture")
     print("Action  : running the fixture through Forge's native test runner, then materializing its full state into local Anvil...")
     print("Helper  : no broadcast; Forge invokes the fixture setUp() normally.")
@@ -7237,7 +7238,8 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     print(f"Project : {root}")
     print(f"Script  : {relative}")
     print(f"RPC     : {rpc_display(rpc)}")
-    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
+    print(f"Actor   : {actor_display(config)}")
     print("Mode    : project-native deployment script")
     print("Action  : executing the project's own deployment entry point...")
 
@@ -8781,6 +8783,23 @@ def encode_target_call(config, function, values):
 
     abi=load_abi(target,config)
     matches=matching_functions(abi,signature) if abi else []
+    if abi and len(matches) == 0:
+        available = [
+            format_signature(item)
+            for item in abi_functions(abi)
+            if str(item.get("type") or "") == "function"
+        ]
+        suggestion = ""
+        if "(" in signature:
+            base_name = signature.split("(", 1)[0].strip().lower()
+            same_name = [item for item in available if item.split("(", 1)[0].lower() == base_name]
+            if same_name:
+                suggestion = " Available signature(s): " + ", ".join(same_name[:8]) + "."
+        raise ValueError(
+            f"Function signature '{signature}' is not present in the current target ABI."
+            + suggestion
+            + " Use 'lk fn' to see the active contract interface."
+        )
     if len(matches)==1:
         values=prepare_argument_values(config,matches[0],values)
         inputs=matches[0].get("inputs",[])
