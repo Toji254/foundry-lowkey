@@ -7136,6 +7136,11 @@ def _validate_project_lab_target(
         except (OSError, ValueError):
             scoped = []
 
+    implementation_lower = implementation.lower() if implementation else None
+    # For a direct deployment the target itself is the deployment identity.
+    # For an ERC-1967 target the implementation is the deployment identity.
+    provenance_address = implementation_lower or target.lower()
+
     exact_records = [
         item for item in deployments
         if isinstance(item, dict)
@@ -7191,11 +7196,6 @@ def _validate_project_lab_target(
             deployed = deployed.get("object")
         deployed = str(deployed or "").strip()
         application_artifacts.append((artifact_name, artifact_path, deployed))
-
-    implementation_lower = implementation.lower() if implementation else None
-    # For a direct deployment the target itself is the deployment identity.
-    # For an ERC-1967 target the implementation is the deployment identity.
-    provenance_address = implementation_lower or target.lower()
 
     for item in provenance_records:
         deployed_address = str(item.get("address") or "").lower()
