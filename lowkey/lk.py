@@ -9357,30 +9357,34 @@ def mapping_slot_matches(config, signature, raw_values, actor_address_value, cha
 def fallback_storage_labels(config, changed_slots):
     """Best-effort human labels when the exact mapping key cannot be proven.
 
-    The storage slot remains the authoritative evidence. When a mapping value is
-    a struct, Lowkey infers the struct base from the *observed changed slots* and
-    now also scores each possible alignment against the actual stored value type.
-    This resolves common partial-write cases such as:
-
-        address, address, uint256, bool
-        ^^^^^^^  ^^^^^^^  ^^^^^^^
-
-    where only the first three fields changed. A pure slot-count tie is no
-    longer treated as equally plausible when the observed values clearly fit
-    one field layout better.
+    Storage slots remain the authoritative evidence. For struct mappings, Lowkey
+    infers the struct base from observed changed slots and also scores each
+    candidate against the observed value's storage type. This resolves common
+    partial-write cases without hard-coding a contract layout.
     """
     types, storage = storage_layout_details(config)
     if not types or not storage:
         return {}
 
     changed = {}
-    for slot in changed_slots:
-        normalized = str(slot).lower()
-        number = storage_slot_int(normalized)
-        if number is not None:
-            changed[normalized] = number
+    observed_values = {}
 
-    labels = {}
+    for item in changed_slots or []:
+        if isinstance(item, dict):
+            slot_value = item.get("slot")
+            after_value = item.get("to") or item.get("newValue") or item.get("new")
+        else:
+            slot_value = item
+            after_value = None
+
+        normalized = str(slot_value or "").lower()
+        number = storage_slot_int(normalized)
+        if number is None:
+            continue
+
+        changed[normalized] = number
+        if after_value is not None:
+            observed_values[normalized] = str(after_value).strip()
 
     def member_slot(member):
         try:
@@ -9389,7 +9393,7 @@ def fallback_storage_labels(config, changed_slots):
             return 0
 
     def type_match_score(raw_value, type_id):
-        """Score how strongly a raw 32-byte word fits an ABI storage type."""
+        """Score how strongly a raw 32-byte word fits a storage type."""
         if not type_id or type_id not in types:
             return 0
 
@@ -9407,9 +9411,7 @@ def fallback_storage_labels(config, changed_slots):
             return 3 if numeric in {0, 1} else 0
 
         if label == "address" or label.startswith("contract "):
-            # Solidity stores an address in the low 20 bytes of the slot.
-            # Require the upper 12 bytes to be zero before treating a large
-            # integer as an address.
+            # Solidity stores address/contract values in the low 20 bytes.
             return 3 if raw[2:26] == "0" * 24 else 0
 
         if label.startswith("uint") or label.startswith("int"):
@@ -9417,9 +9419,6 @@ def fallback_storage_labels(config, changed_slots):
 
         if label.startswith("enum "):
             return 2
-
-        if label == "bytes32":
-            return 1
 
         if label.startswith("bytes"):
             return 1
@@ -9438,18 +9437,23 @@ def fallback_storage_labels(config, changed_slots):
             continue
 
         if info.get("encoding") != "mapping":
-            # Direct state variables remain useful to decode by their declared slot.
             if base in changed.values():
                 target_slot = "0x" + format(base, "064x")
+                labels = globals().get("_fallback_state_labels")
+                if labels is None:
+                    labels = {}
                 labels.setdefault(target_slot, (entry_label, entry_type))
             members = info.get("members", [])
             for member in members if isinstance(members, list) else []:
                 target_number = base + member_slot(member)
                 target_slot = "0x" + format(target_number, "064x")
                 if target_slot.lower() in changed:
+                    labels = globals().get("_fallback_state_labels")
+                    if labels is None:
+                        labels = {}
                     labels.setdefault(
                         target_slot,
-                        (f"{entry_label}.{member.get('label', 'field')}", member.get("type")),
+                        (f"{entry_label}.{member.get('label', 'field')}", member.get('type')),
                     )
             continue
 
@@ -9458,18 +9462,15 @@ def fallback_storage_labels(config, changed_slots):
         members = value_info.get("members", []) if isinstance(value_info, dict) else []
 
         if not members:
-            # Scalar mappings remain unresolved unless mapping_slot_matches()
-            # proved the exact key from the function arguments.
+            # Scalar mappings stay unresolved unless mapping_slot_matches() proved
+            # the exact key from the function arguments.
             continue
 
-        # Reverse the known struct offsets. A partial write can make multiple
-        # bases look equally plausible by slot count alone, so keep the full
-        # observed value in the score.
         candidate_matches = {}
+
         for target_slot, number in changed.items():
-            raw_value = None
-            for item in ():
-                raw_value = item
+            raw_value = observed_values.get(target_slot)
+
             for member in members:
                 candidate_base = number - member_slot(member)
                 if candidate_base < 0:
@@ -9477,29 +9478,32 @@ def fallback_storage_labels(config, changed_slots):
 
                 member_name = str(member.get("label") or "field")
                 member_type = member.get("type")
-                score = 10 + type_match_score(
-                    _changed_value_for_slot(changed, target_slot, changed_slots),
-                    member_type,
-                )
                 state = candidate_matches.setdefault(
                     candidate_base,
-                    {"members": {}, "score": 0},
+                    {"members": {}},
                 )
+
+                slot_score = 100
+                type_score = type_match_score(raw_value, member_type)
+                member_score = slot_score + type_score
+
                 existing = state["members"].get(member_name)
-                if existing is None or score > existing["score"]:
+                if existing is None or member_score > existing["score"]:
                     state["members"][member_name] = {
                         "member": member,
-                        "score": score,
+                        "score": member_score,
                     }
 
         ranked = []
         for candidate_base, state in candidate_matches.items():
-            members_seen = state["members"]
-            if len(members_seen) < 2:
+            matched_members = state["members"]
+            if len(matched_members) < 2:
                 continue
-            slot_score = len(members_seen) * 100
-            type_score = sum(item["score"] - 10 for item in members_seen.values())
-            ranked.append((slot_score + type_score, candidate_base, members_seen))
+            score = (
+                len(matched_members) * 100
+                + sum(item["score"] - 100 for item in matched_members.values())
+            )
+            ranked.append((score, candidate_base, matched_members))
 
         if not ranked:
             continue
@@ -9520,30 +9524,18 @@ def fallback_storage_labels(config, changed_slots):
                 for item in matched_members.values()
             ):
                 continue
-            labels[target_slot.lower()] = (
+
+            # Local function scope keeps the labels deterministic even when
+            # several mappings are inspected in the same storage layout.
+            if "_fallback_state_labels" not in locals():
+                _fallback_state_labels = {}
+            _fallback_state_labels[target_slot.lower()] = (
                 f"{entry_label}[unresolved key].{member.get('label', 'field')} [inferred]",
                 member.get("type"),
             )
 
-    return labels
+    return locals().get("_fallback_state_labels", {})
 
-
-def _changed_value_for_slot(changed, target_slot, changed_slots):
-    """Return the observed post-write value for a changed slot when available.
-
-    Legacy callers only pass slot strings here, so this helper intentionally
-    accepts an optional richer shape too. The state-diff path can provide the
-    actual values, while the standalone fallback API remains compatible.
-    """
-    if isinstance(changed_slots, dict):
-        item = changed_slots.get(target_slot) or changed_slots.get(str(target_slot).lower())
-        if isinstance(item, dict):
-            return item.get("to") or item.get("new") or item.get("value")
-        if isinstance(item, str):
-            return item
-
-    # A standalone list of slot strings carries no value information.
-    return None
 
 def display_storage_key(config, value):
     text_value=str(value)
@@ -9905,7 +9897,7 @@ contract LowkeyStateDiff is Test {{
         raw_args=values[1:]
         changed_slots=[item["slot"] for item in parsed["slots"]]
         labels=mapping_slot_matches(config,signature,raw_args,address,changed_slots)
-        fallback_labels=fallback_storage_labels(config,changed_slots)
+        fallback_labels=fallback_storage_labels(config,parsed["slots"])
         for slot,label in fallback_labels.items():
             labels.setdefault(slot,label)
 
