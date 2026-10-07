@@ -7084,7 +7084,12 @@ def _validate_project_lab_target(
     implementation_text = str(implementation_result.text or "").strip()
     match = re.search(r"0x[0-9a-fA-F]{40}", implementation_text)
     if implementation_result.code == 0 and match:
-        implementation = match.group(0)
+        candidate_implementation = match.group(0)
+        # cast implementation returns the zero address for ordinary
+        # non-proxy contracts. That is "no implementation", not a valid
+        # implementation target.
+        if int(candidate_implementation, 16) != 0:
+            implementation = candidate_implementation
 
     if not implementation or implementation.lower() == target.lower():
         implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
