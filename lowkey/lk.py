@@ -9407,17 +9407,27 @@ def fallback_storage_labels(config, changed_slots):
                 )
             continue
 
-        # Reverse the known struct offsets. Several adjacent changed slots can
-        # fit multiple hypothetical bases, so score every candidate alignment.
-        # Only a unique best alignment is trusted; ties remain raw.
+        # A mapping key may be derived inside the contract (for example
+        # keccak256(msg.sender)), so it cannot always be reconstructed from the
+        # call arguments. Look for a unique contiguous struct footprint among
+        # the changed slots. This is a readable inference, not proof of the key.
+        changed_numbers = set(changed.values())
         candidate_matches = {}
-        for _target_slot, number in changed.items():
-            for member in members:
-                candidate_base = number - member_slot(member)
-                if candidate_base < 0:
-                    continue
-                member_name = str(member.get("label") or "field")
-                candidate_matches.setdefault(candidate_base, set()).add(member_name)
+        if changed_numbers:
+            min_changed = min(changed_numbers)
+            max_changed = max(changed_numbers)
+            max_offset = max((member_slot(member) for member in members), default=0)
+            for candidate_base in range(
+                max(0, min_changed - max_offset),
+                max_changed + 1,
+            ):
+                matched = {
+                    str(member.get("label") or "field")
+                    for member in members
+                    if candidate_base + member_slot(member) in changed_numbers
+                }
+                if matched:
+                    candidate_matches[candidate_base] = matched
 
         best_score = max((len(names) for names in candidate_matches.values()), default=0)
         best_bases = [
@@ -9434,8 +9444,8 @@ def fallback_storage_labels(config, changed_slots):
             target_slot = "0x" + format(target_number, "064x")
             if target_slot.lower() in changed:
                 labels[target_slot.lower()] = (
-                    f"{entry_label}[unresolved key].{member.get('label', 'field')}",
-                    member.get("type"),
+                    f"{entry_label}[unresolved key].{member.get('label', 'field')} [inferred]",
+                    member.get("type")
                 )
 
     return labels
