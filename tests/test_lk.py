@@ -1678,6 +1678,25 @@ contract Pool {
         self.assertTrue(hasattr(lk, "Path"))
         self.assertTrue(lk.AUDIT_CHECKLIST)
 
+    def test_source_checkout_execution_ignores_installed_runtime_mismatch(self):
+        with patch.object(
+            lk,
+            "runtime_sync_status",
+            return_value={
+                "status": "stale",
+                "detail": "installed runtime old",
+                "source_repo": str(ROOT),
+            },
+        ), patch.object(lk, "dispatch_command", return_value=0),              patch.object(lk, "_sync_audit_context"),              patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(".")),              patch.object(lk.audit_context, "emit"):
+            original_argv = lk.sys.argv
+            lk.sys.argv = ["lk", "fn", "buyNft"]
+            try:
+                with self.assertRaises(SystemExit) as raised:
+                    lk.main()
+            finally:
+                lk.sys.argv = original_argv
+        self.assertEqual(raised.exception.code, 0)
+
     def test_mapping_human_view_decodes_struct_fields(self):
         target = "0x" + "1" * 40
         alice = "0x" + "2" * 40
@@ -3237,7 +3256,7 @@ contract Pool {
         self.assertEqual(cast.call_args.args[0][-2:], ["1000000000000000000", "0x" + "2" * 40])
 
     def test_lab_flags_have_simple_aliases_and_auto_eth(self):
-        values, actor, value, keep = lk.split_lab_options(
+        values, actor, value, keep, repeat = lk.split_lab_options(
             ["createescrow", "1", "ether", "Bob", "--as", "Alice"]
         )
         self.assertEqual(values, ["createescrow", "1", "ether", "Bob"])
@@ -3313,13 +3332,14 @@ contract Pool {
 
 
     def test_split_lab_options(self):
-        values, actor, value, keep = lk.split_lab_options(
+        values, actor, value, keep, repeat = lk.split_lab_options(
             ["release", "1", "0x" + "1" * 40, "--actor", "Alice", "--value", "1ether", "--keep"]
         )
         self.assertEqual(values, ["release", "1", "0x" + "1" * 40])
         self.assertEqual(actor, "Alice")
         self.assertEqual(value, "1ether")
         self.assertTrue(keep)
+        self.assertEqual(repeat, 1)
 
     def test_as_restores_previous_actor(self):
         config = {
