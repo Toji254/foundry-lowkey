@@ -8650,6 +8650,7 @@ def split_lab_options(args):
     actor=None
     value="auto"
     keep=False
+    repeat=1
     index=0
     raw=list(args or [])
     while index < len(raw):
@@ -8673,9 +8674,22 @@ def split_lab_options(args):
             keep=True
             index+=1
             continue
+        if token in {"--repeat","--times"}:
+            if index+1>=len(raw):
+                raise ValueError(f"{token} needs a positive integer")
+            try:
+                repeat=int(raw[index+1])
+            except (TypeError,ValueError):
+                raise ValueError(f"{token} needs a positive integer")
+            if repeat < 1:
+                raise ValueError(f"{token} must be at least 1")
+            if repeat > 100:
+                raise ValueError(f"{token} cannot exceed 100")
+            index+=2
+            continue
         values.append(token)
         index+=1
-    return values,actor,value,keep
+    return values,actor,value,keep,repeat
 
 def solidity_value(value):
     value=str(value or "0").strip()
@@ -8915,7 +8929,9 @@ def run_probe(config,args):
     if not args:
         return fail("Usage: lk probe <function> [args...] [--actor NAME] [--value AMOUNT]")
     try:
-        values,actor,value,_keep=split_lab_options(args)
+        values,actor,value,_keep,repeat=split_lab_options(args)
+        if repeat != 1:
+            raise ValueError("repeat/times is supported by 'lk changes', not 'lk probe'")
         if not values:
             raise ValueError("function is required")
         signature,calldata=encode_target_call(config,values[0],values[1:])
@@ -9398,13 +9414,9 @@ def fallback_storage_labels(config, changed_slots):
         members = value_type.get("members", []) if isinstance(value_type, dict) else []
 
         if not members:
-            # We can prove the write belongs to this mapping even when the key
-            # itself cannot be reconstructed from the call inputs.
-            for target_slot, _number in changed.items():
-                labels.setdefault(
-                    target_slot,
-                    (f"{entry_label}[unresolved key]", info.get("value")),
-                )
+            # Without a derivable mapping key, a raw slot cannot safely be
+            # attributed to an arbitrary scalar mapping. Leave it unresolved;
+            # mapping_slot_matches() handles cases where the key is provable.
             continue
 
         # A mapping key may be derived inside the contract (for example
@@ -9711,9 +9723,9 @@ def candidate_storage_slots(config, signature, raw_values, actor_address):
 
 def run_state_diff(config,args):
     if not args:
-        return fail("Usage: lk changes <function> [args...] [--as ACTOR] [--eth AMOUNT]")
+        return fail("Usage: lk changes <function> [args...] [--as ACTOR] [--eth AMOUNT] [--repeat N]")
     try:
-        values,actor,value,_keep=split_lab_options(args)
+        values,actor,value,_keep,repeat=split_lab_options(args)
         if not values:
             raise ValueError("function is required")
         signature,calldata=encode_target_call(config,values[0],values[1:])
@@ -9742,8 +9754,21 @@ contract LowkeyStateDiff is Test {{
         vm.deal(ACTOR, 100 ether);
 
         vm.startStateDiffRecording();
-        vm.prank(ACTOR);
-        (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
+        vm.startPrank(ACTOR);
+
+        bool all_success = true;
+        for (uint256 i = 0; i < {repeat}; i++) {{
+            console2.log("REPEAT_CALL", i + 1);
+            (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
+            console2.log("CALL_SUCCESS", success);
+            console2.log("CALL_RETURN_DATA");
+            console2.logBytes(data);
+            if (!success) {{
+                all_success = false;
+            }}
+        }}
+
+        vm.stopPrank();
         // Foundry exposes storage writes both nested under AccountAccess and
         // directly through getStorageAccesses(). Use the direct view here so
         // target writes are not lost when AccountAccess nesting differs across
@@ -9752,13 +9777,9 @@ contract LowkeyStateDiff is Test {{
         vm.stopAndReturnStateDiff();
 
         console2.log("CALL", "{signature}");
-        console2.log("SUCCESS", success);
+        console2.log("REPEAT_COUNT", {repeat});
+        console2.log("SUCCESS", all_success);
         console2.log("ETH_SENT", VALUE);
-
-        if (!success) {{
-            console2.log("REVERT_DATA");
-            console2.logBytes(data);
-        }}
 
         uint256 changed = 0;
         for (uint256 i = 0; i < storage_accesses.length; i++) {{
