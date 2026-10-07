@@ -612,6 +612,22 @@ def list_anvil_actors(config):
             display = f"lab-deployer ({address})"
         print(f"{marker} {index:>2}: {display}")
 
+        # Keep actor labels authoritative.  If the same address also contains
+        # contract bytecode, expose that fact as a separate identity rather
+        # than replacing the actor name with a contract name.
+        contract_identity = _contract_identity(config, address)
+        if contract_identity:
+            name = str(contract_identity.get("name") or "").strip()
+            symbol = str(contract_identity.get("symbol") or "").strip()
+            if name and symbol:
+                print(f"        Contract   : {name} ({symbol})")
+            elif name:
+                print(f"        Contract   : {name}")
+            elif symbol:
+                print(f"        Contract   : {symbol}")
+            else:
+                print("        Contract   : deployed contract")
+
 def resolve_wallet_key(config,wallet_name=None):
     name=wallet_name or config.get("actor")
     if not name: return None
@@ -2653,6 +2669,80 @@ def _known_address_identities(config):
         identities.setdefault(lowered, (str(label).strip(), str(address)))
 
     return identities
+
+
+def _contract_identity(config, address):
+    """Resolve lightweight on-chain identity for an address without guessing.
+
+    Actors and contracts are deliberately separate concepts.  An address is
+    only described as a contract when live bytecode exists at that address.
+    Optional ERC-20 metadata is then queried on a best-effort basis.
+    """
+    address = str(address or "").strip()
+    if not is_address(address):
+        return None
+
+    rpc = effective_rpc(config)
+    if not rpc:
+        return None
+
+    try:
+        code, runtime, _ = cast_output(
+            ["cast", "code", address, "--rpc-url", rpc]
+        )
+    except Exception:
+        return None
+
+    if code != 0 or not runtime or str(runtime).strip().lower() in {"0x", "0x0"}:
+        # EOA: do not invent a contract identity.
+        return None
+
+    identity = {
+        "address": address,
+        "contract": True,
+        "name": None,
+        "symbol": None,
+        "kind": "contract",
+    }
+
+    # ERC-20 metadata is optional.  A contract failing these calls is not an
+    # error and must not be labeled as an ERC-20 merely because a caller uses
+    # IERC20 for the reference.
+    for function_name, key in (("name()", "name"), ("symbol()", "symbol")):
+        try:
+            rc, output, _ = cast_output(
+                ["cast", "call", address, function_name, "--rpc-url", rpc]
+            )
+        except Exception:
+            rc, output = 1, ""
+        if rc == 0:
+            value = str(output or "").strip()
+            if value:
+                identity[key] = value.strip('"')
+
+    if identity["name"] or identity["symbol"]:
+        identity["kind"] = "token"
+
+    return identity
+
+
+def describe_address(config, address):
+    """Return a human-readable contract description without changing actor identity."""
+    identity = _contract_identity(config, address)
+    if not identity:
+        return str(address)
+
+    name = str(identity.get("name") or "").strip()
+    symbol = str(identity.get("symbol") or "").strip()
+    canonical = identity["address"]
+
+    if name and symbol:
+        return f"{name} ({symbol}) [{canonical}]"
+    if name:
+        return f"{name} [{canonical}]"
+    if symbol:
+        return f"{symbol} [{canonical}]"
+    return f"contract [{canonical}]"
 
 
 def apply_labels(text, config):
@@ -10479,6 +10569,11 @@ def _source_comment_strip(text: str, language="solidity") -> str:
     return "".join(chars)
 
 def run_scan(args):
+    # `lk scan` takes at most a source path; it has no options. Rejecting a
+    # leading-dash token here prevents a flag (e.g. --json) from being silently
+    # interpreted as a filesystem path and producing a misleading error.
+    if args and str(args[0]).startswith("-"):
+        return fail(f"Unknown lk scan option: {args[0]}  (usage: lk scan [src])")
     root = args[0] if args else "."
     if not os.path.exists(root):
         return fail(f"Path not found: {root}")
@@ -12815,20 +12910,25 @@ COMMAND_HELP = {
     ),
     "actor": _help_entry(
         "Name/select a local Anvil account.",
-        "lk actor <index> <name> | lk actor <name> | lk actor reset",
+        "lk actor <index> <name> | lk actor <name> | lk actor reset 1 | lk actor reset 2",
         "lk actor 0 Alice",
         "Use it when you want readable role names instead of anonymous Anvil slots.",
         forms=[
             ("lk actor <index> <name>", "Give an Anvil account a readable role name.", "lk actor 0 Alice"),
             ("lk actor <name>", "Switch to an actor profile you already created.", "lk actor Alice"),
-            ("lk actor reset", "Clear the active actor without deleting the saved profile.", "lk actor reset"),
+            ("lk actor reset 1", "Clear the active actor without deleting the saved profile.", "lk actor reset 1"),
+            ("lk actor reset 2", "Clear the active actor and remove saved actor names.", "lk actor reset 2"),
         ],
         children={
             "reset": _help_entry(
-                "Clear the active actor without deleting its saved profile.",
-                "lk actor reset",
-                "lk actor reset",
-                "Use it when you want Lowkey to have no active actor while keeping the profile.",
+                "Reset actor state with an explicit preservation level.",
+                "lk actor reset 1 | lk actor reset 2",
+                "lk actor reset 1",
+                "Use 1 to clear the active actor while keeping names, or 2 to clear names too.",
+                forms=[
+                    ("lk actor reset 1", "Clear active actor state but preserve saved actor names.", "lk actor reset 1"),
+                    ("lk actor reset 2", "Clear active actor state and remove saved actor names.", "lk actor reset 2"),
+                ],
             ),
         },
         related=["lk actors", "lk impersonate"],
@@ -14264,8 +14364,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
             return
         resolved=resolve_target_ref(config,args[0],root)
         if not resolved:
-            print(f"Unknown target for project: {args[0]}")
-            return
+            return fail(f"Unknown target for project: {args[0]}")
         entries=_project_target_entries(config,root)
         entry=next((item for item in entries if str(item.get("address")).lower()==str(resolved).lower()),None)
         if entry:
@@ -14313,13 +14412,51 @@ def dispatch_command(cmd,args,config,from_batch=False):
         else: return fail("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
     elif cmd=="actor":
         if args and args[0]=="reset":
+            mode = str(args[1]).strip() if len(args) > 1 else "1"
+            if mode not in {"1", "2"} or len(args) > 2:
+                return fail(
+                    "Usage: lk actor reset 1 | lk actor reset 2\n"
+                    "  1 = clear active actor state, keep actor names\n"
+                    "  2 = clear active actor state and remove actor names"
+                )
+
             previous = config.get("actor")
+            if mode == "1":
+                config["actor"] = None
+                save_config(config)
+                if previous:
+                    print(
+                        f"Actor reset 1: no active actor "
+                        f"(profile '{previous}' was kept)."
+                    )
+                else:
+                    print("Actor reset 1: no active actor (profiles kept).")
+                return 0
+
+            # Full reset: remove configured local actor profiles and their
+            # address labels, but leave unrelated wallets/targets untouched.
+            actor_names = set(config.get("wallets", {}).keys())
+            labels = config.setdefault("labels", {})
+
+            for name, entry in list(config.get("wallets", {}).items()):
+                if wallet_is_internal(name, entry):
+                    # The lab deployer is Lowkey infrastructure, not a user
+                    # actor; keep it available for deployment/bootstrap.
+                    continue
+
+                address = str(entry.get("address") or "") if isinstance(entry, dict) else ""
+                if address:
+                    labels.pop(address, None)
+                    labels.pop(address.lower(), None)
+                config["wallets"].pop(name, None)
+
             config["actor"] = None
             save_config(config)
-            if previous:
-                print(f"Actor reset: no active actor (profile '{previous}' was kept).")
+
+            if actor_names:
+                print("Actor reset 2: active actor and saved actor names cleared.")
             else:
-                print("Actor reset: no active actor.")
+                print("Actor reset 2: no actor profiles were configured.")
             return 0
         elif len(args)==1 and args[0].isdigit():
             return select_existing_anvil_actor(config,args[0])
@@ -14480,7 +14617,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"cheat","cheats","cheatsheet"}: return run_cheat(args)
     elif cmd in {"compare","connect","expression","practice","confused","patterns"}: return run_cheat([cmd,*args])
     elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
-    elif cmd in {"actors","actor-list"}: return list_anvil_actors(config)
+    elif cmd in {"actors","actor-list"}: list_anvil_actors(config); return 0
     elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
     elif cmd in {"token","erc20"}: run_token(config,args)
     elif cmd=="snapshot": run_snapshot(config,args)
