@@ -1957,17 +1957,72 @@ contract Pool {
             self.assertEqual(config["_auto_rpc_info"], info)
 
     def test_default_anvil_actor_selection_and_unique_assignment(self):
-        address = "0x" + "1" * 40
+        address0 = "0x" + "1" * 40
+        address1 = "0x" + "2" * 40
         config = {"wallets": {}, "actor": None}
-        info = {"url": "http://127.0.0.1:8545", "accounts": [address]}
-        with patch.object(lk, "detect_anvil_rpc", return_value=info), \
-             patch.object(lk, "derive_default_anvil_key", return_value="0x" + "a" * 64), \
-             patch.object(lk, "cast_output", return_value=(0, address, "")), \
-             patch.object(lk, "save_config"):
-            self.assertEqual(lk.select_anvil_actor(config, 0, "Alice"), 0)
+        info = {"url": "http://127.0.0.1:8545", "accounts": [address0, address1]}
+        with patch.object(lk, "detect_anvil_rpc", return_value=info),              patch.object(lk, "save_config"):
+            self.assertEqual(lk.select_anvil_actor(config, 0, "Alice"), 2)
+            self.assertEqual(lk.select_anvil_actor(config, 1, "Alice"), 0)
             self.assertEqual(config["actor"], "Alice")
-            self.assertEqual(config["wallets"]["Alice"]["anvil_index"], 0)
-            self.assertEqual(lk.select_anvil_actor(config, 0, "Bob"), 2)
+            self.assertEqual(config["wallets"]["Alice"]["anvil_index"], 1)
+            self.assertEqual(lk.select_anvil_actor(config, 1, "Bob"), 2)
+
+    def test_actor_index_without_name_selects_existing_profile(self):
+        address0 = "0x" + "1" * 40
+        address1 = "0x" + "2" * 40
+        config = {
+            "actor": None,
+            "wallets": {
+                "lab-deployer": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": address0,
+                    "internal": True,
+                },
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 1,
+                    "address": address1,
+                },
+            },
+            "labels": {address1: "Alice"},
+        }
+        info = {"url": "http://127.0.0.1:8545", "accounts": [address0, address1]}
+        with patch.object(lk, "anvil_rpc_info", return_value=info), patch.object(lk, "save_config"):
+            self.assertEqual(lk.select_existing_anvil_actor(config, 0), 0)
+            self.assertEqual(config["actor"], "lab-deployer")
+            self.assertEqual(lk.select_existing_anvil_actor(config, 1), 0)
+            self.assertEqual(config["actor"], "Alice")
+
+    def test_unassigned_actor_rows_are_not_marked_active(self):
+        address0 = "0x" + "1" * 40
+        address1 = "0x" + "2" * 40
+        config = {"actor": None, "wallets": {}, "labels": {}}
+        info = {"url": "http://127.0.0.1:8545", "accounts": [address0, address1]}
+        with patch.object(lk, "anvil_rpc_info", return_value=info), patch.object(lk, "save_config"), patch("builtins.print") as printed:
+            lk.list_anvil_actors(config)
+        lines = [call.args[0] for call in printed.call_args_list if call.args]
+        account_lines = [str(line) for line in lines if str(address0) in str(line) or str(address1) in str(line)]
+        self.assertTrue(account_lines)
+        self.assertTrue(all(not line.lstrip().startswith("*") for line in account_lines))
+
+    def test_anvil_actor_key_is_not_stored(self):
+        address="0x"+"1"*40
+        config={
+            "wallets":{
+                "Alice":{
+                    "source":"anvil-default",
+                    "anvil_index":1,
+                    "address":address,
+                }
+            },
+            "actor":"Alice",
+        }
+        info={"url":"http://127.0.0.1:8545","accounts":["0x"+"0"*40, address]}
+        with patch.object(lk, "anvil_rpc_info", return_value=info),              patch.object(lk, "derive_default_anvil_key", return_value="0x"+"b"*64),              patch.object(lk, "cast_output", return_value=(0, address, "")):
+            self.assertEqual(lk.resolve_wallet_key(config), "0x"+"b"*64)
+        self.assertNotIn("private_key", config["wallets"]["Alice"])
 
     def test_anvil_actor_key_is_not_stored(self):
         address="0x"+"1"*40
@@ -3294,13 +3349,38 @@ contract Pool {
             captured["content"] = content
             return "test/Lowkey_state_diff.t.sol"
 
-        with patch.object(lk, "encode_target_call", return_value=("ping()", "abcdef")), \
-             patch.object(lk, "write_generated_test", side_effect=fake_write), \
-             patch.object(lk, "run_foundry", return_value=lk.CommandResult("", 0)):
+        with patch.object(lk, "encode_target_call", return_value=("ping()", "abcdef")),              patch.object(lk, "write_generated_test", side_effect=fake_write),              patch.object(lk, "run_foundry", return_value=lk.CommandResult("", 0)):
             self.assertEqual(lk.run_state_diff(config, ["ping"]), 0)
-        self.assertIn("vm.load(TARGET, slots[i])", captured["content"])
+        self.assertIn("vm.startStateDiffRecording()", captured["content"])
+        self.assertIn("vm.stopAndReturnStateDiff()", captured["content"])
+        self.assertIn("Vm.AccountAccess[] memory accesses", captured["content"])
+        self.assertIn("Vm.StorageAccess memory access", captured["content"])
         self.assertIn('console2.log("STORAGE_CHANGES", changed);', captured["content"])
-        self.assertIn('console2.log("SLOTS_SCANNED", slots.length);', captured["content"])
+
+    def test_state_diff_parser_accepts_recorded_state_write(self):
+        slot = "0x" + "a" * 64
+        before = "0x" + "0" * 64
+        after = "0x" + "b" * 64
+        output = (
+            "[PASS] test_state_diff() (gas: 123)\n"
+            "Logs:\n"
+            "  CALL createescrow(uint256,address)\n"
+            "  SUCCESS true\n"
+            "  ETH_SENT 1000000000000000000\n"
+            "  STATE_SLOT\n"
+            "  " + slot + "\n"
+            "  STATE_FROM\n"
+            "  " + before + "\n"
+            "  STATE_TO\n"
+            "  " + after + "\n"
+            "  STORAGE_CHANGES 1\n"
+        )
+        parsed = lk.parse_state_diff_output(output)
+        self.assertEqual(parsed["changes_expected"], 1)
+        self.assertEqual(len(parsed["slots"]), 1)
+        self.assertEqual(parsed["slots"][0]["slot"], slot)
+        self.assertEqual(parsed["slots"][0]["from"], before)
+        self.assertEqual(parsed["slots"][0]["to"], after)
 
     def test_signal_evidence_attaches_and_deduplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4580,7 +4660,7 @@ def withdraw(amount: uint256):
         rendered = lk.apply_labels(f"creator = {address} [address]", config)
         self.assertEqual(rendered, f"creator = lab-deployer ({address}) [address]")
 
-    def test_internal_lab_deployer_does_not_shadow_public_actor(self):
+    def test_internal_lab_deployer_reclaims_reserved_account(self):
         address = '0x' + '1' * 40
         config = {
             'actor': 'Alice',
@@ -4589,10 +4669,12 @@ def withdraw(amount: uint256):
             },
             'labels': {address: 'Alice'},
         }
-        lk._ensure_lab_deployer(config, address, 0)
-        self.assertEqual(config['actor'], 'Alice')
+        with patch.object(lk, 'save_config'):
+            lk._ensure_lab_deployer(config, address, 0)
+        self.assertEqual(config['actor'], 'lab-deployer')
         self.assertTrue(config['wallets']['lab-deployer']['internal'])
-        self.assertEqual(lk.assigned_anvil_address(config, address), 'Alice')
+        self.assertIsNone(lk.assigned_anvil_address(config, address))
+        self.assertNotIn(address, config['labels'])
 
     def test_security_pattern_is_first_class_project_signal(self):
         with tempfile.TemporaryDirectory() as tmp:
