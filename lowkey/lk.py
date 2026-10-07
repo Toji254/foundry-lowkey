@@ -9585,7 +9585,7 @@ def parse_state_diff_output(output):
 
     gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",clean_output)
     call_match=re.search(r"(?m)^\s*CALL\s+(.+)$",clean_output)
-    success_match=re.search(r"(?m)^\s*SUCCESS\s+(true|false)\s*$",clean_output,re.I)
+    success_match=re.search(r"(?m)^\s*SUCCESS(?:\s*:\s*|\s+)(true|false)\s*$",clean_output,re.I)
     eth_match=re.search(r"(?m)^\s*ETH_SENT\s+([0-9]+)\s*$",clean_output)
     change_match=re.search(r"(?m)^\s*STORAGE_CHANGES\s+([0-9]+)\s*$",clean_output)
     fallback_match=re.search(r"(?m)^\s*FALLBACK_WRITES\s+([0-9]+)\s*$",clean_output)

@@ -3237,7 +3237,7 @@ contract Pool {
         self.assertEqual(cast.call_args.args[0][-2:], ["1000000000000000000", "0x" + "2" * 40])
 
     def test_lab_flags_have_simple_aliases_and_auto_eth(self):
-        values, actor, value, keep = lk.split_lab_options(
+        values, actor, value, keep, repeat = lk.split_lab_options(
             ["createescrow", "1", "ether", "Bob", "--as", "Alice"]
         )
         self.assertEqual(values, ["createescrow", "1", "ether", "Bob"])
@@ -3313,10 +3313,11 @@ contract Pool {
 
 
     def test_split_lab_options(self):
-        values, actor, value, keep = lk.split_lab_options(
+        values, actor, value, keep, repeat = lk.split_lab_options(
             ["release", "1", "0x" + "1" * 40, "--actor", "Alice", "--value", "1ether", "--keep"]
         )
         self.assertEqual(values, ["release", "1", "0x" + "1" * 40])
+        self.assertEqual(repeat, 1)
         self.assertEqual(actor, "Alice")
         self.assertEqual(value, "1ether")
         self.assertTrue(keep)
