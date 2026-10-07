@@ -2447,17 +2447,17 @@ class WalkthroughTests(unittest.TestCase):
                     '0x' + '4' * 40,
                 ]}
 
-        addresses = ['0x' + str(i) * 40 for i in range(1, 5)]
+        addresses = ['0x' + str(i) * 40 for i in range(1, 6)]
         config = {
             'wallets': {
-                'Alice': {'source': 'anvil-default', 'anvil_index': 0, 'address': addresses[0]},
-                'Bob': {'source': 'anvil-default', 'anvil_index': 1, 'address': addresses[1]},
-                'Attacker': {'source': 'anvil-default', 'anvil_index': 2, 'address': addresses[2]},
+                'Alice': {'source': 'anvil-default', 'anvil_index': 1, 'address': addresses[1]},
+                'Bob': {'source': 'anvil-default', 'anvil_index': 2, 'address': addresses[2]},
+                'Attacker': {'source': 'anvil-default', 'anvil_index': 3, 'address': addresses[3]},
                 'lab-deployer': {'source': 'anvil-default', 'anvil_index': 0, 'address': addresses[0], 'internal': True},
             }
         }
         actors = walkthrough._actors(Host(), config, 4)
-        self.assertEqual([actor.name for actor in actors], ['Alice', 'Bob', 'Attacker', 'Anvil #3'])
+        self.assertEqual([actor.name for actor in actors], ['Anvil #0', 'Alice', 'Bob', 'Attacker'])
         self.assertNotIn('Treasury', [actor.name for actor in actors])
 
 
