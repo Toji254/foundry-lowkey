@@ -3337,6 +3337,49 @@ contract Pool {
         self.assertIn('hex"abcdef"', captured["content"])
         self.assertIn("ACTOR Alice", captured["content"])
 
+    def test_existing_public_actor_on_reserved_account_zero_cannot_be_selected(self):
+        address = "0x" + "1" * 40
+        config = {
+            "actor": None,
+            "wallets": {
+                "Alice": {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": address,
+                }
+            },
+            "labels": {address: "Alice"},
+        }
+        with patch.object(lk, "save_config"), patch.object(
+            lk, "anvil_rpc_info",
+            return_value={"url": "http://127.0.0.1:8545", "accounts": [address]},
+        ):
+            result = lk.dispatch_command("actor", ["Alice"], config)
+        self.assertEqual(result, 2)
+        self.assertIsNone(config["actor"])
+
+    def test_configured_actor_addresses_exclude_internal_and_reserved_profiles(self):
+        address0 = "0x" + "1" * 40
+        address1 = "0x" + "2" * 40
+        config = {
+            "actor": None,
+            "wallets": {
+                "lab-deployer": {
+                    "source": "anvil-default", "anvil_index": 0,
+                    "address": address0, "internal": True,
+                },
+                "Alice": {
+                    "source": "anvil-default", "anvil_index": 0,
+                    "address": address0,
+                },
+                "Bob": {
+                    "source": "anvil-default", "anvil_index": 1,
+                    "address": address1,
+                },
+            },
+        }
+        self.assertEqual(lk.configured_actor_addresses(config), [("Bob", address1)])
+
     def test_state_diff_generates_recording(self):
         config = {
             "target": "0x" + "3" * 40,
