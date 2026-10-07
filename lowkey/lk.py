@@ -9411,23 +9411,24 @@ def fallback_storage_labels(config, changed_slots):
         # keccak256(msg.sender)), so it cannot always be reconstructed from the
         # call arguments. Look for a unique contiguous struct footprint among
         # the changed slots. This is a readable inference, not proof of the key.
+        # Do not scan the numeric range between real EVM storage slots:
+        # mapping slots are 256-bit hashes and unrelated changed slots can be
+        # astronomically far apart. Derive only the finite candidate bases that
+        # are possible from an observed slot/member pair.
         changed_numbers = set(changed.values())
         candidate_matches = {}
-        if changed_numbers:
-            min_changed = min(changed_numbers)
-            max_changed = max(changed_numbers)
-            max_offset = max((member_slot(member) for member in members), default=0)
-            for candidate_base in range(
-                max(0, min_changed - max_offset),
-                max_changed + 1,
-            ):
+        for number in changed_numbers:
+            for member in members:
+                candidate_base = number - member_slot(member)
+                if candidate_base < 0:
+                    continue
                 matched = {
-                    str(member.get("label") or "field")
-                    for member in members
-                    if candidate_base + member_slot(member) in changed_numbers
+                    str(other.get("label") or "field")
+                    for other in members
+                    if candidate_base + member_slot(other) in changed_numbers
                 }
                 if matched:
-                    candidate_matches[candidate_base] = matched
+                    candidate_matches.setdefault(candidate_base, set()).update(matched)
 
         best_score = max((len(names) for names in candidate_matches.values()), default=0)
         best_bases = [
