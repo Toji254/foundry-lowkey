@@ -9611,7 +9611,12 @@ contract LowkeyStateDiff is Test {{
         vm.startStateDiffRecording();
         vm.prank(ACTOR);
         (bool success, bytes memory data) = TARGET.call{{value: VALUE}}(hex"{calldata}");
-        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+        // Foundry exposes storage writes both nested under AccountAccess and
+        // directly through getStorageAccesses(). Use the direct view here so
+        // target writes are not lost when AccountAccess nesting differs across
+        // Foundry/forge-std versions.
+        Vm.StorageAccess[] memory storage_accesses = vm.getStorageAccesses();
+        vm.stopAndReturnStateDiff();
 
         console2.log("CALL", "{signature}");
         console2.log("SUCCESS", success);
@@ -9623,21 +9628,19 @@ contract LowkeyStateDiff is Test {{
         }}
 
         uint256 changed = 0;
-        for (uint256 i = 0; i < accesses.length; i++) {{
-            if (accesses[i].account != TARGET) {{
+        for (uint256 i = 0; i < storage_accesses.length; i++) {{
+            Vm.StorageAccess memory access = storage_accesses[i];
+            if (access.account != TARGET) {{
                 continue;
             }}
-            for (uint256 j = 0; j < accesses[i].storageAccesses.length; j++) {{
-                Vm.StorageAccess memory access = accesses[i].storageAccesses[j];
-                if (access.isWrite && !access.reverted && access.previousValue != access.newValue) {{
-                    changed++;
-                    console2.log("STATE_SLOT");
-                    console2.logBytes32(access.slot);
-                    console2.log("STATE_FROM");
-                    console2.logBytes32(access.previousValue);
-                    console2.log("STATE_TO");
-                    console2.logBytes32(access.newValue);
-                }}
+            if (access.isWrite && !access.reverted && access.previousValue != access.newValue) {{
+                changed++;
+                console2.log("STATE_SLOT");
+                console2.logBytes32(access.slot);
+                console2.log("STATE_FROM");
+                console2.logBytes32(access.previousValue);
+                console2.log("STATE_TO");
+                console2.logBytes32(access.newValue);
             }}
         }}
 
