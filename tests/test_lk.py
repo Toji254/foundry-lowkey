@@ -2024,25 +2024,6 @@ contract Pool {
             self.assertEqual(lk.resolve_wallet_key(config), "0x"+"b"*64)
         self.assertNotIn("private_key", config["wallets"]["Alice"])
 
-    def test_anvil_actor_key_is_not_stored(self):
-        address="0x"+"1"*40
-        config={
-            "wallets":{
-                "Alice":{
-                    "source":"anvil-default",
-                    "anvil_index":0,
-                    "address":address,
-                }
-            },
-            "actor":"Alice",
-        }
-        info={"url":"http://127.0.0.1:8545","accounts":[address]}
-        with patch.object(lk, "anvil_rpc_info", return_value=info), \
-             patch.object(lk, "derive_default_anvil_key", return_value="0x"+"b"*64), \
-             patch.object(lk, "cast_output", return_value=(0, address, "")):
-            self.assertEqual(lk.resolve_wallet_key(config), "0x"+"b"*64)
-        self.assertNotIn("private_key", config["wallets"]["Alice"])
-
     def test_stale_anvil_actor_is_rebound_to_current_account(self):
         recorded="0x"+"1"*40
         actual="0x"+"2"*40
