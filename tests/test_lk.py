@@ -3414,13 +3414,17 @@ contract Pool {
             return "test/Lowkey_state_diff.t.sol"
 
         with patch.object(lk, "encode_target_call", return_value=("ping()", "abcdef")),              patch.object(lk, "write_generated_test", side_effect=fake_write),              patch.object(lk, "run_foundry", return_value=lk.CommandResult("", 0)):
-            self.assertEqual(lk.run_state_diff(config, ["ping"]), 0)
+            self.assertEqual(lk.run_state_diff(config, ["ping", "--repeat", "3"]), 0)
         self.assertIn("vm.startStateDiffRecording()", captured["content"])
         self.assertIn("vm.stopAndReturnStateDiff()", captured["content"])
         self.assertIn("vm.getStorageAccesses()", captured["content"])
         self.assertIn("Vm.StorageAccess[] memory storage_accesses", captured["content"])
         self.assertIn("if (access.account != TARGET)", captured["content"])
         self.assertIn('console2.log("STORAGE_CHANGES", changed);', captured["content"])
+        self.assertIn("vm.startPrank(ACTOR);", captured["content"])
+        self.assertIn("for (uint256 i = 0; i < 3; i++)", captured["content"])
+        self.assertIn('console2.log("CALL_RETURN_DATA");', captured["content"])
+
 
     def test_fallback_storage_labels_do_not_guess_scalar_mapping_slots(self):
         config = {"target": "0x" + "1" * 40}
