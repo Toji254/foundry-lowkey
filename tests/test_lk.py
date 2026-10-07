@@ -3186,13 +3186,31 @@ contract Pool {
                 lk.encode_target_call(config,"createescrow",["1 ether"])
 
     def test_split_lab_options_accepts_separated_eth_unit(self):
-        values, actor, value, keep = lk.split_lab_options(
+        values, actor, value, keep, repeat = lk.split_lab_options(
             ["release", "--actor", "Alice", "--value", "1", "ether"]
         )
         self.assertEqual(values, ["release"])
         self.assertEqual(actor, "Alice")
         self.assertEqual(value, "1 ether")
         self.assertFalse(keep)
+        self.assertEqual(repeat, 1)
+
+    def test_split_lab_options_parses_repeat_flag_and_limits(self):
+        values, actor, value, keep, repeat = lk.split_lab_options(
+            ["createescrow", "--value", "1ether", "--repeat", "3"]
+        )
+        self.assertEqual(values, ["createescrow"])
+        self.assertIsNone(actor)
+        self.assertEqual(value, "1ether")
+        self.assertFalse(keep)
+        self.assertEqual(repeat, 3)
+
+        with self.assertRaisesRegex(ValueError, r"--repeat needs a positive integer"):
+            lk.split_lab_options(["createescrow", "--repeat"])
+        with self.assertRaisesRegex(ValueError, r"--repeat must be at least 1"):
+            lk.split_lab_options(["createescrow", "--repeat", "0"])
+        with self.assertRaisesRegex(ValueError, r"--repeat cannot exceed 100"):
+            lk.split_lab_options(["createescrow", "--repeat", "101"])
 
     def test_encode_target_call_resolves_actor_name_for_address_argument(self):
         config = {
@@ -3226,6 +3244,7 @@ contract Pool {
         self.assertEqual(actor, "Alice")
         self.assertEqual(value, "auto")
         self.assertFalse(keep)
+        self.assertEqual(repeat, 1)
 
         config={
             "target":"0x"+"1"*40,
@@ -3402,6 +3421,23 @@ contract Pool {
         self.assertIn("Vm.StorageAccess[] memory storage_accesses", captured["content"])
         self.assertIn("if (access.account != TARGET)", captured["content"])
         self.assertIn('console2.log("STORAGE_CHANGES", changed);', captured["content"])
+
+    def test_fallback_storage_labels_do_not_guess_scalar_mapping_slots(self):
+        config = {"target": "0x" + "1" * 40}
+        types = {
+            "t_mapping": {
+                "encoding": "mapping",
+                "key": "t_address",
+                "value": "t_uint256",
+            },
+            "t_address": {"label": "address", "numberOfBytes": 20},
+            "t_uint256": {"label": "uint256", "numberOfBytes": 32},
+        }
+        changed = ["0x" + format(10, "064x")]
+        storage = [{"label": "balances", "slot": "0", "type": "t_mapping"}]
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
+            labels = lk.fallback_storage_labels(config, changed)
+        self.assertNotIn(changed[0].lower(), labels)
 
     def test_fallback_storage_labels_group_generic_struct_mapping_changes(self):
         config = {"target": "0x" + "1" * 40}
