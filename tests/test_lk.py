@@ -3506,6 +3506,63 @@ contract Pool {
             "escrow[unresolved key].status [inferred]",
         )
 
+    def test_fallback_storage_labels_uses_observed_types_to_break_partial_struct_tie(self):
+        config = {"target": "0x" + "1" * 40}
+        types = {
+            "t_mapping": {
+                "encoding": "mapping",
+                "key": "t_bytes32",
+                "value": "t_struct",
+            },
+            "t_struct": {
+                "encoding": "inplace",
+                "members": [
+                    {"label": "creator", "slot": "0", "offset": 0, "type": "t_address"},
+                    {"label": "hunter", "slot": "1", "offset": 0, "type": "t_address"},
+                    {"label": "amount", "slot": "2", "offset": 0, "type": "t_uint256"},
+                    {"label": "completed", "slot": "3", "offset": 0, "type": "t_bool"},
+                ],
+            },
+            "t_address": {"label": "address", "numberOfBytes": 20},
+            "t_uint256": {"label": "uint256", "numberOfBytes": 32},
+            "t_bool": {"label": "bool", "numberOfBytes": 1},
+            "t_bytes32": {"label": "bytes32", "numberOfBytes": 32},
+        }
+        changed = [
+            {
+                "slot": "0x" + format(50, "064x"),
+                "from": "0x" + "0" * 64,
+                "to": "0x" + "0" * 24 + "1" * 40,
+            },
+            {
+                "slot": "0x" + format(51, "064x"),
+                "from": "0x" + "0" * 64,
+                "to": "0x" + "0" * 24 + "2" * 40,
+            },
+            {
+                "slot": "0x" + format(52, "064x"),
+                "from": "0x" + "0" * 64,
+                "to": "0x" + format(10**18, "064x"),
+            },
+        ]
+        storage = [{"label": "escrows", "slot": "5", "type": "t_mapping"}]
+
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
+            labels = lk.fallback_storage_labels(config, changed)
+
+        self.assertEqual(
+            labels[changed[0]["slot"]][0],
+            "escrows[unresolved key].creator [inferred]",
+        )
+        self.assertEqual(
+            labels[changed[1]["slot"]][0],
+            "escrows[unresolved key].hunter [inferred]",
+        )
+        self.assertEqual(
+            labels[changed[2]["slot"]][0],
+            "escrows[unresolved key].amount [inferred]",
+        )
+
     def test_fallback_storage_labels_leave_ambiguous_alignment_raw(self):
         config = {"target": "0x" + "1" * 40}
         types = {
