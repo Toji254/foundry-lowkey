@@ -9407,30 +9407,36 @@ def fallback_storage_labels(config, changed_slots):
                 )
             continue
 
-        # Reverse the known struct offsets. This lets us recognize a mapping
-        # value from its changed member slots without guessing the key.
-        by_base = {}
-        for target_slot, number in changed.items():
+        # Reverse the known struct offsets. Several adjacent changed slots can
+        # fit multiple hypothetical bases, so score every candidate alignment.
+        # Only a unique best alignment is trusted; ties remain raw.
+        candidate_matches = {}
+        for _target_slot, number in changed.items():
             for member in members:
                 candidate_base = number - member_slot(member)
                 if candidate_base < 0:
                     continue
-                by_base.setdefault(candidate_base, set()).add(str(member.get("label") or "field"))
+                member_name = str(member.get("label") or "field")
+                candidate_matches.setdefault(candidate_base, set()).add(member_name)
 
-        for candidate_base, matched_members in by_base.items():
-            # Require at least two distinct fields before claiming a mapping
-            # value grouping. This keeps unrelated adjacent slots from being
-            # mislabeled as a struct.
-            if len(matched_members) < 2:
-                continue
-            for member in members:
-                target_number = candidate_base + member_slot(member)
-                target_slot = "0x" + format(target_number, "064x")
-                if target_slot.lower() in changed:
-                    labels[target_slot.lower()] = (
-                        f"{entry_label}[unresolved key].{member.get('label', 'field')}",
-                        member.get("type"),
-                    )
+        best_score = max((len(names) for names in candidate_matches.values()), default=0)
+        best_bases = [
+            candidate_base
+            for candidate_base, names in candidate_matches.items()
+            if len(names) == best_score
+        ]
+        if best_score < 2 or len(best_bases) != 1:
+            continue
+
+        chosen_base = best_bases[0]
+        for member in members:
+            target_number = chosen_base + member_slot(member)
+            target_slot = "0x" + format(target_number, "064x")
+            if target_slot.lower() in changed:
+                labels[target_slot.lower()] = (
+                    f"{entry_label}[unresolved key].{member.get('label', 'field')}",
+                    member.get("type"),
+                )
 
     return labels
 
