@@ -3536,6 +3536,30 @@ contract Pool {
             labels = lk.fallback_storage_labels(config, changed)
         self.assertEqual(labels, {})
 
+    def test_state_diff_parser_accepts_repeated_call_results(self):
+        output = (
+            "[PASS] test_state_diff() (gas: 321)\n"
+            "Logs:\n"
+            "  REPEAT_CALL: 1\n"
+            "  CALL_RETURN_DATA\n"
+            "  0x" + "aa" * 32 + "\n"
+            "  REPEAT_CALL: 2\n"
+            "  CALL_RETURN_DATA\n"
+            "  0x" + "aa" * 32 + "\n"
+            "  CALL createescrow(address)\n"
+            "  REPEAT_COUNT: 2\n"
+            "  SUCCESS: true\n"
+            "  ETH_SENT 1000000000000000000\n"
+            "  STORAGE_CHANGES 0\n"
+        )
+        parsed = lk.parse_state_diff_output(output)
+        self.assertEqual(parsed["repeat_count"], 2)
+        self.assertEqual(
+            parsed["repeat_returns"],
+            ["0x" + "aa" * 32, "0x" + "aa" * 32],
+        )
+        self.assertTrue(parsed["success"])
+
     def test_state_diff_parser_accepts_recorded_state_write(self):
         slot = "0x" + "a" * 64
         before = "0x" + "0" * 64
