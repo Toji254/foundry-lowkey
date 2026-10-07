@@ -9585,7 +9585,7 @@ def parse_state_diff_output(output):
 
     gas_match=re.search(r"\[PASS\].*?test_state_diff\(\) \(gas: (\d+)\)",clean_output)
     call_match=re.search(r"(?m)^\s*CALL\s+(.+)$",clean_output)
-    success_match=re.search(r"(?m)^\s*SUCCESS\s+(true|false)\s*$",clean_output,re.I)
+    success_match=re.search(r"(?m)^\s*SUCCESS(?:\s*:\s*|\s+)(true|false)\s*$",clean_output,re.I)
     eth_match=re.search(r"(?m)^\s*ETH_SENT\s+([0-9]+)\s*$",clean_output)
     change_match=re.search(r"(?m)^\s*STORAGE_CHANGES\s+([0-9]+)\s*$",clean_output)
     fallback_match=re.search(r"(?m)^\s*FALLBACK_WRITES\s+([0-9]+)\s*$",clean_output)
@@ -14494,7 +14494,20 @@ def main():
         "--h", "--help", "-h", "help", "--version", "-V", "version",
         "doctor", "self-test",
     }
-    if runtime.get("status") in {"stale", "corrupt"} and command not in runtime_safe_commands:
+    running_from_source_checkout = False
+    try:
+        source_root = Path(__file__).resolve().parents[1]
+        running_from_source_checkout = bool(
+            _is_lowkey_source_checkout and _is_lowkey_source_checkout(source_root)
+        )
+    except OSError:
+        running_from_source_checkout = False
+
+    if (
+        runtime.get("status") in {"stale", "corrupt"}
+        and command not in runtime_safe_commands
+        and not running_from_source_checkout
+    ):
         print("LOWKEY RUNTIME OUT OF SYNC", file=sys.stderr)
         print(f"  {runtime.get('detail', 'installed runtime verification failed')}", file=sys.stderr)
         source_repo = runtime.get("source_repo")
