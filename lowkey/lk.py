@@ -4032,7 +4032,7 @@ def run_self_test():
         ("target alias resolution",resolve_target_ref(alias_config,"one",alias_root)==alias_address),
         ("safe solidity identifier",solidity_identifier("unauthorized release #1")=="unauthorized_release__1"),
         ("solidity address literal","address(uint160(0x00" in solidity_address_literal("0x"+"1"*40)),
-        ("lab options",split_lab_options(["release","1","--actor","Alice","--value","1ether"])[1:] == ("Alice","1ether",False)),
+        ("lab options",split_lab_options(["release","1","--actor","Alice","--value","1ether"])[1:] == ("Alice","1ether",False,1)),
     ]
     failed=[name for name,passed in checks if not passed]
     for name,passed in checks: print(f"{'PASS' if passed else 'FAIL'}  {name}")
@@ -12880,12 +12880,15 @@ COMMAND_HELP = {
             ("lk changes '<function(types...)>' <values...>", "Run the call without attaching ETH unless you add a value option.", "lk changes 'release(bytes32)' 0xd9c5..."),
             ("lk changes '<function(types...)>' <values...> --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes 'createescrow(uint256,address)' 1 0x7099... --value 1ether"),
             ("lk changes '<function(types...)>' <values...> --actor <name>", "Run the call as a named local actor.", "lk changes 'release(bytes32)' 0xd9c5... --actor attacker"),
+            ("lk changes '<function(types...)>' <values...> --repeat <N>", "Repeat the exact call N times inside one transaction. Useful for testing same-transaction identifier collisions.", "lk changes 'createescrow(address)' 0x7099... --value 1ether --repeat 3"),
         ],
         options=[
             ("--actor <name>", "Choose which named local actor makes the call.", "lk changes 'release(bytes32)' 0xd9c5... --actor attacker"),
             ("--as <name>", "Another spelling of --actor.", "lk changes 'release(bytes32)' 0xd9c5... --as attacker"),
             ("--value <amount>", "Attach ETH to the call. Example: --value 1ether makes msg.value equal 1 ETH.", "lk changes 'createescrow(uint256,address)' 1 0x7099... --value 1ether"),
             ("--eth <amount>", "Another spelling of --value.", "lk changes 'createescrow(uint256,address)' 1 0x7099... --eth 1ether"),
+            ("--repeat <N>", "Repeat the exact call N times inside one transaction (maximum 100).", "lk changes 'createescrow(address)' 0x7099... --value 1ether --repeat 3"),
+            ("--times <N>", "Another spelling of --repeat.", "lk changes 'createescrow(address)' 0x7099... --value 1ether --times 3"),
         ],
         related=["lk mapping", "lk layout", "lk trace"],
     ),    "state-diff": _help_entry("Alias for the storage-change reproduction workflow.", "lk state-diff '<name(parameter TYPES...)>' <VALUES...>", "lk state-diff 'deposit(uint256)' 1000", "Use it when the state-diff terminology makes more sense to you.", related=["lk changes", "lk snapshot", "lk diff"]),
