@@ -2051,14 +2051,14 @@ contract Pool {
             "wallets":{
                 "Alice":{
                     "source":"anvil-default",
-                    "anvil_index":0,
+                    "anvil_index":1,
                     "address":recorded,
                 }
             },
             "actor":"Alice",
             "labels":{recorded:"Alice"},
         }
-        info={"url":"http://127.0.0.1:8545","accounts":[actual]}
+        info={"url":"http://127.0.0.1:8545","accounts":["0x"+"0"*40, actual]}
         with patch.object(lk, "anvil_rpc_info", return_value=info),              patch.object(lk, "derive_default_anvil_key", return_value=key),              patch.object(lk, "cast_output", return_value=(0, actual, "")),              patch.object(lk, "save_config") as save_config:
             self.assertEqual(lk.resolve_wallet_key(config), key)
 
@@ -2852,18 +2852,18 @@ contract Pool {
             "wallets": {
                 "Alice": {
                     "source": "anvil-default",
-                    "anvil_index": 0,
+                    "anvil_index": 1,
                     "address": alice,
                 }
             },
             "labels": {},
         }
-        self.assertEqual(lk.actor_display(config), f"Alice ({alice}) [Anvil #0]")
+        self.assertEqual(lk.actor_display(config), f"Alice ({alice}) [Anvil #1]")
 
         with patch.object(
             lk,
             "anvil_rpc_info",
-            return_value={"url": "http://127.0.0.1:8545", "accounts": [alice]},
+            return_value={"url": "http://127.0.0.1:8545", "accounts": ["0x" + "0" * 40, alice]},
         ):
             output = io.StringIO()
             with redirect_stdout(output):
