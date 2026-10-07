@@ -3403,6 +3403,44 @@ contract Pool {
         self.assertIn("if (access.account != TARGET)", captured["content"])
         self.assertIn('console2.log("STORAGE_CHANGES", changed);', captured["content"])
 
+    def test_fallback_storage_labels_group_generic_struct_mapping_changes(self):
+        config = {"target": "0x" + "1" * 40}
+        types = {
+            "t_mapping": {
+                "encoding": "mapping",
+                "key": "t_bytes32",
+                "value": "t_struct",
+            },
+            "t_struct": {
+                "encoding": "inplace",
+                "members": [
+                    {"label": "creator", "slot": "0", "offset": 0, "type": "t_address"},
+                    {"label": "amount", "slot": "1", "offset": 0, "type": "t_uint256"},
+                    {"label": "status", "slot": "2", "offset": 0, "type": "t_uint8"},
+                ],
+            },
+            "t_address": {"label": "address", "numberOfBytes": 20},
+            "t_uint256": {"label": "uint256", "numberOfBytes": 32},
+            "t_uint8": {"label": "uint8", "numberOfBytes": 1},
+            "t_bytes32": {"label": "bytes32", "numberOfBytes": 32},
+        }
+        base = 10
+        changed = [
+            "0x" + format(base, "064x"),
+            "0x" + format(base + 1, "064x"),
+        ]
+        storage = [{"label": "escrow", "slot": "5", "type": "t_mapping"}]
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
+            labels = lk.fallback_storage_labels(config, changed)
+        self.assertEqual(
+            labels[changed[0].lower()][0],
+            "escrow[unresolved key].creator",
+        )
+        self.assertEqual(
+            labels[changed[1].lower()][0],
+            "escrow[unresolved key].amount",
+        )
+
     def test_state_diff_parser_accepts_recorded_state_write(self):
         slot = "0x" + "a" * 64
         before = "0x" + "0" * 64
