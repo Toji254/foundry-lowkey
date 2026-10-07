@@ -192,9 +192,11 @@ jobs:
           TARGET=0x1000000000000000000000000000000000000001
           CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
           cast rpc anvil_setCode "$TARGET" "$CODE"
-          lk actor 0 Alice
-          lk actor 1 Bob
+          lk actor 1 Alice
+          lk actor 2 Bob
           set +e
+          lk actor 0 Alice
+          test $? -ne 0
           lk actor 0 Bob
           test $? -ne 0
           set -e
