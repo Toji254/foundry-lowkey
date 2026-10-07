@@ -9338,6 +9338,103 @@ def mapping_slot_matches(config, signature, raw_values, actor_address_value, cha
     return labels
 
 
+def fallback_storage_labels(config, changed_slots):
+    """Best-effort human labels when the exact mapping key cannot be proven.
+    
+    The raw slot remains the authoritative identifier. When storage layout proves
+    that several changed slots are fields of the same mapping value, label them
+    as mapping[unresolved key].field instead of exposing only opaque hex slots.
+    """
+    types, storage = storage_layout_details(config)
+    if not types or not storage:
+        return {}
+
+    changed = {}
+    for slot in changed_slots:
+        normalized = str(slot).lower()
+        number = storage_slot_int(normalized)
+        if number is not None:
+            changed[normalized] = number
+
+    labels = {}
+
+    def member_slot(member):
+        try:
+            return int(str(member.get("slot", "0")), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    for entry in storage:
+        entry_label = str(entry.get("label") or "storage")
+        entry_type = entry.get("type")
+        info = types.get(entry_type, {}) if isinstance(entry_type, str) else {}
+        if not isinstance(info, dict):
+            continue
+
+        base = storage_slot_int(entry.get("slot"))
+        if base is None:
+            continue
+
+        if info.get("encoding") != "mapping":
+            # Direct state variables remain useful to decode by their declared slot.
+            if base in changed.values():
+                target_slot = "0x" + format(base, "064x")
+                labels.setdefault(
+                    target_slot,
+                    (entry_label, entry_type),
+                )
+            members = info.get("members", [])
+            for member in members if isinstance(members, list) else []:
+                target_number = base + member_slot(member)
+                target_slot = "0x" + format(target_number, "064x")
+                if target_slot.lower() in changed:
+                    labels.setdefault(
+                        target_slot.lower(),
+                        (f"{entry_label}.{member.get('label', 'field')}", member.get("type")),
+                    )
+            continue
+
+        value_type = types.get(info.get("value"), {}) if isinstance(info.get("value"), str) else {}
+        members = value_type.get("members", []) if isinstance(value_type, dict) else []
+
+        if not members:
+            # We can prove the write belongs to this mapping even when the key
+            # itself cannot be reconstructed from the call inputs.
+            for target_slot, _number in changed.items():
+                labels.setdefault(
+                    target_slot,
+                    (f"{entry_label}[unresolved key]", info.get("value")),
+                )
+            continue
+
+        # Reverse the known struct offsets. This lets us recognize a mapping
+        # value from its changed member slots without guessing the key.
+        by_base = {}
+        for target_slot, number in changed.items():
+            for member in members:
+                candidate_base = number - member_slot(member)
+                if candidate_base < 0:
+                    continue
+                by_base.setdefault(candidate_base, set()).add(str(member.get("label") or "field"))
+
+        for candidate_base, matched_members in by_base.items():
+            # Require at least two distinct fields before claiming a mapping
+            # value grouping. This keeps unrelated adjacent slots from being
+            # mislabeled as a struct.
+            if len(matched_members) < 2:
+                continue
+            for member in members:
+                target_number = candidate_base + member_slot(member)
+                target_slot = "0x" + format(target_number, "064x")
+                if target_slot.lower() in changed:
+                    labels[target_slot.lower()] = (
+                        f"{entry_label}[unresolved key].{member.get('label', 'field')}",
+                        member.get("type"),
+                    )
+
+    return labels
+
+
 def display_storage_key(config, value):
     text_value=str(value)
     if is_address(text_value):
@@ -9683,7 +9780,11 @@ contract LowkeyStateDiff is Test {{
 
         types,_storage=storage_layout_details(config)
         raw_args=values[1:]
-        labels=mapping_slot_matches(config,signature,raw_args,address, [item["slot"] for item in parsed["slots"]])
+        changed_slots=[item["slot"] for item in parsed["slots"]]
+        labels=mapping_slot_matches(config,signature,raw_args,address,changed_slots)
+        fallback_labels=fallback_storage_labels(config,changed_slots)
+        for slot,label in fallback_labels.items():
+            labels.setdefault(slot,label)
 
         print("CHANGES")
         print("=======")
@@ -9703,7 +9804,7 @@ contract LowkeyStateDiff is Test {{
         storage_evidence = []
         if parsed["slots"]:
             print("\nStorage changes:")
-        for item in parsed["slots"]:
+        for index,item in enumerate(parsed["slots"],1):
             slot=item["slot"].lower()
             decoded=labels.get(slot)
             if isinstance(decoded,tuple):
@@ -9713,9 +9814,15 @@ contract LowkeyStateDiff is Test {{
                 type_id=None
             before=format_storage_value(config,item["from"],type_id,types,label,eth_sent)
             after=format_storage_value(config,item["to"],type_id,types,label,eth_sent)
-            print(f"  {label}")
+            change_fingerprint = hashlib.sha256(
+                f"{slot}|{item['from'].lower()}|{item['to'].lower()}".encode("utf-8")
+            ).hexdigest()[:10]
+            print(f"  Change {index}/{len(parsed['slots'])}  [{change_fingerprint}]")
+            print(f"    {label}")
             print(f"    {before}  ->  {after}")
+            print(f"    slot: {slot}")
             storage_evidence.append({
+                "change_id": change_fingerprint,
                 "slot": slot,
                 "label": label,
                 "type": type_id,
@@ -9724,7 +9831,6 @@ contract LowkeyStateDiff is Test {{
                 "from_display": before,
                 "to_display": after,
             })
-            print(f"    slot: {slot}")
 
         if parsed["changes_expected"]!=len(parsed["slots"]):
             print(f"\nNote: Forge reported {parsed['changes_expected']} changed slots; Lowkey decoded {len(parsed['slots'])}.")
