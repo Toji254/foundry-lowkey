@@ -3428,6 +3428,7 @@ contract Pool {
         changed = [
             "0x" + format(base, "064x"),
             "0x" + format(base + 1, "064x"),
+            "0x" + format(base + 2, "064x"),
         ]
         storage = [{"label": "escrow", "slot": "5", "type": "t_mapping"}]
         with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
@@ -3440,6 +3441,34 @@ contract Pool {
             labels[changed[1].lower()][0],
             "escrow[unresolved key].amount [inferred]",
         )
+        self.assertEqual(
+            labels[changed[2].lower()][0],
+            "escrow[unresolved key].status [inferred]",
+        )
+
+    def test_fallback_storage_labels_leave_ambiguous_alignment_raw(self):
+        config = {"target": "0x" + "1" * 40}
+        types = {
+            "t_mapping": {
+                "encoding": "mapping",
+                "key": "t_bytes32",
+                "value": "t_struct",
+            },
+            "t_struct": {
+                "encoding": "inplace",
+                "members": [
+                    {"label": "first", "slot": "0", "offset": 0, "type": "t_uint256"},
+                    {"label": "second", "slot": "1", "offset": 0, "type": "t_uint256"},
+                ],
+            },
+            "t_uint256": {"label": "uint256", "numberOfBytes": 32},
+            "t_bytes32": {"label": "bytes32", "numberOfBytes": 32},
+        }
+        changed = ["0x" + format(10, "064x")]
+        storage = [{"label": "items", "slot": "5", "type": "t_mapping"}]
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
+            labels = lk.fallback_storage_labels(config, changed)
+        self.assertNotIn(changed[0].lower(), labels)
 
     def test_state_diff_parser_accepts_recorded_state_write(self):
         slot = "0x" + "a" * 64
