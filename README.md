@@ -134,14 +134,18 @@ Plain `lk audit` detects and uses an existing Anvil node but never starts one. `
 Use actor names so your audit notes read like an attack story instead of a wall of addresses.
 
 ~~~bash
-lk actor 0 Alice
-lk actor 1 Bob
-lk actor 2 attacker
+lk actor 1 Alice
+lk actor 2 Bob
+lk actor 3 attacker
 
+lk actor 0
+lk actor 1
 lk actor
 lk as attacker c balances 0x...
 lk as attacker s release --preview
 ~~~
+
+"lk actor <index>" selects an actor profile already assigned to that Anvil account. "lk actor <index> <name>" assigns or rebinds a user-facing profile. Anvil account 0 is reserved for Lowkey's internal lab-deployer, so user actors should use account 1 or higher.
 
 The same Anvil account cannot be assigned to two actor names.
 
