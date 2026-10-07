@@ -4696,21 +4696,52 @@ def withdraw(amount: uint256):
                 "Alice": {"source": "anvil-default", "anvil_index": 0, "address": "0x"+"1"*40},
             },
             "labels": {},
+            "aliases": {},
+            "targets": {},
+            "abi_paths": {},
+            "project_roots": {},
         }
         address = "0x"+"1"*40
-        with patch.object(lk, "_ensure_lab_deployer") as ensure:
-            ensure.side_effect = lambda cfg, addr, index=0, select_if_empty=True: (
-                cfg["wallets"].update({
-                    "lab-deployer": {
-                        "source": "anvil-default",
-                        "anvil_index": 0,
-                        "address": addr,
-                        "internal": True,
-                    }
-                }),
-                cfg.update({"actor":"lab-deployer"}),
+        target = "0x"+"2"*40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True, exist_ok=True)
+            script.write_text(
+                "pragma solidity ^0.8.20; contract LocalAudit { function run() external {} }",
+                encoding="utf-8",
             )
-            self.assertEqual(lk.actor_display(config), "lab-deployer (0x"+"1"*40+") [Anvil #0]")
+
+            def ensure_deployer(cfg, addr, index=0, select_if_empty=False):
+                cfg["wallets"]["lab-deployer"] = {
+                    "source": "anvil-default",
+                    "anvil_index": 0,
+                    "address": addr,
+                    "internal": True,
+                }
+                cfg["actor"] = "lab-deployer"
+
+            with patch.object(lk, "_ensure_lab_deployer", side_effect=ensure_deployer), \
+                 patch.object(lk, "run_foundry", return_value=lk.CommandResult(f"LOWKEY_TARGET {target}", 0)), \
+                 patch.object(lk, "_lab_script_environment", return_value=({}, [])), \
+                 patch.object(lk, "_validate_project_lab_target", return_value=("Escrow", "/tmp/Escrow.json", None)), \
+                 patch.object(lk, "set_lab_target"), \
+                 patch.object(lk, "_print_security_scope"), \
+                 patch.object(lk, "audit_context"), \
+                 patch.object(lk, "_project_source_mutations", return_value=[]), \
+                 patch.object(lk, "discover_deployments", return_value=[]), \
+                 patch.object(lk, "derive_default_anvil_key", return_value="0x"+"3"*64):
+                result = lk.run_project_lab_script(
+                    config, root, str(script), "http://127.0.0.1:8545",
+                    [address], "0x"+"3"*64,
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(config["actor"], "lab-deployer")
+        self.assertEqual(
+            lk.actor_display(config),
+            "lab-deployer (0x"+"1"*40+") [Anvil #0]",
+        )
 
     def test_internal_lab_deployer_is_still_used_for_address_labels(self):
         address = "0x" + "1" * 40
