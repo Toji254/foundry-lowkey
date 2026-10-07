@@ -7131,8 +7131,27 @@ def _validate_project_lab_target(
         except (OSError, ValueError):
             scoped = []
 
+    exact_records = [
+        item for item in deployments
+        if isinstance(item, dict)
+        and str(item.get("address") or "").strip().lower() == provenance_address
+    ]
+
     if scoped:
-        provenance_records = scoped
+        # Prefer the executed script's deployment records, but do not discard
+        # the exact address Lowkey just selected merely because the broadcast
+        # path could not be scoped (for example after Foundry renamed or
+        # regenerated a run-latest file).
+        scoped_exact = [
+            item for item in scoped
+            if str(item.get("address") or "").strip().lower() == provenance_address
+        ]
+        provenance_records = scoped_exact or exact_records or scoped
+    elif exact_records:
+        # An exact address match is stronger evidence than "latest broadcast".
+        # A project can legitimately have several deployments alive on the
+        # same Anvil instance; newest is not the same thing as selected.
+        provenance_records = exact_records
     else:
         latest_timestamp = max(
             (
@@ -7199,7 +7218,7 @@ def _validate_project_lab_target(
     for item in provenance_records:
         if not isinstance(item, dict):
             continue
-        if implementation_lower and str(item.get("address") or "").lower() == implementation_lower:
+        if str(item.get("address") or "").strip().lower() == provenance_address:
             scoped_matches.append(
                 f"{item.get('contract') or 'Unknown'} @ {item.get('address')}"
             )
