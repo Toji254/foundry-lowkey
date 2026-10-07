@@ -9589,6 +9589,8 @@ def parse_state_diff_output(output):
     eth_match=re.search(r"(?m)^\s*ETH_SENT\s+([0-9]+)\s*$",clean_output)
     change_match=re.search(r"(?m)^\s*STORAGE_CHANGES\s+([0-9]+)\s*$",clean_output)
     fallback_match=re.search(r"(?m)^\s*FALLBACK_WRITES\s+([0-9]+)\s*$",clean_output)
+    repeat_calls=[int(match) for match in re.findall(r"(?m)^\s*REPEAT_CALL[:\s]+(\d+)\s*$",clean_output)]
+    repeat_returns=re.findall(r"(?m)^\s*CALL_RETURN_DATA\s*$\n\s*(0x[0-9a-fA-F]*)\s*$", clean_output)
 
     slots=_extract_state_diff_json_slots(clean_output)
     lines=[line.strip() for line in clean_output.splitlines()]
@@ -9627,6 +9629,8 @@ def parse_state_diff_output(output):
         "eth_sent":int(eth_match.group(1)) if eth_match else 0,
         "changes_expected":int(change_match.group(1)) if change_match else len(dedup),
         "fallback_writes":int(fallback_match.group(1)) if fallback_match else 0,
+        "repeat_count":max(repeat_calls) if repeat_calls else 1,
+        "repeat_returns":repeat_returns,
         "state_diff_json":bool(_extract_state_diff_json_slots(clean_output)),
         "slots":list(dedup.values()),
         "raw":text_output,
@@ -9832,6 +9836,12 @@ contract LowkeyStateDiff is Test {{
         print(f"ETH sent:  {eth_sent/10**18:g} ETH" if eth_sent%10**18==0 else f"ETH sent:  {eth_sent} wei")
         status="SUCCESS" if parsed["success"] else "REVERTED"
         print(f"Result:    {status}")
+        repeat_count=parsed.get("repeat_count",1)
+        if repeat_count > 1:
+            print(f"Calls:     {repeat_count} (same transaction)")
+            returns=parsed.get("repeat_returns") or []
+            for index,returned in enumerate(returns,1):
+                print(f"Return {index}/{repeat_count}: {returned or '0x'}")
         if parsed["gas"] is not None:
             print(f"Gas:       {parsed['gas']}")
         print(f"Storage:   {len(parsed['slots'])} change(s)")
@@ -9882,6 +9892,8 @@ contract LowkeyStateDiff is Test {{
             "success":parsed["success"],
             "gas":parsed["gas"],
             "eth_sent_wei":parsed["eth_sent"],
+            "repeat_count":parsed.get("repeat_count",1),
+            "repeat_returns":parsed.get("repeat_returns",[]),
             "changes_expected":parsed["changes_expected"],
             "fallback_writes":parsed["fallback_writes"],
             "state_diff_json":parsed["state_diff_json"],
