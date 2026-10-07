@@ -756,6 +756,60 @@ class ProjectTargetingTests(unittest.TestCase):
             self.assertEqual(contract, "ConfidencePoolFactory")
             self.assertEqual(resolved_artifact, str(artifact))
 
+    def test_project_lab_ignores_zero_implementation_for_direct_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "Escrow.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.26; contract Escrow {}",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "Escrow.sol" / "Escrow.json"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Escrow",
+                    "sourceName": "src/Escrow.sol",
+                    "bytecode": {"object": "0x6000"},
+                    "deployedBytecode": {"object": "0xdeadbeef"},
+                    "abi": [],
+                }),
+                encoding="utf-8",
+            )
+
+            target = "0x" + "1" * 40
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", target]:
+                    return lk.CommandResult("0xdeadbeef", 0)
+                if args[:2] == ["implementation", target]:
+                    return lk.CommandResult("0x" + "0" * 40, 0)
+                return lk.CommandResult("", 0)
+
+            deployments = [{
+                "contract": "Escrow",
+                "address": target,
+                "file": str(root / "broadcast" / "EthEscrow.s.sol" / "31337" / "run-latest.json"),
+                "time": 100,
+                "run_timestamp": 100,
+            }]
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast), \
+                 patch.object(lk, "discover_deployments", return_value=deployments):
+                contract, resolved_artifact, error = lk._validate_project_lab_target(
+                    config,
+                    root,
+                    "http://127.0.0.1:8545",
+                    target,
+                    provenance_script=root / "script" / "EthEscrow.s.sol",
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(contract, "Escrow")
+            self.assertEqual(resolved_artifact, str(artifact))
+
     def test_project_lab_rejects_unmatched_broadcast_deployment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
