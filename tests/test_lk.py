@@ -3153,6 +3153,27 @@ contract Pool {
             with self.assertRaisesRegex(ValueError, "Replace '...'"):
                 lk.encode_target_call(config,"acceptescrow",["..."])
 
+    def test_encode_target_call_rejects_signature_not_in_active_target_abi(self):
+        config={"target":"0x"+"1"*40}
+        abi=[
+            {
+                "type":"function",
+                "name":"createescrow",
+                "inputs":[{"name":"recipient","type":"address"}],
+                "stateMutability":"payable",
+            }
+        ]
+        with patch.object(lk, "load_abi", return_value=abi):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"Function signature 'createescrow\(uint256,address\)' is not present.*createescrow\(address\)",
+            ):
+                lk.encode_target_call(
+                    config,
+                    "createescrow(uint256,address)",
+                    ["111", "0x"+"2"*40],
+                )
+
     def test_encode_target_call_reports_argument_count(self):
         config={"target":"0x"+"1"*40}
         abi=[{
@@ -4667,6 +4688,29 @@ def withdraw(amount: uint256):
         self.assertNotIn(old, config.get('labels', {}))
         self.assertEqual(lk.assigned_anvil_address(config, new), 'Alice')
         self.assertIsNone(lk.assigned_anvil_address(config, old))
+
+    def test_project_lab_uses_lab_deployer_for_reserved_account_zero_display(self):
+        config = {
+            "actor": "Alice",
+            "wallets": {
+                "Alice": {"source": "anvil-default", "anvil_index": 0, "address": "0x"+"1"*40},
+            },
+            "labels": {},
+        }
+        address = "0x"+"1"*40
+        with patch.object(lk, "_ensure_lab_deployer") as ensure:
+            ensure.side_effect = lambda cfg, addr, index=0, select_if_empty=True: (
+                cfg["wallets"].update({
+                    "lab-deployer": {
+                        "source": "anvil-default",
+                        "anvil_index": 0,
+                        "address": addr,
+                        "internal": True,
+                    }
+                }),
+                cfg.update({"actor":"lab-deployer"}),
+            )
+            self.assertEqual(lk.actor_display(config), "lab-deployer (0x"+"1"*40+") [Anvil #0]")
 
     def test_internal_lab_deployer_is_still_used_for_address_labels(self):
         address = "0x" + "1" * 40
