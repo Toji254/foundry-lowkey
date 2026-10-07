@@ -9356,10 +9356,18 @@ def mapping_slot_matches(config, signature, raw_values, actor_address_value, cha
 
 def fallback_storage_labels(config, changed_slots):
     """Best-effort human labels when the exact mapping key cannot be proven.
-    
-    The raw slot remains the authoritative identifier. When storage layout proves
-    that several changed slots are fields of the same mapping value, label them
-    as mapping[unresolved key].field instead of exposing only opaque hex slots.
+
+    The storage slot remains the authoritative evidence. When a mapping value is
+    a struct, Lowkey infers the struct base from the *observed changed slots* and
+    now also scores each possible alignment against the actual stored value type.
+    This resolves common partial-write cases such as:
+
+        address, address, uint256, bool
+        ^^^^^^^  ^^^^^^^  ^^^^^^^
+
+    where only the first three fields changed. A pure slot-count tie is no
+    longer treated as equally plausible when the observed values clearly fit
+    one field layout better.
     """
     types, storage = storage_layout_details(config)
     if not types or not storage:
@@ -9380,6 +9388,44 @@ def fallback_storage_labels(config, changed_slots):
         except (TypeError, ValueError):
             return 0
 
+    def type_match_score(raw_value, type_id):
+        """Score how strongly a raw 32-byte word fits an ABI storage type."""
+        if not type_id or type_id not in types:
+            return 0
+
+        raw = str(raw_value or "").strip()
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", raw):
+            return 0
+
+        label = storage_type_label(types, type_id).lower()
+        try:
+            numeric = int(raw, 16)
+        except ValueError:
+            return 0
+
+        if label == "bool":
+            return 3 if numeric in {0, 1} else 0
+
+        if label == "address" or label.startswith("contract "):
+            # Solidity stores an address in the low 20 bytes of the slot.
+            # Require the upper 12 bytes to be zero before treating a large
+            # integer as an address.
+            return 3 if raw[2:26] == "0" * 24 else 0
+
+        if label.startswith("uint") or label.startswith("int"):
+            return 2
+
+        if label.startswith("enum "):
+            return 2
+
+        if label == "bytes32":
+            return 1
+
+        if label.startswith("bytes"):
+            return 1
+
+        return 0
+
     for entry in storage:
         entry_label = str(entry.get("label") or "storage")
         entry_type = entry.get("type")
@@ -9395,74 +9441,109 @@ def fallback_storage_labels(config, changed_slots):
             # Direct state variables remain useful to decode by their declared slot.
             if base in changed.values():
                 target_slot = "0x" + format(base, "064x")
-                labels.setdefault(
-                    target_slot,
-                    (entry_label, entry_type),
-                )
+                labels.setdefault(target_slot, (entry_label, entry_type))
             members = info.get("members", [])
             for member in members if isinstance(members, list) else []:
                 target_number = base + member_slot(member)
                 target_slot = "0x" + format(target_number, "064x")
                 if target_slot.lower() in changed:
                     labels.setdefault(
-                        target_slot.lower(),
+                        target_slot,
                         (f"{entry_label}.{member.get('label', 'field')}", member.get("type")),
                     )
             continue
 
-        value_type = types.get(info.get("value"), {}) if isinstance(info.get("value"), str) else {}
-        members = value_type.get("members", []) if isinstance(value_type, dict) else []
+        value_type_id = info.get("value")
+        value_info = types.get(value_type_id, {}) if isinstance(value_type_id, str) else {}
+        members = value_info.get("members", []) if isinstance(value_info, dict) else []
 
         if not members:
-            # Without a derivable mapping key, a raw slot cannot safely be
-            # attributed to an arbitrary scalar mapping. Leave it unresolved;
-            # mapping_slot_matches() handles cases where the key is provable.
+            # Scalar mappings remain unresolved unless mapping_slot_matches()
+            # proved the exact key from the function arguments.
             continue
 
-        # A mapping key may be derived inside the contract (for example
-        # keccak256(msg.sender)), so it cannot always be reconstructed from the
-        # call arguments. Look for a unique contiguous struct footprint among
-        # the changed slots. This is a readable inference, not proof of the key.
-        # Do not scan the numeric range between real EVM storage slots:
-        # mapping slots are 256-bit hashes and unrelated changed slots can be
-        # astronomically far apart. Derive only the finite candidate bases that
-        # are possible from an observed slot/member pair.
-        changed_numbers = set(changed.values())
+        # Reverse the known struct offsets. A partial write can make multiple
+        # bases look equally plausible by slot count alone, so keep the full
+        # observed value in the score.
         candidate_matches = {}
-        for number in changed_numbers:
+        for target_slot, number in changed.items():
+            raw_value = None
+            for item in ():
+                raw_value = item
             for member in members:
                 candidate_base = number - member_slot(member)
                 if candidate_base < 0:
                     continue
-                matched = {
-                    str(other.get("label") or "field")
-                    for other in members
-                    if candidate_base + member_slot(other) in changed_numbers
-                }
-                if matched:
-                    candidate_matches.setdefault(candidate_base, set()).update(matched)
 
-        best_score = max((len(names) for names in candidate_matches.values()), default=0)
-        best_bases = [
-            candidate_base
-            for candidate_base, names in candidate_matches.items()
-            if len(names) == best_score
-        ]
-        if best_score < 2 or len(best_bases) != 1:
+                member_name = str(member.get("label") or "field")
+                member_type = member.get("type")
+                score = 10 + type_match_score(
+                    _changed_value_for_slot(changed, target_slot, changed_slots),
+                    member_type,
+                )
+                state = candidate_matches.setdefault(
+                    candidate_base,
+                    {"members": {}, "score": 0},
+                )
+                existing = state["members"].get(member_name)
+                if existing is None or score > existing["score"]:
+                    state["members"][member_name] = {
+                        "member": member,
+                        "score": score,
+                    }
+
+        ranked = []
+        for candidate_base, state in candidate_matches.items():
+            members_seen = state["members"]
+            if len(members_seen) < 2:
+                continue
+            slot_score = len(members_seen) * 100
+            type_score = sum(item["score"] - 10 for item in members_seen.values())
+            ranked.append((slot_score + type_score, candidate_base, members_seen))
+
+        if not ranked:
             continue
 
-        chosen_base = best_bases[0]
+        best_score = max(item[0] for item in ranked)
+        best = [item for item in ranked if item[0] == best_score]
+        if len(best) != 1:
+            continue
+
+        _score, chosen_base, matched_members = best[0]
         for member in members:
             target_number = chosen_base + member_slot(member)
             target_slot = "0x" + format(target_number, "064x")
-            if target_slot.lower() in changed:
-                labels[target_slot.lower()] = (
-                    f"{entry_label}[unresolved key].{member.get('label', 'field')} [inferred]",
-                    member.get("type")
-                )
+            if target_slot.lower() not in changed:
+                continue
+            if not any(
+                item["member"] is member
+                for item in matched_members.values()
+            ):
+                continue
+            labels[target_slot.lower()] = (
+                f"{entry_label}[unresolved key].{member.get('label', 'field')} [inferred]",
+                member.get("type"),
+            )
 
     return labels
 
+
+def _changed_value_for_slot(changed, target_slot, changed_slots):
+    """Return the observed post-write value for a changed slot when available.
+
+    Legacy callers only pass slot strings here, so this helper intentionally
+    accepts an optional richer shape too. The state-diff path can provide the
+    actual values, while the standalone fallback API remains compatible.
+    """
+    if isinstance(changed_slots, dict):
+        item = changed_slots.get(target_slot) or changed_slots.get(str(target_slot).lower())
+        if isinstance(item, dict):
+            return item.get("to") or item.get("new") or item.get("value")
+        if isinstance(item, str):
+            return item
+
+    # A standalone list of slot strings carries no value information.
+    return None
 
 def display_storage_key(config, value):
     text_value=str(value)
