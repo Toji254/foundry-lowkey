@@ -120,6 +120,32 @@ class CliConsistencyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"cannot repeat an exact call"):
             lk.normalize_send_options(["contribute", "--repeat", "2"])
 
+    def test_send_repeat_error_is_not_double_prefixed(self):
+        with patch.object(lk, "cast_output") as cast_output:
+            result = lk.run_cast(
+                ["send", "contribute", "--repeat", "5"],
+                {"target": "0x" + "3" * 40},
+                capture=True,
+            )
+        self.assertEqual(result.code, 2)
+        self.assertTrue(str(result).startswith("--repeat/--times cannot repeat"))
+        self.assertNotIn("Error: Error:", str(result))
+        cast_output.assert_not_called()
+
+    def test_failed_evidence_command_does_not_refresh_poc(self):
+        config = {"target": "0x" + "3" * 40}
+        with patch.object(lk, "load_config", return_value=config), \
+             patch.object(lk, "dispatch_command", return_value=2), \
+             patch.object(lk, "runtime_sync_status", return_value={"status": "ok"}), \
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/Fallback")), \
+             patch.object(lk, "_sync_audit_context"), \
+             patch.object(lk, "refresh_generated_poc") as refresh_poc, \
+             patch.object(lk, "_print_recommended_next_commands"), \
+             patch.object(lk, "save_config"):
+            with patch.object(lk.sys, "argv", ["lk", "send", "contribute", "--repeat", "5"]):
+                lk.main()
+        refresh_poc.assert_not_called()
+
     def test_send_times_alias_matches_repeat(self):
         with self.assertRaisesRegex(ValueError, r"cannot repeat an exact call"):
             lk.normalize_send_options(["contribute", "--times", "2"])
