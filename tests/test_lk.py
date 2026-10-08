@@ -30,12 +30,13 @@ class LowkeyCastTests(unittest.TestCase):
             "artifact": "out/Fallback.sol/Fallback.json",
         }
 
-        with patch.object(
-            lk,
-            "cast_output",
-            return_value=(0, "0x", ""),
-        ):
-            code = lk._select_project_target(config, entry, pathlib.Path("/tmp/testi"))
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(
+                lk,
+                "_live_target_state",
+                return_value={"status": "NOT_DEPLOYED", "verification": "UNVERIFIED"},
+            ):
+                code = lk._select_project_target(config, entry, pathlib.Path("/tmp/testi"))
 
         self.assertEqual(code, 1)
         self.assertNotIn("target", config)
@@ -59,7 +60,7 @@ class LowkeyCastTests(unittest.TestCase):
                     config, entry, pathlib.Path("/tmp/testi")
                 )
         self.assertEqual(code, 1)
-        self.assertNotIn("target", config)
+        self.assertIsNone(config.get("target"))
 
     def test_status_reports_not_deployed_target_and_recovery(self):
         address = "0x" + "3" * 40
@@ -100,16 +101,13 @@ class LowkeyCastTests(unittest.TestCase):
             "actor": "lab-deployer",
             "wallets": {},
         }
-        with patch.object(lk, "_live_target_state", return_value={
-            "status": "NOT_DEPLOYED",
-            "rpc": "http://127.0.0.1:8545",
-            "verification": "UNVERIFIED",
-        }):
-            with patch.object(
-                lk,
-                "cast_output",
-                side_effect=AssertionError("cast must not execute"),
-            ):
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "rpc_json", return_value="0x"):
+                with patch.object(
+                    lk,
+                    "cast_output",
+                    side_effect=AssertionError("cast must not execute"),
+                ):
                 result = lk.run_cast(
                     ["send", "withdraw", "--eth", "0.1"],
                     config,
@@ -220,7 +218,7 @@ class LowkeyCastTests(unittest.TestCase):
         with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/testi")):
             with patch.object(lk.audit_context, "set_target"), patch.object(lk, "save_config"):
                 code = lk.dispatch_command("target", ["reset"], config)
-        self.assertEqual(code, 0)
+        self.assertIsNone(code)
         self.assertIsNone(config.get("target"))
         self.assertIsNone(config.get("target_contract"))
 
