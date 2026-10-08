@@ -6246,7 +6246,7 @@ def artifact_is_project_application(root, path, artifact):
     # When Foundry stripped sourceName, use the artifact directory only to
     # confirm that the fallback source file belongs to the same artifact stem.
     # The old check compared the artifact directory to the *contract name*,
-    # which incorrectly rejected valid layouts such as PurchaseNFT2.sol -> PurchaseNFT.
+    # which incorrectly rejected valid layouts when source filenames and Solidity symbols differ.
     # Explicit sourceName metadata is stronger provenance and needs no basename check.
     if not explicit_source:
         parent_stem = path_obj.parent.name
@@ -9167,7 +9167,7 @@ def storage_layout_details(config):
         # Some Foundry-compatible artifacts contain ABI/bytecode/metadata
         # but omit contractName and storageLayout. In that case the artifact
         # filename still gives us a trustworthy contract name, e.g.
-        # ./out/EthEscrow.sol/Escrow.json -> Escrow.
+        # The artifact filename can still provide a trustworthy Solidity symbol.
         if not name:
             fallback=Path(path).stem
             if fallback and fallback not in contracts:
@@ -13864,7 +13864,7 @@ COMMON TERMS
   <name>      Friendly name you gave to an actor or target, e.g. Alice or escrow
   <Contract>  Solidity contract name, e.g. Escrow
   <function>  Solidity function name, e.g. release
-  <file>      Source file, e.g. src/EthEscrow.sol
+  <file>      Source file, e.g. src/<SourceFile>.sol
   <dir>       Folder, e.g. src
   <slot>      Number used to locate saved contract data, e.g. 3
   <key>       Value used to look up one mapping entry, often an address
