@@ -58,6 +58,44 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
 
+    def test_storage_command_uses_selected_target(self):
+        target = "0x" + "3" * 40
+        config = {
+            "target": target,
+            "rpc_url": "http://127.0.0.1:8545",
+        }
+        with patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
+            result = lk.dispatch_command("storage", ["1"], config)
+
+        self.assertEqual(result, 0)
+        cast_output.assert_called_once_with([
+            "cast",
+            "storage",
+            target,
+            "1",
+            "--rpc-url",
+            "http://127.0.0.1:8545",
+        ])
+
+    def test_slots_alias_uses_selected_target(self):
+        target = "0x" + "3" * 40
+        config = {
+            "target": target,
+            "rpc_url": "http://127.0.0.1:8545",
+        }
+        with patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
+            result = lk.dispatch_command("slots", ["1"], config)
+
+        self.assertEqual(result, 0)
+        cast_output.assert_called_once_with([
+            "cast",
+            "storage",
+            target,
+            "1",
+            "--rpc-url",
+            "http://127.0.0.1:8545",
+        ])
+
     def test_named_target_can_be_used_as_explicit_read_target(self):
         target = "0x" + "3" * 40
         config = {
