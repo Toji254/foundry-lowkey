@@ -78,10 +78,11 @@ class CliConsistencyTests(unittest.TestCase):
             "target": address,
             "targets": {"Fallback": address},
         }
-        self.assertIn(
-            f"Fallback ({address})",
-            lk.apply_labels(address, config),
-        )
+        with patch.object(lk, "target_aliases", return_value={"Fallback": address}):
+            self.assertIn(
+                f"Fallback ({address})",
+                lk.apply_labels(address, config),
+            )
 
     def test_storage_read_explains_slot_from_compiled_layout(self):
         raw = "0x000000000000000000000000" + "f39fd6e51aad88f6f4ce6ab8827279cfffb92266"
