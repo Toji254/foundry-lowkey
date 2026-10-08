@@ -9000,6 +9000,54 @@ def split_grouped_argument_values(values, expected_count):
 
     return expanded if len(expanded) == expected_count else raw
 
+def parse_type_list_token(token):
+    """Parse a comma-separated explicit Solidity type list."""
+    text=str(token or "").strip()
+    if len(text) >= 2 and text.startswith("(") and text.endswith(")"):
+        text=text[1:-1].strip()
+    if not text or "," not in text:
+        return None
+    parts=[]
+    start=0
+    depth=0
+    for index,char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "," and depth == 0:
+            part=text[start:index].strip()
+            if not part:
+                return None
+            parts.append(part)
+            start=index+1
+    tail=text[start:].strip()
+    if not tail or depth != 0:
+        return None
+    parts.append(tail)
+    return parts
+
+
+def resolve_function_with_types(abi, function_name, type_token):
+    """Resolve a function name plus explicit input types to one ABI signature."""
+    types=parse_type_list_token(type_token)
+    if not types:
+        return None
+    name=str(function_name or "").strip()
+    if not name or "(" in name or ")" in name:
+        return None
+    wanted=[value.lower() for value in types]
+    matches=[]
+    for item in abi_functions(abi or []):
+        if str(item.get("name") or "").lower() != name.lower():
+            continue
+        actual=[canonical_type(value) for value in item.get("inputs",[])]
+        if [value.lower() for value in actual] == wanted:
+            matches.append(item)
+    return format_signature(matches[0]) if len(matches)==1 else None
+
 
 def encode_target_call(config, function, values):
     target=config.get("target")
@@ -9010,10 +9058,14 @@ def encode_target_call(config, function, values):
         raise ValueError("Replace '...' with real argument values. Use 'lk ask <function>' to see the required parameters.")
 
     signature=function
-    if "(" not in signature or ")" not in signature:
-        signature=resolve_function(signature,target,config)
-
     abi=load_abi(target,config)
+    if "(" not in signature or ")" not in signature:
+        typed_signature=resolve_function_with_types(abi,signature,values[0] if values else None)
+        if typed_signature:
+            signature=typed_signature
+            values=values[1:]
+        else:
+            signature=resolve_function(signature,target,config)
     matches=matching_functions(abi,signature) if abi else []
     if abi and len(matches) == 0:
         available = [
