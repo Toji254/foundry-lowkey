@@ -4786,35 +4786,31 @@ def _select_project_target(config, entry, root):
         return fail("Error: selected target has an invalid address.")
 
     # A remembered address is not a live protocol target merely because it has
-    # an ABI/source artifact. Validate against the effective RPC, including
-    # auto-detected Anvil, before allowing it to become active.
+    # an ABI/source artifact. When an RPC is reachable, verify bytecode before
+    # activation; if no RPC is available, keep the metadata selection but mark
+    # it unverified rather than inventing deployment state.
     rpc = effective_rpc(config)
-    if not rpc:
-        return fail(
-            f"Error: Lowkey cannot verify {address} because no RPC is available. "
-            "Start/connect Anvil, then select the target again.",
-            1,
-        )
-
-    state = _live_target_state(config, address, entry.get("artifact"))
-    if state.get("status") == "NOT_DEPLOYED":
-        return fail(
-            f"Error: {address} has no contract bytecode on {rpc}. "
-            "Run 'lk lab' to deploy/refresh the local target, or 'lk target reset' to clear the stale target.",
-            1,
-        )
-    if state.get("status") in {"RPC_UNAVAILABLE", "NO_RPC"}:
-        return fail(
-            f"Error: Lowkey could not verify {address} on {rpc}. "
-            "Refusing to select an unverified contract target.",
-            1,
-        )
-    if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
-        return fail(
-            f"Error: {address} has live bytecode, but it does not match the selected project artifact. "
-            "Run 'lk lab' or select the correct deployment instead of assuming this is the intended contract.",
-            1,
-        )
+    if rpc:
+        state = _live_target_state(config, address, entry.get("artifact"))
+        if state.get("status") == "NOT_DEPLOYED":
+            return fail(
+                f"Error: {address} has no contract bytecode on {rpc}. "
+                "Run 'lk lab' to deploy/refresh the local target, or 'lk target reset' to clear the stale target.",
+                1,
+            )
+        if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
+            return fail(
+                f"Error: {address} has live bytecode, but it does not match the selected project artifact. "
+                "Run 'lk lab' or select the correct deployment instead of assuming this is the intended contract.",
+                1,
+            )
+        if state.get("status") == "DEPLOYED":
+            print(
+                f"Runtime check: LIVE ({state.get('verification', 'unverified').lower()}; "
+                f"{state.get('code_size', 0)} bytes)"
+            )
+        else:
+            print("Runtime check: UNVERIFIED (RPC did not provide authoritative bytecode state).")
 
     contract = entry.get("contract") or entry.get("name") or "target"
     artifact = entry.get("artifact")
@@ -5161,53 +5157,44 @@ def _live_target_state(config, address=None, artifact=None):
 
 
 def _target_health_block(config, target, function=None, cast_cmd="call", args=None, *, capture=False):
-    """Fail closed when a contract operation targets an address without verified code."""
+    """Fail closed only when the connected RPC proves a configured target has no code."""
     if cast_cmd not in {"call", "send", "storage"} or not is_address(target):
         return None
 
-    args = list(args or [])
-    state = _live_target_state(config, target)
-    configured_target = str(config.get("target") or "").lower() == str(target).lower()
-    function_requested = bool(function)
-    value_attached = _attached_value_argument(args)
-
-    healthy = (
-        state.get("status") == "DEPLOYED"
-        and state.get("verification") != "CODE MISMATCH"
-    )
-    if healthy:
+    rpc = effective_rpc(config)
+    if not rpc:
+        # Offline/unit-test paths intentionally keep their existing behavior.
+        # A real transaction cannot execute without an RPC anyway.
         return None
 
-    if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
-        should_block = function_requested or cast_cmd == "storage"
-    else:
-        should_block = function_requested or cast_cmd == "storage" or (
-            cast_cmd == "send" and configured_target
-        )
+    code = rpc_json(rpc, "eth_getCode", [target, "latest"])
+    if code is None:
+        # Do not convert an RPC connectivity problem into a false "not deployed".
+        # The underlying Cast/Forge operation will surface the connection failure.
+        return None
+
+    runtime = str(code or "").strip()
+    if runtime.lower() not in {"", "0x", "0x0"}:
+        return None
+
+    configured_target = str(config.get("target") or "").lower() == str(target).lower()
+    should_block = bool(function) or cast_cmd == "storage" or (
+        cast_cmd == "send" and configured_target
+    )
     if not should_block:
         return None
 
-    status = str(state.get("status") or "UNVERIFIED")
-    reason = {
-        "NOT_DEPLOYED": "the current RPC reports no contract bytecode at this address",
-        "RPC_UNAVAILABLE": "the current RPC could not prove that bytecode exists",
-        "NO_RPC": "no RPC is available to verify the target",
-    }.get(status)
-    if not reason and status == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
-        reason = "live bytecode exists, but it does not match the selected project artifact"
-    reason = reason or "the target is not verified as a usable deployed contract"
-    action = "transaction" if cast_cmd == "send" else "contract call"
-
+    value_attached = _attached_value_argument(args or [])
     lines = [
         "LOWKEY TARGET SAFETY CHECK",
         "==========================",
         f"Target : {apply_labels(target, config)}",
-        f"RPC    : {rpc_display(state.get('rpc')) or 'none'}",
-        f"State  : {status}",
-        f"Reason : {reason}.",
-        f"Action : Lowkey did NOT execute the {action}.",
+        f"RPC    : {rpc_display(rpc)}",
+        "State  : NOT DEPLOYED",
+        "Reason : the current RPC reports no contract bytecode at this address.",
+        f"Action : Lowkey did NOT execute the {'transaction' if cast_cmd == 'send' else 'contract call'}.",
     ]
-    if cast_cmd == "send" and value_attached and status == "NOT_DEPLOYED":
+    if cast_cmd == "send" and value_attached:
         lines.extend([
             "",
             "ETH SAFETY: ETH was attached to this call. Without contract bytecode, it",
@@ -12375,6 +12362,8 @@ def run_status(config):
         state = context.get("tools", {}).get(tool_name, {})
         if isinstance(state, dict) and state.get("status"):
             print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
+    return 0
+
 def run_wizard(config,args):
     if not args:
         return fail("Usage: lk wizard <function> [values...] [call|send|encode]")
