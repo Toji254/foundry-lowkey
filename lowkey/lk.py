@@ -3803,7 +3803,10 @@ def run_balance(config,args=None):
         return fail("Error: RPC returned an invalid ETH balance.")
     print("ETH BALANCE")
     print("===========")
-    print(f"Address:  {apply_labels(address, config)}")
+    display = apply_labels(address, config)
+    print(f"Address:  {display}")
+    if display == address:
+        print("Identity: unnamed address")
     print(f"Balance:  {_wei_to_eth(wei)} ETH")
     return 0
 
