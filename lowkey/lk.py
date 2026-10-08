@@ -13239,17 +13239,17 @@ COMMAND_HELP = {
     "send": _help_entry(
         "Send a transaction that can change contract data or move ETH or tokens.",
         "lk send <function> [args...] [options]",
-        "lk send deposit 1 --value 1ether --confirm",
+        "lk send setValue 10 --confirm",
         "Use it after you understand the function and are ready to actually run it. Use --preview first when you only want to check what will be sent.",
         forms=[
             ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send release 0xd9c5..."),
-            ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send deposit 1 --value 1ether"),
+            ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send contribute --value 1ether"),
             ("lk send <function> [args...] --eth <amount>", "Another spelling of --value. A unitless amount such as 0.001 means 0.001 ETH.", "lk send contribute --eth 0.001"),
             ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send release 0xd9c5... --actor Alice"),
             ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send release 0xd9c5... --as attacker"),
         ],
         options=[
-            ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send deposit 1 --value 1ether"),
+            ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send contribute --value 1ether"),
             ("--eth <amount>", "Another spelling of --value. A unitless amount is interpreted as ETH; explicit wei/gwei/ether units remain unchanged.", "lk send contribute --eth 0.001"),
             ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send release 0xd9c5... --actor Alice"),
             ("--as <name>", "Another spelling of --actor.", "lk send release 0xd9c5... --as attacker"),
