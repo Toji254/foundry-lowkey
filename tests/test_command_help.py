@@ -256,6 +256,72 @@ class CommandHelpTests(unittest.TestCase):
         leaked = [term for term in forbidden if re.search(r"(?<![a-z0-9_])" + re.escape(term) + r"(?![a-z0-9_])", rendered_help)]
         self.assertEqual(leaked, [])
 
+    def test_changes_help_prefers_simple_function_name(self):
+        code, output = self.capture_dispatch("changes", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: lk changes <name> [values...] [options]", output)
+        self.assertIn("lk changes setValue 10", output)
+        self.assertIn("For example, use `contribute` instead of `contribute()`." , output)
+        self.assertIn("lk changes 'setValue(uint256)' 10", output)
+        self.assertIn("full quoted signature", output)
+
+    def test_changes_dispatch_preserves_all_arguments_and_options(self):
+        captured = {}
+
+        def fake_run_state_diff(config, args):
+            captured["args"] = list(args)
+            return 0
+
+        with patch.object(lk, "run_state_diff", side_effect=fake_run_state_diff):
+            code = lk.dispatch_command(
+                "changes",
+                ["contribute", "--eth", "1", "--actor", "Alice", "--repeat", "3"],
+                {},
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            captured["args"],
+            ["contribute", "--eth", "1", "--actor", "Alice", "--repeat", "3"],
+        )
+
+    def test_bare_function_name_resolves_without_signature(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "contribute",
+                "stateMutability": "payable",
+                "inputs": [],
+                "outputs": [],
+            }
+        ]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0xd0d0d0d0", "")):
+            signature, calldata = lk.encode_target_call({"target": target}, "contribute", [])
+
+        self.assertEqual(signature, "contribute()")
+        self.assertEqual(calldata, "d0d0d0d0")
+
+    def test_full_signature_form_still_resolves_exactly(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "setValue",
+                "stateMutability": "nonpayable",
+                "inputs": [{"name": "value", "type": "uint256"}],
+                "outputs": [],
+            }
+        ]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0xd0d0d0d0", "")):
+            signature, calldata = lk.encode_target_call(
+                {"target": target}, "setValue(uint256)", ["10"]
+            )
+
+        self.assertEqual(signature, "setValue(uint256)")
+        self.assertEqual(calldata, "d0d0d0d0")
     def test_receipt_help_uses_plain_words(self):
         code, output = self.capture_dispatch("receipt", "--h")
         self.assertEqual(code, 0)
