@@ -4780,6 +4780,36 @@ def _target_entry_is_protocol(root, entry):
     return True
 
 
+def _validate_manual_target_runtime(config, root, address, contract=None, artifact=None):
+    """Validate a manually supplied target when the connected chain is authoritative."""
+    rpc = effective_rpc(config)
+    if not rpc:
+        print("Runtime check: UNVERIFIED (no RPC available; target metadata is not deployment proof).")
+        return 0
+
+    state = _live_target_state(config, address, artifact)
+    if state.get("status") == "NOT_DEPLOYED":
+        return fail(
+            f"Error: {address} has no contract bytecode on {rpc}. "
+            "Run 'lk lab' to deploy/refresh the local target, or 'lk target reset' to clear the stale target.",
+            1,
+        )
+    if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
+        return fail(
+            f"Error: {address} has live bytecode, but it does not match the selected "
+            f"artifact for {contract or 'this target'}. Run 'lk lab' or select the correct deployment.",
+            1,
+        )
+    if state.get("status") == "DEPLOYED":
+        print(
+            f"Runtime check: LIVE ({state.get('verification', 'unverified').lower()}; "
+            f"{state.get('code_size', 0)} bytes)"
+        )
+    else:
+        print("Runtime check: UNVERIFIED (RPC did not provide authoritative bytecode state).")
+    return 0
+
+
 def _select_project_target(config, entry, root):
     address = entry.get("address")
     if not is_address(address):
@@ -14632,6 +14662,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
             return
         if args[0]=="reset":
             config["target"]=None
+            config["target_contract"]=None
             audit_context.set_target(root, address=None, contract=None, artifact=None, source="project")
         elif args[0]=="list":
             run_targets(config); return
@@ -14656,6 +14687,16 @@ def dispatch_command(cmd,args,config,from_batch=False):
                     None,
                 )
                 if selected_entry is None:
+                    artifact = config.get("abi_paths", {}).get(ref)
+                    validation = _validate_manual_target_runtime(
+                        config,
+                        root,
+                        ref,
+                        config.get("target_contract"),
+                        artifact,
+                    )
+                    if validation != 0:
+                        return validation
                     config["target"] = ref
             else:
                 matches = [
@@ -14690,6 +14731,16 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 source="manual",
             )
         elif len(args)==2 and is_address(args[1]):
+            artifact = config.get("abi_paths",{}).get(args[1])
+            validation = _validate_manual_target_runtime(
+                config,
+                root,
+                args[1],
+                args[0],
+                artifact,
+            )
+            if validation != 0:
+                return validation
             remember_project_target(config, root, args[0], args[1])
             config["target"]=args[1]
             config["target_contract"]=args[0]
@@ -14697,7 +14748,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 root,
                 address=args[1],
                 contract=args[0],
-                artifact=config.get("abi_paths",{}).get(args[1]),
+                artifact=artifact,
                 source="manual",
             )
         else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
