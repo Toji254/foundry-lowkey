@@ -40,6 +40,102 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertNotIn("target", config)
 
+    def test_select_project_target_rejects_stale_no_code_on_auto_anvil(self):
+        address = "0x" + "2" * 40
+        config = {"target": None}
+        entry = {
+            "name": "Fallback",
+            "contract": "Fallback",
+            "address": address,
+            "artifact": "out/Fallback.sol/Fallback.json",
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(
+                lk,
+                "_live_target_state",
+                return_value={"status": "NOT_DEPLOYED", "verification": "UNVERIFIED"},
+            ):
+                code = lk._select_project_target(
+                    config, entry, pathlib.Path("/tmp/testi")
+                )
+        self.assertEqual(code, 1)
+        self.assertNotIn("target", config)
+
+    def test_status_reports_not_deployed_target_and_recovery(self):
+        address = "0x" + "3" * 40
+        config = {
+            "target": address,
+            "target_contract": "Fallback",
+            "abi_paths": {},
+            "last_tx": None,
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "anvil_rpc_info", return_value=None):
+                with patch.object(lk, "_live_target_state", return_value={
+                    "status": "NOT_DEPLOYED",
+                    "verification": "UNVERIFIED",
+                }):
+                    with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/testi")):
+                        with patch.object(lk, "_sync_security_patterns"):
+                            with patch.object(lk.audit_context, "load", return_value={
+                                "focus": {},
+                                "tools": {},
+                            }):
+                                output = io.StringIO()
+                                with redirect_stdout(output):
+                                    code = lk.run_status(config)
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("Deployment: NOT DEPLOYED", rendered)
+        self.assertIn("current RPC reports no contract bytecode", rendered)
+        self.assertIn("lk lab", rendered)
+        self.assertIn("lk target reset", rendered)
+
+    def test_cast_send_blocks_undeployed_target_before_cast(self):
+        address = "0x" + "4" * 40
+        config = {
+            "target": address,
+            "target_contract": "Fallback",
+            "abi_paths": {},
+            "actor": "lab-deployer",
+            "wallets": {},
+        }
+        with patch.object(lk, "_live_target_state", return_value={
+            "status": "NOT_DEPLOYED",
+            "rpc": "http://127.0.0.1:8545",
+            "verification": "UNVERIFIED",
+        }):
+            with patch.object(
+                lk,
+                "cast_output",
+                side_effect=AssertionError("cast must not execute"),
+            ):
+                result = lk.run_cast(
+                    ["send", "withdraw", "--eth", "0.1"],
+                    config,
+                    capture=True,
+                )
+        self.assertEqual(result.code, 2)
+        self.assertIn("Lowkey did NOT execute the transaction", result.text)
+        self.assertIn("ETH was attached to this call", result.text)
+
+    def test_auto_target_does_not_revive_stale_remembered_target(self):
+        address = "0x" + "5" * 40
+        config = {"target": address}
+        remembered = {
+            "contract": "Fallback",
+            "address": address,
+            "artifact": "out/Fallback.sol/Fallback.json",
+        }
+        with patch.object(lk, "discover_deployments", return_value=[]):
+            with patch.object(lk, "project_context_target", return_value=remembered):
+                with patch.object(lk, "_live_target_state", return_value={
+                    "status": "NOT_DEPLOYED",
+                    "verification": "UNVERIFIED",
+                }):
+                    code = lk.run_auto_target(config)
+        self.assertEqual(code, 2)
+
     def test_parse_lab_marker_preserves_default_and_custom_marker_contract(self):
         target = "0x" + "4" * 40
         created = "0x" + "5" * 40
