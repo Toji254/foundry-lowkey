@@ -3716,7 +3716,11 @@ def run_balance(config,args=None):
     print("===========")
     print(f"Address:  {apply_labels(address, config)}")
     print(f"Balance:  {_wei_to_eth(wei)} ETH")
-    return 0
+    if str(config.get("target") or "").lower() == address.lower():
+        state = _live_target_state(config, address)
+        if state.get("status") == "NOT_DEPLOYED":
+            print("Deployment: NOT DEPLOYED")
+            print("WARNING   : this target address has ETH, but the current RPC reports no contract bytecode.")
 
 def run_recon(config):
     target=config.get("target")
