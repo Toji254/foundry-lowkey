@@ -5300,13 +5300,32 @@ def discover_deployments(root="."):
 
 def run_deployments(config):
     records=discover_deployments(".")
-    if not records: print("No Foundry broadcast deployments discovered."); return
+    if not records:
+        root = audit_context.foundry_project_root()
+        current = project_context_target(root)
+        if current:
+            state = _live_target_state(config, current.get("address"), current.get("artifact"))
+            status = state.get("status") or "UNVERIFIED"
+            print("No Foundry broadcast deployments discovered.")
+            print(
+                f"Remembered target: {current.get('contract') or 'unknown'} -> "
+                f"{apply_labels(current.get('address'), config)} [{status}]"
+            )
+        else:
+            print("No Foundry broadcast deployments discovered.")
+        return
     seen=set()
     for r in records:
         key=(r["contract"],r["address"])
         if key in seen: continue
-        seen.add(key); print(
-            f"{r['contract']:<24} {apply_labels(r['address'], config)}  {r['file']}"
+        seen.add(key)
+        state = _live_target_state(config, r.get("address"))
+        status = state.get("status") or "UNVERIFIED"
+        if state.get("verification") == "CODE MISMATCH":
+            status = "CODE MISMATCH"
+        print(
+            f"{r['contract']:<24} {apply_labels(r['address'], config)}  "
+            f"[{status}]  {r['file']}"
         )
 
 def _auto_target_records(config, root, records, requested=None):
