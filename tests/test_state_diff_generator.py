@@ -23,6 +23,7 @@ class StateDiffGeneratorTests(unittest.TestCase):
             "target": "0x" + "1" * 40,
             "actor": "Alice",
             "wallets": {},
+            "rpc": "http://127.0.0.1:0",
         }
 
         with patch.object(

@@ -879,5 +879,42 @@ Target resolution is project-first:
 A live target is still required for state-changing investigation commands such as lk changes,
 because those commands need an address on the connected chain.
 
+### Live target safety and deployment lifecycle
+
+Lowkey treats a configured target address as **configuration**, not proof of deployment. Before a target is
+selected or a Cast-backed contract operation is executed, Lowkey checks the effective connected RPC with
+eth_getCode. A target can therefore be reported as:
+
+- **LIVE** — contract bytecode exists on the current RPC.
+- **NOT DEPLOYED** — the remembered/configured address currently returns 0x bytecode.
+- **UNVERIFIED** — the RPC or runtime identity could not be proven.
+- **CODE MISMATCH** — bytecode exists, but does not match the selected project artifact.
+
+This matters especially with local Anvil: restarting or replacing Anvil can leave .audit/context.json,
+old broadcast files, and ABI artifacts pointing at an address that no longer exists on the new chain.
+
+Safety behavior is fail-closed:
+
+- lk status shows the runtime deployment state, bytecode size, chain, and recovery commands.
+- lk targets shows the live state beside each remembered target.
+- lk target / lk target auto refuse to activate a stale no-code target as a live contract.
+- lk send, lk read, and storage-backed Cast operations refuse to execute against a target that has no
+  verified bytecode. This also prevents an attached --eth value from silently becoming a plain ETH
+  transfer to an empty address.
+- lk lab clears an invalid/stale remembered target before establishing a fresh local deployment.
+- Successful lab target selection records runtime deployment evidence with the project audit context.
+
+When deployment state is uncertain, use:
+
+~~~bash
+lk status
+lk recon
+lk deployments
+lk target auto
+lk lab
+~~~
+
+lk balance remains intentionally read-only and may inspect EOAs or empty addresses because balance lookup
+does not claim that the address is a deployed contract.
 
 <!-- unified regression gate: keep branch tip continuously validated -->

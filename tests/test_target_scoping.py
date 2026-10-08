@@ -233,6 +233,7 @@ class TargetScopingTests(unittest.TestCase):
                 "targets": {},
                 "project_roots": {},
                 "abi_paths": {},
+                "rpc": "http://127.0.0.1:0",
             }
             entries = [
                 {
@@ -274,6 +275,7 @@ class TargetScopingTests(unittest.TestCase):
                 "targets": {},
                 "project_roots": {address: str(current_root)},
                 "abi_paths": {},
+                "rpc": "http://127.0.0.1:0",
             }
 
             with patch.object(lk.audit_context, "foundry_project_root", return_value=current_root), \

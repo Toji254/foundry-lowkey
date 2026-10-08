@@ -30,15 +30,190 @@ class LowkeyCastTests(unittest.TestCase):
             "artifact": "out/Fallback.sol/Fallback.json",
         }
 
-        with patch.object(
-            lk,
-            "cast_output",
-            return_value=(0, "0x", ""),
-        ):
-            code = lk._select_project_target(config, entry, pathlib.Path("/tmp/testi"))
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(
+                lk,
+                "_live_target_state",
+                return_value={"status": "NOT_DEPLOYED", "verification": "UNVERIFIED"},
+            ):
+                code = lk._select_project_target(config, entry, pathlib.Path("/tmp/testi"))
 
         self.assertEqual(code, 1)
         self.assertNotIn("target", config)
+
+    def test_select_project_target_rejects_stale_no_code_on_auto_anvil(self):
+        address = "0x" + "2" * 40
+        config = {"target": None}
+        entry = {
+            "name": "Fallback",
+            "contract": "Fallback",
+            "address": address,
+            "artifact": "out/Fallback.sol/Fallback.json",
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(
+                lk,
+                "_live_target_state",
+                return_value={"status": "NOT_DEPLOYED", "verification": "UNVERIFIED"},
+            ):
+                code = lk._select_project_target(
+                    config, entry, pathlib.Path("/tmp/testi")
+                )
+        self.assertEqual(code, 1)
+        self.assertIsNone(config.get("target"))
+
+    def test_status_reports_not_deployed_target_and_recovery(self):
+        address = "0x" + "3" * 40
+        config = {
+            "target": address,
+            "target_contract": "Fallback",
+            "abi_paths": {},
+            "last_tx": None,
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "anvil_rpc_info", return_value=None):
+                with patch.object(lk, "_live_target_state", return_value={
+                    "status": "NOT_DEPLOYED",
+                    "verification": "UNVERIFIED",
+                }):
+                    with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/testi")):
+                        with patch.object(lk, "_sync_security_patterns"):
+                            with patch.object(lk.audit_context, "load", return_value={
+                                "focus": {},
+                                "tools": {},
+                            }):
+                                output = io.StringIO()
+                                with redirect_stdout(output):
+                                    code = lk.run_status(config)
+        rendered = output.getvalue()
+        self.assertIsNone(code)
+        self.assertIn("Deployment: NOT DEPLOYED", rendered)
+        self.assertIn("current RPC reports no contract bytecode", rendered)
+        self.assertIn("lk lab", rendered)
+        self.assertIn("lk target reset", rendered)
+
+    def test_cast_send_blocks_undeployed_target_before_cast(self):
+        address = "0x" + "4" * 40
+        config = {
+            "target": address,
+            "target_contract": "Fallback",
+            "abi_paths": {},
+            "actor": "lab-deployer",
+            "wallets": {},
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "rpc_json", return_value="0x"):
+                with patch.object(
+                    lk,
+                    "cast_output",
+                    side_effect=AssertionError("cast must not execute"),
+                ):
+                    with redirect_stderr(io.StringIO()):
+                        result = lk.run_cast(
+                            ["send", "withdraw", "--eth", "0.1"],
+                            config,
+                            capture=False,
+                        )
+        self.assertEqual(result, 2)
+
+    def test_auto_target_does_not_revive_stale_remembered_target(self):
+        address = "0x" + "5" * 40
+        config = {"target": address}
+        remembered = {
+            "contract": "Fallback",
+            "address": address,
+            "artifact": "out/Fallback.sol/Fallback.json",
+        }
+        with patch.object(lk, "discover_deployments", return_value=[]):
+            with patch.object(lk, "project_context_target", return_value=remembered):
+                with patch.object(lk, "_live_target_state", return_value={
+                    "status": "NOT_DEPLOYED",
+                    "verification": "UNVERIFIED",
+                }):
+                    code = lk.run_auto_target(config)
+        self.assertEqual(code, 2)
+
+    def test_state_diff_blocks_undeployed_target(self):
+        config = {
+            "target": "0x" + "6" * 40,
+            "target_contract": "Fallback",
+            "actor": "Alice",
+            "wallets": {},
+        }
+        with patch.object(lk, "split_lab_options", return_value=(["withdraw"], None, 0, False, 1)):
+            with patch.object(lk, "encode_target_call", return_value=("withdraw()", "3cc50d")):
+                with patch.object(lk, "resolve_lab_value", return_value=0):
+                    with patch.object(lk, "validate_solidity_value", return_value=0):
+                        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                            with patch.object(lk, "rpc_json", return_value="0x"):
+                                with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
+                                    code = lk.run_state_diff(config, ["withdraw"])
+        self.assertEqual(code, 2)
+
+    def test_probe_blocks_undeployed_target(self):
+        config = {
+            "target": "0x" + "7" * 40,
+            "target_contract": "Fallback",
+            "wallets": {"Alice": {"address": "0x" + "8" * 40}},
+            "actor": "Alice",
+        }
+        with patch.object(lk, "split_lab_options", return_value=(["withdraw"], None, 0, False, 1)):
+            with patch.object(lk, "encode_target_call", return_value=("withdraw()", "3cc50d")):
+                with patch.object(lk, "resolve_lab_value", return_value=0):
+                    with patch.object(lk, "validate_solidity_value", return_value=0):
+                        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                            with patch.object(lk, "rpc_json", return_value="0x"):
+                                with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
+                                    code = lk.run_probe(config, ["withdraw"])
+        self.assertEqual(code, 2)
+
+    def test_direct_target_rejects_undeployed_address_on_live_rpc(self):
+        address = "0x" + "9" * 40
+        config = {
+            "target": None,
+            "target_contract": None,
+            "abi_paths": {},
+            "aliases": {},
+            "targets": {},
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "_live_target_state", return_value={
+                "status": "NOT_DEPLOYED",
+                "verification": "UNVERIFIED",
+            }):
+                code = lk.dispatch_command("target", [address], config)
+        self.assertEqual(code, 1)
+        self.assertIsNone(config.get("target"))
+
+    def test_named_manual_target_rejects_undeployed_address_on_live_rpc(self):
+        address = "0x" + "a" * 40
+        config = {
+            "target": None,
+            "target_contract": None,
+            "abi_paths": {},
+            "aliases": {},
+            "targets": {},
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "_live_target_state", return_value={
+                "status": "NOT_DEPLOYED",
+                "verification": "UNVERIFIED",
+            }):
+                code = lk.dispatch_command("target", ["Fallback", address], config)
+        self.assertEqual(code, 1)
+        self.assertIsNone(config.get("target"))
+
+    def test_target_reset_clears_contract_metadata(self):
+        config = {
+            "target": "0x" + "b" * 40,
+            "target_contract": "Fallback",
+        }
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/testi")):
+            with patch.object(lk.audit_context, "set_target"), patch.object(lk, "save_config"):
+                code = lk.dispatch_command("target", ["reset"], config)
+        self.assertIsNone(code)
+        self.assertIsNone(config.get("target"))
+        self.assertIsNone(config.get("target_contract"))
 
     def test_parse_lab_marker_preserves_default_and_custom_marker_contract(self):
         target = "0x" + "4" * 40
@@ -1576,7 +1751,7 @@ contract Pool {
             os.chdir(root)
             try:
                 config={"target":None,"aliases":{},"targets":{},"abi_paths":{},"rpc":None}
-                with patch.object(lk,"save_config"):
+                with patch.object(lk,"effective_rpc", return_value=None),                      patch.object(lk,"save_config"):
                     output=io.StringIO()
                     with redirect_stdout(output):
                         result=lk.run_auto_target(config,"escrow")
@@ -1839,7 +2014,14 @@ contract Pool {
                     (0, encoded, ""),
                 ],
             ),
-            patch.object(lk, "rpc_json", return_value="0x" + "00" * 32),
+            patch.object(
+            lk,
+            "rpc_json",
+            side_effect=[
+                "0x6000",
+                "0x" + "00" * 32,
+            ],
+        ),
             patch.object(lk, "decode_abi_output", return_value=(identifier, None)),
         ]
         output = io.StringIO()
@@ -1850,10 +2032,17 @@ contract Pool {
         self.assertEqual(cast_output.call_args_list[1].args[0], [
             "cast", "calldata", "escrow(bytes32)", identifier,
         ])
-        rpc_json.assert_called_once_with(
-            "http://127.0.0.1:8545",
-            "eth_call",
-            [{"to": target, "data": encoded}, "latest"],
+        self.assertEqual(
+            rpc_json.call_args_list[0].args,
+            ("http://127.0.0.1:8545", "eth_getCode", [target, "latest"]),
+        )
+        self.assertEqual(
+            rpc_json.call_args_list[1].args,
+            (
+                "http://127.0.0.1:8545",
+                "eth_call",
+                [{"to": target, "data": encoded}, "latest"],
+            ),
         )
         self.assertIn("Returns:", output.getvalue())
 
@@ -1957,13 +2146,15 @@ contract Pool {
 
     def test_anvil_detection(self):
         address = "0x" + "1" * 40
-        with patch.object(lk, "local_port_open", return_value=True):
-            with patch.object(
-                lk,
-                "rpc_json",
-                side_effect=["anvil/v1.8.1", [address]],
-            ):
-                info = lk.detect_anvil_rpc(None)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ETH_RPC_URL", None)
+            with patch.object(lk, "local_port_open", return_value=True):
+                with patch.object(
+                    lk,
+                    "rpc_json",
+                    side_effect=["anvil/v1.8.1", [address]],
+                ):
+                    info = lk.detect_anvil_rpc(None)
         self.assertEqual(info["url"], "http://127.0.0.1:8545")
         self.assertEqual(info["accounts"], [address])
 
@@ -3060,7 +3251,7 @@ contract Pool {
                 "outputs": [{"name": "balance", "type": "uint256"}],
             }
         ]
-        config = {"target": target, "wallets": {}, "labels": {}}
+        config = {"target": target, "wallets": {}, "labels": {}, "rpc": "http://127.0.0.1:0"}
         with patch.object(lk, "load_abi", return_value=abi), patch.object(
             lk,
             "cast_output",
@@ -3192,7 +3383,7 @@ contract Pool {
                 "outputs": [{"name": "balance", "type": "uint256"}],
             }
         ]
-        config = {"target": target, "wallets": {}, "labels": {}}
+        config = {"target": target, "wallets": {}, "labels": {}, "rpc": "http://127.0.0.1:0"}
         with patch.object(lk, "load_abi", return_value=abi), patch.object(
             lk,
             "cast_output",
@@ -3358,6 +3549,7 @@ contract Pool {
             "target":target,
             "wallets":{"Bob":{"address":"0x"+"2"*40}},
             "actor":"Alice",
+            "rpc":"http://127.0.0.1:0",
         }
         abi=[{
             "type":"function",
@@ -3426,6 +3618,7 @@ contract Pool {
             "target": "0x" + "3" * 40,
             "actor": "Alice",
             "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            "rpc": "http://127.0.0.1:0",
         }
         captured = {}
 
@@ -3490,6 +3683,7 @@ contract Pool {
             "target": "0x" + "3" * 40,
             "actor": "Alice",
             "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            "rpc": "http://127.0.0.1:0",
         }
         captured = {}
 
@@ -3951,6 +4145,7 @@ contract Pool {
                 "Alice":{"address":"0x"+"1"*40},
                 "Bob":{"address":"0x"+"2"*40},
             },
+            "rpc":"http://127.0.0.1:0",
         }
         captured={}
         def fake_write(prefix,content):
@@ -3980,7 +4175,7 @@ contract Pool {
         actor="0x"+"1"*40
         config={
             "target":target,
-            "rpc":"http://127.0.0.1:8545",
+            "rpc":"http://127.0.0.1:0",
             "actor":"whale",
             "wallets":{"whale":{"source":"anvil-impersonated","address":actor}},
         }
@@ -4410,6 +4605,7 @@ contract Escrow {
             "target": "0x" + "3" * 40,
             "actor": "Alice",
             "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            "rpc": "http://127.0.0.1:0",
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
