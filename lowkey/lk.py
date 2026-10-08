@@ -13665,6 +13665,150 @@ def _help_entry_for_path(path):
             unknown = raw_key
             break
     return current, consumed, unknown
+def _help_parent_path(path):
+    if len(path) < 2:
+        return None
+    child = str(path[-1] or "").strip().lower()
+    parent_root = _canonical_help_command(path[0])
+    parent = COMMAND_HELP.get(parent_root)
+    if not parent:
+        return None
+    if child in parent.get("children", {}):
+        return [parent_root]
+    return None
+
+
+def _help_suggestions(command, limit=3):
+    """Return likely Lowkey command names for a misspelled help request."""
+    raw = str(command or "").strip().lower()
+    if not raw:
+        return []
+    candidates = set(COMMAND_HELP)
+    candidates.update(HELP_ALIASES)
+    scored = []
+    for candidate in candidates:
+        canonical = _canonical_help_command(candidate)
+        if candidate != canonical:
+            # Prefer canonical names in suggestions; aliases remain valid but
+            # should not crowd the result list.
+            continue
+        if candidate == raw:
+            continue
+        ratio = SequenceMatcher(None, raw, candidate).ratio()
+        if candidate.startswith(raw) or raw.startswith(candidate):
+            ratio += 0.15
+        if ratio >= 0.55:
+            scored.append((ratio, candidate))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [candidate for _, candidate in scored[:limit]]
+
+def _render_command_help(path):
+    entry, resolved, unknown = _help_entry_for_path(path)
+    shown_path = " ".join(resolved or [str(item) for item in path])
+    alias = _help_alias_for(path[0]) if path else None
+
+    print()
+    print(f"LOWKEY HELP  •  lk {shown_path}")
+    print("=" * 72)
+
+    if unknown:
+        print(f"Unknown subcommand: '{unknown}' under 'lk {shown_path}'.")
+        available = list((entry or {}).get("children", {}).keys())
+        if available:
+            print("Available next commands: " + ", ".join(available))
+        print(f"Run 'lk {shown_path} --h' to see the parent help.")
+        return 2
+
+    if not entry:
+        command = str(path[0] if path else "").strip().lower()
+        suggestions = _help_suggestions(command)
+        print(f"No dedicated Lowkey help page matches '{command}'.")
+        if suggestions:
+            print("")
+            print("DID YOU MEAN")
+            print("------------")
+            for suggestion in suggestions:
+                print(f"  lk {suggestion} --h")
+        print("")
+        print("ALL COMMANDS")
+        print("------------")
+        print("  lk --h")
+        print("  Help forms: --h | --help | -h | help")
+        return 2
+
+    if alias:
+        print(f"Alias: 'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'.")
+    print(f"What it does: {entry['summary']}")
+    print(f"When to use: {entry['use']}")
+    print(f"Usage: {entry['usage']}")
+    print(f"Example: {entry['example']}")
+
+    forms = entry.get("forms") or []
+    if forms:
+        print("")
+        print("COMMAND VARIATIONS")
+        print("------------------")
+        for form, description, example in forms:
+            print(f"  {form}")
+            print(f"      {description}")
+            print(f"      Example: {example}")
+
+    children = entry.get("children") or {}
+    if children:
+        print("")
+        print("NEXT COMMANDS")
+        print("-------------")
+        for name, child in children.items():
+            print(f"  lk {shown_path} {name}")
+            print(f"      What it does: {child['summary']}")
+            print(f"      When to use: {child['use']}")
+            print(f"      Example: {child['example']}")
+        print("")
+        print("TIP")
+        print("  Pick a next command above and add --h for its detailed help.")
+    else:
+        parent = _help_parent_path(path)
+        if parent:
+            parent_shown = " ".join(parent)
+            print("")
+            print("NAVIGATION")
+            print("----------")
+            print(f"  lk {parent_shown} --h")
+            print("      Go back to the parent command and see its available subcommands.")
+
+    options = entry.get("options") or []
+    if options:
+        print("")
+        print("OPTIONS / MODES")
+        print("---------------")
+        for option, description, example in options:
+            print(f"  {option}")
+            print(f"      {description}")
+            print(f"      Example: {example}")
+
+    related = entry.get("related") or []
+    if related:
+        print("")
+        print("RELATED COMMANDS")
+        print("---------------")
+        for command in related:
+            print(f"  {command}")
+
+    print("")
+    print("HELP TIP")
+    print("  Help is always safe: it does not select targets, send transactions, or change project state.")
+    print("  Accepted forms: --h, --help, -h, help.")
+    if children:
+        first_child = next(iter(children))
+        print(f"  Next: lk {shown_path} {first_child} --h")
+    elif related:
+        print(f"  Related: {related[0]}")
+    elif parent:
+        print(f"  Parent: lk {' '.join(parent)} --h")
+    else:
+        print("  Start: lk --h")
+    return 0
+
 def print_help():
     print(r"""
 LOWKEY — SECURITY & AUDIT CONSOLE
