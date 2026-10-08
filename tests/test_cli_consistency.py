@@ -37,6 +37,26 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [alice])
         self.assertEqual(lk.prepare_argument_values(config, item, ["Bob"]), ["Bob"])
 
+    def test_project_target_name_resolves_for_address_argument(self):
+        target = "0x" + "3" * 40
+        config = {"actor": "Alice", "wallets": {"Alice": {"address": "0x" + "1" * 40}}, "targets": {"Fallback": target}}
+        item = {"inputs": [{"name": "account", "type": "address"}]}
+        with patch.object(lk, "actor_address", return_value=None), \\
+             patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/Fallback")):
+            with patch.object(lk, "resolve_target_ref", return_value=target) as resolve_target:
+                self.assertEqual(lk.prepare_argument_values(config, item, ["Fallback"]), [target])
+                resolve_target.assert_called_once_with(config, "Fallback", pathlib.Path("/tmp/Fallback"))
+
+    def test_actor_name_wins_over_target_name_for_address_argument(self):
+        actor = "0x" + "1" * 40
+        target = "0x" + "2" * 40
+        config = {"actor": "Alice", "wallets": {"Alice": {"address": actor}}, "targets": {"Alice": target}}
+        item = {"inputs": [{"name": "account", "type": "address"}]}
+        with patch.object(lk, "actor_address", return_value=actor), \\
+             patch.object(lk, "resolve_target_ref", return_value=target) as resolve_target:
+            self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
+            resolve_target.assert_not_called()
+
     def test_internal_deployer_identity_is_available_with_active_actor(self):
         alice = "0x" + "1" * 40
         deployer = "0x" + "2" * 40
