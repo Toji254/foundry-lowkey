@@ -5463,31 +5463,27 @@ def run_auto_target(config,name=None):
         )
 
     rpc = effective_rpc(config)
-    if not rpc:
-        return fail(
-            "Error: Lowkey cannot verify Foundry deployments because no RPC is available. Start Anvil or run 'lk lab'.",
-            1,
-        )
+    if rpc:
+        live_ranked = []
+        for candidate in ranked:
+            state = _live_target_state(config, candidate.get("address"), candidate.get("_artifact"))
+            if state.get("status") != "DEPLOYED":
+                continue
+            if state.get("verification") == "CODE MISMATCH":
+                continue
+            candidate["_runtime_state"] = state
+            live_ranked.append(candidate)
 
-    live_ranked = []
-    for candidate in ranked:
-        state = _live_target_state(config, candidate.get("address"), candidate.get("_artifact"))
-        if state.get("status") != "DEPLOYED":
-            continue
-        if state.get("verification") == "CODE MISMATCH":
-            continue
-        candidate["_runtime_state"] = state
-        live_ranked.append(candidate)
-
-    if not live_ranked:
-        return fail(
-            "Foundry broadcast records exist, but none resolve to a verified live contract on the current RPC. "
-            "The addresses may belong to a previous/reset Anvil instance. "
-            "Fix: lk lab | lk target auto after deployment | lk recon.",
-            2,
-        )
-
-    ranked = live_ranked
+        if not live_ranked:
+            return fail(
+                "Foundry broadcast records exist, but none resolve to a verified live contract on the current RPC. "
+                "The addresses may belong to a previous/reset Anvil instance. "
+                "Fix: lk lab | lk target auto after deployment | lk recon.",
+                2,
+            )
+        ranked = live_ranked
+    else:
+        print("Runtime check: UNVERIFIED (no RPC available; target metadata is not deployment proof).")
     record=ranked[0]
     contract = record.get("_resolved_contract") or record.get("contract") or "Target"
     alias=name or contract
