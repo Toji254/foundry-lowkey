@@ -13111,7 +13111,7 @@ COMMAND_HELP = {
         "Use the function name for normal use. For example, use `contribute` instead of `contribute()`. Lowkey resolves the full signature for you. Use a quoted full signature only when you need an exact overload.",
         forms=[
             ("lk changes <name> [values...]", "Run a function by name. Lowkey looks up the full Solidity signature for you.", "lk changes setValue 10"),
-            ("lk changes '<function(types...)>' [values...]", "Use the full quoted signature when a function is overloaded or you want to specify its exact parameter types.", "lk changes 'setValue(uint256)' 10"),
+            ("lk changes '<name(types...)>' [values...]", "Use the full quoted signature when a function is overloaded or you want to specify its exact parameter types.", "lk changes 'setValue(uint256)' 10"),
             ("lk changes <name> [values...] --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes setValue --value 1ether"),
             ("lk changes <name> [values...] --actor <name>", "Run the call as a named local actor.", "lk changes setValue 10 --actor Alice"),
             ("lk changes <name> [values...] --repeat <N>", "Repeat the exact call N times inside one transaction.", "lk changes setValue 10 --repeat 3"),
