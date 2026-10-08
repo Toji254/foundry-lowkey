@@ -156,16 +156,36 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
             parts = list(relative.parts)[:-1]
             if not parts:
                 return None
-            source = root / "src" / Path(*parts)
-            return source if source.exists() else None
+            source_roots = []
+            foundry = root / "foundry.toml"
+            if foundry.is_file():
+                text = foundry.read_text(encoding="utf-8", errors="replace")
+                match = re.search(r"(?m)^\s*src\s*=\s*['\"]([^'\"]+)['\"]", text)
+                if match:
+                    source_roots.append(root / match.group(1).strip())
+            source_roots.append(root / "src")
+            for source_root in source_roots:
+                source = source_root / Path(*parts)
+                if source.exists():
+                    return source
+            return None
         except (ValueError, OSError):
             return None
 
     if contract_name:
-        # Prefer an exact source filename match. A user-facing request such as
-        # "EthEscrow" naturally refers to src/EthEscrow.sol, while the Solidity
-        # symbol inside that file may be "Escrow".
-        requested_source = root / "src" / f"{contract_name}.sol"
+        # Prefer an exact source filename match using the project's configured
+        # source root when available. The contract name remains user supplied.
+        source_root = root / "src"
+        foundry = root / "foundry.toml"
+        if foundry.is_file():
+            try:
+                foundry_text = foundry.read_text(encoding="utf-8", errors="replace")
+                match = re.search(r"(?m)^\s*src\s*=\s*['\"]([^'\"]+)['\"]", foundry_text)
+                if match:
+                    source_root = root / match.group(1).strip()
+            except OSError:
+                pass
+        requested_source = source_root / f"{contract_name}.sol"
         source_file_matches = []
 
         if requested_source.exists():
