@@ -2149,12 +2149,12 @@ contract Pool {
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("ETH_RPC_URL", None)
             with patch.object(lk, "local_port_open", return_value=True):
-            with patch.object(
-                lk,
-                "rpc_json",
-                side_effect=["anvil/v1.8.1", [address]],
-            ):
-                info = lk.detect_anvil_rpc(None)
+                with patch.object(
+                    lk,
+                    "rpc_json",
+                    side_effect=["anvil/v1.8.1", [address]],
+                ):
+                    info = lk.detect_anvil_rpc(None)
         self.assertEqual(info["url"], "http://127.0.0.1:8545")
         self.assertEqual(info["accounts"], [address])
 
@@ -3620,6 +3620,7 @@ contract Pool {
             "target": "0x" + "3" * 40,
             "actor": "Alice",
             "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            "rpc": "http://127.0.0.1:0",
         }
         captured = {}
 
