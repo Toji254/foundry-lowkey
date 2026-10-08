@@ -9354,6 +9354,17 @@ def run_probe(config,args):
         signature,calldata=encode_target_call(config,values[0],values[1:])
         value=validate_solidity_value(resolve_lab_value(config,signature,values[1:],value))
         target=config.get("target")
+        target_guard = _target_health_block(
+            config,
+            target,
+            signature,
+            "call",
+            ["--value", str(value)] if value else [],
+            capture=True,
+        )
+        if target_guard is not None:
+            return target_guard.code
+
         actors=[]
         if actor:
             address=actor_address(config,actor)
@@ -10213,6 +10224,17 @@ def run_state_diff(config,args):
         signature,calldata=encode_target_call(config,values[0],values[1:])
         value=validate_solidity_value(resolve_lab_value(config,signature,values[1:],value))
         target=config.get("target")
+        target_guard = _target_health_block(
+            config,
+            target,
+            signature,
+            "call",
+            ["--value", str(value)] if value else [],
+            capture=True,
+        )
+        if target_guard is not None:
+            return target_guard.code
+
         selected_actor=actor or config.get("actor")
         address=actor_address(config,selected_actor)
         if not address:
@@ -12905,6 +12927,18 @@ def run_external_audit(config, args):
 def run_break(config, args):
     if break_engine is None:
         return fail("Break engine is not installed. Re-run install.sh from this checkout.")
+    target = config.get("target")
+    if target:
+        target_guard = _target_health_block(
+            config,
+            target,
+            "break",
+            "send",
+            args,
+            capture=True,
+        )
+        if target_guard is not None:
+            return target_guard.code
     return break_engine.run(config, args, host=sys.modules[__name__])
 
 
