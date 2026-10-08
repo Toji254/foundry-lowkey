@@ -140,6 +140,55 @@ class AnalysisAdapterTests(unittest.TestCase):
             self.assertEqual(result["files_scanned"], 1)
             self.assertEqual(result["project"]["source_files"], ["src/Vault.sol"])
 
+    def test_self_remapping_does_not_prune_first_party_source(self):
+        # Regression: a project that maps an import prefix onto its own source
+        # directory (e.g. "@protocol/=contracts/") must not have that directory
+        # pruned as a dependency. Doing so hid the entire Solidity scope and
+        # made a real Foundry project look like an unsupported source-project.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foundry.toml").write_text(
+                "[profile.default]\nsrc = 'contracts'\n", encoding="utf-8"
+            )
+            (root / "remappings.txt").write_text(
+                "@protocol/=contracts/\n", encoding="utf-8"
+            )
+            (root / "contracts").mkdir()
+            (root / "contracts" / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault { function x() external { tx.origin; } }\n",
+                encoding="utf-8",
+            )
+            info = analysis_adapters.inspect_repository(root)
+            self.assertIn("foundry", info["stacks"])
+            self.assertEqual(info["languages"].get("solidity"), 1)
+            self.assertIn("contracts/Vault.sol", info["source_files"])
+
+    def test_remapping_submodule_destination_is_still_pruned(self):
+        # A remapping that resolves into a registered git submodule must still
+        # be treated as external dependency code.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foundry.toml").write_text(
+                "[profile.default]\nsrc = 'src'\n", encoding="utf-8"
+            )
+            (root / ".gitmodules").write_text(
+                '[submodule "vendor/lib"]\n\tpath = vendor/lib\n', encoding="utf-8"
+            )
+            (root / "remappings.txt").write_text(
+                "@dep/=vendor/lib/src/\n", encoding="utf-8"
+            )
+            (root / "vendor" / "lib" / "src").mkdir(parents=True)
+            (root / "vendor" / "lib" / "src" / "Dep.sol").write_text(
+                "pragma solidity ^0.8.20; contract Dep {}\n", encoding="utf-8"
+            )
+            (root / "src").mkdir()
+            (root / "src" / "App.sol").write_text(
+                "pragma solidity ^0.8.20; contract App {}\n", encoding="utf-8"
+            )
+            info = analysis_adapters.inspect_repository(root)
+            self.assertIn("src/App.sol", info["source_files"])
+            self.assertNotIn("vendor/lib/src/Dep.sol", info["source_files"])
+
     def test_mixed_cairo_and_solidity_scope_keeps_both_adapters(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
