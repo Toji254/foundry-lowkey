@@ -13230,6 +13230,8 @@ COMMAND_HELP = {
         "Use the function name for normal use. For example, use `contribute` instead of `contribute()`. Lowkey resolves the full signature for you. Use a quoted full signature only when you need an exact overload.",
         forms=[
             ("lk changes <name> [values...]", "Run a function by name. Lowkey looks up the full Solidity signature for you.", "lk changes setValue 10"),
+            ("lk changes <name> <value1>,<value2>,...", "Pass several values separated by commas. Parentheses around the whole group are optional; quote the group in Bash if you use parentheses.", "lk changes setValues 10,0x1111111111111111111111111111111111111111,true"),
+            ("lk changes <name> <types> <values...>", "Choose an exact overload by giving its input types as a comma-separated list, then pass the values.", "lk changes setValues uint256,address,bool 10,0x1111111111111111111111111111111111111111,true"),
             ("lk changes '<name(types...)>' [values...]", "Use the full quoted signature when a function is overloaded or you want to specify its exact parameter types.", "lk changes 'setValue(uint256)' 10"),
             ("lk changes <name> \"(value1,value2,...)\"", "Pass several values together in one quoted group. The number of values must match the function inputs.", "lk changes setValues \"(10,0x1111111111111111111111111111111111111111,true)\""),
             ("lk changes <name> [values...] --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes setValue --value 1ether"),
