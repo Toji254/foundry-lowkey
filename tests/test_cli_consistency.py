@@ -58,6 +58,35 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
 
+    def test_storage_read_explains_slot_from_compiled_layout(self):
+        raw = "0x000000000000000000000000" + "f39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        types = {
+            "t_address": {
+                "label": "address",
+                "numberOfBytes": 20,
+            },
+        }
+        storage = [
+            {
+                "slot": "1",
+                "offset": 0,
+                "label": "owner",
+                "type": "t_address",
+            },
+        ]
+        config = {"target": "0x" + "3" * 40}
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
+            rendered = lk.format_storage_read(config, "1", raw)
+
+        self.assertIn("Slot:      1", rendered)
+        self.assertIn("owner:", rendered)
+        self.assertIn("Type:  address", rendered)
+        self.assertIn(
+            "Value: 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+            rendered,
+        )
+        self.assertIn(f"Raw:       {raw}", rendered)
+
     def test_storage_command_uses_selected_target(self):
         target = "0x" + "3" * 40
         config = {
