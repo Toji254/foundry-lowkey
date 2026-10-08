@@ -398,6 +398,11 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(signature, "setValues(uint256,address,bool)")
         self.assertEqual(captured["command"][-3:], ["10", address, "true"])
 
+    def test_trailing_comma_is_accepted_for_grouped_values(self):
+        self.assertEqual(
+            lk.split_grouped_argument_values(["10,20,"], 2),
+            ["10", "20"],
+        )
     def test_function_name_plus_type_list_selects_exact_overload(self):
         target = "0x" + "1" * 40
         address = "0x" + "2" * 40
