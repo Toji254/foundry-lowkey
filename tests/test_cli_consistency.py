@@ -128,7 +128,7 @@ class CliConsistencyTests(unittest.TestCase):
                 capture=True,
             )
         self.assertEqual(result.code, 2)
-        self.assertTrue(str(result).startswith("--repeat/--times cannot repeat"))
+        self.assertTrue(str(result).startswith("Error: --repeat/--times cannot repeat"))
         self.assertNotIn("Error: Error:", str(result))
         cast_output.assert_not_called()
 
@@ -143,7 +143,9 @@ class CliConsistencyTests(unittest.TestCase):
              patch.object(lk, "_print_recommended_next_commands"), \
              patch.object(lk, "save_config"):
             with patch.object(lk.sys, "argv", ["lk", "send", "contribute", "--repeat", "5"]):
-                lk.main()
+                with self.assertRaises(SystemExit) as exit_info:
+                    lk.main()
+        self.assertEqual(exit_info.exception.code, 2)
         refresh_poc.assert_not_called()
 
     def test_send_times_alias_matches_repeat(self):
