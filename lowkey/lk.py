@@ -8785,6 +8785,10 @@ def split_lab_options(args):
             if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
                 value=f"{value} {raw[index]}"
                 index+=1
+            elif token == "--eth":
+                # --eth is the human-friendly ETH form: a unitless number means ETH.
+                # Explicit wei/gwei/ether remains unchanged.
+                value=f"{value} ether"
             continue
         if token=="--keep":
             keep=True
@@ -10022,6 +10026,7 @@ contract LowkeyStateDiff is Test {{
         if parsed["gas"] is not None:
             print(f"Gas:       {parsed['gas']}")
         print(f"Storage:   {len(parsed['slots'])} change(s)")
+        print("Persistence: temporary test; chain state unchanged")
         root=audit_context.foundry_project_root()
         audit_context.update(root, latest={"function":signature, "value":str(parsed["eth_sent"]), "calldata":calldata, "state_diff":"recorded"})
         audit_context.record_tool("state-diff", root, status="completed", summary=f"{len(parsed['slots'])} storage change(s)", data={"function":signature, "generated_test":path})
@@ -14075,7 +14080,7 @@ _NEXT_COMMANDS = {
     "findings": ["lk focus <id>", "lk q next", "lk context", "lk checklist"],
     "focus": ["lk fn <function>", "lk changes '<signature>' <values...>", "lk trace", "lk finding <note>"],
     "probe": ["lk changes '<signature>' <values...>", "lk trace", "lk finding <note>"],
-    "changes": ["lk trace", "lk findings", "lk finding <note>", "lk mapping <slot> <key>"],
+    "changes": ["lk findings", "lk finding <note>", "lk mapping <slot> <key>", "lk read <function> [args]"],
     "trace": ["lk changes '<signature>' <values...>", "lk tx <tx>", "lk findings"],
     "tx": ["lk receipt", "lk trace", "lk logs"],
     "receipt": ["lk trace", "lk tx", "lk logs"],
