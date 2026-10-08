@@ -86,7 +86,7 @@ class LowkeyCastTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     code = lk.run_status(config)
         rendered = output.getvalue()
-        self.assertEqual(code, 0)
+        self.assertIsNone(code)
         self.assertIn("Deployment: NOT DEPLOYED", rendered)
         self.assertIn("current RPC reports no contract bytecode", rendered)
         self.assertIn("lk lab", rendered)
@@ -2014,7 +2014,14 @@ contract Pool {
                     (0, encoded, ""),
                 ],
             ),
-            patch.object(lk, "rpc_json", return_value="0x" + "00" * 32),
+            patch.object(
+            lk,
+            "rpc_json",
+            side_effect=[
+                "0x6000",
+                "0x" + "00" * 32,
+            ],
+        ),
             patch.object(lk, "decode_abi_output", return_value=(identifier, None)),
         ]
         output = io.StringIO()
@@ -2025,10 +2032,17 @@ contract Pool {
         self.assertEqual(cast_output.call_args_list[1].args[0], [
             "cast", "calldata", "escrow(bytes32)", identifier,
         ])
-        rpc_json.assert_called_once_with(
-            "http://127.0.0.1:8545",
-            "eth_call",
-            [{"to": target, "data": encoded}, "latest"],
+        self.assertEqual(
+            rpc_json.call_args_list[0].args,
+            ("http://127.0.0.1:8545", "eth_getCode", [target, "latest"]),
+        )
+        self.assertEqual(
+            rpc_json.call_args_list[1].args,
+            (
+                "http://127.0.0.1:8545",
+                "eth_call",
+                [{"to": target, "data": encoded}, "latest"],
+            ),
         )
         self.assertIn("Returns:", output.getvalue())
 
