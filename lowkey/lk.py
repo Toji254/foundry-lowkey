@@ -3730,6 +3730,9 @@ def run_cast(args,config,capture=False):
             if cast_cmd=="send":
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 print(format_send_summary(out,config,call))
+            elif cast_cmd=="storage" and len(remaining) >= 1:
+                explained = format_storage_read(config, remaining[0], out)
+                print(explained if explained else humanize_value(apply_labels(out,config)))
             elif cast_cmd=="call" and function_item and function_item.get("outputs"):
                 output_payload=str(out).strip()
                 signature=format_output_signature(function_item)
@@ -11322,6 +11325,87 @@ def run_gas(config,args):
         except ValueError as error:
             print(f"Error: {error}",file=sys.stderr); return
     run_cast(["estimate",target]+values,config)
+def format_storage_read(config, slot, raw):
+    """Explain a raw storage word using the selected target's compiled storage layout."""
+    raw_text = str(raw or "").strip()
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", raw_text):
+        return None
+    try:
+        slot_number = int(str(slot), 0)
+    except (TypeError, ValueError):
+        try:
+            slot_number = int(str(slot))
+        except (TypeError, ValueError):
+            return None
+
+    types, storage = storage_layout_details(config)
+    if not storage:
+        return None
+
+    matches = []
+    for entry in storage:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            entry_slot = int(str(entry.get("slot")), 0)
+        except (TypeError, ValueError):
+            try:
+                entry_slot = int(str(entry.get("slot")))
+            except (TypeError, ValueError):
+                continue
+        if entry_slot != slot_number:
+            continue
+
+        type_id = entry.get("type")
+        type_info = types.get(type_id, {}) if isinstance(types, dict) else {}
+        if not isinstance(type_info, dict):
+            type_info = {}
+        label = str(entry.get("label") or "").strip()
+        type_label = str(type_info.get("label") or type_id or "unknown").strip()
+        matches.append((entry, type_info, label, type_label))
+
+    if not matches:
+        return None
+
+    value_int = int(raw_text, 16)
+    lines = [
+        "STORAGE SLOT",
+        "============",
+        f"Slot:      {slot_number}",
+    ]
+
+    if len(matches) > 1:
+        lines.append("Fields:")
+    for entry, type_info, label, type_label in matches:
+        offset = int(entry.get("offset") or 0)
+        number_of_bytes = int(type_info.get("numberOfBytes") or 32)
+        shift = 8 * offset
+        mask = (1 << (8 * number_of_bytes)) - 1
+        decoded_int = (value_int >> shift) & mask
+        decoded = None
+        lowered = type_label.lower()
+
+        if lowered == "address" and number_of_bytes == 20:
+            decoded = "0x" + f"{decoded_int:040x}"
+        elif lowered == "bool" and number_of_bytes == 1:
+            decoded = "true" if decoded_int else "false"
+        elif lowered.startswith("uint") or lowered.startswith("int"):
+            decoded = str(decoded_int)
+        elif lowered == "bytes32" and number_of_bytes == 32:
+            decoded = "0x" + f"{decoded_int:064x}"
+
+        prefix = f"  {label or 'slot value'}"
+        lines.append(f"{prefix}:")
+        lines.append(f"    Type:  {type_label}")
+        if decoded is not None:
+            lines.append(f"    Value: {decoded}")
+        else:
+            lines.append("    Value: raw 32-byte storage word (type not safely decoded)")
+
+    lines.append(f"Raw:       {raw_text}")
+    return "\n".join(lines)
+
+
 def run_raw(config,args):
     if not args: return fail("Usage: lk raw <cast-subcommand> [args...]")
     safe=redact_secrets(shlex.join(["cast"]+args)); print(f"DEBUG: Executing -> {safe}")
