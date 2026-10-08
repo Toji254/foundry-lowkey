@@ -8962,7 +8962,18 @@ def resolve_argument_aliases(config, function_item, values):
         if item_type=="address":
             name=str(value).strip()
             if not is_address(name):
+                # Address parameters accept the same human identities Lowkey
+                # already knows elsewhere: actors first, then current-project
+                # targets. This lets calls such as
+                #   lk read contributions Fallback
+                # resolve without copying the address.
                 address=actor_address(config,name)
+                if not address:
+                    try:
+                        root=audit_context.foundry_project_root()
+                        address=resolve_target_ref(config,name,root)
+                    except Exception:
+                        address=None
                 if address:
                     value=address
         value=normalize_numeric_argument(value,item_type)
