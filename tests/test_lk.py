@@ -176,6 +176,54 @@ class LowkeyCastTests(unittest.TestCase):
                                 code = lk.run_probe(config, ["withdraw"])
         self.assertEqual(code, 2)
 
+    def test_direct_target_rejects_undeployed_address_on_live_rpc(self):
+        address = "0x" + "9" * 40
+        config = {
+            "target": None,
+            "target_contract": None,
+            "abi_paths": {},
+            "aliases": {},
+            "targets": {},
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "_live_target_state", return_value={
+                "status": "NOT_DEPLOYED",
+                "verification": "UNVERIFIED",
+            }):
+                code = lk.dispatch_command("target", [address], config)
+        self.assertEqual(code, 1)
+        self.assertIsNone(config.get("target"))
+
+    def test_named_manual_target_rejects_undeployed_address_on_live_rpc(self):
+        address = "0x" + "a" * 40
+        config = {
+            "target": None,
+            "target_contract": None,
+            "abi_paths": {},
+            "aliases": {},
+            "targets": {},
+        }
+        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+            with patch.object(lk, "_live_target_state", return_value={
+                "status": "NOT_DEPLOYED",
+                "verification": "UNVERIFIED",
+            }):
+                code = lk.dispatch_command("target", ["Fallback", address], config)
+        self.assertEqual(code, 1)
+        self.assertIsNone(config.get("target"))
+
+    def test_target_reset_clears_contract_metadata(self):
+        config = {
+            "target": "0x" + "b" * 40,
+            "target_contract": "Fallback",
+        }
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/testi")):
+            with patch.object(lk.audit_context, "set_target"), patch.object(lk, "save_config"):
+                code = lk.dispatch_command("target", ["reset"], config)
+        self.assertEqual(code, 0)
+        self.assertIsNone(config.get("target"))
+        self.assertIsNone(config.get("target_contract"))
+
     def test_parse_lab_marker_preserves_default_and_custom_marker_contract(self):
         target = "0x" + "4" * 40
         created = "0x" + "5" * 40
