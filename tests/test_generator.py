@@ -467,6 +467,34 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertNotIn("PLACEHOLDER", source)
 
 
+    def test_find_artifact_uses_configured_foundry_source_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "foundry.toml").write_text(
+                "[profile.default]\nsrc = 'contracts'\n", encoding="utf-8"
+            )
+            source = root / "contracts" / "Target.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Target {}\n",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "contracts" / "Target.sol" / "Target.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Target",
+                    "abi": [],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+
+            found = generator.find_artifact(root, "Target")
+
+            self.assertIsNotNone(found)
+            self.assertEqual(found[0], artifact)
+
     def test_generate_test_uses_supplied_calldata(self):
         target = "0x" + "1" * 40
         with tempfile.TemporaryDirectory() as tmp:
