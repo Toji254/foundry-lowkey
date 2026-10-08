@@ -490,7 +490,7 @@ def _rg_source_root(root: str) -> str:
             foundry_text = foundry_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             foundry_text = ""
-        match = re.search(r'(?m)^\\s*src\\s*=\\s*["\\']([^"\\']+)["\\']', foundry_text)
+        match = re.search(r"(?m)^\\s*src\\s*=\\s*['\"]([^'\"]+)['\"]", foundry_text)
         if match:
             configured = root_path / match.group(1).strip()
             if configured.is_dir():
