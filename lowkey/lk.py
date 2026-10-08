@@ -3854,8 +3854,105 @@ def run_proxy(config):
     admin=run_cast(["admin",target],config,capture=True)
     print(f"Implementation: {apply_labels(implementation or 'Unknown',config)}")
     print(f"Admin:         {apply_labels(admin or 'Unknown',config)}")
+def storage_type_expression(types, type_id, seen=None):
+    """Render a compact Solidity-like storage type from a Foundry layout type id."""
+    if seen is None:
+        seen=set()
+    if not isinstance(type_id, str):
+        return "unknown"
+    if type_id in seen:
+        return storage_type_label(types, type_id) or type_id
+    seen.add(type_id)
+    info=types.get(type_id,{}) if isinstance(types,dict) else {}
+    if not isinstance(info,dict):
+        return storage_type_label(types,type_id) or type_id
+    label=storage_type_label(types,type_id) or type_id
+    encoding=str(info.get("encoding") or "").lower()
+    if encoding == "mapping":
+        key=storage_type_expression(types, info.get("key"), seen.copy())
+        value=storage_type_expression(types, info.get("value"), seen.copy())
+        return f"mapping({key} => {value})"
+    if encoding in {"dynamic_array", "bytes"}:
+        base=storage_type_expression(types, info.get("base"), seen.copy()) if info.get("base") else label
+        return f"{base}[]" if encoding == "dynamic_array" else "bytes"
+    if encoding == "inplace" and str(type_id).startswith("t_array"):
+        base=storage_type_expression(types, info.get("base"), seen.copy())
+        length=info.get("length") or info.get("numberOfBytes")
+        return f"{base}[{length}]" if length else f"{base}[]"
+    if encoding == "inplace" and info.get("base") and info.get("length") is not None:
+        base=storage_type_expression(types, info.get("base"), seen.copy())
+        return f"{base}[{info.get('length')}]"
+    return label
+
+
+def storage_structure_catalog(config):
+    """List mapping/array variables and the exact slots/types needed to inspect them."""
+    types, storage=storage_layout_details(config)
+    if not storage:
+        return []
+
+    items=[]
+    for entry in storage:
+        if not isinstance(entry,dict):
+            continue
+        type_id=entry.get("type")
+        type_info=types.get(type_id,{}) if isinstance(types,dict) else {}
+        if not isinstance(type_info,dict):
+            continue
+        encoding=str(type_info.get("encoding") or "").lower()
+        if encoding not in {"mapping","dynamic_array"} and not (
+            encoding == "inplace" and type_info.get("base") is not None
+        ):
+            continue
+
+        slot=entry.get("slot")
+        label=str(entry.get("label") or "unnamed")
+        expression=storage_type_expression(types,type_id)
+        kind="MAPPING" if encoding=="mapping" else "ARRAY"
+        item={
+            "kind":kind,
+            "label":label,
+            "slot":slot,
+            "type":expression,
+        }
+        if encoding=="mapping":
+            item["key_type"]=storage_type_expression(types,type_info.get("key"))
+            item["value_type"]=storage_type_expression(types,type_info.get("value"))
+        else:
+            item["element_type"]=storage_type_expression(types,type_info.get("base")) if type_info.get("base") else expression
+            item["length"]="dynamic" if encoding=="dynamic_array" else type_info.get("length")
+        items.append(item)
+    return items
+
+
 def run_mapping(config,*args):
     if not config.get("target"): return fail("Error: Set target first.")
+    if not args:
+        items=storage_structure_catalog(config)
+        print("STORAGE COLLECTIONS")
+        print("===================")
+        if not items:
+            print("No mapping or array variables were found in the selected target's compiled storage layout.")
+            return 0
+        for index,item in enumerate(items,1):
+            print(f"{index}. {item['kind']}")
+            print(f"   Name: {item['label']}")
+            print(f"   Slot: {item['slot']}")
+            print(f"   Type: {item['type']}")
+            if item["kind"]=="MAPPING":
+                print(f"   Key:  {item['key_type']}")
+                print(f"   Value: {item['value_type']}")
+                print(f"   Lookup: lk mapping {item['key_type']} {item['slot']} <{item['key_type']}>")
+            else:
+                print(f"   Element: {item['element_type']}")
+                print(f"   Length:  {item['length']}")
+                print(f"   Inspect base slot: lk st {item['slot']}")
+                if item["length"]=="dynamic":
+                    print("   Elements: dynamic-array data starts at keccak256(base slot) + index.")
+                else:
+                    print("   Elements: fixed-array elements are laid out from the base slot according to the element size.")
+            print("")
+        return 0
     if len(args)==2: slot,key=args; key_type="address" if is_address(key) else "uint256"
     elif len(args)==3: key_type,slot,key=args
     else: return fail("Usage: lk mapping [key_type] <slot> <key>")
