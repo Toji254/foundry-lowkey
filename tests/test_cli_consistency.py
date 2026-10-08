@@ -58,6 +58,32 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
 
+    def test_named_target_can_be_used_as_explicit_read_target(self):
+        target = "0x" + "3" * 40
+        config = {
+            "target": None,
+            "targets": {"Fallback": target},
+            "rpc_url": "http://127.0.0.1:8545",
+        }
+        abi_item = {"name": "getContribution", "type": "function", "inputs": [], "outputs": []}
+        with patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/Fallback")), \
+             patch.object(lk, "resolve_target_ref", return_value=target) as resolve_target, \
+             patch.object(lk, "resolve_function", return_value="getContribution()"), \
+             patch.object(lk, "load_abi", return_value=[abi_item]), \
+             patch.object(lk, "cast_output", return_value=(0, "0x", "")) as cast_output:
+            result = lk.run_cast(["call", "Fallback", "getContribution"], config, capture=True)
+
+        self.assertEqual(result.code, 0)
+        resolve_target.assert_called_once_with(config, "Fallback", root=pathlib.Path("/tmp/Fallback"))
+        cast_output.assert_called_once_with([
+            "cast",
+            "call",
+            target,
+            "getContribution()",
+            "--rpc-url",
+            "http://127.0.0.1:8545",
+        ])
+
     def test_internal_deployer_identity_is_available_with_active_actor(self):
         alice = "0x" + "1" * 40
         deployer = "0x" + "2" * 40
