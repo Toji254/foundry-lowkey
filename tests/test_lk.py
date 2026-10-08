@@ -3204,6 +3204,21 @@ contract Pool {
             with self.assertRaisesRegex(ValueError, r"expects 2 argument\(s\), got 1"):
                 lk.encode_target_call(config,"createescrow",["1 ether"])
 
+    def test_split_lab_options_defaults_unitless_eth_to_ether(self):
+        values, actor, value, keep, repeat = lk.split_lab_options(
+            ["contribute", "--eth", "0.001"]
+        )
+        self.assertEqual(values, ["contribute"])
+        self.assertIsNone(actor)
+        self.assertEqual(value, "0.001 ether")
+        self.assertFalse(keep)
+        self.assertEqual(repeat, 1)
+
+        values, actor, value, keep, repeat = lk.split_lab_options(
+            ["contribute", "--eth", "1", "wei"]
+        )
+        self.assertEqual(value, "1 wei")
+
     def test_split_lab_options_accepts_separated_eth_unit(self):
         values, actor, value, keep, repeat = lk.split_lab_options(
             ["release", "--actor", "Alice", "--value", "1", "ether"]
