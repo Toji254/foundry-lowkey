@@ -12668,7 +12668,7 @@ def _validate_help_variations(entries):
 
 COMMAND_HELP = {
     "benchmark": _help_entry(
-        "Run deterministic Lowkey source-triage regression cases before trusting a release. This verifies detector behavior and language-boundary handling; it is not a real-world audit-accuracy score.",
+        "Run deterministic Lowkey source-triage regression cases before trusting a withdraw. This verifies detector behavior and language-boundary handling; it is not a real-world audit-accuracy score.",
         "lk benchmark [--json] [--verbose]",
         "lk benchmark",
         "Use it as the final regression gate after changing the audit engine, adapters, or source-triage rules.",
@@ -12998,17 +12998,17 @@ COMMAND_HELP = {
     "read": _help_entry(
         "Call a contract without intentionally changing state. Lowkey uses the selected target and understands common Solidity argument types, including addresses, numbers, and fixed-size bytes such as bytes32 IDs.",
         "lk read <function> [args...]",
-        "lk read vault 0xd9c5115d8ca09413513b0348ccd4aa5d5d2b8183823763b527bfd81f40d86f2a",
+        "lk read getRecord 0x1111111111111111111111111111111111111111111111111111111111111111",
         "Use it for getters and state observation. It does not intentionally change contract data.",
         forms=[
             ("lk read <function>", "Read a getter with no arguments.", "lk read totalSupply"),
             ("lk read <function> <args...>", "Pass the real values the getter expects. Lowkey uses the ABI to interpret their types.", "lk read balanceOf 0x7099..."),
-            ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x5fbdb231... vault 0xd9c5..."),
+            ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x1111111111111111111111111111111111111111 getRecord 0x1111..."),
         ],
         options=[
             ("address", "Pass an Ethereum address directly or use a configured actor name where supported.", "lk read balanceOf 0x7099..."),
             ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read amount 1 ether"),
-            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as an vault ID.", "lk read vault 0xd9c5115d...d86f2a"),
+            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as a record ID.", "lk read getRecord 0x1111111111111111111111111111111111111111111111111111111111111111"),
         ],
         related=["lk ask", "lk send", "lk changes"],
     ),
@@ -13018,19 +13018,19 @@ COMMAND_HELP = {
         "lk send deposit 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether --confirm",
         "Use it after you understand the function and are ready to actually run it. Use --preview first when you only want to check what will be sent.",
         forms=[
-            ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send release 0xd9c5..."),
+            ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send withdraw 0xd9c5..."),
             ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send deposit 1 0x7099... --value 1ether"),
-            ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send release 0xd9c5... --actor Alice"),
-            ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send release 0xd9c5... --as attacker"),
+            ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send withdraw 0xd9c5... --actor Alice"),
+            ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send withdraw 0xd9c5... --as attacker"),
         ],
         options=[
             ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send deposit 1 0x7099... --value 1ether"),
-            ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send release 0xd9c5... --actor Alice"),
-            ("--as <name>", "Another spelling of --actor.", "lk send release 0xd9c5... --as attacker"),
-            ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
-            ("--dry-run", "Another spelling of --preview.", "lk send release 0xd9c5... --dry-run"),
-            ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send release 0xd9c5... --confirm"),
-            ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send release 0xd9c5... --yes"),
+            ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send withdraw 0xd9c5... --actor Alice"),
+            ("--as <name>", "Another spelling of --actor.", "lk send withdraw 0xd9c5... --as attacker"),
+            ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send withdraw 0xd9c5... --preview"),
+            ("--dry-run", "Another spelling of --preview.", "lk send withdraw 0xd9c5... --dry-run"),
+            ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send withdraw 0xd9c5... --confirm"),
+            ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send withdraw 0xd9c5... --yes"),
         ],
         related=["lk changes", "lk trace", "lk receipt"],
     ),    "import": _help_entry(
@@ -13072,15 +13072,15 @@ COMMAND_HELP = {
         "lk wizard deposit 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "Use it when you know which function you want but want Lowkey to handle the function signature and argument prompts. A target must already be selected. Transactions use the current actor. A state-changing function is sent by default; a read-only function is only read.",
         forms=[
-            ("lk wizard <function> [values...]", "Give Lowkey the function name and any values you already know. It asks for anything still missing.", "lk wizard release 0xd9c5..."),
+            ("lk wizard <function> [values...]", "Give Lowkey the function name and any values you already know. It asks for anything still missing.", "lk wizard withdraw 0xd9c5..."),
             ("lk wizard <function> [values...] call", "Force a read-only call. The contract is not changed.", "lk wizard balanceOf 0x7099... call"),
-            ("lk wizard <function> [values...] send", "Force a state-changing transaction.", "lk wizard release 0xd9c5... send"),
-            ("lk wizard <function> [values...] encode", "Only build the call data. Nothing is sent.", "lk wizard release 0xd9c5... encode"),
+            ("lk wizard <function> [values...] send", "Force a state-changing transaction.", "lk wizard withdraw 0xd9c5... send"),
+            ("lk wizard <function> [values...] encode", "Only build the call data. Nothing is sent.", "lk wizard withdraw 0xd9c5... encode"),
         ],
         options=[
             ("call", "Read the function without changing contract data.", "lk wizard balanceOf 0x7099... call"),
-            ("send", "Send the function as a transaction using the current actor.", "lk wizard release 0xd9c5... send"),
-            ("encode", "Build the data for the function call without sending it.", "lk wizard release 0xd9c5... encode"),
+            ("send", "Send the function as a transaction using the current actor.", "lk wizard withdraw 0xd9c5... send"),
+            ("encode", "Build the data for the function call without sending it.", "lk wizard withdraw 0xd9c5... encode"),
             ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard deposit"),
             ("TARGET", "A target must already be selected before wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
             ("ACTOR", "Transactions use the current actor. For example, select Anvil account 0 as Alice with lk actor 0 Alice.", "lk actor 0 Alice"),
@@ -13094,12 +13094,12 @@ COMMAND_HELP = {
         "Use it when you want to quickly try a function without writing your own test first. A probe reports what happened; it does not decide whether the behavior is safe.",
         forms=[
             ("lk probe <function> [args...]", "Try the function with the local actors Lowkey has configured.", "lk probe deposit 1 0x7099..."),
-            ("lk probe <function> [args...] --actor <name>", "Try it only as the named actor.", "lk probe release 0xd9c5... --actor attacker"),
+            ("lk probe <function> [args...] --actor <name>", "Try it only as the named actor.", "lk probe withdraw 0xd9c5... --actor attacker"),
             ("lk probe <function> [args...] --value <amount>", "Attach ETH to each test call.", "lk probe deposit 1 0x7099... --value 1ether"),
         ],
         options=[
-            ("--actor <name>", "Run the test only as this named local actor.", "lk probe release 0xd9c5... --actor attacker"),
-            ("--as <name>", "Another spelling of --actor.", "lk probe release 0xd9c5... --as attacker"),
+            ("--actor <name>", "Run the test only as this named local actor.", "lk probe withdraw 0xd9c5... --actor attacker"),
+            ("--as <name>", "Another spelling of --actor.", "lk probe withdraw 0xd9c5... --as attacker"),
             ("--value <amount>", "Attach ETH to the test call. Example: --value 1ether means msg.value is 1 ETH.", "lk probe deposit 1 0x7099... --value 1ether"),
             ("--eth <amount>", "Another spelling of --value.", "lk probe deposit 1 0x7099... --eth 1ether"),
         ],
@@ -13110,14 +13110,14 @@ COMMAND_HELP = {
         "lk changes 'deposit(uint256,address)' 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether",
         "Use it when you want to connect a function call to the exact contract data that changed. If the call fails, Lowkey should show that it failed and that no stored values changed.",
         forms=[
-            ("lk changes '<function(types...)>' <values...>", "Run the call without attaching ETH unless you add a value option.", "lk changes 'release(bytes32)' 0xd9c5..."),
+            ("lk changes '<function(types...)>' <values...>", "Run the call without attaching ETH unless you add a value option.", "lk changes 'withdraw(bytes32)' 0xd9c5..."),
             ("lk changes '<function(types...)>' <values...> --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes 'deposit(uint256,address)' 1 0x7099... --value 1ether"),
-            ("lk changes '<function(types...)>' <values...> --actor <name>", "Run the call as a named local actor.", "lk changes 'release(bytes32)' 0xd9c5... --actor attacker"),
+            ("lk changes '<function(types...)>' <values...> --actor <name>", "Run the call as a named local actor.", "lk changes 'withdraw(bytes32)' 0xd9c5... --actor attacker"),
             ("lk changes '<function(types...)>' <values...> --repeat <N>", "Repeat the exact call N times inside one transaction. Useful for testing same-transaction identifier collisions.", "lk changes 'deposit(address)' 0x7099... --value 1ether --repeat 3"),
         ],
         options=[
-            ("--actor <name>", "Choose which named local actor makes the call.", "lk changes 'release(bytes32)' 0xd9c5... --actor attacker"),
-            ("--as <name>", "Another spelling of --actor.", "lk changes 'release(bytes32)' 0xd9c5... --as attacker"),
+            ("--actor <name>", "Choose which named local actor makes the call.", "lk changes 'withdraw(bytes32)' 0xd9c5... --actor attacker"),
+            ("--as <name>", "Another spelling of --actor.", "lk changes 'withdraw(bytes32)' 0xd9c5... --as attacker"),
             ("--value <amount>", "Attach ETH to the call. Example: --value 1ether makes msg.value equal 1 ETH.", "lk changes 'deposit(uint256,address)' 1 0x7099... --value 1ether"),
             ("--eth <amount>", "Another spelling of --value.", "lk changes 'deposit(uint256,address)' 1 0x7099... --eth 1ether"),
             ("--repeat <N>", "Repeat the exact call N times inside one transaction (maximum 100).", "lk changes 'deposit(address)' 0x7099... --value 1ether --repeat 3"),
@@ -13206,10 +13206,10 @@ COMMAND_HELP = {
         forms=[
             ("lk trace", "Show the trace for the last transaction Lowkey remembers.", "lk trace"),
             ("lk trace <tx>", "Show the trace for a specific transaction.", "lk trace 0x871f..."),
-            ("lk trace <tx> --grep <text>", "Show only trace lines containing the text you give.", "lk trace 0x871f... --grep release"),
+            ("lk trace <tx> --grep <text>", "Show only trace lines containing the text you give.", "lk trace 0x871f... --grep withdraw"),
         ],
         options=[
-            ("--grep <text>", "Show only trace lines that contain this text. This helps when a long trace has one part you care about.", "lk trace --grep release"),
+            ("--grep <text>", "Show only trace lines that contain this text. This helps when a long trace has one part you care about.", "lk trace --grep withdraw"),
             ("--quick", "Ask Cast for a shorter trace when you do not need every detail.", "lk trace --quick"),
             ("--decode-internal", "Ask Cast to decode more of the data used by calls inside the transaction.", "lk trace --decode-internal"),
             ("--trace-printer <value>", "Pass a trace display setting to Cast. Run 'cast run --help' to see the exact value choices.", "lk trace --trace-printer <value>"),
@@ -13340,13 +13340,13 @@ COMMAND_HELP = {
     "matrix": _help_entry(
         "Build an attacker/state matrix and turn scenarios into Forge tests.",
         "lk matrix init | actor | state | add | list | test",
-        "lk matrix add badRelease release Attacker revert",
+        "lk matrix add badRelease withdraw Attacker revert",
         "Use it when the same security question needs testing across several callers or states.",
         forms=[
             ("lk matrix init", "Create matrix files before adding scenarios.", "lk matrix init"),
             ("lk matrix actor <name> <address>", "Add a named actor/address to the scenario matrix.", "lk matrix actor Attacker 0x..."),
             ("lk matrix state <name> <description>", "Define a scenario precondition.", "lk matrix state funded vault holds 1 ETH"),
-            ("lk matrix add <name> <function> <actor> <expected>", "Record one testable security scenario.", "lk matrix add badRelease release Attacker revert"),
+            ("lk matrix add <name> <function> <actor> <expected>", "Record one testable security scenario.", "lk matrix add badRelease withdraw Attacker revert"),
             ("lk matrix list", "List saved scenarios.", "lk matrix list"),
             ("lk matrix test <name>", "Generate/run a Forge test for one scenario.", "lk matrix test badRelease"),
         ],
@@ -13355,7 +13355,7 @@ COMMAND_HELP = {
             "init": _help_entry("Create matrix files.", "lk matrix init", "lk matrix init", "Use it before adding scenarios."),
             "actor": _help_entry("Add a named actor/address.", "lk matrix actor <name> <address>", "lk matrix actor Attacker 0x...", "Use it when a scenario needs a specific caller."),
             "state": _help_entry("Define a named state condition.", "lk matrix state <name> <description>", "lk matrix state funded vault holds 1 ETH", "Use it to document a scenario precondition."),
-            "add": _help_entry("Add a testable scenario.", "lk matrix add <name> <function> <actor> <expected>", "lk matrix add badRelease release Attacker revert", "Use it to capture a security hypothesis before generating a test."),
+            "add": _help_entry("Add a testable scenario.", "lk matrix add <name> <function> <actor> <expected>", "lk matrix add badRelease withdraw Attacker revert", "Use it to capture a security hypothesis before generating a test."),
             "list": _help_entry("List saved scenarios.", "lk matrix list", "lk matrix list", "Use it to review queued reproductions."),
             "test": _help_entry("Generate/run a Forge test for one scenario.", "lk matrix test <name>", "lk matrix test badRelease", "Use it when you are ready to turn the scenario into executable evidence."),
         },
@@ -13524,7 +13524,7 @@ COMMAND_HELP = {
     "create": _help_entry("Create a new Foundry component.", "lk create", "lk create", "Use it while bootstrapping contracts, libraries, or tests."),
     "batch": _help_entry("Run one Lowkey command per line from a file.", "lk batch <command-file>", "lk batch audit-steps.lk", "Use it for repeatable local investigation sequences.", related=["lk audit"]),
     "raw": _help_entry("Run a raw Cast command when Lowkey has no friendlier wrapper.", "lk raw <cast-subcommand> [args...]", "lk raw storage 0", "Use it as the advanced EVM inspection escape hatch.", related=["lk encode", "lk tx"]),
-    "gas": _help_entry("Estimate gas for a function call.", "lk gas <function> [args]", "lk gas release", "Use it to see the transaction's estimated gas cost before sending.", related=["lk send", "lk trace"]),
+    "gas": _help_entry("Estimate gas for a function call.", "lk gas <function> [args]", "lk gas withdraw", "Use it to see the transaction's estimated gas cost before sending.", related=["lk send", "lk trace"]),
     "slither": _help_entry(
         "Run Slither, a Solidity code checker, through Lowkey.",
         "lk slither [options]",
@@ -13559,7 +13559,7 @@ COMMAND_HELP = {
     "storage": _help_entry("Use raw storage inspection through Cast.", "lk storage ...", "lk raw storage 0", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping"]),
     "slots": _help_entry("Alias-style low-level storage inspection.", "lk slots ...", "lk raw storage 0", "Use it for direct slot inspection.", related=["lk layout", "lk mapping"]),
     "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c balanceOf 0x...", "Use it when you want the compact read form.", related=["lk read"]),
-    "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s release --preview", "Use it when you want the compact send form.", related=["lk send"]),
+    "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s withdraw --preview", "Use it when you want the compact send form.", related=["lk send"]),
     "st": _help_entry("Short low-level/state helper alias.", "lk st ...", "lk st storage 0", "Use it when you want the compact forensic form.", related=["lk raw", "lk state-diff"]),
 }
 
@@ -13722,7 +13722,7 @@ COMMON TERMS
   <address>   20-byte contract or wallet address, e.g. 0x1111...1111
   <name>      Friendly name you gave to an actor or target, e.g. Alice or vault
   <Contract>  Solidity contract name, e.g. Vault
-  <function>  Solidity function name, e.g. release
+  <function>  Solidity function name, e.g. withdraw
   <file>      Source file, e.g. src/<SourceFile>.sol
   <dir>       Folder, e.g. src
   <slot>      Number used to locate saved contract data, e.g. 3
@@ -13773,7 +13773,7 @@ UNDERSTAND THE PROJECT
   lk info                          Show target, bytecode, ABI, proxy information.
   lk recon                         Quick contract reconnaissance: balance/code/nonce.
   lk functions [query]             List contract functions. Example: lk functions
-  lk fn [query]                    Find/list functions. Example: lk fn release
+  lk fn [query]                    Find/list functions. Example: lk fn withdraw
   lk fn -h                         Explain function-search syntax.
   lk ask <function>                Show function inputs. Example: lk ask deposit
   lk wizard <function> [values...] [call|send|encode] Interactive argument helper; return values shown after successful sends when available.
@@ -13782,20 +13782,20 @@ UNDERSTAND THE PROJECT
   lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
   lk seams [hotspots]              Show audit hotspots.
   lk risk                          Show ABI-level review-surface hints.
-  lk gas <function> [args]         Estimate gas. Example: lk gas release
+  lk gas <function> [args]         Estimate gas. Example: lk gas withdraw
   lk slither [args...]             Run Slither through Lowkey's reporter.
   lk rg <pattern> [path]           Search source and save evidence. Example: lk rg "delegatecall" src
 
 INTERACT WITH CONTRACTS
   lk read <function> [args]        Read without changing state. Example: lk read balanceOf <address>
   lk balance [address|name]        Check native ETH held by a contract or wallet. Example: lk balance vault
-  lk send <function> [args]        Send a transaction. Example: lk send release --preview
+  lk send <function> [args]        Send a transaction. Example: lk send withdraw --preview
   lk send ... --preview            Encode/check without sending.
   lk send ... --confirm            Preview, then ask before sending.
   lk c <function> [args]           Short read alias. Example: lk c balanceOf <address>
-  lk s <function> [args]           Short send alias. Example: lk s release --preview
+  lk s <function> [args]           Short send alias. Example: lk s withdraw --preview
   lk st ...                        Short raw-storage/low-level alias.
-  lk encode <function> [args]      Build calldata. Example: lk encode release
+  lk encode <function> [args]      Build calldata. Example: lk encode withdraw
   lk decode <function> <data>      Decode return data.
   lk decode-error <data>           Decode a custom error.
   lk event <sig> <data> [topics]   Decode event data.
@@ -13834,7 +13834,1092 @@ TRANSACTION FORENSICS
   lk label <address> <name>        Give an address a readable label.
 
 REPRODUCE / ATTACK / TEST
-  lk probe <function> [args]       Try a call without assertions. Example: lk probe release
+  lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
+  lk test-gen                      Turn the latest send into a Forge test.
+  lk generate test '<name(parameter TYPES...)>' <VALUES...>
+                                   Generate a reusable Forge test.
+                                   FUNCTION SIGNATURE = function name + parameter TYPES.
+                                   The quoted part contains TYPES, not real values.
+                                   Put actual argument VALUES after the closing quote.
+                                   Example:
+                                     lk generate test 'createRecord(address,uint256)' <addr> <amount>
+  lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
+  lk generate deployment <Contract> Generate a deployment script.
+  lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
+  lk fuzz [args...]                Run Forge fuzz tests.
+  lk invariant [args...]           Run Forge invariant tests.
+  lk symbolic [args...]            Run symbolic tests when configured.
+  lk mutate [args...]              Run mutation testing.
+  lk brutalize [args...]           Stress calldata/state assumptions.
+  lk cheatcodes [args...]          Show/run useful Foundry cheatcode helpers.
+  lk matrix init                   Create an attacker-state test matrix.
+  lk matrix actor ...              Add an actor to the matrix.
+  lk matrix state ...              Define a state.
+  lk matrix add ...               Add a scenario.
+  lk matrix list                   List scenarios.
+  lk matrix test <name>            Generate a Forge test skeleton for a scenario.
+
+AUDIT WORKFLOW / EVIDENCE
+  lk audit                          Interactive audit dashboard.
+  lk audit auto                    Local autonomous audit; may provision Anvil.
+  lk audit --checks                Explicitly run the default static-check baseline (compatibility alias).
+  lk audit --no-checks              Skip Slither/lint/unsafe-cheatcode checks; keep build/tests/coverage.
+  lk audit auto --checks           Autonomous audit with the default static-check baseline.
+  lk audit run                     Full evidence pipeline: build -> tests -> coverage -> Slither -> triage.
+  lk audit run --poc               Same pipeline, then generate a PoC scaffold.
+  lk audit--checks                 Legacy compact alias for audit --checks.
+  lk finding <note>                Record a manual observation. Example: lk finding caller is not restricted
+  lk finding add <sev> <title>...  Record severity/title/text in one command.
+  lk findings                      Show stored findings/signals.
+  lk focus <id|query>              Focus one finding/review surface.
+  lk checklist                    View/reset/mark checklist items.
+  lk note <text>                   Save an audit note.
+  lk todo <text>                   Add an audit TODO.
+  lk session [start|resume|end]   Manage audit sessions.
+  lk workspace [args]             Inspect audit workspace files.
+  lk export                        Build an audit-report/ bundle.
+
+PROTOCOL WALKTHROUGH
+  lk walkthrough --h                Explain the walkthrough, its options, and next commands.
+  lk walkthrough test --h           Explain randomized adversarial testing.
+  Example: lk walkthrough --auto --steps 8
+
+FORK / PROXY / ABI FORENSICS
+  lk fork <rpc> [block]             Start a local fork command/state.
+  lk proxy                          Inspect an EIP-1967 proxy.
+  lk implementation                 Resolve the implementation address.
+  lk admin                          Resolve the proxy admin.
+  lk selectors                     Extract runtime function selectors.
+  lk calldata <data>                Decode calldata and selectors.
+  lk sig <function>                 Print a function signature/selector.
+  lk 4byte ...                      Extended Cast 4byte helper.
+  lk access-list ...                Build/access an access list.
+  lk constructor-args ...           Inspect constructor arguments.
+  lk creation-code ...              Inspect creation/init code.
+  lk decode-calldata ...            Decode calldata directly.
+  lk abi-encode ...                 ABI-encode arguments.
+  lk disasm ...                     Disassemble bytecode.
+  lk txpool ...                     Inspect the local transaction pool.
+  lk chisel ...                     Launch/use Foundry Chisel.
+  lk ens <name|address>             ENS forward/reverse lookup.
+  lk token <token>                  ERC20 metadata helper.
+  lk token balance <token> <holder> ERC20 holder balance helper.
+  lk snapshot/diff                   Storage snapshot + comparison.
+
+FOUNDRY SHORTCUTS
+  lk forge <forge-command> [args]   Use native Forge through Lowkey. Example: lk forge test -vvvv
+  lk build                          Shortcut for forge build. Example: lk build
+  lk test                           Shortcut for forge test. Example: lk test
+  lk script <args>                  Shortcut for forge script.
+  lk inspect <args>                 Shortcut for forge inspect.
+  lk coverage <args>                Shortcut for forge coverage.
+  lk lint / geiger                  Run those Forge tools when installed.
+  lk fmt                            Format Foundry sources.
+  lk create                         Create a new Foundry component.
+
+UTILITIES / COMPATIBILITY
+  lk context                        Show current audit/project context.
+  lk state-diff / statediff         Legacy aliases for state-diff.
+  lk try                            Legacy alias for probe.
+  lk investigate                   Legacy alias for focus/investigation.
+  lk signals                       Legacy alias for findings.
+  lk resolve / lookup               ENS lookup aliases.
+  lk erc20                         Token helper alias.
+  lk receipt / tx / trace / logs   Transaction inspection commands.
+  lk batch <file>                   Run one lk command per line.
+  lk self-test                      Run Lowkey regression tests.
+  lk doctor                        Diagnose installation/toolchain problems.
+
+SAFETY / EXPECTATIONS
+  • Preview sends before touching a chain: use --preview or --confirm.
+  • Use local Anvil/test keys while learning; do not put production keys in Lowkey.
+  • Heuristics and analyzer findings are review leads, not vulnerability verdicts.
+  • The goal is RECON → ATTACK → PROVE: understand the system, reproduce behavior, then prove impact.
+""")
+
+# Root commands with a deliberate workflow. Reasons are sourced from COMMAND_HELP
+# so the recommendation UX stays aligned with the command documentation.
+_NEXT_COMMANDS = {
+    "status": ["lk functions", "lk actors", "lk recon", "lk abi"],
+    "lab": ["lk status", "lk functions", "lk actors", "lk walkthrough --auto"],
+    "target": ["lk status", "lk functions", "lk abi", "lk recon"],
+    "target list": ["lk target auto", "lk status", "lk functions"],
+    "target auto": ["lk status", "lk functions", "lk recon"],
+    "functions": ["lk fn <function>", "lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]"],
+    "fn": ["lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]", "lk changes '<signature>' <values...>"],
+    "ask": ["lk read <function> [args]", "lk wizard <function> [values...]", "lk changes '<signature>' <values...>"],
+    "abi": ["lk functions", "lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]"],
+    "read": ["lk functions", "lk send <function> [args] --preview", "lk wizard <function> [values...]"],
+    "send": ["lk receipt", "lk trace", "lk last tx", "lk changes '<signature>' <values...>"],
+    "wizard": ["lk last tx", "lk receipt", "lk trace", "lk changes '<signature>' <values...>"],
+    "project": ["lk targets", "lk recon", "lk deps", "lk risk"],
+    "projects": ["lk project", "lk targets", "lk doctor"],
+    "system": ["lk project", "lk doctor", "lk lab"],
+    "rpc": ["lk status", "lk chain", "lk doctor"],
+    "wallet": ["lk actors", "lk actor", "lk wizard <function> [values...]"],
+    "actor": ["lk actors", "lk wizard <function> [values...]", "lk as <actor> <command>"],
+    "actors": ["lk actor <index> <name>", "lk wizard <function> [values...]", "lk as <actor> <command>"],
+    "as": ["lk status", "lk functions", "lk actors"],
+    "deployments": ["lk targets", "lk target auto", "lk status"],
+    "recon": ["lk functions", "lk risk", "lk scan src", "lk slither"],
+    "risk": ["lk seams", "lk fn <function>", "lk slither"],
+    "seams": ["lk fn <function>", "lk scan src", "lk findings"],
+    "scan": ["lk findings", "lk focus <id>", "lk rg \"<marker>\" src"],
+    "rg": ["lk focus <id>", "lk fn <function>", "lk changes '<signature>' <values...>"],
+    "slither": ["lk findings", "lk focus <id>", "lk build"],
+    "build": ["lk test", "lk functions", "lk audit run"],
+    "test": ["lk coverage", "lk fuzz", "lk audit run"],
+    "coverage": ["lk test", "lk fuzz", "lk audit run"],
+    "audit": ["lk findings", "lk checklist", "lk q next", "lk context"],
+    "audit run": ["lk findings", "lk focus <id>", "lk test-gen", "lk poc"],
+    "audit pipeline": ["lk findings", "lk focus <id>", "lk test-gen"],
+    "findings": ["lk focus <id>", "lk q next", "lk context", "lk checklist"],
+    "focus": ["lk fn <function>", "lk changes '<signature>' <values...>", "lk trace", "lk finding <note>"],
+    "probe": ["lk changes '<signature>' <values...>", "lk trace", "lk finding <note>"],
+    "changes": ["lk trace", "lk findings", "lk finding <note>", "lk mapping <slot> <key>"],
+    "trace": ["lk changes '<signature>' <values...>", "lk tx <tx>", "lk findings"],
+    "tx": ["lk receipt", "lk trace", "lk logs"],
+    "receipt": ["lk trace", "lk tx", "lk logs"],
+    "logs": ["lk tx", "lk receipt", "lk event <sig> <data>"],
+    "chain": ["lk status", "lk recon", "lk actors"],
+    "mapping": ["lk storage <slot>", "lk changes '<signature>' <values...>", "lk snapshot <slot>"],
+    "storage": ["lk mapping <slot> <key>", "lk snapshot <slot>", "lk diff"],
+    "slots": ["lk mapping <slot> <key>", "lk snapshot <slot>", "lk diff"],
+    "snapshot": ["lk diff", "lk mapping <slot> <key>", "lk storage <slot>"],
+    "diff": ["lk mapping <slot> <key>", "lk changes '<signature>' <values...>", "lk finding <note>"],
+    "encode": ["lk calldata <data>", "lk sig <function>", "lk send <function> [args] --preview"],
+    "calldata": ["lk decode-calldata <data>", "lk sig <function>", "lk tx <tx>"],
+    "sig": ["lk calldata <data>", "lk 4byte <selector>", "lk fn <function>"],
+    "selectors": ["lk calldata <data>", "lk sig <function>", "lk disasm <address>"],
+    "proxy": ["lk implementation", "lk admin", "lk storage <slot>"],
+    "implementation": ["lk proxy", "lk admin", "lk functions"],
+    "admin": ["lk proxy", "lk implementation", "lk findings"],
+    "gas": ["lk send <function> [args] --preview", "lk changes '<signature>' <values...>", "lk trace"],
+    "generate": ["lk generate test '<signature>' <values...>", "lk poc", "lk test"],
+    "generate test": ["lk test", "lk trace", "lk findings"],
+    "poc": ["lk test", "lk findings", "lk generate test '<signature>' <values...>"],
+    "test-gen": ["lk test", "lk fuzz", "lk findings"],
+    "fuzz": ["lk findings", "lk test-gen", "lk trace"],
+    "invariant": ["lk findings", "lk test-gen", "lk trace"],
+    "mutate": ["lk findings", "lk test-gen", "lk test"],
+    "symbolic": ["lk findings", "lk trace", "lk test-gen"],
+    "brutalize": ["lk findings", "lk test-gen", "lk trace"],
+    "q": ["lk q next", "lk q why", "lk q evidence"],
+    "q next": ["lk q why", "lk q evidence", "lk q source"],
+    "questions": ["lk q next", "lk q skip", "lk q reset"],
+    "checklist": ["lk findings", "lk q next", "lk context"],
+    "finding": ["lk findings", "lk focus <id>", "lk checklist"],
+    "note": ["lk findings", "lk context", "lk todo <text>"],
+    "todo": ["lk findings", "lk context", "lk checklist"],
+    "session": ["lk context", "lk findings", "lk workspace"],
+    "workspace": ["lk findings", "lk context", "lk export"],
+    "export": ["lk findings", "lk workspace", "lk session end"],
+    "doctor": ["lk self-test", "lk build", "lk status"],
+    "self-test": ["lk doctor", "lk status"],
+    "clone": ["lk doctor", "lk project", "lk build"],
+    "deps": ["lk project", "lk risk", "lk scan src"],
+    "layout": ["lk mapping <slot> <key>", "lk storage <slot>", "lk changes '<signature>' <values...>"],
+    "namespace": ["lk storage <slot>", "lk proof <slot>", "lk layout <Contract>"],
+    "proof": ["lk storage <slot>", "lk snapshot <slot>", "lk diff"],
+    "fork": ["lk status", "lk target auto", "lk actors"],
+    "impersonate": ["lk actors", "lk status", "lk wizard <function> [values...]"],
+    "disasm": ["lk selectors", "lk storage <slot>", "lk findings"],
+    "txpool": ["lk tx <tx>", "lk receipt", "lk trace"],
+    "ens": ["lk token <address>", "lk status", "lk read <function> [args]"],
+    "token": ["lk read <function> [args]", "lk actors", "lk status"],
+    "info": ["lk functions", "lk proxy", "lk recon"],
+    "label": ["lk actors", "lk status", "lk recon"],
+    "matrix": ["lk matrix list", "lk matrix test <name>", "lk matrix add <name> <text>"],
+    "matrix list": ["lk matrix test <name>", "lk matrix add <name> <text>"],
+    "matrix test": ["lk test", "lk findings"],
+    "walkthrough": ["lk functions", "lk changes '<signature>' <values...>", "lk trace"],
+    "walkthrough test": ["lk findings", "lk test-gen", "lk trace"],
+}
+
+
+def _recommendation_reason(command_text):
+    """Use the command's own help page as the explanation for why to try it."""
+    tokens = str(command_text or "").strip().split()
+    if not tokens or tokens[0].lower() != "lk":
+        return "Continue exploring from here."
+    path = [token for token in tokens[1:3] if not token.startswith("<") and not token.startswith("[")]
+    entry, _, _ = _help_entry_for_path(path[:2] or [])
+    if entry:
+        return str(entry.get("use") or entry.get("summary") or "Continue exploring from here.")
+    return "Continue exploring from here."
+
+
+def _recommended_next_commands(command, args=None, config=None):
+    """Return a small, contextual next-step menu for an interactive CLI user."""
+    raw_command = str(command or "").strip().lower()
+    raw_args = [str(item).strip() for item in (args or [])]
+    canonical = _canonical_help_command(raw_command)
+
+    # Machine-readable commands must remain machine-readable.
+    if any(item.lower() == "--json" or item.lower() == "json" for item in raw_args):
+        return []
+    if canonical in {"raw", "batch"}:
+        return []
+
+    command_key = canonical
+    nested = {
+        "audit": {"run", "pipeline", "auto"},
+        "walkthrough": {"test", "seed"},
+        "generate": {"test", "poc", "deployment", "contract"},
+        "target": {"list", "auto", "reset"},
+        "rpc": {"set", "use", "reset"},
+        "wallet": {"list", "set", "set-env", "use", "remove"},
+        "session": {"start", "resume", "end"},
+        "fork": {"status", "stop", "dump", "load"},
+        "matrix": {"init", "actor", "state", "add", "list", "test"},
+        "finding": {"add", "list", "ls"},
+        "checklist": {"done", "reset"},
+        "actor": {"reset"},
+        "q": {"current", "next", "why", "evidence", "path", "done", "note", "skip", "na", "not-applicable", "source", "reset"},
+    }
+    first_arg = raw_args[0].lower() if raw_args else ""
+    if first_arg in nested.get(canonical, set()):
+        command_key = f"{canonical} {first_arg}"
+
+    dynamic_items = _function_interaction_recommendations(command, raw_args, config or {}) if canonical in {"read","send","wizard"} else []
+    if canonical == "actors" and isinstance(config,dict):
+        actor_name=str(config.get("actor") or "").strip()
+        actor_entry=(config.get("wallets") or {}).get(actor_name) if actor_name else None
+        if actor_name and isinstance(actor_entry,dict) and actor_entry.get("source")=="anvil-default":
+            first_index=actor_entry.get("anvil_index")
+            items_override=list(_NEXT_COMMANDS.get("actors",[]))
+            items_override=[item for item in items_override if not str(item).startswith(f"lk actor {first_index} ")]
+        else:
+            items_override=None
+    else:
+        items_override=None
+    items = dynamic_items or (items_override if items_override is not None else list(_NEXT_COMMANDS.get(command_key, _NEXT_COMMANDS.get(canonical, []))))
+
+    if canonical in {"fn", "ask"} and raw_args and not raw_args[0].startswith("-"):
+        query = shlex.quote(raw_args[0])
+        items = [
+            f"lk ask {query}",
+            f"lk read {query} [args]",
+            f"lk wizard {query} [values...]",
+            "lk changes '<signature>' <values...>",
+        ]
+
+    # Recommendations are deliberately opt-in. A command without a curated
+    # workflow is better served by no footer than by generic/unrelated advice.
+    if not items:
+        return []
+
+    current_query=_function_query_for_command(command, raw_args)
+    if current_query and canonical in {"read","send","wizard","fn","ask"}:
+        normalized_current=f"lk {canonical} {str(current_query).strip()}".strip().lower()
+    else:
+        normalized_current=f"lk {command_key}".strip().lower()
+    rendered = []
+    for item in items:
+        if isinstance(item,(tuple,list)) and len(item)==2:
+            command_text=str(item[0]).strip()
+            reason=str(item[1]).strip()
+        else:
+            command_text = str(item).strip()
+            reason = _recommendation_reason(command_text)
+        if (
+            not command_text
+            or command_text == normalized_current
+            or command_text.startswith(normalized_current + " ")
+        ):
+            continue
+        if not reason:
+            reason = _recommendation_reason(command_text)
+        pair = (command_text, reason)
+        if pair not in rendered:
+            rendered.append(pair)
+        if len(rendered) >= 4:
+            break
+    return rendered
+
+
+def _print_recommended_next_commands(command, args=None, result=0, config=None):
+    """Render contextual next steps without breaking failed or machine-readable commands."""
+    result_code = result if isinstance(result, int) else getattr(result, "code", 0)
+    if result_code not in {None, 0}:
+        return
+    items = _recommended_next_commands(command, args, config)
+    if not items:
+        return
+    print("")
+    print("RECOMMENDED NEXT COMMANDS")
+    print("=========================")
+    for command_text, reason in items:
+        print(f"  {command_text:<42} {reason}")
+
+
+def dispatch_command(cmd,args,config,from_batch=False):
+    # Contextual help is side-effect free: do not activate targets or execute
+    # commands when the user is only asking for documentation.
+    lowered_cmd = str(cmd or "").strip().lower()
+    if lowered_cmd in HELP_FLAGS:
+        if args:
+            return _render_command_help(args)
+        print_help()
+        return 0
+
+    help_index = next(
+        (
+            index for index, token in enumerate(args or [])
+            if str(token).strip().lower() in HELP_FLAGS
+        ),
+        None,
+    )
+    if help_index is not None:
+        return _render_command_help([cmd, *(args or [])[:help_index]])
+
+    activate_project_target(config)
+    if cmd in {"--version","-V","version"}: return run_version()
+    elif cmd=="target":
+        root=audit_context.foundry_project_root()
+        current=active_project_target(config,root)
+        if not args:
+            project=project_context_target(root)
+            if project:
+                print(f"Current project target: {project.get('contract') or 'unknown'} -> {apply_labels(project.get('address'), config)}")
+            else:
+                print(f"Current project target: {apply_labels(current, config) if current else 'none'}")
+            return
+        if args[0]=="reset":
+            config["target"]=None
+            audit_context.set_target(root, address=None, contract=None, artifact=None, source="project")
+        elif args[0]=="list":
+            run_targets(config); return
+        elif args[0]=="auto":
+            return run_auto_target(config,args[1] if len(args)>1 else None)
+        elif len(args)==1:
+            ref = str(args[0]).strip()
+            entries = _project_target_entries(config, root)
+            protocol_entries = [entry for entry in entries if _target_entry_is_protocol(root, entry)]
+
+            selected_entry = None
+            if ref.isdigit():
+                index = int(ref) - 1
+                if 0 <= index < len(protocol_entries):
+                    selected_entry = protocol_entries[index]
+                else:
+                    return fail(f"Error: target number must be between 1 and {len(protocol_entries)}.")
+            elif is_address(ref):
+                selected_entry = next(
+                    (entry for entry in protocol_entries
+                     if str(entry.get("address")).lower() == ref.lower()),
+                    None,
+                )
+                if selected_entry is None:
+                    config["target"] = ref
+            else:
+                matches = [
+                    entry for entry in protocol_entries
+                    if str(entry.get("name") or entry.get("contract") or "").strip().lower() == ref.lower()
+                ]
+                if len(matches) == 1:
+                    selected_entry = matches[0]
+                elif len(matches) > 1:
+                    print(f"Ambiguous target name: {ref}")
+                    print("Use the number from 'lk targets' or the target address.")
+                    return 0
+                else:
+                    resolved = resolve_target_ref(config, ref, root)
+                    if resolved:
+                        selected_entry = next(
+                            (entry for entry in protocol_entries
+                             if str(entry.get("address")).lower() == str(resolved).lower()),
+                            None,
+                        )
+                    if selected_entry is None:
+                        return run_auto_target(config, ref)
+
+            if selected_entry is not None:
+                return _select_project_target(config, selected_entry, root)
+
+            audit_context.set_target(
+                root,
+                address=config["target"],
+                contract=config.get("target_contract"),
+                artifact=config.get("abi_paths",{}).get(config["target"]),
+                source="manual",
+            )
+        elif len(args)==2 and is_address(args[1]):
+            remember_project_target(config, root, args[0], args[1])
+            config["target"]=args[1]
+            config["target_contract"]=args[0]
+            audit_context.set_target(
+                root,
+                address=args[1],
+                contract=args[0],
+                artifact=config.get("abi_paths",{}).get(args[1]),
+                source="manual",
+            )
+        else: return fail("Usage: lk target <address> | lk target <name> <address> | lk target auto")
+        save_config(config)
+    elif cmd in {"targets","target-list"}: return run_targets(config, include_support=bool(args and args[0] == "--all"))
+    elif cmd=="use":
+        root=audit_context.foundry_project_root()
+        if not args:
+            run_targets(config)
+            return
+        resolved=resolve_target_ref(config,args[0],root)
+        if not resolved:
+            return fail(f"Unknown target for project: {args[0]}")
+        entries=_project_target_entries(config,root)
+        entry=next((item for item in entries if str(item.get("address")).lower()==str(resolved).lower()),None)
+        if entry:
+            return _select_project_target(config,entry,root)
+        return fail("Error: target belongs to a different project context.")
+    elif cmd in {"build", "test"}: return run_native_project_command(config, cmd, args)
+    elif cmd=="deployments": run_deployments(config)
+    elif cmd in {"project","graph"}: return run_project_map(config,args)
+    elif cmd=="projects": return run_projects(config,args)
+    elif cmd=="system": return run_system_model(config,args)
+    elif cmd=="clone": return run_clone(config,args)
+    elif cmd=="lab": return run_lab(config,args)
+    elif cmd=="rpc":
+        if not args:
+            rpc=effective_rpc(config)
+            mode="manual" if config.get("rpc") else "auto Anvil"
+            print(f"RPC: {rpc_display(rpc) or 'none'} ({mode})" if rpc else "RPC: none (no local Anvil detected)")
+            return
+        sub=args[0]
+        if sub=="reset": config["rpc"]=None
+        elif sub=="set" and len(args)==3: config["rpc_profiles"][args[1]]=args[2]; config["rpc"]=args[2]
+        elif sub=="use" and len(args)==2 and args[1] in config["rpc_profiles"]: config["rpc"]=config["rpc_profiles"][args[1]]
+        elif sub=="use": return fail(f"Error: unknown RPC profile: {args[1] if len(args)>1 else ''}")
+        elif len(args)==1: config["rpc"]=args[0]
+        else: return fail("Usage: lk rpc <url> | lk rpc set <name> <url> | lk rpc use <name> | lk rpc reset")
+        save_config(config)
+    elif cmd=="wallet":
+        if args and args[0]=="list":
+            for name,entry in config.get("wallets",{}).items():
+                print(f"{name}: {wallet_entry_kind(entry)}")
+        elif len(args)==3 and args[0]=="set":
+            key=normalize_private_key(args[2])
+            if not key: print("Invalid private key format."); return
+            config["wallets"][args[1]]={"private_key":key}; config["actor"]=args[1]; save_config(config)
+            print("Wallet saved. This stores the key locally; use wallet set-env for secret-free storage.")
+        elif len(args)==3 and args[0]=="set-env":
+            config["wallets"][args[1]]={"env":args[2]}; config["actor"]=args[1]; save_config(config)
+            print(f"Wallet profile '{args[1]}' now reads from environment variable {args[2]}.")
+        elif len(args)==2 and args[0]=="use" and args[1] in config.get("wallets",{}): config["actor"]=args[1]; save_config(config)
+        elif len(args)==2 and args[0]=="use": return fail(f"Error: unknown wallet profile: {args[1]}")
+        elif len(args)==2 and args[0]=="remove":
+            config["wallets"].pop(args[1],None)
+            if config.get("actor")==args[1]: config["actor"]=None
+            save_config(config)
+        else: return fail("Usage: lk wallet list | set <name> <private-key> | set-env <name> <ENV_VAR> | use <name> | remove <name>")
+    elif cmd=="actor":
+        if args and args[0]=="reset":
+            mode = str(args[1]).strip() if len(args) > 1 else "1"
+            if mode not in {"1", "2"} or len(args) > 2:
+                return fail(
+                    "Usage: lk actor reset 1 | lk actor reset 2\n"
+                    "  1 = clear active actor state, keep actor names\n"
+                    "  2 = clear active actor state and remove actor names"
+                )
+
+            previous = config.get("actor")
+            if mode == "1":
+                config["actor"] = None
+                save_config(config)
+                if previous:
+                    print(
+                        f"Actor reset 1: no active actor "
+                        f"(profile '{previous}' was kept)."
+                    )
+                else:
+                    print("Actor reset 1: no active actor (profiles kept).")
+                return 0
+
+            # Full reset: remove configured local actor profiles and their
+            # address labels, but leave unrelated wallets/targets untouched.
+            actor_names = set(config.get("wallets", {}).keys())
+            labels = config.setdefault("labels", {})
+
+            for name, entry in list(config.get("wallets", {}).items()):
+                if wallet_is_internal(name, entry):
+                    # The lab deployer is Lowkey infrastructure, not a user
+                    # actor; keep it available for deployment/bootstrap.
+                    continue
+
+                address = str(entry.get("address") or "") if isinstance(entry, dict) else ""
+                if address:
+                    labels.pop(address, None)
+                    labels.pop(address.lower(), None)
+                config["wallets"].pop(name, None)
+
+            config["actor"] = None
+            save_config(config)
+
+            if actor_names:
+                print("Actor reset 2: active actor and saved actor names cleared.")
+            else:
+                print("Actor reset 2: no actor profiles were configured.")
+            return 0
+        elif len(args)==1 and args[0].isdigit():
+            return select_existing_anvil_actor(config,args[0])
+        elif len(args)>=2 and args[0].isdigit():
+            return select_anvil_actor(config,args[0],args[1])
+        elif len(args)==1 and args[0] in config.get("wallets",{}):
+            name = args[0]
+            entry = config.get("wallets", {}).get(name)
+            if (
+                isinstance(entry, dict)
+                and entry.get("source") == "anvil-default"
+                and int(entry.get("anvil_index", -1)) == 0
+                and not wallet_is_internal(name, entry)
+            ):
+                return fail(
+                    f"Error: actor profile '{name}' is bound to reserved Anvil account 0. "
+                    f"Reassign it with 'lk actor <index> {name}' using account 1 or higher."
+                )
+            config["actor"]=name
+            if isinstance(entry, dict) and entry.get("source") == "anvil-default":
+                info=anvil_rpc_info(config)
+                _sync_current_anvil_actor(config, info, name)
+            save_config(config)
+            print(f"Actor selected: {actor_display(config)}")
+        elif not args:
+            list_anvil_actors(config)
+        else:
+            return fail("Usage: lk actor <index> [name] | lk actor [existing-name] | lk actor reset")
+    elif cmd=="abi":
+        target=config.get("target")
+        if not target: return fail("Error: Set target first.")
+        if not args:
+            run_abi(config)
+        elif args[0]=="auto":
+            path=auto_abi_path(target,config)
+            if not path: return fail("Error: could not auto-discover an ABI for the current target.")
+            print(f"ABI auto-loaded: {path}")
+        else:
+            path=os.path.expanduser(args[0])
+            if not os.path.exists(path):
+                return fail(f"Error: ABI file not found: {path}")
+            remember_abi_path(config,target,path)
+            config["target_contract"]=artifact_contract_name(path,read_artifact(path))
+            save_config(config)
+            config.pop("_config_dirty",None)
+            print(f"ABI override saved: {path}")
+    elif cmd in {"read"}:
+        if len(args) == 1 and is_address(args[0]):
+            return fail(
+                "Usage: lk read <function> [args]\n"
+                "       lk read <target> <function> [args]\n"
+                "A bare address is a contract target, not a function call."
+            )
+        return run_cast(["call",*args],config)
+    elif cmd in {"send"}:
+        return run_cast(["send",*args],config)
+    elif cmd in {"try","probe"}:
+        return run_probe(config,args)
+    elif cmd in {"changes","state-diff"}:
+        return run_state_diff(config,args)
+    elif cmd=="functions": return run_functions(config,args)
+    elif cmd=="fn": return run_functions(config,args)
+    elif cmd=="wizard": run_wizard(config,args)
+    elif cmd=="replay": run_replay(config,args)
+    elif cmd=="fork": return run_fork(args,config)
+    elif cmd=="ask":
+        if len(args) != 1:
+            return fail("Usage: lk ask <function>  (this command only inspects the function's parameters)")
+        query=args[0]
+        root=audit_context.foundry_project_root()
+        target=active_project_target(config,root)
+        funcs=abi_functions(load_abi(target,config)) if target else []
+        if not funcs:
+            artifact_matches=project_artifact_function_matches(root,query)
+            if not artifact_matches:
+                return fail(f"Error: no built-project function matched '{query}'. Run 'forge build' first.")
+            print(f"Built-project function matches for '{query}':")
+            for contract,signature,path in artifact_matches[:8]:
+                print(f"  {contract}::{signature}")
+            print("Use a deployed project target when you need live-chain details.")
+            return 0
+        matches=matching_functions(funcs,query)
+        if len(matches) != 1:
+            suggestions = sorted(funcs,key=lambda x:function_score(x,query),reverse=True)[:8]
+            print(f"No exact function match for '{query}'.")
+            if suggestions:
+                print("Did you mean:")
+                for item in suggestions:
+                    print(f"  {format_signature(item)}")
+            print("Use 'lk functions' to list the full contract interface.")
+            return 2
+        item=matches[0]
+        print(f"Function: {format_signature(item)}")
+        for index,param in enumerate(item.get("inputs",[]),1):
+            print(f"  arg{index}: {param.get('name') or 'arg'+str(index)} : {canonical_type(param)}")
+    elif cmd=="info": run_info(config)
+    elif cmd=="status": run_status(config)
+    elif cmd in {"project", "detect-project", "detect"}:
+        info = detect_project(detected_project_root(".")) if detect_project else None
+        if not info:
+            return fail("Project detection layer is unavailable. Reinstall Lowkey.")
+        print(format_detection(info))
+        return 0
+    elif cmd in {"audit--checks","audit-checks"}: return run_audit_mode(config, ["--checks", *args])
+    elif cmd=="audit":
+        if args and args[0] in {"run","pipeline"}:
+            return run_external_audit(config,args)
+        return run_audit_mode(config,args)
+    elif cmd=="break": return run_break(config,args)
+    elif cmd=="benchmark":
+        if benchmark is None:
+            return fail("Benchmark module is not installed. Re-run install.sh from this checkout.")
+        return benchmark.run(args)
+    elif cmd=="q":
+        if question_engine is None:
+            return fail("Question engine is not installed. Re-run install.sh from this checkout.")
+        return question_engine.run(config, args)
+    elif cmd=="questions":
+        if question_engine is None:
+            return fail("Question engine is not installed. Re-run install.sh from this checkout.")
+        return question_engine.run(config, args, mode="overview")
+    elif cmd in {"walkthrough","walk"}: return walkthrough.run(config,args,host=sys.modules[__name__])
+    elif cmd=="context": return run_context(config)
+    elif cmd in {"focus", "investigate", "investigation"}: return run_investigate(config,args)
+    elif cmd in {"findings", "signals", "signal"}: return run_signals(config,args)
+    elif cmd=="chain": run_chain(config)
+    elif cmd=="balance": return run_balance(config,args)
+    elif cmd=="encode": run_encode(config,args)
+    elif cmd=="sig": run_signature(args)
+    elif cmd in {"decode-error","error"}: run_decode_error(config,args)
+    elif cmd in {"decode","returns"}: run_decode(config,args)
+    elif cmd in {"event","decode-event"}: run_event(config,args)
+    elif cmd=="tx": run_tx(config,args)
+    elif cmd=="label":
+        if len(args)==2: config["labels"][args[0]]=args[1]; save_config(config)
+        else: print("Usage: lk label <address> <name>")
+    elif cmd=="recon": run_recon(config)
+    elif cmd=="proxy": run_proxy(config)
+    elif cmd=="implementation": run_cast(["implementation",config.get("target")],config)
+    elif cmd=="admin": run_cast(["admin",config.get("target")],config)
+    elif cmd in {"mapping","map"}: run_mapping(config,*args)
+    elif cmd=="namespace": run_namespace(config,args)
+    elif cmd=="proof": run_proof(config,args)
+    elif cmd=="selectors": return run_selectors(config,args)
+    elif cmd=="calldata": return run_calldata(config,args)
+    elif cmd in {"4byte","4byte-calldata","4byte-event","access-list","interface","constructor-args","creation-code","decode-calldata","abi-encode"}: return run_cast_deep(config,[cmd,*args])
+    elif cmd=="disasm": return run_disasm(config,args)
+    elif cmd=="txpool": return run_txpool(config,args)
+    elif cmd=="chisel": return run_chisel(args)
+    elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
+    elif cmd=="as": return run_as(config,args)
+    elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
+    elif cmd=="fuzz": return run_fuzz(args)
+    elif cmd=="invariant": return run_invariant(config,args)
+    elif cmd=="mutate": return run_mutate(args)
+    elif cmd=="symbolic": return run_symbolic(args)
+    elif cmd=="brutalize": return run_brutalize(args)
+    elif cmd in {"cheat","cheats","cheatsheet"}: return run_cheat(args)
+    elif cmd in {"compare","connect","expression","practice","confused","patterns"}: return run_cheat([cmd,*args])
+    elif cmd in {"cheatcodes","cheatcode"}: return run_cheatcodes(args)
+    elif cmd in {"actors","actor-list"}: list_anvil_actors(config); return 0
+    elif cmd in {"ens","resolve","lookup"}: run_ens(config,args)
+    elif cmd in {"token","erc20"}: run_token(config,args)
+    elif cmd=="snapshot": run_snapshot(config,args)
+    elif cmd=="diff": run_diff(config)
+    elif cmd=="finding":
+        if not args:
+            print("Usage:")
+            print("  lk finding add <high|medium|low|info> <title> <description>")
+            print("  lk finding <note>")
+            print("  lk findings              List audit signals/findings")
+            return 0
+        if args[0].lower() in {"list", "ls"}:
+            return run_signals(config, args[1:])
+        if args[0]=="add" and len(args)>=4:
+            run_finding(config,f"[{args[1].upper()}] {args[2]}: {' '.join(args[3:])}")
+        else:
+            run_finding(config," ".join(args))
+    elif cmd=="checklist":
+        if args and args[0]=="done": run_checklist(config,"done"," ".join(args[1:]))
+        elif args and args[0]=="reset": run_checklist(config,"reset")
+        else: run_checklist(config)
+    elif cmd=="session":
+        if args and args[0] in {"start","resume"}: run_session_lifecycle(config,args[0])
+        elif args and args[0]=="end":
+            config["session_active"]=False; config["session_ended"]=datetime.now().isoformat(timespec="seconds"); save_config(config); print("Audit session ended.")
+        elif os.path.exists(SESSION_FILE): print(Path(SESSION_FILE).read_text(encoding="utf-8"))
+        else: print("No session history yet.")
+    elif cmd=="workspace": run_workspace(config,args)
+    elif cmd=="note": run_note(" ".join(args))
+    elif cmd=="todo": run_todo(" ".join(args))
+    elif cmd=="export": run_export(config)
+    elif cmd=="matrix":
+        if args and args[0]=="state" and len(args)>=3:
+            paths=workspace_paths(); os.makedirs(paths["matrix"],exist_ok=True)
+            states=read_json_file(paths["matrix_states"],{}); states[args[1]]={"description":" ".join(args[2:])}; write_json_file(paths["matrix_states"],states); print(f"Matrix state saved: {args[1]}")
+        else: run_matrix(config,args)
+    elif cmd=="risk": run_risk(config)
+    elif cmd in {"seams","hotspots"}: return run_seams(config)
+    elif cmd=="scan": return run_scan(args)
+    elif cmd=="rg": return run_audit_rg(config,args)
+    elif cmd=="poc": return run_audit_poc(config,args)
+    elif cmd=="deps": run_deps(args)
+    elif cmd=="layout": run_layout(args)
+    elif cmd=="gas": run_gas(config,args)
+    elif cmd=="raw": run_raw(config,args)
+    elif cmd=="batch": run_batch(config,args)
+    elif cmd=="self-test": raise SystemExit(run_self_test())
+    elif cmd=="doctor": return run_doctor()
+    elif cmd=="receipt": return run_receipt(config, args=args)
+    elif cmd=="trace": return run_trace(config,args)
+    elif cmd=="logs": run_logs(config,args)
+    elif cmd=="last":
+        action=args[0] if args else "receipt"
+        if action=="tx": run_tx(config,[])
+        elif action=="trace": run_trace(config,[])
+        elif action=="logs": run_logs(config,[])
+        else: run_receipt(config)
+    elif cmd=="test-gen": run_test_gen(config)
+    elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
+    else:
+        print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
+        print("Run 'lk --help' for the command catalog or 'lk <command> --h' for command help.", file=sys.stderr)
+        return 2
+
+
+def main():
+    global _COMMAND_STATUS
+    _COMMAND_STATUS = 0
+    config=load_config()
+    if len(sys.argv)<2:
+        print_help()
+        return
+
+    command = sys.argv[1]
+    if command.lower() in HELP_FLAGS or any(
+        str(argument).strip().lower() in HELP_FLAGS for argument in sys.argv[2:]
+    ):
+        result = dispatch_command(command, sys.argv[2:], config)
+        if isinstance(result, int):
+            raise SystemExit(result)
+        return
+
+    if command.lower() in {"cheat", "cheats", "cheatsheet"}:
+        result = run_cheat(sys.argv[2:])
+        footer_status = result
+        if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
+            footer_status = _COMMAND_STATUS
+        _print_recommended_next_commands(command, sys.argv[2:], footer_status, config)
+        if isinstance(result, int):
+            raise SystemExit(result)
+        return
+
+    root = audit_context.foundry_project_root()
+    _sync_audit_context(config, root)
+
+    runtime = runtime_sync_status()
+    runtime_safe_commands = {
+        "--h", "--help", "-h", "help", "--version", "-V", "version",
+        "doctor", "self-test",
+    }
+    running_from_source_checkout = False
+    try:
+        source_root = Path(__file__).resolve().parents[1]
+        running_from_source_checkout = bool(
+            _is_lowkey_source_checkout and _is_lowkey_source_checkout(source_root)
+        )
+    except OSError:
+        running_from_source_checkout = False
+
+    if (
+        runtime.get("status") in {"stale", "corrupt"}
+        and command not in runtime_safe_commands
+        and not running_from_source_checkout
+    ):
+        print("LOWKEY RUNTIME OUT OF SYNC", file=sys.stderr)
+        print(f"  {runtime.get('detail', 'installed runtime verification failed')}", file=sys.stderr)
+        source_repo = runtime.get("source_repo")
+        if source_repo:
+            print(f"  FIX: cd {source_repo} && bash install.sh", file=sys.stderr)
+        else:
+            print("  FIX: reinstall Lowkey with bash install.sh", file=sys.stderr)
+        return fail("Refusing to run with a mismatched Lowkey installation.", 3)
+
+    result=dispatch_command(command,sys.argv[2:],config)
+    evidence_commands={
+        "scan","slither","changes","state-diff","trace","logs","tx","receipt",
+        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
+        "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
+    }
+    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks","break"}:
+        try:
+            refresh_generated_poc(config)
+        except Exception as error:
+            print(f"Warning: automatic PoC refresh failed: {error}", file=sys.stderr)
+    if config.pop("_config_dirty",False):
+        save_config(config)
+    final_root = audit_context.foundry_project_root()
+    _sync_audit_context(config, final_root)
+    footer_status = result
+    if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
+        footer_status = _COMMAND_STATUS
+    _print_recommended_next_commands(
+        command_name if 'command_name' in locals() else command,
+        sys.argv[2:],
+        footer_status,
+        config,
+    )
+    command_name = str(sys.argv[1] or "").strip().lower()
+    first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
+    nested_commands = {
+        "audit": {"run", "pipeline"},
+        "walkthrough": {"test", "seed"},
+        "walk": {"test", "seed"},
+        "generate": {"test", "script", "contract"},
+        "project": {"--workspace"},
+        "projects": {"reset"},
+        "target": {"list", "auto", "reset"},
+        "rpc": {"set", "use", "reset"},
+        "wallet": {"list", "set", "set-env", "use", "remove"},
+        "session": {"start", "resume", "end"},
+        "fork": {"status", "stop", "dump", "load"},
+        "matrix": {"init", "actor", "state", "add", "list", "test"},
+        "finding": {"add", "list", "ls"},
+        "checklist": {"done", "reset"},
+        "actor": {"reset"},
+        "q": {"current", "next", "why", "evidence", "path", "done", "note", "skip", "na", "not-applicable", "source", "reset"},
+    }
+    command_path = command_name
+    if first_arg and first_arg in nested_commands.get(command_name, set()):
+        command_path = f"{command_name} {first_arg}"
+    audit_context.emit(
+        "lk-command",
+        final_root,
+        tool="lk",
+        status="completed" if (not isinstance(result,int) or result == 0) else "failed",
+        summary=command_path,
+        data={
+            "command": command_name,
+            "command_path": command_path,
+            "subcommand": first_arg if command_path != command_name else None,
+            "exit_code": result if isinstance(result,int) else 0,
+        },
+    )
+    if isinstance(result,int): raise SystemExit(result)
+    if _COMMAND_STATUS: raise SystemExit(_COMMAND_STATUS)
+
+def _safe_main() -> int:
+    """Never expose a Python traceback for a CLI-level repository/runtime failure."""
+    try:
+        result = main()
+        return int(result) if isinstance(result, int) else 0
+    except KeyboardInterrupt:
+        print("\nLOWKEY: interrupted.", file=sys.stderr)
+        return 130
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else 0
+    except Exception as exc:
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            root = None
+
+        print("LOWKEY RUNTIME ERROR", file=sys.stderr)
+        print(f"  {type(exc).__name__}: {exc}", file=sys.stderr)
+        if root:
+            print(f"  project: {root}", file=sys.stderr)
+            try:
+                evidence = Path(root) / ".audit" / "evidence"
+                evidence.mkdir(parents=True, exist_ok=True)
+                (evidence / "lk-runtime-error.json").write_text(
+                    json.dumps({
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "project": str(root),
+                        "command": sys.argv[1:],
+                        "status": "blocked",
+                    }, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                print("  evidence: .audit/evidence/lk-runtime-error.json", file=sys.stderr)
+            except Exception as evidence_error:
+                print(f"  evidence: unavailable ({evidence_error})", file=sys.stderr)
+        print("  RESULT: REVIEW NEEDED — Lowkey could not complete this command.", file=sys.stderr)
+        print("  No security conclusion should be inferred from this failure.", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_safe_main())def print_help():
+    print(r"""
+LOWKEY — SECURITY & AUDIT CONSOLE
+=======================================
+
+START HERE
+  lk -h / lk --help                  Show the full command catalog.
+  lk <command> --h                  Show friendly help for that command.
+  lk <command> <subcommand> --h     Drill into the next command level.
+                                   Example: lk walkthrough test --h
+  lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
+  lk build                           Compile the current Foundry project.
+  lk test                            Run the project's Forge tests.
+  lk lab                             Start/rebuild a disposable local audit lab.
+  lk target auto                     Pick the latest usable deployed target.
+  lk status                          See target, RPC, actor, ABI, and last transaction.
+  lk walkthrough --auto              Understand the whole protocol by executing a local flow.
+  lk audit                           Run the interactive audit workflow.
+  lk benchmark                       Run deterministic source-triage regression checks.
+  lk break                           Aggressively attack the current target/function in a local Anvil/Forge lab.
+  lk q                              Get the next auditor-mindset question from current evidence.
+  lk questions                      See the compact question frontier across the project.
+  lk import                         Browse/import Solidity declarations and source files.
+  lk cheat                          Read-only Solidity learning dictionary.
+  lk cheat mapping                  Explain mappings with a real contract example.
+  lk cheat arrays-mappings           Explain arrays + mappings together.
+  lk cheat require                  Explain require(condition, "message") structure.
+  lk cheat fallback                 Explain fallback() step by step.
+  lk cheat receive                  Explain receive() step by step.
+  lk cheat interface                Explain interfaces step by step.
+  lk cheat symbols                  Show Solidity symbols/operators at a glance.
+  lk compare for while do-while     Compare loop forms.
+  lk connect structs mappings arrays Connect concepts inside one contract lab.
+  lk expression "balances[...]"     Read one Solidity expression.
+  lk practice mapping               Predict behavior before executing.
+  lk confused calldata              Compare commonly confused terms.
+  lk patterns                       Show recurring Solidity patterns.
+
+FIRST 10 MINUTES
+  1. Start Anvil:                  anvil
+  2. Compile:                      lk build
+  3. Build the local lab:          lk lab
+  4. See what Lowkey selected:      lk status
+  5. See the project/system map:    lk project
+                                     lk project 2
+                                     lk system
+  6. Understand the flow:           lk walkthrough --auto --steps 6
+  7. List the attack surface:      lk functions
+                                     lk risk
+  8. Try a read safely:             lk read <function> [args]
+  9. Preview a transaction:         lk send <function> [args] --preview
+ 10. Inspect what happened:         lk trace
+
+COMMON TERMS
+  <address>   20-byte contract or wallet address, e.g. 0x1111...1111
+  <name>      Friendly name you gave to an actor or target, e.g. Alice or vault
+  <Contract>  Solidity contract name, e.g. Vault
+  <function>  Solidity function name, e.g. withdraw
+  <file>      Source file, e.g. src/<SourceFile>.sol
+  <dir>       Folder, e.g. src
+  <slot>      Number used to locate saved contract data, e.g. 3
+  <key>       Value used to look up one mapping entry, often an address
+  <tx>        64-character transaction ID (transaction hash)
+  identifier  A value a contract uses to distinguish one record from another, such as an ID or mapping key. Solidity does not make an identifier unique automatically.
+  <rpc>       Address of the Ethereum node Lowkey talks to, e.g. http://127.0.0.1:8545
+  transaction An action sent to a contract that can change its saved data or move ETH
+  receipt     A record showing whether a transaction worked, how much gas it used, and what events it produced
+  storage     Data saved inside the contract
+  revert      The contract rejected the call; its state changes were undone
+  payable     A function marked so it can receive ETH
+  msg.value   The amount of ETH attached to the current call
+  trace       A step-by-step record of what the transaction did inside the Ethereum virtual machine
+  Anvil       A local Ethereum test network used for safe experiments
+
+PROJECT / TARGET SETUP
+  lk target <address>               Select a contract. Example: lk target 0x...
+  lk target <name> <address>        Save + select a named target. Example: lk target vault 0x...
+  lk target list                    List saved targets.
+  lk target auto [name]             Use a recent deployment. Example: lk target auto vault
+  lk use <name|number>              Switch to a saved target. Example: lk use vault
+  lk deployments                    List deployment records.
+  lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
+  lk projects                       Show projects found inside the current workspace.
+  lk project [number|path]          Show the human-readable project map.
+  lk lab [Contract]                 Set up a realistic local lab automatically.
+  lk lab --generic [Contract]      Deploy a contract directly and enter constructor values.
+  lk lab --artifact <Contract>     Deploy this exact compiled contract.
+  lk lab stop                      Stop the local Anvil instance started by Lowkey.
+  lk rpc <url>                      Set RPC manually. Example: lk rpc http://127.0.0.1:8545
+  lk rpc set <name> <url>           Save an RPC profile.
+  lk rpc use <name>                 Select an RPC profile.
+  lk wallet list                    List signer profiles.
+  lk wallet set-env <name> <ENV>    Use a private key from an environment variable.
+  lk actor                          Show current actor/accounts.
+  lk actor <index> <name>           Name an Anvil account. Example: lk actor 0 Alice
+  lk actors                         List available Anvil actors.
+  lk impersonate <address> [name]   Use an existing account on a local fork.
+  lk as <actor> <command> [args]    Run one command as another actor.
+
+UNDERSTAND THE PROJECT
+  lk project [json]                Explain the project and dependency graph in plain English.
+                                   Use 'lk graph' as the same command; add 'json' for raw machine data.
+                                   Example: lk project
+  lk system [json]                 Build/show the reusable system bootstrap manifest.
+                                   Example: lk system
+  lk info                          Show target, bytecode, ABI, proxy information.
+  lk recon                         Quick contract reconnaissance: balance/code/nonce.
+  lk functions [query]             List contract functions. Example: lk functions
+  lk fn [query]                    Find/list functions. Example: lk fn withdraw
+  lk fn -h                         Explain function-search syntax.
+  lk ask <function>                Show function inputs. Example: lk ask deposit
+  lk wizard <function> [values...] [call|send|encode] Interactive argument helper; return values shown after successful sends when available.
+  lk layout <Contract>             Show Forge storage layout.
+  lk deps [src]                    Show imports/inheritance. Example: lk deps
+  lk scan [src]                    Find high-signal Solidity review markers. Example: lk scan src
+  lk seams [hotspots]              Show audit hotspots.
+  lk risk                          Show ABI-level review-surface hints.
+  lk gas <function> [args]         Estimate gas. Example: lk gas withdraw
+  lk slither [args...]             Run Slither through Lowkey's reporter.
+  lk rg <pattern> [path]           Search source and save evidence. Example: lk rg "delegatecall" src
+
+INTERACT WITH CONTRACTS
+  lk read <function> [args]        Read without changing state. Example: lk read balanceOf <address>
+  lk balance [address|name]        Check native ETH held by a contract or wallet. Example: lk balance vault
+  lk send <function> [args]        Send a transaction. Example: lk send withdraw --preview
+  lk send ... --preview            Encode/check without sending.
+  lk send ... --confirm            Preview, then ask before sending.
+  lk c <function> [args]           Short read alias. Example: lk c balanceOf <address>
+  lk s <function> [args]           Short send alias. Example: lk s withdraw --preview
+  lk st ...                        Short raw-storage/low-level alias.
+  lk encode <function> [args]      Build calldata. Example: lk encode withdraw
+  lk decode <function> <data>      Decode return data.
+  lk decode-error <data>           Decode a custom error.
+  lk event <sig> <data> [topics]   Decode event data.
+  lk raw <cast-command> [args]     Run a raw Cast command when Lowkey has no nicer wrapper.
+
+STORAGE / STATE FORENSICS
+  lk mapping <slot> <key>          Calculate/read a mapping slot. Example: lk mapping 3 0x...
+  lk mapping <type> <slot> <key>   Explicitly choose the mapping key type.
+  lk namespace <id>                Calculate an ERC-7201 namespace slot.
+  lk proof <slot> [block]          Read a storage proof.
+  lk snapshot [slot ...]           Save selected storage slots.
+  lk diff                          Compare the latest storage snapshot.
+  lk changes '<name(parameter TYPES...)>' <VALUES...>
+                                   Show storage changes from a call.
+                                   FUNCTION SIGNATURE = function name + parameter TYPES.
+                                   The quoted part contains TYPES, not real values.
+                                   Put actual argument VALUES after the closing quote.
+                                   Example:
+                                     lk changes 'createRecord(address,uint256)' <addr> <amount>
+  lk state-diff '<name(parameter TYPES...)>' <VALUES...>
+                                   Alias for storage-change reproduction.
+  lk storage / slots               Use raw Cast storage tools through lk raw when needed.
+
+TRANSACTION FORENSICS
+  lk balance [address|name]        Show how much native ETH an address holds.
+  lk tx [tx]                       Inspect/decode a transaction.
+  lk receipt [tx] [--raw]          Show a simple result first; use --raw for full receipt details.
+  lk trace [tx] [flags]            Replay/trace execution and show returned identifiers when Lowkey can identify them.
+  lk replay <tx> [flags]           Explicit transaction replay alias.
+  lk logs [args...]                Query logs.
+  lk logs --decode [args...]       Query and ABI-decode events.
+  lk last tx                       Inspect the latest sent transaction.
+  lk last trace                    Trace the latest transaction.
+  lk last logs                     Query logs using the latest transaction context.
+  lk chain                         Show chain ID/block/RPC.
+  lk label <address> <name>        Give an address a readable label.
+
+REPRODUCE / ATTACK / TEST
+  lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
   lk test-gen                      Turn the latest send into a Forge test.
   lk generate test '<name(parameter TYPES...)>' <VALUES...>
                                    Generate a reusable Forge test.
