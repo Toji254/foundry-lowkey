@@ -208,8 +208,25 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk read", output)
         self.assertIn("bytes32", output)
         self.assertIn("exactly 64 hex characters", output)
-        self.assertIn("lk read getRecord 0x1111111111111111111111111111111111111111111111111111111111111111", output)
+        self.assertIn("lk read getValue", output)
         self.assertIn("does not intentionally change contract data", output)
+
+    def test_core_help_examples_are_beginner_friendly(self):
+        cases = {
+            "read": ("lk read getValue", "getRecord"),
+            "send": ("lk send setValue 10", "lk send deposit"),
+            "probe": ("lk probe setValue 10", "lk probe deposit"),
+            "changes": ("lk changes 'setValue(uint256)' 10", "lk changes 'deposit("),
+            "wizard": ("lk wizard setValue 10", "lk wizard deposit"),
+            "target": ("lk target MyContract 0x1111111111111111111111111111111111111111", "lk target vault"),
+            "lab": ("lk lab MyContract", "lk lab Vault"),
+        }
+        for command, (good, old) in cases.items():
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, "--h")
+                self.assertEqual(code, 0)
+                self.assertIn(good, output)
+                self.assertNotIn(old, output)
 
     def test_help_examples_are_protocol_agnostic(self):
         import re
