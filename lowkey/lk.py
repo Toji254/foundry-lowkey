@@ -1460,7 +1460,12 @@ def storage_getter_names(target,config,abi):
                 ["forge","inspect",str(contract_name),"storage-layout"],
             ]
             for command in inspect_commands:
-                code,out,_=cast_output(command)
+                # Storage-layout inspection is a local build-artifact query and
+                # never legitimately needs the network. Run it offline so a
+                # missing solc version produces an immediate error instead of a
+                # silent compiler-download stall (observed as a permanent hang
+                # of 'lk fn'/'lk functions' in offline environments).
+                code,out,_=cast_output(command, timeout=30, env=_foundry_offline_env())
                 if code!=0 or not out:
                     continue
                 try:
@@ -1860,7 +1865,11 @@ def _function_storage_labels(target, config, artifact):
         ["forge", "inspect", str(contract_name), "storage-layout", "--json"],
         ["forge", "inspect", str(contract_name), "storage-layout"],
     ):
-        code, out, _ = cast_output(command)
+        # Storage-layout inspection is a local build-artifact query and never
+        # legitimately needs the network. Run it offline so a missing solc
+        # version fails immediately instead of stalling on a silent compiler
+        # download (this previously hung 'lk fn'/'lk functions' forever).
+        code, out, _ = cast_output(command, timeout=30, env=_foundry_offline_env())
         if code != 0 or not out:
             continue
         try:
@@ -2249,9 +2258,42 @@ def run_signature(args):
     if code!=0 and not err:
         print("Unable to resolve selector.",file=sys.stderr)
     return record_status(code)
-def cast_output(args,input_text=None):
-    result=subprocess.run(args,capture_output=True,text=True,input=input_text)
-    return result.returncode,result.stdout.strip(),result.stderr.strip()
+def _foundry_offline_env():
+    """Environment for probe-style forge invocations that must never hang.
+
+    Foundry silently retries a compiler download when the configured solc
+    version is not installed. In an offline environment (or behind a broken
+    proxy) that download can stall indefinitely, which previously turned even
+    read-only commands such as 'lk fn' into a silent permanent hang because
+    cast_output had no timeout. Setting FOUNDRY_OFFLINE makes forge fail fast
+    with an explicit error instead of waiting on the network.
+    """
+    env = dict(os.environ)
+    env.setdefault("FOUNDRY_OFFLINE", "true")
+    return env
+
+
+def cast_output(args, input_text=None, timeout=120, env=None):
+    """Run a subprocess with a timeout so a stalled tool cannot hang the CLI.
+
+    The default timeout is deliberately generous (120s): legitimate sends on a
+    slow RPC can take a while, while a probe-style invocation that needs to
+    finish quickly passes a smaller value. TimeoutExpired is normalized to a
+    normal failure result so callers keep a (code, out, err) contract.
+    """
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            input=input_text,
+            timeout=timeout,
+            env=env,
+        )
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        label = shlex.join(args) if all(isinstance(a, str) for a in args) else str(args[0])
+        return 124, "", f"timed out after {timeout}s: {label}"
 def abi_selector(signature):
     code, output, _ = cast_output(["cast", "sig", signature])
     if code != 0 or not output:
