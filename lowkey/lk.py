@@ -8932,13 +8932,14 @@ def split_lab_options(args):
 def run_multi_actor_send(config, args):
     """Send the same call from up to ten live Anvil accounts as separate transactions."""
     info = anvil_rpc_info(config)
-    accounts = info.get("accounts", []) if isinstance(info, dict) else []
-    if not accounts:
+    raw_accounts = info.get("accounts", []) if isinstance(info, dict) else []
+    detected_count = len(raw_accounts) if isinstance(raw_accounts, list) else 0
+    if not raw_accounts:
         return fail(
             "Error: no Anvil accounts detected. Start Anvil with its default unlocked accounts first."
         )
 
-    accounts = [str(address).strip() for address in accounts if is_address(address)][:10]
+    accounts = [str(address).strip() for address in raw_accounts if is_address(address)][:10]
     if not accounts:
         return fail("Error: the detected Anvil RPC reported no usable accounts.")
 
@@ -8952,7 +8953,7 @@ def run_multi_actor_send(config, args):
     print("MULTI-ACTOR SEND")
     print("================")
     print(f"Anvil RPC: {rpc}")
-    print(f"Accounts detected: {len(accounts)}")
+    print(f"Accounts detected: {detected_count}")
     print(f"Accounts used:     {len(accounts)} (maximum 10)")
     print("Each account sends a separate transaction, so msg.sender changes per call.")
     print("")
@@ -8960,8 +8961,6 @@ def run_multi_actor_send(config, args):
     overall_code = 0
     successes = 0
     failures = 0
-    original_target = config.get("target")
-
     for index, address in enumerate(accounts):
         actor_name = f"anvil-{index}"
         actor_config = dict(config)
