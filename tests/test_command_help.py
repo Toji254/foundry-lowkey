@@ -369,6 +369,80 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(signature, "setValues(uint256,address,bool)")
         self.assertEqual(calldata, "d0d0d0d0")
         self.assertEqual(captured["command"][-3:], ["10", address, "true"])
+    def test_comma_separated_values_work_without_parentheses(self):
+        target = "0x" + "1" * 40
+        address = "0x" + "2" * 40
+        abi = [{
+            "type": "function",
+            "name": "setValues",
+            "stateMutability": "nonpayable",
+            "inputs": [
+                {"name": "amount", "type": "uint256"},
+                {"name": "who", "type": "address"},
+                {"name": "enabled", "type": "bool"},
+            ],
+            "outputs": [],
+        }]
+        captured = {}
+
+        def fake_cast_output(command):
+            captured["command"] = list(command)
+            return 0, "0xd0d0d0d0", ""
+
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", side_effect=fake_cast_output):
+            signature, calldata = lk.encode_target_call(
+                {"target": target}, "setValues", ["10," + address + ",true"]
+            )
+
+        self.assertEqual(signature, "setValues(uint256,address,bool)")
+        self.assertEqual(captured["command"][-3:], ["10", address, "true"])
+
+    def test_function_name_plus_type_list_selects_exact_overload(self):
+        target = "0x" + "1" * 40
+        address = "0x" + "2" * 40
+        abi = [
+            {"type": "function", "name": "setValues", "inputs": [
+                {"type": "uint256"}, {"type": "address"}, {"type": "bool"}], "outputs": []},
+            {"type": "function", "name": "setValues", "inputs": [
+                {"type": "address"}, {"type": "uint256"}], "outputs": []},
+        ]
+        captured = {}
+
+        def fake_cast_output(command):
+            captured["command"] = list(command)
+            return 0, "0xd0d0d0d0", ""
+
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", side_effect=fake_cast_output):
+            signature, _ = lk.encode_target_call(
+                {"target": target}, "setValues", ["uint256,address,bool", "10," + address + ",true"]
+            )
+
+        self.assertEqual(signature, "setValues(uint256,address,bool)")
+        self.assertEqual(captured["command"][-3:], ["10", address, "true"])
+
+    def test_parenthesized_type_list_also_selects_exact_overload(self):
+        target = "0x" + "1" * 40
+        abi = [{"type": "function", "name": "setValues", "inputs": [
+            {"type": "uint256"}, {"type": "address"}, {"type": "bool"}], "outputs": []}]
+        with patch.object(lk, "load_abi", return_value=abi), \
+             patch.object(lk, "cast_output", return_value=(0, "0xd0d0d0d0", "")):
+            signature, _ = lk.encode_target_call(
+                {"target": target}, "setValues", ["(uint256,address,bool)", "10", "0x" + "2" * 40, "true"]
+            )
+        self.assertEqual(signature, "setValues(uint256,address,bool)")
+
+    def test_tuple_argument_is_preserved_when_grouping_values(self):
+        target = "0x" + "1" * 40
+        address = "0x" + "2" * 40
+        abi = [{"type": "function", "name": "useTuple", "inputs": [
+            {"type": "tuple", "components": [{"type": "uint256"}, {"type": "uint256"}]},
+            {"type": "address"}], "outputs": []}]
+        values=["(10,20)", address]
+        self.assertEqual(lk.split_grouped_argument_values(
+            values, 2, abi[0]["inputs"]), values)
+
     def test_receipt_help_uses_plain_words(self):
         code, output = self.capture_dispatch("receipt", "--h")
         self.assertEqual(code, 0)
