@@ -91,9 +91,9 @@ class CliConsistencyTests(unittest.TestCase):
         target = "0x" + "3" * 40
         config = {
             "target": target,
-            "rpc_url": "http://127.0.0.1:8545",
+            "rpc": "http://127.0.0.1:8545",
         }
-        with patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
+        with patch.object(lk, "activate_project_target", return_value=target),              patch.object(lk, "storage_layout_details", return_value=({}, [])),              patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
             result = lk.dispatch_command("storage", ["1"], config)
 
         self.assertEqual(result, 0)
@@ -110,9 +110,9 @@ class CliConsistencyTests(unittest.TestCase):
         target = "0x" + "3" * 40
         config = {
             "target": target,
-            "rpc_url": "http://127.0.0.1:8545",
+            "rpc": "http://127.0.0.1:8545",
         }
-        with patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
+        with patch.object(lk, "activate_project_target", return_value=target),              patch.object(lk, "storage_layout_details", return_value=({}, [])),              patch.object(lk, "cast_output", return_value=(0, "0x" + "4" * 64, "")) as cast_output:
             result = lk.dispatch_command("slots", ["1"], config)
 
         self.assertEqual(result, 0)
@@ -215,7 +215,7 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertTrue(all(call_config.get("_ephemeral") is True for _, call_config in calls))
         self.assertEqual(config["wallets"], {})
         rendered = output.getvalue()
-        self.assertIn("Accounts detected: 10", rendered)
+        self.assertIn("Accounts detected: 12", rendered)
         self.assertIn("Accounts used:     10 (maximum 10)", rendered)
         self.assertIn("msg.sender changes per call", rendered)
 
