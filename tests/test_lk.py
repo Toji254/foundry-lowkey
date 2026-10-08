@@ -3335,7 +3335,7 @@ contract Pool {
                 "outputs": [{"name": "balance", "type": "uint256"}],
             }
         ]
-        config = {"target": target, "wallets": {}, "labels": {}}
+        config = {"target": target, "wallets": {}, "labels": {}, "rpc": "http://127.0.0.1:0"}
         with patch.object(lk, "load_abi", return_value=abi), patch.object(
             lk,
             "cast_output",
@@ -4542,6 +4542,7 @@ contract Escrow {
             "target": "0x" + "3" * 40,
             "actor": "Alice",
             "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            "rpc": "http://127.0.0.1:0",
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
