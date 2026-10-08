@@ -279,6 +279,70 @@ class AuditEngineTests(unittest.TestCase):
         self.assertIn("0 signals", rendered)
         self.assertIn("Heuristic findings are review leads", rendered)
 
+    def test_run_rg_groups_matches_and_excludes_dependencies_by_default(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            payloads = [
+                {"type": "match", "data": {"path": {"text": "src/Vault.sol"}, "line_number": 10, "lines": {"text": "function mint() external {"}}},
+                {"type": "match", "data": {"path": {"text": "src/Vault.sol"}, "line_number": 11, "lines": {"text": "    _mint(msg.sender, 1);"}}},
+                {"type": "match", "data": {"path": {"text": "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol"}, "line_number": 20, "lines": {"text": "function _mint(address a, uint256 v) internal {"}}},
+            ]
+            output = "\n".join(json.dumps(item) for item in payloads)
+
+            with patch.object(audit_engine, "rg_available", return_value=True), patch.object(
+                audit_engine, "run_command", return_value=(0, output, "")
+            ), patch.object(audit_engine, "record_evidence") as record, redirect_stdout(io.StringIO()) as rendered:
+                code = audit_engine.run_rg("mint", root=str(root))
+
+            self.assertEqual(code, 0)
+            command = audit_engine.run_command.call_args.args[0]
+            self.assertIn("--glob", command)
+            self.assertIn("!lib/**", command)
+            text = rendered.getvalue()
+            self.assertIn("RG SEARCH", text)
+            self.assertIn("src/Vault.sol", text)
+            self.assertIn("2 across 1 file(s)", text)
+            self.assertNotIn("openzeppelin-contracts", text)
+            evidence = record.call_args.args[1]
+            self.assertEqual(evidence["file_count"], 1)
+            self.assertFalse(evidence["all_files"])
+
+    def test_run_rg_src_scopes_to_configured_foundry_source_root(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "contracts").mkdir()
+            (root / "foundry.toml").write_text('src = "contracts"\n', encoding="utf-8")
+
+            with patch.object(audit_engine, "rg_available", return_value=True), patch.object(
+                audit_engine, "run_command", return_value=(1, "", "")
+            ) as runner, patch.object(audit_engine, "record_evidence"):
+                code = audit_engine.run_rg("mint", args=["--src"], root=str(root))
+
+            self.assertEqual(code, 0)
+            command = runner.call_args.args[0]
+            self.assertEqual(command[-2:], ["mint", "contracts"])
+
+    def test_run_rg_all_includes_dependency_globs_without_scope_filters(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+
+            with patch.object(audit_engine, "rg_available", return_value=True), patch.object(
+                audit_engine, "run_command", return_value=(1, "", "")
+            ) as runner, patch.object(audit_engine, "record_evidence") as record:
+                code = audit_engine.run_rg("mint", args=["--all"], root=str(root))
+
+            self.assertEqual(code, 0)
+            command = runner.call_args.args[0]
+            self.assertNotIn("!lib/**", command)
+            evidence = record.call_args.args[1]
+            self.assertTrue(evidence["all_files"])
+
     def test_run_rg_treats_no_match_as_success(self):
         with patch.object(audit_engine, "rg_available", return_value=True), patch.object(
             audit_engine, "run_command", return_value=(1, "", "")
