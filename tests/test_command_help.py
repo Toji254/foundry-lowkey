@@ -259,11 +259,25 @@ class CommandHelpTests(unittest.TestCase):
     def test_changes_help_prefers_simple_function_name(self):
         code, output = self.capture_dispatch("changes", "--h")
         self.assertEqual(code, 0)
-        self.assertIn("Usage: lk changes <name> [values...] [options]", output)
+        self.assertIn("Usage: lk changes <function> [values...] [options]", output)
+        self.assertNotIn("lk changes <name>", output)
+        self.assertNotIn("lk changes '<name(types...)>'", output)
+        self.assertIn("lk changes '<function(types...)>'", output)
         self.assertIn("lk changes setValue 10", output)
         self.assertIn("For example, use `contribute` instead of `contribute()`." , output)
         self.assertIn("lk changes 'setValue(uint256)' 10", output)
         self.assertIn("full quoted signature", output)
+
+    def test_function_placeholders_are_consistent_across_changes_workflows(self):
+        for command, args in ((
+            ("state-diff", ("--h",)),
+            ("generate", ("test", "--h")),
+        ),):
+            with self.subTest(command=command):
+                code, output = self.capture_dispatch(command, *args)
+                self.assertEqual(code, 0)
+                self.assertNotIn("<name(parameter TYPES...)>", output)
+                self.assertIn("<function(parameter TYPES...)>", output)
 
     def test_changes_dispatch_preserves_all_arguments_and_options(self):
         captured = {}
