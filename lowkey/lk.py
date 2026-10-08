@@ -11398,9 +11398,7 @@ def format_storage_read(config, slot, raw):
         lines.append(f"{prefix}:")
         lines.append(f"    Type:  {type_label}")
         if decoded is not None:
-            rendered_decoded = apply_labels(config, decoded) if False else decoded
-            if lowered == "address" and is_address(decoded):
-                rendered_decoded = apply_labels(decoded, config)
+            rendered_decoded = apply_labels(decoded, config) if lowered == "address" and is_address(decoded) else decoded
             lines.append(f"    Value: {rendered_decoded}")
         else:
             lines.append("    Value: raw 32-byte storage word (type not safely decoded)")
