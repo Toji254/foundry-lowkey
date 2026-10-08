@@ -136,6 +136,46 @@ class LowkeyCastTests(unittest.TestCase):
                     code = lk.run_auto_target(config)
         self.assertEqual(code, 2)
 
+    def test_state_diff_blocks_undeployed_target(self):
+        config = {
+            "target": "0x" + "6" * 40,
+            "target_contract": "Fallback",
+            "actor": "Alice",
+            "wallets": {},
+        }
+        with patch.object(lk, "split_lab_options", return_value=(["withdraw"], None, 0, False, 1)):
+            with patch.object(lk, "encode_target_call", return_value=("withdraw()", "3cc50d")):
+                with patch.object(lk, "resolve_lab_value", return_value=0):
+                    with patch.object(lk, "validate_solidity_value", return_value=0):
+                        with patch.object(lk, "_live_target_state", return_value={
+                            "status": "NOT_DEPLOYED",
+                            "rpc": "http://127.0.0.1:8545",
+                            "verification": "UNVERIFIED",
+                        }):
+                            with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
+                                code = lk.run_state_diff(config, ["withdraw"])
+        self.assertEqual(code, 2)
+
+    def test_probe_blocks_undeployed_target(self):
+        config = {
+            "target": "0x" + "7" * 40,
+            "target_contract": "Fallback",
+            "wallets": {"Alice": {"address": "0x" + "8" * 40}},
+            "actor": "Alice",
+        }
+        with patch.object(lk, "split_lab_options", return_value=(["withdraw"], None, 0, False, 1)):
+            with patch.object(lk, "encode_target_call", return_value=("withdraw()", "3cc50d")):
+                with patch.object(lk, "resolve_lab_value", return_value=0):
+                    with patch.object(lk, "validate_solidity_value", return_value=0):
+                        with patch.object(lk, "_live_target_state", return_value={
+                            "status": "NOT_DEPLOYED",
+                            "rpc": "http://127.0.0.1:8545",
+                            "verification": "UNVERIFIED",
+                        }):
+                            with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
+                                code = lk.run_probe(config, ["withdraw"])
+        self.assertEqual(code, 2)
+
     def test_parse_lab_marker_preserves_default_and_custom_marker_contract(self):
         target = "0x" + "4" * 40
         created = "0x" + "5" * 40
