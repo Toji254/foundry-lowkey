@@ -208,8 +208,36 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("LOWKEY HELP  •  lk read", output)
         self.assertIn("bytes32", output)
         self.assertIn("exactly 64 hex characters", output)
-        self.assertIn("lk read escrow 0xd9c5115d...d86f2a", output)
+        self.assertIn("lk read getRecord 0x1111111111111111111111111111111111111111111111111111111111111111", output)
         self.assertIn("does not intentionally change contract data", output)
+
+    def test_help_examples_are_protocol_agnostic(self):
+        import re
+
+        outputs = []
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        outputs.append(output.getvalue())
+
+        for command in sorted(lk.COMMAND_HELP):
+            code, rendered = self.capture_dispatch(command, "--h")
+            self.assertEqual(code, 0, command)
+            outputs.append(rendered)
+
+        rendered_help = "\n".join(outputs).lower()
+        forbidden = (
+            "ethescrow",
+            "confidencepool",
+            "confidencepoolfactory",
+            "bountyarena",
+            "purchasenft",
+            "createescrow",
+            "createbounty",
+            "escrow",
+        )
+        leaked = [term for term in forbidden if re.search(r"(?<![a-z0-9_])" + re.escape(term) + r"(?![a-z0-9_])", rendered_help)]
+        self.assertEqual(leaked, [])
 
     def test_receipt_help_uses_plain_words(self):
         code, output = self.capture_dispatch("receipt", "--h")
@@ -314,7 +342,7 @@ class CommandHelpTests(unittest.TestCase):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
         self.assertIn("Interact with one contract function without having to build the full command yourself.", output)
-        self.assertIn("lk wizard createescrow 1", output)
+        self.assertIn("lk wizard deposit 1", output)
         self.assertIn("Force a read-only call. The contract is not changed.", output)
         self.assertIn("Force a state-changing transaction.", output)
         self.assertIn("Only build the call data. Nothing is sent.", output)
