@@ -4771,23 +4771,35 @@ def _select_project_target(config, entry, root):
         return fail("Error: selected target has an invalid address.")
 
     # A remembered address is not a live protocol target merely because it has
-    # an ABI/source artifact. On local EVM labs, reject EOAs and stale addresses
-    # before they can become the active audit target.
-    # Only validate against an explicitly configured RPC. A discovered/default
-    # Anvil endpoint is not enough to prove that a remembered project target
-    # belongs to the current live audit session.
-    rpc = config.get("rpc")
-    if rpc:
-        try:
-            code, runtime, _ = cast_output(["cast", "code", address, "--rpc-url", rpc])
-        except Exception:
-            code, runtime = 1, ""
-        if code == 0 and str(runtime or "").strip().lower() in {"", "0x", "0x0"}:
-            return fail(
-                f"Error: {address} has no contract bytecode on {rpc}. "
-                "Run 'lk lab' to deploy or refresh a live local target.",
-                1,
-            )
+    # an ABI/source artifact. Validate against the effective RPC, including
+    # auto-detected Anvil, before allowing it to become active.
+    rpc = effective_rpc(config)
+    if not rpc:
+        return fail(
+            f"Error: Lowkey cannot verify {address} because no RPC is available. "
+            "Start/connect Anvil, then select the target again.",
+            1,
+        )
+
+    state = _live_target_state(config, address, entry.get("artifact"))
+    if state.get("status") == "NOT_DEPLOYED":
+        return fail(
+            f"Error: {address} has no contract bytecode on {rpc}. "
+            "Run 'lk lab' to deploy/refresh the local target, or 'lk target reset' to clear the stale target.",
+            1,
+        )
+    if state.get("status") in {"RPC_UNAVAILABLE", "NO_RPC"}:
+        return fail(
+            f"Error: Lowkey could not verify {address} on {rpc}. "
+            "Refusing to select an unverified contract target.",
+            1,
+        )
+    if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
+        return fail(
+            f"Error: {address} has live bytecode, but it does not match the selected project artifact. "
+            "Run 'lk lab' or select the correct deployment instead of assuming this is the intended contract.",
+            1,
+        )
 
     contract = entry.get("contract") or entry.get("name") or "target"
     artifact = entry.get("artifact")
