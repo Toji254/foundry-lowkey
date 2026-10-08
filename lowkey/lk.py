@@ -13660,15 +13660,16 @@ COMMAND_HELP = {
     "deps": _help_entry("Show imports, inheritance, and source dependencies.", "lk deps [src]", "lk deps src", "Use it to separate application logic from libraries, interfaces, and dependency code.", related=["lk project", "lk layout"]),
     "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout MyContract", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
     "mapping": _help_entry(
-        "Calculate/read a mapping entry's storage location.",
-        "lk mapping <slot> <key> | lk mapping <key_type> <slot> <key>",
-        "lk mapping address 3 0x1111111111111111111111111111111111111111",
-        "Use it when you know a mapping's anchor slot and want to inspect one key.",
+        "Index the selected contract's mappings and arrays, or calculate/read one mapping entry's storage location.",
+        "lk mapping | lk mapping <slot> <key> | lk mapping <key_type> <slot> <key>",
+        "lk mapping",
+        "Run it with no arguments to see every detected mapping/array, its storage slot, types, and the exact lookup command to use. Pass a slot and key when you want one mapping entry.",
         forms=[
-            ("lk mapping <slot> <key>", "Let Lowkey infer the mapping key type from the key value.", "lk mapping 3 0x1111111111111111111111111111111111111111"),
-            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly.", "lk mapping address 3 0x1111111111111111111111111111111111111111"),
+            ("lk mapping", "List detected mappings and arrays in the selected target's compiled storage layout.", "lk mapping"),
+            ("lk mapping <slot> <key>", "Let Lowkey infer the mapping key type from the key value.", "lk mapping 0 0x1111111111111111111111111111111111111111"),
+            ("lk mapping <key_type> <slot> <key>", "Specify the mapping key type explicitly.", "lk mapping address 0 0x1111111111111111111111111111111111111111"),
         ],
-        related=["lk layout", "lk snapshot"]),
+        related=["lk layout", "lk storage", "lk snapshot"]),
     "namespace": _help_entry("Calculate an ERC-7201 namespaced storage slot.", "lk namespace <erc7201-namespace-id>", "lk namespace example.storage", "Use it when auditing namespaced storage.", related=["lk layout", "lk mapping"]),
     "proof": _help_entry("Read an account/storage proof for a slot.", "lk proof <slot> [block]", "lk proof 3 21000000", "Use it when you need storage evidence tied to a specific block.", related=["lk mapping", "lk snapshot"]),
     "snapshot": _help_entry(
