@@ -58,6 +58,27 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
 
+    def test_balance_labels_active_project_target_from_context(self):
+        target = "0x" + "3" * 40
+        config = {
+            "target": target,
+            "target_contract": "Fallback",
+            "rpc": "http://127.0.0.1:8545",
+        }
+        with patch.object(
+            lk,
+            "project_context_target",
+            return_value={"address": target, "contract": "Fallback", "source": "manual"},
+        ),              patch.object(lk, "rpc_json", return_value="0x0"):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_balance(config)
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn(f"Address:  Fallback ({target})", rendered)
+        self.assertNotIn("Identity: unnamed address", rendered)
+
     def test_balance_resolves_named_target_and_labels_it(self):
         target = "0x" + "3" * 40
         config = {
