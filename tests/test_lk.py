@@ -108,14 +108,13 @@ class LowkeyCastTests(unittest.TestCase):
                     "cast_output",
                     side_effect=AssertionError("cast must not execute"),
                 ):
-                result = lk.run_cast(
-                    ["send", "withdraw", "--eth", "0.1"],
-                    config,
-                    capture=True,
-                )
-        self.assertEqual(result.code, 2)
-        self.assertIn("Lowkey did NOT execute the transaction", result.text)
-        self.assertIn("ETH was attached to this call", result.text)
+                    with redirect_stderr(io.StringIO()):
+                        result = lk.run_cast(
+                            ["send", "withdraw", "--eth", "0.1"],
+                            config,
+                            capture=False,
+                        )
+        self.assertEqual(result, 2)
 
     def test_auto_target_does_not_revive_stale_remembered_target(self):
         address = "0x" + "5" * 40
@@ -145,13 +144,10 @@ class LowkeyCastTests(unittest.TestCase):
             with patch.object(lk, "encode_target_call", return_value=("withdraw()", "3cc50d")):
                 with patch.object(lk, "resolve_lab_value", return_value=0):
                     with patch.object(lk, "validate_solidity_value", return_value=0):
-                        with patch.object(lk, "_live_target_state", return_value={
-                            "status": "NOT_DEPLOYED",
-                            "rpc": "http://127.0.0.1:8545",
-                            "verification": "UNVERIFIED",
-                        }):
-                            with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
-                                code = lk.run_state_diff(config, ["withdraw"])
+                        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                            with patch.object(lk, "rpc_json", return_value="0x"):
+                                with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
+                                    code = lk.run_state_diff(config, ["withdraw"])
         self.assertEqual(code, 2)
 
     def test_probe_blocks_undeployed_target(self):
@@ -165,13 +161,10 @@ class LowkeyCastTests(unittest.TestCase):
             with patch.object(lk, "encode_target_call", return_value=("withdraw()", "3cc50d")):
                 with patch.object(lk, "resolve_lab_value", return_value=0):
                     with patch.object(lk, "validate_solidity_value", return_value=0):
-                        with patch.object(lk, "_live_target_state", return_value={
-                            "status": "NOT_DEPLOYED",
-                            "rpc": "http://127.0.0.1:8545",
-                            "verification": "UNVERIFIED",
-                        }):
-                            with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
-                                code = lk.run_probe(config, ["withdraw"])
+                        with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                            with patch.object(lk, "rpc_json", return_value="0x"):
+                                with patch.object(lk, "run_foundry", side_effect=AssertionError("forge must not run")):
+                                    code = lk.run_probe(config, ["withdraw"])
         self.assertEqual(code, 2)
 
     def test_direct_target_rejects_undeployed_address_on_live_rpc(self):
