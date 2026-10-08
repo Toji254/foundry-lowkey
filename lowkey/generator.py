@@ -1218,8 +1218,8 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         default_output = Path("script") / f"LowkeyDeploy_{_id(contract)}.s.sol"
 
         # Clean up prior Lowkey-generated names for both the user-facing request
-        # (EthEscrow) and the resolved Solidity symbol (Escrow). Never touch
-        # scripts that do not carry Lowkey's generated marker.
+        # and the resolved Solidity symbol. Never touch scripts that do not carry
+        # Lowkey's generated marker.
         if request.output is None:
             _cleanup_generated_deployments(root, request.contract or "", contract)
 
