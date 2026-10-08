@@ -8992,7 +8992,7 @@ def encode_target_call(config, function, values):
                 hint = f" Use: lk changes '{signature_text}' {placeholders}."
             raise ValueError(
                 f"{signature_text} expects {len(inputs)} argument(s), got {len(values)}.{suffix}"
-                f" The full signature form uses TYPES; pass real VALUES after the closing quote, or use just the function name for normal use."
+                f" The full signature form uses TYPES; pass real VALUES after the closing quote. For normal use, just give the function name."
                 f"{hint}"
             )
 
@@ -9947,7 +9947,7 @@ def candidate_storage_slots(config, signature, raw_values, actor_address):
 
 def run_state_diff(config,args):
     if not args:
-        return fail("Usage: lk changes <function> [args...] [--as ACTOR] [--eth AMOUNT] [--repeat N]")
+        return fail("Usage: lk changes <name> [values...] [--as ACTOR] [--eth AMOUNT] [--repeat N]")
     try:
         values,actor,value,_keep,repeat=split_lab_options(args)
         if not values:
@@ -13106,15 +13106,15 @@ COMMAND_HELP = {
         related=["lk walkthrough test", "lk changes", "lk generate test"],
     ),    "changes": _help_entry(
         "Run a function once in a temporary test and show exactly which contract storage values changed.",
-        "lk changes <function> [values...] [options]",
+        "lk changes <name> [values...] [options]",
         "lk changes setValue 10",
-        "Use the simple function name for normal use. Lowkey resolves it from the selected contract. Use a full quoted signature only when you need to choose between overloaded functions.",
+        "Use the function name for normal use. For example, use `contribute` instead of `contribute()`. Lowkey resolves the full signature for you. Use a quoted full signature only when you need an exact overload.",
         forms=[
-            ("lk changes <function> [values...]", "Run a function by name. Lowkey looks up the full Solidity signature for you.", "lk changes setValue 10"),
+            ("lk changes <name> [values...]", "Run a function by name. Lowkey looks up the full Solidity signature for you.", "lk changes setValue 10"),
             ("lk changes '<function(types...)>' [values...]", "Use the full quoted signature when a function is overloaded or you want to specify its exact parameter types.", "lk changes 'setValue(uint256)' 10"),
-            ("lk changes <function> [values...] --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes setValue --value 1ether"),
-            ("lk changes <function> [values...] --actor <name>", "Run the call as a named local actor.", "lk changes setValue 10 --actor Alice"),
-            ("lk changes <function> [values...] --repeat <N>", "Repeat the exact call N times inside one transaction.", "lk changes setValue 10 --repeat 3"),
+            ("lk changes <name> [values...] --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes setValue --value 1ether"),
+            ("lk changes <name> [values...] --actor <name>", "Run the call as a named local actor.", "lk changes setValue 10 --actor Alice"),
+            ("lk changes <name> [values...] --repeat <N>", "Repeat the exact call N times inside one transaction.", "lk changes setValue 10 --repeat 3"),
         ],
         options=[
             ("--actor <name>", "Choose which named local actor makes the call.", "lk changes setValue 10 --actor Alice"),
@@ -13954,7 +13954,7 @@ STORAGE / STATE FORENSICS
   lk proof <slot> [block]          Read a storage proof.
   lk snapshot [slot ...]           Save selected storage slots.
   lk diff                          Compare the latest storage snapshot.
-  lk changes <function> [values...]
+  lk changes <name> [values...]
                                    Show storage changes from a call.
                                    FUNCTION SIGNATURE = function name + parameter TYPES.
                                    The quoted part contains TYPES, not real values.
@@ -14092,12 +14092,12 @@ _NEXT_COMMANDS = {
     "target list": ["lk target auto", "lk status", "lk functions"],
     "target auto": ["lk status", "lk functions", "lk recon"],
     "functions": ["lk fn <function>", "lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]"],
-    "fn": ["lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]", "lk changes <function> [values...]"],
-    "ask": ["lk read <function> [args]", "lk wizard <function> [values...]", "lk changes <function> [values...]"],
+    "fn": ["lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]", "lk changes <name> [values...]"],
+    "ask": ["lk read <function> [args]", "lk wizard <function> [values...]", "lk changes <name> [values...]"],
     "abi": ["lk functions", "lk ask <function>", "lk read <function> [args]", "lk wizard <function> [values...]"],
     "read": ["lk functions", "lk send <function> [args] --preview", "lk wizard <function> [values...]"],
-    "send": ["lk receipt", "lk trace", "lk last tx", "lk changes <function> [values...]"],
-    "wizard": ["lk last tx", "lk receipt", "lk trace", "lk changes <function> [values...]"],
+    "send": ["lk receipt", "lk trace", "lk last tx", "lk changes <name> [values...]"],
+    "wizard": ["lk last tx", "lk receipt", "lk trace", "lk changes <name> [values...]"],
     "project": ["lk targets", "lk recon", "lk deps", "lk risk"],
     "projects": ["lk project", "lk targets", "lk doctor"],
     "system": ["lk project", "lk doctor", "lk lab"],
@@ -14111,7 +14111,7 @@ _NEXT_COMMANDS = {
     "risk": ["lk seams", "lk fn <function>", "lk slither"],
     "seams": ["lk fn <function>", "lk scan src", "lk findings"],
     "scan": ["lk findings", "lk focus <id>", "lk rg \"<marker>\" src"],
-    "rg": ["lk focus <id>", "lk fn <function>", "lk changes <function> [values...]"],
+    "rg": ["lk focus <id>", "lk fn <function>", "lk changes <name> [values...]"],
     "slither": ["lk findings", "lk focus <id>", "lk build"],
     "build": ["lk test", "lk functions", "lk audit run"],
     "test": ["lk coverage", "lk fuzz", "lk audit run"],
@@ -14120,19 +14120,19 @@ _NEXT_COMMANDS = {
     "audit run": ["lk findings", "lk focus <id>", "lk test-gen", "lk poc"],
     "audit pipeline": ["lk findings", "lk focus <id>", "lk test-gen"],
     "findings": ["lk focus <id>", "lk q next", "lk context", "lk checklist"],
-    "focus": ["lk fn <function>", "lk changes <function> [values...]", "lk trace", "lk finding <note>"],
-    "probe": ["lk changes <function> [values...]", "lk trace", "lk finding <note>"],
+    "focus": ["lk fn <function>", "lk changes <name> [values...]", "lk trace", "lk finding <note>"],
+    "probe": ["lk changes <name> [values...]", "lk trace", "lk finding <note>"],
     "changes": ["lk trace", "lk findings", "lk finding <note>", "lk mapping <slot> <key>"],
-    "trace": ["lk changes <function> [values...]", "lk tx <tx>", "lk findings"],
+    "trace": ["lk changes <name> [values...]", "lk tx <tx>", "lk findings"],
     "tx": ["lk receipt", "lk trace", "lk logs"],
     "receipt": ["lk trace", "lk tx", "lk logs"],
     "logs": ["lk tx", "lk receipt", "lk event <sig> <data>"],
     "chain": ["lk status", "lk recon", "lk actors"],
-    "mapping": ["lk storage <slot>", "lk changes <function> [values...]", "lk snapshot <slot>"],
+    "mapping": ["lk storage <slot>", "lk changes <name> [values...]", "lk snapshot <slot>"],
     "storage": ["lk mapping <slot> <key>", "lk snapshot <slot>", "lk diff"],
     "slots": ["lk mapping <slot> <key>", "lk snapshot <slot>", "lk diff"],
     "snapshot": ["lk diff", "lk mapping <slot> <key>", "lk storage <slot>"],
-    "diff": ["lk mapping <slot> <key>", "lk changes <function> [values...]", "lk finding <note>"],
+    "diff": ["lk mapping <slot> <key>", "lk changes <name> [values...]", "lk finding <note>"],
     "encode": ["lk calldata <data>", "lk sig <function>", "lk send <function> [args] --preview"],
     "calldata": ["lk decode-calldata <data>", "lk sig <function>", "lk tx <tx>"],
     "sig": ["lk calldata <data>", "lk 4byte <selector>", "lk fn <function>"],
@@ -14140,7 +14140,7 @@ _NEXT_COMMANDS = {
     "proxy": ["lk implementation", "lk admin", "lk storage <slot>"],
     "implementation": ["lk proxy", "lk admin", "lk functions"],
     "admin": ["lk proxy", "lk implementation", "lk findings"],
-    "gas": ["lk send <function> [args] --preview", "lk changes <function> [values...]", "lk trace"],
+    "gas": ["lk send <function> [args] --preview", "lk changes <name> [values...]", "lk trace"],
     "generate": ["lk generate test '<signature>' <values...>", "lk poc", "lk test"],
     "generate test": ["lk test", "lk trace", "lk findings"],
     "poc": ["lk test", "lk findings", "lk generate test '<signature>' <values...>"],
@@ -14164,7 +14164,7 @@ _NEXT_COMMANDS = {
     "self-test": ["lk doctor", "lk status"],
     "clone": ["lk doctor", "lk project", "lk build"],
     "deps": ["lk project", "lk risk", "lk scan src"],
-    "layout": ["lk mapping <slot> <key>", "lk storage <slot>", "lk changes <function> [values...]"],
+    "layout": ["lk mapping <slot> <key>", "lk storage <slot>", "lk changes <name> [values...]"],
     "namespace": ["lk storage <slot>", "lk proof <slot>", "lk layout <Contract>"],
     "proof": ["lk storage <slot>", "lk snapshot <slot>", "lk diff"],
     "fork": ["lk status", "lk target auto", "lk actors"],
@@ -14178,7 +14178,7 @@ _NEXT_COMMANDS = {
     "matrix": ["lk matrix list", "lk matrix test <name>", "lk matrix add <name> <text>"],
     "matrix list": ["lk matrix test <name>", "lk matrix add <name> <text>"],
     "matrix test": ["lk test", "lk findings"],
-    "walkthrough": ["lk functions", "lk changes <function> [values...]", "lk trace"],
+    "walkthrough": ["lk functions", "lk changes <name> [values...]", "lk trace"],
     "walkthrough test": ["lk findings", "lk test-gen", "lk trace"],
 }
 
@@ -14247,7 +14247,7 @@ def _recommended_next_commands(command, args=None, config=None):
             f"lk ask {query}",
             f"lk read {query} [args]",
             f"lk wizard {query} [values...]",
-            "lk changes <function> [values...]",
+            "lk changes <name> [values...]",
         ]
 
     # Recommendations are deliberately opt-in. A command without a curated
