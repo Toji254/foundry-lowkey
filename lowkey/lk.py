@@ -3560,6 +3560,17 @@ def run_cast(args,config,capture=False):
             record_status(result.code)
             print(str(result),file=sys.stderr)
             return result if capture else result.code
+    guard = _target_health_block(
+        config,
+        target,
+        remaining[0] if cast_cmd in {"call", "send"} and remaining else None,
+        cast_cmd,
+        remaining,
+        capture=capture,
+    )
+    if guard is not None:
+        return guard
+
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
     bypass="--yes" in remaining
@@ -4907,10 +4918,20 @@ def run_targets(config, interactive=False, include_support=False):
             if entry not in group:
                 continue
             marker = "*" if str(entry.get("address")).lower() == str(current_address or "").lower() else " "
+            runtime_state = _live_target_state(config, entry.get("address"), entry.get("artifact"))
+            runtime_label = {
+                "DEPLOYED": "LIVE",
+                "NOT_DEPLOYED": "NOT DEPLOYED",
+                "RPC_UNAVAILABLE": "UNVERIFIED",
+                "NO_RPC": "UNVERIFIED",
+                "INVALID_TARGET": "INVALID",
+            }.get(runtime_state.get("status"), "UNVERIFIED")
+            if runtime_state.get("verification") == "CODE MISMATCH":
+                runtime_label = "CODE MISMATCH"
             print(
                 f" {marker} {index:>2}. "
                 f"{entry.get('name') or entry.get('contract') or 'target':<28} "
-                f"{apply_labels(entry.get('address'), config)}"
+                f"{apply_labels(entry.get('address'), config)}  [{runtime_label}]"
             )
             source_file = entry.get("source_file")
             deployment_file = entry.get("deployment_file")
@@ -12169,6 +12190,28 @@ def run_status(config):
     contract=config.get("target_contract") or "unknown"
     print(f"ABI    : {abi or 'auto/not found'}")
     print(f"Contract: {contract}")
+    if target:
+        runtime_state = _live_target_state(config, target, abi)
+        runtime_status = runtime_state.get("status")
+        verification = runtime_state.get("verification")
+        if runtime_status == "DEPLOYED" and verification != "CODE MISMATCH":
+            print(f"Deployment: LIVE ({verification.lower()}; {runtime_state.get('code_size', 0)} bytes)")
+            print(f"Chain     : {runtime_state.get('chain_id') or 'unknown'}")
+            print(f"Block     : {runtime_state.get('block_number') or 'unknown'}")
+        elif runtime_status == "NOT_DEPLOYED":
+            print("Deployment: NOT DEPLOYED")
+            print("WARNING   : target is remembered/configured, but the current RPC reports no contract bytecode here.")
+            print("Fix       : lk lab | lk target auto | lk recon | lk target reset")
+        elif runtime_status in {"RPC_UNAVAILABLE", "NO_RPC"}:
+            print("Deployment: UNVERIFIED")
+            print("WARNING   : Lowkey cannot prove that contract bytecode exists on the current RPC.")
+            print("Fix       : start/connect the correct RPC, then run 'lk status' or 'lk recon'.")
+        elif runtime_status == "DEPLOYED" and verification == "CODE MISMATCH":
+            print("Deployment: CODE MISMATCH")
+            print("WARNING   : bytecode exists, but it does not match the selected project artifact.")
+            print("Fix       : lk lab | lk target auto | inspect the deployment before sending calls")
+        else:
+            print(f"Deployment: {runtime_status or 'UNVERIFIED'}")
     print(f"Last tx: {config.get('last_tx') or 'none'}")
     root = audit_context.foundry_project_root()
     _sync_security_patterns(root)
