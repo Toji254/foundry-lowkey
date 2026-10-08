@@ -13172,6 +13172,7 @@ COMMAND_HELP = {
         forms=[
             ("lk changes <name> [values...]", "Run a function by name. Lowkey looks up the full Solidity signature for you.", "lk changes setValue 10"),
             ("lk changes '<name(types...)>' [values...]", "Use the full quoted signature when a function is overloaded or you want to specify its exact parameter types.", "lk changes 'setValue(uint256)' 10"),
+            ("lk changes <name> \"(value1,value2,...)\"", "Pass several values together in one quoted group. The number of values must match the function inputs.", "lk changes setValues \"(10,0x1111111111111111111111111111111111111111,true)\""),
             ("lk changes <name> [values...] --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes setValue --value 1ether"),
             ("lk changes <name> [values...] --actor <name>", "Run the call as a named local actor.", "lk changes setValue 10 --actor Alice"),
             ("lk changes <name> [values...] --repeat <N>", "Repeat the exact call N times inside one transaction.", "lk changes setValue 10 --repeat 3"),
