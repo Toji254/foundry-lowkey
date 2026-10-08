@@ -494,6 +494,10 @@ class LowkeyGeneratorTests(unittest.TestCase):
 
             self.assertIsNotNone(found)
             self.assertEqual(found[0], artifact)
+            self.assertEqual(
+                generator._source_import(root, artifact, "Target"),
+                "../contracts/Target.sol",
+            )
 
     def test_generate_test_uses_supplied_calldata(self):
         target = "0x" + "1" * 40
