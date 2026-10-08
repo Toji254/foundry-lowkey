@@ -2504,6 +2504,21 @@ contract Pool {
         self.assertEqual(value, "1 ether")
         self.assertFalse(keep)
 
+    def test_split_lab_options_defaults_eth_to_ether_for_unitless_amount(self):
+        values, actor, value, keep = lk.split_lab_options(
+            ["contribute", "--eth", "0.001"]
+        )
+        self.assertEqual(values, ["contribute"])
+        self.assertIsNone(actor)
+        self.assertEqual(value, "0.001 ether")
+        self.assertFalse(keep)
+
+        values, actor, value, keep = lk.split_lab_options(
+            ["contribute", "--eth", "1000000", "wei"]
+        )
+        self.assertEqual(values, ["contribute"])
+        self.assertEqual(value, "1000000 wei")
+
     def test_encode_target_call_resolves_actor_name_for_address_argument(self):
         config = {
             "target": "0x" + "1" * 40,
