@@ -359,7 +359,7 @@ class CommandHelpTests(unittest.TestCase):
         code, output = self.capture_dispatch("wizard", "--h")
         self.assertEqual(code, 0)
         self.assertIn("Interact with one contract function without having to build the full command yourself.", output)
-        self.assertIn("lk wizard deposit 1", output)
+        self.assertIn("lk wizard setValue 10", output)
         self.assertIn("Force a read-only call. The contract is not changed.", output)
         self.assertIn("Force a state-changing transaction.", output)
         self.assertIn("Only build the call data. Nothing is sent.", output)
