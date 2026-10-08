@@ -5123,7 +5123,12 @@ def _live_target_state(config, address=None, artifact=None):
             except Exception:
                 artifact_path = None
         artifact_data = read_artifact(artifact_path) if artifact_path else None
+        deployed_bytecode = None
         if isinstance(artifact_data, dict):
+            deployed_bytecode = artifact_data.get("deployedBytecode")
+            if isinstance(deployed_bytecode, dict):
+                deployed_bytecode = deployed_bytecode.get("object")
+        if isinstance(artifact_data, dict) and str(deployed_bytecode or "").strip() not in {"", "0x", "0x0"}:
             try:
                 match = _live_target_artifact_match(config, address, artifact_data)
             except Exception:
