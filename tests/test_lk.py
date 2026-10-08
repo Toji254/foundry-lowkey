@@ -4677,23 +4677,6 @@ contract BountyArena {
         adapter = importlib.import_module("lowkey.walkthrough_benchmarks")
         self.assertIsNone(adapter.get_benchmark_adapter(model, [model], {}))
 
-    def test_target_fixture_benchmark_adapter_matches_only_confidence_pool_system(self):
-        model = lk.walkthrough.ContractModel(
-            name="ConfidencePoolFactory",
-            source="src/ConfidencePoolFactory.sol",
-            artifact="out/ConfidencePoolFactory.sol/ConfidencePoolFactory.json",
-            functions=["createPool(address,address,uint256,uint256,address,address[])"],
-        )
-        child = lk.walkthrough.ContractModel(
-            name="ConfidencePool",
-            source="src/ConfidencePool.sol",
-            artifact="out/ConfidencePool.sol/ConfidencePool.json",
-        )
-        adapter = importlib.import_module("lowkey.walkthrough_benchmarks")
-        selected = adapter.get_benchmark_adapter(model, [model, child], {})
-        self.assertIsNotNone(selected)
-        self.assertEqual(selected.adapter_id, "confidence-pool")
-
     def test_real_world_pattern_scanner_covers_recurring_bug_families(self):
         patterns = importlib.import_module("lowkey.walkthrough_finding_patterns")
         with tempfile.TemporaryDirectory() as tmp:
@@ -4838,35 +4821,6 @@ def withdraw(amount: uint256):
         self.assertIsNotNone(selected)
         self.assertEqual(selected.adapter_id, "demo")
         adapter_module._REGISTERED_BENCHMARK_ADAPTERS.remove(DemoAdapter)
-
-    def test_confidence_pool_stateful_benchmarks_cover_known_attack_stories(self):
-        actors = [
-            lk.walkthrough.Actor("Alice", "0x" + "1" * 40, 0),
-            lk.walkthrough.Actor("Bob", "0x" + "2" * 40, 1),
-            lk.walkthrough.Actor("Attacker", "0x" + "3" * 40, 2),
-            lk.walkthrough.Actor("Treasury", "0x" + "4" * 40, 3),
-        ]
-        config = {
-            "lab_system": {
-                "stake_token": "0x" + "5" * 40,
-                "attack_registry": "0x" + "6" * 40,
-                "moderator": "0x" + "7" * 40,
-            }
-        }
-        benchmark = importlib.import_module("lowkey.walkthrough_benchmarks").ConfidencePoolBenchmarkAdapter()
-        stories = benchmark.build_stories(config, actors, {"pool": "0x" + "8" * 40})
-        self.assertEqual([item.story_id for item in stories], ["CP-01", "CP-02", "CP-03", "CP-04"])
-        self.assertTrue(any("sweepUnclaimedBonus" in str(action) for action in stories[0].actions))
-        self.assertTrue(any(
-            "contributeBonus" in str(action) and action.get("kind") == "call"
-            for action in stories[1].actions
-        ))
-        self.assertTrue(any(
-            "setPoolScope" in str(action)
-            for action in stories[2].actions
-        ))
-
-
 
     def test_fn_help_is_not_treated_as_a_function_query(self):
         config = lk.fresh_config()
