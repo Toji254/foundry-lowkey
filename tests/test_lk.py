@@ -2110,6 +2110,36 @@ contract Pool {
         self.assertIn(f"Target : Fallback @ {target}", rendered)
         self.assertIn("Contract: Fallback", rendered)
 
+    def test_generic_lab_labels_deployer_and_target_distinctly(self):
+        target="0x"+"4"*40
+        deployer="0x"+"5"*40
+        root=pathlib.Path("/tmp/fallback-lab")
+
+        config={"wallets":{},"actor":None,"labels":{}}
+
+        with patch.object(lk, "discover_generic_lab_contract", return_value=(
+            100,
+            "Fallback",
+            root / "src" / "Fallback.sol",
+            {"abi": [], "bytecode": {"object": "0x6000"}},
+            [],
+            "src/Fallback.sol:Fallback",
+        )),              patch.object(lk, "_deploy_artifact_locally", return_value=(target, None)),              patch.object(lk, "artifact_has_initializer", return_value=False),              patch.object(lk, "_ensure_lab_deployer"),              patch.object(lk, "set_lab_target"),              patch.object(lk, "_print_security_scope"),              patch.object(lk.project_tools, "detect_project", return_value={"kind":"foundry"}),              patch("builtins.print") as printed:
+            result=lk.run_generic_lab(
+                config,
+                root,
+                "http://127.0.0.1:8545",
+                [deployer],
+                "0x"+"6"*64,
+            )
+
+        self.assertEqual(result, 0)
+        rendered="\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn("Contract: Fallback", rendered)
+        self.assertIn("Target  : Fallback @ " + target, rendered)
+        self.assertIn("Deployer: lab-deployer (" + deployer + ") [Anvil #0]", rendered)
+        self.assertNotIn("Actor   : Anvil #0", rendered)
+
     def test_status_repairs_stale_anvil_actor_before_display(self):
         recorded="0x"+"1"*40
         actual="0x"+"2"*40
