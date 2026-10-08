@@ -1751,7 +1751,7 @@ contract Pool {
             os.chdir(root)
             try:
                 config={"target":None,"aliases":{},"targets":{},"abi_paths":{},"rpc":None}
-                with patch.object(lk,"save_config"):
+                with patch.object(lk,"effective_rpc", return_value=None),                      patch.object(lk,"save_config"):
                     output=io.StringIO()
                     with redirect_stdout(output):
                         result=lk.run_auto_target(config,"escrow")
@@ -2146,7 +2146,9 @@ contract Pool {
 
     def test_anvil_detection(self):
         address = "0x" + "1" * 40
-        with patch.object(lk, "local_port_open", return_value=True):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ETH_RPC_URL", None)
+            with patch.object(lk, "local_port_open", return_value=True):
             with patch.object(
                 lk,
                 "rpc_json",
@@ -3201,7 +3203,7 @@ contract Pool {
                 "outputs": [{"name": "balance", "type": "uint256"}],
             }
         ]
-        config = {"target": target, "wallets": {}, "labels": {}}
+        config = {"target": target, "wallets": {}, "labels": {}, "rpc": "http://127.0.0.1:0"}
         with patch.object(lk, "load_abi", return_value=abi), patch.object(
             lk,
             "cast_output",
@@ -3484,6 +3486,7 @@ contract Pool {
             "target":target,
             "wallets":{"Bob":{"address":"0x"+"2"*40}},
             "actor":"Alice",
+            "rpc":"http://127.0.0.1:0",
         }
         abi=[{
             "type":"function",
@@ -3552,6 +3555,7 @@ contract Pool {
             "target": "0x" + "3" * 40,
             "actor": "Alice",
             "wallets": {"Alice": {"address": "0x" + "1" * 40}},
+            "rpc": "http://127.0.0.1:0",
         }
         captured = {}
 
@@ -4077,6 +4081,7 @@ contract Pool {
                 "Alice":{"address":"0x"+"1"*40},
                 "Bob":{"address":"0x"+"2"*40},
             },
+            "rpc":"http://127.0.0.1:0",
         }
         captured={}
         def fake_write(prefix,content):
@@ -4106,7 +4111,7 @@ contract Pool {
         actor="0x"+"1"*40
         config={
             "target":target,
-            "rpc":"http://127.0.0.1:8545",
+            "rpc":"http://127.0.0.1:0",
             "actor":"whale",
             "wallets":{"whale":{"source":"anvil-impersonated","address":actor}},
         }
