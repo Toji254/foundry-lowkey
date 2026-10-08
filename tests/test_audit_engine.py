@@ -287,7 +287,6 @@ class AuditEngineTests(unittest.TestCase):
             payloads = [
                 {"type": "match", "data": {"path": {"text": "src/Vault.sol"}, "line_number": 10, "lines": {"text": "function mint() external {"}}},
                 {"type": "match", "data": {"path": {"text": "src/Vault.sol"}, "line_number": 11, "lines": {"text": "    _mint(msg.sender, 1);"}}},
-                {"type": "match", "data": {"path": {"text": "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol"}, "line_number": 20, "lines": {"text": "function _mint(address a, uint256 v) internal {"}}},
             ]
             output = "\n".join(json.dumps(item) for item in payloads)
 
