@@ -784,7 +784,11 @@ def target_aliases(config, root=None):
     names = list(config.get("aliases", {}).items()) + list(config.get("targets", {}).items())
 
     # The selected target may exist only in project-scoped audit context rather
-    # than config aliases. Expose that canonical contract name as an identity.
+    # than config aliases. project_context_target() has already validated this
+    # target for the current project, so keep it as a trusted identity instead
+    # of sending it through the generic legacy-alias ownership checks below.
+    context_name = ""
+    context_address = None
     context_target = project_context_target(project_root)
     if isinstance(context_target, dict):
         context_name = str(
@@ -794,7 +798,11 @@ def target_aliases(config, root=None):
         ).strip()
         context_address = context_target.get("address")
         if context_name and is_address(context_address):
-            names.append((context_name, context_address))
+            context_identity = (context_name, context_address)
+        else:
+            context_identity = None
+    else:
+        context_identity = None
 
     for name, addr in names:
         if not is_address(addr):
@@ -839,6 +847,13 @@ def target_aliases(config, root=None):
             continue
 
         merged.setdefault(str(name), addr)
+
+    if context_identity:
+        context_name, context_address = context_identity
+        lowered_name = context_name.lower()
+        if not (lowered_name.endswith(("mock", "fixture", "test")) or "mock" in lowered_name):
+            merged.setdefault(context_name, context_address)
+
     return merged
 
 def remember_project_target(config, root, name, address):
