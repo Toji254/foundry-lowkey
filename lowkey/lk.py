@@ -5023,6 +5023,20 @@ def _artifact_runtime_matches(path, artifact, runtime):
     runtime = str(runtime or "").strip().lower()
     if deployed and deployed not in {"0x", "0x0"} and deployed == runtime:
         return "runtime"
+
+    # Solidity immutables are patched into runtime bytecode at deployment.
+    # Compare with the compiler-provided immutable reference map before
+    # declaring a live target to be a different contract.
+    try:
+        normalizer = _artifact_runtime_normalizer(artifact)
+    except Exception:
+        normalizer = None
+    if normalizer is not None:
+        try:
+            if normalizer(runtime):
+                return "runtime"
+        except Exception:
+            pass
     return None
 
 
