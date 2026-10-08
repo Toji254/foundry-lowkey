@@ -225,7 +225,7 @@ class CliConsistencyTests(unittest.TestCase):
             target,
             "1",
             "--rpc-url",
-            "http://127.0.0.1:8545",
+            "http://127.0.0.1:0",
         ])
 
     def test_slots_alias_uses_selected_target(self):
@@ -244,7 +244,7 @@ class CliConsistencyTests(unittest.TestCase):
             target,
             "1",
             "--rpc-url",
-            "http://127.0.0.1:8545",
+            "http://127.0.0.1:0",
         ])
 
     def test_named_target_can_be_used_as_explicit_read_target(self):
