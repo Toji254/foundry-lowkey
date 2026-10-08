@@ -176,6 +176,8 @@ jobs:
           lk system
           test -f .audit/evidence/system_bootstrap.json
           lk lab Fixture
+          lk status | tee /tmp/lowkey-live-status.txt
+          grep -q "Deployment: LIVE" /tmp/lowkey-live-status.txt
           lk abi | tee /tmp/lowkey-abi.txt
           test -f .audit/abi/Fixture.json
           grep -q '"abi": \[' .audit/abi/Fixture.json
@@ -189,7 +191,14 @@ jobs:
           lk walkthrough --static --steps 4
           test -f .audit/walkthrough/model.json
           test -f .audit/walkthrough/latest.json
-          TARGET=0x1000000000000000000000000000000000000001
+          STALE_TARGET=0x2000000000000000000000000000000000000002
+          set +e
+          lk target "$STALE_TARGET"
+          test $? -eq 1
+          lk send "$STALE_TARGET" withdraw --eth 0.1 --as Alice
+          test $? -eq 2
+          set -e
+                    TARGET=0x1000000000000000000000000000000000000001
           CODE=$(python3 -c 'import json; print(json.load(open("out/Fixture.sol/Fixture.json"))["deployedBytecode"]["object"])')
           cast rpc anvil_setCode "$TARGET" "$CODE"
           lk actor 1 Alice
