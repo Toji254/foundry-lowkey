@@ -468,6 +468,8 @@ class AuditEngineTests(unittest.TestCase):
                     }
                 },
                 "tests": {
+                    "status": "review",
+                    "exit_code": 2,
                     "stdout": "Warning: No tests found in project!",
                     "stderr": "",
                 },
