@@ -36,6 +36,7 @@ DEPENDENCY_CONTAINER_DIRS = {"lib", "libs"}
 
 def _dependency_prefixes(root: Path) -> set[str]:
     prefixes: set[str] = set()
+    submodule_paths: set[str] = set()
     gitmodules = root / ".gitmodules"
     if gitmodules.is_file():
         for line in _safe_read(gitmodules).splitlines():
@@ -43,7 +44,9 @@ def _dependency_prefixes(root: Path) -> set[str]:
             if match:
                 value = match.group(1).strip().replace("\\", "/").strip("./")
                 if value:
-                    prefixes.add(value)
+                    normalized = value.rstrip("/")
+                    prefixes.add(normalized)
+                    submodule_paths.add(normalized)
     remappings = root / "remappings.txt"
     if remappings.is_file():
         for line in _safe_read(remappings).splitlines():
@@ -52,10 +55,24 @@ def _dependency_prefixes(root: Path) -> set[str]:
                 continue
             _prefix, destination = (part.strip() for part in value.split("=", 1))
             destination = destination.replace("\\", "/").strip("./")
-            if destination:
-                prefixes.add(destination.rstrip("/"))
+            if not destination:
+                continue
+            normalized = destination.rstrip("/")
+            if not normalized:
+                continue
+            first = normalized.split("/", 1)[0]
+            # A remapping destination is only dependency evidence when it
+            # resolves into a real dependency location. Projects frequently map
+            # an import prefix onto their own source tree (for example
+            # "@protocol/=contracts/"); pruning that directory would hide
+            # first-party source and make the whole project look unsupported.
+            is_submodule = any(
+                normalized == submodule or normalized.startswith(submodule + "/")
+                for submodule in submodule_paths
+            )
+            if first in DEPENDENCY_CONTAINER_DIRS or first in IGNORED_DIRS or is_submodule:
+                prefixes.add(normalized)
     return prefixes
-
 def _is_dependency_path(path: Path, root: Path, prefixes: set[str] | None = None) -> bool:
     try:
         relative = path.resolve().relative_to(root.resolve()).as_posix().strip("./")

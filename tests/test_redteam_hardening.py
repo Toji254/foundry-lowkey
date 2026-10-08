@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -101,6 +103,111 @@ Error: solar reported 1 error; see the diagnostics printed above
             self.assertEqual(forge_tools._forge_timeout([]), 7200)
         self.assertIsNone(lk._bounded_forge_timeout(["--watch"]))
         self.assertIsNone(forge_tools._forge_timeout(["--watch"]))
+
+    def test_actor_reset_mode_1_clears_active_actor_but_keeps_profile(self):
+        config = lk.fresh_config()
+        config["actor"] = "Alice"
+        config["wallets"]["Alice"] = {
+            "source": "anvil-default",
+            "anvil_index": 1,
+            "address": "0x1111111111111111111111111111111111111111",
+        }
+        config["labels"]["0x1111111111111111111111111111111111111111"] = "Alice"
+
+        with patch.object(lk, "save_config"):
+            code = lk.dispatch_command("actor", ["reset", "1"], config)
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(config["actor"])
+        self.assertIn("Alice", config["wallets"])
+        self.assertIn(
+            "0x1111111111111111111111111111111111111111",
+            config["labels"],
+        )
+
+    def test_actor_reset_mode_2_clears_active_actor_and_profiles(self):
+        config = lk.fresh_config()
+        config["actor"] = "Alice"
+        config["wallets"]["Alice"] = {
+            "source": "anvil-default",
+            "anvil_index": 1,
+            "address": "0x1111111111111111111111111111111111111111",
+        }
+        config["wallets"]["lab-deployer"] = {
+            "source": "anvil-default",
+            "anvil_index": 0,
+            "address": "0x2222222222222222222222222222222222222222",
+            "internal": True,
+        }
+        config["labels"]["0x1111111111111111111111111111111111111111"] = "Alice"
+
+        with patch.object(lk, "save_config"):
+            code = lk.dispatch_command("actor", ["reset", "2"], config)
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(config["actor"])
+        self.assertNotIn("Alice", config["wallets"])
+        self.assertNotIn(
+            "0x1111111111111111111111111111111111111111",
+            config["labels"],
+        )
+        self.assertIn("lab-deployer", config["wallets"])
+
+    def test_actor_list_does_not_replace_actor_identity_with_contract_identity(self):
+        config = lk.fresh_config()
+        config["actor"] = "lab-deployer"
+        config["wallets"]["lab-deployer"] = {
+            "source": "anvil-default",
+            "anvil_index": 0,
+            "address": "0x2222222222222222222222222222222222222222",
+            "internal": True,
+        }
+
+        with patch.object(
+            lk,
+            "anvil_rpc_info",
+            return_value={
+                "url": "http://127.0.0.1:8545",
+                "accounts": [
+                    "0x2222222222222222222222222222222222222222"
+                ],
+            },
+        ), patch.object(lk, "_contract_identity", return_value={
+            "address": "0x2222222222222222222222222222222222222222",
+            "contract": True,
+            "name": "LOKI",
+            "symbol": "LK",
+            "kind": "token",
+        }), patch.object(lk, "save_config"):
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = lk.dispatch_command("actors", [], config)
+
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("lab-deployer", rendered)
+        self.assertIn("Contract   : LOKI (LK)", rendered)
+
+    def test_scan_rejects_unknown_flag_instead_of_treating_it_as_a_path(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = lk.run_scan(["--json"])
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown lk scan option", err.getvalue())
+
+    def test_use_unknown_target_exits_nonzero(self):
+        config = lk.fresh_config()
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(lk, "activate_project_target"), \
+                 patch.object(lk, "save_config"), \
+                 patch.object(lk, "resolve_target_ref", return_value=None), \
+                 patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path(tmp)), \
+                 contextlib.redirect_stderr(err):
+                code = lk.dispatch_command("use", ["definitely-not-a-target"], config)
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown target for project", err.getvalue())
 
     def test_unknown_command_is_rejected_before_cast(self):
         with patch.object(lk, "run_cast", side_effect=AssertionError("cast fallback reached")):
