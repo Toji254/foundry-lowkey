@@ -12691,7 +12691,7 @@ COMMAND_HELP = {
             "evidence": _help_entry("Show the current question's evidence and its trust level.", "lk q evidence", "lk q evidence", "Use it to separate direct observations from source facts, derived interpretations, and weak heuristics."),
             "path": _help_entry("Show the question thread recorded so far.", "lk q path", "lk q path", "Use it to see how your investigation has narrowed."),
             "done": _help_entry("Mark the current question answered and move the frontier.", "lk q done", "lk q done", "Use it only after you can explain the answer with evidence; simply running a TRY command is not enough."),
-            "note": _help_entry("Record your answer and supporting evidence for the current question, then move the frontier.", "lk q note \"...\"", "lk q note \"onlyOwner gates withdraw() and no alternate path bypasses it\"", "Use it when you have actually answered the question and want the reasoning saved."),
+            "note": _help_entry("Record your answer and supporting evidence for the current question, then move the frontier.", "lk q note \"...\"", "lk q note \"setValue() requires the right caller and no alternate path bypasses that check\"", "Use it when you have actually answered the question and want the reasoning saved."),
             "skip": _help_entry("Record that you are not pursuing the current question right now.", "lk q skip \"...\"", "lk q skip \"defer until the state review\"", "Use it for an intentional deferral; use na when the entire branch genuinely does not apply."),
             "na": _help_entry("Record that the current question genuinely does not apply to this project.", "lk q na \"...\"", "lk q na \"this project has no web/API layer\"", "Use it only when project evidence shows the whole branch is irrelevant."),
             "source": _help_entry("Show the research sources attached to a question.", "lk q source <QUESTION_ID>", "lk q source ARCH-001", "Use it to inspect the provenance behind a question."),
@@ -12805,7 +12805,7 @@ COMMAND_HELP = {
 
         children={
             "list": _help_entry("List remembered targets.", "lk target list", "lk target list", "Use it before switching when several targets exist."),
-            "auto": _help_entry("Reconnect to a usable current-project deployment.", "lk target auto [name]", "lk target auto Vault", "Use it after local deployment when you do not want to copy an address by hand."),
+            "auto": _help_entry("Reconnect to a usable current-project deployment.", "lk target auto [name]", "lk target auto MyContract", "Use it after local deployment when you do not want to copy an address by hand."),
             "reset": _help_entry("Clear the current project target.", "lk target reset", "lk target reset", "Use it after a reset or when stale target state is getting in the way."),
         },
         related=["lk deployments", "lk status", "lk lab"],
@@ -12981,7 +12981,7 @@ COMMAND_HELP = {
     ),
     "actors": _help_entry("List available local Anvil accounts.", "lk actors", "lk actors", "Use it when you need to know which local addresses are available.", related=["lk actor", "lk impersonate"]),
     "impersonate": _help_entry("Impersonate an address on local Anvil/a fork.", "lk impersonate <address> [name]", "lk impersonate 0x... Whale", "Use it when the account you care about already exists on a local fork.", related=["lk fork", "lk actor"]),
-    "as": _help_entry("Run one command as another configured actor, then restore your previous actor.", "lk as <actor> <command> [args...]", "lk as Bob send approve 0x... 1000", "Use it when one investigation needs several protocol roles.", related=["lk actor", "lk wallet"]),
+    "as": _help_entry("Run one command as another configured actor, then restore your previous actor.", "lk as <actor> <command> [args...]", "lk as Bob send setValue 10", "Use it when one investigation needs several protocol roles.", related=["lk actor", "lk wallet"]),
     "abi": _help_entry(
         "Show or set the ABI Lowkey should use for the current target.",
         "lk abi | lk abi auto | lk abi <file>",
@@ -13001,7 +13001,7 @@ COMMAND_HELP = {
         "lk read getValue",
         "Use it for getters and state observation. It does not intentionally change contract data.",
         forms=[
-            ("lk read <function>", "Read a getter with no arguments.", "lk read totalSupply"),
+            ("lk read <function>", "Read a getter with no arguments.", "lk read getValue"),
             ("lk read <function> <args...>", "Pass the real values the getter expects. Lowkey uses the ABI to interpret their types.", "lk read getValue"),
             ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x1111111111111111111111111111111111111111 getValue"),
         ],
@@ -13021,12 +13021,12 @@ COMMAND_HELP = {
             ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send setValue 10"),
             ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send setValue 10 --value 1ether"),
             ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send setValue 10 --actor Alice"),
-            ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send setValue 10 --as attacker"),
+            ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send setValue 10 --as Alice"),
         ],
         options=[
             ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send setValue 10 --value 1ether"),
             ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send setValue 10 --actor Alice"),
-            ("--as <name>", "Another spelling of --actor.", "lk send setValue 10 --as attacker"),
+            ("--as <name>", "Another spelling of --actor.", "lk send setValue 10 --as Alice"),
             ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send setValue 10 --preview"),
             ("--dry-run", "Another spelling of --preview.", "lk send setValue 10 --dry-run"),
             ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send setValue 10 --confirm"),
@@ -13061,7 +13061,7 @@ COMMAND_HELP = {
     "fn": _help_entry(
         "Short spelling of the function inventory/search command.",
         "lk fn [query] [-v] [-V visibility] [-m mutability] [-c class] [-r]",
-        "lk fn -v withdraw",
+        "lk fn -v setValue",
         "Use it for the same function inventory when you want the compact command.",
         related=["lk functions", "lk ask"]
     ),
@@ -13081,7 +13081,7 @@ COMMAND_HELP = {
             ("call", "Read the function without changing contract data.", "lk wizard getValue call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard setValue 10 send"),
             ("encode", "Build the data for the function call without sending it.", "lk wizard setValue 10 encode"),
-            ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard deposit"),
+            ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard setValue"),
             ("TARGET", "A target must already be selected before wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
             ("ACTOR", "Transactions use the current actor. For example, select Anvil account 0 as Alice with lk actor 0 Alice.", "lk actor 0 Alice"),
             ("ATTACH ETH", "Wizard does not have an ETH-value flag. To send ETH with a function call, use lk send --value or for a local test use lk probe --value.", "lk send setValue 10 --value 1ether"),
@@ -13112,12 +13112,12 @@ COMMAND_HELP = {
         forms=[
             ("lk changes '<function(types...)>' <values...>", "Run the call without attaching ETH unless you add a value option.", "lk changes 'setValue(uint256)' 10"),
             ("lk changes '<function(types...)>' <values...> --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes 'setValue(uint256)' 10 --value 1ether"),
-            ("lk changes '<function(types...)>' <values...> --actor <name>", "Run the call as a named local actor.", "lk changes 'setValue(uint256)' 10 --actor attacker"),
+            ("lk changes '<function(types...)>' <values...> --actor <name>", "Run the call as a named local actor.", "lk changes 'setValue(uint256)' 10 --actor Alice"),
             ("lk changes '<function(types...)>' <values...> --repeat <N>", "Repeat the exact call N times inside one transaction. Useful for testing same-transaction identifier collisions.", "lk changes 'setValue(uint256)' 10 --repeat 3"),
         ],
         options=[
-            ("--actor <name>", "Choose which named local actor makes the call.", "lk changes 'setValue(uint256)' 10 --actor attacker"),
-            ("--as <name>", "Another spelling of --actor.", "lk changes 'setValue(uint256)' 10 --as attacker"),
+            ("--actor <name>", "Choose which named local actor makes the call.", "lk changes 'setValue(uint256)' 10 --actor Alice"),
+            ("--as <name>", "Another spelling of --actor.", "lk changes 'setValue(uint256)' 10 --as Alice"),
             ("--value <amount>", "Attach ETH to the call. Example: --value 1ether makes msg.value equal 1 ETH.", "lk changes 'setValue(uint256)' 10 --value 1ether"),
             ("--eth <amount>", "Another spelling of --value.", "lk changes 'setValue(uint256)' 10 --eth 1ether"),
             ("--repeat <N>", "Repeat the exact call N times inside one transaction (maximum 100).", "lk changes 'setValue(uint256)' 10 --repeat 3"),
@@ -13206,10 +13206,10 @@ COMMAND_HELP = {
         forms=[
             ("lk trace", "Show the trace for the last transaction Lowkey remembers.", "lk trace"),
             ("lk trace <tx>", "Show the trace for a specific transaction.", "lk trace 0x871f..."),
-            ("lk trace <tx> --grep <text>", "Show only trace lines containing the text you give.", "lk trace 0x871f... --grep withdraw"),
+            ("lk trace <tx> --grep <text>", "Show only trace lines containing the text you give.", "lk trace 0x871f... --grep setValue"),
         ],
         options=[
-            ("--grep <text>", "Show only trace lines that contain this text. This helps when a long trace has one part you care about.", "lk trace --grep withdraw"),
+            ("--grep <text>", "Show only trace lines that contain this text. This helps when a long trace has one part you care about.", "lk trace --grep setValue"),
             ("--quick", "Ask Cast for a shorter trace when you do not need every detail.", "lk trace --quick"),
             ("--decode-internal", "Ask Cast to decode more of the data used by calls inside the transaction.", "lk trace --decode-internal"),
             ("--trace-printer <value>", "Pass a trace display setting to Cast. Run 'cast run --help' to see the exact value choices.", "lk trace --trace-printer <value>"),
@@ -13232,7 +13232,7 @@ COMMAND_HELP = {
     ),
     "label": _help_entry("Give an address a readable label in Lowkey output.", "lk label <address> <name>", "lk label 0x... Treasury", "Use it when traces and balances are easier to read with protocol role names.", related=["lk actor", "lk walkthrough"]),
     "encode": _help_entry("Build ABI calldata for a function and its values.", "lk encode <function> [args...]", "lk encode transfer 0x... 1000", "Use it for calldata debugging or low-level calls.", related=["lk decode", "lk sig", "lk calldata"]),
-    "decode": _help_entry("Decode return data using the current target ABI.", "lk decode <function> <return-data>", "lk decode balanceOf 0x...", "Use it when a low-level call returned encoded bytes.", related=["lk encode", "lk decode-error"]),
+    "decode": _help_entry("Decode return data using the current target ABI.", "lk decode <function> <return-data>", "lk decode getValue 0x...", "Use it when a low-level call returned encoded bytes.", related=["lk encode", "lk decode-error"]),
     "4byte-calldata": _help_entry(
         "Look up possible function signatures for calldata/selector data.",
         "lk 4byte-calldata <selector> [args...]",
@@ -13249,33 +13249,33 @@ COMMAND_HELP = {
     ),
     "decode-error": _help_entry("Decode a Solidity custom-error payload.", "lk decode-error <data>", "lk decode-error 0x...", "Use it when a revert payload is hex and you want the actual error and arguments.", related=["lk trace", "lk decode"]),
     "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
-    "poc": _help_entry("Generate an evidence-backed PoC scaffold.", "lk poc [--finding N] [--name NAME]", "lk poc --finding 2 --name withdraw-bypass", "Use it when a finding is concrete enough to deserve a reproducible proof scaffold.", related=["lk finding", "lk export"]),
+    "poc": _help_entry("Generate an evidence-backed PoC scaffold.", "lk poc [--finding N] [--name NAME]", "lk poc --finding 2 --name setValue-bypass", "Use it when a finding is concrete enough to deserve a reproducible proof scaffold.", related=["lk finding", "lk export"]),
     "generate": _help_entry(
         "Create reusable Forge tests, PoC scaffolds, or deployment scripts.",
         "lk generate <test|poc|deployment> ...",
-        "lk generate test 'withdraw(address,uint256)' 0x... 1000",
+        "lk generate test 'setValue(uint256)' 10",
         "Use it after observing behavior you want to turn into repeatable evidence.",
         forms=[
-            ("lk generate test ...", "Create a reusable Forge test from observed behavior.", "lk generate test 'withdraw(address,uint256)' 0x... 1000"),
-            ("lk generate poc ...", "Create a PoC scaffold connected to current evidence.", "lk generate poc withdraw"),
-            ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment Vault"),
+            ("lk generate test ...", "Create a reusable Forge test from observed behavior.", "lk generate test 'setValue(uint256)' 10"),
+            ("lk generate poc ...", "Create a PoC scaffold connected to current evidence.", "lk generate poc setValue"),
+            ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment MyContract"),
         ],
 
         children={
-            "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<name(parameter TYPES...)>' <VALUES...>", "lk generate test 'withdraw(address,uint256)' 0x... 1000", "Use it to turn an observed transition into regression evidence."),
-            "poc": _help_entry("Generate a PoC scaffold connected to current evidence.", "lk generate poc <function>", "lk generate poc withdraw", "Use it as a starting point for exploit reproduction."),
-            "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment Vault", "Use it when you need a repeatable local deployment entry point."),
+            "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<name(parameter TYPES...)>' <VALUES...>", "lk generate test 'setValue(uint256)' 10", "Use it to turn an observed transition into regression evidence."),
+            "poc": _help_entry("Generate a PoC scaffold connected to current evidence.", "lk generate poc <function>", "lk generate poc setValue", "Use it as a starting point for exploit reproduction."),
+            "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment MyContract", "Use it when you need a repeatable local deployment entry point."),
         },
         related=["lk matrix", "lk poc"],
     ),
     "finding": _help_entry(
         "Record a manual audit observation in the project-scoped findings ledger.",
         "lk finding <note> | lk finding add <severity> <title> <description>",
-        "lk finding add medium withdraw lacks caller restriction",
+        "lk finding add medium setValue lacks caller restriction",
         "Use it while manually reviewing source or reproducing behavior you want to track.",
         forms=[
-            ("lk finding <note>", "Save a quick free-form observation.", "lk finding withdraw path lacks authorization"),
-            ("lk finding add <severity> <title> <description>", "Save a structured finding with severity and description.", "lk finding add medium withdraw lacks caller restriction"),
+            ("lk finding <note>", "Save a quick free-form observation.", "lk finding setValue path lacks authorization"),
+            ("lk finding add <severity> <title> <description>", "Save a structured finding with severity and description.", "lk finding add medium setValue lacks caller restriction"),
         ],
 
         children={
@@ -13340,13 +13340,13 @@ COMMAND_HELP = {
     "matrix": _help_entry(
         "Build an attacker/state matrix and turn scenarios into Forge tests.",
         "lk matrix init | actor | state | add | list | test",
-        "lk matrix add badRelease withdraw Attacker revert",
+        "lk matrix add badAccess setValue Alice revert",
         "Use it when the same security question needs testing across several callers or states.",
         forms=[
             ("lk matrix init", "Create matrix files before adding scenarios.", "lk matrix init"),
             ("lk matrix actor <name> <address>", "Add a named actor/address to the scenario matrix.", "lk matrix actor Attacker 0x..."),
             ("lk matrix state <name> <description>", "Define a scenario precondition.", "lk matrix state funded vault holds 1 ETH"),
-            ("lk matrix add <name> <function> <actor> <expected>", "Record one testable security scenario.", "lk matrix add badRelease withdraw Attacker revert"),
+            ("lk matrix add <name> <function> <actor> <expected>", "Record one testable security scenario.", "lk matrix add badAccess setValue Alice revert"),
             ("lk matrix list", "List saved scenarios.", "lk matrix list"),
             ("lk matrix test <name>", "Generate/run a Forge test for one scenario.", "lk matrix test badRelease"),
         ],
@@ -13355,7 +13355,7 @@ COMMAND_HELP = {
             "init": _help_entry("Create matrix files.", "lk matrix init", "lk matrix init", "Use it before adding scenarios."),
             "actor": _help_entry("Add a named actor/address.", "lk matrix actor <name> <address>", "lk matrix actor Attacker 0x...", "Use it when a scenario needs a specific caller."),
             "state": _help_entry("Define a named state condition.", "lk matrix state <name> <description>", "lk matrix state funded vault holds 1 ETH", "Use it to document a scenario precondition."),
-            "add": _help_entry("Add a testable scenario.", "lk matrix add <name> <function> <actor> <expected>", "lk matrix add badRelease withdraw Attacker revert", "Use it to capture a security hypothesis before generating a test."),
+            "add": _help_entry("Add a testable scenario.", "lk matrix add <name> <function> <actor> <expected>", "lk matrix add badAccess setValue Alice revert", "Use it to capture a security hypothesis before generating a test."),
             "list": _help_entry("List saved scenarios.", "lk matrix list", "lk matrix list", "Use it to review queued reproductions."),
             "test": _help_entry("Generate/run a Forge test for one scenario.", "lk matrix test <name>", "lk matrix test badRelease", "Use it when you are ready to turn the scenario into executable evidence."),
         },
@@ -13430,11 +13430,11 @@ COMMAND_HELP = {
     ),    "invariant": _help_entry(
         "Run tests that check a rule should stay true after many different contract actions.",
         "lk invariant [new <Contract>] [options]",
-        "lk invariant new Vault",
+        "lk invariant new MyContract",
         "Use it when you can describe something that must always remain true, even after many state changes.",
         forms=[
             ("lk invariant", "Run tests whose names start with invariant_.", "lk invariant"),
-            ("lk invariant new <Contract>", "Create a small starting test for an invariant. You must edit it and add the rule you actually care about.", "lk invariant new Vault"),
+            ("lk invariant new <Contract>", "Create a small starting test for an invariant. You must edit it and add the rule you actually care about.", "lk invariant new MyContract"),
         ],
         options=[
             ("--match-test <pattern>", "Run only invariant tests whose test name matches the pattern you give.", "lk invariant --match-test invariant_.*"),
@@ -13516,7 +13516,7 @@ COMMAND_HELP = {
     "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
     "script": _help_entry("Run a native Forge script.", "lk script <args...>", "lk script script/LocalDeploy.s.sol --sig run()", "Use it when the project already has a useful setup/deployment script.", related=["lk lab", "lk forge"]),
-    "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect Vault storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
+    "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect MyContract storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
     "coverage": _help_entry("Run Forge coverage reporting.", "lk coverage <args...>", "lk coverage", "Use it to see which code paths your tests actually execute.", related=["lk test", "lk audit run"]),
     "lint": _help_entry("Run Forge lint tooling when supported.", "lk lint", "lk lint", "Use it for quick static/code-quality checks.", related=["lk geiger", "lk doctor"]),
     "geiger": _help_entry("Run Geiger-style scanning when available.", "lk geiger", "lk geiger", "Use it as an extra dependency/security signal.", related=["lk lint", "lk audit"]),
@@ -13524,7 +13524,7 @@ COMMAND_HELP = {
     "create": _help_entry("Create a new Foundry component.", "lk create", "lk create", "Use it while bootstrapping contracts, libraries, or tests."),
     "batch": _help_entry("Run one Lowkey command per line from a file.", "lk batch <command-file>", "lk batch audit-steps.lk", "Use it for repeatable local investigation sequences.", related=["lk audit"]),
     "raw": _help_entry("Run a raw Cast command when Lowkey has no friendlier wrapper.", "lk raw <cast-subcommand> [args...]", "lk raw storage 0", "Use it as the advanced EVM inspection escape hatch.", related=["lk encode", "lk tx"]),
-    "gas": _help_entry("Estimate gas for a function call.", "lk gas <function> [args]", "lk gas withdraw", "Use it to see the transaction's estimated gas cost before sending.", related=["lk send", "lk trace"]),
+    "gas": _help_entry("Estimate gas for a function call.", "lk gas <function> [args]", "lk gas setValue 10", "Use it to see the transaction's estimated gas cost before sending.", related=["lk send", "lk trace"]),
     "slither": _help_entry(
         "Run Slither, a Solidity code checker, through Lowkey.",
         "lk slither [options]",
@@ -13558,8 +13558,8 @@ COMMAND_HELP = {
     "detect-project": _help_entry("Alias for project/toolchain detection.", "lk detect-project", "lk detect-project", "Use it as an explicit project-detection command.", related=["lk detect", "lk project"]),
     "storage": _help_entry("Use raw storage inspection through Cast.", "lk storage ...", "lk raw storage 0", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping"]),
     "slots": _help_entry("Alias-style low-level storage inspection.", "lk slots ...", "lk raw storage 0", "Use it for direct slot inspection.", related=["lk layout", "lk mapping"]),
-    "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c balanceOf 0x...", "Use it when you want the compact read form.", related=["lk read"]),
-    "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s withdraw --preview", "Use it when you want the compact send form.", related=["lk send"]),
+    "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c getValue 0x...", "Use it when you want the compact read form.", related=["lk read"]),
+    "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s setValue 10 --preview", "Use it when you want the compact send form.", related=["lk send"]),
     "st": _help_entry("Short low-level/state helper alias.", "lk st ...", "lk st storage 0", "Use it when you want the compact forensic form.", related=["lk raw", "lk state-diff"]),
 }
 
