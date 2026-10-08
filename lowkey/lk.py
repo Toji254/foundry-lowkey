@@ -782,6 +782,20 @@ def target_aliases(config, root=None):
         owners_by_address[str(address).lower()] = owner_root
 
     names = list(config.get("aliases", {}).items()) + list(config.get("targets", {}).items())
+
+    # The selected target may exist only in project-scoped audit context rather
+    # than config aliases. Expose that canonical contract name as an identity.
+    context_target = project_context_target(project_root)
+    if isinstance(context_target, dict):
+        context_name = str(
+            context_target.get("contract")
+            or config.get("target_contract")
+            or ""
+        ).strip()
+        context_address = context_target.get("address")
+        if context_name and is_address(context_address):
+            names.append((context_name, context_address))
+
     for name, addr in names:
         if not is_address(addr):
             continue
