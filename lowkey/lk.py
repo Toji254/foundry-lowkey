@@ -14656,10 +14656,23 @@ def dispatch_command(cmd,args,config,from_batch=False):
         current=active_project_target(config,root)
         if not args:
             project=project_context_target(root)
-            if project:
-                print(f"Current project target: {project.get('contract') or 'unknown'} -> {apply_labels(project.get('address'), config)}")
-            else:
-                print(f"Current project target: {apply_labels(current, config) if current else 'none'}")
+            display_address = project.get("address") if project else current
+            display_name = project.get("contract") if project else config.get("target_contract")
+            print(
+                f"Current project target: {display_name or 'unknown'} -> "
+                f"{apply_labels(display_address, config) if display_address else 'none'}"
+            )
+            if display_address:
+                state = _live_target_state(config, display_address, project.get("artifact") if project else None)
+                if state.get("status") == "DEPLOYED" and state.get("verification") != "CODE MISMATCH":
+                    print(f"Deployment: LIVE ({state.get('verification', 'unverified').lower()}; {state.get('code_size', 0)} bytes)")
+                elif state.get("status") == "NOT_DEPLOYED":
+                    print("Deployment: NOT DEPLOYED")
+                    print("WARNING   : this address is remembered/configured, but the current RPC reports no contract bytecode.")
+                    print("Fix       : lk lab | lk target auto | lk recon | lk target reset")
+                elif state.get("status") in {"RPC_UNAVAILABLE", "NO_RPC"}:
+                    print("Deployment: UNVERIFIED")
+                    print("WARNING   : Lowkey cannot prove that contract bytecode exists on the current RPC.")
             return
         if args[0]=="reset":
             config["target"]=None
