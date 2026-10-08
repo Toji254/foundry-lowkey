@@ -269,10 +269,10 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("full quoted signature", output)
 
     def test_function_placeholders_are_consistent_across_changes_workflows(self):
-        for command, args in ((
+        for command, args in (
             ("state-diff", ("--h",)),
             ("generate", ("test", "--h")),
-        ),):
+        ):
             with self.subTest(command=command):
                 code, output = self.capture_dispatch(command, *args)
                 self.assertEqual(code, 0)
