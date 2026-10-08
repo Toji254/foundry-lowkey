@@ -137,6 +137,56 @@ def artifact_files(root: Path) -> list[Path]:
     return [p for p in out.rglob("*.json") if "build-info" not in p.parts and p.name != "solc-input.json"]
 
 
+def _configured_foundry_source_roots(root: Path) -> list[Path]:
+    roots: list[Path] = []
+    foundry = root / "foundry.toml"
+    if foundry.is_file():
+        try:
+            foundry_text = foundry.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            foundry_text = ""
+        match = re.search(r"(?m)^\s*src\s*=\s*['\"]([^'\"]+)['\"]", foundry_text)
+        if match:
+            roots.append(root / match.group(1).strip())
+    roots.append(root / "src")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for source_root in roots:
+        key = str(source_root)
+        if key not in seen:
+            seen.add(key)
+            unique.append(source_root)
+    return unique
+
+
+def _artifact_source_path(root: Path, artifact: Path) -> Path | None:
+    try:
+        relative = artifact.relative_to(root / "out")
+        parts = list(relative.parts)[:-1]
+        if not parts:
+            return None
+    except ValueError:
+        return None
+
+    for source_root in _configured_foundry_source_roots(root):
+        try:
+            source_root_parts = list(source_root.relative_to(root).parts)
+        except ValueError:
+            source_root_parts = []
+
+        candidate_parts = parts
+        if source_root_parts and candidate_parts[:len(source_root_parts)] == source_root_parts:
+            candidate_parts = candidate_parts[len(source_root_parts):]
+        if not candidate_parts:
+            continue
+
+        source = source_root / Path(*candidate_parts)
+        if source.exists():
+            return source
+    return None
+
+
 def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, dict[str, Any]] | None:
     matches = []
     for path in artifact_files(root):
@@ -151,26 +201,7 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
         return None
 
     def source_for_artifact(path: Path) -> Path | None:
-        try:
-            relative = path.relative_to(root / "out")
-            parts = list(relative.parts)[:-1]
-            if not parts:
-                return None
-            source_roots = []
-            foundry = root / "foundry.toml"
-            if foundry.is_file():
-                text = foundry.read_text(encoding="utf-8", errors="replace")
-                match = re.search(r"(?m)^\s*src\s*=\s*['\"]([^'\"]+)['\"]", text)
-                if match:
-                    source_roots.append(root / match.group(1).strip())
-            source_roots.append(root / "src")
-            for source_root in source_roots:
-                source = source_root / Path(*parts)
-                if source.exists():
-                    return source
-            return None
-        except (ValueError, OSError):
-            return None
+        return _artifact_source_path(root, path)
 
     if contract_name:
         # Prefer an exact source filename match using the project's configured
@@ -267,20 +298,14 @@ def find_artifact(root: Path, contract_name: str | None = None) -> tuple[Path, d
 
 def _source_import(root: Path, artifact: Path, contract: str) -> str:
     # Foundry artifacts normally live under out/<source-path>/<Contract>.sol/Contract.json.
-    try:
-        relative = artifact.relative_to(root / "out")
-        parts = list(relative.parts)[:-1]
-        if parts:
-            candidate = root / "src" / Path(*parts)
-            if candidate.exists():
-                return "../" + candidate.relative_to(root).as_posix()
-    except ValueError:
-        pass
+    source = _artifact_source_path(root, artifact)
+    if source:
+        return "../" + source.relative_to(root).as_posix()
 
-    src = root / "src"
-    if src.is_dir():
-        for candidate in src.rglob(f"{contract}.sol"):
-            return "../" + candidate.relative_to(root).as_posix()
+    for source_root in _configured_foundry_source_roots(root):
+        if source_root.is_dir():
+            for candidate in source_root.rglob(f"{contract}.sol"):
+                return "../" + candidate.relative_to(root).as_posix()
     return f"../src/{contract}.sol"
 
 
