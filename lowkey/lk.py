@@ -7550,6 +7550,10 @@ def split_lab_options(args):
             if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
                 value=f"{value} {raw[index]}"
                 index+=1
+            elif token == "--eth":
+                # --eth is the human-friendly ETH form: a unitless number is ETH,
+                # while an explicit wei/gwei/ether suffix remains unchanged.
+                value=f"{value} ether"
             continue
         if token=="--keep":
             keep=True
