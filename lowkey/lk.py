@@ -3596,7 +3596,19 @@ def run_cast(args,config,capture=False):
             return result.code
 
     if cast_cmd in {"call","send","storage"}:
-        if remaining and is_address(remaining[0]): target=remaining.pop(0)
+        if remaining and is_address(remaining[0]):
+            target=remaining.pop(0)
+        elif len(remaining) >= 2:
+            # The documented explicit-target form is: lk read <target> <function> [args].
+            # Resolve a named/numbered project target before resolving the function.
+            try:
+                root=audit_context.foundry_project_root()
+                named_target=resolve_target_ref(config, remaining[0], root=root)
+            except Exception:
+                named_target=None
+            if named_target:
+                target=named_target
+                remaining.pop(0)
         if not target:
             result=CommandResult("Error: no target set. Use lk target <address> or pass one explicitly.",2)
             record_status(result.code)
