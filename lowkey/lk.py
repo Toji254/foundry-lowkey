@@ -5022,6 +5022,156 @@ def _live_target_artifact_match(config, address, artifact):
     return None
 
 
+
+def _attached_value_argument(args):
+    """Return True when a Cast argument list explicitly attaches ETH value."""
+    for index, token in (enumerate(args or [])):
+        text = str(token or "").strip().lower()
+        if text in {"--value", "--eth"} and index + 1 < len(args or []):
+            return True
+        if text.startswith("--value=") or text.startswith("--eth="):
+            return True
+    return False
+
+
+def _live_target_state(config, address=None, artifact=None):
+    """Return authoritative runtime state for a configured EVM target."""
+    address = address or config.get("target")
+    state = {
+        "status": "INVALID_TARGET",
+        "address": address,
+        "rpc": None,
+        "chain_id": None,
+        "block_number": None,
+        "code_size": 0,
+        "verification": "UNVERIFIED",
+    }
+    if not is_address(address):
+        return state
+
+    rpc = effective_rpc(config)
+    state["rpc"] = rpc
+    if not rpc:
+        state["status"] = "NO_RPC"
+        return state
+
+    code = rpc_json(rpc, "eth_getCode", [address, "latest"])
+    if code is None:
+        state["status"] = "RPC_UNAVAILABLE"
+        return state
+
+    runtime = str(code or "").strip()
+    if runtime.lower() in {"", "0x", "0x0"}:
+        state["status"] = "NOT_DEPLOYED"
+    else:
+        state["status"] = "DEPLOYED"
+        if runtime.lower().startswith("0x"):
+            state["code_size"] = max(0, (len(runtime) - 2) // 2)
+
+    chain_id = rpc_json(rpc, "eth_chainId", [])
+    if chain_id is not None:
+        try:
+            state["chain_id"] = str(int(str(chain_id), 16))
+        except (TypeError, ValueError):
+            state["chain_id"] = str(chain_id)
+
+    block_number = rpc_json(rpc, "eth_blockNumber", [])
+    if block_number is not None:
+        try:
+            state["block_number"] = str(int(str(block_number), 16))
+        except (TypeError, ValueError):
+            state["block_number"] = str(block_number)
+
+    if state["status"] == "DEPLOYED":
+        artifact_path = artifact
+        if not artifact_path:
+            try:
+                artifact_path = resolve_abi_path(config, address)
+            except Exception:
+                artifact_path = None
+        artifact_data = read_artifact(artifact_path) if artifact_path else None
+        if isinstance(artifact_data, dict):
+            try:
+                match = _live_target_artifact_match(config, address, artifact_data)
+            except Exception:
+                match = None
+            if match == "runtime":
+                state["verification"] = "MATCHED"
+            elif match == "clone-or-proxy":
+                state["verification"] = "PROXY/CLONE MATCHED"
+            else:
+                state["verification"] = "CODE MISMATCH"
+    return state
+
+
+def _target_health_block(config, target, function=None, cast_cmd="call", args=None, *, capture=False):
+    """Fail closed when a contract operation targets an address without verified code."""
+    if cast_cmd not in {"call", "send", "storage"} or not is_address(target):
+        return None
+
+    args = list(args or [])
+    state = _live_target_state(config, target)
+    configured_target = str(config.get("target") or "").lower() == str(target).lower()
+    function_requested = bool(function)
+    value_attached = _attached_value_argument(args)
+
+    healthy = (
+        state.get("status") == "DEPLOYED"
+        and state.get("verification") != "CODE MISMATCH"
+    )
+    if healthy:
+        return None
+
+    if state.get("status") == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
+        should_block = function_requested or cast_cmd == "storage"
+    else:
+        should_block = function_requested or cast_cmd == "storage" or (
+            cast_cmd == "send" and configured_target
+        )
+    if not should_block:
+        return None
+
+    status = str(state.get("status") or "UNVERIFIED")
+    reason = {
+        "NOT_DEPLOYED": "the current RPC reports no contract bytecode at this address",
+        "RPC_UNAVAILABLE": "the current RPC could not prove that bytecode exists",
+        "NO_RPC": "no RPC is available to verify the target",
+    }.get(status)
+    if not reason and status == "DEPLOYED" and state.get("verification") == "CODE MISMATCH":
+        reason = "live bytecode exists, but it does not match the selected project artifact"
+    reason = reason or "the target is not verified as a usable deployed contract"
+    action = "transaction" if cast_cmd == "send" else "contract call"
+
+    lines = [
+        "LOWKEY TARGET SAFETY CHECK",
+        "==========================",
+        f"Target : {apply_labels(target, config)}",
+        f"RPC    : {rpc_display(state.get('rpc')) or 'none'}",
+        f"State  : {status}",
+        f"Reason : {reason}.",
+        f"Action : Lowkey did NOT execute the {action}.",
+    ]
+    if cast_cmd == "send" and value_attached and status == "NOT_DEPLOYED":
+        lines.extend([
+            "",
+            "ETH SAFETY: ETH was attached to this call. Without contract bytecode, it",
+            "would be sent to the address instead of executing Solidity.",
+        ])
+    lines.extend([
+        "",
+        "Recommended fixes:",
+        "  lk lab                         Deploy/refresh a local audit lab",
+        "  lk target auto                 Find a deployment live on this RPC",
+        "  lk recon                       Verify bytecode and target identity",
+        "  lk target reset                Clear the stale remembered target",
+    ])
+    result = CommandResult("\n".join(lines), 2)
+    record_status(result.code)
+    if capture:
+        return result
+    print(str(result), file=sys.stderr)
+    return result.code
+
 def discover_deployments(root="."):
     records=[]
     root_path = Path(root).resolve()
