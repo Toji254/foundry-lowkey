@@ -2721,6 +2721,16 @@ def _known_address_identities(config):
         lowered = str(address).lower()
         identities.setdefault(lowered, (str(label).strip(), str(address)))
 
+    # Project target names are also human identities. Actor/wallet identities
+    # remain higher priority when the same address has both meanings.
+    try:
+        for name, address in target_aliases(config).items():
+            if is_address(address):
+                lowered = str(address).lower()
+                identities.setdefault(lowered, (str(name), str(address)))
+    except Exception:
+        pass
+
     return identities
 
 
