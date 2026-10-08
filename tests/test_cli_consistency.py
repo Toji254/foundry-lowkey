@@ -58,6 +58,31 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
 
+    def test_storage_read_labels_actor_address(self):
+        address = "0x" + "f" * 40
+        config = {
+            "target": "0x" + "3" * 40,
+            "actor": "Alice",
+            "wallets": {"Alice": {"address": address}},
+        }
+        rendered = lk.format_storage_read(
+            config,
+            "1",
+            "0x000000000000000000000000" + "f" * 40,
+        )
+        self.assertIn(f"Value: Alice ({address})", rendered)
+
+    def test_address_labels_include_project_target_names(self):
+        address = "0x" + "4" * 40
+        config = {
+            "target": address,
+            "targets": {"Fallback": address},
+        }
+        self.assertIn(
+            f"Fallback ({address})",
+            lk.apply_labels(address, config),
+        )
+
     def test_storage_read_explains_slot_from_compiled_layout(self):
         raw = "0x000000000000000000000000" + "f39fd6e51aad88f6f4ce6ab8827279cfffb92266"
         types = {
