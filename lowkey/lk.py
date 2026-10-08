@@ -8983,10 +8983,9 @@ def split_grouped_argument_values(values, expected_count, inputs=None):
         if quote or depth != 0:
             return None
         tail=text[start:].strip()
-        if not tail:
-            return None
-        parts.append(tail)
-        return parts
+        if tail:
+            parts.append(tail)
+        return parts if parts else None
 
     expanded=[]
     for index,token in enumerate(raw):
@@ -9031,10 +9030,11 @@ def parse_type_list_token(token):
             parts.append(part)
             start=index+1
     tail=text[start:].strip()
-    if not tail or depth != 0:
+    if depth != 0:
         return None
-    parts.append(tail)
-    return parts
+    if tail:
+        parts.append(tail)
+    return parts if parts else None
 
 
 def resolve_function_with_types(abi, function_name, type_token):
