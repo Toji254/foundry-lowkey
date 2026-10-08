@@ -395,6 +395,14 @@ def run_slither(root: str = ".", args: Sequence[str] | None = None) -> int:
 
     extra = list(args or [])
     raw_path = evidence_dir(root) / "slither.raw.json"
+    # Findings are review evidence, not process failures. Preserve an explicit
+    # caller-selected --fail-* policy, otherwise ask Slither not to fail merely
+    # because it found detectors.
+    if not any(
+        str(item).startswith("--fail-") or str(item) == "--no-fail-pedantic"
+        for item in extra
+    ):
+        extra.append("--fail-none")
     command = ["slither", ".", "--exclude-dependencies", "--disable-color", "--json", str(raw_path), *extra]
     if "--exclude-dependencies" in extra:
         command = ["slither", ".", "--disable-color", "--json", str(raw_path), *extra]
@@ -457,13 +465,102 @@ def rg_available() -> bool:
     return command_path("rg") is not None
 
 
+DEFAULT_RG_EXCLUDES = (
+    ".git/**",
+    ".audit/**",
+    "out/**",
+    "cache/**",
+    "artifacts/**",
+    "build/**",
+    "dist/**",
+    "node_modules/**",
+    "lib/**",
+    "vendor/**",
+    "broadcast/**",
+)
+
+
+def _rg_source_root(root: str) -> str:
+    """Resolve the project's primary source directory for --src/--source."""
+    root_path = Path(root).resolve()
+
+    foundry_path = root_path / "foundry.toml"
+    if foundry_path.is_file():
+        try:
+            foundry_text = foundry_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            foundry_text = ""
+        match = re.search(r"(?m)^\s*src\s*=\s*['\"]([^'\"]+)['\"]", foundry_text)
+        if match:
+            configured = root_path / match.group(1).strip()
+            if configured.is_dir():
+                return str(configured.relative_to(root_path).as_posix() or ".")
+    
+    for candidate in ("src", "contracts", "vyper"):
+        if (root_path / candidate).is_dir():
+            return candidate
+    return "."
+
+
+def _parse_rg_options(extra: Sequence[str] | None, root: str, path: str) -> tuple[str, list[str], bool, str]:
+    """Parse Lowkey-only scope switches while preserving native rg options."""
+    remaining = []
+    include_all = False
+    scope = path
+    scope_label = path
+
+    raw = list(extra or [])
+    index = 0
+    while index < len(raw):
+        token = str(raw[index])
+        if token == "--all":
+            include_all = True
+            index += 1
+            continue
+        if token in {"--src", "--source"}:
+            scope = _rg_source_root(root)
+            scope_label = f"{scope} (source)"
+            index += 1
+            continue
+        if token.startswith("--src=") or token.startswith("--source="):
+            value = token.split("=", 1)[1].strip()
+            if not value:
+                raise ValueError("--src/--source needs a path when using '='")
+            scope = value
+            scope_label = f"{value} (source)"
+            index += 1
+            continue
+        remaining.append(token)
+        index += 1
+
+    if scope != path:
+        scope_path = Path(scope)
+        if scope_path.is_absolute():
+            try:
+                scope = scope_path.resolve().relative_to(Path(root).resolve()).as_posix()
+            except (OSError, ValueError):
+                scope = str(scope_path)
+    
+    return scope, remaining, include_all, scope_label
+
+
 def run_rg(pattern: str, path: str = ".", args: Sequence[str] | None = None, root: str = ".") -> int:
     if not rg_available():
         print("rg: not found on PATH")
         return 127
-    extra = list(args or [])
-    command = ["rg", "--json", "--line-number", *extra, pattern, path]
+
+    try:
+        search_path, extra, include_all, scope_label = _parse_rg_options(args, root, path)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    glob_args = [] if include_all else [
+        item for exclude in DEFAULT_RG_EXCLUDES for item in ("--glob", "!" + exclude)
+    ]
+    command = ["rg", "--json", "--line-number", *glob_args, *extra, pattern, search_path]
     code, stdout, stderr = run_command(command, root, 120)
+
     hits = []
     for line in stdout.splitlines():
         try:
@@ -481,12 +578,22 @@ def run_rg(pattern: str, path: str = ".", args: Sequence[str] | None = None, roo
                 "submatches": data.get("submatches") or [],
             }
         )
+
+    grouped = {}
+    for hit in hits:
+        grouped.setdefault(hit["path"], []).append(hit)
+
     record_evidence(
         "rg",
         {
             "pattern": pattern,
-            "path": path,
+            "path": search_path,
+            "scope": scope_label,
             "args": extra,
+            "all_files": include_all,
+            "excluded_globs": [] if include_all else list(DEFAULT_RG_EXCLUDES),
+            "grouped": True,
+            "file_count": len(grouped),
             "command": " ".join(shlex.quote(x) for x in command),
             "exit_code": code,
             "stderr": stderr,
@@ -494,9 +601,29 @@ def run_rg(pattern: str, path: str = ".", args: Sequence[str] | None = None, roo
         },
         root,
     )
-    for hit in hits:
-        print(f"{hit['path']}:{hit['line']}: {hit['text']}")
-    print(f"\nrg matches: {len(hits)}")
+
+    print("RG SEARCH")
+    print("=========")
+    print(f"Pattern : {pattern}")
+    print(f"Scope   : {scope_label}")
+    if include_all:
+        print("Files   : all repository files")
+    else:
+        print("Files   : project files (dependencies/generated output excluded; use --all to include them)")
+    print(f"Matches : {len(hits)} across {len(grouped)} file(s)")
+
+    if hits:
+        print("")
+        for filename in sorted(grouped):
+            print(filename)
+            for hit in grouped[filename]:
+                print(f"  {hit['line']:>5}: {hit['text']}")
+            print("")
+    elif code != 1:
+        detail = stderr.strip()
+        if detail:
+            print(f"rg error: {detail}", file=sys.stderr)
+
     return 0 if code == 1 else code
 
 
@@ -1291,6 +1418,8 @@ def _format_step_status(root: str, name: str, detail: str = "") -> tuple[str, st
         return "N/A", detail or str(data.get("reason") or "not applicable to project")
     if explicit in {"skipped", "skip"}:
         return "SKIPPED", detail or str(data.get("reason") or "skipped")
+    if explicit in {"review", "review-needed", "review_needed"}:
+        return "REVIEW", detail or str(data.get("reason") or "review required")
     code = data.get("exit_code")
     if code == 0:
         status = "PASS"
@@ -1497,9 +1626,18 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
     ):
         coverage_gaps.append("slither: unavailable for Solidity sources")
 
+    tests_evidence = _evidence_data(root, "tests")
+    if (
+        str(tests_evidence.get("status") or "").lower() in {"review", "review-needed", "review_needed"}
+        and int(tests_evidence.get("exit_code", 0) or 0) == 2
+    ):
+        coverage_gaps.append("forge tests: no tests found")
+
     final_code = code
     if final_code == 0 and coverage_gaps:
         final_code = 2
+    elif final_code == 0 and optional_failures:
+        final_code = 1
 
     manifest["pipeline"] = {
         "completed_at": now_stamp(),
@@ -2122,17 +2260,37 @@ def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]
         )
         return
 
+    # A Forge test command can exit successfully while reporting that the
+    # repository contains no tests. That is execution success, but it is
+    # incomplete security evidence and must be surfaced as review-required.
+    if name == "tests":
+        for item in applicable:
+            evidence_name = str(item.get("evidence") or "")
+            if not evidence_name:
+                continue
+            evidence = _evidence_data(root, evidence_name)
+            output = (
+                str(evidence.get("stdout", ""))
+                + "\n"
+                + str(evidence.get("stderr", ""))
+            )
+            if re.search(r"(?i)No tests found in project", output):
+                item["code"] = 2
+                item["status"] = "review"
+                item["reason"] = "No tests found in project; security test coverage is incomplete."
+
     failures = [item for item in applicable if item.get("code") != 0]
     code = failures[0].get("code", 1) if failures else 0
     summary = "; ".join(
         f"{item.get('tool')}: {item.get('code')}"
         for item in applicable
     )
+    status = "review" if any(item.get("status") == "review" for item in failures) else ("failed" if failures else "passed")
     record_evidence(
         name,
         {
             "exit_code": code,
-            "status": "failed" if failures else "passed",
+            "status": status,
             "summary": summary,
             "substeps": outcomes,
         },

@@ -802,7 +802,7 @@ exit 1  = an audit/tool step failed
 exit 2  = review required because security coverage is incomplete
 ~~~
 
-For Solidity projects, an unavailable Slither installation now keeps the pipeline non-clean instead of silently producing exit 0. Likewise, universal source triage returning `REVIEW NEEDED` is propagated as exit 2.
+For Solidity projects, an unavailable Slither installation now keeps the pipeline non-clean instead of silently producing exit 0. Slither detector hits are collected as evidence without turning a normal finding into a process failure; a genuine analyzer error still makes the pipeline fail. Likewise, universal source triage returning `REVIEW NEEDED`, or a Foundry project with no tests found, is propagated as exit 2.
 
 This is intentional: **absence of a finding is never treated as evidence of safety when Lowkey did not establish the relevant coverage.**
 
