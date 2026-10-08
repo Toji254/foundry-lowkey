@@ -65,11 +65,26 @@ class CliConsistencyTests(unittest.TestCase):
             "actor": "Alice",
             "wallets": {"Alice": {"address": address}},
         }
-        rendered = lk.format_storage_read(
-            config,
-            "1",
-            "0x000000000000000000000000" + "f" * 40,
-        )
+        types = {
+            "t_address": {
+                "label": "address",
+                "numberOfBytes": 20,
+            },
+        }
+        storage = [
+            {
+                "slot": "1",
+                "offset": 0,
+                "label": "owner",
+                "type": "t_address",
+            },
+        ]
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
+            rendered = lk.format_storage_read(
+                config,
+                "1",
+                "0x000000000000000000000000" + "f" * 40,
+            )
         self.assertIn(f"Value: Alice ({address})", rendered)
 
     def test_address_labels_include_project_target_names(self):
