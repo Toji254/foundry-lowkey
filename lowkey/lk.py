@@ -7579,7 +7579,7 @@ def _print_lab_owner_identity(config, target):
         if not rpc:
             return
         code, owner, _=cast_output(
-            ["cast", "call", target, format_signature(item) + "(address)", "--rpc-url", rpc]
+            ["cast", "call", target, format_signature(item), "--rpc-url", rpc]
         )
     except Exception:
         return
@@ -13070,7 +13070,7 @@ COMMAND_HELP = {
             ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x5fbdb231... escrow 0xd9c5..."),
         ],
         options=[
-            ("address", "Pass an Ethereum address directly or use a configured actor name such as Alice, Bob, or lab-deployer.", "lk read balanceOf 0x7099..."),
+            ("address", "Pass an Ethereum address directly, a configured actor name such as Alice or Bob, or a project target name such as Fallback.", "lk read contributions Fallback"),
             ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read amount 1 ether"),
             ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as an escrow ID.", "lk read escrow 0xd9c5115d...d86f2a"),
         ],
