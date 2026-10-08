@@ -5413,10 +5413,17 @@ def run_auto_target(config,name=None):
     if not records:
         existing=project_context_target(root)
         if existing:
-            existing_address = apply_labels(existing.get("address"), config)
-            print(f"Target already remembered for this project: {existing.get('contract') or 'unknown'} -> {existing_address}")
-            return 0
-        return fail("No deployment found in broadcast/. Build artifacts exist, but a live target still needs deployment.")
+            state = _live_target_state(config, existing.get("address"), existing.get("artifact"))
+            if state.get("status") == "DEPLOYED" and state.get("verification") != "CODE MISMATCH":
+                print(f"Target already remembered and LIVE: {existing.get('contract') or 'unknown'} -> {apply_labels(existing.get('address'), config)}")
+                print(f"  Bytecode    : {state.get('code_size', 0)} bytes")
+                print(f"  Chain       : {state.get('chain_id') or 'unknown'}")
+                return 0
+            print(f"Remembered target is NOT LIVE on the current RPC: {existing.get('contract') or 'unknown'} -> {apply_labels(existing.get('address'), config)}")
+            print("  Lowkey will not reuse this address as a live target.")
+            print("  Fix: lk lab | lk target reset | lk recon")
+            return 2
+        return fail("No deployment found in broadcast/. Build artifacts exist, but a live target still needs deployment. Run 'lk lab' to create one.", 1)
 
     ranked = _auto_target_records(config, root, records, requested=name)
     if not ranked:
@@ -5426,6 +5433,32 @@ def run_auto_target(config,name=None):
             + (f" Available broadcasts: {available}" if available else "")
         )
 
+    rpc = effective_rpc(config)
+    if not rpc:
+        return fail(
+            "Error: Lowkey cannot verify Foundry deployments because no RPC is available. Start Anvil or run 'lk lab'.",
+            1,
+        )
+
+    live_ranked = []
+    for candidate in ranked:
+        state = _live_target_state(config, candidate.get("address"), candidate.get("_artifact"))
+        if state.get("status") != "DEPLOYED":
+            continue
+        if state.get("verification") == "CODE MISMATCH":
+            continue
+        candidate["_runtime_state"] = state
+        live_ranked.append(candidate)
+
+    if not live_ranked:
+        return fail(
+            "Foundry broadcast records exist, but none resolve to a verified live contract on the current RPC. "
+            "The addresses may belong to a previous/reset Anvil instance. "
+            "Fix: lk lab | lk target auto after deployment | lk recon.",
+            2,
+        )
+
+    ranked = live_ranked
     record=ranked[0]
     contract = record.get("_resolved_contract") or record.get("contract") or "Target"
     alias=name or contract
@@ -6619,7 +6652,32 @@ def set_lab_target(config, root, target, contract, artifact):
         artifact=artifact,
         source="project-lab",
     )
-    audit_context.update(root, actor=actor_display(config), rpc=effective_rpc(config))
+    runtime_state = _live_target_state(config, target, artifact)
+    deployment = {
+        "source": "project-lab",
+        "contract": contract,
+        "address": target,
+        "rpc": runtime_state.get("rpc"),
+        "chain_id": runtime_state.get("chain_id"),
+        "block_number": runtime_state.get("block_number"),
+        "runtime_status": runtime_state.get("status"),
+        "verification": runtime_state.get("verification"),
+        "verified_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    audit_context.update(
+        root,
+        actor=actor_display(config),
+        rpc=effective_rpc(config),
+        target={"runtime": runtime_state},
+        deployment=deployment,
+    )
+    if runtime_state.get("status") == "DEPLOYED" and runtime_state.get("verification") != "CODE MISMATCH":
+        print(
+            f"Deployment verified: LIVE ({runtime_state.get('verification', 'unverified').lower()}; "
+            f"{runtime_state.get('code_size', 0)} bytes)"
+        )
+    else:
+        print(f"Deployment verified: NO ({runtime_state.get('status', 'UNVERIFIED')})")
 
 def repo_clone_url(value):
     value = str(value or "").strip()
@@ -8670,6 +8728,28 @@ def run_lab(config,args):
     accounts = info.get("accounts", [])
     if not accounts:
         return fail("Error: the detected Anvil node reported no accounts.")
+
+    previous_target = config.get("target")
+    if previous_target:
+        previous_state = _live_target_state(config, previous_target)
+        if previous_state.get("status") != "DEPLOYED" or previous_state.get("verification") == "CODE MISMATCH":
+            previous_name = config.get("target_contract") or "target"
+            print(
+                f"STALE TARGET  : {previous_name} -> {apply_labels(previous_target, config)} "
+                "is not a verified live contract on this lab RPC."
+            )
+            print("Action        : clearing stale target; 'lk lab' will establish a fresh deployment.")
+            config["target"] = None
+            config["target_contract"] = None
+            audit_context.set_target(
+                root,
+                address=None,
+                contract=None,
+                artifact=None,
+                source="project-lab-reset",
+            )
+            save_config(config)
+
     key = derive_default_anvil_key(0)
     if not key:
         return fail("Error: could not derive the default Anvil account #0 key.")
