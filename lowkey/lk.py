@@ -5817,7 +5817,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"Test    : {relative_test}")
     print(f"RPC     : {rpc_display(rpc)}")
     _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
-    print(f"Actor   : {actor_display(config)}")
+    print(f"Deployer: lab-deployer ({accounts[0]}) [Anvil #0]")
     print("Mode    : promoted project test fixture")
     print("Action  : running the fixture through Forge's native test runner, then materializing its full state into local Anvil...")
     print("Helper  : no broadcast; Forge invokes the fixture setUp() normally.")
@@ -5886,7 +5886,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     }
     set_lab_target(config, root, target, contract_name, artifact)
 
-    print(f"Target  : {contract_name} -> {apply_labels(target, config)}")
+    print(f"Target  : {contract_name} @ {apply_labels(target, config)}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     print(f"Harness : {fixture['relative']}::{fixture['contract']}")
     _print_security_scope(root)
@@ -8088,9 +8088,10 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
     print(f"Project : {root}")
-    print(f"Target  : {contract}")
+    print(f"Contract: {contract}")
+    print(f"Target  : pending deployment")
     print(f"RPC     : {rpc_display(rpc)}")
-    print(f"Actor   : Anvil #0 ({accounts[0]})")
+    print(f"Deployer: lab-deployer ({accounts[0]}) [Anvil #0]")
     if mode == "artifact":
         print("Mode    : explicit artifact deployment")
     else:
@@ -8117,7 +8118,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
 
     has_initializer = artifact_has_initializer(artifact)
     if has_initializer:
-        print(f"Target  : {contract} -> {target}")
+        print(f"Target  : {contract} @ {target}")
         print(f"ABI     : {path}")
         print("Status  : DEPLOYED IMPLEMENTATION")
         print("Note    : this artifact exposes initialize(); a proxy/initializer may be required.")
@@ -8140,7 +8141,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
         "target_model": contract,
     }
 
-    print(f"Target  : {contract} -> {target}")
+    print(f"Target  : {contract} @ {target}")
     print(f"ABI     : {path}")
     _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
@@ -12038,15 +12039,18 @@ def run_status(config):
             _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
             save_config(config)
     _sync_current_anvil_actor(config, info)
-    print(f"Target : {apply_labels(target, config) if target else 'none'}")
+    abi=resolve_abi_path(config,target) if target else None
+    contract=config.get("target_contract") or "unknown"
+    if target:
+        print(f"Target : {contract} @ {apply_labels(target, config)}")
+    else:
+        print("Target : none")
     if rpc:
         mode="manual" if config.get("rpc") else "auto Anvil"
         print(f"RPC    : {rpc} ({mode})")
     else:
         print("RPC    : none (no local Anvil detected)")
     print(f"Actor  : {actor_display(config)}")
-    abi=resolve_abi_path(config,target) if target else None
-    contract=config.get("target_contract") or "unknown"
     print(f"ABI    : {abi or 'auto/not found'}")
     print(f"Contract: {contract}")
     print(f"Last tx: {config.get('last_tx') or 'none'}")
