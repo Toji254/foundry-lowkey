@@ -42,7 +42,7 @@ class CliConsistencyTests(unittest.TestCase):
         target = "0x" + "3" * 40
         config = {"actor": "Alice", "wallets": {"Alice": {"address": "0x" + "1" * 40}}, "targets": {"Fallback": target}}
         item = {"inputs": [{"name": "account", "type": "address"}]}
-        with patch.object(lk, "actor_address", return_value=None), \\
+        with patch.object(lk, "actor_address", return_value=None), \
              patch.object(lk.audit_context, "foundry_project_root", return_value=pathlib.Path("/tmp/Fallback")):
             with patch.object(lk, "resolve_target_ref", return_value=target) as resolve_target:
                 self.assertEqual(lk.prepare_argument_values(config, item, ["Fallback"]), [target])
@@ -53,7 +53,7 @@ class CliConsistencyTests(unittest.TestCase):
         target = "0x" + "2" * 40
         config = {"actor": "Alice", "wallets": {"Alice": {"address": actor}}, "targets": {"Alice": target}}
         item = {"inputs": [{"name": "account", "type": "address"}]}
-        with patch.object(lk, "actor_address", return_value=actor), \\
+        with patch.object(lk, "actor_address", return_value=actor), \
              patch.object(lk, "resolve_target_ref", return_value=target) as resolve_target:
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
