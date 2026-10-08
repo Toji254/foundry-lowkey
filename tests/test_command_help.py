@@ -473,6 +473,14 @@ class CommandHelpTests(unittest.TestCase):
                     missing.append(name)
         self.assertEqual(missing, [])
 
+    def test_changes_recommendations_do_not_assume_a_transaction(self):
+        items = lk._recommended_next_commands("changes", [])
+        commands = [command for command, _ in items]
+        self.assertIn("lk findings", commands)
+        self.assertIn("lk mapping <slot> <key>", commands)
+        self.assertNotIn("lk trace", commands)
+        self.assertNotIn("lk receipt", commands)
+
     def test_recommended_next_commands_are_contextual(self):
         items = lk._recommended_next_commands("functions", [])
         commands = [command for command, _ in items]
