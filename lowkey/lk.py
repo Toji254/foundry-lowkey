@@ -12746,7 +12746,7 @@ COMMAND_HELP = {
         options=[
             ("--auto", "Let Lowkey find/provision a safe local target and Anvil runtime.", "lk walkthrough --auto"),
             ("--static", "Render the compiled protocol model without sending live transactions.", "lk walkthrough --static"),
-            ("--contract NAME", "Focus on a specific compiled contract.", "lk walkthrough --contract Escrow"),
+            ("--contract NAME", "Focus on a specific compiled contract.", "lk walkthrough --contract Vault"),
             ("--steps N", "Limit the live story to N observed interactions.", "lk walkthrough --steps 6"),
             ("--technical", "Show lower-level storage details.", "lk walkthrough --technical"),
             ("--yes", "Run without interactive pauses.", "lk walkthrough --auto --yes"),
@@ -12784,10 +12784,10 @@ COMMAND_HELP = {
     "use": _help_entry(
         "Switch Lowkey to a saved project target.",
         "lk use <name|number>",
-        "lk use Escrow",
+        "lk use Vault",
         "Use it when several targets are available and you want to change focus without retyping an address.",
         forms=[
-            ("lk use <name>", "Switch to a saved target by its friendly name.", "lk use Escrow"),
+            ("lk use <name>", "Switch to a saved target by its friendly name.", "lk use Vault"),
             ("lk use <number>", "Switch to a saved target by its numbered position.", "lk use 2"),
         ],
         related=["lk targets", "lk target"],
@@ -12795,17 +12795,17 @@ COMMAND_HELP = {
     "target": _help_entry(
         "Choose which deployed contract Lowkey should treat as the current project target.",
         "lk target <address> | lk target <name> <address> | lk target auto",
-        "lk target escrow 0x1111111111111111111111111111111111111111",
+        "lk target vault 0x1111111111111111111111111111111111111111",
         "Use it when no target is selected or Lowkey is pointing at the wrong contract.",
         forms=[
             ("lk target <address>", "Select a contract directly by address.", "lk target 0x1111111111111111111111111111111111111111"),
-            ("lk target <name> <address>", "Save/select a friendly target name for the address.", "lk target escrow 0x1111111111111111111111111111111111111111"),
+            ("lk target <name> <address>", "Save/select a friendly target name for the address.", "lk target vault 0x1111111111111111111111111111111111111111"),
             ("lk target auto", "Reconnect to a usable deployment Lowkey can discover.", "lk target auto"),
         ],
 
         children={
             "list": _help_entry("List remembered targets.", "lk target list", "lk target list", "Use it before switching when several targets exist."),
-            "auto": _help_entry("Reconnect to a usable current-project deployment.", "lk target auto [name]", "lk target auto Escrow", "Use it after local deployment when you do not want to copy an address by hand."),
+            "auto": _help_entry("Reconnect to a usable current-project deployment.", "lk target auto [name]", "lk target auto Vault", "Use it after local deployment when you do not want to copy an address by hand."),
             "reset": _help_entry("Clear the current project target.", "lk target reset", "lk target reset", "Use it after a reset or when stale target state is getting in the way."),
         },
         related=["lk deployments", "lk status", "lk lab"],
@@ -12813,12 +12813,12 @@ COMMAND_HELP = {
     "lab": _help_entry(
         "Create a disposable local EVM lab for safe contract interaction and audit experiments.",
         "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop",
-        "lk lab Escrow",
+        "lk lab Vault",
         "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
         forms=[
-            ("lk lab [Contract]", "Use the project’s native deployment path when available.", "lk lab Escrow"),
-            ("lk lab --generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic Escrow"),
-            ("lk lab --artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact Escrow"),
+            ("lk lab [Contract]", "Use the project’s native deployment path when available.", "lk lab Vault"),
+            ("lk lab --generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic Vault"),
+            ("lk lab --artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact Vault"),
             ("lk lab stop", "Stop the project-local Anvil started by Lowkey.", "lk lab stop"),
         ],
 
@@ -12826,8 +12826,8 @@ COMMAND_HELP = {
             "stop": _help_entry("Stop the project-local Anvil that Lowkey started.", "lk lab stop", "lk lab stop", "Use it when the disposable lab is no longer needed."),
         },
         options=[
-            ("--generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic Escrow"),
-            ("--artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact Escrow"),
+            ("--generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic Vault"),
+            ("--artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact Vault"),
         ],
         related=["lk target", "lk walkthrough", "lk status"],
     ),
@@ -12990,7 +12990,7 @@ COMMAND_HELP = {
         forms=[
             ("lk abi", "Show the ABI currently loaded for the selected target.", "lk abi"),
             ("lk abi auto", "Auto-discover and load an ABI for the selected target.", "lk abi auto"),
-            ("lk abi <file>", "Use a specific ABI file or artifact.", "lk abi out/Escrow.json"),
+            ("lk abi <file>", "Use a specific ABI file or artifact.", "lk abi out/Vault.json"),
         ],
 
         related=["lk functions", "lk ask"],
@@ -12998,33 +12998,33 @@ COMMAND_HELP = {
     "read": _help_entry(
         "Call a contract without intentionally changing state. Lowkey uses the selected target and understands common Solidity argument types, including addresses, numbers, and fixed-size bytes such as bytes32 IDs.",
         "lk read <function> [args...]",
-        "lk read escrow 0xd9c5115d8ca09413513b0348ccd4aa5d5d2b8183823763b527bfd81f40d86f2a",
+        "lk read vault 0xd9c5115d8ca09413513b0348ccd4aa5d5d2b8183823763b527bfd81f40d86f2a",
         "Use it for getters and state observation. It does not intentionally change contract data.",
         forms=[
             ("lk read <function>", "Read a getter with no arguments.", "lk read totalSupply"),
             ("lk read <function> <args...>", "Pass the real values the getter expects. Lowkey uses the ABI to interpret their types.", "lk read balanceOf 0x7099..."),
-            ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x5fbdb231... escrow 0xd9c5..."),
+            ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x5fbdb231... vault 0xd9c5..."),
         ],
         options=[
             ("address", "Pass an Ethereum address directly or use a configured actor name where supported.", "lk read balanceOf 0x7099..."),
             ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read amount 1 ether"),
-            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as an escrow ID.", "lk read escrow 0xd9c5115d...d86f2a"),
+            ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as an vault ID.", "lk read vault 0xd9c5115d...d86f2a"),
         ],
         related=["lk ask", "lk send", "lk changes"],
     ),
     "send": _help_entry(
         "Send a transaction that can change contract data or move ETH or tokens.",
         "lk send <function> [args...] [options]",
-        "lk send createescrow 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether --confirm",
+        "lk send deposit 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether --confirm",
         "Use it after you understand the function and are ready to actually run it. Use --preview first when you only want to check what will be sent.",
         forms=[
             ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send release 0xd9c5..."),
-            ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send createescrow 1 0x7099... --value 1ether"),
+            ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send deposit 1 0x7099... --value 1ether"),
             ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send release 0xd9c5... --actor Alice"),
             ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send release 0xd9c5... --as attacker"),
         ],
         options=[
-            ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send createescrow 1 0x7099... --value 1ether"),
+            ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send deposit 1 0x7099... --value 1ether"),
             ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send release 0xd9c5... --actor Alice"),
             ("--as <name>", "Another spelling of --actor.", "lk send release 0xd9c5... --as attacker"),
             ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
@@ -13065,11 +13065,11 @@ COMMAND_HELP = {
         "Use it for the same function inventory when you want the compact command.",
         related=["lk functions", "lk ask"]
     ),
-    "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createbounty", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
+    "ask": _help_entry("Show a function's argument names and Solidity types.", "lk ask <function>", "lk ask createRecord", "Use it before read/send/changes when you are unsure what values a function expects.", related=["lk fn", "lk changes"]),
     "wizard": _help_entry(
         "Interact with one contract function without having to build the full command yourself.",
         "lk wizard <function> [values...] [call|send|encode]",
-        "lk wizard createescrow 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+        "lk wizard deposit 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
         "Use it when you know which function you want but want Lowkey to handle the function signature and argument prompts. A target must already be selected. Transactions use the current actor. A state-changing function is sent by default; a read-only function is only read.",
         forms=[
             ("lk wizard <function> [values...]", "Give Lowkey the function name and any values you already know. It asks for anything still missing.", "lk wizard release 0xd9c5..."),
@@ -13081,47 +13081,47 @@ COMMAND_HELP = {
             ("call", "Read the function without changing contract data.", "lk wizard balanceOf 0x7099... call"),
             ("send", "Send the function as a transaction using the current actor.", "lk wizard release 0xd9c5... send"),
             ("encode", "Build the data for the function call without sending it.", "lk wizard release 0xd9c5... encode"),
-            ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard createescrow"),
+            ("no values", "Leave out the function values and let Lowkey ask you for each one.", "lk wizard deposit"),
             ("TARGET", "A target must already be selected before wizard can interact with a contract.", "lk target 0x1111111111111111111111111111111111111111"),
             ("ACTOR", "Transactions use the current actor. For example, select Anvil account 0 as Alice with lk actor 0 Alice.", "lk actor 0 Alice"),
-            ("ATTACH ETH", "Wizard does not have an ETH-value flag. To send ETH with a function call, use lk send --value or for a local test use lk probe --value.", "lk send createescrow 1 0x7099... --value 1ether"),
+            ("ATTACH ETH", "Wizard does not have an ETH-value flag. To send ETH with a function call, use lk send --value or for a local test use lk probe --value.", "lk send deposit 1 0x7099... --value 1ether"),
         ],
         related=["lk ask", "lk read", "lk send", "lk probe"],
     ),    "probe": _help_entry(
         "Try a state-changing function with local test accounts and record whether each call succeeds or reverts.",
         "lk probe <function> [args...] [options]",
-        "lk probe createescrow 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether",
+        "lk probe deposit 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether",
         "Use it when you want to quickly try a function without writing your own test first. A probe reports what happened; it does not decide whether the behavior is safe.",
         forms=[
-            ("lk probe <function> [args...]", "Try the function with the local actors Lowkey has configured.", "lk probe createescrow 1 0x7099..."),
+            ("lk probe <function> [args...]", "Try the function with the local actors Lowkey has configured.", "lk probe deposit 1 0x7099..."),
             ("lk probe <function> [args...] --actor <name>", "Try it only as the named actor.", "lk probe release 0xd9c5... --actor attacker"),
-            ("lk probe <function> [args...] --value <amount>", "Attach ETH to each test call.", "lk probe createescrow 1 0x7099... --value 1ether"),
+            ("lk probe <function> [args...] --value <amount>", "Attach ETH to each test call.", "lk probe deposit 1 0x7099... --value 1ether"),
         ],
         options=[
             ("--actor <name>", "Run the test only as this named local actor.", "lk probe release 0xd9c5... --actor attacker"),
             ("--as <name>", "Another spelling of --actor.", "lk probe release 0xd9c5... --as attacker"),
-            ("--value <amount>", "Attach ETH to the test call. Example: --value 1ether means msg.value is 1 ETH.", "lk probe createescrow 1 0x7099... --value 1ether"),
-            ("--eth <amount>", "Another spelling of --value.", "lk probe createescrow 1 0x7099... --eth 1ether"),
+            ("--value <amount>", "Attach ETH to the test call. Example: --value 1ether means msg.value is 1 ETH.", "lk probe deposit 1 0x7099... --value 1ether"),
+            ("--eth <amount>", "Another spelling of --value.", "lk probe deposit 1 0x7099... --eth 1ether"),
         ],
         related=["lk walkthrough test", "lk changes", "lk generate test"],
     ),    "changes": _help_entry(
         "Run one function in a temporary test and show which stored contract values changed.",
         "lk changes '<function(types...)>' <values...> [options]",
-        "lk changes 'createescrow(uint256,address)' 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether",
+        "lk changes 'deposit(uint256,address)' 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether",
         "Use it when you want to connect a function call to the exact contract data that changed. If the call fails, Lowkey should show that it failed and that no stored values changed.",
         forms=[
             ("lk changes '<function(types...)>' <values...>", "Run the call without attaching ETH unless you add a value option.", "lk changes 'release(bytes32)' 0xd9c5..."),
-            ("lk changes '<function(types...)>' <values...> --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes 'createescrow(uint256,address)' 1 0x7099... --value 1ether"),
+            ("lk changes '<function(types...)>' <values...> --value <amount>", "Attach ETH to the call so the function receives it as msg.value.", "lk changes 'deposit(uint256,address)' 1 0x7099... --value 1ether"),
             ("lk changes '<function(types...)>' <values...> --actor <name>", "Run the call as a named local actor.", "lk changes 'release(bytes32)' 0xd9c5... --actor attacker"),
-            ("lk changes '<function(types...)>' <values...> --repeat <N>", "Repeat the exact call N times inside one transaction. Useful for testing same-transaction identifier collisions.", "lk changes 'createescrow(address)' 0x7099... --value 1ether --repeat 3"),
+            ("lk changes '<function(types...)>' <values...> --repeat <N>", "Repeat the exact call N times inside one transaction. Useful for testing same-transaction identifier collisions.", "lk changes 'deposit(address)' 0x7099... --value 1ether --repeat 3"),
         ],
         options=[
             ("--actor <name>", "Choose which named local actor makes the call.", "lk changes 'release(bytes32)' 0xd9c5... --actor attacker"),
             ("--as <name>", "Another spelling of --actor.", "lk changes 'release(bytes32)' 0xd9c5... --as attacker"),
-            ("--value <amount>", "Attach ETH to the call. Example: --value 1ether makes msg.value equal 1 ETH.", "lk changes 'createescrow(uint256,address)' 1 0x7099... --value 1ether"),
-            ("--eth <amount>", "Another spelling of --value.", "lk changes 'createescrow(uint256,address)' 1 0x7099... --eth 1ether"),
-            ("--repeat <N>", "Repeat the exact call N times inside one transaction (maximum 100).", "lk changes 'createescrow(address)' 0x7099... --value 1ether --repeat 3"),
-            ("--times <N>", "Another spelling of --repeat.", "lk changes 'createescrow(address)' 0x7099... --value 1ether --times 3"),
+            ("--value <amount>", "Attach ETH to the call. Example: --value 1ether makes msg.value equal 1 ETH.", "lk changes 'deposit(uint256,address)' 1 0x7099... --value 1ether"),
+            ("--eth <amount>", "Another spelling of --value.", "lk changes 'deposit(uint256,address)' 1 0x7099... --eth 1ether"),
+            ("--repeat <N>", "Repeat the exact call N times inside one transaction (maximum 100).", "lk changes 'deposit(address)' 0x7099... --value 1ether --repeat 3"),
+            ("--times <N>", "Another spelling of --repeat.", "lk changes 'deposit(address)' 0x7099... --value 1ether --times 3"),
         ],
         related=["lk mapping", "lk layout", "lk trace"],
     ),    "state-diff": _help_entry("Alias for the storage-change reproduction workflow.", "lk state-diff '<name(parameter TYPES...)>' <VALUES...>", "lk state-diff 'deposit(uint256)' 1000", "Use it when the state-diff terminology makes more sense to you.", related=["lk changes", "lk snapshot", "lk diff"]),
@@ -13138,7 +13138,7 @@ COMMAND_HELP = {
         related=["lk risk", "lk slither", "lk rg"],
     ),    "seams": _help_entry("Show audit hotspots where protocol boundaries and assumptions deserve extra scrutiny.", "lk seams", "lk seams", "Use it to decide where manual review should start.", related=["lk project", "lk risk", "lk walkthrough"]),
     "deps": _help_entry("Show imports, inheritance, and source dependencies.", "lk deps [src]", "lk deps src", "Use it to separate application logic from libraries, interfaces, and dependency code.", related=["lk project", "lk layout"]),
-    "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout Escrow", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
+    "layout": _help_entry("Show compiled Solidity storage layout.", "lk layout <Contract>", "lk layout Vault", "Use it when auditing mappings, packing, proxies, or storage collisions.", related=["lk mapping", "lk snapshot", "lk proof"]),
     "mapping": _help_entry(
         "Calculate/read a mapping entry's storage location.",
         "lk mapping <slot> <key> | lk mapping <key_type> <slot> <key>",
@@ -13221,12 +13221,12 @@ COMMAND_HELP = {
     "balance": _help_entry(
         "Show how much native ETH an address holds.",
         "lk balance [address|name]",
-        "lk balance escrow",
+        "lk balance vault",
         "Use it when checking ETH held by a contract or wallet. With no argument, Lowkey checks the current target. You can use a full address, a saved target name, or a saved actor name.",
         forms=[
             ("lk balance", "Check the current target's ETH balance.", "lk balance"),
             ("lk balance <address>", "Check a specific Ethereum address.", "lk balance 0x5FbDB2315678afecb367f032d93F642f64180aa3"),
-            ("lk balance <name>", "Check a saved target or actor by name.", "lk balance escrow"),
+            ("lk balance <name>", "Check a saved target or actor by name.", "lk balance vault"),
         ],
         related=["lk recon", "lk actor", "lk target"],
     ),
@@ -13258,13 +13258,13 @@ COMMAND_HELP = {
         forms=[
             ("lk generate test ...", "Create a reusable Forge test from observed behavior.", "lk generate test 'withdraw(address,uint256)' 0x... 1000"),
             ("lk generate poc ...", "Create a PoC scaffold connected to current evidence.", "lk generate poc withdraw"),
-            ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment Escrow"),
+            ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment Vault"),
         ],
 
         children={
             "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<name(parameter TYPES...)>' <VALUES...>", "lk generate test 'withdraw(address,uint256)' 0x... 1000", "Use it to turn an observed transition into regression evidence."),
             "poc": _help_entry("Generate a PoC scaffold connected to current evidence.", "lk generate poc <function>", "lk generate poc withdraw", "Use it as a starting point for exploit reproduction."),
-            "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment Escrow", "Use it when you need a repeatable local deployment entry point."),
+            "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment Vault", "Use it when you need a repeatable local deployment entry point."),
         },
         related=["lk matrix", "lk poc"],
     ),
@@ -13345,7 +13345,7 @@ COMMAND_HELP = {
         forms=[
             ("lk matrix init", "Create matrix files before adding scenarios.", "lk matrix init"),
             ("lk matrix actor <name> <address>", "Add a named actor/address to the scenario matrix.", "lk matrix actor Attacker 0x..."),
-            ("lk matrix state <name> <description>", "Define a scenario precondition.", "lk matrix state funded escrow holds 1 ETH"),
+            ("lk matrix state <name> <description>", "Define a scenario precondition.", "lk matrix state funded vault holds 1 ETH"),
             ("lk matrix add <name> <function> <actor> <expected>", "Record one testable security scenario.", "lk matrix add badRelease release Attacker revert"),
             ("lk matrix list", "List saved scenarios.", "lk matrix list"),
             ("lk matrix test <name>", "Generate/run a Forge test for one scenario.", "lk matrix test badRelease"),
@@ -13354,7 +13354,7 @@ COMMAND_HELP = {
         children={
             "init": _help_entry("Create matrix files.", "lk matrix init", "lk matrix init", "Use it before adding scenarios."),
             "actor": _help_entry("Add a named actor/address.", "lk matrix actor <name> <address>", "lk matrix actor Attacker 0x...", "Use it when a scenario needs a specific caller."),
-            "state": _help_entry("Define a named state condition.", "lk matrix state <name> <description>", "lk matrix state funded escrow holds 1 ETH", "Use it to document a scenario precondition."),
+            "state": _help_entry("Define a named state condition.", "lk matrix state <name> <description>", "lk matrix state funded vault holds 1 ETH", "Use it to document a scenario precondition."),
             "add": _help_entry("Add a testable scenario.", "lk matrix add <name> <function> <actor> <expected>", "lk matrix add badRelease release Attacker revert", "Use it to capture a security hypothesis before generating a test."),
             "list": _help_entry("List saved scenarios.", "lk matrix list", "lk matrix list", "Use it to review queued reproductions."),
             "test": _help_entry("Generate/run a Forge test for one scenario.", "lk matrix test <name>", "lk matrix test badRelease", "Use it when you are ready to turn the scenario into executable evidence."),
@@ -13430,11 +13430,11 @@ COMMAND_HELP = {
     ),    "invariant": _help_entry(
         "Run tests that check a rule should stay true after many different contract actions.",
         "lk invariant [new <Contract>] [options]",
-        "lk invariant new Escrow",
+        "lk invariant new Vault",
         "Use it when you can describe something that must always remain true, even after many state changes.",
         forms=[
             ("lk invariant", "Run tests whose names start with invariant_.", "lk invariant"),
-            ("lk invariant new <Contract>", "Create a small starting test for an invariant. You must edit it and add the rule you actually care about.", "lk invariant new Escrow"),
+            ("lk invariant new <Contract>", "Create a small starting test for an invariant. You must edit it and add the rule you actually care about.", "lk invariant new Vault"),
         ],
         options=[
             ("--match-test <pattern>", "Run only invariant tests whose test name matches the pattern you give.", "lk invariant --match-test invariant_.*"),
@@ -13516,7 +13516,7 @@ COMMAND_HELP = {
     "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
     "script": _help_entry("Run a native Forge script.", "lk script <args...>", "lk script script/LocalDeploy.s.sol --sig run()", "Use it when the project already has a useful setup/deployment script.", related=["lk lab", "lk forge"]),
-    "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect Escrow storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
+    "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect Vault storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
     "coverage": _help_entry("Run Forge coverage reporting.", "lk coverage <args...>", "lk coverage", "Use it to see which code paths your tests actually execute.", related=["lk test", "lk audit run"]),
     "lint": _help_entry("Run Forge lint tooling when supported.", "lk lint", "lk lint", "Use it for quick static/code-quality checks.", related=["lk geiger", "lk doctor"]),
     "geiger": _help_entry("Run Geiger-style scanning when available.", "lk geiger", "lk geiger", "Use it as an extra dependency/security signal.", related=["lk lint", "lk audit"]),
@@ -13665,151 +13665,6 @@ def _help_entry_for_path(path):
             unknown = raw_key
             break
     return current, consumed, unknown
-
-def _help_parent_path(path):
-    if len(path) < 2:
-        return None
-    child = str(path[-1] or "").strip().lower()
-    parent_root = _canonical_help_command(path[0])
-    parent = COMMAND_HELP.get(parent_root)
-    if not parent:
-        return None
-    if child in parent.get("children", {}):
-        return [parent_root]
-    return None
-
-
-def _help_suggestions(command, limit=3):
-    """Return likely Lowkey command names for a misspelled help request."""
-    raw = str(command or "").strip().lower()
-    if not raw:
-        return []
-    candidates = set(COMMAND_HELP)
-    candidates.update(HELP_ALIASES)
-    scored = []
-    for candidate in candidates:
-        canonical = _canonical_help_command(candidate)
-        if candidate != canonical:
-            # Prefer canonical names in suggestions; aliases remain valid but
-            # should not crowd the result list.
-            continue
-        if candidate == raw:
-            continue
-        ratio = SequenceMatcher(None, raw, candidate).ratio()
-        if candidate.startswith(raw) or raw.startswith(candidate):
-            ratio += 0.15
-        if ratio >= 0.55:
-            scored.append((ratio, candidate))
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [candidate for _, candidate in scored[:limit]]
-
-def _render_command_help(path):
-    entry, resolved, unknown = _help_entry_for_path(path)
-    shown_path = " ".join(resolved or [str(item) for item in path])
-    alias = _help_alias_for(path[0]) if path else None
-
-    print()
-    print(f"LOWKEY HELP  •  lk {shown_path}")
-    print("=" * 72)
-
-    if unknown:
-        print(f"Unknown subcommand: '{unknown}' under 'lk {shown_path}'.")
-        available = list((entry or {}).get("children", {}).keys())
-        if available:
-            print("Available next commands: " + ", ".join(available))
-        print(f"Run 'lk {shown_path} --h' to see the parent help.")
-        return 2
-
-    if not entry:
-        command = str(path[0] if path else "").strip().lower()
-        suggestions = _help_suggestions(command)
-        print(f"No dedicated Lowkey help page matches '{command}'.")
-        if suggestions:
-            print("")
-            print("DID YOU MEAN")
-            print("------------")
-            for suggestion in suggestions:
-                print(f"  lk {suggestion} --h")
-        print("")
-        print("ALL COMMANDS")
-        print("------------")
-        print("  lk --h")
-        print("  Help forms: --h | --help | -h | help")
-        return 2
-
-    if alias:
-        print(f"Alias: 'lk {alias}' is another way to run 'lk {shown_path.split()[0]}'.")
-    print(f"What it does: {entry['summary']}")
-    print(f"When to use: {entry['use']}")
-    print(f"Usage: {entry['usage']}")
-    print(f"Example: {entry['example']}")
-
-    forms = entry.get("forms") or []
-    if forms:
-        print("")
-        print("COMMAND VARIATIONS")
-        print("------------------")
-        for form, description, example in forms:
-            print(f"  {form}")
-            print(f"      {description}")
-            print(f"      Example: {example}")
-
-    children = entry.get("children") or {}
-    if children:
-        print("")
-        print("NEXT COMMANDS")
-        print("-------------")
-        for name, child in children.items():
-            print(f"  lk {shown_path} {name}")
-            print(f"      What it does: {child['summary']}")
-            print(f"      When to use: {child['use']}")
-            print(f"      Example: {child['example']}")
-        print("")
-        print("TIP")
-        print("  Pick a next command above and add --h for its detailed help.")
-    else:
-        parent = _help_parent_path(path)
-        if parent:
-            parent_shown = " ".join(parent)
-            print("")
-            print("NAVIGATION")
-            print("----------")
-            print(f"  lk {parent_shown} --h")
-            print("      Go back to the parent command and see its available subcommands.")
-
-    options = entry.get("options") or []
-    if options:
-        print("")
-        print("OPTIONS / MODES")
-        print("---------------")
-        for option, description, example in options:
-            print(f"  {option}")
-            print(f"      {description}")
-            print(f"      Example: {example}")
-
-    related = entry.get("related") or []
-    if related:
-        print("")
-        print("RELATED COMMANDS")
-        print("---------------")
-        for command in related:
-            print(f"  {command}")
-
-    print("")
-    print("HELP TIP")
-    print("  Help is always safe: it does not select targets, send transactions, or change project state.")
-    print("  Accepted forms: --h, --help, -h, help.")
-    if children:
-        first_child = next(iter(children))
-        print(f"  Next: lk {shown_path} {first_child} --h")
-    elif related:
-        print(f"  Related: {related[0]}")
-    elif parent:
-        print(f"  Parent: lk {' '.join(parent)} --h")
-    else:
-        print("  Start: lk --h")
-    return 0
-
 def print_help():
     print(r"""
 LOWKEY — SECURITY & AUDIT CONSOLE
@@ -13865,8 +13720,8 @@ FIRST 10 MINUTES
 
 COMMON TERMS
   <address>   20-byte contract or wallet address, e.g. 0x1111...1111
-  <name>      Friendly name you gave to an actor or target, e.g. Alice or escrow
-  <Contract>  Solidity contract name, e.g. Escrow
+  <name>      Friendly name you gave to an actor or target, e.g. Alice or vault
+  <Contract>  Solidity contract name, e.g. Vault
   <function>  Solidity function name, e.g. release
   <file>      Source file, e.g. src/<SourceFile>.sol
   <dir>       Folder, e.g. src
@@ -13886,10 +13741,10 @@ COMMON TERMS
 
 PROJECT / TARGET SETUP
   lk target <address>               Select a contract. Example: lk target 0x...
-  lk target <name> <address>        Save + select a named target. Example: lk target escrow 0x...
+  lk target <name> <address>        Save + select a named target. Example: lk target vault 0x...
   lk target list                    List saved targets.
-  lk target auto [name]             Use a recent deployment. Example: lk target auto escrow
-  lk use <name|number>              Switch to a saved target. Example: lk use escrow
+  lk target auto [name]             Use a recent deployment. Example: lk target auto vault
+  lk use <name|number>              Switch to a saved target. Example: lk use vault
   lk deployments                    List deployment records.
   lk clone <repo> [dir] [options]   Clone/prepare a project for auditing.
   lk projects                       Show projects found inside the current workspace.
@@ -13920,7 +13775,7 @@ UNDERSTAND THE PROJECT
   lk functions [query]             List contract functions. Example: lk functions
   lk fn [query]                    Find/list functions. Example: lk fn release
   lk fn -h                         Explain function-search syntax.
-  lk ask <function>                Show function inputs. Example: lk ask createEscrow
+  lk ask <function>                Show function inputs. Example: lk ask deposit
   lk wizard <function> [values...] [call|send|encode] Interactive argument helper; return values shown after successful sends when available.
   lk layout <Contract>             Show Forge storage layout.
   lk deps [src]                    Show imports/inheritance. Example: lk deps
@@ -13933,7 +13788,7 @@ UNDERSTAND THE PROJECT
 
 INTERACT WITH CONTRACTS
   lk read <function> [args]        Read without changing state. Example: lk read balanceOf <address>
-  lk balance [address|name]        Check native ETH held by a contract or wallet. Example: lk balance escrow
+  lk balance [address|name]        Check native ETH held by a contract or wallet. Example: lk balance vault
   lk send <function> [args]        Send a transaction. Example: lk send release --preview
   lk send ... --preview            Encode/check without sending.
   lk send ... --confirm            Preview, then ask before sending.
@@ -13959,7 +13814,7 @@ STORAGE / STATE FORENSICS
                                    The quoted part contains TYPES, not real values.
                                    Put actual argument VALUES after the closing quote.
                                    Example:
-                                     lk changes 'createbounty(address,uint256)' <addr> <amount>
+                                     lk changes 'createRecord(address,uint256)' <addr> <amount>
   lk state-diff '<name(parameter TYPES...)>' <VALUES...>
                                    Alias for storage-change reproduction.
   lk storage / slots               Use raw Cast storage tools through lk raw when needed.
@@ -13987,7 +13842,7 @@ REPRODUCE / ATTACK / TEST
                                    The quoted part contains TYPES, not real values.
                                    Put actual argument VALUES after the closing quote.
                                    Example:
-                                     lk generate test 'createbounty(address,uint256)' <addr> <amount>
+                                     lk generate test 'createRecord(address,uint256)' <addr> <amount>
   lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
   lk generate deployment <Contract> Generate a deployment script.
   lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
