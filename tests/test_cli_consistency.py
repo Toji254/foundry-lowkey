@@ -104,6 +104,62 @@ class CliConsistencyTests(unittest.TestCase):
         self.assertEqual(identities[alice.lower()][0], "Alice")
         self.assertEqual(identities[deployer.lower()][0], "lab-deployer")
 
+    def test_multi_actor_send_caps_at_ten_live_anvil_accounts(self):
+        accounts = ["0x" + f"{index + 1:040x}" for index in range(12)]
+        calls = []
+
+        def fake_run_cast(args, config, capture=False):
+            calls.append((list(args), config))
+            return lk.CommandResult(
+                "transactionHash 0x" + "1" * 64 + "\n"
+                "blockNumber 8\n"
+                "gasUsed 21000\n"
+                "from " + config["wallets"][config["actor"]]["address"] + "\n"
+                "to " + "0x" + "9" * 40 + "\n"
+                "status 1",
+                0,
+            )
+
+        with patch.object(lk, "anvil_rpc_info", return_value={"url": "http://127.0.0.1:8545", "accounts": accounts}), \
+             patch.object(lk, "run_cast", side_effect=fake_run_cast), \
+             patch.object(lk, "format_send_summary", return_value="TRANSACTION OK"):
+            config = {
+                "target": "0x" + "9" * 40,
+                "wallets": {},
+                "labels": {},
+            }
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_multi_actor_send(
+                    config,
+                    ["contribute", "--value", "1"],
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(
+            [call_config["actor"] for _, call_config in calls],
+            [f"anvil-{index}" for index in range(10)],
+        )
+        self.assertEqual(
+            [call_config["wallets"][call_config["actor"]]["address"] for _, call_config in calls],
+            accounts[:10],
+        )
+        self.assertTrue(all(call_config.get("_ephemeral") is True for _, call_config in calls))
+        self.assertEqual(config["wallets"], {})
+        rendered = output.getvalue()
+        self.assertIn("Accounts detected: 10", rendered)
+        self.assertIn("Accounts used:     10 (maximum 10)", rendered)
+        self.assertIn("msg.sender changes per call", rendered)
+
+    def test_multi_actor_send_rejects_repeat_flags(self):
+        with patch.object(lk, "anvil_rpc_info", return_value={"url": "http://127.0.0.1:8545", "accounts": ["0x" + "1" * 40]}):
+            result = lk.run_multi_actor_send(
+                {"target": "0x" + "9" * 40},
+                ["contribute", "--repeat", "2"],
+            )
+        self.assertEqual(result, 2)
+
     def test_send_eth_alias_normalizes_unitless_eth(self):
         self.assertEqual(
             lk.normalize_send_options(["contribute", "--eth", "0.001"]),
@@ -160,6 +216,7 @@ class CliConsistencyTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("--eth <amount>", rendered)
         self.assertIn("--repeat <N>", rendered)
+        self.assertIn("--actors", rendered)
         self.assertIn("msg.sender", rendered)
 
 
