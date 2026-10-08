@@ -3585,6 +3585,15 @@ def run_cast(args,config,capture=False):
     remaining=cleaned
 
     if cast_cmd == "send":
+        if "--actors" in remaining:
+            if actor_override:
+                result=CommandResult("Error: --actors cannot be combined with --actor/--as.",2)
+                record_status(result.code)
+                if capture: return result
+                print(str(result),file=sys.stderr)
+                return result.code
+            remaining = [token for token in remaining if token != "--actors"]
+            return run_multi_actor_send(config, remaining)
         try:
             remaining = normalize_send_options(remaining)
         except ValueError as error:
@@ -3688,7 +3697,9 @@ def run_cast(args,config,capture=False):
             match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
             if match:
                 tx_hash=match.group(1)
-                config["last_tx"]=tx_hash; config["last_tx_block"]=None; save_config(config)
+                config["last_tx"]=tx_hash; config["last_tx_block"]=None
+                if not config.get("_ephemeral"):
+                    save_config(config)
                 call=remaining[0] if remaining and "(" in remaining[0] else None
                 root=audit_context.foundry_project_root()
                 audit_context.set_latest(root,tx_hash=tx_hash,function=call)
@@ -8917,6 +8928,74 @@ def split_lab_options(args):
         values.append(token)
         index+=1
     return values,actor,value,keep,repeat
+
+def run_multi_actor_send(config, args):
+    """Send the same call from up to ten live Anvil accounts as separate transactions."""
+    info = anvil_rpc_info(config)
+    accounts = info.get("accounts", []) if isinstance(info, dict) else []
+    if not accounts:
+        return fail(
+            "Error: no Anvil accounts detected. Start Anvil with its default unlocked accounts first."
+        )
+
+    accounts = [str(address).strip() for address in accounts if is_address(address)][:10]
+    if not accounts:
+        return fail("Error: the detected Anvil RPC reported no usable accounts.")
+
+    if any(str(token) in {"--repeat", "--times"} for token in args):
+        return fail(
+            "Error: --actors cannot be combined with --repeat/--times. "
+            "--actors already sends separate transactions from different Anvil identities."
+        )
+
+    rpc = info.get("url")
+    print("MULTI-ACTOR SEND")
+    print("================")
+    print(f"Anvil RPC: {rpc}")
+    print(f"Accounts detected: {len(accounts)}")
+    print(f"Accounts used:     {len(accounts)} (maximum 10)")
+    print("Each account sends a separate transaction, so msg.sender changes per call.")
+    print("")
+
+    overall_code = 0
+    successes = 0
+    failures = 0
+    original_target = config.get("target")
+
+    for index, address in enumerate(accounts):
+        actor_name = f"anvil-{index}"
+        actor_config = dict(config)
+        actor_config["_ephemeral"] = True
+        actor_config["actor"] = actor_name
+        actor_config["wallets"] = dict(config.get("wallets") or {})
+        actor_config["wallets"][actor_name] = {
+            "source": "anvil-impersonated",
+            "address": address,
+        }
+
+        result = run_cast(["send", *args], actor_config, capture=True)
+        code = getattr(result, "code", 0)
+        output = str(result).strip()
+
+        print(f"ACCOUNT {index}: {address}")
+        if code == 0:
+            print(format_send_summary(output, actor_config, args[0] if args else None))
+            successes += 1
+        else:
+            print(f"Status:    FAILED")
+            if output:
+                print(output)
+            failures += 1
+            overall_code = max(overall_code, 1 if code == 1 else code)
+        print("")
+
+    print("MULTI-ACTOR SUMMARY")
+    print("===================")
+    print(f"Attempted:  {len(accounts)}")
+    print(f"Succeeded:  {successes}")
+    print(f"Failed:     {failures}")
+    return overall_code
+
 
 def normalize_send_options(args):
     """Normalize Lowkey-only send flags before passing arguments to Cast."""
