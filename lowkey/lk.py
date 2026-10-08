@@ -8942,6 +8942,65 @@ def prepare_argument_values(config, function_item, values):
     return resolve_argument_aliases(config, function_item, prepared)
 
 
+def split_grouped_argument_values(values, expected_count):
+    """Expand one outer '(a,b,c)' group when the ABI expects several values."""
+    raw=list(values or [])
+    if expected_count <= 1 or not raw:
+        return raw
+
+    def split_top_level(text):
+        parts=[]
+        start=0
+        depth=0
+        quote=None
+        escaped=False
+        pairs={"(":")", "[":"]", "{":"}"}
+        closing=set(pairs.values())
+        for index,char in enumerate(text):
+            if quote:
+                if escaped:
+                    escaped=False
+                elif char == "\\":
+                    escaped=True
+                elif char == quote:
+                    quote=None
+                continue
+            if char in {"'", '"'}:
+                quote=char
+                continue
+            if char in pairs:
+                depth += 1
+            elif char in closing:
+                depth -= 1
+                if depth < 0:
+                    return None
+            elif char == "," and depth == 0:
+                part=text[start:index].strip()
+                if not part:
+                    return None
+                parts.append(part)
+                start=index+1
+        if quote or depth != 0:
+            return None
+        tail=text[start:].strip()
+        if not tail:
+            return None
+        parts.append(tail)
+        return parts
+
+    expanded=[]
+    for token in raw:
+        token_text=str(token).strip()
+        if len(token_text) >= 2 and token_text.startswith("(") and token_text.endswith(")"):
+            parts=split_top_level(token_text[1:-1])
+            if parts and len(parts) > 1:
+                expanded.extend(parts)
+                continue
+        expanded.append(token)
+
+    return expanded if len(expanded) == expected_count else raw
+
+
 def encode_target_call(config, function, values):
     target=config.get("target")
     if not target:
@@ -8974,8 +9033,9 @@ def encode_target_call(config, function, values):
             + " Use 'lk fn' to see the active contract interface."
         )
     if len(matches)==1:
-        values=prepare_argument_values(config,matches[0],values)
         inputs=matches[0].get("inputs",[])
+        values=split_grouped_argument_values(values, len(inputs))
+        values=prepare_argument_values(config,matches[0],values)
         if len(values)!=len(inputs):
             expected=", ".join(
                 f"{item.get('name') or 'arg'+str(index+1)}:{canonical_type(item)}"
