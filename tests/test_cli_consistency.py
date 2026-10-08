@@ -58,6 +58,66 @@ class CliConsistencyTests(unittest.TestCase):
             self.assertEqual(lk.prepare_argument_values(config, item, ["Alice"]), [actor])
             resolve_target.assert_not_called()
 
+    def test_balance_resolves_named_target_and_labels_it(self):
+        target = "0x" + "3" * 40
+        config = {
+            "target": target,
+            "rpc": "http://127.0.0.1:8545",
+            "targets": {"Fallback": target},
+        }
+        with patch.object(lk, "target_aliases", return_value={"Fallback": target}),              patch.object(lk, "rpc_json", return_value="0x16345785d8a0000"):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_balance(config)
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn(f"Address:  Fallback ({target})", rendered)
+        self.assertIn("Balance:", rendered)
+
+    def test_balance_accepts_named_target_argument(self):
+        target = "0x" + "3" * 40
+        config = {
+            "target": "0x" + "4" * 40,
+            "rpc": "http://127.0.0.1:8545",
+            "targets": {"Fallback": target},
+        }
+        with patch.object(lk, "resolve_target_ref", return_value=target),              patch.object(lk, "apply_labels", side_effect=lambda value, _config: f"Fallback ({value})"),              patch.object(lk, "rpc_json", return_value="0x0"):
+            result_output = io.StringIO()
+            with redirect_stdout(result_output):
+                result = lk.run_balance(config, ["Fallback"])
+
+        self.assertEqual(result, 0)
+        self.assertIn(f"Address:  Fallback ({target})", result_output.getvalue())
+
+    def test_mapping_without_arguments_indexes_mappings_and_arrays(self):
+        config = {"target": "0x" + "3" * 40}
+        types = {
+            "t_address": {"label": "address", "numberOfBytes": 20},
+            "t_uint256": {"label": "uint256", "numberOfBytes": 32},
+            "t_mapping": {"label": "mapping(address => uint256)", "encoding": "mapping", "key": "t_address", "value": "t_uint256"},
+            "t_array_uint": {"label": "uint256[]", "encoding": "dynamic_array", "base": "t_uint256"},
+        }
+        storage = [
+            {"slot": "0", "offset": 0, "label": "contributions", "type": "t_mapping"},
+            {"slot": "2", "offset": 0, "label": "values", "type": "t_array_uint"},
+        ]
+        with patch.object(lk, "storage_layout_details", return_value=(types, storage)):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = lk.run_mapping(config)
+
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("contributions", rendered)
+        self.assertIn("Slot: 0", rendered)
+        self.assertIn("mapping(address => uint256)", rendered)
+        self.assertIn("Lookup: lk mapping address 0 <address>", rendered)
+        self.assertIn("values", rendered)
+        self.assertIn("Slot: 2", rendered)
+        self.assertIn("uint256[]", rendered)
+        self.assertIn("keccak256(base slot) + index", rendered)
+
     def test_storage_read_labels_actor_address(self):
         address = "0x" + "f" * 40
         config = {
