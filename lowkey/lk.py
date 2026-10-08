@@ -8950,7 +8950,7 @@ def normalize_send_options(args):
                 raise ValueError(f"{token} cannot exceed 100")
             if repeat != 1:
                 raise ValueError(
-                    "Error: --repeat/--times cannot repeat an exact call inside one generic send transaction. "
+                    "--repeat/--times cannot repeat an exact call inside one generic send transaction. "
                     "A helper contract would change msg.sender, while separate sends would be separate transactions. "
                     "Use 'lk changes --repeat N' for one-transaction state-diff experiments."
                 )
@@ -15032,13 +15032,20 @@ def main():
         return fail("Refusing to run with a mismatched Lowkey installation.", 3)
 
     result=dispatch_command(command,sys.argv[2:],config)
+    result_code = result if isinstance(result, int) else getattr(result, "code", 0)
+    if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
+        result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
         "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
-    if sys.argv[1] in evidence_commands and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks","break"}:
+    if (
+        result_code == 0
+        and sys.argv[1] in evidence_commands
+        and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks","break"}
+    ):
         try:
             refresh_generated_poc(config)
         except Exception as error:
@@ -15047,9 +15054,7 @@ def main():
         save_config(config)
     final_root = audit_context.foundry_project_root()
     _sync_audit_context(config, final_root)
-    footer_status = result
-    if _COMMAND_STATUS and (not isinstance(result, int) or result == 0):
-        footer_status = _COMMAND_STATUS
+    footer_status = result_code
     _print_recommended_next_commands(
         command_name if 'command_name' in locals() else command,
         sys.argv[2:],
