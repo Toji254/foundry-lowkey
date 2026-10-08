@@ -2092,6 +2092,24 @@ contract Pool {
         self.assertNotIn(actual, config["labels"])
         save_config.assert_called_once()
 
+    def test_status_labels_target_with_contract_and_address(self):
+        target="0x"+"3"*40
+        config={
+            "target":target,
+            "target_contract":"Fallback",
+            "rpc":None,
+            "wallets":{},
+            "actor":None,
+            "labels":{},
+        }
+        with patch.object(lk, "load_abi"),              patch.object(lk, "effective_rpc", return_value=None),              patch.object(lk, "anvil_rpc_info", return_value=None),              patch.object(lk, "_sync_current_anvil_actor"),              patch.object(lk, "_sync_security_patterns"),              patch.object(lk, "_security_pattern_summary", return_value={"total":0,"reviews":0,"confirmed":0,"candidates":0}),              patch("builtins.print") as printed:
+            result=lk.run_status(config)
+
+        self.assertIsNone(result)
+        rendered="\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        self.assertIn(f"Target : Fallback @ {target}", rendered)
+        self.assertIn("Contract: Fallback", rendered)
+
     def test_status_repairs_stale_anvil_actor_before_display(self):
         recorded="0x"+"1"*40
         actual="0x"+"2"*40
