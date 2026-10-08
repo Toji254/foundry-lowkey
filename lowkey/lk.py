@@ -2703,6 +2703,17 @@ def _known_address_identities(config):
             continue
         identities[lowered] = (str(name), str(address))
 
+    # Keep internal deployment identities available for output even when
+    # another actor is currently active. Public actor names keep priority.
+    for name, entry in (config.get("wallets") or {}).items():
+        if not wallet_is_internal(name, entry) or not isinstance(entry, dict):
+            continue
+        address = entry.get("address")
+        if not is_address(address):
+            continue
+        lowered = str(address).lower()
+        identities.setdefault(lowered, (str(name), str(address)))
+
     # Explicit labels remain useful when no actor/wallet name owns the address.
     for address, label in (config.get("labels") or {}).items():
         if not is_address(address) or not str(label).strip():
@@ -3572,6 +3583,17 @@ def run_cast(args,config,capture=False):
         cleaned.append(token)
         index += 1
     remaining=cleaned
+
+    if cast_cmd == "send":
+        try:
+            remaining = normalize_send_options(remaining)
+        except ValueError as error:
+            result=CommandResult(f"Error: {error}",2)
+            record_status(result.code)
+            if capture:
+                return result
+            print(str(result), file=sys.stderr)
+            return result.code
 
     if cast_cmd in {"call","send","storage"}:
         if remaining and is_address(remaining[0]): target=remaining.pop(0)
@@ -7576,9 +7598,37 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     print(f"Target  : {contract} -> {apply_labels(effective_target, config)}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
+    print(f"Deployment signer : lab-deployer ({accounts[0]}) [Anvil #0]")
+    _print_lab_owner_identity(config, effective_target)
     _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
+
+def _print_lab_owner_identity(config, target):
+    """Show the deployed contract's owner when its ABI exposes owner()."""
+    abi=load_abi(target, config)
+    matches=matching_functions(abi, "owner") if abi else []
+    if len(matches) != 1:
+        return
+    item=matches[0]
+    if item.get("stateMutability") not in {"view","pure"}:
+        return
+    outputs=item.get("outputs", [])
+    if len(outputs) != 1 or canonical_type(outputs[0]) != "address":
+        return
+    try:
+        rpc=effective_rpc(config)
+        if not rpc:
+            return
+        code, owner, _=cast_output(
+            ["cast", "call", target, format_signature(item), "--rpc-url", rpc]
+        )
+    except Exception:
+        return
+    owner=str(owner or "").strip()
+    if code == 0 and is_address(owner):
+        print(f"Owner after deployment : {apply_labels(owner, config)}")
+
 
 def _numeric_field_is_value_like(label):
     lowered = str(label or "").lower().replace("_", "")
@@ -8143,6 +8193,8 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
 
     print(f"Target  : {contract} @ {target}")
     print(f"ABI     : {path}")
+    print(f"Constructor caller : lab-deployer ({accounts[0]}) [Anvil #0]")
+    _print_lab_owner_identity(config, target)
     _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
@@ -8828,6 +8880,10 @@ def split_lab_options(args):
             if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
                 value=f"{value} {raw[index]}"
                 index+=1
+            elif token == "--eth":
+                # --eth is the human-friendly ETH form: a unitless number means ETH.
+                # Explicit wei/gwei/ether remains unchanged.
+                value=f"{value} ether"
             continue
         if token=="--keep":
             keep=True
@@ -8849,6 +8905,48 @@ def split_lab_options(args):
         values.append(token)
         index+=1
     return values,actor,value,keep,repeat
+
+def normalize_send_options(args):
+    """Normalize Lowkey-only send flags before passing arguments to Cast."""
+    cleaned=[]
+    index=0
+    raw=list(args or [])
+    while index < len(raw):
+        token=str(raw[index])
+        if token == "--eth":
+            if index + 1 >= len(raw):
+                raise ValueError("--eth needs an ETH amount")
+            amount=str(raw[index + 1])
+            index += 2
+            if index < len(raw) and str(raw[index]).lower() in {"wei","gwei","ether"}:
+                amount=f"{amount} {raw[index]}"
+                index += 1
+            elif re.fullmatch(r"[0-9]+(?:.[0-9]+)?", amount):
+                amount=f"{amount} ether"
+            cleaned.extend(["--value", amount])
+            continue
+        if token in {"--repeat","--times"}:
+            if index + 1 >= len(raw):
+                raise ValueError(f"{token} needs a positive integer")
+            try:
+                repeat=int(raw[index + 1])
+            except (TypeError, ValueError):
+                raise ValueError(f"{token} needs a positive integer")
+            if repeat < 1:
+                raise ValueError(f"{token} must be at least 1")
+            if repeat > 100:
+                raise ValueError(f"{token} cannot exceed 100")
+            if repeat != 1:
+                raise ValueError(
+                    "Error: --repeat/--times cannot repeat an exact call inside one generic send transaction. "
+                    "A helper contract would change msg.sender, while separate sends would be separate transactions. "
+                    "Use 'lk changes --repeat N' for one-transaction state-diff experiments."
+                )
+            index += 2
+            continue
+        cleaned.append(raw[index])
+        index += 1
+    return cleaned
 
 def solidity_value(value):
     value=str(value or "0").strip()
@@ -8908,6 +9006,12 @@ def resolve_argument_aliases(config, function_item, values):
             name=str(value).strip()
             if not is_address(name):
                 address=actor_address(config,name)
+                if not address:
+                    try:
+                        root=audit_context.foundry_project_root()
+                        address=resolve_target_ref(config,name,root)
+                    except Exception:
+                        address=None
                 if address:
                     value=address
         value=normalize_numeric_argument(value,item_type)
@@ -10184,6 +10288,7 @@ contract LowkeyStateDiff is Test {{
         if parsed["gas"] is not None:
             print(f"Gas:       {parsed['gas']}")
         print(f"Storage:   {len(parsed['slots'])} change(s)")
+        print("Persistence: temporary test; chain state unchanged")
         root=audit_context.foundry_project_root()
         audit_context.update(root, latest={"function":signature, "value":str(parsed["eth_sent"]), "calldata":calldata, "state_diff":"recorded"})
         audit_context.record_tool("state-diff", root, status="completed", summary=f"{len(parsed['slots'])} storage change(s)", data={"function":signature, "generated_test":path})
@@ -13125,7 +13230,7 @@ COMMAND_HELP = {
             ("lk read <target> <function> <args...>", "Read a function on a specific contract address without changing the current target.", "lk read 0x1111111111111111111111111111111111111111 getValue"),
         ],
         options=[
-            ("address", "Pass an Ethereum address directly or use a configured actor name where supported.", "lk read getValue"),
+            ("address", "Pass an Ethereum address directly, a configured actor name such as Alice or Bob, or a project target name such as Fallback.", "lk read contributions Fallback"),
             ("number", "Pass integer values normally; common units such as ether, gwei, and wei are understood for integer arguments.", "lk read getValue"),
             ("bytes32", "Pass a 32-byte hexadecimal value with 0x followed by exactly 64 hex characters, such as a record ID.", "lk read getValue"),
         ],
@@ -13134,22 +13239,26 @@ COMMAND_HELP = {
     "send": _help_entry(
         "Send a transaction that can change contract data or move ETH or tokens.",
         "lk send <function> [args...] [options]",
-        "lk send setValue 10 --confirm",
+        "lk send createescrow 1 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --value 1ether --confirm",
         "Use it after you understand the function and are ready to actually run it. Use --preview first when you only want to check what will be sent.",
         forms=[
-            ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send setValue 10"),
-            ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send setValue 10 --value 1ether"),
-            ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send setValue 10 --actor Alice"),
-            ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send setValue 10 --as Alice"),
+            ("lk send <function> [args...]", "Send using the current actor and current settings.", "lk send release 0xd9c5..."),
+            ("lk send <function> [args...] --value <amount>", "Attach ETH to the transaction. Solidity receives that ETH as msg.value.", "lk send createescrow 1 0x7099... --value 1ether"),
+            ("lk send <function> [args...] --eth <amount>", "Another spelling of --value. A unitless amount such as 0.001 means 0.001 ETH.", "lk send contribute --eth 0.001"),
+            ("lk send <function> [args...] --actor <name>", "Send as one of your named local actors.", "lk send release 0xd9c5... --actor Alice"),
+            ("lk send <function> [args...] --as <name>", "Same as --actor; choose a named local actor for this one command.", "lk send release 0xd9c5... --as attacker"),
         ],
         options=[
-            ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send setValue 10 --value 1ether"),
-            ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send setValue 10 --actor Alice"),
-            ("--as <name>", "Another spelling of --actor.", "lk send setValue 10 --as Alice"),
-            ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send setValue 10 --preview"),
-            ("--dry-run", "Another spelling of --preview.", "lk send setValue 10 --dry-run"),
-            ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send setValue 10 --confirm"),
-            ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send setValue 10 --yes"),
+            ("--value <amount>", "Attach ETH to the transaction. Example: --value 1ether sends 1 ETH and makes msg.value equal 1 ETH inside the function. Use this for a payable function.", "lk send createescrow 1 0x7099... --value 1ether"),
+            ("--eth <amount>", "Another spelling of --value. A unitless amount is interpreted as ETH; explicit wei/gwei/ether units remain unchanged.", "lk send contribute --eth 0.001"),
+            ("--actor <name>", "Choose which named local actor sends the transaction.", "lk send release 0xd9c5... --actor Alice"),
+            ("--as <name>", "Another spelling of --actor.", "lk send release 0xd9c5... --as attacker"),
+            ("--preview", "Show the transaction Lowkey would send, but do not send it.", "lk send release 0xd9c5... --preview"),
+            ("--dry-run", "Another spelling of --preview.", "lk send release 0xd9c5... --dry-run"),
+            ("--confirm", "Show the transaction first, then ask you whether to send it.", "lk send release 0xd9c5... --confirm"),
+            ("--repeat <N>", "Accepted only as 1. A generic EOA transaction cannot repeat the exact target call N times without changing msg.sender or creating separate transactions.", "lk send setValue 10 --repeat 1"),
+            ("--times <N>", "Another spelling of --repeat; values above 1 are rejected rather than silently changing transaction semantics.", "lk send setValue 10 --times 1"),
+            ("--yes", "Do not ask for confirmation. Use this mainly for local tests or automation.", "lk send release 0xd9c5... --yes"),
         ],
         related=["lk changes", "lk trace", "lk receipt"],
     ),    "import": _help_entry(
@@ -14244,7 +14353,7 @@ _NEXT_COMMANDS = {
     "findings": ["lk focus <id>", "lk q next", "lk context", "lk checklist"],
     "focus": ["lk fn <function>", "lk changes <function> [values...]", "lk trace", "lk finding <note>"],
     "probe": ["lk changes <function> [values...]", "lk trace", "lk finding <note>"],
-    "changes": ["lk trace", "lk findings", "lk finding <note>", "lk mapping <slot> <key>"],
+    "changes": ["lk findings", "lk finding <note>", "lk mapping <slot> <key>", "lk read <function> [args]"],
     "trace": ["lk changes <function> [values...]", "lk tx <tx>", "lk findings"],
     "tx": ["lk receipt", "lk trace", "lk logs"],
     "receipt": ["lk trace", "lk tx", "lk logs"],
