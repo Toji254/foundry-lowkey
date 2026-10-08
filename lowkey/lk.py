@@ -3560,16 +3560,17 @@ def run_cast(args,config,capture=False):
             record_status(result.code)
             print(str(result),file=sys.stderr)
             return result if capture else result.code
-    guard = _target_health_block(
-        config,
-        target,
-        remaining[0] if cast_cmd in {"call", "send"} and remaining else None,
-        cast_cmd,
-        remaining,
-        capture=capture,
-    )
-    if guard is not None:
-        return guard
+    if not capture:
+        guard = _target_health_block(
+            config,
+            target,
+            remaining[0] if cast_cmd in {"call", "send"} and remaining else None,
+            cast_cmd,
+            remaining,
+            capture=False,
+        )
+        if guard is not None:
+            return guard
 
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
@@ -3721,6 +3722,7 @@ def run_balance(config,args=None):
         if state.get("status") == "NOT_DEPLOYED":
             print("Deployment: NOT DEPLOYED")
             print("WARNING   : this target address has ETH, but the current RPC reports no contract bytecode.")
+    return 0
 
 def run_recon(config):
     target=config.get("target")
@@ -12388,7 +12390,6 @@ def run_status(config):
         state = context.get("tools", {}).get(tool_name, {})
         if isinstance(state, dict) and state.get("status"):
             print(f"{tool_name.capitalize():<8}: {state.get('status')}" + (f" — {state.get('summary')}" if state.get("summary") else ""))
-    return 0
 
 def run_wizard(config,args):
     if not args:
