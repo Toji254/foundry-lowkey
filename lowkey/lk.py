@@ -13881,8 +13881,8 @@ COMMAND_HELP = {
     "version": _help_entry("Show the installed Lowkey runtime version/status.", "lk version", "lk version", "Use it when checking which Lowkey runtime is installed."),
     "detect": _help_entry("Detect the current project/toolchain.", "lk detect", "lk detect", "Use it when you want Lowkey to explain which build/backend it sees.", related=["lk project", "lk doctor"]),
     "detect-project": _help_entry("Alias for project/toolchain detection.", "lk detect-project", "lk detect-project", "Use it as an explicit project-detection command.", related=["lk detect", "lk project"]),
-    "storage": _help_entry("Use raw storage inspection through Cast.", "lk storage ...", "lk raw storage 0", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping"]),
-    "slots": _help_entry("Alias-style low-level storage inspection.", "lk slots ...", "lk raw storage 0", "Use it for direct slot inspection.", related=["lk layout", "lk mapping"]),
+    "storage": _help_entry("Read a raw storage slot from the selected target.", "lk storage <slot>", "lk storage 0", "Use it for low-level storage reads when the higher-level wrappers are not enough.", related=["lk layout", "lk mapping"]),
+    "slots": _help_entry("Alias for selected-target storage inspection.", "lk slots <slot>", "lk slots 0", "Use it for direct slot inspection.", related=["lk storage", "lk layout"]),
     "c": _help_entry("Short alias for a contract read.", "lk c <function> [args...]", "lk c getValue 0x...", "Use it when you want the compact read form.", related=["lk read"]),
     "s": _help_entry("Short alias for a contract send.", "lk s <function> [args...]", "lk s setValue 10 --preview", "Use it when you want the compact send form.", related=["lk send"]),
     "st": _help_entry("Short low-level/state helper alias.", "lk st ...", "lk st storage 0", "Use it when you want the compact forensic form.", related=["lk raw", "lk state-diff"]),
@@ -14263,7 +14263,7 @@ INTERACT WITH CONTRACTS
   lk send ... --confirm            Preview, then ask before sending.
   lk c <function> [args]           Short read alias. Example: lk c balanceOf <address>
   lk s <function> [args]           Short send alias. Example: lk s withdraw --preview
-  lk st ...                        Short raw-storage/low-level alias.
+  lk st <slot>                     Short selected-target raw-storage alias.
   lk encode <function> [args]      Build calldata. Example: lk encode withdraw
   lk decode <function> <data>      Decode return data.
   lk decode-error <data>           Decode a custom error.
@@ -15032,8 +15032,9 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd=="deps": run_deps(args)
     elif cmd=="layout": run_layout(args)
     elif cmd=="gas": run_gas(config,args)
-    elif cmd=="raw": run_raw(config,args)
-    elif cmd=="batch": run_batch(config,args)
+    elif cmd=="raw": return run_raw(config,args)
+    elif cmd in {"storage","slots"}: return run_cast(["storage",*args],config)
+    elif cmd=="batch": return run_batch(config,args)
     elif cmd=="self-test": raise SystemExit(run_self_test())
     elif cmd=="doctor": return run_doctor()
     elif cmd=="receipt": return run_receipt(config, args=args)
