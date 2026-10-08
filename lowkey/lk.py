@@ -8942,7 +8942,7 @@ def prepare_argument_values(config, function_item, values):
     return resolve_argument_aliases(config, function_item, prepared)
 
 
-def split_grouped_argument_values(values, expected_count):
+def split_grouped_argument_values(values, expected_count, inputs=None):
     """Expand one outer '(a,b,c)' group when the ABI expects several values."""
     raw=list(values or [])
     if expected_count <= 1 or not raw:
@@ -8989,15 +8989,22 @@ def split_grouped_argument_values(values, expected_count):
         return parts
 
     expanded=[]
-    for token in raw:
+    for index,token in enumerate(raw):
         token_text=str(token).strip()
-        if len(token_text) >= 2 and token_text.startswith("(") and token_text.endswith(")"):
+        is_tuple_input=False
+        if inputs and index < len(inputs):
+            item_type=canonical_type(inputs[index])
+            is_tuple_input=item_type.startswith("(")
+        if len(token_text) >= 2 and token_text.startswith("(") and token_text.endswith(")") and not is_tuple_input:
             parts=split_top_level(token_text[1:-1])
             if parts and len(parts) > 1:
                 expanded.extend(parts)
                 continue
+        parts=split_top_level(token_text) if "," in token_text else None
+        if parts and len(parts) > 1 and not is_tuple_input:
+            expanded.extend(parts)
+            continue
         expanded.append(token)
-
     return expanded if len(expanded) == expected_count else raw
 
 def parse_type_list_token(token):
@@ -9086,7 +9093,7 @@ def encode_target_call(config, function, values):
         )
     if len(matches)==1:
         inputs=matches[0].get("inputs",[])
-        values=split_grouped_argument_values(values, len(inputs))
+        values=split_grouped_argument_values(values, len(inputs), inputs)
         values=prepare_argument_values(config,matches[0],values)
         if len(values)!=len(inputs):
             expected=", ".join(
