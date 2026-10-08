@@ -3541,6 +3541,17 @@ def run_cast(args,config,capture=False):
         cmd=["cast",cast_cmd,target]
     else: cmd=["cast",cast_cmd]
     function_item=None
+    if not capture:
+        guard = _target_health_block(
+            config,
+            target,
+            remaining[0] if cast_cmd in {"call", "send"} and remaining else None,
+            cast_cmd,
+            remaining,
+            capture=False,
+        )
+        if guard is not None:
+            return guard
     if cast_cmd in {"call","send"} and remaining:
         if "(" not in remaining[0] or ")" not in remaining[0]:
             try: remaining[0]=resolve_function(remaining[0],target,config)
@@ -3560,18 +3571,6 @@ def run_cast(args,config,capture=False):
             record_status(result.code)
             print(str(result),file=sys.stderr)
             return result if capture else result.code
-    if not capture:
-        guard = _target_health_block(
-            config,
-            target,
-            remaining[0] if cast_cmd in {"call", "send"} and remaining else None,
-            cast_cmd,
-            remaining,
-            capture=False,
-        )
-        if guard is not None:
-            return guard
-
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
     bypass="--yes" in remaining
