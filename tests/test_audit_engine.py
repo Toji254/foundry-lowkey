@@ -293,11 +293,11 @@ class AuditEngineTests(unittest.TestCase):
 
             with patch.object(audit_engine, "rg_available", return_value=True), patch.object(
                 audit_engine, "run_command", return_value=(0, output, "")
-            ), patch.object(audit_engine, "record_evidence") as record, redirect_stdout(io.StringIO()) as rendered:
+            ) as run_command, patch.object(audit_engine, "record_evidence") as record, redirect_stdout(io.StringIO()) as rendered:
                 code = audit_engine.run_rg("mint", root=str(root))
 
             self.assertEqual(code, 0)
-            command = audit_engine.run_command.call_args.args[0]
+            command = run_command.call_args.args[0]
             self.assertIn("--glob", command)
             self.assertIn("!lib/**", command)
             text = rendered.getvalue()
