@@ -11565,7 +11565,7 @@ def run_native_project_command(config, command_name, args):
                         continue
                     lowkey_state_diff_tests.append(test_file)
                     if not re.search(
-                        r"TARGET\\s*\\.\\s*code\\s*\\.\\s*length\\s*>\\s*0",
+                        r"TARGET\s*\.\s*code\s*\.\s*length\s*>\s*0",
                         generated_source,
                     ):
                         print("LOWKEY TEST SAFETY CHECK")
