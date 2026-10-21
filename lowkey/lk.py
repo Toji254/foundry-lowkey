@@ -10771,11 +10771,13 @@ contract LowkeyStateDiff is Test {{
     uint256 constant VALUE = {solidity_value(value)};
 
     function setUp() public {{
-        // State-diff tests must inspect a real deployed contract, not an EOA.
-        // The command runner uses the active Anvil fork; direct forge runs need --fork-url.
+        // A Foundry test has its own EVM and does not inherit the live Anvil's state.
+        // Select the configured Anvil RPC explicitly so the target's deployment is visible.
+        // Override this URL with LOWKEY_RPC_URL when auditing a different local/forked chain.
+        vm.createSelectFork(vm.envOr("LOWKEY_RPC_URL", "http://127.0.0.1:8545"));
         require(
             TARGET.code.length > 0,
-            "Lowkey: target has no runtime code; run against the recorded chain fork"
+            "Lowkey: target has no runtime code on the selected RPC"
         );
     }}
 
