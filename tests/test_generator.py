@@ -514,6 +514,8 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIn('hex"deadbeef"', text)
             self.assertIn("vm.prank(attacker)", text)
             self.assertIn("vm.snapshot()", text)
+            self.assertIn("vm.createSelectFork", text)
+            self.assertIn("TARGET.code.length", text)
 
     def test_generate_test_deploys_first_party_contract_locally_when_no_constructor_args(self):
         target = "0x" + "1" * 40
