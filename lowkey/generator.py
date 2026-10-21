@@ -1048,21 +1048,55 @@ contract LowkeyPoC_{ident} is Script {{
 }}
 '''
 
-def _template_test(contract: str, target: str, function: str, value: str, calldata: str) -> str:
+def _template_test(
+    contract: str,
+    target: str,
+    function: str,
+    value: str,
+    calldata: str,
+    *,
+    source_import: str | None = None,
+    deploy_locally: bool = False,
+) -> str:
     ident = _id(contract, "Target")
     test_name = _id(function or "reproduction").lower()
+
+    if deploy_locally and source_import:
+        target_import = f'import {{ {contract} }} from "{source_import}";'
+        target_declaration = (
+            f"    {contract} internal targetContract;\n"
+            "    address internal TARGET;"
+        )
+        target_setup = (
+            f"        targetContract = new {contract}();\n"
+            "        TARGET = address(targetContract);"
+        )
+    else:
+        target_import = ""
+        target_declaration = (
+            f"    address internal constant TARGET = "
+            f"{_solidity_address_literal(target)};"
+        )
+        target_setup = (
+            '        // Existing-deployment mode forks a chain where TARGET is deployed.\n'
+            '        // Override the local Anvil default with LOWKEY_RPC_URL when needed.\n'
+            '        vm.createSelectFork(vm.envOr("LOWKEY_RPC_URL", "http://127.0.0.1:8545"));'
+        )
+
     return f'''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 import {{Test, console2}} from "forge-std/Test.sol";
 import {{Vm}} from "forge-std/Vm.sol";
 
+{target_import}
+
 interface IERC20Lowkey {{
     function balanceOf(address account) external view returns (uint256);
 }}
 
 contract LowkeyTest_{ident} is Test {{
-    address internal constant TARGET = {_solidity_address_literal(target)};
+{target_declaration}
     address internal attacker;
     address internal victim;
 
@@ -1128,6 +1162,7 @@ contract LowkeyTest_{ident} is Test {{
     }}
 
     function setUp() public {{
+{target_setup}
         attacker = makeAddr("attacker");
         victim = makeAddr("victim");
         vm.deal(attacker, 100 ether);
@@ -1317,13 +1352,41 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             print(f"Error: {exc}")
             return 2
 
-    artifact = find_artifact(root)
+    preferred_contract = str(config.get("target_contract") or "").strip()
+    artifact = find_artifact(root, preferred_contract) if preferred_contract else None
+    if artifact is None:
+        artifact = find_artifact(root)
     if artifact:
         payload = artifact[1]
         contract = str(payload.get("contractName") or artifact[0].stem or "Target")
     else:
+        payload = {}
         contract = "Target"
     ident = _id(contract, "Target")
+
+    # Generated Forge tests run in their own EVM, not in the Anvil instance
+    # that supplied the recorded TARGET address. Prefer a reproducible local
+    # deployment when the target is a first-party Solidity contract with no
+    # constructor arguments. Deployed contracts that cannot be recreated this
+    # way use an explicit fork, rather than accidentally testing an empty EOA.
+    test_source_import = None
+    deploy_test_locally = False
+    if kind == "test" and artifact:
+        artifact_path, payload = artifact
+        source_path = _artifact_source_path(root, artifact_path)
+        constructor = _constructor(payload.get("abi", []))
+        constructor_inputs = constructor.get("inputs", []) if constructor else []
+        bytecode = payload.get("bytecode", {})
+        if (
+            source_path
+            and source_path.suffix.lower() == ".sol"
+            and isinstance(bytecode, dict)
+            and bytecode.get("object")
+            and not constructor_inputs
+        ):
+            test_source_import = _source_import(root, artifact_path, contract)
+            deploy_test_locally = True
+
     if kind == "poc":
         content = _context_comment_block(evidence) + _template_poc(contract, request.target, request.function or "raw-call", request.value, request.calldata or "")
         if placeholder_request:
@@ -1333,7 +1396,15 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             )
         default = Path("script") / f"LowkeyPoC_{ident}.s.sol"
     else:
-        content = _context_comment_block(evidence) + _template_test(contract, request.target, request.function or "raw-call", request.value, request.calldata or "")
+        content = _context_comment_block(evidence) + _template_test(
+            contract,
+            request.target,
+            request.function or "raw-call",
+            request.value,
+            request.calldata or "",
+            source_import=test_source_import,
+            deploy_locally=deploy_test_locally,
+        )
         if placeholder_request:
             content = content.replace(
                 'assertTrue(success, "Lowkey reproduction: target call reverted");',
