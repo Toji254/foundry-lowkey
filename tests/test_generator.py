@@ -556,6 +556,44 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertNotIn("address internal constant TARGET", source_text)
             self.assertIn("assertGt(TARGET.code.length, 0", source_text)
 
+    def test_generate_test_forks_initializer_contract_instead_of_auto_deploying(self):
+        target = "0x" + "1" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = root / "src" / "Vault.sol"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Vault { bool public initialized; function initialize() external { initialized = true; } }",
+                encoding="utf-8",
+            )
+            artifact = root / "out" / "Vault.sol" / "Vault.json"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text(
+                json.dumps({
+                    "contractName": "Vault",
+                    "abi": [
+                        {"type": "constructor", "inputs": []},
+                        {"type": "function", "name": "initialize", "inputs": [], "outputs": []},
+                    ],
+                    "bytecode": {"object": "0x6000"},
+                }),
+                encoding="utf-8",
+            )
+
+            with patch.object(generator.Path, "cwd", return_value=root):
+                result = generator.run_generate(
+                    {"target": target, "target_contract": "Vault"},
+                    ["test", "initialize()", "--calldata", "0x8129fc1c"],
+                )
+
+            self.assertEqual(result, 0)
+            generated = next((root / "test").glob("LowkeyTest_*.t.sol"))
+            source_text = generated.read_text(encoding="utf-8")
+            self.assertIn("address internal constant TARGET", source_text)
+            self.assertIn("vm.createSelectFork", source_text)
+            self.assertNotIn('import { Vault } from "../src/Vault.sol";', source_text)
+            self.assertNotIn("targetContract = new Vault();", source_text)
+
     def test_audit_candidate_prefers_focused_signal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
