@@ -1377,12 +1377,21 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         constructor = _constructor(payload.get("abi", []))
         constructor_inputs = constructor.get("inputs", []) if constructor else []
         bytecode = payload.get("bytecode", {})
+        bytecode_object = str(bytecode.get("object") or "") if isinstance(bytecode, dict) else ""
+        function_names = {
+            str(item.get("name") or "")
+            for item in _functions(payload.get("abi", []))
+        }
+        has_initializer_or_upgrade_surface = bool(
+            function_names
+            & {"initialize", "upgradeTo", "upgradeToAndCall", "proxiableUUID"}
+        )
         if (
             source_path
             and source_path.suffix.lower() == ".sol"
-            and isinstance(bytecode, dict)
-            and bytecode.get("object")
+            and bytecode_object.removeprefix("0x")
             and not constructor_inputs
+            and not has_initializer_or_upgrade_surface
         ):
             test_source_import = _source_import(root, artifact_path, contract)
             deploy_test_locally = True
