@@ -69,6 +69,10 @@ class StateDiffGeneratorTests(unittest.TestCase):
             "target has no runtime code",
             captured["body"],
         )
+        self.assertIn(
+            'vm.createSelectFork(vm.envOr("LOWKEY_RPC_URL", "http://127.0.0.1:8545"))',
+            captured["body"],
+        )
 
     def test_lk_test_blocks_legacy_state_diff_without_code_guard(self):
         from pathlib import Path
