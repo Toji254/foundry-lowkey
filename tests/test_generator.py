@@ -555,8 +555,8 @@ class LowkeyGeneratorTests(unittest.TestCase):
                 source_text,
                 r'import\s*\{\s*Vault\s*\}\s*from\s*"\.\./src/Vault\.sol";',
             )
-            self.assertIn("targetContract = new Vault();", source_text)
-            self.assertIn("TARGET = address(targetContract);", source_text)
+            self.assertIn("targetInstance = new Vault();", source_text)
+            self.assertIn("TARGET = address(targetInstance);", source_text)
             self.assertNotIn("address internal constant TARGET", source_text)
             self.assertIn("assertGt(TARGET.code.length, 0", source_text)
 
@@ -596,7 +596,7 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertIn("address internal constant TARGET", source_text)
             self.assertIn("vm.createSelectFork", source_text)
             self.assertNotIn('import { Vault } from "../src/Vault.sol";', source_text)
-            self.assertNotIn("targetContract = new Vault();", source_text)
+            self.assertNotIn("targetInstance = new Vault();", source_text)
 
     def test_audit_candidate_prefers_focused_signal(self):
         with tempfile.TemporaryDirectory() as tmp:

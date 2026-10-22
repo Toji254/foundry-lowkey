@@ -1064,12 +1064,12 @@ def _template_test(
     if deploy_locally and source_import:
         target_import = f'import {{ {contract} }} from "{source_import}";'
         target_declaration = (
-            f"    {contract} internal targetContract;\n"
+            f"    {contract} internal targetInstance;\n"
             "    address internal TARGET;"
         )
         target_setup = (
-            f"        targetContract = new {contract}();\n"
-            "        TARGET = address(targetContract);"
+            f"        targetInstance = new {contract}();\n"
+            "        TARGET = address(targetInstance);"
         )
     else:
         target_import = ""
