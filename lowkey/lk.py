@@ -358,8 +358,11 @@ def anvil_rpc_info(config):
     return info
 
 def effective_rpc(config):
+    # "rpc" is the current key; keep reading older saved configs that used "rpc_url".
     if config.get("rpc"):
         return config["rpc"]
+    if config.get("rpc_url"):
+        return config["rpc_url"]
     info=anvil_rpc_info(config)
     return info.get("url") if isinstance(info,dict) else None
 
@@ -10774,7 +10777,11 @@ contract LowkeyStateDiff is Test {{
         // A Foundry test has its own EVM and does not inherit the live Anvil's state.
         // Select the configured Anvil RPC explicitly so the target's deployment is visible.
         // Override this URL with LOWKEY_RPC_URL when auditing a different local/forked chain.
-        vm.createSelectFork(vm.envOr("LOWKEY_RPC_URL", "http://127.0.0.1:8545"));
+        string memory rpcUrl = "http://127.0.0.1:8545";
+        if (vm.envExists("LOWKEY_RPC_URL")) {{
+            rpcUrl = vm.envString("LOWKEY_RPC_URL");
+        }}
+        vm.createSelectFork(rpcUrl);
         require(
             TARGET.code.length > 0,
             "Lowkey: target has no runtime code on the selected RPC"

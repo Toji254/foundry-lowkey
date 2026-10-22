@@ -1080,7 +1080,11 @@ def _template_test(
         target_setup = (
             '        // Existing-deployment mode forks a chain where TARGET is deployed.\n'
             '        // Override the local Anvil default with LOWKEY_RPC_URL when needed.\n'
-            '        vm.createSelectFork(vm.envOr("LOWKEY_RPC_URL", "http://127.0.0.1:8545"));'
+            '        string memory rpcUrl = "http://127.0.0.1:8545";\n'
+            '        if (vm.envExists("LOWKEY_RPC_URL")) {\n'
+            '            rpcUrl = vm.envString("LOWKEY_RPC_URL");\n'
+            '        }\n'
+            '        vm.createSelectFork(rpcUrl);'
         )
 
     return f'''// SPDX-License-Identifier: MIT
