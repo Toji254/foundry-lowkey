@@ -11570,6 +11570,10 @@ def _lowkey_generated_test_safety_issue(source):
 
     has_code_guard = bool(
         re.search(r"TARGET\s*\.\s*code\s*\.\s*length\s*>\s*0", source)
+        or re.search(
+            r"assertGt\s*\(\s*TARGET\s*\.\s*code\s*\.\s*length\s*,\s*0\b",
+            source,
+        )
     )
     has_rpc_fork = bool(re.search(r"\bvm\s*\.\s*createSelectFork\s*\(", source))
     deploys_local_contract = bool(
