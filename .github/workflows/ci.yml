@@ -290,7 +290,11 @@ jobs:
           lk generate deployment Fixture
           test -f script/LowkeyDeploy_Fixture.s.sol
           forge build
-          lk target 0x1111111111111111111111111111111111111111
+          # Generated tests require the selected target to exist on the fork.
+          # Reuse the fixture runtime bytecode at the explicit generated-test address.
+          GENERATED_TARGET=0x1111111111111111111111111111111111111111
+          cast rpc anvil_setCode "$GENERATED_TARGET" "$CODE"
+          lk target "$GENERATED_TARGET"
           lk generate test ping 42 --calldata 0xdeadbeef
           test -f test/LowkeyTest_Fixture.t.sol
           lk generate poc ping 42 --calldata 0xdeadbeef

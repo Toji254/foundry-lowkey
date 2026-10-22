@@ -550,7 +550,11 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertEqual(result, 0)
             generated = next((root / "test").glob("LowkeyTest_*.t.sol"))
             source_text = generated.read_text(encoding="utf-8")
-            self.assertIn('import { Vault } from "../src/Vault.sol";', source_text)
+            # forge fmt may normalize spaces inside the named-import braces.
+            self.assertRegex(
+                source_text,
+                r'import\s*\{\s*Vault\s*\}\s*from\s*"\.\./src/Vault\.sol";',
+            )
             self.assertIn("targetContract = new Vault();", source_text)
             self.assertIn("TARGET = address(targetContract);", source_text)
             self.assertNotIn("address internal constant TARGET", source_text)
