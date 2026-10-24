@@ -536,7 +536,7 @@ class CommandHelpTests(unittest.TestCase):
         trace = f"    └─ ← [Return] {identifier}"
         with patch.object(lk, "_trace_function_item", return_value=(item, [item])):
             rendered, candidates = lk._trace_identifier_info({}, {}, trace)
-        self.assertIn(f"  Contract identifier #1: {identifier} [bytes32]", rendered)
+        self.assertIn(f"  Escrow ID: {identifier} [bytes32]", rendered)
         self.assertEqual(candidates[0]["value"], identifier.lower())
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -545,6 +545,45 @@ class CommandHelpTests(unittest.TestCase):
         self.assertEqual(first, [])
         self.assertTrue(second)
         self.assertIn("supposed to be unique", second[0])
+
+    def test_trace_output_distinguishes_transaction_id_from_record_id(self):
+        tx_hash = "0x" + "1" * 64
+        target = "0x" + "2" * 40
+        identifier = "0x" + "a" * 64
+        config = {"target": target, "wallets": {}, "labels": {}}
+        trace_result = lk.CommandResult(
+            f"    └─ ← [Return] {identifier}",
+            0,
+        )
+        output = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            with patch.object(lk, "run_cast", return_value=trace_result):
+                with patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"):
+                    with patch.object(lk, "rpc_json", return_value={"to": target, "input": "0x12345678"}):
+                        with patch.object(
+                            lk,
+                            "_trace_identifier_info",
+                            return_value=([f"  Escrow ID: {identifier} [bytes32]"], [
+                                {"value": identifier, "label": "Escrow ID", "type": "bytes32"}
+                            ]),
+                        ):
+                            with patch.object(lk, "_record_identifier_candidates", return_value=[]):
+                                with patch.object(lk.audit_context, "foundry_project_root", return_value=root):
+                                    with patch.object(lk.audit_context, "set_latest"):
+                                        with patch.object(lk.audit_context, "record_tool"):
+                                            with patch.object(lk.walkthrough, "_transaction_link", return_value=tx_hash):
+                                                with redirect_stdout(output):
+                                                    code = lk.run_trace(config, [tx_hash])
+
+        rendered = output.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn(f"Transaction ID: {tx_hash}", rendered)
+        self.assertIn(f"Escrow ID: {identifier} [bytes32]", rendered)
+        self.assertIn("Contract return:", rendered)
+        self.assertNotIn("Tx ID:", rendered)
+        self.assertNotIn("Return value #1:", rendered)
 
     def test_wizard_help_explains_how_to_attach_eth(self):
         code, output = self.capture_dispatch("wizard", "--h")
