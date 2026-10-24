@@ -544,7 +544,7 @@ class CommandHelpTests(unittest.TestCase):
             second = lk._record_identifier_candidates(temp_dir, "0x" + "2" * 64, candidates)
         self.assertEqual(first, [])
         self.assertTrue(second)
-        self.assertIn("supposed to be unique", second[0])
+        self.assertIn("should be unique", second[0])
 
     def test_trace_output_distinguishes_transaction_id_from_record_id(self):
         tx_hash = "0x" + "1" * 64
