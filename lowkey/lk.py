@@ -2608,9 +2608,9 @@ def run_trace(config,args=None):
     print("=================")
     print(f"Transaction ID: {walkthrough._transaction_link(root, tx_hash)}")
     if returned_lines:
-        print("Returned values:")
+        print("Contract return:")
         for line in returned_lines:
-            print(line.replace("Contract identifier #", "Returned contract identifier #", 1) if "Contract identifier #" in line else line)
+            print(line)
     if duplicate_warnings:
         print("")
         print("REPEATED CONTRACT IDENTIFIER")
@@ -3402,6 +3402,33 @@ def _creation_function_name(name):
         return True
     return any(word in text for word in creation_words)
 
+
+def _trace_identifier_label(function_item, output, number):
+    """Give probable returned IDs a label a learner can compare at a glance."""
+    output_name = str((output or {}).get("name") or "").strip()
+    normalized = output_name.replace("_", "").lower()
+    for suffix, display in (("id", "ID"), ("key", "key"), ("hash", "hash")):
+        if normalized.endswith(suffix) and normalized != suffix:
+            prefix = normalized[:-len(suffix)]
+            if prefix:
+                return f"{prefix[:1].upper() + prefix[1:]} {display}"
+
+    function_name = str((function_item or {}).get("name") or "").strip()
+    function_lower = function_name.lower()
+    if normalized in {"", "id", "key", "hash"}:
+        for prefix in ("create", "register", "spawn", "issue", "mint", "open", "new"):
+            if function_lower.startswith(prefix) and len(function_name) > len(prefix):
+                subject = function_name[len(prefix):].strip("_ ")
+                subject = re.sub(r"[_\-]+", " ", subject)
+                subject = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", subject).strip()
+                if subject:
+                    return f"{subject[:1].upper() + subject[1:]} ID"
+        if normalized in {"key", "hash"}:
+            return f"Returned {normalized}"
+    if normalized == "nonce":
+        return "Returned nonce"
+    return f"Returned ID #{number}"
+
 def _trace_root_return(trace_text):
     """Extract the top-level EVM return line from Cast's trace output."""
     lines = str(trace_text or "").splitlines()
@@ -3454,7 +3481,7 @@ def _trace_identifier_info(config, tx, trace_text):
         )
         if looks_like_id:
             identifier_count += 1
-            label = f"Contract identifier #{identifier_count}"
+            label = _trace_identifier_label(function_item, output, identifier_count)
         else:
             label = f"Return value #{index + 1}"
         rendered.append(f"  {label}: {raw} [{type_name}]")
@@ -3491,11 +3518,11 @@ def _record_identifier_candidates(root, tx_hash, candidates):
         duplicate = next((entry for entry in history if entry.get("tx_hash") != tx_hash), None)
         if duplicate:
             warnings.append(
-                "  Value already returned by another transaction: "
+                f"  Repeated {item.get('label') or 'contract identifier'}: "
                 f"{apply_labels(key, {})}"
-                f"\n    Previous tx: {duplicate.get('tx_hash', '?')}"
-                f"\n    Current tx:  {tx_hash}"
-                "\n    Review: check whether this value is supposed to be unique."
+                f"\n    Previous transaction ID: {duplicate.get('tx_hash', '?')}"
+                f"\n    Current transaction ID:  {tx_hash}"
+                "\n    Review: check whether this should be unique and whether an existing record was overwritten."
             )
         if not any(entry.get("tx_hash") == tx_hash for entry in history if isinstance(entry, dict)):
             history.append({
