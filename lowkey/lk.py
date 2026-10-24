@@ -3409,9 +3409,10 @@ def _trace_identifier_label(function_item, output, number):
     normalized = output_name.replace("_", "").lower()
     for suffix, display in (("id", "ID"), ("key", "key"), ("hash", "hash")):
         if normalized.endswith(suffix) and normalized != suffix:
-            prefix = normalized[:-len(suffix)]
+            prefix = output_name[:-len(suffix)].replace("_", " ").strip()
+            prefix = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", prefix)
             if prefix:
-                return f"{prefix[:1].upper() + prefix[1:]} {display}"
+                return f"{prefix.title()} {display}"
 
     function_name = str((function_item or {}).get("name") or "").strip()
     function_lower = function_name.lower()
