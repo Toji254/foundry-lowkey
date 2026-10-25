@@ -4021,14 +4021,36 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
     if source == "runtime":
         return "LOWKEY RUNTIME ERROR\n  " + text
 
-    # Lowkey's own validation errors already contain targeted usage/fix text.
-    # Keep those messages stable, but normalize every failure returned by an
-    # external command so stderr never mixes a raw traceback/wrapper with a
-    # misleading success-shaped result.
+    # Lowkey validation/configuration failures use the same visible shape,
+    # while preserving the existing detailed explanation and usage hints.
     if source == "lowkey":
-        return text
+        if text.startswith(("ERROR [", "LOWKEY RUNTIME ERROR")):
+            return text
+        if lowered.startswith("usage:") or any(marker in lowered for marker in (
+            "unknown lowkey command", "unknown lk ", "unknown option",
+            "unexpected argument", "needs an actor name",
+        )):
+            category = "USAGE"
+        elif any(marker in lowered for marker in (
+            "no target", "set target first", "no rpc", "rpc is not configured",
+            "not configured", "no address or target selected",
+        )):
+            category = "CONFIGURATION"
+        elif any(marker in lowered for marker in (
+            "not found", "could not resolve", "unavailable", "not installed",
+        )):
+            category = "DEPENDENCY OR RESOURCE"
+        else:
+            category = "LOWKEY"
+        details = text
+        if len(details) > 4000:
+            details = details[:4000] + "\\n  [diagnostic truncated after 4000 characters]"
+        detail_lines = "\\n".join("  " + line for line in details.splitlines()) or "  (no details)"
+        operation = f"  Operation: lk {command}\\n" if command else ""
+        exit_code = f"  Exit code: {code}\\n" if isinstance(code, int) and code else ""
+        return f"ERROR [{category}]\\n" + operation + exit_code + "  Details:\\n" + detail_lines
 
-    operation = f"  Operation: lk {command}\n" if command else ""
+    operation = f"  Operation: lk {command}\\n" if command else ""
     exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
     details = text
     if len(details) > 4000:
