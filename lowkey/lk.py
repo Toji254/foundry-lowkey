@@ -23,6 +23,22 @@ if str(MODULE_DIR) not in sys.path:
 import audit_context
 import walkthrough
 try:
+    import generation_plugins
+except ImportError:
+    generation_plugins = None
+try:
+    import behavioral_validation
+except ImportError:
+    behavioral_validation = None
+try:
+    import verification_benchmark
+except ImportError:
+    verification_benchmark = None
+try:
+    import verification_cli
+except ImportError:
+    verification_cli = None
+try:
     import question_engine
 except ImportError:
     question_engine = None
@@ -15775,6 +15791,11 @@ TRANSACTION FORENSICS
 REPRODUCE / ATTACK / TEST
   lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
   lk test-gen                      Turn the latest send into a Forge test.
+  lk test-gen <Contract> [options]  Generate project-aware unit/fuzz/invariant/etc. test drafts.
+  lk verification engines [--json]  Inventory installed verification engines and capabilities.
+  lk verification run <manifest>    Run a bounded, serial multi-engine verification campaign.
+  lk verification-benchmark <file>  Run a manifest-driven verification benchmark.
+  lk mutation-check <manifest>      Validate a test suite against explicit source mutants.
   lk generate test '<function(parameter TYPES...)>' <VALUES...>
                                    Generate a reusable Forge test.
                                    FUNCTION SIGNATURE = function name + parameter TYPES.
@@ -16553,7 +16574,25 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         elif action=="trace": run_trace(config,[])
         elif action=="logs": run_logs(config,[])
         else: run_receipt(config)
-    elif cmd=="test-gen": run_test_gen(config)
+    elif cmd=="test-gen":
+        # Preserve the legacy last-send workflow when no arguments are supplied.
+        if args:
+            if generation_plugins is None:
+                return fail("Generation plugin registry is not installed. Re-run install.sh.")
+            return generation_plugins.run_generation_command(config, args)
+        return run_test_gen(config)
+    elif cmd=="mutation-check":
+        if behavioral_validation is None:
+            return fail("Mutation validation module is not installed. Re-run install.sh.")
+        return behavioral_validation.run_cli(args)
+    elif cmd=="verification-benchmark":
+        if verification_benchmark is None:
+            return fail("Verification benchmark module is not installed. Re-run install.sh.")
+        return verification_benchmark.run_cli(args)
+    elif cmd=="verification":
+        if verification_cli is None:
+            return fail("Verification engine CLI is not installed. Re-run install.sh.")
+        return verification_cli.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
@@ -16750,7 +16789,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","test-gen","mutation-check","verification-benchmark","verification","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
