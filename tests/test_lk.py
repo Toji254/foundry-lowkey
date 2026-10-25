@@ -562,7 +562,9 @@ class LowkeyCastTests(unittest.TestCase):
                 "outputs": [{"name": "", "type": "uint256"}],
             },
         ]
-        with patch.object(lk, "load_abi", return_value=abi):
+        with patch.object(lk, "resolve_target_ref", return_value=None), patch.object(
+            lk, "load_abi", return_value=abi
+        ):
             self.assertIsNone(lk._read_state_change_warning(["count"], {"target": target}))
             self.assertIsNone(
                 lk._read_state_change_warning(["calculate", "3"], {"target": target})
