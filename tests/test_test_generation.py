@@ -571,5 +571,27 @@ class TestGenerationTests(unittest.TestCase):
             self.assertIn('import { Counter } from "../../contracts/Counter.sol";', generated)
             self.assertTrue((root / "spec").exists() is False)
 
+
+    def test_formal_only_validation_is_not_reported_as_a_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter"},
+                        ["--types", "formal", "--validate"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 1)
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["validation"]["status"], "not-applicable")
+            self.assertIn("Formal specs are not validated by Forge", report["validation"]["detail"])
+
 if __name__ == "__main__":
     unittest.main()

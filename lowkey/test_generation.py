@@ -903,7 +903,9 @@ The generator does not claim coverage or invent protocol-specific assertions.
         print(f"Validation: {validation.get('status')} - {validation.get('detail', '')}")
     print(f"Plan: {plan_path.relative_to(root) if plan_path.is_relative_to(root) else plan_path}")
     print(f"Report: {report_path.relative_to(root) if report_path.is_relative_to(root) else report_path}")
-    if validate and report["validation"].get("status") not in ("passed", "not-applicable"):
+    if validate and report["validation"].get("status") != "passed":
+        # A requested validation that could not compile any Solidity draft is not a pass.
+        # In particular, Forge cannot validate Certora CVL/worksheet output.
         return 1
     return 0
 
