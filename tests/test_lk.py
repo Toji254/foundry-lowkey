@@ -538,7 +538,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("attempted: 500", rendered)
         self.assertIn("0x12345678", rendered)
 
-    def test_unknown_custom_error_keeps_selector_and_identifies_missing_abi(self):
+    def test_unknown_custom_error_preserves_selector_data_and_missing_abi_context(self):
         payload = "0xdeadbeef" + f"{7:064x}"
         rendered = lk._format_cli_error(
             f'execution reverted, data: "{payload}"',
@@ -547,7 +547,8 @@ class LowkeyCastTests(unittest.TestCase):
         )
         self.assertIn("ERROR [CUSTOM REVERT]", rendered)
         self.assertIn("0xdeadbeef", rendered)
-        self.assertIn("not defined in the selected contract ABI", rendered)
+        self.assertIn("no contract ABI was available to resolve it", rendered)
+        self.assertIn(f"Raw revert data: {payload}", rendered)
 
     def test_empty_revert_is_not_reported_as_a_known_reason(self):
         rendered = lk._format_cli_error(
