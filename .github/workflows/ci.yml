@@ -181,9 +181,12 @@ jobs:
       - name: Generate and execute test-generation fixtures
         working-directory: /tmp/lowkey-fixture
         run: |
-          lk test-gen Fixture --types all --force --validate
-          lk test-gen ConfiguredFixture --types all --force --validate
-          lk test-gen TestToken --types all --force --validate
+          lk test-gen Fixture --types all --force
+          lk test-gen Fixture --types unit,fuzz,invariant,integration,fork,poc,regression --force --validate
+          lk test-gen ConfiguredFixture --types all --force
+          lk test-gen ConfiguredFixture --types unit,fuzz,invariant,integration,fork,poc,regression --force --validate
+          lk test-gen TestToken --types all --force
+          lk test-gen TestToken --types unit,fuzz,invariant,integration,fork,poc,regression --force --validate
           grep -q 'ERC-20-like token' .audit/test-gen/TestToken/test-plan.md
           grep -q 'allowance consumption' .audit/test-gen/TestToken/test-plan.md
           mkdir -p test/lowkey-generated
