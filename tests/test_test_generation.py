@@ -583,14 +583,23 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(report["analysis"]["existing_tests"]["files"][0]["path"], "spec/Existing.t.sol")
 
 
-    def test_formal_only_validation_is_not_reported_as_a_pass(self):
+    def test_formal_only_validation_ignores_unrelated_existing_solidity_drafts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root)
+            output = root / ".audit" / "test-gen" / "Counter"
+            output.mkdir(parents=True)
+            (output / "LowkeyGeneratedUnit_Counter.t.sol").write_text(
+                "pragma solidity ^0.8.20; contract OldDraft {}",
+                encoding="utf-8",
+            )
             previous = Path.cwd()
             try:
                 os.chdir(root)
-                with contextlib.redirect_stdout(io.StringIO()):
+                completed = subprocess.CompletedProcess(["forge", "build"], 0, "ok", "")
+                with patch("test_generation.shutil.which", return_value="/fake/forge"), patch(
+                    "test_generation.subprocess.run", return_value=completed
+                ) as run, contextlib.redirect_stdout(io.StringIO()):
                     code = generation.run_test_gen(
                         {"target_contract": "Counter"},
                         ["--types", "formal", "--validate"],
@@ -598,6 +607,7 @@ class TestGenerationTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
             self.assertEqual(code, 1)
+            run.assert_not_called()
             report = json.loads(
                 (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
             )

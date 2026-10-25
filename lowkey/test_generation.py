@@ -299,8 +299,8 @@ def _rel_import(root: Path, source_path: Path) -> str:
     return PurePosixPath(os.path.relpath(source_path, destination)).as_posix()
 
 
-def _validate_generated(root: Path, generated: list[str], output_dir: Path | None = None) -> dict[str, Any]:
-    """Compile temporary copies of generated Solidity drafts without executing tests."""
+def _validate_generated(root: Path, generated: list[str]) -> dict[str, Any]:
+    """Compile only drafts written for this invocation; never validate unrelated stale files."""
     solidity_files: list[Path] = []
     for raw_path in generated:
         path = Path(raw_path)
@@ -308,8 +308,6 @@ def _validate_generated(root: Path, generated: list[str], output_dir: Path | Non
             path = root / path
         if path.name.endswith(".t.sol") and path.is_file():
             solidity_files.append(path.resolve())
-    if output_dir is not None and output_dir.is_dir():
-        solidity_files.extend(path.resolve() for path in output_dir.glob("*.t.sol") if path.is_file())
     solidity_files = sorted(set(solidity_files))
     result: dict[str, Any] = {
         "requested": True,
@@ -878,7 +876,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "validation": {"requested": False, "status": "not-requested"},
     }
     if validate:
-        report["validation"] = _validate_generated(root, generated, output_dir)
+        report["validation"] = _validate_generated(root, generated)
     plan_path = output_dir / "test-plan.md"
     if plan_path.exists() and not force:
         plan_path = output_dir / "test-plan.latest.md"
