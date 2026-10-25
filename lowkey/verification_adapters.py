@@ -249,6 +249,13 @@ class CapabilityRegistry:
         request = dict(request or {})
         budget = dict(budget or {})
         selected = self.select(project, test_kind, profile=profile)
+        profile_limits = {
+            "light": {"timeout_seconds": 60, "fuzz_runs": 32, "invariant_runs": 16, "invariant_depth": 10},
+            "balanced": {"timeout_seconds": 300, "fuzz_runs": 256, "invariant_runs": 64, "invariant_depth": 20},
+            "deep": {"timeout_seconds": 900, "fuzz_runs": 1024, "invariant_runs": 256, "invariant_depth": 50},
+        }
+        limits = profile_limits[profile]
+        budget.setdefault("timeout_seconds", limits["timeout_seconds"])
         by_name = {name: adapter for name, adapter in self._adapters.items()}
         results: list[dict[str, Any]] = []
         argv_by_engine = request.get("argv_by_engine") or {}
@@ -261,6 +268,14 @@ class CapabilityRegistry:
             engine_request["test_kind"] = test_kind
             if name in argv_by_engine:
                 engine_request["argv"] = argv_by_engine[name]
+            elif "argv" not in engine_request and name == "forge":
+                if test_kind == "fuzz":
+                    engine_request["argv"] = ["test", "--fuzz-runs", str(limits["fuzz_runs"])]
+                elif test_kind == "invariant":
+                    engine_request["argv"] = [
+                        "test", "--invariant-runs", str(limits["invariant_runs"]),
+                        "--invariant-depth", str(limits["invariant_depth"]),
+                    ]
             result = by_name[name].run(project, engine_request, budget=budget)
             results.append({
                 "selection": candidate,
