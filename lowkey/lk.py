@@ -3833,8 +3833,10 @@ def _decode_contract_revert(error_text, config=None, target=None):
     if textual_reason:
         return {"kind": "REVERT", "reason": textual_reason, "selector": None, "data": None}
 
-    if "execution reverted" in lowered or ("revert" in lowered and _explicit_revert_payloads(text)):
+    if "execution reverted" in lowered or ("revert" in lowered and bool(list(_explicit_revert_payloads(text)))):
         for payload in _explicit_revert_payloads(text):
+            if len(payload) < 10:
+                continue
             selector = payload[:10].lower()
             if selector not in {"0x08c379a0", "0x4e487b71"}:
                 return {
