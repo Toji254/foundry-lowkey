@@ -462,7 +462,8 @@ A guessed assertion could be incorrect or vacuous. Add a formal rule only after 
     return ".md", content
 
 
-def _fork_template(kind: str, name: str, target: str | None) -> str:
+def _fork_template(kind: str, name: str, target: str | None, import_path: str,
+                   fuzz_property: dict[str, str] | None) -> str:
     ident = _solidity_name(name)
     addr = target.lower() if isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) else "address(0)"
     target_literal = addr if addr == "address(0)" else f"address({addr})"
@@ -472,15 +473,18 @@ pragma solidity ^0.8.20;
 
 // LowkeyCast-generated starter. Configure LOWKEY_RPC_URL before running.
 import {{Test}} from "forge-std/Test.sol";
+import {{ {name} }} from "{import_path}";
 
 contract {generated} is Test {{
     address internal constant TARGET = {target_literal};
+    {name} internal target;
 
     function setUp() public {{
         string memory rpcUrl = vm.envString("LOWKEY_RPC_URL");
         vm.createSelectFork(rpcUrl);
         require(TARGET != address(0), "Set a real target address before running");
         assertGt(TARGET.code.length, 0, "Target has no code on selected fork");
+        target = {name}(TARGET);
     }}
 
 '''
@@ -489,12 +493,28 @@ contract {generated} is Test {{
         assertGt(TARGET.code.length, 0);
     }
 
-    // TODO: Assert the expected behavior against this chain's actual state.
-}
+'''
+        if fuzz_property:
+            setter = fuzz_property["setter"]
+            parameter_type = fuzz_property["type"]
+            state = fuzz_property["state"]
+            body += f'''    function testFork_{setter}_round_trip() public {{
+        {parameter_type} expected = {parameter_type}(1);
+        target.{setter}(expected);
+        assertEq(target.{state}(), expected);
+    }}
+
+    // This assertion is generated only for a source-recognized direct setter.
+    // Confirm the fork target is the expected implementation/version.
+'''
+        else:
+            body += '''    // TODO: Assert the expected behavior against this chain's actual state.
+'''
+        body += '''}
 '''
     else:
-        body += '''    // TODO: Add the concrete call/preconditions and the security property
-    // that demonstrates impact. A successful low-level call is not a finding.
+        body += '''    // TODO: Add concrete exploit preconditions, trigger, and a security-impact assertion.
+    // No suspected bug was supplied, so Lowkey cannot truthfully generate a PoC.
     // For call-specific recorded evidence, use the existing lk generate test.
 }
 '''
@@ -515,7 +535,7 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
                 "this constructor contains an unsupported or unrecognized type"
             )
         return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None)
-    return _fork_template(kind, name, target)
+    return _fork_template(kind, name, target, import_path, fuzz_property)
 
 
 def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
