@@ -542,5 +542,34 @@ class TestGenerationTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn('import { Counter } from "../../../src/Counter.sol";', unit)
 
+    def test_custom_foundry_config_and_profile_source_directory_are_respected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            contracts = root / "contracts"
+            contracts.mkdir()
+            (contracts / "Counter.sol").write_text(
+                "pragma solidity ^0.8.20; contract Counter { uint256 public value; function setValue(uint256 next) external { value = next; } }\n",
+                encoding="utf-8",
+            )
+            config_path = root / "foundry.ci.toml"
+            config_path.write_text(
+                '[profile.default]\nsrc = "src"\ntest = "test"\n'
+                '[profile.ci]\nsrc = "contracts"\ntest = "spec"\n',
+                encoding="utf-8",
+            )
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict(os.environ, {"FOUNDRY_CONFIG": "foundry.ci.toml", "FOUNDRY_PROFILE": "ci"}), contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen({"target_contract": "Counter"}, ["--types", "unit"])
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            output = root / ".audit" / "test-gen" / "Counter" / "LowkeyGeneratedUnit_Counter.t.sol"
+            generated = output.read_text(encoding="utf-8")
+            self.assertIn('import { Counter } from "../../../contracts/Counter.sol";', generated)
+            self.assertTrue((root / "spec").exists() is False)
+
 if __name__ == "__main__":
     unittest.main()

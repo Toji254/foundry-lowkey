@@ -41,21 +41,28 @@ def parse_types(raw: str | None) -> list[str]:
 
 
 def _source_root(root: Path) -> Path:
-    src = "src"
-    config = root / "foundry.toml"
-    if config.exists():
+    """Resolve the active Foundry source directory without guessing a different profile."""
+    configured_path = Path(os.environ.get("FOUNDRY_CONFIG", "foundry.toml")).expanduser()
+    config_path = configured_path if configured_path.is_absolute() else root / configured_path
+    src = os.environ.get("FOUNDRY_SRC") or "src"
+    if config_path.exists():
         try:
             import tomllib
-            data = tomllib.loads(config.read_text(encoding="utf-8"))
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            profiles = config.get("profile", {})
+            active_profile = os.environ.get("FOUNDRY_PROFILE", "default")
+            profile_config = profiles.get(active_profile, {})
+            default_config = profiles.get("default", {})
             src = (
-                data.get("profile", {}).get("default", {}).get("src")
-                or data.get("src")
+                os.environ.get("FOUNDRY_SRC")
+                or profile_config.get("src")
+                or default_config.get("src")
+                or config.get("src")
                 or src
             )
-        except (OSError, ValueError, ImportError):
+        except (OSError, ValueError, ImportError, AttributeError):
             pass
     return (root / str(src)).resolve()
-
 
 def _contract_source(root: Path, name: str) -> tuple[Path, str] | None:
     source_root = _source_root(root)
