@@ -16423,6 +16423,27 @@ def _has_standard_error_shape(output):
     )
 
 
+def _ensure_error_context(output, command=None, code=None):
+    """Add consistent operation/exit context without nesting formatted errors."""
+    lines = str(output or "").strip().splitlines()
+    if not lines:
+        lines = ["ERROR [COMMAND]", "  Details: The command failed without diagnostic output."]
+
+    if command and not any(re.match(r"(?i)^\s*Operation:", line) for line in lines):
+        lines.insert(1, f"  Operation: lk {command}")
+
+    if isinstance(code, int) and code != 0 and not any(
+        re.match(r"(?i)^\s*Exit code:", line) for line in lines
+    ):
+        operation_index = next(
+            (index for index, line in enumerate(lines) if re.match(r"(?i)^\s*Operation:", line)),
+            0,
+        )
+        lines.insert(operation_index + 1, f"  Exit code: {code}")
+
+    return "\n".join(lines)
+
+
 def dispatch_command(cmd, args, config, from_batch=False):
     """Dispatch a command and normalize direct stderr errors through one renderer.
 
@@ -16453,7 +16474,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
                         source="lowkey",
                     )
                 )
-                print(rendered, file=sys.stderr)
+                print(_ensure_error_context(rendered, cmd, code), file=sys.stderr)
                 record_status(code)
             else:
                 sys.stderr.write(diagnostic)
@@ -16485,7 +16506,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
                 source="lowkey",
             )
         )
-        print(rendered, file=sys.stderr)
+        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
     else:
         rendered = _format_cli_error(
             "",
@@ -16494,7 +16515,7 @@ def dispatch_command(cmd, args, config, from_batch=False):
             config=config,
             source="lowkey",
         )
-        print(rendered, file=sys.stderr)
+        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
 
     record_status(error_code)
     if isinstance(returned_code, int) and returned_code != 0:
