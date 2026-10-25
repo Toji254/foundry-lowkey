@@ -913,6 +913,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     output_dir = Path(".audit/test-gen")
     force = False
     validate = False
+    strict = False
     positionals: list[str] = []
     index = 0
     while index < len(args):
