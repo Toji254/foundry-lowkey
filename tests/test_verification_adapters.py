@@ -119,6 +119,27 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(campaign["summary"]["passed"], 1)
         self.assertIn("campaign evidence", campaign["results"][0]["result"]["raw_stdout"])
 
+    def test_campaign_scales_fuzz_depth_and_timeout_by_profile(self):
+        class CaptureAdapter:
+            capability = EngineCapability("forge", "forge", ("fuzz",), memory_class="low")
+            def available(self):
+                return True
+            def supports(self, project, test_kind):
+                return True, "fixture"
+            def run(self, project, request, *, budget):
+                self.request = request
+                self.budget = budget
+                return EngineResult("forge", "passed", 0, raw_evidence={"argv": request.get("argv")})
+
+        for profile, expected_runs, expected_timeout in (("light", "32", 60), ("deep", "1024", 900)):
+            adapter = CaptureAdapter()
+            campaign = CapabilityRegistry([adapter]).run_campaign(
+                {"root": "."}, "fuzz", profile=profile,
+            )
+            self.assertEqual(campaign["execution_mode"], "serial")
+            self.assertIn(expected_runs, adapter.request["argv"])
+            self.assertEqual(adapter.budget["timeout_seconds"], expected_timeout)
+
     def test_engine_result_keeps_native_evidence(self):
         result = EngineResult("forge", "failed", 1, raw_stdout="failed", raw_evidence={"trace": ["0xabc"]})
         serialized = result.to_dict()
