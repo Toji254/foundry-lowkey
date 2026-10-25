@@ -249,15 +249,23 @@ def _constructor_values(raw: str | None) -> list[str] | None:
 
 def _foundry_test_dir(root: Path) -> Path:
     """Read the active Foundry profile's configured test directory."""
-    config_path = root / "foundry.toml"
+    configured_path = Path(os.environ.get("FOUNDRY_CONFIG", "foundry.toml")).expanduser()
+    config_path = configured_path if configured_path.is_absolute() else root / configured_path
     test_dir = "test"
     if config_path.exists():
         try:
             import tomllib
             config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            profiles = config.get("profile", {})
             active_profile = os.environ.get("FOUNDRY_PROFILE", "default")
-            profile_config = config.get("profile", {}).get(active_profile, {})
-            test_dir = profile_config.get("test") or config.get("test") or test_dir
+            profile_config = profiles.get(active_profile, {})
+            default_config = profiles.get("default", {})
+            test_dir = (
+                profile_config.get("test")
+                or default_config.get("test")
+                or config.get("test")
+                or test_dir
+            )
         except (OSError, ValueError, ImportError, AttributeError):
             pass
     if not isinstance(test_dir, str) or not test_dir.strip():

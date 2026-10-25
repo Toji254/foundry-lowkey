@@ -402,7 +402,8 @@ class TestGenerationTests(unittest.TestCase):
             root = Path(tmp)
             self._project(root)
             (root / "foundry.toml").write_text(
-                '[profile.default]\nsrc = "src"\ntest = "spec"\n', encoding="utf-8"
+                '[profile.default]\nsrc = "src"\ntest = "spec"\n'
+                '[profile.ci]\nfuzz.runs = 1\n', encoding="utf-8"
             )
             source_path = root / "src" / "Counter.sol"
             source_path.write_text(
@@ -414,7 +415,7 @@ class TestGenerationTests(unittest.TestCase):
             previous = Path.cwd()
             try:
                 os.chdir(root)
-                with contextlib.redirect_stdout(io.StringIO()):
+                with patch.dict(os.environ, {"FOUNDRY_PROFILE": "ci"}), contextlib.redirect_stdout(io.StringIO()):
                     code = generation.run_test_gen({"target_contract": "Counter"}, ["--types", "unit"])
             finally:
                 os.chdir(previous)
