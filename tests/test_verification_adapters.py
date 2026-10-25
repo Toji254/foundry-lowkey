@@ -188,6 +188,26 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertIn("third-party", {row["name"] for row in registry.inventory()})
         self.assertEqual(registry.plugin_errors, [])
 
+    def test_campaign_preserves_later_results_when_adapter_raises(self):
+        class BrokenAdapter(ExecutableAdapter):
+            def run(self, project, request, *, budget):
+                raise RuntimeError("adapter fixture failure")
+
+        broken = BrokenAdapter(EngineCapability("broken", sys.executable, ("unit",), memory_class="low"))
+        healthy = ExecutableAdapter(EngineCapability("healthy", sys.executable, ("unit",), memory_class="low"))
+        registry = CapabilityRegistry([broken, healthy])
+        with tempfile.TemporaryDirectory() as root:
+            report = registry.run_campaign(
+                {"root": root}, "unit", profile="light",
+                request={"argv": ["-c", "print(42)"]},
+                budget={"timeout_seconds": 5},
+            )
+        self.assertEqual(report["summary"]["error"], 1)
+        self.assertEqual(report["summary"]["passed"], 1)
+        self.assertEqual(report["results"][0]["result"]["status"], "error")
+        self.assertIn("adapter fixture failure", report["results"][0]["result"]["summary"])
+        self.assertIn("42", report["results"][1]["result"]["raw_stdout"])
+
     def test_unknown_test_kind_and_profile_fail_explicitly(self):
         registry = default_registry()
         with self.assertRaisesRegex(ValueError, "unknown test kind"):
