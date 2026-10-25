@@ -474,6 +474,310 @@ class LowkeyCastTests(unittest.TestCase):
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
 
+    def _error_string_payload(self, reason):
+        message = reason.encode("utf-8")
+        padded = message.hex().ljust(((len(message) + 31) // 32) * 64, "0")
+        return "0x08c379a0" + f"{32:064x}" + f"{len(message):064x}" + padded
+
+    def test_solidity_error_string_is_decoded_from_rpc_estimation_failure(self):
+        payload = self._error_string_payload("invalid number")
+        error = (
+            "Error: Failed to estimate gas: server returned an error response: "
+            f'error code 3: execution reverted: invalid number, data: "{payload}": '
+            'Error("invalid number")'
+        )
+
+        self.assertEqual(lk._decode_solidity_revert_reason(error), "invalid number")
+        self.assertEqual(
+            lk._format_revert_error(error),
+            "Error: Transaction not sent\n"
+            "  Reason: invalid number\n"
+            "  What happened: The contract rejected the call while Lowkey checked whether it could run. No transaction was submitted.\n"
+            "  Next step: Check the number you passed and the function's input checks.",
+        )
+
+    def test_legacy_machine_style_revert_is_reformatted_for_people(self):
+        legacy = (
+            "ERROR [REVERT]\n"
+            "  Operation: lk send\n"
+            "  Exit code: 1\n"
+            "  Reason: invalid number\n"
+            "  Transaction broadcast: no (gas estimation failed)."
+        )
+        rendered = lk._format_cli_error(legacy, code=1, command="send", source="cast")
+        self.assertTrue(rendered.startswith("Error: Transaction not sent"))
+        self.assertIn("Reason: invalid number", rendered)
+        self.assertIn("Next step:", rendered)
+        self.assertNotIn("ERROR [REVERT]", rendered)
+        self.assertNotIn("Operation: lk send", rendered)
+        self.assertNotIn("Exit code: 1", rendered)
+        self.assertNotIn("Transaction broadcast:", rendered)
+
+    def test_solidity_panic_is_decoded(self):
+        payload = "0x4e487b71" + f"{0x11:064x}"
+        rendered = lk._format_cli_error(
+            f'execution reverted, data: "{payload}"',
+            command="send",
+            source="cast",
+        )
+        self.assertIn("Contract hit a Solidity panic", rendered)
+        self.assertIn("arithmetic overflow or underflow", rendered)
+        self.assertIn("panic code 0x11", rendered)
+
+    def test_solidity_panic_is_decoded_when_provider_only_returns_text(self):
+        rendered = lk._format_cli_error(
+            "execution reverted: Panic(0x11)",
+            command="send",
+            source="cast",
+        )
+        self.assertIn("Contract hit a Solidity panic", rendered)
+        self.assertIn("arithmetic overflow or underflow", rendered)
+        self.assertIn("panic code 0x11", rendered)
+
+    def test_custom_error_is_decoded_against_selected_abi(self):
+        payload = "0x12345678" + f"{500:064x}"
+        abi = [{
+            "type": "error",
+            "name": "LimitExceeded",
+            "inputs": [{"name": "attempted", "type": "uint256"}],
+        }]
+        with patch.object(lk, "load_abi", return_value=abi), patch.object(
+            lk, "abi_selector", return_value="0x12345678"
+        ), patch.object(lk, "decode_abi_input", return_value="attempted: 500"):
+            rendered = lk._format_cli_error(
+                f'execution reverted, data: "{payload}"',
+                config={"target": "0x" + "1" * 40},
+                target="0x" + "1" * 40,
+                command="send",
+                source="cast",
+            )
+        self.assertIn("Contract rejected the send request", rendered)
+        self.assertIn("LimitExceeded(uint256)", rendered)
+        self.assertIn("attempted: 500", rendered)
+        self.assertIn("0x12345678", rendered)
+
+    def test_unknown_custom_error_preserves_selector_data_and_missing_abi_context(self):
+        payload = "0xdeadbeef" + f"{7:064x}"
+        rendered = lk._format_cli_error(
+            f'execution reverted, data: "{payload}"',
+            command="send",
+            source="cast",
+        )
+        self.assertIn("Contract rejected the send request", rendered)
+        self.assertIn("0xdeadbeef", rendered)
+        self.assertIn("no contract ABI was available to resolve it", rendered)
+        self.assertIn(f"revert data {payload}", rendered)
+
+    def test_empty_revert_is_not_reported_as_a_known_reason(self):
+        rendered = lk._format_cli_error(
+            'execution reverted, data: "0x"',
+            command="send",
+            source="cast",
+        )
+        self.assertIn("without providing an error message", rendered)
+        self.assertIn("Contract rejected the send request", rendered)
+
+    def test_revert_formatter_preserves_plain_text_reason(self):
+        error = "execution reverted: custom error payload unavailable"
+        rendered = lk._format_cli_error(error, command="call", source="cast")
+        self.assertIn("Contract call reverted", rendered)
+        self.assertIn("Reason: custom error payload unavailable", rendered)
+
+    def test_lowkey_validation_errors_use_shared_error_shape_and_keep_hints(self):
+        message = "Error: No RPC is configured. Start Anvil or set an RPC with lk rpc <url>."
+        rendered = lk._format_cli_error(message, code=2, command="balance", source="lowkey")
+        self.assertIn("Error: Lowkey needs configuration before it can continue", rendered)
+        self.assertNotIn("Operation: lk balance", rendered)
+        self.assertIn("No RPC is configured", rendered)
+        self.assertIn("lk rpc <url>", rendered)
+
+        output = io.StringIO()
+        with redirect_stderr(output):
+            lk.fail("Usage: lk read <function> [args]", code=2)
+        self.assertIn("Error: Check the command syntax", output.getvalue())
+        self.assertIn("Usage: lk read <function> [args]", output.getvalue())
+
+    def test_shared_error_formatter_classifies_non_contract_failures(self):
+        rpc_error = lk._format_cli_error(
+            "connection refused while connecting to RPC",
+            command="call",
+            source="cast",
+        )
+        self.assertIn("Error: Couldn't connect to the RPC node", rpc_error)
+        self.assertIn("lk rpc", rpc_error)
+
+        timeout_error = lk._format_cli_error(
+            "timed out after 120s while waiting for cast",
+            command="read",
+            source="cast",
+        )
+        self.assertIn("Error: The command timed out", timeout_error)
+
+        invalid_input = lk._format_cli_error(
+            "unexpected argument --mystery",
+            command="send",
+            source="cast",
+        )
+        self.assertIn("Error: Invalid command input", invalid_input)
+        self.assertIn("lk send --h", invalid_input)
+
+        generic = lk._format_cli_error(
+            "provider rejected an unknown request",
+            code=1,
+            command="send",
+            source="cast",
+        )
+        self.assertIn("Error: The command failed", generic)
+        self.assertIn("provider rejected an unknown request", generic)
+        self.assertNotIn("Exit code: 1", generic)
+
+    def test_dispatcher_normalizes_direct_stderr_errors_and_sets_failure_status(self):
+        output = io.StringIO()
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            print("Error: required input was missing", file=sys.stderr)
+            return None
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("sample", [], {})
+
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("Error:"))
+        self.assertNotIn("Operation: lk sample", rendered)
+        self.assertIn("required input was missing", rendered)
+
+    def test_dispatcher_does_not_double_wrap_a_formatted_error(self):
+        output = io.StringIO()
+        formatted = lk._format_cli_error(
+            "execution reverted: invalid state",
+            command="send",
+            source="cast",
+        )
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            print(formatted, file=sys.stderr)
+            return 1
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("send", [], {})
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count("Error:"), 1)
+        self.assertNotIn("Operation: lk send", rendered)
+        self.assertNotIn("Exit code: 1", rendered)
+
+    def test_dispatcher_explains_when_external_tool_diagnostic_bypassed_stderr(self):
+        output = io.StringIO()
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            # External tools can write straight to the terminal file descriptor.
+            return 1
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("forge", ["test"], {})
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("Error:"))
+        self.assertNotIn("Operation: lk forge", rendered)
+        self.assertNotIn("Exit code: 1", rendered)
+        self.assertIn("no Python-level stderr was captured", rendered)
+        self.assertIn("external tool may have written its detailed diagnostic", rendered)
+
+    def test_dispatcher_preserves_non_error_warnings(self):
+        output = io.StringIO()
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            print("Warning: optional metadata was unavailable", file=sys.stderr)
+            return 0
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("sample", [], {})
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.getvalue(), "Warning: optional metadata was unavailable\n")
+
+    def test_runtime_failures_use_the_shared_error_heading(self):
+        rendered = lk._format_cli_error(
+            "TypeError: unexpected runtime state",
+            command="run",
+            code=2,
+            source="runtime",
+        )
+        self.assertTrue(rendered.startswith("Error: Lowkey encountered an internal error"))
+        self.assertNotIn("Operation: lk run", rendered)
+        self.assertNotIn("Exit code: 2", rendered)
+        self.assertIn("TypeError: unexpected runtime state", rendered)
+
+    def test_insufficient_funds_is_not_hidden_by_gas_estimation_wrapper(self):
+        rendered = lk._format_cli_error(
+            "Failed to estimate gas: insufficient funds for gas * price + value",
+            code=1,
+            command="send",
+            source="cast",
+        )
+        self.assertIn("Error: Not enough funds to send this transaction", rendered)
+        self.assertIn("What happened: The node rejected the request", rendered)
+        self.assertNotIn("Transaction: Not sent", rendered)
+
+    def test_run_cast_returns_formatted_failure_without_treating_error_as_success(self):
+        target = "0x" + "1" * 40
+        payload = self._error_string_payload("invalid number")
+        error = f'Failed to estimate gas: execution reverted, data: "{payload}"'
+        config = {
+            "target": target,
+            "target_contract": "Example",
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+            "labels": {},
+            "aliases": {},
+            "project_roots": {},
+            "abi_paths": {},
+        }
+        with patch.object(lk, "load_abi", return_value=[]), patch.object(
+            lk, "resolve_wallet_key", return_value=None
+        ), patch.object(lk, "cast_output", return_value=(1, "", error)):
+            result = lk.run_cast(["send", "setNumber(uint256)", "53"], config, capture=True)
+
+        self.assertEqual(result.code, 1)
+        self.assertIn("Error: Transaction not sent", result.text)
+        self.assertIn("Reason: invalid number", result.text)
+        self.assertIn("No transaction was submitted", result.text)
+        self.assertNotIn("Failed to estimate gas:", result.text)
+
+    def test_failed_send_preserves_transaction_hash_when_cast_returns_one(self):
+        target = "0x" + "1" * 40
+        tx_hash = "0x" + "a" * 64
+        config = {
+            "target": target,
+            "target_contract": "Example",
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+            "labels": {},
+            "aliases": {},
+            "project_roots": {},
+            "abi_paths": {},
+            "_ephemeral": True,
+        }
+        with patch.object(lk, "load_abi", return_value=[]), patch.object(
+            lk, "resolve_wallet_key", return_value=None
+        ), patch.object(
+            lk, "cast_output",
+            return_value=(1, f"transactionHash: {tx_hash}", "execution reverted: invalid number"),
+        ):
+            result = lk.run_cast(["send", "setNumber(uint256)", "53"], config, capture=True)
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(config["last_tx"], tx_hash)
+        self.assertIn("Reason: invalid number", result.text)
+        self.assertIn(f"Transaction: Submitted; transaction hash {tx_hash}", result.text)
+
     def test_lab_numeric_grouping_is_normalized(self):
         self.assertEqual(
             lk._normalize_human_numeric_input("1,000,000", "uint256", "limit"),
@@ -483,6 +787,95 @@ class LowkeyCastTests(unittest.TestCase):
             lk._normalize_human_numeric_input("1 ETH", "uint256", "amount"),
             "1000000000000000000",
         )
+
+    def test_numeric_constructor_guidance_offers_raw_integer_without_assuming_eth(self):
+        raw_output = io.StringIO()
+        with redirect_stdout(raw_output):
+            lk._print_numeric_unit_reference("count", "uint256")
+        raw_text = raw_output.getvalue()
+        self.assertIn("NUMERIC INPUT OPTIONS", raw_text)
+        self.assertIn("Raw integer", raw_text)
+        self.assertIn("1000000", raw_text)
+        self.assertIn("uint/int types do not specify", raw_text)
+        self.assertIn("does not suggest an ETH amount", raw_text)
+        self.assertNotIn("Optional ETH units", raw_text)
+
+        amount_output = io.StringIO()
+        with redirect_stdout(amount_output):
+            lk._print_numeric_unit_reference("amount", "uint256")
+        amount_text = amount_output.getvalue()
+        self.assertIn("Raw integer", amount_text)
+        self.assertIn("Optional ETH units", amount_text)
+        self.assertIn("only if the contract expects", amount_text)
+        self.assertNotIn("ETH-denominated input detected", amount_text)
+
+    def test_constructor_numeric_prompt_keeps_generic_suggestion_and_accepts_enter(self):
+        output = io.StringIO()
+        with redirect_stdout(output), patch("builtins.input", return_value=""):
+            value = lk._lab_prompt_value(
+                {},
+                [],
+                "ExampleContract",
+                {"name": "count", "type": "uint256"},
+                path="params[1]",
+            )
+        self.assertEqual(value, "1000000")
+        self.assertIn("Suggested : 1000000", output.getvalue())
+        self.assertIn("generic raw integer", output.getvalue())
+        self.assertIn("Raw integer", output.getvalue())
+
+        # A small integer type must not receive an overflowing suggestion.
+        self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "uint8"), "1")
+        self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "int8"), "1")
+
+    def test_read_warns_for_state_changing_abi_function_without_contract_specific_names(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "updateCount",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "nextCount", "type": "uint256"}],
+            "outputs": [],
+        }]
+        with patch.object(lk, "resolve_target_ref", return_value=None), patch.object(
+            lk, "load_abi", return_value=abi
+        ):
+            warning = lk._read_state_change_warning(
+                ["updateCount", "5"],
+                {"target": target},
+            )
+        self.assertIn("updateCount(uint256)", warning)
+        self.assertIn("state-changing", warning)
+        self.assertIn("state changes are discarded", warning)
+        self.assertIn("may print 0x", warning)
+        self.assertIn("lk send updateCount(uint256)", warning)
+        self.assertIn("lk changes updateCount(uint256)", warning)
+
+    def test_read_does_not_warn_for_view_or_pure_abi_functions(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "count",
+                "stateMutability": "view",
+                "inputs": [],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+            {
+                "type": "function",
+                "name": "calculate",
+                "stateMutability": "pure",
+                "inputs": [{"name": "left", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+        ]
+        with patch.object(lk, "resolve_target_ref", return_value=None), patch.object(
+            lk, "load_abi", return_value=abi
+        ):
+            self.assertIsNone(lk._read_state_change_warning(["count"], {"target": target}))
+            self.assertIsNone(
+                lk._read_state_change_warning(["calculate", "3"], {"target": target})
+            )
 
     def test_wizard_treats_positional_value_as_argument_and_infers_send(self):
         target = "0x" + "1" * 40

@@ -10,7 +10,7 @@ import io
 import shutil
 import socket
 from urllib import request as urllib_request
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
@@ -161,7 +161,13 @@ def record_status(code):
     return code
 
 def fail(message, code=2):
-    print(message, file=sys.stderr)
+    # Shared formatter recognizes external/runtime failures while preserving
+    # Lowkey's own specific validation messages and their usage hints.
+    try:
+        rendered = _format_cli_error(message, code=code, source="lowkey")
+    except Exception:
+        rendered = str(message)
+    print(rendered, file=sys.stderr)
     return record_status(code)
 
 def is_tx_hash(value):
@@ -3264,6 +3270,51 @@ def _function_item_for_command(command,args,config):
     matches=matching_functions(abi,query)
     return (matches[0] if len(matches)==1 else None),abi
 
+
+def _read_state_change_warning(args, config):
+    """Explain why a state-changing ABI function is inappropriate for the read command.
+
+    This is deliberately ABI-driven and does not depend on a contract name or
+    any particular function. Unknown/ambiguous functions keep the normal
+    command path so Lowkey does not guess about an unresolved signature.
+    """
+    values = [str(value).strip() for value in (args or [])]
+    target = config.get("target") if isinstance(config, dict) else None
+
+    if values and is_address(values[0]):
+        target = values.pop(0)
+    elif len(values) >= 2:
+        try:
+            root = audit_context.foundry_project_root()
+            named_target = resolve_target_ref(config, values[0], root=root)
+        except Exception:
+            named_target = None
+        if named_target:
+            target = named_target
+            values.pop(0)
+
+    if not target or not values:
+        return None
+
+    abi = load_abi(target, config)
+    matches = matching_functions(abi, values[0]) if abi else []
+    if len(matches) != 1:
+        return None
+
+    item = matches[0]
+    if item.get("stateMutability") in {"view", "pure"}:
+        return None
+
+    signature = format_signature(item)
+    return (
+        f"'{signature}' is state-changing, so lk read cannot persist its effects. "
+        "lk read uses a simulated call; state changes are discarded, and a function "
+        "with no return values may print 0x. "
+        f"Use 'lk send {signature} <args...>' to submit a transaction, or "
+        f"'lk changes {signature} <args...>' to inspect a temporary state-diff simulation."
+    )
+
+
 def _function_interaction_recommendations(command,args,config):
     """Build recommendations from the actual ABI function just used."""
     canonical=_canonical_help_command(str(command or "").strip().lower())
@@ -3625,6 +3676,581 @@ def _rpc_read_fallback(config, target, function_item, values):
         return None
     return result
 
+def _decode_solidity_revert_reason(error_text):
+    """Decode Solidity Error(string) revert data embedded in an RPC/Cast error."""
+    text = str(error_text or "")
+    for match in re.finditer(r"(?i)\b(0x08c379a0[0-9a-f]+)\b", text):
+        payload = match.group(1)[2:]
+        arguments = payload[8:]
+        # Error(string) uses an ABI offset followed by a length and UTF-8 bytes.
+        if len(arguments) < 128:
+            continue
+        try:
+            offset = int(arguments[:64], 16)
+            if offset % 32 != 0 or offset < 32:
+                continue
+            length_start = offset * 2
+            if length_start + 64 > len(arguments):
+                continue
+            byte_length = int(arguments[length_start:length_start + 64], 16)
+            byte_start = length_start + 64
+            byte_end = byte_start + byte_length * 2
+            if byte_end > len(arguments):
+                continue
+            reason = bytes.fromhex(arguments[byte_start:byte_end]).decode("utf-8").strip()
+            if reason:
+                return reason
+        except (ValueError, UnicodeDecodeError, OverflowError):
+            continue
+
+    # Some clients include the decoded reason in the text but omit revert data.
+    match = re.search(r"(?i)execution reverted:\s*([^,\r\n]+)", text)
+    if match:
+        reason = match.group(1).strip().strip('"' + "'")
+        if reason and not reason.lower().startswith("0x"):
+            return reason
+    return None
+
+
+def _explicit_revert_payloads(error_text):
+    """Extract data fields explicitly attached to JSON-RPC/provider errors."""
+    text = str(error_text or "")
+    pattern = r'''(?i)(?:revert data|return data|data)\s*[:=]\s*["']?(0x[0-9a-f]+)'''
+    seen = set()
+    for match in re.finditer(pattern, text):
+        payload = match.group(1)
+        if len(payload[2:]) % 2 == 0 and payload.lower() not in seen:
+            seen.add(payload.lower())
+            yield payload
+
+
+def _revert_payloads(error_text):
+    """Yield explicit revert data first, followed by other possible hex payloads."""
+    text = str(error_text or "")
+    seen = set()
+    for payload in _explicit_revert_payloads(text):
+        seen.add(payload.lower())
+        yield payload
+    for match in re.finditer(r"(?i)0x[0-9a-f]{8,}", text):
+        payload = match.group(0)
+        if len(payload[2:]) % 2 == 0 and payload.lower() not in seen:
+            seen.add(payload.lower())
+            yield payload
+
+
+_SOLIDITY_PANIC_REASONS = {
+    0x00: "generic compiler panic",
+    0x01: "assertion failed",
+    0x11: "arithmetic overflow or underflow",
+    0x12: "division or modulo by zero",
+    0x21: "invalid enum conversion",
+    0x22: "invalid storage byte-array encoding",
+    0x31: "pop() called on an empty array",
+    0x32: "array index out of bounds",
+    0x41: "memory allocation overflow or array too large",
+    0x51: "call to an uninitialized internal function",
+}
+
+
+def _decode_contract_revert(error_text, config=None, target=None):
+    """Decode known Solidity revert forms; preserve an honest fallback for unknown ones."""
+    text = str(error_text or "")
+    lowered = text.lower()
+    payloads = list(_revert_payloads(text))
+
+    for payload in payloads:
+        selector = payload[:10].lower()
+
+        if selector == "0x08c379a0":
+            reason = _decode_solidity_revert_reason(payload)
+            if reason:
+                return {
+                    "kind": "REVERT",
+                    "reason": reason,
+                    "selector": selector,
+                    "data": payload,
+                }
+
+        if selector == "0x4e487b71" and len(payload) >= 74:
+            try:
+                panic_code = int(payload[10:74], 16)
+            except ValueError:
+                continue
+            panic_reason = _SOLIDITY_PANIC_REASONS.get(
+                panic_code, "unknown Solidity panic code"
+            )
+            return {
+                "kind": "SOLIDITY PANIC",
+                "reason": f"{panic_reason} (panic code 0x{panic_code:x})",
+                "selector": selector,
+                "data": payload,
+            }
+
+    # Some providers render Panic(uint256) as text instead of returning its ABI data.
+    panic_text = re.search(
+        r"(?i)\bpanic(?:\s+code)?\s*\(?\s*(0x[0-9a-f]+|[0-9]+)\s*\)?",
+        text,
+    )
+    if panic_text:
+        raw_code = panic_text.group(1)
+        try:
+            panic_code = int(raw_code, 16 if raw_code.lower().startswith("0x") else 10)
+        except ValueError:
+            panic_code = None
+        if panic_code is not None:
+            panic_reason = _SOLIDITY_PANIC_REASONS.get(
+                panic_code, "unknown Solidity panic code"
+            )
+            return {
+                "kind": "SOLIDITY PANIC",
+                "reason": f"{panic_reason} (panic code 0x{panic_code:x})",
+                "selector": "0x4e487b71",
+                "data": None,
+            }
+
+    # Custom errors are defined by the selected contract's ABI. Resolve their
+    # selectors with Cast's Keccak-aware selector implementation, not SHA3-256.
+    custom_abi = []
+    custom_abi_available = False
+    if target and isinstance(config, dict):
+        try:
+            custom_abi = load_abi(target, config) or []
+        except Exception:
+            custom_abi = []
+        custom_abi_available = bool(custom_abi)
+        for item in custom_abi:
+            if not isinstance(item, dict) or item.get("type") != "error":
+                continue
+            try:
+                signature = format_signature(item)
+                selector = abi_selector(signature)
+            except Exception:
+                continue
+            if not selector:
+                continue
+            for payload in payloads:
+                if payload[:10].lower() != str(selector).strip().lower():
+                    continue
+                inputs = item.get("inputs") or []
+                decoded = None
+                if inputs:
+                    try:
+                        rendered = decode_abi_input(signature, payload)
+                        if rendered and not str(rendered).lower().startswith(("error:", "failed")):
+                            decoded = str(rendered).strip()
+                    except Exception:
+                        decoded = None
+                reason = signature
+                if decoded:
+                    reason += f"\n  Arguments: {decoded}"
+                elif not inputs:
+                    reason += "\n  Arguments: none"
+                return {
+                    "kind": "CUSTOM REVERT",
+                    "reason": reason,
+                    "selector": str(selector).strip(),
+                    "data": payload,
+                }
+
+    # Prefer a plain-text reason before treating an unknown selector as a
+    # custom error. Some provider messages contain both a human reason and data.
+    textual_reason = _decode_solidity_revert_reason(text)
+    if textual_reason:
+        return {"kind": "REVERT", "reason": textual_reason, "selector": None, "data": None}
+
+    if "execution reverted" in lowered or ("revert" in lowered and bool(list(_explicit_revert_payloads(text)))):
+        for payload in _explicit_revert_payloads(text):
+            if len(payload) < 10:
+                continue
+            selector = payload[:10].lower()
+            if selector not in {"0x08c379a0", "0x4e487b71"}:
+                if custom_abi_available:
+                    reason = (
+                        f"unknown custom error selector {selector}; it is not defined "
+                        "in the selected contract ABI"
+                    )
+                else:
+                    reason = (
+                        f"unknown custom error selector {selector}; no contract ABI was "
+                        "available to resolve it"
+                    )
+                return {
+                    "kind": "CUSTOM REVERT",
+                    "reason": reason,
+                    "selector": selector,
+                    "data": payload,
+                }
+        empty_data = bool(re.search(
+            r'''(?i)\b(?:data|revert data|return data)\s*[:=]\s*["']?0x["']?''',
+            text,
+        ))
+        if empty_data:
+            reason = "contract reverted without a reason (empty revert data)"
+        else:
+            reason = "contract execution reverted, but the RPC supplied no decodable reason"
+        return {"kind": "REVERT", "reason": reason, "selector": None, "data": None}
+
+    return None
+
+
+def _friendly_error(title, *, reason=None, what=None, next_step=None, transaction=None, technical=None):
+    """Render error messages for people first; keep optional diagnostics secondary."""
+    lines = [f"Error: {title}"]
+    if reason:
+        reason_lines = str(reason).strip().splitlines()
+        if reason_lines:
+            lines.append(f"  Reason: {reason_lines[0].strip()}")
+            lines.extend(f"  {line.strip()}" for line in reason_lines[1:] if line.strip())
+    if what:
+        lines.append(f"  What happened: {what}")
+    if next_step:
+        lines.append(f"  Next step: {next_step}")
+    if transaction:
+        lines.append(f"  Transaction: {transaction}")
+    if technical:
+        detail = str(technical).strip()
+        if len(detail) > 2000:
+            detail = detail[:2000] + "\n[technical details truncated]"
+        lines.append(f"  Technical details: {detail}")
+    return "\n".join(lines)
+
+
+def _clean_error_detail(text):
+    """Remove common wrappers without discarding the underlying diagnostic."""
+    detail = str(text or "").strip()
+    detail = re.sub(r"(?i)^(?:error|fatal|exception)\s*:\s*", "", detail).strip()
+    detail = re.sub(
+        r"(?i)^server returned an error response:\s*(?:error code \d+\s*:\s*)?",
+        "",
+        detail,
+    ).strip()
+    return detail
+
+
+def _format_cli_error(error_text, *, code=None, command=None, config=None, target=None, transaction_hash=None, source="cast"):
+    """Use one approachable, action-oriented format for Lowkey, RPC, and EVM errors."""
+    text = str(error_text or "").strip()
+    lowered = text.lower()
+    if not text:
+        text = "The command failed without diagnostic output."
+        lowered = text.lower()
+
+    is_send = str(command or "").lower() in {"send", "s"}
+    is_gas_estimation = "failed to estimate gas" in lowered
+    looks_reverted = (
+        "execution reverted" in lowered
+        or ("revert" in lowered and bool(list(_explicit_revert_payloads(text))))
+        or bool(re.search(r"(?i)\bpanic(?:\s+code)?\s*\(?\s*(?:0x)?[0-9a-f]+\s*\)?", text))
+        or any(
+            payload.lower().startswith(("0x08c379a0", "0x4e487b71"))
+            for payload in _revert_payloads(text)
+        )
+    )
+
+    def transaction_status():
+        if transaction_hash:
+            return f"Submitted; transaction hash {transaction_hash}. Use lk receipt to check the final status."
+        if is_gas_estimation:
+            return "Not sent. The RPC rejected the call before broadcasting a transaction."
+        return "Not confirmed. Check the sender nonce and receipt before retrying."
+
+    # Convert old machine-style errors emitted by older Lowkey subcommands or
+    # stored command output into the same human-friendly format as new errors.
+    legacy = re.match(r"(?is)^\s*ERROR\s*\[([^\]]+)\]\s*(?:\r?\n|$)(.*)$", text)
+    if legacy:
+        legacy_kind = legacy.group(1).strip().upper()
+        body = legacy.group(2).strip()
+        reason_match = re.search(r"(?im)^\s*Reason:\s*(.*)$", body)
+        detail_match = re.search(r"(?im)^\s*Details?:\s*(.*)$", body)
+        reason = (reason_match.group(1).strip() if reason_match else
+                  detail_match.group(1).strip() if detail_match else None)
+        what_match = re.search(r"(?im)^\s*What happened:\s*(.*)$", body)
+        next_match = re.search(r"(?im)^\s*Next(?: step)?:\s*(.*)$", body)
+        legacy_tx = re.search(r"(?im)^\s*Transaction broadcast:\s*(.*)$", body)
+        selector_match = re.search(r"(?im)^\s*Selector:\s*(.*)$", body)
+        raw_data_match = re.search(r"(?im)^\s*Raw revert data:\s*(.*)$", body)
+        technical = "; ".join(
+            part for part in (
+                f"selector {selector_match.group(1).strip()}" if selector_match else None,
+                f"revert data {raw_data_match.group(1).strip()}" if raw_data_match else None,
+            ) if part
+        ) or None
+        category_titles = {
+            "INSUFFICIENT FUNDS": "Not enough funds to send this transaction" if is_send else "Insufficient funds",
+            "GAS ESTIMATION": "Transaction not sent",
+            "RPC CONNECTION": "Couldn't connect to the RPC node",
+            "TIMEOUT": "The command timed out",
+            "TRANSACTION NONCE/FEES": "The node rejected the transaction's nonce or fee settings",
+            "INVALID INPUT": "Invalid command input",
+            "MISSING DEPENDENCY OR FILE": "A required tool, file, or module wasn't found",
+            "CONFIGURATION": "Lowkey needs configuration before it can continue",
+            "USAGE": "Check the command syntax",
+            "RUNTIME": "Lowkey encountered an internal error",
+            "LOWKEY": "Lowkey couldn't complete the command",
+            "COMMAND": "The command failed",
+        }
+        if legacy_kind in {"REVERT", "CUSTOM REVERT", "SOLIDITY PANIC"}:
+            if legacy_kind == "SOLIDITY PANIC":
+                title = "Contract hit a Solidity panic"
+            elif is_send and ("gas estimation failed" in body.lower() or is_gas_estimation):
+                title = "Transaction not sent"
+            elif is_send:
+                title = "Contract rejected the send request"
+            else:
+                title = "Contract call reverted"
+            reason = reason or "The contract rejected the call, but Lowkey could not recover a readable reason."
+            what = what_match.group(1).strip() if what_match else (
+                "The call was rejected by the contract. Lowkey did not assume it was safe to continue."
+            )
+            next_step = next_match.group(1).strip() if next_match else (
+                "Check the function's validation conditions and the values you supplied."
+            )
+            tx = (
+                None if is_send and ("gas estimation failed" in body.lower() or is_gas_estimation)
+                else transaction_status() if is_send
+                else "No transaction was sent; this was a simulated call."
+            )
+            return _friendly_error(title, reason=reason, what=what, next_step=next_step,
+                                   transaction=tx, technical=technical)
+        title = category_titles.get(legacy_kind, "Lowkey couldn't complete the command")
+        what = what_match.group(1).strip() if what_match else None
+        next_step = next_match.group(1).strip() if next_match else (
+            "Check the reason above and correct the input, configuration, or dependency."
+        )
+        tx = transaction_status() if is_send and legacy_kind != "GAS ESTIMATION" else None
+        return _friendly_error(title, reason=reason or body or "No additional details were provided.",
+                               what=what, next_step=next_step, transaction=tx, technical=technical)
+
+    if looks_reverted:
+        decoded = _decode_contract_revert(text, config=config, target=target)
+        if decoded:
+            kind = decoded.get("kind")
+            reason = str(decoded.get("reason") or "The contract reverted without a readable reason.")
+            technical_parts = []
+            selector = decoded.get("selector")
+            data = decoded.get("data")
+            if selector and kind == "CUSTOM REVERT":
+                technical_parts.append(f"selector {selector}")
+            if data and (kind == "CUSTOM REVERT" or not reason):
+                technical_parts.append(f"revert data {data}")
+
+            if kind == "CUSTOM REVERT" and reason.lower().startswith("unknown custom error selector"):
+                reason = "The contract returned a custom error that Lowkey could not identify."
+                technical_parts.append(str(decoded.get("reason") or ""))
+                next_step = "Load the matching contract ABI with lk abi <artifact>, then repeat the call to decode the custom error."
+            elif kind == "CUSTOM REVERT":
+                next_step = "Read the named custom error and its arguments, then check which input or contract condition triggered it."
+            elif kind == "SOLIDITY PANIC":
+                next_step = "Review the arithmetic, array indexes, and bounds related to this panic."
+            elif "empty revert data" in reason.lower():
+                reason = "The contract reverted without providing an error message."
+                next_step = "Check the function's requirements and use lk trace if a transaction was submitted."
+            else:
+                next_step = "Check the number you passed and the function's input checks."
+
+            if kind == "SOLIDITY PANIC":
+                title = "Contract hit a Solidity panic"
+                what = "The EVM stopped execution on an invalid operation. The decoded panic reason describes the failure, but the contract's intended rule must be checked separately."
+            elif is_send and is_gas_estimation and not transaction_hash:
+                title = "Transaction not sent"
+                what = "The contract rejected the call while Lowkey checked whether it could run. No transaction was submitted."
+            elif is_send and transaction_hash:
+                title = "The submitted transaction reported a revert"
+                what = "A transaction hash was returned. Check its receipt to confirm whether it was mined and how it finished."
+            elif is_send:
+                title = "Contract rejected the send request"
+                what = "The RPC returned a revert, but Lowkey did not receive a transaction hash to confirm whether submission occurred."
+            else:
+                title = "Contract call reverted"
+                what = "This call was simulated; it stopped at the revert and did not save state changes."
+
+            transaction = (
+                transaction_status()
+                if is_send and not (is_gas_estimation and not transaction_hash)
+                else "No transaction was sent; this was a simulated call." if not is_send
+                else None
+            )
+            return _friendly_error(
+                title,
+                reason=reason,
+                what=what,
+                next_step=next_step,
+                transaction=transaction,
+                technical="; ".join(part for part in technical_parts if part) or None,
+            )
+
+    if "insufficient funds" in lowered or "insufficient balance for gas" in lowered:
+        title = "Not enough funds to send this transaction" if is_send else "Insufficient funds"
+        return _friendly_error(
+            title,
+            reason="The sending account cannot cover the transaction value and required network fees.",
+            what="The node rejected the request because the account's native-token balance is too low.",
+            next_step="Check the sender's balance with lk balance and reduce the transaction value or fund the account.",
+            technical=_clean_error_detail(text),
+        )
+
+    # Gas estimation can fail for reasons other than a Solidity revert.
+    if is_gas_estimation:
+        match = re.search(r"(?is)failed to estimate gas\s*:?\s*(.*)", text)
+        detail = match.group(1).strip() if match else text
+        detail = re.sub(
+            r"(?i)^server returned an error response:\s*(?:error code \d+\s*:\s*)?",
+            "",
+            detail,
+        ).strip()
+        detail = detail.split(", data:", 1)[0].strip().rstrip(":")
+        return _friendly_error(
+            "Transaction not sent",
+            reason=_clean_error_detail(detail) or "The node rejected the transaction during gas estimation.",
+            what="Lowkey checks whether a transaction can execute before broadcasting it. This check failed, so no transaction was submitted.",
+            next_step="Check the function arguments, account balance, and transaction value/fee settings.",
+            technical=None if detail == "The node rejected the transaction during gas estimation." else _clean_error_detail(text),
+        )
+
+    if any(marker in lowered for marker in (
+        "connection refused", "failed to connect", "could not connect",
+        "connection reset", "network is unreachable", "name or service not known",
+        "no such host", "failed to fetch", "error sending request",
+        "connection timed out", "remote end closed connection",
+    )):
+        return _friendly_error(
+            "Couldn't connect to the RPC node",
+            reason="Lowkey could not reach the configured blockchain node.",
+            what="The request could not be sent to or answered by the RPC endpoint.",
+            next_step="Check the active endpoint with lk rpc and make sure Anvil or the remote node is running and reachable.",
+            transaction=transaction_status() if is_send else None,
+            technical=_clean_error_detail(text),
+        )
+
+    if "timed out" in lowered or "timeout" in lowered:
+        return _friendly_error(
+            "The command timed out",
+            reason=_clean_error_detail(text),
+            what="Lowkey did not receive a complete response before the time limit.",
+            next_step="Check whether the RPC node or external tool is still responsive. If this was a send, check its receipt/nonce before retrying.",
+            transaction=transaction_status() if is_send else None,
+        )
+
+    if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
+        return _friendly_error(
+            "The node rejected the transaction's nonce or fee settings",
+            reason=_clean_error_detail(text),
+            what="The sender's nonce or replacement fee does not match the node's pending transaction state.",
+            next_step="Inspect the sender's pending transactions and nonce before attempting another send.",
+            transaction=transaction_status() if is_send else None,
+        )
+
+    if any(marker in lowered for marker in (
+        "unexpected argument", "unknown argument", "unknown option",
+        "unrecognized option", "invalid value", "invalid type",
+        "missing required argument", "could not parse argument",
+    )):
+        return _friendly_error(
+            "Invalid command input",
+            reason=_clean_error_detail(text),
+            next_step=(f"Run lk {command} --h to see accepted arguments and examples." if command else "Check the command's help for accepted arguments and examples."),
+            transaction="Not sent; the command input was rejected." if is_send else None,
+        )
+
+    if any(marker in lowered for marker in (
+        "no such file or directory", "command not found", "executable file not found",
+        "not found in path", "not found on path", "no module named",
+    )):
+        return _friendly_error(
+            "A required tool, file, or module wasn't found",
+            reason=_clean_error_detail(text),
+            next_step="Check the path and install or restore the missing dependency.",
+            transaction="Not sent; the required command could not run." if is_send else None,
+        )
+
+    if source == "runtime":
+        return _friendly_error(
+            "Lowkey encountered an internal error",
+            reason=_clean_error_detail(text),
+            next_step="Retry once. If this happens again, share this message and the runtime evidence file under .audit/evidence.",
+        )
+
+    if source == "lowkey":
+        if _has_standard_error_shape(text):
+            # Preserve a complete user-facing message already rendered by a lower layer.
+            return text
+        if lowered.startswith("usage:") or any(marker in lowered for marker in (
+            "unknown lowkey command", "unknown lk ", "unknown option",
+            "unexpected argument", "needs an actor name", "--repeat", "--times",
+        )):
+            return _friendly_error(
+                "Check the command syntax",
+                reason=_clean_error_detail(text),
+                next_step=(f"Run lk {command} --h for command usage." if command else "Run lk --help for the command list."),
+            )
+        if any(marker in lowered for marker in (
+            "no target", "set target first", "no rpc", "rpc is not configured",
+            "not configured", "no address or target selected",
+        )):
+            return _friendly_error(
+                "Lowkey needs configuration before it can continue",
+                reason=_clean_error_detail(text),
+                next_step="Set the required target, RPC endpoint, or actor, then repeat the command.",
+            )
+        if any(marker in lowered for marker in (
+            "not found", "could not resolve", "unavailable", "not installed",
+        )):
+            return _friendly_error(
+                "A required resource wasn't found",
+                reason=_clean_error_detail(text),
+                next_step="Check the name/path and verify the required dependency is installed.",
+            )
+        return _friendly_error(
+            "Lowkey couldn't complete the command",
+            reason=_clean_error_detail(text),
+            next_step="Review the reason above, correct the input or configuration, and try again.",
+        )
+
+    detail = _clean_error_detail(text)
+    if is_send:
+        return _friendly_error(
+            "The command failed",
+            reason=detail,
+            what="Lowkey could not determine a more specific cause from the available diagnostic.",
+            next_step="Check the arguments and RPC status. If the command was a send, confirm the receipt/nonce before retrying.",
+            transaction=transaction_status(),
+        )
+    return _friendly_error(
+        "The command failed",
+        reason=detail,
+        next_step="Check the message above, the command's help, and the active RPC/configuration.",
+    )
+
+
+def _lowkey_command_error(message, code=2, *, capture=False, command=None, config=None, target=None):
+    """Build/emit Lowkey-owned command errors through the shared formatter."""
+    rendered = _format_cli_error(
+        message,
+        code=code,
+        command=command,
+        config=config,
+        target=target,
+        source="lowkey",
+    )
+    result = CommandResult(rendered, code)
+    record_status(code)
+    if capture:
+        return result
+    print(str(result), file=sys.stderr)
+    return result.code
+
+
+def _format_revert_error(error_text, config=None, target=None):
+    """Backward-compatible wrapper around Lowkey's shared error formatter."""
+    return _format_cli_error(
+        error_text,
+        command="send",
+        config=config,
+        target=target,
+        source="cast",
+    )
+
+
 def run_cast(args,config,capture=False):
     if not args:
         result=CommandResult("",2)
@@ -3642,11 +4268,10 @@ def run_cast(args,config,capture=False):
         token=remaining[index]
         if token in {"--as","--actor"}:
             if index+1 >= len(remaining):
-                result=CommandResult(f"Error: {token} needs an actor name",2)
-                record_status(result.code)
-                if capture: return result
-                print(str(result),file=sys.stderr)
-                return result.code
+                return _lowkey_command_error(
+                    f"Error: {token} needs an actor name", 2, capture=capture,
+                    command="send" if cast_cmd == "send" else cast_cmd, config=config, target=target
+                )
             actor_override=remaining[index+1]
             index += 2
             continue
@@ -3657,22 +4282,18 @@ def run_cast(args,config,capture=False):
     if cast_cmd == "send":
         if "--actors" in remaining:
             if actor_override:
-                result=CommandResult("Error: --actors cannot be combined with --actor/--as.",2)
-                record_status(result.code)
-                if capture: return result
-                print(str(result),file=sys.stderr)
-                return result.code
+                return _lowkey_command_error(
+                    "Error: --actors cannot be combined with --actor/--as.", 2,
+                    capture=capture, command=cast_cmd, config=config, target=target
+                )
             remaining = [token for token in remaining if token != "--actors"]
             return run_multi_actor_send(config, remaining)
         try:
             remaining = normalize_send_options(remaining)
         except ValueError as error:
-            result=CommandResult(f"Error: {error}",2)
-            record_status(result.code)
-            if capture:
-                return result
-            print(str(result), file=sys.stderr)
-            return result.code
+            return _lowkey_command_error(
+                f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
+            )
 
     if cast_cmd in {"call","send","storage"}:
         if remaining and is_address(remaining[0]):
@@ -3689,10 +4310,10 @@ def run_cast(args,config,capture=False):
                 target=named_target
                 remaining.pop(0)
         if not target:
-            result=CommandResult("Error: no target set. Use lk target <address> or pass one explicitly.",2)
-            record_status(result.code)
-            if capture: return result
-            print(str(result),file=sys.stderr); return result.code
+            return _lowkey_command_error(
+                "Error: no target set. Use lk target <address> or pass one explicitly.",
+                2, capture=capture, command=cast_cmd, config=config, target=target
+            )
         cmd=["cast",cast_cmd,target]
     else: cmd=["cast",cast_cmd]
     function_item=None
@@ -3711,10 +4332,9 @@ def run_cast(args,config,capture=False):
         if "(" not in remaining[0] or ")" not in remaining[0]:
             try: remaining[0]=resolve_function(remaining[0],target,config)
             except ValueError as error:
-                result=CommandResult(f"Error: {error}",2)
-                record_status(result.code)
-                print(str(result),file=sys.stderr)
-                return result if capture else result.code
+                return _lowkey_command_error(
+                    f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
+                )
         try:
             abi=load_abi(target,config)
             matches=matching_functions(abi,remaining[0]) if abi else []
@@ -3722,10 +4342,9 @@ def run_cast(args,config,capture=False):
                 function_item=matches[0]
                 remaining[1:]=prepare_argument_values(config,matches[0],remaining[1:])
         except ValueError as error:
-            result=CommandResult(f"Error: {error}",2)
-            record_status(result.code)
-            print(str(result),file=sys.stderr)
-            return result if capture else result.code
+            return _lowkey_command_error(
+                f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
+            )
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
     bypass="--yes" in remaining
@@ -3773,7 +4392,39 @@ def run_cast(args,config,capture=False):
             fallback = _rpc_read_fallback(config, target, function_item, remaining[1:])
             if fallback is not None:
                 out, err, code = fallback, "", 0
-        final=out or err; log_session(safe_cmd,final)
+        final=out or err
+        log_session(safe_cmd, final)
+
+        # Any unsuccessful Cast operation goes through the same formatter.
+        # Handle failure before parsing output as a transaction receipt/result:
+        # otherwise provider error text written to stdout can look like success.
+        if code != 0:
+            raw_error = err or out or final
+            tx_match = re.search(r"(?i)transactionHash(?:\s|:)+([0-9a-fx]{66})", out or "")
+            failed_tx_hash = tx_match.group(1) if tx_match else None
+            if cast_cmd == "send" and failed_tx_hash:
+                # A nonzero exit does not erase evidence that a transaction hash
+                # was returned. Preserve it so the user can inspect the receipt.
+                config["last_tx"] = failed_tx_hash
+                config["last_tx_block"] = None
+                if not config.get("_ephemeral"):
+                    save_config(config)
+            rendered_error = _format_cli_error(
+                raw_error,
+                code=code,
+                command=cast_cmd,
+                config=config,
+                target=target,
+                transaction_hash=failed_tx_hash,
+                source="cast",
+            )
+            record_status(code)
+            result = CommandResult(rendered_error, code)
+            if capture:
+                return result
+            print(apply_labels(rendered_error, config), file=sys.stderr)
+            return code
+
         if cast_cmd=="send" and out:
             match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
             if match:
@@ -3830,21 +4481,34 @@ def run_cast(args,config,capture=False):
             else:
                 print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
         if err:
-            if code!=0 and "execution reverted" in err.lower(): err="REVERT: "+err
+            # Some successful commands emit non-fatal diagnostics on stderr.
             print(apply_labels(err,config),file=sys.stderr)
         return code
     except FileNotFoundError:
-        message="Error: cast was not found in PATH. Install/update Foundry first."
-        result=CommandResult(message,127)
+        message = _format_cli_error(
+            "Cast executable not found in PATH. Install or update Foundry, then verify 'cast --version'.",
+            code=127,
+            command=cast_cmd,
+            source="cast",
+        )
+        result = CommandResult(message, 127)
         record_status(result.code)
-        if capture: return result
-        print(message,file=sys.stderr)
+        if capture:
+            return result
+        print(message, file=sys.stderr)
         return result.code
     except OSError as error:
-        result=CommandResult(f"Error executing cast: {error}",1)
+        message = _format_cli_error(
+            f"Error executing Cast: {error}",
+            code=1,
+            command=cast_cmd,
+            source="cast",
+        )
+        result = CommandResult(message, 1)
         record_status(result.code)
-        if capture: return result
-        print(str(result),file=sys.stderr)
+        if capture:
+            return result
+        print(str(result), file=sys.stderr)
         return result.code
 def run_balance(config,args=None):
     args=list(args or [])
@@ -8136,19 +8800,23 @@ def _numeric_field_is_value_like(label):
 
 
 def _print_numeric_unit_reference(label, ptype):
+    """Show numeric input choices without inferring a unit from the ABI or name."""
     if not str(ptype).startswith(("uint", "int")):
         return
+
+    print()
+    print("NUMERIC INPUT OPTIONS")
+    print("---------------------")
+    print("  Raw integer : a number such as 1000000 is passed through unchanged.")
+    print("  Separators  : commas/underscores are accepted, e.g. 1,000,000.")
+    print("  Unit note   : uint/int types do not specify what the number measures.")
     if _numeric_field_is_value_like(label):
-        print()
-        print("NUMERIC UNIT REFERENCE")
-        print("----------------------")
-        print("  1 ETH      = 1,000,000,000,000,000,000 wei")
-        print("  1 gwei     = 1,000,000,000 wei")
-        print("  1 wei      = 0.000000000000000001 ETH")
-        print("  0.001 ETH  = 1,000,000,000,000,000 wei")
-        print("  ETH-denominated input detected. Examples: 0.5 ETH, 10 gwei, 1 wei")
+        print("  Optional ETH units: 0.5 ETH, 10 gwei, or 1 wei (converted to wei).")
+        print("  Check first : use ETH units only if the contract expects a wei-denominated amount.")
+        print("  Reference   : 1 ETH = 1000000000000000000 wei; 1 gwei = 1000000000 wei.")
     else:
-        print("  Raw integer field. No ETH unit conversion is suggested for this field.")
+        print("  Field hint  : this name does not suggest an ETH amount.")
+        print("  Use plain integers unless you know the contract expects a wei-denominated amount.")
     print()
 
 
@@ -8222,6 +8890,15 @@ def _lab_constructor_default(contract, label, ptype):
         if name in {"version", "poolversion"}:
             return "v1"
 
+    # Keep a useful, generic raw-integer lab suggestion without guessing units.
+    # Narrow integer types receive 1 instead when 1,000,000 would overflow.
+    integer_match = re.fullmatch(r"(u?int)(\d+)?", str(ptype))
+    if integer_match:
+        signed = integer_match.group(1) == "int"
+        bits = int(integer_match.group(2) or "256")
+        maximum = (1 << (bits - 1)) - 1 if signed else (1 << bits) - 1
+        return "1000000" if maximum >= 1000000 else "1"
+
     return None
 
 
@@ -8253,7 +8930,11 @@ def _lab_constructor_meaning(label, ptype, param=None):
         return "Text value."
 
     if normalized.startswith(("uint", "int")):
-        return "Integer value. Commas and underscores are accepted as visual separators; ETH/gwei/wei units are supported."
+        return (
+            "Integer value. The ABI does not specify its unit; plain numbers are passed "
+            "through, and ETH/gwei/wei notation is a convenience only when the contract "
+            "expects a wei-denominated amount."
+        )
 
     if normalized == "bytes":
         return "Dynamic bytes. Enter hex, for example 0x1234."
@@ -8303,6 +8984,8 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
 
     if default is not None:
         print(f"  Suggested : {default}")
+        if ptype.startswith(("uint", "int")):
+            print("  Suggestion note: generic raw integer; unit and meaning are not inferred from the ABI.")
 
     prompt = f"  Value{' [Enter = ' + default + ']' if default is not None else ''}: "
     value = input(prompt).strip()
@@ -9310,7 +9993,12 @@ def run_foundry(args, capture=False, cwd=None):
     root = audit_context.foundry_project_root()
     command_name = args[0] if args else "forge"
     if not binary:
-        message = "Error: forge was not found on PATH. Install Foundry first."
+        message = _format_cli_error(
+            "forge was not found on PATH. Install Foundry first.",
+            code=127,
+            command=f"forge {command_name}",
+            source="cast",
+        )
         audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
         result = CommandResult(message, 127)
         record_status(result.code)
@@ -9324,7 +10012,12 @@ def run_foundry(args, capture=False, cwd=None):
             [binary, *args], capture, cwd if cwd is not None else root, timeout
         )
     except OSError as error:
-        message = f"Error executing forge: {error}"
+        message = _format_cli_error(
+            f"Error executing forge: {error}",
+            code=1,
+            command=f"forge {command_name}",
+            source="cast",
+        )
         audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
         result = CommandResult(message, 1)
         record_status(result.code)
@@ -9333,10 +10026,15 @@ def run_foundry(args, capture=False, cwd=None):
         print(message, file=sys.stderr)
         return result.code
     if timed_out:
-        message = (
-            f"TIMEOUT: forge {command_name} exceeded {timeout}s and its process group "
-            "was terminated. No security conclusion is supported by this run. "
-            "Adjust LOWKEY_FORGE_TIMEOUT (30-7200s) if needed."
+        message = _format_cli_error(
+            (
+                f"Timed out: Forge {command_name} exceeded {timeout}s and its process group "
+                "was terminated. No security conclusion is supported by this run. "
+                "Adjust LOWKEY_FORGE_TIMEOUT (30-7200s) if needed."
+            ),
+            code=124,
+            command=f"forge {command_name}",
+            source="cast",
         )
         audit_context.emit(
             "forge-command", root, tool="forge", status="failed",
@@ -12024,11 +12722,28 @@ def format_storage_read(config, slot, raw):
 
 
 def run_raw(config,args):
-    if not args: return fail("Usage: lk raw <cast-subcommand> [args...]")
-    safe=redact_secrets(shlex.join(["cast"]+args)); print(f"DEBUG: Executing -> {safe}")
-    code,out,err=cast_output(["cast"]+args); log_session(safe,out or err)
-    if out: print(humanize_value(apply_labels(out,config)))
-    if err: print(err,file=sys.stderr)
+    if not args:
+        return fail("Usage: lk raw <cast-subcommand> [args...]")
+    safe = redact_secrets(shlex.join(["cast"] + args))
+    print(f"DEBUG: Executing -> {safe}")
+    code, out, err = cast_output(["cast"] + args)
+    log_session(safe, out or err)
+    if code != 0:
+        detail = "\n".join(part for part in (err, out) if part).strip()
+        rendered = _format_cli_error(
+            detail,
+            code=code,
+            command="raw",
+            config=config,
+            target=config.get("target"),
+            source="cast",
+        )
+        print(apply_labels(rendered, config), file=sys.stderr)
+        return record_status(code)
+    if out:
+        print(humanize_value(apply_labels(out, config)))
+    if err:
+        print(err, file=sys.stderr)
     return record_status(code)
 
 def run_batch(config,args):
@@ -15359,7 +16074,7 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
         print(f"  {command_text:<42} {reason}")
 
 
-def dispatch_command(cmd,args,config,from_batch=False):
+def _dispatch_command_impl(cmd,args,config,from_batch=False):
     # Contextual help is side-effect free: do not activate targets or execute
     # commands when the user is only asking for documentation.
     lowered_cmd = str(cmd or "").strip().lower()
@@ -15651,6 +16366,9 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 "       lk read <target> <function> [args]\n"
                 "A bare address is a contract target, not a function call."
             )
+        warning = _read_state_change_warning(args, config)
+        if warning:
+            return fail(warning)
         return run_cast(["call",*args],config)
     elif cmd in {"send"}:
         return run_cast(["send",*args],config)
@@ -15825,6 +16543,131 @@ def dispatch_command(cmd,args,config,from_batch=False):
         return 2
 
 
+_ERROR_DIAGNOSTIC_START = re.compile(
+    r"(?im)^\s*(?:"
+    r"ERROR(?:\s*\[|\s*:|\b)|"
+    r"REVERT\s*:|"
+    r"FATAL\s*:|"
+    r"TRACEBACK \(MOST RECENT CALL LAST\)|"
+    r"EXCEPTION(?:\s*:|\b)|"
+    r"USAGE\s*:|"
+    r"FAILED(?:\s+TO)?\b|"
+    r"COULD NOT\b|"
+    r"CANNOT\b|"
+    r"CONNECTION REFUSED\b|"
+    r"TIMED OUT\b|"
+    r"NO SUCH FILE OR DIRECTORY\b|"
+    r"COMMAND NOT FOUND\b"
+    r")"
+)
+
+def _is_error_diagnostic(output):
+    """Recognize errors printed directly by commands that bypass fail()."""
+    return bool(_ERROR_DIAGNOSTIC_START.search(str(output or "")))
+
+
+def _has_standard_error_shape(output):
+    """Identify the current human-readable format, not legacy machine-style headings."""
+    return bool(
+        re.search(
+            r"(?im)^Error: .+\n\s{2}(?:Reason|What happened|Next step|Transaction|Technical details):",
+            str(output or ""),
+        )
+    )
+
+
+def _ensure_error_context(output, command=None, code=None):
+    """Keep user-facing errors focused; process status remains available to the shell."""
+    text = str(output or "").strip()
+    if not text:
+        return "Error: The command failed without diagnostic output."
+    # Command names and exit codes are shell/debug metadata, not the explanation
+    # a user needs to decide what to do next.
+    return text
+
+
+def dispatch_command(cmd, args, config, from_batch=False):
+    """Dispatch a command and normalize direct stderr errors through one renderer.
+
+    Many legacy handlers print directly to stderr. Capturing that stream at the
+    dispatcher means they receive the same classification as fail() and Cast
+    failures, without capturing stdout (which would hide interactive prompts).
+    """
+    status_before = _COMMAND_STATUS
+    captured_stderr = io.StringIO()
+    try:
+        with redirect_stderr(captured_stderr):
+            result = _dispatch_command_impl(cmd, args, config, from_batch=from_batch)
+    except SystemExit as exc:
+        # A few commands intentionally exit from inside their handler. Do not
+        # discard diagnostics just because the handler uses SystemExit.
+        diagnostic = captured_stderr.getvalue()
+        if diagnostic:
+            code = exc.code if isinstance(exc.code, int) and exc.code else 2
+            if _is_error_diagnostic(diagnostic):
+                rendered = (
+                    diagnostic.strip()
+                    if _has_standard_error_shape(diagnostic)
+                    else _format_cli_error(
+                        diagnostic.strip(),
+                        code=code,
+                        command=cmd,
+                        config=config,
+                        source="lowkey",
+                    )
+                )
+                print(_ensure_error_context(rendered, cmd, code), file=sys.stderr)
+                record_status(code)
+            else:
+                sys.stderr.write(diagnostic)
+        raise
+
+    diagnostic = captured_stderr.getvalue()
+    returned_code = result if isinstance(result, int) else getattr(result, "code", None)
+    if returned_code is None and _COMMAND_STATUS != status_before and _COMMAND_STATUS != 0:
+        returned_code = _COMMAND_STATUS
+
+    has_error_text = _is_error_diagnostic(diagnostic)
+    is_failure = (isinstance(returned_code, int) and returned_code != 0) or has_error_text
+
+    if not is_failure:
+        if diagnostic:
+            sys.stderr.write(diagnostic)
+        return result
+
+    error_code = returned_code if isinstance(returned_code, int) and returned_code != 0 else 2
+    if diagnostic.strip():
+        rendered = (
+            diagnostic.strip()
+            if _has_standard_error_shape(diagnostic)
+            else _format_cli_error(
+                diagnostic.strip(),
+                code=error_code,
+                command=cmd,
+                config=config,
+                source="lowkey",
+            )
+        )
+        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
+    else:
+        rendered = _format_cli_error(
+            (
+                f"Command returned exit code {error_code}; no Python-level stderr was captured. "
+                "An external tool may have written its detailed diagnostic directly to the terminal."
+            ),
+            code=error_code,
+            command=cmd,
+            config=config,
+            source="lowkey",
+        )
+        print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
+
+    record_status(error_code)
+    if isinstance(returned_code, int) and returned_code != 0:
+        return result
+    return error_code
+
+
 def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
@@ -15970,8 +16813,15 @@ def _safe_main() -> int:
         except Exception:
             root = None
 
-        print("LOWKEY RUNTIME ERROR", file=sys.stderr)
-        print(f"  {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            _format_cli_error(
+                f"{type(exc).__name__}: {exc}",
+                code=2,
+                command=sys.argv[1] if len(sys.argv) > 1 else None,
+                source="runtime",
+            ),
+            file=sys.stderr,
+        )
         if root:
             print(f"  project: {root}", file=sys.stderr)
             try:
