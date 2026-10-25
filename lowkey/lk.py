@@ -15778,6 +15778,8 @@ REPRODUCE / ATTACK / TEST
                                      lk generate test 'createRecord(address,uint256)' <addr> <amount>
   lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
   lk generate deployment <Contract> Generate a deployment script.
+  lk test-gen <Contract> --types ... Generate project-aware test drafts through adapters.
+  lk mutation-check <manifest.json>  Run isolated mutation validation and report a score.
   lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
   lk fuzz [args...]                Run Forge fuzz tests.
   lk invariant [args...]           Run Forge invariant tests.
