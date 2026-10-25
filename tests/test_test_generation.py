@@ -423,5 +423,32 @@ class TestGenerationTests(unittest.TestCase):
             self.assertIn("pragma solidity ^0.8.24;", unit)
             self.assertIn('import { Counter } from "../../src/Counter.sol";', unit)
 
+
+    def test_fork_draft_is_read_only_and_chain_pin_is_optional_but_real(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter", "target": "0x1111111111111111111111111111111111111111"},
+                        ["--types", "fork"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            fork = (
+                root / ".audit" / "test-gen" / "Counter" /
+                "LowkeyGeneratedFork_Counter.t.sol"
+            ).read_text(encoding="utf-8")
+            self.assertIn("LOWKEY_EXPECTED_CHAIN_ID", fork)
+            self.assertIn("uint256(0)", fork)
+            self.assertIn("if (expectedChainId != 0) assertEq", fork)
+            self.assertIn("staticcall(", fork)
+            self.assertNotIn("target.setValue(", fork)
+            self.assertNotIn("target.setValue(fuzzValue)", fork)
+
 if __name__ == "__main__":
     unittest.main()

@@ -14712,6 +14712,8 @@ HELP_ALIASES = {
     "decode-calldata": "calldata",
     "returns": "decode",
     "error": "decode-error",
+    "testgen": "test-gen",
+    "generate-tests": "test-gen",
 }
 
 # Aliases not otherwise given their own page still get the canonical command help.

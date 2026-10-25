@@ -456,7 +456,7 @@ import {{ {name} }} from "{import_path}";
     function test_deployment_has_runtime_code() public view {{
         address deployed = address(target);
         uint256 codeSize;
-        assembly { codeSize := extcodesize(deployed) }
+        assembly {{ codeSize := extcodesize(deployed) }}
         assertGt(codeSize, 0);
     }}
 
@@ -636,15 +636,16 @@ def _fork_template(kind: str, name: str, target: str | None, import_path: str,
     version_match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", source_pragma)
     chainid_supported = not version_match or (int(version_match.group(1)), int(version_match.group(2))) >= (0, 8)
     chain_id_check = (
-        '        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", block.chainid);'
-        '\n        assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");'
+        '        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", uint256(0));'
+        '\n        if (expectedChainId != 0) assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");'
         if chainid_supported else
         '        // Solidity before 0.8.0 has no block.chainid builtin; pin the chain externally.'
     )
     body = f'''// SPDX-License-Identifier: MIT
 pragma solidity {source_pragma};
 
-// LowkeyCast-generated fork diagnostic. Configure LOWKEY_RPC_URL before running.
+// LowkeyCast-generated fork diagnostic. Set LOWKEY_RPC_URL; pin LOWKEY_FORK_BLOCK and
+// LOWKEY_EXPECTED_CHAIN_ID for reproducible, chain-checked audit evidence.
 // Tests run against a local Foundry fork; they do not send transactions to mainnet.
 import {{Test}} from "forge-std/Test.sol";
 import {{ {name} }} from "{import_path}";
