@@ -566,6 +566,12 @@ class TestGenerationTests(unittest.TestCase):
                 'pragma solidity ^0.8.20; contract ExistingTest { function testExisting() public {} }',
                 encoding="utf-8",
             )
+            inactive_tests = root / "tests"
+            inactive_tests.mkdir()
+            (inactive_tests / "Inactive.t.sol").write_text(
+                'pragma solidity ^0.8.20; contract InactiveTest { function test_inactive() public {} }',
+                encoding="utf-8",
+            )
             previous = Path.cwd()
             try:
                 os.chdir(root)

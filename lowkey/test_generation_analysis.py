@@ -192,7 +192,7 @@ def _read_evidence(root: Path) -> dict[str, Any]:
 
 def _existing_tests(root: Path, configured_test_dir: Path | None = None) -> dict[str, Any]:
     files, count = [], 0
-    directories = [configured_test_dir or (root / "test"), root / "tests"]
+    directories = [configured_test_dir or (root / "test")]
     seen_directories: set[Path] = set()
     for directory in directories:
         directory = directory.resolve()
