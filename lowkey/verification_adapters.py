@@ -355,21 +355,29 @@ class EchidnaAdapter(NativeConfiguredAdapter):
         budget: dict[str, Any],
     ) -> EngineResult:
         result = super().run(project, request, budget=budget)
-        if result.status != "passed":
+        if result.status in {"timeout", "error", "unsupported"}:
             return result
         try:
             payload = json.loads(result.raw_stdout)
-        except (json.JSONDecodeError, TypeError):
-            result.status = "inconclusive"
-            result.summary = "Echidna exited successfully but did not emit a parseable JSON campaign result"
-            result.metadata["result_semantics"] = "echidna_json_result_missing_or_invalid"
+        except (json.JSONDecodeError, TypeError) as exc:
+            if result.status == "passed":
+                result.status = "inconclusive"
+                result.summary = "Echidna exited successfully but did not emit a parseable JSON campaign result"
+                result.metadata["result_semantics"] = "echidna_json_result_missing_or_invalid"
+            else:
+                result.metadata["result_semantics"] = "echidna_json_result_unavailable_after_nonzero_exit"
+                result.metadata["native_result_parse_error"] = str(exc)
             return result
         if not isinstance(payload, dict) or not isinstance(payload.get("success"), bool):
-            result.status = "inconclusive"
-            result.summary = "Echidna JSON output lacks the documented boolean campaign success field"
-            result.metadata["result_semantics"] = "echidna_campaign_success_missing"
+            if result.status == "passed":
+                result.status = "inconclusive"
+                result.summary = "Echidna JSON output lacks the documented boolean campaign success field"
+                result.metadata["result_semantics"] = "echidna_campaign_success_missing"
+            else:
+                result.metadata["result_semantics"] = "echidna_campaign_result_malformed_after_nonzero_exit"
             result.raw_evidence = {"process": result.raw_evidence, "native_result": payload}
             return result
+        process_status = result.status
         result.raw_evidence = {"process": result.raw_evidence, "native_result": payload}
         result.metadata["native_campaign_success"] = payload["success"]
         result.metadata["native_test_count"] = len(payload.get("tests", [])) if isinstance(payload.get("tests"), list) else None
@@ -377,14 +385,17 @@ class EchidnaAdapter(NativeConfiguredAdapter):
             result.status = "error"
             result.summary = f"Echidna campaign error: {payload['error']}"
             result.metadata["result_semantics"] = "echidna_campaign_error"
-        elif payload["success"]:
-            result.metadata["result_semantics"] = "echidna_json_campaign_success"
-        else:
+        elif not payload["success"]:
             result.status = "failed"
-            result.summary = "Echidna reported campaign success=false (a property failed or campaign did not satisfy its checks)"
+            result.summary = "Echidna reported campaign success=false"
             result.metadata["result_semantics"] = "echidna_json_campaign_failure"
+        elif process_status != "passed":
+            result.status = "failed"
+            result.summary = "Echidna JSON reports success=true but the process exited nonzero"
+            result.metadata["result_semantics"] = "echidna_exit_code_conflicts_with_json"
+        else:
+            result.metadata["result_semantics"] = "echidna_json_campaign_success"
         return result
-
 
 class MedusaAdapter(NativeConfiguredAdapter):
     def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
