@@ -1,8 +1,8 @@
-"""Capability registry and common contract for Lowkey verification-tool adapters.
+"""Capability registry and bounded execution adapters for Lowkey verification tools.
 
-This module deliberately does not execute engines. It describes what is available,
-what a project can support, and the evidence shape an adapter must return. Execution
-and project-specific generation remain owned by their native engines.
+This module inventories tools, validates project compatibility/configuration, executes
+native commands without a shell, and preserves raw evidence. Native engines remain
+responsible for their own test semantics; a zero exit code is not a formal proof.
 """
 from __future__ import annotations
 
