@@ -3810,12 +3810,15 @@ def _decode_contract_revert(error_text, config=None, target=None):
 
     # Custom errors are defined by the selected contract's ABI. Resolve their
     # selectors with Cast's Keccak-aware selector implementation, not SHA3-256.
+    custom_abi = []
+    custom_abi_available = False
     if target and isinstance(config, dict):
         try:
-            abi = load_abi(target, config)
+            custom_abi = load_abi(target, config) or []
         except Exception:
-            abi = []
-        for item in abi or []:
+            custom_abi = []
+        custom_abi_available = bool(custom_abi)
+        for item in custom_abi:
             if not isinstance(item, dict) or item.get("type") != "error":
                 continue
             try:
@@ -3861,12 +3864,19 @@ def _decode_contract_revert(error_text, config=None, target=None):
                 continue
             selector = payload[:10].lower()
             if selector not in {"0x08c379a0", "0x4e487b71"}:
-                return {
-                    "kind": "CUSTOM REVERT",
-                    "reason": (
+                if custom_abi_available:
+                    reason = (
                         f"unknown custom error selector {selector}; it is not defined "
                         "in the selected contract ABI"
-                    ),
+                    )
+                else:
+                    reason = (
+                        f"unknown custom error selector {selector}; no contract ABI was "
+                        "available to resolve it"
+                    )
+                return {
+                    "kind": "CUSTOM REVERT",
+                    "reason": reason,
                     "selector": selector,
                     "data": payload,
                 }
@@ -3908,6 +3918,8 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                      f"  Reason: {decoded['reason']}"]
             if decoded.get("kind") == "CUSTOM REVERT" and decoded.get("selector"):
                 lines.append(f"  Selector: {decoded['selector']}")
+                if decoded.get("data"):
+                    lines.append(f"  Raw revert data: {decoded['data']}")
             if transaction_hash:
                 lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
             elif is_gas_estimation:
