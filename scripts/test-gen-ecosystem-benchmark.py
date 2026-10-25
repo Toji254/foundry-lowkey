@@ -51,6 +51,60 @@ def run(command: list[str], cwd: Path | None = None, timeout: int = 1800) -> dic
         return {"command": command, "exit_code": None, "error": str(exc)}
 
 
+def mask_solidity(source: str) -> str:
+    """Mask comments and quoted literals so source cues are not mistaken for code."""
+    chars = list(source)
+    state = "code"
+    quote = ""
+    index = 0
+    while index < len(chars):
+        char = chars[index]
+        nxt = chars[index + 1] if index + 1 < len(chars) else ""
+        if state == "code":
+            if char == "/" and nxt == "/":
+                chars[index] = chars[index + 1] = " "
+                index += 2
+                state = "line"
+                continue
+            if char == "/" and nxt == "*":
+                chars[index] = chars[index + 1] = " "
+                index += 2
+                state = "block"
+                continue
+            if char in ("'", '"'):
+                quote = char
+                chars[index] = " "
+                state = "string"
+        elif state == "line":
+            if char == "\\n":
+                state = "code"
+            else:
+                chars[index] = " "
+        elif state == "block":
+            if char == "*" and nxt == "/":
+                chars[index] = chars[index + 1] = " "
+                index += 2
+                state = "code"
+                continue
+            if char != "\\n":
+                chars[index] = " "
+        elif state == "string":
+            if char == "\\\\":
+                chars[index] = " "
+                if index + 1 < len(chars):
+                    if chars[index + 1] != "\\n":
+                        chars[index + 1] = " "
+                    index += 2
+                    continue
+            elif char == quote:
+                chars[index] = " "
+                state = "code"
+            elif char != "\\n":
+                chars[index] = " "
+        index += 1
+    return "".join(chars)
+
+
 def find_contracts(root: Path) -> dict[str, str]:
     """Discover contract declarations without assuming project-specific paths."""
     declarations: dict[str, str] = {}
@@ -62,7 +116,7 @@ def find_contracts(root: Path) -> dict[str, str]:
             source = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for match in DECLARATION.finditer(source):
+        for match in DECLARATION.finditer(mask_solidity(source)):
             declarations.setdefault(match.group(1), path.relative_to(root).as_posix())
     return declarations
 
