@@ -280,9 +280,10 @@ import {{ {name} }} from "{import_path}";
         parameter_type = fuzz_property["type"]
         state = fuzz_property["state"]
         setter_unit_test = f"""
-    function test_{setter}_updatesPublicState({parameter_type} nextValue) public {{
-        target.{setter}(nextValue);
-        assertEq(target.{state}(), nextValue);
+    function test_{setter}_updatesPublicState() public {{
+        {parameter_type} expected = {parameter_type}(1);
+        target.{setter}(expected);
+        assertEq(target.{state}(), expected);
     }}
 """
     if kind == "unit":
