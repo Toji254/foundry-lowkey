@@ -1006,6 +1006,22 @@ The generator does not claim coverage or invent protocol-specific assertions.
         label = filename.relative_to(root) if filename.is_relative_to(root) else filename
         generated.append(str(label))
 
+    generation_assessment = _generation_assessment(
+        selected,
+        local_deploy=local_deploy,
+        is_abstract=is_abstract,
+        fuzz_property=fuzz_property,
+        target=target,
+        constructor_values=constructor_values,
+        recorded_poc=poc_replay is not None,
+    )
+    for skipped_item in skipped:
+        generation_assessment[skipped_item["type"]] = {
+            "level": "not-generated",
+            "protocol_security_established": False,
+            "note": skipped_item["reason"],
+        }
+
     report = {
         "contract": name,
         "source": source_label,
@@ -1017,15 +1033,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "fuzz_property": fuzz_property,
         "analysis": {key: value for key, value in analysis.items() if not key.startswith("_")},
         "requested_types": selected,
-        "generation_assessment": _generation_assessment(
-            selected,
-            local_deploy=local_deploy,
-            is_abstract=is_abstract,
-            fuzz_property=fuzz_property,
-            target=target,
-            constructor_values=constructor_values,
-            recorded_poc=poc_replay is not None,
-        ),
+        "generation_assessment": generation_assessment,
         "poc_replay": poc_replay,
         "generated": generated,
         "skipped": skipped,

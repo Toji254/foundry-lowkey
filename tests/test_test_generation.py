@@ -165,6 +165,9 @@ class TestGenerationTests(unittest.TestCase):
                 {item["type"] for item in report["skipped"]},
                 {"unit", "fuzz"},
             )
+            self.assertEqual(report["generation_assessment"]["unit"]["level"], "not-generated")
+            self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "not-generated")
+            self.assertIn("unsupported", report["generation_assessment"]["unit"]["note"])
 
 
     def test_fuzz_remains_a_todo_when_no_direct_setter_property_is_recognized(self):
