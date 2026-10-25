@@ -474,15 +474,13 @@ class LowkeyCastTests(unittest.TestCase):
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
 
-    def test_solidity_error_string_is_decoded_from_rpc_estimation_failure(self):
-        message = b"invalid number"
+    def _error_string_payload(self, reason):
+        message = reason.encode("utf-8")
         padded = message.hex().ljust(((len(message) + 31) // 32) * 64, "0")
-        payload = (
-            "0x08c379a0"
-            + f"{32:064x}"
-            + f"{len(message):064x}"
-            + padded
-        )
+        return "0x08c379a0" + f"{32:064x}" + f"{len(message):064x}" + padded
+
+    def test_solidity_error_string_is_decoded_from_rpc_estimation_failure(self):
+        payload = self._error_string_payload("invalid number")
         error = (
             "Error: Failed to estimate gas: server returned an error response: "
             f'error code 3: execution reverted: invalid number, data: "{payload}": '
@@ -492,16 +490,138 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk._decode_solidity_revert_reason(error), "invalid number")
         self.assertEqual(
             lk._format_revert_error(error),
-            "REVERT: invalid number\n"
-            "Transaction broadcast: no (the call reverted during gas estimation).",
+            "ERROR [REVERT]\\n"
+            "  Reason: invalid number\\n"
+            "  Transaction broadcast: no (gas estimation failed).",
         )
 
-    def test_revert_formatter_preserves_unrecognized_revert_details(self):
-        error = "execution reverted: custom error payload unavailable"
-        self.assertEqual(
-            lk._format_revert_error(error),
-            "REVERT: custom error payload unavailable",
+    def test_solidity_panic_is_decoded(self):
+        payload = "0x4e487b71" + f"{0x11:064x}"
+        rendered = lk._format_cli_error(
+            f'execution reverted, data: "{payload}"',
+            command="send",
+            source="cast",
         )
+        self.assertIn("ERROR [SOLIDITY PANIC]", rendered)
+        self.assertIn("arithmetic overflow or underflow", rendered)
+        self.assertIn("panic code 0x11", rendered)
+
+    def test_custom_error_is_decoded_against_selected_abi(self):
+        payload = "0x12345678" + f"{500:064x}"
+        abi = [{
+            "type": "error",
+            "name": "LimitExceeded",
+            "inputs": [{"name": "attempted", "type": "uint256"}],
+        }]
+        with patch.object(lk, "load_abi", return_value=abi), patch.object(
+            lk, "abi_selector", return_value="0x12345678"
+        ), patch.object(lk, "decode_abi_input", return_value="attempted: 500"):
+            rendered = lk._format_cli_error(
+                f'execution reverted, data: "{payload}"',
+                config={"target": "0x" + "1" * 40},
+                target="0x" + "1" * 40,
+                command="send",
+                source="cast",
+            )
+        self.assertIn("ERROR [CUSTOM REVERT]", rendered)
+        self.assertIn("LimitExceeded(uint256)", rendered)
+        self.assertIn("attempted: 500", rendered)
+        self.assertIn("0x12345678", rendered)
+
+    def test_unknown_custom_error_keeps_selector_and_identifies_missing_abi(self):
+        payload = "0xdeadbeef" + f"{7:064x}"
+        rendered = lk._format_cli_error(
+            f'execution reverted, data: "{payload}"',
+            command="send",
+            source="cast",
+        )
+        self.assertIn("ERROR [CUSTOM REVERT]", rendered)
+        self.assertIn("0xdeadbeef", rendered)
+        self.assertIn("not defined in the selected contract ABI", rendered)
+
+    def test_empty_revert_is_not_reported_as_a_known_reason(self):
+        rendered = lk._format_cli_error(
+            'execution reverted, data: "0x"',
+            command="send",
+            source="cast",
+        )
+        self.assertIn("empty revert data", rendered)
+        self.assertIn("ERROR [REVERT]", rendered)
+
+    def test_revert_formatter_preserves_plain_text_reason(self):
+        error = "execution reverted: custom error payload unavailable"
+        rendered = lk._format_cli_error(error, command="call", source="cast")
+        self.assertIn("ERROR [REVERT]", rendered)
+        self.assertIn("Reason: custom error payload unavailable", rendered)
+
+    def test_shared_error_formatter_classifies_non_contract_failures(self):
+        rpc_error = lk._format_cli_error(
+            "connection refused while connecting to RPC",
+            command="call",
+            source="cast",
+        )
+        self.assertIn("ERROR [RPC CONNECTION]", rpc_error)
+        self.assertIn("lk rpc", rpc_error)
+
+        timeout_error = lk._format_cli_error(
+            "timed out after 120s while waiting for cast",
+            command="read",
+            source="cast",
+        )
+        self.assertIn("ERROR [TIMEOUT]", timeout_error)
+
+        invalid_input = lk._format_cli_error(
+            "unexpected argument --mystery",
+            command="send",
+            source="cast",
+        )
+        self.assertIn("ERROR [INVALID INPUT]", invalid_input)
+        self.assertIn("lk send --h", invalid_input)
+
+        generic = lk._format_cli_error(
+            "provider rejected an unknown request",
+            code=1,
+            command="send",
+            source="cast",
+        )
+        self.assertIn("ERROR [COMMAND]", generic)
+        self.assertIn("provider rejected an unknown request", generic)
+        self.assertIn("Exit code: 1", generic)
+
+    def test_insufficient_funds_is_not_hidden_by_gas_estimation_wrapper(self):
+        rendered = lk._format_cli_error(
+            "Failed to estimate gas: insufficient funds for gas * price + value",
+            code=1,
+            command="send",
+            source="cast",
+        )
+        self.assertIn("ERROR [INSUFFICIENT FUNDS]", rendered)
+        self.assertIn("Transaction broadcast: no", rendered)
+
+    def test_run_cast_returns_formatted_failure_without_treating_error_as_success(self):
+        target = "0x" + "1" * 40
+        payload = self._error_string_payload("invalid number")
+        error = f'Failed to estimate gas: execution reverted, data: "{payload}"'
+        config = {
+            "target": target,
+            "target_contract": "Example",
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+            "labels": {},
+            "aliases": {},
+            "project_roots": {},
+            "abi_paths": {},
+        }
+        with patch.object(lk, "load_abi", return_value=[]), patch.object(
+            lk, "resolve_wallet_key", return_value=None
+        ), patch.object(lk, "cast_output", return_value=(1, "", error)):
+            result = lk.run_cast(["send", "setNumber(uint256)", "53"], config, capture=True)
+
+        self.assertEqual(result.code, 1)
+        self.assertIn("ERROR [REVERT]", result.text)
+        self.assertIn("Reason: invalid number", result.text)
+        self.assertIn("Transaction broadcast: no", result.text)
+        self.assertNotIn("Failed to estimate gas:", result.text)
 
     def test_lab_numeric_grouping_is_normalized(self):
         self.assertEqual(
