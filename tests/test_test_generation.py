@@ -18,7 +18,7 @@ class TestGenerationTests(unittest.TestCase):
     def test_parse_types_defaults_to_all_supported_scaffolds(self):
         self.assertEqual(
             generation.parse_types(None),
-            ["unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal"],
+            ["unit", "fuzz", "invariant", "integration", "exploit", "fork", "poc", "regression", "formal"],
         )
 
     def test_parse_types_deduplicates_and_rejects_unknown_values(self):
@@ -60,10 +60,10 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(code, 0)
             folder = root / ".audit" / "test-gen" / "Counter"
             names = {p.name for p in folder.glob("*.t.sol")}
-            self.assertEqual(len(names), 7)
+            self.assertEqual(len(names), 8)
             self.assertFalse((root / "test").exists())
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(report["generated"]), 8)
+            self.assertEqual(len(report["generated"]), 9)
             self.assertIn("not protocol proofs", report["warning"])
             self.assertEqual(len(report["source_sha256"]), 64)
             self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
@@ -71,6 +71,10 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(report["generation_assessment"]["invariant"]["level"], "executable-candidate")
             self.assertEqual(report["generation_assessment"]["integration"]["level"], "scaffold")
             self.assertEqual(report["generation_assessment"]["poc"]["protocol_security_established"], False)
+            self.assertEqual(report["generation_assessment"]["exploit"]["level"], "scaffold")
+            self.assertEqual(report["generation_assessment"]["exploit"]["protocol_security_established"], False)
+            exploit_draft = (folder / "LowkeyGeneratedExploit_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertIn("concrete exploit precondition", exploit_draft)
             self.assertIn("compile-only", output.getvalue())
             self.assertIn("generated", output.getvalue())
             self.assertEqual(
