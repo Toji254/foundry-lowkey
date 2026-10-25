@@ -231,7 +231,7 @@ contract {generated} is Test {{
 
 def _render(kind: str, name: str, import_path: str, target: str | None,
             local_deploy: bool) -> str:
-    if kind in {"unit", "fuzz", "invariant", "integration"}:
+    if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:
         if not local_deploy:
             raise ValueError(
                 f"{kind} requires a zero-argument constructor for automatic local deployment"
