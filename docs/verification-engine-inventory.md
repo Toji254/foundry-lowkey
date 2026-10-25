@@ -21,6 +21,7 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - `EngineResult` normalizes status/exit code/summary/artifacts and monotonic elapsed duration while retaining raw stdout, stderr, raw evidence, and metadata. Duration is evidence for comparing campaigns, not a correctness score.
 - `CapabilityRegistry` inventories adapters, selects available compatible tools under `light`, `balanced`, or `deep` profiles, and runs selected engines serially through `run_campaign()`.
 - Campaign reports include total wall-clock duration and the sum of measured engine durations, making runtime comparisons reproducible alongside each engine's raw evidence.
+- Adapter exceptions are normalized as per-engine `error` results, so one faulty plugin does not discard later engine evidence from the same serial campaign.
 - Native command arguments are explicit (`argv` or `argv_by_engine`); the registry does not guess tool-specific harness/spec syntax. Forge defaults to `forge test` only when no Forge argument vector is supplied.
 - `default_registry()` is a candidate catalogue, not a guarantee that an executable is installed or that every advertised workflow has an engine-specific integration.
 - `lowkey/test_generation.py` adds project-aware Solidity/Foundry drafts for unit, integration, invariant, exploit, regression, fuzz, and formal categories, plus fork/PoC variants. It recognizes only a narrow direct integer setter/getter property; unsupported constructor types are skipped rather than guessed.
