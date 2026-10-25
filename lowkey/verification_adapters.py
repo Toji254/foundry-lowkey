@@ -337,6 +337,7 @@ class CapabilityRegistry:
             "execution_mode": "serial",
             "selected_count": len(selected),
             "considered_engines": plan["selected"] + plan["rejected"],
+            "plugin_errors": list(self.plugin_errors),
             "results": results,
             "summary": {
                 "passed": sum(row["result"]["status"] == "passed" for row in results),
