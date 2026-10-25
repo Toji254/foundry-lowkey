@@ -905,6 +905,7 @@ will not silently affect the project's existing test suite. Review the report,
 complete TODOs, and move approved files into the configured Foundry test directory before running Forge.
 The generator does not claim coverage or invent protocol-specific assertions.
 --validate compiles temporary generated drafts with forge build; it never executes tests.
+--strict fails if selected types remain scaffolds/unverified, and also requires --validate to pass.
 """)
         return 0
 
@@ -1061,6 +1062,19 @@ The generator does not claim coverage or invent protocol-specific assertions.
             elif validation.get("status") == "not-applicable":
                 validation["detail"] += " Formal specifications require their configured verifier; Forge cannot validate them."
         report["validation"] = validation
+    if strict:
+        if not validate:
+            strict_blockers.append({
+                "type": "validation",
+                "level": "not-requested",
+                "note": "Use --validate so Forge compiles the generated Solidity drafts before strict readiness can pass.",
+            })
+        elif report["validation"].get("status") != "passed":
+            strict_blockers.append({
+                "type": "validation",
+                "level": report["validation"].get("status", "unknown"),
+                "note": report["validation"].get("detail", "Generated drafts were not fully validated."),
+            })
     plan_path = output_dir / "test-plan.md"
     if plan_path.exists() and not force:
         plan_path = output_dir / "test-plan.latest.md"

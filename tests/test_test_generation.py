@@ -903,5 +903,30 @@ contract Protocol {
             self.assertTrue({"integration", "poc", "regression", "formal", "fork"} <= blocker_types)
             self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
 
+
+    def test_strict_mode_requires_and_accepts_successful_compile_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch(
+                    "test_generation._validate_generated",
+                    return_value={"requested": True, "status": "passed", "detail": "compiled"},
+                ), contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter"},
+                        ["--types", "unit,fuzz,invariant", "--strict", "--validate"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["strict_blockers"], [])
+            self.assertEqual(report["validation"]["status"], "passed")
+
 if __name__ == "__main__":
     unittest.main()
