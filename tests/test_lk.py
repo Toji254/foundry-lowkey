@@ -474,6 +474,35 @@ class LowkeyCastTests(unittest.TestCase):
         ctx.record_tool.assert_called_once()
         self.assertEqual(ctx.record_tool.call_args.args[0], "receipt")
 
+    def test_solidity_error_string_is_decoded_from_rpc_estimation_failure(self):
+        message = b"invalid number"
+        padded = message.hex().ljust(((len(message) + 31) // 32) * 64, "0")
+        payload = (
+            "0x08c379a0"
+            + f"{32:064x}"
+            + f"{len(message):064x}"
+            + padded
+        )
+        error = (
+            "Error: Failed to estimate gas: server returned an error response: "
+            f'error code 3: execution reverted: invalid number, data: "{payload}": '
+            'Error("invalid number")'
+        )
+
+        self.assertEqual(lk._decode_solidity_revert_reason(error), "invalid number")
+        self.assertEqual(
+            lk._format_revert_error(error),
+            "REVERT: invalid number\\n"
+            "Transaction broadcast: no (the call reverted during gas estimation).",
+        )
+
+    def test_revert_formatter_preserves_unrecognized_revert_details(self):
+        error = "execution reverted: custom error payload unavailable"
+        self.assertEqual(
+            lk._format_revert_error(error),
+            "REVERT: custom error payload unavailable",
+        )
+
     def test_lab_numeric_grouping_is_normalized(self):
         self.assertEqual(
             lk._normalize_human_numeric_input("1,000,000", "uint256", "limit"),
