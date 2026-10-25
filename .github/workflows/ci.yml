@@ -570,13 +570,13 @@ jobs:
           /tmp/lowkey-halmos-venv/bin/pip install --upgrade pip
           /tmp/lowkey-halmos-venv/bin/pip install halmos==0.3.3
           echo "/tmp/lowkey-halmos-venv/bin" >> "$GITHUB_PATH"
-          halmos --help
+          /tmp/lowkey-halmos-venv/bin/halmos --help
 
           python -m venv /tmp/lowkey-certora-venv
           /tmp/lowkey-certora-venv/bin/pip install --upgrade pip
           /tmp/lowkey-certora-venv/bin/pip install certora-cli
           echo "/tmp/lowkey-certora-venv/bin" >> "$GITHUB_PATH"
-          certoraRun --help
+          /tmp/lowkey-certora-venv/bin/certoraRun --help
       - name: Build real Solidity fixture for fuzz and symbolic testing
         run: |
           mkdir -p /tmp/lowkey-external-fixture/src /tmp/lowkey-external-fixture/test
