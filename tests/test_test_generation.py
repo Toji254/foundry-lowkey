@@ -16,7 +16,7 @@ class TestGenerationTests(unittest.TestCase):
     def test_parse_types_defaults_to_all_supported_scaffolds(self):
         self.assertEqual(
             generation.parse_types(None),
-            ["unit", "fuzz", "invariant", "integration", "fork", "poc"],
+            ["unit", "fuzz", "invariant", "integration", "fork", "poc", "regression"],
         )
 
     def test_parse_types_deduplicates_and_rejects_unknown_values(self):
@@ -58,7 +58,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(code, 0)
             folder = root / ".audit" / "test-gen" / "Counter"
             names = {p.name for p in folder.glob("*.t.sol")}
-            self.assertEqual(len(names), 6)
+            self.assertEqual(len(names), 7)
             self.assertFalse((root / "test").exists())
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(len(report["generated"]), 6)
@@ -87,7 +87,7 @@ class TestGenerationTests(unittest.TestCase):
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["constructor"], "arguments-required")
             skipped = {item["type"] for item in report["skipped"]}
-            self.assertEqual(skipped, {"unit", "fuzz", "invariant", "integration"})
+            self.assertEqual(skipped, {"unit", "fuzz", "invariant", "integration", "regression"})
 
     def test_existing_draft_is_preserved_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
