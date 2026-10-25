@@ -12,7 +12,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal")
+TEST_TYPES = ("unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal", "fork", "poc")
 
 
 def parse_types(raw: str | None) -> list[str]:
@@ -523,18 +523,19 @@ def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
         print("""Lowkey test generator
 
 Usage:
-  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,fork,poc,regression,formal]
+  lk test-gen [ContractName] [--types all|unit,integration,invariant,exploit,regression,fuzz,formal,fork,poc]
               [--output-dir .audit/test-gen] [--force]
 
 Types:
-  unit         Local deployment smoke test + unit-test TODOs
-  fuzz         Fuzz-test scaffold; the property and valid input range are TODOs
-  invariant    Handler/property scaffold; protocol invariants must be supplied
+  unit         Local deployment smoke test + recognized direct state properties
   integration  Local peer-contract wiring scaffold
+  invariant    Handler/property scaffold; protocol invariants must be supplied
+  exploit      Fork-based exploit reproduction scaffold
+  regression   Starter for locking in a previously fixed bug
+  fuzz         Fuzz test with a recognized direct setter/getter property when safe
+  formal       Certora CVL rule for recognized properties, or a formal-spec worksheet
   fork         Fork smoke test against the configured target
   poc          Fork-based reproduction scaffold
-  regression   Starter for locking in a previously fixed bug
-  formal       Certora CVL rule for recognized properties, or a formal-spec worksheet
 
 Generated drafts are saved outside Foundry's test directory by default, so they
 will not silently affect the project's existing test suite. Review the report,
