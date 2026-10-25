@@ -730,5 +730,23 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(report["validation"]["unvalidated_types"], ["formal"])
             self.assertIn("formal specification was not checked by Forge", report["validation"]["detail"])
 
+    def test_external_active_test_directory_is_inventoried_without_relative_path_error(self):
+        from test_generation_analysis import analyse_contract
+
+        with tempfile.TemporaryDirectory() as project_tmp, tempfile.TemporaryDirectory() as tests_tmp:
+            root = Path(project_tmp)
+            self._project(root)
+            external = Path(tests_tmp)
+            test_file = external / "External.t.sol"
+            test_file.write_text(
+                'pragma solidity ^0.8.20; contract ExternalTest { function test_external() public {} }',
+                encoding="utf-8",
+            )
+            source_path = root / "src" / "Counter.sol"
+            source = source_path.read_text(encoding="utf-8")
+            analysis = analyse_contract(root, "Counter", source_path, source, external)
+            self.assertEqual(analysis["existing_tests"]["file_count"], 1)
+            self.assertEqual(analysis["existing_tests"]["files"][0]["path"], str(test_file))
+
 if __name__ == "__main__":
     unittest.main()
