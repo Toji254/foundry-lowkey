@@ -38,10 +38,12 @@ class EngineCapability:
     notes: str = ""
 
     def __post_init__(self) -> None:
-        if not self.name.strip():
-            raise ValueError("engine capability name must not be empty")
-        if not self.command.strip():
-            raise ValueError("engine capability command must not be empty")
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("engine capability name must be a non-empty string")
+        if not isinstance(self.command, str) or not self.command.strip():
+            raise ValueError("engine capability command must be a non-empty string")
+        if not isinstance(self.test_kinds, (tuple, list)):
+            raise ValueError("engine capability test_kinds must be a tuple or list")
         if self.memory_class not in {"low", "medium", "high"}:
             raise ValueError(
                 "engine capability memory_class must be one of: low, medium, high"
@@ -164,6 +166,8 @@ class ExecutableAdapter:
 
         captured = {"stdout": bytearray(), "stderr": bytearray()}
         truncated = {"stdout": False, "stderr": False}
+        orphan_process_group_terminated = False
+        reader_threads_stuck = False
 
         def drain(pipe: Any, name: str) -> None:
             # Drain continuously to avoid child-process deadlock, but retain only
@@ -215,8 +219,29 @@ class ExecutableAdapter:
                         pass
                     process.wait()
                 code, status = 124, "timeout"
+            # A tool may exit while a child it spawned still holds inherited
+            # stdout/stderr pipes open. Do not leave daemon drain threads or
+            # background descendants behind after a campaign.
             for reader in readers:
-                reader.join(timeout=5)
+                reader.join(timeout=0.25)
+            if any(reader.is_alive() for reader in readers):
+                reader_threads_stuck = True
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        orphan_process_group_terminated = True
+                    except OSError:
+                        pass
+                    for reader in readers:
+                        reader.join(timeout=1)
+                    if any(reader.is_alive() for reader in readers):
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            orphan_process_group_terminated = True
+                        except OSError:
+                            pass
+                for reader in readers:
+                    reader.join(timeout=1)
             stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
             stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
             marker = "\n[LOWKEY_OUTPUT_TRUNCATED; retained at most output_limit_bytes]"
@@ -238,6 +263,8 @@ class ExecutableAdapter:
                 "output_limit_bytes": output_limit,
                 "stdout_truncated": truncated["stdout"],
                 "stderr_truncated": truncated["stderr"],
+                "orphan_process_group_terminated": orphan_process_group_terminated,
+                "reader_threads_stuck_after_cleanup": any(reader.is_alive() for reader in readers),
             },
             metadata={"test_kind": test_kind, "project": str(root)},
         )
