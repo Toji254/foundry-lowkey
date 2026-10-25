@@ -440,3 +440,90 @@ jobs:
           grep -q 'Language: vyper' /tmp/lowkey-vyper-break.txt
           lk status
           lk context
+
+  verification-live-foundry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Create minimal real Foundry fixture
+        run: |
+          mkdir -p /tmp/lowkey-verification-fixture/src /tmp/lowkey-verification-fixture/test
+          cat > /tmp/lowkey-verification-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cat > /tmp/lowkey-verification-fixture/src/Counter.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract Counter {
+              uint256 public value;
+              function set(uint256 next) external { value = next; }
+          }
+          EOF
+          cat > /tmp/lowkey-verification-fixture/test/Counter.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          import "../src/Counter.sol";
+          contract CounterTest {
+              function testSetAndRead() public {
+                  Counter counter = new Counter();
+                  counter.set(42);
+                  require(counter.value() == 42, "counter value mismatch");
+              }
+          }
+          EOF
+      - name: Verify registry detection and execute a live Forge campaign through Lowkey
+        working-directory: /tmp/lowkey-verification-fixture
+        run: |
+          lk verification engines --json > /tmp/lowkey-verification-engines.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open("/tmp/lowkey-verification-engines.json", encoding="utf-8"))
+          project = report["project"]
+          assert project["language"] == "solidity", project
+          assert "solidity" in project["languages"], project
+          assert "foundry" in project["build_systems"], project
+          assert "foundry.toml" in project["markers"], project
+          forge = next(engine for engine in report["engines"] if engine["name"] == "forge")
+          assert forge["available"], forge
+          assert forge["support_matrix"]["unit"]["supported"], forge
+          print("PASS: project detection identifies Solidity + Foundry and Forge is executable")
+          PY
+          cat > campaign.json <<'EOF'
+          {
+            "test_kind": "unit",
+            "profile": "light",
+            "budget": {"timeout_seconds": 60},
+            "request": {
+              "argv_by_engine": {
+                "forge": ["test", "--match-test", "testSetAndRead", "-vv"]
+              }
+            }
+          }
+          EOF
+          lk verification run campaign.json --profile light --output .audit/verification/forge-unit-report.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/verification/forge-unit-report.json", encoding="utf-8"))
+          assert report["selected_count"] == 1, report
+          assert report["summary"]["passed"] == 1, report["summary"]
+          assert report["summary"]["failed"] == 0, report["summary"]
+          forge = next(row["result"] for row in report["results"] if row["result"]["engine"] == "forge")
+          assert forge["status"] == "passed", forge
+          assert "testSetAndRead" in forge["raw_stdout"], forge["raw_stdout"]
+          assert report["duration_seconds"] >= 0, report
+          print("PASS: Lowkey completed a real Forge campaign and retained native stdout/evidence")
+          PY
