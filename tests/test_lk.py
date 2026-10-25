@@ -662,7 +662,7 @@ class LowkeyCastTests(unittest.TestCase):
                 result = lk.dispatch_command("sample", [], {})
 
         self.assertEqual(result, 0)
-        self.assertEqual(output.getvalue(), "Warning: optional metadata was unavailable\\n")
+        self.assertEqual(output.getvalue(), "Warning: optional metadata was unavailable\n")
 
     def test_runtime_failures_use_the_shared_error_heading(self):
         rendered = lk._format_cli_error(
