@@ -76,7 +76,7 @@ def mask_solidity(source: str) -> str:
                 chars[index] = " "
                 state = "string"
         elif state == "line":
-            if char == "\\n":
+            if char == "\n":
                 state = "code"
             else:
                 chars[index] = " "
@@ -86,24 +86,23 @@ def mask_solidity(source: str) -> str:
                 index += 2
                 state = "code"
                 continue
-            if char != "\\n":
+            if char != "\n":
                 chars[index] = " "
         elif state == "string":
-            if char == "\\\\":
+            if char == "\\":
                 chars[index] = " "
                 if index + 1 < len(chars):
-                    if chars[index + 1] != "\\n":
+                    if chars[index + 1] != "\n":
                         chars[index + 1] = " "
                     index += 2
                     continue
             elif char == quote:
                 chars[index] = " "
                 state = "code"
-            elif char != "\\n":
+            elif char != "\n":
                 chars[index] = " "
         index += 1
     return "".join(chars)
-
 
 def find_contracts(root: Path) -> dict[str, str]:
     """Discover contract declarations without assuming project-specific paths."""
