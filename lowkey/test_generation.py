@@ -261,7 +261,7 @@ def _constructor_values(raw: str | None) -> list[str] | None:
 def _foundry_test_dir(root: Path) -> Path:
     """Read the active Foundry profile's configured test directory."""
     config_path = _foundry_config_path(root)
-    test_dir = "test"
+    test_dir = os.environ.get("FOUNDRY_TEST") or os.environ.get("DAPP_TEST") or "test"
     if config_path.exists():
         try:
             import tomllib
