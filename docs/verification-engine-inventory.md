@@ -32,7 +32,8 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - `lowkey/behavioral_validation.py` adds a baseline-first mutation runner. It executes commands without a shell in isolated project copies, requires exact unique source replacements, records hashes and raw output, separates killed/survived/invalid/timeout/error outcomes, and writes reproducible JSON.
 - `lk mutation-check manifest.json` exposes the mutation runner. The manifest supplies a native argv array and mutation definitions. A failed baseline produces no mutation score; compile/setup failures are not automatically counted as killed behavioral bugs.
 
-## Initial engine map
+- `lowkey/verification_benchmark.py` adds manifest-driven benchmark runs with per-case project labels, manifest hashes, git revision, aggregate killed/survived/invalid/timeout counts, and an optional mutation-score gate. Use `lk verification-benchmark manifest.json --min-mutation-score 0.80` to enforce the gate.
+\n## Initial engine map
 
 | Engine | Potential role | Important boundary |
 |---|---|---|
