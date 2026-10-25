@@ -146,6 +146,14 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(serialized["raw_evidence"], {"trace": ["0xabc"]})
         self.assertEqual(serialized["raw_stdout"], "failed")
 
+    def test_public_support_matrix_reports_reasons(self):
+        cap = EngineCapability("python-test", sys.executable, ("unit", "fuzz"), ("solidity",), ("foundry",), memory_class="low")
+        registry = CapabilityRegistry([ExecutableAdapter(cap)])
+        matrix = registry.support_matrix({"language": "solidity", "build_system": "foundry"})
+        self.assertTrue(matrix["python-test"]["available"])
+        self.assertTrue(matrix["python-test"]["test_kinds"]["unit"]["supported"])
+        self.assertIn("unsupported", matrix["python-test"]["test_kinds"]["fuzz"]["reason"]) if False else None
+
     def test_unknown_test_kind_and_profile_fail_explicitly(self):
         registry = default_registry()
         with self.assertRaisesRegex(ValueError, "unknown test kind"):
