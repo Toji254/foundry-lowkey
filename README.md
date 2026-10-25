@@ -380,6 +380,9 @@ The generated matrix test uses the saved actor and calls the target through a lo
 
 `lk test-gen <Contract> --types all` now writes both selected test drafts and a `test-plan.md` describing the contract shapes and security-relevant source cues it recognized, locally resolvable imports, existing Solidity tests, and available saved audit evidence. The report distinguishes source-based hypotheses from established behavior. Fork drafts are read-only by default and can be pinned with `LOWKEY_FORK_BLOCK` and checked against `LOWKEY_EXPECTED_CHAIN_ID`; they do not infer state-changing calls merely from a local setter.
 
+
+Use `lk test-gen Counter --types unit,fuzz,invariant --validate` to compile temporary copies of generated drafts with `forge build`. This checks compilation only; it does not execute tests or establish protocol security.
+
 Turn the last recorded send into a Forge reproduction:
 
 ~~~bash
@@ -455,9 +458,6 @@ FINDING
 ~~~
 
 The context is deliberately project-scoped. Lowkey configuration under `~/.lowkey/` remains for reusable user settings, wallets, aliases, and RPC preferences; `.audit/` is the audit evidence shared by the tools working on the current Foundry project.
-
-
-Use `lk test-gen Counter --types unit,fuzz,invariant --validate` to compile temporary copies of generated drafts with `forge build`. This checks compilation only; it does not execute tests or establish protocol security.
 
 ### Connected investigation evidence
 
