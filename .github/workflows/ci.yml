@@ -591,7 +591,7 @@ jobs:
           ./install.sh
           echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - name: Install pinned external engine versions
-        run: ./scripts/install-verification-engines.sh
+        run: bash scripts/install-verification-engines.sh
       - name: Build real Solidity fixture for fuzz and symbolic testing
         run: |
           mkdir -p /tmp/lowkey-external-fixture/src /tmp/lowkey-external-fixture/test
