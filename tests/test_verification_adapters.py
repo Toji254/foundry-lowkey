@@ -1,0 +1,56 @@
+import unittest
+from unittest.mock import patch
+
+from lowkey.verification_adapters import (
+    CapabilityRegistry, EngineCapability, EngineResult, ExecutableAdapter,
+    TEST_KINDS, default_registry,
+)
+
+
+class VerificationAdapterRegistryTests(unittest.TestCase):
+    def test_all_seven_test_kinds_are_declared(self):
+        self.assertEqual(
+            set(TEST_KINDS),
+            {"unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal"},
+        )
+
+    def test_registry_rejects_duplicate_names(self):
+        cap = EngineCapability("forge", "forge", ("unit",))
+        registry = CapabilityRegistry([ExecutableAdapter(cap)])
+        with self.assertRaisesRegex(ValueError, "already registered"):
+            registry.register(ExecutableAdapter(cap))
+
+    def test_selection_uses_project_support_and_executable_presence(self):
+        cap = EngineCapability("fake", "fake-engine", ("unit",), ("solidity",), ("foundry",), memory_class="low")
+        adapter = ExecutableAdapter(cap)
+        registry = CapabilityRegistry([adapter])
+        with patch("lowkey.verification_adapters.shutil.which", return_value="/usr/bin/fake-engine"):
+            selected = registry.select({"language": "solidity", "build_system": "foundry"}, "unit", profile="light")
+            unsupported = registry.select({"language": "rust", "build_system": "cargo"}, "unit", profile="light")
+        self.assertEqual([x["engine"] for x in selected], ["fake"])
+        self.assertEqual(unsupported, [])
+
+    def test_light_profile_excludes_high_memory_engines(self):
+        registry = default_registry()
+        with patch("lowkey.verification_adapters.shutil.which", return_value="/usr/bin/tool"):
+            light = registry.select({"language": "solidity", "build_system": "foundry", "markers": ["foundry.toml"]}, "fuzz", profile="light")
+            deep = registry.select({"language": "solidity", "build_system": "foundry", "markers": ["foundry.toml"]}, "formal", profile="deep")
+        self.assertNotIn("halmos", {x["engine"] for x in light})
+        self.assertIn("halmos", {x["engine"] for x in deep})
+
+    def test_engine_result_keeps_native_evidence(self):
+        result = EngineResult("forge", "failed", 1, raw_stdout="failed", raw_evidence={"trace": ["0xabc"]})
+        serialized = result.to_dict()
+        self.assertEqual(serialized["raw_evidence"], {"trace": ["0xabc"]})
+        self.assertEqual(serialized["raw_stdout"], "failed")
+
+    def test_unknown_test_kind_and_profile_fail_explicitly(self):
+        registry = default_registry()
+        with self.assertRaisesRegex(ValueError, "unknown test kind"):
+            registry.select({}, "magic")
+        with self.assertRaisesRegex(ValueError, "unknown resource profile"):
+            registry.select({}, "unit", profile="unlimited")
+
+
+if __name__ == "__main__":
+    unittest.main()
