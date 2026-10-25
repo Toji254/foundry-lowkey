@@ -400,7 +400,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(campaign["selection_summary"]["selected"], 1)
         self.assertEqual(campaign["selection_summary"]["missing_configuration"], 0)
         self.assertEqual(campaign["budget"]["timeout_seconds"], 5)
-        self.assertEqual(campaign["profile_limits"]["fuzz_runs"], 32) if campaign["test_kind"] == "fuzz" else self.assertEqual(campaign["profile_limits"]["timeout_seconds"], 60)
+        self.assertEqual(campaign["profile_limits"]["timeout_seconds"], 60)
         self.assertEqual(campaign["summary"]["passed"], 1)
         self.assertIn("campaign evidence", campaign["results"][0]["result"]["raw_stdout"])
 
