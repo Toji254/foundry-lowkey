@@ -3988,8 +3988,8 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                 title = "The submitted transaction reported a revert"
                 what = "A transaction hash was returned. Check its receipt to confirm whether it was mined and how it finished."
             elif is_send:
-                title = "Couldn't confirm whether the transaction was sent"
-                what = "The send command reported a revert, but Lowkey has no transaction hash to confirm submission."
+                title = "Contract rejected the send request"
+                what = "The RPC returned a revert, but Lowkey did not receive a transaction hash to confirm whether submission occurred."
             else:
                 title = "Contract call reverted"
                 what = "This call was simulated; it stopped at the revert and did not save state changes."
