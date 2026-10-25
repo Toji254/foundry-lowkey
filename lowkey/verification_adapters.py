@@ -202,6 +202,21 @@ class CapabilityRegistry:
             })
         return rows
 
+    def support_matrix(self, project: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Return availability and explicit per-kind compatibility reasons."""
+        matrix: dict[str, dict[str, Any]] = {}
+        for name, adapter in sorted(self._adapters.items()):
+            kinds: dict[str, dict[str, Any]] = {}
+            for kind in adapter.capability.test_kinds:
+                supported, reason = adapter.supports(project, kind)
+                kinds[kind] = {"supported": supported, "reason": reason}
+            matrix[name] = {
+                "available": bool(adapter.available()),
+                "test_kinds": kinds,
+                "notes": adapter.capability.notes,
+            }
+        return matrix
+
     def select(
         self, project: dict[str, Any], test_kind: str, *,
         profile: str = "balanced",
