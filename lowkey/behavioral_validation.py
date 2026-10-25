@@ -314,7 +314,7 @@ exactly once. Commands execute without a shell in isolated temporary copies.
             detail = str(baseline.get(label) or "").strip()
             if detail:
                 print(f"  Baseline {label} (last 40 lines):")
-                print("\\n".join(detail.splitlines()[-40:]))
+                print("\n".join(detail.splitlines()[-40:]))
     print(f"  Killed: {summary.get('killed', 0)}  Survived: {summary.get('survived', 0)}  Invalid: {summary.get('invalid', 0)}  Timeout: {summary.get('timeout', 0)}")
     score = report.get("mutation_score")
     print(f"  Mutation score: {score:.1%}" if isinstance(score, (float, int)) else "  Mutation score: not available")
