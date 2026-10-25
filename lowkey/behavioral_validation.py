@@ -205,3 +205,111 @@ def write_report(report: dict[str, Any], output_path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+
+def run_cli(args: list[str]) -> int:
+    """CLI for reproducible mutation campaigns described by a JSON manifest."""
+    import sys
+
+    if not args or any(str(arg).lower() in {"-h", "--help", "help"} for arg in args):
+        print("""Lowkey mutation validation
+
+Usage:
+  lk mutation-check <manifest.json> [--output .audit/verification/mutation-report.json] [--timeout 300]
+
+Manifest format:
+  {
+    "command": ["forge", "test"],
+    "mutants": [
+      {"id": "disable-withdraw-check", "file": "src/Vault.sol",
+       "before": "require(amount <= balance);", "after": "require(amount < 0);"}
+    ]
+  }
+
+The baseline suite must pass before mutants are evaluated. Mutations must match
+exactly once. Commands execute without a shell in isolated temporary copies.
+""")
+        return 0 if args and any(str(arg).lower() in {"-h", "--help", "help"} for arg in args) else 2
+
+    manifest_path: Path | None = None
+    output_path = Path(".audit/verification/mutation-report.json")
+    timeout = 300
+    index = 0
+    while index < len(args):
+        value = str(args[index])
+        if value == "--output":
+            index += 1
+            if index >= len(args):
+                print("Error: --output needs a path", file=sys.stderr)
+                return 2
+            output_path = Path(args[index]).expanduser()
+        elif value.startswith("--output="):
+            output_path = Path(value.split("=", 1)[1]).expanduser()
+        elif value == "--timeout":
+            index += 1
+            if index >= len(args):
+                print("Error: --timeout needs seconds", file=sys.stderr)
+                return 2
+            try:
+                timeout = int(args[index])
+            except ValueError:
+                print("Error: --timeout must be an integer", file=sys.stderr)
+                return 2
+        elif value.startswith("--timeout="):
+            try:
+                timeout = int(value.split("=", 1)[1])
+            except ValueError:
+                print("Error: --timeout must be an integer", file=sys.stderr)
+                return 2
+        elif value.startswith("-"):
+            print(f"Error: unknown option: {value}", file=sys.stderr)
+            return 2
+        elif manifest_path is None:
+            manifest_path = Path(value).expanduser()
+        else:
+            print(f"Error: unexpected argument: {value}", file=sys.stderr)
+            return 2
+        index += 1
+    if manifest_path is None:
+        print("Error: provide a mutation manifest JSON file", file=sys.stderr)
+        return 2
+    if not manifest_path.is_absolute():
+        manifest_path = Path.cwd() / manifest_path
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Error: cannot read mutation manifest: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(manifest, dict):
+        print("Error: mutation manifest must be a JSON object", file=sys.stderr)
+        return 2
+    argv = manifest.get("command")
+    mutants = manifest.get("mutants")
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) for arg in argv):
+        print("Error: manifest.command must be a non-empty array of CLI arguments", file=sys.stderr)
+        return 2
+    if not isinstance(mutants, list):
+        print("Error: manifest.mutants must be an array", file=sys.stderr)
+        return 2
+    try:
+        import audit_context
+        root_value = audit_context.foundry_project_root()
+    except (ImportError, OSError):
+        root_value = None
+    root = Path(str(root_value)).resolve() if root_value else Path.cwd().resolve()
+    report = validate_mutations(root, argv, mutants, timeout_seconds=timeout)
+    destination = output_path if output_path.is_absolute() else root / output_path
+    try:
+        written = write_report(report, destination)
+    except OSError as exc:
+        print(f"Error: could not write mutation report: {exc}", file=sys.stderr)
+        return 2
+    summary = report.get("summary") or {}
+    print(f"Mutation validation: {report.get('status')}")
+    print(f"  Baseline: {report.get('baseline', {}).get('status', 'not run')}")
+    print(f"  Killed: {summary.get('killed', 0)}  Survived: {summary.get('survived', 0)}  Invalid: {summary.get('invalid', 0)}  Timeout: {summary.get('timeout', 0)}")
+    score = report.get("mutation_score")
+    print(f"  Mutation score: {score:.1%}" if isinstance(score, (float, int)) else "  Mutation score: not available")
+    print(f"  Report: {written}")
+    return 0 if report.get("status") == "completed" else 1
