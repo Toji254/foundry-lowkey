@@ -24,6 +24,14 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - `lowkey/test_generation.py` adds project-aware Solidity/Foundry drafts for unit, integration, invariant, exploit, regression, fuzz, and formal categories, plus fork/PoC variants. It recognizes only a narrow direct integer setter/getter property; unsupported constructor types are skipped rather than guessed.
 - `lk test-gen <ContractName> --types ...` routes to the project-aware generator. Bare `lk test-gen` retains the existing last-send reproduction workflow for backward compatibility.
 
+## Generation plugins and behavioral validation
+
+- `lowkey/generation_plugins.py` defines `GenerationCapability`, `GeneratedArtifact`, `GenerationRun`, the `GenerationAdapter` protocol, and `GenerationRegistry`.
+- The current `SolidityFoundryGenerationAdapter` routes project-aware generation for Solidity + Foundry through the existing test generator. Each artifact carries a status, recognized property when one is actually inferred, assumptions, source provenance, and a review-required marker.
+- `lk test-gen Contract --types unit,integration,invariant,exploit,regression,fuzz,formal` routes through that registry. Bare `lk test-gen` preserves the legacy last-send workflow.
+- `lowkey/behavioral_validation.py` adds a baseline-first mutation runner. It executes commands without a shell in isolated project copies, requires exact unique source replacements, records hashes and raw output, separates killed/survived/invalid/timeout/error outcomes, and writes reproducible JSON.
+- `lk mutation-check manifest.json` exposes the mutation runner. The manifest supplies a native argv array and mutation definitions. A failed baseline produces no mutation score; compile/setup failures are not automatically counted as killed behavioral bugs.
+
 ## Initial engine map
 
 | Engine | Potential role | Important boundary |
