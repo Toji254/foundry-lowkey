@@ -3794,9 +3794,9 @@ def _decode_contract_revert(error_text, config=None, target=None):
                         decoded = None
                 reason = signature
                 if decoded:
-                    reason += f"\\n  Arguments: {decoded}"
+                    reason += f"\n  Arguments: {decoded}"
                 elif not inputs:
-                    reason += "\\n  Arguments: none"
+                    reason += "\n  Arguments: none"
                 return {
                     "kind": "CUSTOM REVERT",
                     "reason": reason,
@@ -3810,7 +3810,7 @@ def _decode_contract_revert(error_text, config=None, target=None):
         return {"kind": "REVERT", "reason": textual_reason, "selector": None, "data": None}
 
     if "execution reverted" in lowered:
-        empty_data = bool(re.search(r'''(?i)\\b(?:data|revert data|return data)\\s*[:=]\\s*["']?0x["']?''', text))
+        empty_data = bool(re.search(r'''(?i)\b(?:data|revert data|return data)\s*[:=]\s*["']?0x["']?''', text))
         if empty_data:
             reason = "contract reverted without a reason (empty revert data)"
         else:
@@ -3844,22 +3844,22 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                 lines.append("  Transaction broadcast: no (gas estimation failed).")
             elif command == "send":
                 lines.append("  Transaction broadcast: not confirmed; check the transaction/receipt before retrying.")
-            return "\\n".join(lines)
+            return "\n".join(lines)
 
     # A gas-estimation failure can have a useful provider reason without being
     # a Solidity revert (e.g. fee, balance, or transaction-parameter rejection).
     if is_gas_estimation:
-        match = re.search(r"(?is)failed to estimate gas\\s*:?\\s*(.*)", text)
+        match = re.search(r"(?is)failed to estimate gas\s*:?\s*(.*)", text)
         detail = match.group(1).strip() if match else text
         detail = re.sub(
-            r"(?i)^server returned an error response:\\s*(?:error code \\d+\\s*:\\s*)?",
+            r"(?i)^server returned an error response:\s*(?:error code \d+\s*:\s*)?",
             "",
             detail,
         ).strip()
         detail = detail.split(", data:", 1)[0].strip().rstrip(":")
         lines = ["ERROR [GAS ESTIMATION]", f"  Reason: {detail or 'the provider rejected the transaction during estimation'}",
                  "  Transaction broadcast: no (gas estimation failed)."]
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     if any(marker in lowered for marker in (
         "connection refused", "failed to connect", "could not connect",
@@ -3870,12 +3870,12 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         detail = text
         lines = ["ERROR [RPC CONNECTION]", f"  Details: {detail}",
                  "  Next: check the active RPC with 'lk rpc' and verify that the node/network is reachable."]
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     if "timed out" in lowered or "timeout" in lowered:
         return (
-            "ERROR [TIMEOUT]\\n"
-            f"  Details: {text}\\n"
+            "ERROR [TIMEOUT]\n"
+            f"  Details: {text}\n"
             "  Next: check whether the command or RPC is still responsive, then retry."
         )
 
@@ -3884,19 +3884,19 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                  "  Next: check the sender's native-token balance and the transaction's gas/value requirements."]
         if command == "send" and is_gas_estimation:
             lines.append("  Transaction broadcast: no (gas estimation failed).")
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
         return (
-            "ERROR [TRANSACTION NONCE/FEES]\\n"
-            f"  Details: {text}\\n"
+            "ERROR [TRANSACTION NONCE/FEES]\n"
+            f"  Details: {text}\n"
             "  Next: inspect the sender nonce and pending transactions before retrying."
         )
 
     if source == "runtime":
         return (
-            "ERROR [LOWKEY RUNTIME]\\n"
-            f"  Details: {text}\\n"
+            "ERROR [LOWKEY RUNTIME]\n"
+            f"  Details: {text}\n"
             "  Result: Lowkey could not complete this command; no security conclusion should be inferred."
         )
 
@@ -3907,13 +3907,13 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
     if source == "lowkey":
         return text
 
-    operation = f"  Operation: lk {command}\\n" if command else ""
-    exit_code = f"  Exit code: {code}\\n" if isinstance(code, int) and code else ""
+    operation = f"  Operation: lk {command}\n" if command else ""
+    exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
     details = text
     if len(details) > 4000:
-        details = details[:4000] + "\\n  [diagnostic truncated after 4000 characters]"
-    detail_lines = "\\n".join("  " + line for line in details.splitlines()) or "  (no details)"
-    return "ERROR [COMMAND]\\n" + operation + exit_code + "  Details:\\n" + detail_lines
+        details = details[:4000] + "\n  [diagnostic truncated after 4000 characters]"
+    detail_lines = "\n".join("  " + line for line in details.splitlines()) or "  (no details)"
+    return "ERROR [COMMAND]\n" + operation + exit_code + "  Details:\n" + detail_lines
 
 
 def _format_revert_error(error_text, config=None, target=None):
