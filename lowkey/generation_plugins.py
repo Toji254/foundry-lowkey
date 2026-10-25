@@ -147,6 +147,10 @@ class SolidityFoundryGenerationAdapter:
             args.extend(["--output-dir", str(output_dir)])
         if request.get("force"):
             args.append("--force")
+        if request.get("validate"):
+            args.append("--validate")
+        if request.get("strict"):
+            args.append("--strict")
         stdout = io.StringIO()
         stderr = io.StringIO()
         config = {"target_contract": contract, "target": project.get("target")}
@@ -251,6 +255,8 @@ def run_generation_command(config: dict[str, Any], args: list[str]) -> int:
     types: str | list[str] = list(SolidityFoundryGenerationAdapter.capability.artifact_kinds)
     output_dir = ".audit/test-gen"
     force = False
+    validate = False
+    strict = False
     positionals: list[str] = []
     index = 0
     while index < len(args):
@@ -273,6 +279,10 @@ def run_generation_command(config: dict[str, Any], args: list[str]) -> int:
             output_dir = value.split("=", 1)[1]
         elif value == "--force":
             force = True
+        elif value == "--validate":
+            validate = True
+        elif value == "--strict":
+            strict = True
         elif value.startswith("-"):
             print(f"Error: unknown option: {value}")
             return 2
@@ -299,6 +309,8 @@ def run_generation_command(config: dict[str, Any], args: list[str]) -> int:
         "types": types,
         "output_dir": output_dir,
         "force": force,
+        "validate": validate,
+        "strict": strict,
     }
     runs = default_generation_registry().generate(project, request)
     if not runs:
