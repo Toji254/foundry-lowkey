@@ -89,7 +89,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(report["constructor"], "arguments-required")
             self.assertEqual(report["constructor_parameters"], "uint256 initial")
             self.assertEqual(report["constructor_placeholders"], ["0"])
-            self.assertEqual(report["generated"].__len__(), 7)
+            self.assertEqual(len(report["generated"]), 7)
             self.assertEqual(report["skipped"], [])
             unit = (folder / "LowkeyGeneratedUnit_Counter.t.sol").read_text(encoding="utf-8")
             fuzz = (folder / "LowkeyGeneratedFuzz_Counter.t.sol").read_text(encoding="utf-8")
