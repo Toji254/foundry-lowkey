@@ -582,12 +582,40 @@ class CertoraAdapter(NativeConfiguredAdapter):
         budget: dict[str, Any],
     ) -> EngineResult:
         result = super().run(project, request, budget=budget)
-        if result.status == "passed":
-            # A zero CLI exit may only mean that a remote verification job was
-            # submitted; do not misreport it as a proven property.
-            result.status = "submitted"
-            result.summary = "Certora CLI exited successfully; proof outcome is not established by this exit code"
-            result.metadata["result_semantics"] = "cli_success_is_not_proof_success"
+        output = result.raw_stdout + "\n" + result.raw_stderr
+        completed = "Finished verification request" in output
+        has_violation = bool(
+            re.search(r"(?im)^\\s*ERROR:\\s*Prover found violations", output)
+            or re.search(r"(?im)^\\s*\\[[^]]+\\]\\s*[^\\n]*?:\\s*FAIL\\b", output)
+        )
+        has_pass = bool(re.search(r"(?im)^\\s*\\[[^]]+\\]\\s*[^\\n]*?:\\s*PASS\\b", output))
+        submitted = bool(re.search(r"(?i)job submitted to server|job submitted", output))
+
+        if result.status in {"passed", "failed"} and has_violation:
+            result.status = "failed"
+            result.summary = "Certora completed with one or more violated rules"
+            result.metadata["result_semantics"] = "certora_completed_with_violations"
+        elif result.status == "passed" and completed and has_pass:
+            result.status = "passed"
+            result.summary = "Certora completed and reported passing rule results"
+            result.metadata["result_semantics"] = "certora_completed_pass"
+        elif result.status == "failed" and not has_violation:
+            result.status = "error"
+            result.summary = "Certora CLI failed without recognizable proof-violation evidence"
+            result.metadata["result_semantics"] = "certora_cli_execution_error"
+        elif result.status == "passed":
+            # A zero CLI exit may only mean a remote job was submitted. If no
+            # explicit completed result is present, never infer proof success.
+            result.status = "submitted" if submitted or not (completed and has_pass) else "inconclusive"
+            result.summary = (
+                "Certora job was submitted; proof outcome is not established"
+                if result.status == "submitted"
+                else "Certora output did not contain a recognizable completed proof result"
+            )
+            result.metadata["result_semantics"] = (
+                "certora_job_submitted" if result.status == "submitted"
+                else "certora_result_not_recognized"
+            )
         return result
 
 
