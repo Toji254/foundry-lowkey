@@ -355,7 +355,7 @@ jobs:
           forge build
           forge test --match-path test/lowkey-generated/LowkeyGeneratedUnit_Fixture.t.sol
           forge test --match-path test/lowkey-generated/LowkeyGeneratedFuzz_Fixture.t.sol --fuzz-runs 32
-          forge test --match-path test/lowkey-generated/LowkeyGeneratedInvariant_Fixture.t.sol --invariant-runs 16 --invariant-depth 10
+          FOUNDRY_INVARIANT_RUNS=16 FOUNDRY_INVARIANT_DEPTH=10 forge test --match-path test/lowkey-generated/LowkeyGeneratedInvariant_Fixture.t.sol
           python3 - <<'PY'
           import json
           from pathlib import Path
