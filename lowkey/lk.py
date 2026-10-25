@@ -31,6 +31,10 @@ try:
 except ImportError:
     generation_plugins = None
 try:
+    import behavioral_validation
+except ImportError:
+    behavioral_validation = None
+try:
     import question_engine
 except ImportError:
     question_engine = None
@@ -16551,6 +16555,10 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
                 return fail("Generation plugin registry is not installed. Re-run install.sh.")
             return generation_plugins.run_generation_command(config, args)
         return run_test_gen(config)
+    elif cmd=="mutation-check":
+        if behavioral_validation is None:
+            return fail("Mutation validation module is not installed. Re-run install.sh.")
+        return behavioral_validation.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
@@ -16747,7 +16755,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","test-gen","mutation-check","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
