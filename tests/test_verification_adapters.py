@@ -314,6 +314,41 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertLess(len(result.raw_stdout), 1200)
         self.assertLess(len(result.raw_stderr), 1200)
 
+    def test_adapter_enforces_optional_linux_process_group_memory_budget(self):
+        if sys.platform != "linux":
+            self.skipTest("live RSS budget uses Linux /proc accounting")
+        cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
+        adapter = ExecutableAdapter(cap)
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {
+                    "test_kind": "unit",
+                    "argv": [
+                        "-c",
+                        "import time; data=bytearray(96*1024*1024); print('allocated', flush=True); time.sleep(10)",
+                    ],
+                },
+                budget={"timeout_seconds": 5, "max_memory_mb": 48},
+            )
+        self.assertEqual(result.status, "resource_limit")
+        self.assertEqual(result.exit_code, 137)
+        self.assertTrue(result.raw_evidence["resource_limit_exceeded"])
+        self.assertGreater(result.raw_evidence["peak_process_group_rss_bytes"], 48 * 1024 * 1024)
+        self.assertIn("allocated", result.raw_stdout)
+
+    def test_adapter_rejects_invalid_memory_budget_before_launch(self):
+        cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
+        adapter = ExecutableAdapter(cap)
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {"test_kind": "unit", "argv": ["-c", "print('must not launch')"]},
+                budget={"max_memory_mb": 0},
+            )
+        self.assertEqual(result.status, "unsupported")
+        self.assertIn("positive integer", result.summary)
+
     def test_adapter_times_out_and_terminates_process(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
         adapter = ExecutableAdapter(cap)
