@@ -127,7 +127,10 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
 
             medusa = MedusaAdapter(EngineCapability("medusa", "medusa", ("fuzz",)))
             argv, _ = medusa.request_configuration(project, {"target_contracts": ["Vault", "Token"]})
-            self.assertEqual(argv, ["fuzz", "--config", "medusa.json", "--target-contracts", "Vault, Token"])
+            self.assertEqual(argv, ["fuzz", "--config", "medusa.json", "--workers", "1", "--target-contracts", "Vault, Token"])
+
+            self.assertIsNone(medusa.request_configuration(project, {"workers": 0})[0])
+            self.assertIsNone(medusa.request_configuration(project, {"workers": 100})[0])
 
             halmos = HalmosAdapter(EngineCapability("halmos", "halmos", ("formal",)))
             self.assertEqual(halmos.request_configuration(project, {})[0], ["--function", "test"])
