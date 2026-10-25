@@ -3706,17 +3706,225 @@ def _decode_solidity_revert_reason(error_text):
     return None
 
 
-def _format_revert_error(error_text):
-    """Prefer a concise decoded reason while preserving opaque failures verbatim."""
-    text = str(error_text or "").strip()
-    reason = _decode_solidity_revert_reason(text)
-    if not reason:
-        return "REVERT: " + text if "execution reverted" in text.lower() else text
+def _revert_payloads(error_text):
+    """Yield plausible ABI revert-data payloads from arbitrary Cast/RPC text."""
+    for match in re.finditer(r"(?i)0x[0-9a-f]{8,}", str(error_text or "")):
+        payload = match.group(0)
+        hex_data = payload[2:]
+        if len(hex_data) % 2 == 0:
+            yield payload
 
-    rendered = "REVERT: " + reason
-    if "failed to estimate gas" in text.lower():
-        rendered += "\nTransaction broadcast: no (the call reverted during gas estimation)."
-    return rendered
+
+_SOLIDITY_PANIC_REASONS = {
+    0x00: "generic compiler panic",
+    0x01: "assertion failed",
+    0x11: "arithmetic overflow or underflow",
+    0x12: "division or modulo by zero",
+    0x21: "invalid enum conversion",
+    0x22: "invalid storage byte-array encoding",
+    0x31: "pop() called on an empty array",
+    0x32: "array index out of bounds",
+    0x41: "memory allocation overflow or array too large",
+    0x51: "call to an uninitialized internal function",
+}
+
+
+def _decode_contract_revert(error_text, config=None, target=None):
+    """Decode known Solidity revert forms; preserve an honest fallback for unknown ones."""
+    text = str(error_text or "")
+    lowered = text.lower()
+    payloads = list(_revert_payloads(text))
+
+    for payload in payloads:
+        selector = payload[:10].lower()
+
+        if selector == "0x08c379a0":
+            reason = _decode_solidity_revert_reason(payload)
+            if reason:
+                return {
+                    "kind": "REVERT",
+                    "reason": reason,
+                    "selector": selector,
+                    "data": payload,
+                }
+
+        if selector == "0x4e487b71" and len(payload) >= 74:
+            try:
+                panic_code = int(payload[10:74], 16)
+            except ValueError:
+                continue
+            panic_reason = _SOLIDITY_PANIC_REASONS.get(
+                panic_code, "unknown Solidity panic code"
+            )
+            return {
+                "kind": "SOLIDITY PANIC",
+                "reason": f"{panic_reason} (panic code 0x{panic_code:x})",
+                "selector": selector,
+                "data": payload,
+            }
+
+    # Custom errors are defined by the selected contract's ABI. Resolve their
+    # selectors with Cast's Keccak-aware selector implementation, not SHA3-256.
+    if target and isinstance(config, dict):
+        try:
+            abi = load_abi(target, config)
+        except Exception:
+            abi = []
+        for item in abi or []:
+            if not isinstance(item, dict) or item.get("type") != "error":
+                continue
+            try:
+                signature = format_signature(item)
+                selector = abi_selector(signature)
+            except Exception:
+                continue
+            if not selector:
+                continue
+            for payload in payloads:
+                if payload[:10].lower() != str(selector).strip().lower():
+                    continue
+                inputs = item.get("inputs") or []
+                decoded = None
+                if inputs:
+                    try:
+                        rendered = decode_abi_input(signature, payload)
+                        if rendered and not str(rendered).lower().startswith(("error:", "failed")):
+                            decoded = str(rendered).strip()
+                    except Exception:
+                        decoded = None
+                reason = signature
+                if decoded:
+                    reason += f"\\n  Arguments: {decoded}"
+                elif not inputs:
+                    reason += "\\n  Arguments: none"
+                return {
+                    "kind": "CUSTOM REVERT",
+                    "reason": reason,
+                    "selector": str(selector).strip(),
+                    "data": payload,
+                }
+
+    # Some RPC implementations include a readable reason but no usable bytes.
+    textual_reason = _decode_solidity_revert_reason(text)
+    if textual_reason:
+        return {"kind": "REVERT", "reason": textual_reason, "selector": None, "data": None}
+
+    if "execution reverted" in lowered:
+        empty_data = bool(re.search(r'''(?i)\\b(?:data|revert data|return data)\\s*[:=]\\s*["']?0x["']?''', text))
+        if empty_data:
+            reason = "contract reverted without a reason (empty revert data)"
+        else:
+            reason = "contract execution reverted, but the RPC supplied no decodable reason"
+        return {"kind": "REVERT", "reason": reason, "selector": None, "data": None}
+
+    return None
+
+
+def _format_cli_error(error_text, *, code=None, command=None, config=None, target=None, source="cast"):
+    """Central error formatter for CLI, RPC, EVM revert, and runtime failures."""
+    text = str(error_text or "").strip()
+    lowered = text.lower()
+    if not text:
+        text = "The command failed without diagnostic output."
+        lowered = text.lower()
+
+    is_gas_estimation = "failed to estimate gas" in lowered
+    looks_reverted = "execution reverted" in lowered or any(
+        payload.lower().startswith(("0x08c379a0", "0x4e487b71"))
+        for payload in _revert_payloads(text)
+    )
+    if looks_reverted:
+        decoded = _decode_contract_revert(text, config=config, target=target)
+        if decoded:
+            lines = [f"ERROR [{decoded['kind']}]",
+                     f"  Reason: {decoded['reason']}"]
+            if decoded.get("kind") == "CUSTOM REVERT" and decoded.get("selector"):
+                lines.append(f"  Selector: {decoded['selector']}")
+            if is_gas_estimation:
+                lines.append("  Transaction broadcast: no (gas estimation failed).")
+            elif command == "send":
+                lines.append("  Transaction broadcast: not confirmed; check the transaction/receipt before retrying.")
+            return "\\n".join(lines)
+
+    # A gas-estimation failure can have a useful provider reason without being
+    # a Solidity revert (e.g. fee, balance, or transaction-parameter rejection).
+    if is_gas_estimation:
+        match = re.search(r"(?is)failed to estimate gas\\s*:?\\s*(.*)", text)
+        detail = match.group(1).strip() if match else text
+        detail = re.sub(
+            r"(?i)^server returned an error response:\\s*(?:error code \\d+\\s*:\\s*)?",
+            "",
+            detail,
+        ).strip()
+        detail = detail.split(", data:", 1)[0].strip().rstrip(":")
+        lines = ["ERROR [GAS ESTIMATION]", f"  Reason: {detail or 'the provider rejected the transaction during estimation'}",
+                 "  Transaction broadcast: no (gas estimation failed)."]
+        return "\\n".join(lines)
+
+    if any(marker in lowered for marker in (
+        "connection refused", "failed to connect", "could not connect",
+        "connection reset", "network is unreachable", "name or service not known",
+        "no such host", "failed to fetch", "error sending request",
+        "connection timed out", "remote end closed connection",
+    )):
+        detail = text
+        lines = ["ERROR [RPC CONNECTION]", f"  Details: {detail}",
+                 "  Next: check the active RPC with 'lk rpc' and verify that the node/network is reachable."]
+        return "\\n".join(lines)
+
+    if "timed out" in lowered or "timeout" in lowered:
+        return (
+            "ERROR [TIMEOUT]\\n"
+            f"  Details: {text}\\n"
+            "  Next: check whether the command or RPC is still responsive, then retry."
+        )
+
+    if "insufficient funds" in lowered or "insufficient balance for gas" in lowered:
+        lines = ["ERROR [INSUFFICIENT FUNDS]", f"  Details: {text}",
+                 "  Next: check the sender's native-token balance and the transaction's gas/value requirements."]
+        if command == "send" and is_gas_estimation:
+            lines.append("  Transaction broadcast: no (gas estimation failed).")
+        return "\\n".join(lines)
+
+    if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
+        return (
+            "ERROR [TRANSACTION NONCE/FEES]\\n"
+            f"  Details: {text}\\n"
+            "  Next: inspect the sender nonce and pending transactions before retrying."
+        )
+
+    if source == "runtime":
+        return (
+            "ERROR [LOWKEY RUNTIME]\\n"
+            f"  Details: {text}\\n"
+            "  Result: Lowkey could not complete this command; no security conclusion should be inferred."
+        )
+
+    # Lowkey's own validation errors already contain targeted usage/fix text.
+    # Keep those messages stable, but normalize every failure returned by an
+    # external command so stderr never mixes a raw traceback/wrapper with a
+    # misleading success-shaped result.
+    if source == "lowkey":
+        return text
+
+    operation = f"  Operation: lk {command}\\n" if command else ""
+    exit_code = f"  Exit code: {code}\\n" if isinstance(code, int) and code else ""
+    details = text
+    if len(details) > 4000:
+        details = details[:4000] + "\\n  [diagnostic truncated after 4000 characters]"
+    detail_lines = "\\n".join("  " + line for line in details.splitlines()) or "  (no details)"
+    return "ERROR [COMMAND]\\n" + operation + exit_code + "  Details:\\n" + detail_lines
+
+
+def _format_revert_error(error_text, config=None, target=None):
+    """Backward-compatible wrapper around Lowkey's shared error formatter."""
+    return _format_cli_error(
+        error_text,
+        command="send",
+        config=config,
+        target=target,
+        source="cast",
+    )
 
 
 def run_cast(args,config,capture=False):
