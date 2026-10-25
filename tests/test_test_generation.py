@@ -66,7 +66,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertIn("not protocol proofs", report["warning"])
             self.assertIn("generated", output.getvalue())
 
-    def test_constructor_arguments_skip_local_deployment_types(self):
+    def test_constructor_arguments_generate_local_drafts_with_safe_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root, "constructor(uint256 initial) { value = initial; }")
@@ -83,12 +83,49 @@ class TestGenerationTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             folder = root / ".audit" / "test-gen" / "Counter"
-            names = {p.name for p in folder.glob("*.t.sol")}
-            self.assertEqual(len(names), 2)
+            drafts = list(folder.glob("*.t.sol"))
+            self.assertEqual(len(drafts), 7)
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["constructor"], "arguments-required")
-            skipped = {item["type"] for item in report["skipped"]}
-            self.assertEqual(skipped, {"unit", "fuzz", "invariant", "integration", "regression"})
+            self.assertEqual(report["constructor_parameters"], "uint256 initial")
+            self.assertEqual(report["constructor_placeholders"], ["0"])
+            self.assertEqual(report["generated"].__len__(), 7)
+            self.assertEqual(report["skipped"], [])
+            unit = (folder / "LowkeyGeneratedUnit_Counter.t.sol").read_text(encoding="utf-8")
+            fuzz = (folder / "LowkeyGeneratedFuzz_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertIn("new Counter(0)", unit)
+            self.assertIn("new Counter(0)", fuzz)
+            self.assertIn("Review the compile-safe constructor placeholder values", unit)
+
+    def test_unsupported_constructor_types_remain_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root, "constructor(MyType initial) {}")
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter", "target": "0x" + "1" * 40},
+                        ["--types", "unit,fuzz,fork,poc"],
+                    )
+            finally:
+                os.chdir(previous)
+
+            self.assertEqual(code, 0)
+            folder = root / ".audit" / "test-gen" / "Counter"
+            names = {p.name for p in folder.glob("*.t.sol")}
+            self.assertEqual(names, {
+                "LowkeyGeneratedFork_Counter.t.sol",
+                "LowkeyGeneratedPoc_Counter.t.sol",
+            })
+            report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["constructor"], "unsupported-arguments")
+            self.assertIsNone(report["constructor_placeholders"])
+            self.assertEqual(
+                {item["type"] for item in report["skipped"]},
+                {"unit", "fuzz"},
+            )
 
     def test_existing_draft_is_preserved_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
