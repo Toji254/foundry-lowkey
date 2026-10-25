@@ -220,6 +220,7 @@ class CapabilityRegistry:
     def plan(
         self, project: dict[str, Any], test_kind: str, *,
         profile: str = "balanced",
+        request: dict[str, Any] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """Explain all selected and rejected engines for one bounded campaign."""
         if test_kind not in TEST_KINDS:
@@ -244,6 +245,18 @@ class CapabilityRegistry:
                     "reason": reason,
                 })
                 continue
+            if request is not None and name != "forge":
+                per_engine = request.get("argv_by_engine") or {}
+                has_native_args = (
+                    isinstance(per_engine, dict) and name in per_engine
+                ) or isinstance(request.get("argv"), list)
+                if not has_native_args:
+                    rejected.append({
+                        "engine": name, "test_kind": test_kind,
+                        "memory_class": cap.memory_class, "status": "missing_configuration",
+                        "reason": "explicit native argv/harness configuration is required for this engine",
+                    })
+                    continue
             if cap.memory_class not in profiles[profile]:
                 rejected.append({
                     "engine": name, "test_kind": test_kind,
@@ -282,7 +295,7 @@ class CapabilityRegistry:
         """
         request = dict(request or {})
         budget = dict(budget or {})
-        plan = self.plan(project, test_kind, profile=profile)
+        plan = self.plan(project, test_kind, profile=profile, request=request)
         selected = plan["selected"]
         profile_limits = {
             "light": {"timeout_seconds": 60, "fuzz_runs": 32, "invariant_runs": 16, "invariant_depth": 10},
