@@ -561,7 +561,7 @@ class TestGenerationTests(unittest.TestCase):
             spec = root / "spec"
             spec.mkdir()
             (spec / "Existing.t.sol").write_text(
-                "pragma solidity ^0.8.20; contract ExistingTest { function test_existing() public {} }",
+                'pragma solidity ^0.8.20; contract ExistingTest { function testExisting() public {} }',
                 encoding="utf-8",
             )
             previous = Path.cwd()
@@ -575,11 +575,12 @@ class TestGenerationTests(unittest.TestCase):
             output = root / ".audit" / "test-gen" / "Counter" / "LowkeyGeneratedUnit_Counter.t.sol"
             generated = output.read_text(encoding="utf-8")
             self.assertIn('import { Counter } from "../../contracts/Counter.sol";', generated)
+            self.assertTrue(spec.exists())
             report = json.loads(
                 (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(report["analysis"]["existing_tests"]["directory"], "spec")
             self.assertEqual(report["analysis"]["existing_tests"]["function_count"], 1)
+            self.assertEqual(report["analysis"]["existing_tests"]["files"][0]["path"], "spec/Existing.t.sol")
 
 
     def test_formal_only_validation_is_not_reported_as_a_pass(self):

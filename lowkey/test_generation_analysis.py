@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -191,46 +190,35 @@ def _read_evidence(root: Path) -> dict[str, Any]:
     return {"files": files, "signals": signals[:25], "note": None if files else "No readable JSON evidence was found."}
 
 
-def _existing_tests(root: Path) -> dict[str, Any]:
-    """Inventory tests from the active Foundry test directory."""
-    configured_path = Path(os.environ.get("FOUNDRY_TEST") or os.environ.get("DAPP_TEST") or "test").expanduser()
-    config_path = Path(os.environ.get("FOUNDRY_CONFIG", "foundry.toml")).expanduser()
-    config_root = config_path.parent if config_path.is_absolute() else root
-    resolved_config = config_path if config_path.is_absolute() else root / config_path
-    if not (os.environ.get("FOUNDRY_TEST") or os.environ.get("DAPP_TEST")) and resolved_config.is_file():
-        try:
-            import tomllib
-            config = tomllib.loads(resolved_config.read_text(encoding="utf-8"))
-            profiles = config.get("profile", {})
-            active = os.environ.get("FOUNDRY_PROFILE", "default")
-            selected = profiles.get(active, {})
-            default = profiles.get("default", {})
-            configured = selected.get("test") or default.get("test") or config.get("test")
-            if configured:
-                configured_path = Path(str(configured)).expanduser()
-        except (OSError, ValueError, ImportError, AttributeError):
-            pass
-    test_dir = configured_path if configured_path.is_absolute() else config_root / configured_path
+def _existing_tests(root: Path, configured_test_dir: Path | None = None) -> dict[str, Any]:
     files, count = [], 0
-    if not test_dir.is_dir():
-        label = test_dir.relative_to(root).as_posix() if test_dir.is_relative_to(root) else str(test_dir)
-        return {"directory": label, "file_count": 0, "function_count": 0, "files": []}
-    for path in sorted(test_dir.rglob("*.sol"))[:300]:
-        try:
-            clean = mask_solidity(path.read_text(encoding="utf-8"))
-        except OSError:
+    directories = [configured_test_dir or (root / "test"), root / "tests"]
+    seen_directories: set[Path] = set()
+    for directory in directories:
+        directory = directory.resolve()
+        if directory in seen_directories:
             continue
-        names = re.findall(r"\bfunction\s+((?:test|invariant|echidna_)\w*)\s*\(", clean)
-        count += len(names)
-        try:
-            relative_path = path.relative_to(root).as_posix()
-        except ValueError:
-            relative_path = str(path)
-        files.append({"path": relative_path, "functions": names[:60]})
-    label = test_dir.relative_to(root).as_posix() if test_dir.is_relative_to(root) else str(test_dir)
-    return {"directory": label, "file_count": len(files), "function_count": count, "files": files[:100]}
+        seen_directories.add(directory)
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("*.sol"))[:300]:
+            try:
+                clean = mask_solidity(path.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            names = re.findall(r"\bfunction\s+((?:test|invariant|echidna_)\w*)\s*\(", clean)
+            count += len(names)
+            files.append({"path": path.relative_to(root).as_posix(), "functions": names[:60]})
+    return {"file_count": len(files), "function_count": count, "files": files[:100]}
 
-def analyse_contract(root: Path, name: str, source_path: Path, source: str) -> dict[str, Any]:
+
+def analyse_contract(
+    root: Path,
+    name: str,
+    source_path: Path,
+    source: str,
+    configured_test_dir: Path | None = None,
+) -> dict[str, Any]:
     root = root.resolve()
     extracted = _extract(source, name)
     functions, variables, events, declared_modifiers, inheritance = [], [], [], [], []
@@ -309,7 +297,7 @@ def analyse_contract(root: Path, name: str, source_path: Path, source: str) -> d
         "imports": imports,
         "security_surfaces": surfaces,
         "test_opportunities": opportunities,
-        "existing_tests": _existing_tests(root),
+        "existing_tests": _existing_tests(root, configured_test_dir),
         "audit_evidence": _read_evidence(root),
         "limitations": [
             "Heuristic source analysis can miss inheritance, aliases, assembly, proxy dispatch, and generated code.",

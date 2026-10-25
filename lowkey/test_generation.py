@@ -828,7 +828,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
     local_deploy = constructor_values is not None and not is_abstract
     fuzz_property = _find_simple_fuzz_property(source, name)
-    analysis = analyse_contract(root, name, source_path, source) if analyse_contract else {
+    analysis = analyse_contract(root, name, source_path, source, _foundry_test_dir(root)) if analyse_contract else {
         "contract": name, "source": str(source_path), "functions": [], "state_variables": [],
         "security_surfaces": {}, "profiles": [], "imports": [], "existing_tests": {},
         "audit_evidence": {"files": [], "signals": [], "note": "Analysis module unavailable."},
