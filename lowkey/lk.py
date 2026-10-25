@@ -3673,7 +3673,7 @@ def _rpc_read_fallback(config, target, function_item, values):
 def _decode_solidity_revert_reason(error_text):
     """Decode Solidity Error(string) revert data embedded in an RPC/Cast error."""
     text = str(error_text or "")
-    for match in re.finditer(r"(?i)\\b(0x08c379a0[0-9a-f]+)\\b", text):
+    for match in re.finditer(r"(?i)\b(0x08c379a0[0-9a-f]+)\b", text):
         payload = match.group(1)[2:]
         arguments = payload[8:]
         # Error(string) uses an ABI offset followed by a length and UTF-8 bytes.
@@ -3698,7 +3698,7 @@ def _decode_solidity_revert_reason(error_text):
             continue
 
     # Some clients include the decoded reason in the text but omit revert data.
-    match = re.search(r"(?i)execution reverted:\\s*([^,\\r\\n]+)", text)
+    match = re.search(r"(?i)execution reverted:\s*([^,\r\n]+)", text)
     if match:
         reason = match.group(1).strip().strip('"' + "'")
         if reason and not reason.lower().startswith(("0x", "custom error", "panic")):
@@ -3715,7 +3715,7 @@ def _format_revert_error(error_text):
 
     rendered = "REVERT: " + reason
     if "failed to estimate gas" in text.lower():
-        rendered += "\\nTransaction broadcast: no (the call reverted during gas estimation)."
+        rendered += "\nTransaction broadcast: no (the call reverted during gas estimation)."
     return rendered
 
 
