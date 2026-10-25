@@ -879,5 +879,29 @@ contract Protocol {
             self.assertFalse(report["poc_replay"]["security_impact_assertion"])
             self.assertEqual(report["generation_assessment"]["poc"]["level"], "recorded-call-replay")
 
+
+    def test_strict_mode_fails_when_requested_types_are_only_scaffolds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter"},
+                        ["--types", "all", "--strict"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 1)
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(report["strict"])
+            blocker_types = {item["type"] for item in report["strict_blockers"]}
+            self.assertTrue({"integration", "poc", "regression", "formal", "fork"} <= blocker_types)
+            self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
+
 if __name__ == "__main__":
     unittest.main()

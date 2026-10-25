@@ -888,7 +888,7 @@ def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
 
 Usage:
   lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,fork,poc,regression,formal]
-              [--output-dir .audit/test-gen] [--force] [--validate]
+              [--output-dir .audit/test-gen] [--force] [--validate] [--strict]
 
 Types:
   unit         Local deployment smoke test + unit-test TODOs
@@ -935,6 +935,8 @@ The generator does not claim coverage or invent protocol-specific assertions.
             force = True
         elif value == "--validate":
             validate = True
+        elif value == "--strict":
+            strict = True
         elif value.startswith("-"):
             return _error(f"Unknown option: {value}")
         else:
@@ -1022,6 +1024,12 @@ The generator does not claim coverage or invent protocol-specific assertions.
             "note": skipped_item["reason"],
         }
 
+    strict_blockers = [
+        {"type": kind, "level": item["level"], "note": item["note"]}
+        for kind, item in generation_assessment.items()
+        if item["level"] not in {"executable-candidate", "diagnostic-candidate", "recorded-call-replay"}
+    ]
+
     report = {
         "contract": name,
         "source": source_label,
@@ -1033,7 +1041,9 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "fuzz_property": fuzz_property,
         "analysis": {key: value for key, value in analysis.items() if not key.startswith("_")},
         "requested_types": selected,
+        "strict": strict,
         "generation_assessment": generation_assessment,
+        "strict_blockers": strict_blockers,
         "poc_replay": poc_replay,
         "generated": generated,
         "skipped": skipped,
@@ -1072,6 +1082,10 @@ The generator does not claim coverage or invent protocol-specific assertions.
     for kind, assessment in report["generation_assessment"].items():
         print(f"  {kind}: {assessment['level']} — {assessment['note']}")
     print("No generated artifact establishes protocol security; validation is compile-only.")
+    if strict and strict_blockers:
+        print("Strict readiness check failed:")
+        for blocker in strict_blockers:
+            print(f"  {blocker['type']}: {blocker['level']} — {blocker['note']}")
     validation = report["validation"]
     if validation.get("requested"):
         print(f"Validation: {validation.get('status')} - {validation.get('detail', '')}")
@@ -1080,6 +1094,8 @@ The generator does not claim coverage or invent protocol-specific assertions.
     if validate and report["validation"].get("status") != "passed":
         # A requested validation that could not compile any Solidity draft is not a pass.
         # In particular, Forge cannot validate Certora CVL/worksheet output.
+        return 1
+    if strict and strict_blockers:
         return 1
     return 0
 
