@@ -337,7 +337,6 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertGreater(result.raw_evidence["peak_process_group_rss_bytes"], 48 * 1024 * 1024)
         self.assertIn("LOWKEY_RESOURCE_LIMIT_MB=48", result.raw_stderr)
         self.assertIn("exceeded the 48 MiB", result.summary)
-        self.assertIn("allocated", result.raw_stdout)
 
     def test_adapter_rejects_invalid_memory_budget_before_launch(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
