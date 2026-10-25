@@ -14805,7 +14805,7 @@ COMMAND_HELP = {
         ],
         related=["lk changes", "lk trace", "lk receipt"],
     ),    "import": _help_entry(
-        "Find Solidity symbols and exact import paths, then understand whether a result is a project contract, an installed dependency, or a reference suggestion. Lookup is read-only by default; installing a dependency requires an explicit install mode.",
+        "Find Solidity symbols, importable packages, and exact import paths, then understand whether a result is a project contract, an installed dependency, or a reference suggestion. Lookup is read-only by default; installing a dependency requires an explicit install mode.",
         "lk import [symbol|path|search <term>|explain <symbol|topic>|usage <symbol>|related <symbol>|graph <symbol>|audit <symbol>] [options]",
         "lk import ERC20",
         "Use this while writing a contract or test and you are unsure what to import. The help distinguishes a concrete implementation you can inherit from, an interface for calling an existing contract, and a reference entry whose dependency is not installed yet.",
