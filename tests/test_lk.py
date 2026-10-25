@@ -653,6 +653,25 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Operation: lk send", rendered)
         self.assertIn("Exit code: 1", rendered)
 
+    def test_dispatcher_explains_when_external_tool_diagnostic_bypassed_stderr(self):
+        output = io.StringIO()
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            # External tools can write straight to the terminal file descriptor.
+            return 1
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("forge", ["test"], {})
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("ERROR [LOWKEY]"))
+        self.assertIn("Operation: lk forge", rendered)
+        self.assertIn("Exit code: 1", rendered)
+        self.assertIn("no Python-level stderr was captured", rendered)
+        self.assertIn("external tool may have written its detailed diagnostic", rendered)
+
     def test_dispatcher_preserves_non_error_warnings(self):
         output = io.StringIO()
 
