@@ -78,6 +78,38 @@ class VerificationCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("submitted: 1", output.getvalue())
 
+    def test_failed_campaign_prints_native_engine_diagnostics(self):
+        report = {
+            "test_kind": "unit",
+            "profile": "light",
+            "execution_mode": "serial",
+            "selected_count": 1,
+            "considered_engines": [],
+            "results": [{
+                "result": {
+                    "engine": "forge",
+                    "status": "failed",
+                    "summary": "forge exited with 1",
+                    "raw_stderr": "Compiler error: expected a declaration",
+                    "raw_stdout": "failed to compile fixture",
+                }
+            }],
+            "summary": {
+                "passed": 0, "submitted": 0, "inconclusive": 0,
+                "failed": 1, "timeout": 0, "resource_limit": 0,
+                "unsupported": 0, "error": 0,
+            },
+            "report_path": ".audit/verification/campaign.json",
+        }
+        output = io.StringIO()
+        with patch.object(verification_cli, "run_campaign_manifest", return_value=report):
+            with redirect_stdout(output):
+                code = verification_cli.run_cli(["run", "campaign.json"])
+        self.assertEqual(code, 1)
+        self.assertIn("Engine diagnostics:", output.getvalue())
+        self.assertIn("Compiler error: expected a declaration", output.getvalue())
+        self.assertIn("failed to compile fixture", output.getvalue())
+
     def test_campaign_manifest_executes_and_saves_native_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
