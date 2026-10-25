@@ -414,6 +414,19 @@ The deployment generator uses the compiled ABI to externalize constructor inputs
 
 These generators are scaffolding and education aids; they do not automatically declare that behavior is vulnerable.
 
+## Optional external verification engines
+
+The base Lowkey installer keeps third-party engines optional. On Linux x86_64, install the same pinned engine versions used by the live CI smoke tests from the repository root:
+
+~~~bash
+./scripts/install-verification-engines.sh
+lk verification engines --json
+~~~
+
+The installer uses isolated Python tool environments and installs Echidna 2.3.3, Medusa 1.5.1, Halmos 0.3.3, Slither 0.11.6, `crytic-compile` 0.4.2, `solc-select` 1.2.0, and Certora CLI 8.20.2. It also installs Solidity compiler 0.8.20 through `solc-select`; it does not replace or install Foundry.
+
+Certora CLI availability is separate from proof execution. Submitting a proof requires a Certora account and personal access key exported as `CERTORAKEY`; Lowkey does not store that secret. The live CI validates Certora CLI startup but intentionally does not submit a remote proof without credentials. Engine availability and compatible harness/config files must still be checked for each project.
+
 ## Verification engine registry and campaigns
 
 Inspect which verification tools are installed and which project/test kinds each supports:
