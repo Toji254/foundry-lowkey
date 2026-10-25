@@ -904,6 +904,34 @@ contract Protocol {
             self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
 
 
+
+    def test_strict_rejects_fork_diagnostics_as_not_protocol_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch(
+                    "test_generation._validate_generated",
+                    return_value={"requested": True, "status": "passed", "detail": "compiled"},
+                ), contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {
+                            "target_contract": "Counter",
+                            "target": "0x1111111111111111111111111111111111111111",
+                        },
+                        ["--types", "fork", "--strict", "--validate"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 1)
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["generation_assessment"]["fork"]["level"], "diagnostic-candidate")
+            self.assertIn("fork", {item["type"] for item in report["strict_blockers"]})
+
     def test_strict_mode_requires_and_accepts_successful_compile_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

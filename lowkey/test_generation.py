@@ -1029,7 +1029,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     strict_blockers = [
         {"type": kind, "level": item["level"], "note": item["note"]}
         for kind, item in generation_assessment.items()
-        if item["level"] not in {"executable-candidate", "diagnostic-candidate", "recorded-call-replay"}
+        if item["level"] != "executable-candidate"
     ]
 
     report = {
