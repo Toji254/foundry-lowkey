@@ -373,7 +373,8 @@ class CliConsistencyTests(unittest.TestCase):
                 capture=True,
             )
         self.assertEqual(result.code, 2)
-        self.assertTrue(str(result).startswith("Error: --repeat/--times cannot repeat"))
+        self.assertTrue(str(result).startswith("ERROR [USAGE]"))
+        self.assertIn("--repeat/--times cannot repeat", str(result))
         self.assertNotIn("Error: Error:", str(result))
         cast_output.assert_not_called()
 
