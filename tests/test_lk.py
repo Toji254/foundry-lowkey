@@ -506,6 +506,16 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("arithmetic overflow or underflow", rendered)
         self.assertIn("panic code 0x11", rendered)
 
+    def test_solidity_panic_is_decoded_when_provider_only_returns_text(self):
+        rendered = lk._format_cli_error(
+            "execution reverted: Panic(0x11)",
+            command="send",
+            source="cast",
+        )
+        self.assertIn("ERROR [SOLIDITY PANIC]", rendered)
+        self.assertIn("arithmetic overflow or underflow", rendered)
+        self.assertIn("panic code 0x11", rendered)
+
     def test_custom_error_is_decoded_against_selected_abi(self):
         payload = "0x12345678" + f"{500:064x}"
         abi = [{
@@ -622,6 +632,33 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Reason: invalid number", result.text)
         self.assertIn("Transaction broadcast: no", result.text)
         self.assertNotIn("Failed to estimate gas:", result.text)
+
+    def test_failed_send_preserves_transaction_hash_when_cast_returns_one(self):
+        target = "0x" + "1" * 40
+        tx_hash = "0x" + "a" * 64
+        config = {
+            "target": target,
+            "target_contract": "Example",
+            "rpc": "http://127.0.0.1:8545",
+            "wallets": {},
+            "labels": {},
+            "aliases": {},
+            "project_roots": {},
+            "abi_paths": {},
+            "_ephemeral": True,
+        }
+        with patch.object(lk, "load_abi", return_value=[]), patch.object(
+            lk, "resolve_wallet_key", return_value=None
+        ), patch.object(
+            lk, "cast_output",
+            return_value=(1, f"transactionHash: {tx_hash}", "execution reverted: invalid number"),
+        ):
+            result = lk.run_cast(["send", "setNumber(uint256)", "53"], config, capture=True)
+
+        self.assertEqual(result.code, 1)
+        self.assertEqual(config["last_tx"], tx_hash)
+        self.assertIn("Reason: invalid number", result.text)
+        self.assertIn(f"Transaction broadcast: yes ({tx_hash})", result.text)
 
     def test_lab_numeric_grouping_is_normalized(self):
         self.assertEqual(
