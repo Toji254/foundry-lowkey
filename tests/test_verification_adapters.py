@@ -114,6 +114,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             (root / "src" / "Harness.sol").write_text("contract Harness {}", encoding="utf-8")
             (root / "echidna.yaml").write_text("testMode: property\n", encoding="utf-8")
             (root / "medusa.json").write_text("{}\n", encoding="utf-8")
+            (root / "bad-medusa.json").write_text("{not-json}\n", encoding="utf-8")
             (root / "rules.conf").write_text('{"files": ["src/Harness.sol"]}\n', encoding="utf-8")
             project = {"root": str(root)}
 
@@ -131,6 +132,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
 
             self.assertIsNone(medusa.request_configuration(project, {"workers": 0})[0])
             self.assertIsNone(medusa.request_configuration(project, {"workers": 100})[0])
+            self.assertIsNone(medusa.request_configuration(project, {"config": "bad-medusa.json"})[0])
 
             halmos = HalmosAdapter(EngineCapability("halmos", "halmos", ("formal",)))
             self.assertEqual(halmos.request_configuration(project, {})[0], ["--function", "test"])
