@@ -16521,7 +16521,10 @@ def dispatch_command(cmd, args, config, from_batch=False):
         print(_ensure_error_context(rendered, cmd, error_code), file=sys.stderr)
     else:
         rendered = _format_cli_error(
-            "",
+            (
+                f"Command returned exit code {error_code}; no Python-level stderr was captured. "
+                "An external tool may have written its detailed diagnostic directly to the terminal."
+            ),
             code=error_code,
             command=cmd,
             config=config,
