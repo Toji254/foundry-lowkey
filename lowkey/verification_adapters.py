@@ -515,6 +515,25 @@ class MedusaAdapter(NativeConfiguredAdapter):
             argv.extend(["--timeout", str(timeout)])
         return argv, "Medusa config and optional target overrides validated"
 
+    def run(
+        self, project: dict[str, Any], request: dict[str, Any], *,
+        budget: dict[str, Any],
+    ) -> EngineResult:
+        result = super().run(project, request, budget=budget)
+        # Medusa documents exit code 7 as a test failure; codes 1 and 6
+        # indicate execution/handled errors, not a discovered contract failure.
+        if result.status in {"failed", "passed"} and result.exit_code == 7:
+            result.status = "failed"
+            result.summary = "Medusa reported a failing fuzz test (exit code 7)"
+            result.metadata["result_semantics"] = "medusa_native_test_failure_exit_7"
+        elif result.status == "failed" and result.exit_code in {1, 6}:
+            result.status = "error"
+            result.summary = f"Medusa execution error (exit code {result.exit_code})"
+            result.metadata["result_semantics"] = "medusa_native_execution_error"
+        elif result.status == "passed" and result.exit_code == 0:
+            result.metadata["result_semantics"] = "medusa_exit_success"
+        return result
+
 
 class HalmosAdapter(NativeConfiguredAdapter):
     def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
