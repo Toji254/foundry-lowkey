@@ -192,7 +192,7 @@ def run_cli(args: list[str]) -> int:
         print(f"  Report: {report.get('report_path', output)}")
         if report["selected_count"] == 0:
             return 2
-        if any(report["summary"][key] for key in ("failed", "timeout", "resource_limit", "error", "unsupported", "inconclusive", "submitted")):
+        if any(report["summary"].get(key, 0) for key in ("failed", "timeout", "resource_limit", "error", "unsupported", "inconclusive", "submitted")):
             return 1
         return 0
     print("Error: expected 'engines' or 'run'. Use 'lk verification --h'.", file=sys.stderr)
