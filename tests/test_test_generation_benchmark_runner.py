@@ -55,14 +55,15 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
 
             def fake_run(command, cwd=None, timeout=1800):
                 output_dir = Path(command[command.index("--output-dir") + 1])
-                output_dir.mkdir(parents=True, exist_ok=True)
+                report_dir = output_dir / command[2]
+                report_dir.mkdir(parents=True, exist_ok=True)
                 if command[command.index("--types") + 1] == "all":
-                    (output_dir / "report.json").write_text(
+                    (report_dir / "report.json").write_text(
                         json.dumps({"generation_assessment": {"unit": {"level": "executable-candidate"}}}),
                         encoding="utf-8",
                     )
                     return {"command": command, "exit_code": 1, "stdout_tail": "", "stderr_tail": "generation error"}
-                (output_dir / "report.json").write_text(
+                (report_dir / "report.json").write_text(
                     json.dumps({"validation": {"status": "passed"}}), encoding="utf-8"
                 )
                 return {"command": command, "exit_code": 0, "stdout_tail": "", "stderr_tail": ""}
@@ -81,14 +82,15 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
 
             def fake_run(command, cwd=None, timeout=1800):
                 output_dir = Path(command[command.index("--output-dir") + 1])
-                output_dir.mkdir(parents=True, exist_ok=True)
+                report_dir = output_dir / command[2]
+                report_dir.mkdir(parents=True, exist_ok=True)
                 if command[command.index("--types") + 1] == "all":
-                    (output_dir / "report.json").write_text(
+                    (report_dir / "report.json").write_text(
                         json.dumps({"generation_assessment": {"unit": {"level": "executable-candidate"}}}),
                         encoding="utf-8",
                     )
                 else:
-                    (output_dir / "report.json").write_text(
+                    (report_dir / "report.json").write_text(
                         json.dumps({"validation": {"status": "passed"}}), encoding="utf-8"
                     )
                 return {"command": command, "exit_code": 0, "stdout_tail": "", "stderr_tail": ""}

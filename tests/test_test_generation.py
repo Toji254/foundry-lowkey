@@ -71,7 +71,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "executable-candidate")
             self.assertEqual(report["generation_assessment"]["invariant"]["level"], "executable-candidate")
             self.assertEqual(report["generation_assessment"]["integration"]["level"], "scaffold")
-        self.assertEqual(report["generation_assessment"]["exploit"]["level"], "scaffold")
+            self.assertEqual(report["generation_assessment"]["exploit"]["level"], "scaffold")
             self.assertEqual(report["generation_assessment"]["poc"]["protocol_security_established"], False)
             self.assertIn("compile-only", output.getvalue())
             self.assertIn("generated", output.getvalue())

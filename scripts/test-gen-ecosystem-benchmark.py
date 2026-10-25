@@ -214,13 +214,13 @@ def evaluate_target(project_root: Path, contract: str, output_root: Path) -> dic
         common + ["--types", "all", "--output-dir", str(all_dir)],
         cwd=project_root,
     )
-    generation_report = load_report(all_dir / "report.json")
+    generation_report = load_report(all_dir / slug / "report.json")
 
     validation = run(
         common + ["--types", SOLIDITY_TYPES, "--output-dir", str(solidity_dir), "--validate"],
         cwd=project_root,
     )
-    validation_report = load_report(solidity_dir / "report.json")
+    validation_report = load_report(solidity_dir / slug / "report.json")
     assessments = (generation_report or {}).get("generation_assessment", {})
     validation_status = (validation_report or {}).get("validation", {}).get("status", "report-missing")
     generation_succeeded = generation.get("exit_code") == 0 and generation_report is not None
@@ -239,7 +239,7 @@ def evaluate_target(project_root: Path, contract: str, output_root: Path) -> dic
         "validation_status": validation_status,
         "validation_report_found": validation_report is not None,
         "validation_succeeded": validation_succeeded,
-        "formal_artifact_exists": any(all_dir.glob("*Formal*")),
+        "formal_artifact_exists": any(all_dir.rglob("*Formal*")),
         "honest_result": (
             "generation-and-validation-passed"
             if generation_succeeded and validation_succeeded
