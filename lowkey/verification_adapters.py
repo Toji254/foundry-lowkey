@@ -331,8 +331,11 @@ class CapabilityRegistry:
                         "test", "--invariant-runs", str(limits["invariant_runs"]),
                         "--invariant-depth", str(limits["invariant_depth"]),
                     ]
+            engine_started_at = time.monotonic()
             try:
                 result = by_name[name].run(project, engine_request, budget=budget)
+                if result.duration_seconds is None:
+                    result.duration_seconds = round(time.monotonic() - engine_started_at, 6)
             except Exception as exc:
                 # One broken adapter must not erase evidence from the rest of a campaign.
                 result = EngineResult(
@@ -340,6 +343,7 @@ class CapabilityRegistry:
                     status="error",
                     summary=f"adapter raised {type(exc).__name__}: {exc}",
                     raw_evidence={"exception_type": type(exc).__name__},
+                    duration_seconds=round(time.monotonic() - engine_started_at, 6),
                 )
             results.append({
                 "selection": candidate,
