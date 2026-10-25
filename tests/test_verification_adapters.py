@@ -230,11 +230,16 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             failed = run('{"success": false, "tests": [{"name": "echidna_supply", "status": "solved"}]}', exit_code=1)
             error = run('{"success": true, "error": "compiler failed", "tests": []}')
             unclear = run("not-json")
+            noisy = run(
+                'Echidna launcher banner\\n{"success": true, "tests": []}\\ncampaign complete'
+            )
         self.assertEqual(passed.status, "passed")
         self.assertEqual(passed.metadata["result_semantics"], "echidna_json_campaign_success")
         self.assertEqual(failed.status, "failed")
         self.assertEqual(error.status, "error")
         self.assertEqual(unclear.status, "inconclusive")
+        self.assertEqual(noisy.status, "passed")
+        self.assertEqual(noisy.raw_evidence["native_result"]["success"], True)
         self.assertIn("native_result", passed.raw_evidence)
 
     def test_halmos_requires_recognized_symbolic_result_markers(self):

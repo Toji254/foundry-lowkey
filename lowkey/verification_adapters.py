@@ -392,6 +392,31 @@ def _project_file(root_value: Any, value: Any, *, suffix: str | None = None) -> 
     return str(raw), ""
 
 
+def _extract_echidna_campaign(raw_output: str) -> dict[str, Any] | None:
+    """Extract Echidna's JSON campaign object even when CLI logs surround it.
+
+    Echidna's JSON output is the authoritative campaign result, but launchers and
+    compiler diagnostics may add non-JSON text to stdout. Scan JSON object starts
+    and prefer an object containing the documented boolean success field.
+    """
+    decoder = json.JSONDecoder()
+    first_object: dict[str, Any] | None = None
+    for offset, character in enumerate(raw_output):
+        if character != "{":
+            continue
+        try:
+            candidate, _ = decoder.raw_decode(raw_output[offset:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(candidate, dict):
+            continue
+        if isinstance(candidate.get("success"), bool):
+            return candidate
+        if first_object is None:
+            first_object = candidate
+    return first_object
+
+
 class EchidnaAdapter(NativeConfiguredAdapter):
     def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
         explicit, reason = super().request_configuration(project, request)
@@ -427,16 +452,16 @@ class EchidnaAdapter(NativeConfiguredAdapter):
         result = super().run(project, request, budget=budget)
         if result.status in {"timeout", "error", "unsupported"}:
             return result
-        try:
-            payload = json.loads(result.raw_stdout)
-        except (json.JSONDecodeError, TypeError) as exc:
+        payload = _extract_echidna_campaign(result.raw_stdout)
+        if payload is None:
+            parse_error = "No JSON object found in Echidna stdout"
             if result.status == "passed":
                 result.status = "inconclusive"
                 result.summary = "Echidna exited successfully but did not emit a parseable JSON campaign result"
                 result.metadata["result_semantics"] = "echidna_json_result_missing_or_invalid"
             else:
                 result.metadata["result_semantics"] = "echidna_json_result_unavailable_after_nonzero_exit"
-                result.metadata["native_result_parse_error"] = str(exc)
+                result.metadata["native_result_parse_error"] = parse_error
             return result
         if not isinstance(payload, dict) or not isinstance(payload.get("success"), bool):
             if result.status == "passed":
