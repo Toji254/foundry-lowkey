@@ -2,6 +2,7 @@ import json
 import io
 import sys
 import tempfile
+import subprocess
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -26,6 +27,36 @@ class VerificationCliTests(unittest.TestCase):
         self.assertIn("fuzz", forge["supported_test_kinds"])
         slither = next(item for item in report["engines"] if item["name"] == "slither")
         self.assertEqual(tuple(slither["test_kinds"]), ())
+
+    def test_lk_json_inventory_stdout_is_parseable_without_extra_output(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        cli_path = repository_root / "lowkey" / "lk.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text(
+                '[profile.default]\\nsrc = "src"\\n', encoding="utf-8"
+            )
+            (root / "src" / "Vault.sol").write_text(
+                "pragma solidity ^0.8.20; contract Vault {}",
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [sys.executable, str(cli_path), "verification", "engines", "--json"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["project"]["root"], str(root.resolve()))
+        self.assertIn("solidity", report["project"]["languages"])
+        self.assertIn("foundry", report["project"]["build_systems"])
+        self.assertNotIn("POC generated:", completed.stdout)
+        self.assertNotIn("RECOMMENDED NEXT COMMANDS", completed.stdout)
 
     def test_submitted_remote_proof_does_not_return_success_exit_code(self):
         report = {
