@@ -25,6 +25,7 @@ class TestGenerationEcosystemManifest(unittest.TestCase):
         for project in projects:
             with self.subTest(project=project["id"]):
                 self.assertTrue(project["repository"].startswith("https://github.com/"))
+                self.assertRegex(project.get("revision", ""), r"^[0-9a-f]{40}$")
                 self.assertTrue(project["target_candidates"])
                 self.assertTrue(project["architectural_challenges"])
                 self.assertTrue(project["required_evidence"])

@@ -43,7 +43,8 @@
         "poc",
         "regression",
         "formal"
-      ]
+      ],
+      "revision": "11565e5f6277a320408025e649240056ba6a3919"
     },
     {
       "id": "uniswap-v2-core",
@@ -73,7 +74,8 @@
         "poc",
         "regression",
         "formal"
-      ]
+      ],
+      "revision": "6a9e7c97860676e0992f22a49665760444c1cdf5"
     },
     {
       "id": "uniswap-v4-core",
@@ -104,7 +106,8 @@
         "poc",
         "regression",
         "formal"
-      ]
+      ],
+      "revision": "bea7f6d1c11cd5dc4f0d5151ffa37a1c239feee6"
     },
     {
       "id": "aave-v3-core",
@@ -137,7 +140,8 @@
         "poc",
         "regression",
         "formal"
-      ]
+      ],
+      "revision": "782f51917056a53a2c228701058a6c3fb233684a"
     },
     {
       "id": "morpho-blue",
@@ -167,7 +171,8 @@
         "poc",
         "regression",
         "formal"
-      ]
+      ],
+      "revision": "9cf6d5b844625ba108e36d1cf911f5d2faf7c136"
     },
     {
       "id": "layerzero-v2",
@@ -198,7 +203,8 @@
         "poc",
         "regression",
         "formal"
-      ]
+      ],
+      "revision": "9c741e7f9790639537b1710a203bcdfd73b0b9ac"
     },
     {
       "id": "solady",
@@ -229,7 +235,8 @@
         "poc",
         "regression",
         "formal"
-      ]
+      ],
+      "revision": "258f67cc71e39cff307b726939ade17e9d8bcf5c"
     },
     {
       "id": "forge-std",
@@ -254,7 +261,8 @@
         "regression",
         "formal"
       ],
-      "expected_outcome": "Correctly classify this as a test framework or unsupported target instead of inventing protocol tests."
+      "expected_outcome": "Correctly classify this as a test framework or unsupported target instead of inventing protocol tests.",
+      "revision": "9964d28dd139cbceb8a7c7c3e182c29cd9888bfd"
     }
   ]
 }

@@ -51,6 +51,84 @@ def run(command: list[str], cwd: Path | None = None, timeout: int = 1800) -> dic
         return {"command": command, "exit_code": None, "error": str(exc)}
 
 
+def resolve_revision(root: Path, requested: Any) -> dict[str, Any]:
+    """Ensure a benchmark checkout uses the immutable commit named in its manifest."""
+    if requested is not None and (
+        not isinstance(requested, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{40}", requested.strip())
+    ):
+        return {
+            "ok": False,
+            "status": "invalid-revision-pin",
+            "requested_revision": requested,
+            "error": "revision must be a full 40-character Git commit SHA",
+        }
+
+    current = run(["git", "rev-parse", "HEAD"], cwd=root, timeout=30)
+    if current.get("exit_code") != 0:
+        return {
+            "ok": False,
+            "status": "revision-read-failed",
+            "requested_revision": requested,
+            "current_revision_command": current,
+        }
+    actual = str(current.get("stdout_tail") or "").strip()
+    evidence: dict[str, Any] = {"initial_revision_command": current}
+    if requested is not None and actual.lower() != requested.lower():
+        fetched = run(
+            ["git", "fetch", "--depth", "1", "origin", requested],
+            cwd=root, timeout=1800,
+        )
+        evidence["fetch_requested_revision"] = fetched
+        if fetched.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "revision-fetch-failed",
+                "requested_revision": requested, "actual_revision": actual,
+                "evidence": evidence,
+            }
+        checkout = run(["git", "checkout", "--detach", requested], cwd=root, timeout=60)
+        evidence["checkout_requested_revision"] = checkout
+        if checkout.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "revision-checkout-failed",
+                "requested_revision": requested, "actual_revision": actual,
+                "evidence": evidence,
+            }
+        submodules = run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            cwd=root, timeout=1800,
+        )
+        evidence["submodules_after_checkout"] = submodules
+        if submodules.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "pinned-submodule-update-failed",
+                "requested_revision": requested, "actual_revision": actual,
+                "evidence": evidence,
+            }
+        verified = run(["git", "rev-parse", "HEAD"], cwd=root, timeout=30)
+        evidence["verified_revision_command"] = verified
+        if verified.get("exit_code") != 0:
+            return {
+                "ok": False, "status": "revision-verification-failed",
+                "requested_revision": requested, "evidence": evidence,
+            }
+        actual = str(verified.get("stdout_tail") or "").strip()
+
+    if requested is not None and actual.lower() != requested.lower():
+        return {
+            "ok": False, "status": "revision-mismatch",
+            "requested_revision": requested, "actual_revision": actual,
+            "evidence": evidence,
+        }
+    return {
+        "ok": True,
+        "status": "pinned" if requested is not None else "unpinned",
+        "requested_revision": requested,
+        "actual_revision": actual,
+        "evidence": evidence,
+    }
+
+
 def mask_solidity(source: str) -> str:
     """Mask comments and quoted literals so source cues are not mistaken for code."""
     chars = list(source)
@@ -144,19 +222,30 @@ def evaluate_target(project_root: Path, contract: str, output_root: Path) -> dic
     )
     validation_report = load_report(solidity_dir / "report.json")
     assessments = (generation_report or {}).get("generation_assessment", {})
+    validation_status = (validation_report or {}).get("validation", {}).get("status", "report-missing")
+    generation_succeeded = generation.get("exit_code") == 0 and generation_report is not None
+    validation_succeeded = (
+        validation.get("exit_code") == 0
+        and validation_report is not None
+        and validation_status == "passed"
+    )
     return {
         "contract": contract,
         "generation_command": generation,
         "generation_report_found": generation_report is not None,
+        "generation_succeeded": generation_succeeded,
         "generation_assessment": assessments,
         "validation_command": validation,
-        "validation_status": (validation_report or {}).get("validation", {}).get("status", "report-missing"),
+        "validation_status": validation_status,
         "validation_report_found": validation_report is not None,
+        "validation_succeeded": validation_succeeded,
         "formal_artifact_exists": any(all_dir.glob("*Formal*")),
         "honest_result": (
-            "generation-and-validation-ran"
-            if generation_report is not None and validation_report is not None
+            "generation-and-validation-passed"
+            if generation_succeeded and validation_succeeded
             else "tool-or-report-failure"
+            if generation_report is None or validation_report is None
+            else "generation-or-validation-failed"
         ),
     }
 
@@ -216,14 +305,13 @@ def main() -> int:
                 results.append(item)
                 continue
 
-            try:
-                revision = subprocess.run(
-                    ["git", "rev-parse", "HEAD"], cwd=clone_dir,
-                    capture_output=True, text=True, timeout=30, check=True,
-                ).stdout.strip()
-            except (OSError, subprocess.SubprocessError) as exc:
-                revision = None
-                item["revision_error"] = str(exc)
+            revision_pin = resolve_revision(clone_dir, project.get("revision"))
+            item["revision_pin"] = revision_pin
+            if not revision_pin.get("ok"):
+                item["status"] = revision_pin.get("status", "revision-pin-failed")
+                results.append(item)
+                continue
+            revision = revision_pin.get("actual_revision")
             item["revision"] = revision
 
             declarations = find_contracts(clone_dir)
@@ -244,7 +332,15 @@ def main() -> int:
                 evaluate_target(clone_dir, name, clone_dir / ".audit" / "ecosystem-benchmark")
                 for name in candidates
             ]
-            item["status"] = "evaluated" if build.get("exit_code") == 0 else "baseline-build-failed"
+            if build.get("exit_code") != 0:
+                item["status"] = "baseline-build-failed"
+            elif item["targets"] and all(
+                target.get("honest_result") == "generation-and-validation-passed"
+                for target in item["targets"]
+            ):
+                item["status"] = "evaluated"
+            else:
+                item["status"] = "generation-validation-failed"
             results.append(item)
 
         summary = {
@@ -253,6 +349,12 @@ def main() -> int:
             "manifest": str(args.manifest),
             "project_count": len(projects),
             "evaluated_count": sum(item["status"] == "evaluated" for item in results),
+            "baseline_build_failed_count": sum(item["status"] == "baseline-build-failed" for item in results),
+            "generation_validation_failed_count": sum(item["status"] == "generation-validation-failed" for item in results),
+            "revision_pin_failed_count": sum(
+                "revision" in item.get("status", "") or "submodule" in item.get("status", "")
+                for item in results
+            ),
             "results": results,
             "limitations": [
                 "A completed benchmark run is not a security certification.",

@@ -378,6 +378,49 @@ jobs:
           assert report["mutation_score"] == 1.0, report
           PY
 
+  test-generation-ecosystem-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          check-latest: true
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Run pinned OpenZeppelin generation benchmark
+        run: |
+          python3 scripts/test-gen-ecosystem-benchmark.py \
+            --limit-projects 1 --targets-per-project 1 \
+            --output .audit/test-gen-ecosystem-smoke.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/test-gen-ecosystem-smoke.json", encoding="utf-8"))
+          assert report["project_count"] == 1, report
+          assert report["evaluated_count"] == 1, report
+          project = report["results"][0]
+          assert project["id"] == "openzeppelin-contracts", project
+          assert project["status"] == "evaluated", project
+          assert project["revision"] == "11565e5f6277a320408025e649240056ba6a3919", project
+          assert len(project["targets"]) == 1, project
+          target = project["targets"][0]
+          assert target["generation_succeeded"], target
+          assert target["validation_succeeded"], target
+          assert target["validation_status"] == "passed", target
+          print("PASS: pinned OpenZeppelin target generation and eligible local-test validation")
+          PY
+      - name: Retain ecosystem benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-generation-ecosystem-smoke
+          path: .audit/test-gen-ecosystem-smoke.json
+          if-no-files-found: warn
+
   vyper-integration:
     runs-on: ubuntu-latest
     steps:
