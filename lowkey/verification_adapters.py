@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import os
+from importlib.metadata import entry_points
 import signal
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -180,6 +181,7 @@ class CapabilityRegistry:
 
     def __init__(self, adapters: list[ToolAdapter] | None = None) -> None:
         self._adapters: dict[str, ToolAdapter] = {}
+        self.plugin_errors: list[dict[str, str]] = []
         for adapter in adapters or []:
             self.register(adapter)
 
@@ -416,8 +418,13 @@ def inspect_project(root: str | Path) -> dict[str, Any]:
     }
 
 
-def default_registry() -> CapabilityRegistry:
-    """Describe common engines without claiming they are installed or runnable."""
+def default_registry(*, load_plugins: bool = True) -> CapabilityRegistry:
+    """Build builtin adapters and load optional Python entry-point plugins.
+
+    Third-party packages register factories in the lowkey.verification_adapters
+    entry-point group. A factory returns one ToolAdapter or a list/tuple of
+    adapters. Plugin failures are retained for inspection.
+    """
     specs = [
         EngineCapability("forge", "forge", ("unit", "integration", "invariant", "exploit", "regression", "fuzz"), ("solidity",), ("foundry",), ("foundry.toml",), memory_class="low", notes="Native Forge tests/fuzz/invariant; formal proof is not implied."),
         EngineCapability("echidna", "echidna", ("invariant", "fuzz"), ("solidity",), ("foundry", "hardhat"), memory_class="medium", notes="Property-based smart-contract fuzzing."),
@@ -427,4 +434,28 @@ def default_registry() -> CapabilityRegistry:
         EngineCapability("slither", "slither", (), ("solidity",), ("foundry", "hardhat", "brownie"), memory_class="low", notes="Static analysis, not a test executor or formal proof engine."),
     ]
     adapters: list[ToolAdapter] = [ExecutableAdapter(spec) for spec in specs]
-    return CapabilityRegistry(adapters)
+    registry = CapabilityRegistry(adapters)
+    if load_plugins:
+        try:
+            points = entry_points().select(group="lowkey.verification_adapters")
+        except Exception as exc:
+            registry.plugin_errors.append({
+                "plugin": "entry-point-discovery",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            points = ()
+        for point in points:
+            try:
+                factory = point.load()
+                provided = factory()
+                candidates = list(provided) if isinstance(provided, (list, tuple)) else [provided]
+                for adapter in candidates:
+                    if not isinstance(adapter, ToolAdapter):
+                        raise TypeError("plugin factory must return ToolAdapter instances")
+                    registry.register(adapter)
+            except Exception as exc:
+                registry.plugin_errors.append({
+                    "plugin": point.name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+    return registry
