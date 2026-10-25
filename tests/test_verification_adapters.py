@@ -256,8 +256,8 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
                     budget={"timeout_seconds": 5},
                 )
             submitted = run("Job submitted to server")
-            passed = run("Finished verification request\\n[rule] supplyInvariant: PASS")
-            failed = run("Finished verification request\\nERROR: Prover found violations\\n[rule] supplyInvariant: FAIL", 1)
+            passed = run("Finished verification request\n[rule] supplyInvariant: PASS")
+            failed = run("Finished verification request\nERROR: Prover found violations\n[rule] supplyInvariant: FAIL", 1)
             tool_error = run("configuration parsing failed", 1)
         self.assertEqual(submitted.status, "submitted")
         self.assertEqual(submitted.metadata["result_semantics"], "certora_job_submitted")
