@@ -649,6 +649,8 @@ class LowkeyCastTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertEqual(rendered.count("ERROR [REVERT]"), 1)
         self.assertNotIn("ERROR [LOWKEY]", rendered)
+        self.assertIn("Operation: lk send", rendered)
+        self.assertIn("Exit code: 1", rendered)
 
     def test_dispatcher_preserves_non_error_warnings(self):
         output = io.StringIO()
