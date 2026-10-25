@@ -51,6 +51,8 @@ class VerificationCliTests(unittest.TestCase):
             saved = json.loads((root / ".audit/verification/campaign.json").read_text(encoding="utf-8"))
         self.assertEqual(report["summary"]["passed"], 1)
         self.assertEqual(report["execution_mode"], "serial")
+        self.assertGreaterEqual(report["duration_seconds"], 0)
+        self.assertGreaterEqual(report["engine_duration_seconds"], 0)
         self.assertIn("native output", report["results"][0]["result"]["raw_stdout"])
         self.assertEqual(saved["report_path"], report["report_path"])
 
