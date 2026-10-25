@@ -16671,6 +16671,8 @@ def _safe_main() -> int:
         print(
             _format_cli_error(
                 f"{type(exc).__name__}: {exc}",
+                code=2,
+                command=sys.argv[1] if len(sys.argv) > 1 else None,
                 source="runtime",
             ),
             file=sys.stderr,
