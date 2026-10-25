@@ -564,6 +564,20 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("ERROR [REVERT]", rendered)
         self.assertIn("Reason: custom error payload unavailable", rendered)
 
+    def test_lowkey_validation_errors_use_shared_error_shape_and_keep_hints(self):
+        message = "Error: No RPC is configured. Start Anvil or set an RPC with lk rpc <url>."
+        rendered = lk._format_cli_error(message, code=2, command="balance", source="lowkey")
+        self.assertIn("ERROR [CONFIGURATION]", rendered)
+        self.assertIn("Operation: lk balance", rendered)
+        self.assertIn("No RPC is configured", rendered)
+        self.assertIn("lk rpc <url>", rendered)
+
+        output = io.StringIO()
+        with redirect_stderr(output):
+            lk.fail("Usage: lk read <function> [args]", code=2)
+        self.assertIn("ERROR [USAGE]", output.getvalue())
+        self.assertIn("Usage: lk read <function> [args]", output.getvalue())
+
     def test_shared_error_formatter_classifies_non_contract_failures(self):
         rpc_error = lk._format_cli_error(
             "connection refused while connecting to RPC",
