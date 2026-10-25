@@ -490,8 +490,8 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk._decode_solidity_revert_reason(error), "invalid number")
         self.assertEqual(
             lk._format_revert_error(error),
-            "ERROR [REVERT]\\n"
-            "  Reason: invalid number\\n"
+            "ERROR [REVERT]\n"
+            "  Reason: invalid number\n"
             "  Transaction broadcast: no (gas estimation failed).",
         )
 
