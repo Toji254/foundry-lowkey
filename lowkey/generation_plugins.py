@@ -229,5 +229,108 @@ class SolidityFoundryGenerationAdapter:
         )
 
 
+def run_generation_command(config: dict[str, Any], args: list[str]) -> int:
+    """CLI bridge that routes project-aware generation through the plugin registry."""
+    try:
+        try:
+            import test_generation
+        except ImportError:
+            from lowkey import test_generation
+        try:
+            from verification_adapters import inspect_project
+        except ImportError:
+            from lowkey.verification_adapters import inspect_project
+    except ImportError as exc:
+        print(f"Error: generation runtime unavailable: {exc}")
+        return 2
+
+    if any(str(arg).lower() in {"-h", "--help", "help"} for arg in args):
+        return test_generation.run_test_gen(config, args)
+
+    contract = str(config.get("target_contract") or "").strip()
+    types: str | list[str] = list(SolidityFoundryGenerationAdapter.capability.artifact_kinds)
+    output_dir = ".audit/test-gen"
+    force = False
+    positionals: list[str] = []
+    index = 0
+    while index < len(args):
+        value = str(args[index])
+        if value == "--types":
+            index += 1
+            if index >= len(args):
+                print("Error: --types needs a comma-separated list or 'all'")
+                return 2
+            types = str(args[index])
+        elif value.startswith("--types="):
+            types = value.split("=", 1)[1]
+        elif value == "--output-dir":
+            index += 1
+            if index >= len(args):
+                print("Error: --output-dir needs a path")
+                return 2
+            output_dir = str(args[index])
+        elif value.startswith("--output-dir="):
+            output_dir = value.split("=", 1)[1]
+        elif value == "--force":
+            force = True
+        elif value.startswith("-"):
+            print(f"Error: unknown option: {value}")
+            return 2
+        else:
+            positionals.append(value)
+        index += 1
+    if positionals:
+        contract = positionals[0]
+    if not contract:
+        print("Error: provide <ContractName> or set the active project target first.")
+        return 2
+
+    try:
+        project_root = Path(str(project_root_from_config(config) or Path.cwd())).expanduser().resolve()
+        project = inspect_project(project_root)
+    except (ValueError, OSError) as exc:
+        print(f"Error: project inspection failed: {exc}")
+        return 2
+    if project.get("build_system") != "foundry" and "foundry" not in project.get("build_systems", []):
+        print("Error: this generation plugin currently requires a Foundry project.")
+        return 2
+    request = {
+        "contract": contract,
+        "types": types,
+        "output_dir": output_dir,
+        "force": force,
+    }
+    runs = default_generation_registry().generate(project, request)
+    if not runs:
+        print("Error: no installed generation plugin supports this project.")
+        return 2
+    run = runs[0]
+    if run.stdout:
+        print(run.stdout, end="" if run.stdout.endswith("\n") else "\n")
+    if run.stderr:
+        print(run.stderr, end="" if run.stderr.endswith("\n") else "\n")
+    if run.status not in {"drafted", "partial"}:
+        print(f"Generation status: {run.status}")
+        return 2
+    print(f"Generation plugin: {run.generator}")
+    print(f"Structured artifacts: {len(run.artifacts)}")
+    for artifact in run.artifacts:
+        print(f"  {artifact.kind}: {artifact.status} — {artifact.path}")
+        if artifact.intended_property:
+            print(f"    property: {artifact.intended_property}")
+    print("Review generated TODOs and compile artifacts before relying on them.")
+    return 0
+
+
+def project_root_from_config(config: dict[str, Any]) -> str | None:
+    """Resolve project root from the existing Lowkey context without guessing a target."""
+    try:
+        import audit_context
+        root = audit_context.foundry_project_root()
+        return str(root) if root else None
+    except (ImportError, OSError):
+        return None
+
+
 def default_generation_registry() -> GenerationRegistry:
     return GenerationRegistry([SolidityFoundryGenerationAdapter()])
