@@ -50,6 +50,7 @@ jobs:
           test -f "$HOME/.lowkey/import_helper.py"
           test -f "$HOME/.lowkey/break_playbook.py"
           test -f "$HOME/.lowkey/break_engine.py"
+          test -f "$HOME/.lowkey/test_generation_analysis.py"
           test -f "$HOME/.lowkey/benchmark.py"
           test -f "$HOME/.lowkey/analysis_adapters.py"
           test -f "$HOME/.lowkey/solidity_cheatsheet.py"
@@ -60,6 +61,7 @@ jobs:
           grep -q '/import_helper.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_playbook.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_engine.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/test_generation_analysis.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/analysis_adapters.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/solidity_cheatsheet.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/solidity_cheat_topics.py":' "$HOME/.lowkey/install-manifest.json"
@@ -98,10 +100,58 @@ jobs:
                   count += value;
                   emit Ping(value);
               }
+              uint256 public value;
+              function setValue(uint256 next) external { value = next; }
               function deposit(uint256 amount) external payable {
                   require(amount == msg.value, "attach eth");
                   count += amount;
               }
+          }
+          EOF
+          cat > src/TestToken.sol <<'EOF'
+          pragma solidity ^0.8.20;
+          contract TestToken {
+              string public name = "Fixture Token";
+              string public symbol = "FTK";
+              uint8 public decimals = 18;
+              uint256 public totalSupply;
+              mapping(address => uint256) public balanceOf;
+              mapping(address => mapping(address => uint256)) public allowance;
+
+              function mint(address to, uint256 amount) external {
+                  totalSupply += amount;
+                  balanceOf[to] += amount;
+              }
+
+              function transfer(address to, uint256 amount) external returns (bool) {
+                  require(balanceOf[msg.sender] >= amount, "balance");
+                  balanceOf[msg.sender] -= amount;
+                  balanceOf[to] += amount;
+                  return true;
+              }
+
+              function approve(address spender, uint256 amount) external returns (bool) {
+                  allowance[msg.sender][spender] = amount;
+                  return true;
+              }
+
+              function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+                  uint256 permitted = allowance[from][msg.sender];
+                  require(permitted >= amount, "allowance");
+                  require(balanceOf[from] >= amount, "balance");
+                  allowance[from][msg.sender] = permitted - amount;
+                  balanceOf[from] -= amount;
+                  balanceOf[to] += amount;
+                  return true;
+              }
+          }
+          EOF
+          cat > src/ConfiguredFixture.sol <<'EOF'
+          pragma solidity ^0.8.20;
+          contract ConfiguredFixture {
+              uint256 public value;
+              constructor(uint256 initial) { value = initial; }
+              function setValue(uint256 next) external { value = next; }
           }
           EOF
           cat > test/Fixture.t.sol <<'EOF'
@@ -127,6 +177,34 @@ jobs:
               }
           }
           EOF
+
+      - name: Generate and execute test-generation fixtures
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          lk test-gen Fixture --types all --force
+          lk test-gen Fixture --types unit,fuzz,invariant,integration,fork,poc,regression --force --validate
+          lk test-gen ConfiguredFixture --types all --force
+          lk test-gen ConfiguredFixture --types unit,fuzz,invariant,integration,fork,poc,regression --force --validate
+          lk test-gen TestToken --types all --force
+          lk test-gen TestToken --types unit,fuzz,invariant,integration,fork,poc,regression --force --validate
+          grep -q 'ERC-20-like token' .audit/test-gen/TestToken/test-plan.md
+          grep -q 'allowance consumption' .audit/test-gen/TestToken/test-plan.md
+          mkdir -p test/lowkey-generated
+          cp .audit/test-gen/Fixture/LowkeyGeneratedUnit_Fixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/Fixture/LowkeyGeneratedFuzz_Fixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/Fixture/LowkeyGeneratedInvariant_Fixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedUnit_ConfiguredFixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedFuzz_ConfiguredFixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedInvariant_ConfiguredFixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/TestToken/LowkeyGeneratedUnit_TestToken.t.sol test/lowkey-generated/
+          cp .audit/test-gen/TestToken/LowkeyGeneratedFuzz_TestToken.t.sol test/lowkey-generated/
+          cp .audit/test-gen/TestToken/LowkeyGeneratedInvariant_TestToken.t.sol test/lowkey-generated/
+          test -s .audit/test-gen/TestToken/LowkeyGeneratedFormal_TestToken.md
+          forge test --match-path 'test/lowkey-generated/.*(Fixture|TestToken).t.sol' -vv
+          # Keep the general integration fixture identical to its original one-contract setup.
+          rm -f src/ConfiguredFixture.sol src/TestToken.sol
+          rm -f test/lowkey-generated/*ConfiguredFixture.t.sol test/lowkey-generated/*TestToken.t.sol
+          rm -rf .audit/test-gen/ConfiguredFixture .audit/test-gen/TestToken out/ConfiguredFixture.sol out/TestToken.sol
 
       - name: Start Anvil
         run: |

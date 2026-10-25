@@ -11894,6 +11894,18 @@ def run_selector_compare(config,args):
 def run_chisel(args):
     return run_tool("chisel",args)
 
+def run_test_gen_command(config, args):
+    """Generate project-aware starter files for multiple Solidity test styles."""
+    try:
+        from test_generation import run_test_gen
+    except ImportError as exc:
+        return fail(f"Test generator is unavailable: {exc}")
+    try:
+        return run_test_gen(config, args)
+    except Exception as exc:
+        return fail(f"Test generation failed: {exc}")
+
+
 def run_fuzz(args):
     values=list(args)
     mode=values.pop(0) if values and not values[0].startswith("-") else None
@@ -15288,7 +15300,19 @@ COMMAND_HELP = {
         related=["lk cheatcodes"],
     ),
     "cheatcodes": _help_entry("Show or run useful Foundry cheatcode helpers.", "lk cheatcodes [args...]", "lk cheatcodes", "Use it when you need controlled local callers, balances, time, or storage.", related=["lk forge", "lk matrix"]),
-    "test-gen": _help_entry("Turn the latest useful transaction/evidence into a Forge test.", "lk test-gen", "lk test-gen", "Use it after reproducing behavior and wanting a regression test.", related=["lk generate test", "lk trace"]),
+    "test-gen": _help_entry(
+        "Generate project-aware starter files for several Solidity test styles.",
+        "lk test-gen <Contract> [--types all|unit,fuzz,...,formal] [--output-dir <dir>] [--force]",
+        "lk test-gen Counter --types unit,fuzz,invariant",
+        "Use it to create reviewable test scaffolds, then fill in assertions and project-specific setup.",
+        forms=[
+            ("lk test-gen <Contract> --types unit,fuzz", "Generate local unit and fuzz drafts.", "lk test-gen Counter --types unit,fuzz"),
+            ("lk test-gen <Contract> --types fork,poc", "Generate fork and PoC starter drafts.", "lk test-gen Counter --types fork,poc"),
+            ("lk test-gen <Contract> --types all", "Request every supported starter type.", "lk test-gen Counter --types all"),
+            ("lk test-gen <Contract> --types formal", "Generate a formal verification rule or worksheet.", "lk test-gen Counter --types formal"),
+        ],
+        related=["lk generate test", "lk test", "lk trace"],
+    ),
     "forge": _help_entry("Pass a native Forge command through Lowkey.", "lk forge <forge-command> [args...]", "lk forge test -vvvv", "Use it when you need a Forge feature that Lowkey does not wrap separately.", related=["lk build", "lk test"]),
     "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
@@ -15403,6 +15427,8 @@ HELP_ALIASES = {
     "decode-calldata": "calldata",
     "returns": "decode",
     "error": "decode-error",
+    "testgen": "test-gen",
+    "generate-tests": "test-gen",
 }
 
 # Aliases not otherwise given their own page still get the canonical command help.
@@ -15599,6 +15625,7 @@ START HERE
   lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
+  lk test-gen [Contract]             Generate unit/fuzz/invariant/integration/fork/PoC/regression test scaffolds.
   lk lab                             Start/rebuild a disposable local audit lab.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
@@ -15756,7 +15783,7 @@ TRANSACTION FORENSICS
 
 REPRODUCE / ATTACK / TEST
   lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
-  lk test-gen                      Turn the latest send into a Forge test.
+  lk test-gen [Contract]           Generate draft scaffolds for selected Solidity test styles.
   lk generate test '<function(parameter TYPES...)>' <VALUES...>
                                    Generate a reusable Forge test.
                                    FUNCTION SIGNATURE = function name + parameter TYPES.
@@ -16468,6 +16495,7 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
     elif cmd=="as": return run_as(config,args)
     elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
+    elif cmd in {"test-gen","testgen","generate-tests"}: return run_test_gen_command(config,args)
     elif cmd=="fuzz": return run_fuzz(args)
     elif cmd=="invariant": return run_invariant(config,args)
     elif cmd=="mutate": return run_mutate(args)
@@ -16535,7 +16563,6 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         elif action=="trace": run_trace(config,[])
         elif action=="logs": run_logs(config,[])
         else: run_receipt(config)
-    elif cmd=="test-gen": run_test_gen(config)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
@@ -16732,7 +16759,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
