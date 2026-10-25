@@ -15902,7 +15902,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
