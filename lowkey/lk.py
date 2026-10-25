@@ -3786,6 +3786,28 @@ def _decode_contract_revert(error_text, config=None, target=None):
                 "data": payload,
             }
 
+    # Some providers render Panic(uint256) as text instead of returning its ABI data.
+    panic_text = re.search(
+        r"(?i)\\bpanic(?:\\s+code)?\\s*\\(?\\s*(0x[0-9a-f]+|[0-9]+)\\s*\\)?",
+        text,
+    )
+    if panic_text:
+        raw_code = panic_text.group(1)
+        try:
+            panic_code = int(raw_code, 16 if raw_code.lower().startswith("0x") else 10)
+        except ValueError:
+            panic_code = None
+        if panic_code is not None:
+            panic_reason = _SOLIDITY_PANIC_REASONS.get(
+                panic_code, "unknown Solidity panic code"
+            )
+            return {
+                "kind": "SOLIDITY PANIC",
+                "reason": f"{panic_reason} (panic code 0x{panic_code:x})",
+                "selector": "0x4e487b71",
+                "data": None,
+            }
+
     # Custom errors are defined by the selected contract's ABI. Resolve their
     # selectors with Cast's Keccak-aware selector implementation, not SHA3-256.
     if target and isinstance(config, dict):
@@ -3870,10 +3892,15 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         lowered = text.lower()
 
     is_gas_estimation = "failed to estimate gas" in lowered
-    looks_reverted = ("execution reverted" in lowered or ("revert" in lowered and bool(list(_explicit_revert_payloads(text)))) or any(
-        payload.lower().startswith(("0x08c379a0", "0x4e487b71"))
-        for payload in _revert_payloads(text)
-    ))
+    looks_reverted = (
+        "execution reverted" in lowered
+        or ("revert" in lowered and bool(list(_explicit_revert_payloads(text))))
+        or bool(re.search(r"(?i)\\bpanic(?:\\s+code)?\\s*\\(?\\s*(?:0x)?[0-9a-f]+\\s*\\)?", text))
+        or any(
+            payload.lower().startswith(("0x08c379a0", "0x4e487b71"))
+            for payload in _revert_payloads(text)
+        )
+    )
     if looks_reverted:
         decoded = _decode_contract_revert(text, config=config, target=target)
         if decoded:
