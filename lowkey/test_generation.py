@@ -66,7 +66,7 @@ def _contract_source(root: Path, name: str) -> tuple[Path, str] | None:
     return None
 
 
-def _constructor_args(source: str, name: str) -> str | None:
+def _contract_body(source: str, name: str) -> str | None:
     match = re.search(
         r"\b(?:abstract\s+)?contract\s+" + re.escape(name) + r"\b[^\{]*\{",
         source,
@@ -82,11 +82,100 @@ def _constructor_args(source: str, name: str) -> str | None:
         elif source[end] == "}":
             depth -= 1
         end += 1
-    body = source[start:max(start, end - 1)]
+    if depth:
+        return None
+    return source[start:end - 1]
+
+
+def _constructor_args(source: str, name: str) -> str | None:
+    body = _contract_body(source, name)
+    if body is None:
+        return None
     constructor = re.search(r"\bconstructor\s*\(([^)]*)\)", body)
     if not constructor:
         return ""
     return constructor.group(1).strip()
+
+
+def _normalise_integer_type(solidity_type: str) -> str:
+    if solidity_type == "uint":
+        return "uint256"
+    if solidity_type == "int":
+        return "int256"
+    return solidity_type
+
+
+def _matching_brace(source: str, open_index: int) -> int | None:
+    depth = 0
+    for index in range(open_index, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
+    """Recognize a public integer state variable with a one-statement setter.
+
+    This deliberately narrow source pattern gives us direct evidence for the
+    generated property: calling the setter with x should make the public getter
+    return x. Anything more complex stays a TODO rather than an invented claim.
+    """
+    body = _contract_body(source, name)
+    if body is None:
+        return None
+
+    integer_type = r"(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)"
+    states: dict[str, str] = {}
+    for match in re.finditer(
+        rf"(?m)^\s*({integer_type})\s+public\s+([A-Za-z_]\w*)\s*;",
+        body,
+    ):
+        states[match.group(2)] = match.group(1)
+
+    if not states:
+        return None
+
+    function_pattern = re.compile(
+        r"\bfunction\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*"
+        r"(?:external|public)\b[^{}]*\{"
+    )
+    for match in function_pattern.finditer(body):
+        parameters = _split_parameters(match.group(2))
+        if len(parameters) != 1:
+            continue
+        parameter_tokens = parameters[0].split()
+        if len(parameter_tokens) != 2:
+            continue
+        parameter_type, parameter_name = parameter_tokens
+        if not re.fullmatch(integer_type, parameter_type):
+            continue
+
+        opening = match.end() - 1
+        closing = _matching_brace(body, opening)
+        if closing is None:
+            continue
+        function_body = body[opening + 1:closing]
+        function_body = re.sub(r"/\*.*?\*/|//[^\n]*", "", function_body, flags=re.S).strip()
+
+        for state_name, state_type in states.items():
+            if _normalise_integer_type(parameter_type) != _normalise_integer_type(state_type):
+                continue
+            assignment = re.fullmatch(
+                rf"{re.escape(state_name)}\s*=\s*{re.escape(parameter_name)}\s*;",
+                function_body,
+            )
+            if assignment:
+                return {
+                    "setter": match.group(1),
+                    "parameter": parameter_name,
+                    "type": parameter_type,
+                    "state": state_name,
+                }
+    return None
 
 
 def _split_parameters(raw: str) -> list[str]:
@@ -160,7 +249,8 @@ def _solidity_name(name: str) -> str:
     return clean
 
 
-def _local_template(kind: str, name: str, import_path: str, constructor_values: list[str]) -> str:
+def _local_template(kind: str, name: str, import_path: str, constructor_values: list[str],
+                    fuzz_property: dict[str, str] | None = None) -> str:
     ident = _solidity_name(name)
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
     constructor_arguments = ", ".join(constructor_values)
@@ -193,19 +283,37 @@ import {{ {name} }} from "{import_path}";
 }}
 '''
     elif kind == "fuzz":
-        body = f'''contract {generated} is Test {{
+        if fuzz_property:
+            setter = fuzz_property["setter"]
+            parameter_type = fuzz_property["type"]
+            state = fuzz_property["state"]
+            body = f'''contract {generated} is Test {{
     {name} internal target;
 
     function setUp() public {{
         target = {deploy_expression};
     }}
 
-    // TODO: Add a testFuzz_ function for a property you can state precisely.
-    // Example shape:
-    // function testFuzz_amount(uint256 amount) public {{
-    //     amount = bound(amount, 0, MAX_VALID_AMOUNT);
-    //     // Arrange caller/balances/approvals, call target, assert the property.
-    // }}
+    function testFuzz_{setter}_preservesStoredValue({parameter_type} fuzzValue) public {{
+        target.{setter}(fuzzValue);
+        assertEq(target.{state}(), fuzzValue);
+    }}
+
+    // Generated only because the source has a public integer state variable
+    // and a setter whose body assigns its sole parameter directly.
+    // TODO: Add caller/access-control cases and boundary-specific properties.
+}}
+'''
+        else:
+            body = f'''contract {generated} is Test {{
+    {name} internal target;
+
+    function setUp() public {{
+        target = {deploy_expression};
+    }}
+
+    // TODO: No safe direct-setter/public-integer-getter property was recognized.
+    // Add an executable testFuzz_ function for a property you can state precisely.
     // Do not mistake a fuzzed call for a tested property.
 }}
 '''
@@ -293,7 +401,7 @@ contract {generated} is Test {{
 
 def _render(kind: str, name: str, import_path: str, target: str | None,
             local_deploy: bool, constructor_values: list[str] | None,
-            is_abstract: bool) -> str:
+            is_abstract: bool, fuzz_property: dict[str, str] | None) -> str:
     if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:
         if is_abstract:
             raise ValueError(f"{kind} cannot automatically deploy an abstract contract")
@@ -302,7 +410,7 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
                 f"{kind} needs constructor argument types with supported placeholder values; "
                 "this constructor contains an unsupported or unrecognized type"
             )
-        return _local_template(kind, name, import_path, constructor_values)
+        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind == "fuzz" else None)
     return _fork_template(kind, name, target)
 
 
@@ -379,6 +487,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     constructor_values = _constructor_values(constructor_args)
     is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
     local_deploy = constructor_values is not None and not is_abstract
+    fuzz_property = _find_simple_fuzz_property(source, name)
     import_path = _rel_import(root, source_path)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
     output_dir = output_dir / _solidity_name(name)
@@ -390,7 +499,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     for kind in selected:
         filename = output_dir / f"LowkeyGenerated{kind.title()}_{_solidity_name(name)}.t.sol"
         try:
-            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract)
+            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property)
         except ValueError as exc:
             skipped.append({"type": kind, "reason": str(exc)})
             continue
@@ -408,6 +517,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "constructor": "abstract-contract" if is_abstract else ("unknown" if constructor_args is None else ("zero-argument" if not constructor_args.strip() else ("arguments-required" if constructor_values is not None else "unsupported-arguments"))),
         "constructor_parameters": constructor_args,
         "constructor_placeholders": constructor_values,
+        "fuzz_property": fuzz_property,
         "requested_types": selected,
         "generated": generated,
         "skipped": skipped,
