@@ -19,8 +19,8 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
 
     def test_engine_capability_rejects_blank_name_or_command(self):
         for name, command, message in (
-            ("   ", "forge", "name must not be empty"),
-            ("forge", "  ", "command must not be empty"),
+            ("   ", "forge", "name must be a non-empty string"),
+            ("forge", "  ", "command must be a non-empty string"),
         ):
             with self.subTest(name=name, command=command):
                 with self.assertRaisesRegex(ValueError, message):
