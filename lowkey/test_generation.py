@@ -11,7 +11,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc")
+TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc", "regression")
 
 
 def parse_types(raw: str | None) -> list[str]:
@@ -161,7 +161,7 @@ import {{ {name} }} from "{import_path}";
     // No protocol invariant can be safely inferred from the ABI alone.
 }}
 '''
-    else:  # integration
+    elif kind == "integration":
         body = f'''contract {generated} is Test {{
     {name} internal target;
 
@@ -172,6 +172,19 @@ import {{ {name} }} from "{import_path}";
     // TODO: Deploy or configure the real peer contracts (tokens, oracle, router,
     // vault, etc.), wire their addresses, and test cross-contract behavior.
     // This starter intentionally does not invent dependency addresses.
+}}
+'''
+    else:  # regression
+        body = f'''contract {generated} is Test {{
+    {name} internal target;
+
+    function setUp() public {{
+        target = new {name}();
+    }}
+
+    // TODO: Preserve a specific previously failing behavior here.
+    // Add the old bug's preconditions, trigger, and expected post-fix assertion.
+    // A smoke test alone is not a regression test.
 }}
 '''
     return common + body
@@ -228,7 +241,7 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
 
 
 def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
-    if not args or any(str(arg).lower() in {"-h", "--help", "help"} for arg in args):
+    if any(str(arg).lower() in {"-h", "--help", "help"} for arg in args):
         print("""Lowkey test generator
 
 Usage:
@@ -296,7 +309,8 @@ The generator does not claim coverage or invent protocol-specific assertions.
         return _error(f"Could not find contract '{name}' under {_source_root(root)}.")
     source_path, source = found
     constructor_args = _constructor_args(source, name)
-    local_deploy = constructor_args == ""
+    is_abstract = bool(re.search(r"\\babstract\\s+contract\\s+" + re.escape(name) + r"\\b", source))
+    local_deploy = constructor_args == "" and not is_abstract
     import_path = _rel_import(root, source_path)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
     output_dir = output_dir / _solidity_name(name)
@@ -323,7 +337,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     report = {
         "contract": name,
         "source": str(source_path.relative_to(root)),
-        "constructor": "zero-argument" if local_deploy else ("arguments-required" if constructor_args is not None else "unknown"),
+        "constructor": "abstract-contract" if is_abstract else ("zero-argument" if local_deploy else ("arguments-required" if constructor_args else "unknown")),
         "requested_types": selected,
         "generated": generated,
         "skipped": skipped,
