@@ -17,6 +17,7 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 
 - `EngineCapability` declares test kinds, language/build support, project markers, RPC needs, and resource class.
 - `ToolAdapter` defines `available()`, `supports(project, test_kind)`, and bounded `run(project, request, budget)`.
+- Third-party Python packages may register an entry point in the `lowkey.verification_adapters` group. Each entry point is a zero-argument factory returning one adapter or a list/tuple; required members are `capability`, `available()`, `supports()`, and `run()`. Discovery/registration failures are visible in `lk verification engines` output and JSON rather than silently swallowed.
 - `EngineResult` normalizes status/exit code/summary/artifacts while retaining raw stdout, stderr, raw evidence, and metadata.
 - `CapabilityRegistry` inventories adapters, selects available compatible tools under `light`, `balanced`, or `deep` profiles, and runs selected engines serially through `run_campaign()`.
 - Native command arguments are explicit (`argv` or `argv_by_engine`); the registry does not guess tool-specific harness/spec syntax. Forge defaults to `forge test` only when no Forge argument vector is supplied.
