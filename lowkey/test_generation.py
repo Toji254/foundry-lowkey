@@ -21,7 +21,7 @@ try:
 except ImportError:  # keep partial installs diagnosable
     analyse_contract = render_test_plan = unit_access_control_tests = mask_solidity = None
 
-TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal")
+TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "exploit", "fork", "poc", "regression", "formal")
 
 
 def parse_types(raw: str | None) -> list[str]:
@@ -910,7 +910,9 @@ def _generation_assessment(
             if recorded_poc:
                 level, note = "recorded-call-replay", "Replays a recorded call on a fork; it is not an exploit proof until impact assertions are added."
             else:
-                level, note = "scaffold", "A concrete exploit precondition, trigger, and impact assertion are required."
+                level, note = "scaffold", "A concrete PoC precondition, trigger, and impact assertion are required."
+        elif kind == "exploit":
+            level, note = "scaffold", "A concrete exploit precondition, trigger, and measurable security-impact assertion must be grounded in a finding or recorded execution."
         elif kind == "regression":
             level, note = "scaffold", "A known bug's trigger and post-fix expectation must be supplied."
         elif kind == "formal":
@@ -931,7 +933,7 @@ def run_test_gen(config: dict[str, Any], args: list[str], *, project_root: str |
         print("""Lowkey test generator
 
 Usage:
-  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,fork,poc,regression,formal]
+  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,exploit,fork,poc,regression,formal]
               [--output-dir .audit/test-gen] [--force] [--validate] [--strict]
 
 Types:
