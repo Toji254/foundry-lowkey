@@ -1,6 +1,6 @@
 # Verification engine inventory and adapter contract
 
-Status: initial architecture inventory; capability claims must be verified per checkout and execution environment.
+Status: validated first-release integration for the pinned tools and fixtures below. Capability claims remain project- and environment-specific; smoke tests are not security certification.
 
 ## Existing architecture observed on `integration-test-drive`
 
@@ -83,7 +83,7 @@ Every generated artifact should record: intended property, preconditions, actors
 
 ## Validation evidence and remaining release blockers
 
-### Live CI evidence (25 October 2026)
+### Live CI evidence (25–26 October 2026)
 
 The [CI workflow](../.github/workflows/ci.yml) has separate real-project smoke gates:
 
@@ -92,9 +92,9 @@ The [CI workflow](../.github/workflows/ci.yml) has separate real-project smoke g
 - **Halmos 0.3.3:** Lowkey runs a `check_*` symbolic test and checks native PASS evidence is normalized as `passed`.
 - **Slither 0.11.6:** Slither compiles and analyzes the fixture. The deliberately simple fixture emits a compiler-version detector finding; successful analysis means the tool ran, not that the fixture is security-clean.
 - **Certora CLI 8.20.2:** installation and CLI startup are checked, but CI does not submit a remote proof because that requires authorized credentials and may invoke a paid service. Therefore remote proof submission/completion is not marked live-validated.
-- **Generation/mutation:** CI generates all seven Solidity/Foundry artifact classes, compiles generated Solidity drafts, runs the mutation harness against a seeded setter mutant, and asserts that the mutant is killed.
+- **Generation/mutation:** CI generates the requested Solidity/Foundry draft classes, compiles generated Solidity drafts, executes generated unit/fuzz/invariant candidates, and runs the mutation harness against a seeded setter mutant. The mutation gate requires the unmodified unit baseline to pass and the known setter mutant to be killed.
 
-The [validated integration commit](https://github.com/Toji254/foundry-lowkey/commit/8a2a9292e7ebe80f44db7fc842b0cd98b3dae84c) has a [successful CI run](https://github.com/Toji254/foundry-lowkey/actions/runs/40228444653) across all five jobs, including live Forge and external-engine jobs. The workflow now pins the observed external-tool versions directly and asserts the Python package versions instead of relying on an unpinned latest install.
+The live checks are run by the [CI workflow](../.github/workflows/ci.yml); each successful run validates pinned fixtures and exact tool versions, not every user project. The workflow pins observed external-tool versions and asserts Python package versions rather than relying on an unpinned latest install.
 
 ### Remaining work
 

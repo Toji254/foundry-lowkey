@@ -6,15 +6,16 @@ This matrix is the acceptance contract for generic verification. "Implemented" m
 
 | Dimension | Fixture / gate | Status | What it proves |
 |---|---|---|---|
-| Solidity + Foundry | Minimal state setter/getter fixture | CI validation pending | Generator can identify one narrow direct assignment property |
-| Unit generation | Generated unit test includes a concrete getter assertion for the recognized setter | CI validation pending | The recognized property is represented as an executable assertion |
-| Fuzz generation | Generated fuzz test passes arbitrary setter values to the getter assertion | CI validation pending | A generated property is exercised over fuzzed values |
-| Invariant generation | Handler tracks successful setter input and invariant compares the getter | CI validation pending | The handler-driven invariant compiles and can detect the seeded mutation |
-| Formal artifact | CVL starter generated for the recognized property | CI validation pending | A specification artifact is emitted; not yet a verified proof |
-| Behavioral validation | Baseline-first mutation runner; one seeded off-by-one source mutation | CI validation pending | Generated suite must fail against the mutant while baseline passes |
-| Failure classification | Unit tests cover killed, survived, invalid syntax, baseline failure, and path escape | CI validation pending | Invalid setup/syntax is not counted as a killed behavioral mutant |
-| Resource profile | Light/balanced/deep selection and serial campaign runner | Unit tests added; CI validation pending | High-memory engines are excluded from light campaigns; execution is serial |
-| Evidence preservation | Raw stdout/stderr, command, working directory, timeout, hashes, report JSON | Unit tests added; CI validation pending | Normalization does not discard native execution evidence |
+| Solidity + Foundry | Minimal state setter/getter fixture plus `lk verification engines --json` and a live Forge campaign | Live CI pass on pinned fixture | Detection, adapter selection and a real Forge campaign work for the tested project shape |
+| Unit generation | Generated unit test includes a concrete getter assertion for the recognized setter | Live CI pass | The generated unit candidate executes and is used by the seeded mutation gate |
+| Fuzz generation | Generated fuzz test passes arbitrary setter values to the getter assertion | Live CI pass | The generated fuzz candidate executes with a bounded fuzz run count on the fixture |
+| Invariant generation | Handler tracks successful setter input and invariant compares the getter | Live CI pass | The generated handler-backed invariant executes on the fixture; it is a narrow setter property, not a protocol-wide invariant |
+| Formal artifact | CVL starter generated for the recognized property | Artifact checked; proof pending | A specification is emitted and checked as an artifact; no authenticated Certora proof has been run |
+| Behavioral validation | Baseline-first mutation runner; one seeded off-by-one source mutation | Live CI pass | The unit baseline passes and the seeded setter mutant is killed; this is one fixture, not a general mutation score |
+| Failure classification | Unit tests cover killed, survived, invalid syntax, baseline failure, and path escape | Unit tests and CI pass | Invalid setup/syntax is not counted as a killed behavioral mutant |
+| Resource profile | Light/balanced/deep selection and serial campaign runner | Unit tests and CI pass | High-memory engines are excluded from light campaigns; execution is serial |
+| Evidence preservation | Raw stdout/stderr, command, working directory, timeout, hashes, report JSON | Unit tests and CI pass | Normalization retains native execution evidence for the tested fixture and result paths |
+| External engine compatibility | Echidna 2.3.3, Medusa 1.5.1, Halmos 0.3.3, Slither 0.11.6; Certora CLI 8.20.2 startup | Live CI pass for listed smoke checks; remote Certora proof pending | Pinned fixtures execute; this is not universal version/project support or proof completion |
 
 ## Required expansion matrix
 

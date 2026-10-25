@@ -436,7 +436,7 @@ Use `lk mutation-check manifest.json` to test whether an existing suite detects 
 Generate reviewable test drafts for one contract; generated files are written to `.audit/test-gen` instead of the configured Foundry test folder by default:
 
 ~~~bash
-lk test-gen TokenSale --types unit,fuzz,invariant,integration,fork,poc,regression,formal --force
+lk test-gen TokenSale --types unit,fuzz,invariant,integration,exploit,fork,poc,regression,formal --force
 lk test-gen TokenSale --types unit,fuzz,invariant --force --validate
 ~~~
 
