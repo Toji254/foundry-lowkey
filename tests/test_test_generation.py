@@ -61,7 +61,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(len(names), 7)
             self.assertFalse((root / "test").exists())
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(report["generated"]), 6)
+            self.assertEqual(len(report["generated"]), 7)
             self.assertIn("not protocol proofs", report["warning"])
             self.assertIn("generated", output.getvalue())
 
@@ -75,7 +75,7 @@ class TestGenerationTests(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     code = generation.run_test_gen(
                         {"target_contract": "Counter", "target": "0x" + "1" * 40},
-                        ["--types", "unit,fuzz,invariant,integration,fork,poc"],
+                        ["--types", "unit,fuzz,invariant,integration,fork,poc,regression"],
                     )
             finally:
                 os.chdir(previous)
