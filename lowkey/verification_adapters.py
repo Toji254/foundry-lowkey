@@ -46,7 +46,7 @@ class EngineCapability:
             raise ValueError("engine capability command must be a non-empty string")
         if not isinstance(self.test_kinds, (tuple, list)):
             raise ValueError("engine capability test_kinds must be a tuple or list")
-        if self.memory_class not in {"low", "medium", "high"}:
+        if not isinstance(self.memory_class, str) or self.memory_class not in {"low", "medium", "high"}:
             raise ValueError(
                 "engine capability memory_class must be one of: low, medium, high"
             )
