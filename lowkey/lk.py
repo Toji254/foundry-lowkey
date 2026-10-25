@@ -9803,7 +9803,12 @@ def run_foundry(args, capture=False, cwd=None):
     root = audit_context.foundry_project_root()
     command_name = args[0] if args else "forge"
     if not binary:
-        message = "Error: forge was not found on PATH. Install Foundry first."
+        message = _format_cli_error(
+            "forge was not found on PATH. Install Foundry first.",
+            code=127,
+            command=f"forge {command_name}",
+            source="cast",
+        )
         audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
         result = CommandResult(message, 127)
         record_status(result.code)
@@ -9817,7 +9822,12 @@ def run_foundry(args, capture=False, cwd=None):
             [binary, *args], capture, cwd if cwd is not None else root, timeout
         )
     except OSError as error:
-        message = f"Error executing forge: {error}"
+        message = _format_cli_error(
+            f"Error executing forge: {error}",
+            code=1,
+            command=f"forge {command_name}",
+            source="cast",
+        )
         audit_context.emit("forge-command", root, tool="forge", status="failed", summary=command_name)
         result = CommandResult(message, 1)
         record_status(result.code)
@@ -9826,10 +9836,15 @@ def run_foundry(args, capture=False, cwd=None):
         print(message, file=sys.stderr)
         return result.code
     if timed_out:
-        message = (
-            f"TIMEOUT: forge {command_name} exceeded {timeout}s and its process group "
-            "was terminated. No security conclusion is supported by this run. "
-            "Adjust LOWKEY_FORGE_TIMEOUT (30-7200s) if needed."
+        message = _format_cli_error(
+            (
+                f"Forge {command_name} exceeded {timeout}s and its process group "
+                "was terminated. No security conclusion is supported by this run. "
+                "Adjust LOWKEY_FORGE_TIMEOUT (30-7200s) if needed."
+            ),
+            code=124,
+            command=f"forge {command_name}",
+            source="cast",
         )
         audit_context.emit(
             "forge-command", root, tool="forge", status="failed",
@@ -12517,11 +12532,28 @@ def format_storage_read(config, slot, raw):
 
 
 def run_raw(config,args):
-    if not args: return fail("Usage: lk raw <cast-subcommand> [args...]")
-    safe=redact_secrets(shlex.join(["cast"]+args)); print(f"DEBUG: Executing -> {safe}")
-    code,out,err=cast_output(["cast"]+args); log_session(safe,out or err)
-    if out: print(humanize_value(apply_labels(out,config)))
-    if err: print(err,file=sys.stderr)
+    if not args:
+        return fail("Usage: lk raw <cast-subcommand> [args...]")
+    safe = redact_secrets(shlex.join(["cast"] + args))
+    print(f"DEBUG: Executing -> {safe}")
+    code, out, err = cast_output(["cast"] + args)
+    log_session(safe, out or err)
+    if code != 0:
+        detail = "\\n".join(part for part in (err, out) if part).strip()
+        rendered = _format_cli_error(
+            detail,
+            code=code,
+            command="raw " + str(args[0]),
+            config=config,
+            target=config.get("target"),
+            source="cast",
+        )
+        print(apply_labels(rendered, config), file=sys.stderr)
+        return record_status(code)
+    if out:
+        print(humanize_value(apply_labels(out, config)))
+    if err:
+        print(err, file=sys.stderr)
     return record_status(code)
 
 def run_batch(config,args):
