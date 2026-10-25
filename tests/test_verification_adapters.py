@@ -360,6 +360,8 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             )
         self.assertEqual(campaign["execution_mode"], "serial")
         self.assertEqual(campaign["selected_count"], 1)
+        self.assertEqual(campaign["selection_summary"]["selected"], 1)
+        self.assertEqual(campaign["selection_summary"]["missing_configuration"], 0)
         self.assertEqual(campaign["summary"]["passed"], 1)
         self.assertIn("campaign evidence", campaign["results"][0]["result"]["raw_stdout"])
 
@@ -371,6 +373,8 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
                 {"root": root}, "fuzz", request={}, profile="balanced",
             )
         self.assertEqual(campaign["selected_count"], 0)
+        self.assertEqual(campaign["selection_summary"]["selected"], 0)
+        self.assertEqual(campaign["selection_summary"]["missing_configuration"], 1)
         rejected = next(item for item in campaign["considered_engines"] if item["engine"] == "echidna")
         self.assertEqual(rejected["status"], "missing_configuration")
         self.assertEqual(campaign["results"], [])
