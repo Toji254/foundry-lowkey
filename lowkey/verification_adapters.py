@@ -287,6 +287,37 @@ class CapabilityRegistry:
             raise ValueError(f"adapter already registered: {name}")
         self._adapters[name] = adapter
 
+    def _record_adapter_error(self, name: str, phase: str, exc: Exception) -> None:
+        entry = {
+            "plugin": name,
+            "error": f"{phase} raised {type(exc).__name__}: {exc}",
+        }
+        if entry not in self.plugin_errors:
+            self.plugin_errors.append(entry)
+
+    def _safe_available(self, name: str, adapter: ToolAdapter) -> bool:
+        try:
+            return bool(adapter.available())
+        except Exception as exc:
+            self._record_adapter_error(name, "available()", exc)
+            return False
+
+    def _safe_supports(
+        self, name: str, adapter: ToolAdapter, project: dict[str, Any],
+        test_kind: str,
+    ) -> tuple[bool, str, bool]:
+        try:
+            decision = adapter.supports(project, test_kind)
+            if (
+                not isinstance(decision, tuple) or len(decision) != 2
+                or not isinstance(decision[0], bool)
+            ):
+                raise TypeError("supports() must return (bool, reason)")
+            return decision[0], str(decision[1]), False
+        except Exception as exc:
+            self._record_adapter_error(name, "supports()", exc)
+            return False, f"adapter capability check failed: {type(exc).__name__}: {exc}", True
+
     def inventory(self) -> list[dict[str, Any]]:
         rows = []
         for name in sorted(self._adapters):
@@ -294,7 +325,7 @@ class CapabilityRegistry:
             cap = adapter.capability
             rows.append({
                 **asdict(cap),
-                "available": bool(adapter.available()),
+                "available": self._safe_available(name, adapter),
             })
         return rows
 
@@ -304,10 +335,10 @@ class CapabilityRegistry:
         for name, adapter in sorted(self._adapters.items()):
             kinds: dict[str, dict[str, Any]] = {}
             for kind in adapter.capability.test_kinds:
-                supported, reason = adapter.supports(project, kind)
+                supported, reason, _ = self._safe_supports(name, adapter, project, kind)
                 kinds[kind] = {"supported": supported, "reason": reason}
             matrix[name] = {
-                "available": bool(adapter.available()),
+                "available": self._safe_available(name, adapter),
                 "test_kinds": kinds,
                 "notes": adapter.capability.notes,
             }
@@ -333,11 +364,12 @@ class CapabilityRegistry:
         order = {"low": 0, "medium": 1, "high": 2}
         for name, adapter in self._adapters.items():
             cap = adapter.capability
-            ok, reason = adapter.supports(project, test_kind)
+            ok, reason, adapter_error = self._safe_supports(name, adapter, project, test_kind)
             if not ok:
                 rejected.append({
                     "engine": name, "test_kind": test_kind,
-                    "memory_class": cap.memory_class, "status": "unsupported",
+                    "memory_class": cap.memory_class,
+                    "status": "adapter_error" if adapter_error else "unsupported",
                     "reason": reason,
                 })
                 continue
