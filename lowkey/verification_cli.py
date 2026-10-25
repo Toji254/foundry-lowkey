@@ -36,15 +36,18 @@ Campaign manifest:
     "test_kind": "fuzz",
     "budget": {"timeout_seconds": 120},
     "request": {
+      "engine_config_by_engine": {
+        "echidna": {"target": "test/EchidnaTarget.sol", "contract": "EchidnaTarget", "config": "echidna.yaml"},
+        "medusa": {"config": "medusa.json", "target_contracts": ["EchidnaTarget"], "workers": 1},
+        "halmos": {"function": "test"}
+      },
       "argv_by_engine": {
-        "forge": ["test", "--fuzz-runs", "64"],
-        "echidna": ["src/Target.sol", "--contract", "EchidnaTarget", "--config", "echidna.yaml"],
-        "medusa": ["fuzz"]
+        "forge": ["test", "--fuzz-runs", "64"]
       }
     }
   }
 
-Native arguments are passed without a shell. Engine-specific configuration is explicit;
+Native arguments are passed without a shell. Use engine_config_by_engine for different harness/config paths in one campaign, or argv_by_engine to override a tool with exact native arguments. Engine-specific configuration is explicit;
 unsupported/missing arguments are reported, never silently replaced with guessed commands.
 """)
 
