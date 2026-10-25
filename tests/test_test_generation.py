@@ -568,7 +568,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(code, 0)
             output = root / ".audit" / "test-gen" / "Counter" / "LowkeyGeneratedUnit_Counter.t.sol"
             generated = output.read_text(encoding="utf-8")
-            self.assertIn('import { Counter } from "../../../contracts/Counter.sol";', generated)
+            self.assertIn('import { Counter } from "../../contracts/Counter.sol";', generated)
             self.assertTrue((root / "spec").exists() is False)
 
 if __name__ == "__main__":
