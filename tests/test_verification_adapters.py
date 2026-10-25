@@ -106,6 +106,27 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 7)
         self.assertIn("failure evidence", result.raw_stderr)
 
+    def test_adapter_bounds_captured_output_and_records_truncation(self):
+        cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
+        adapter = ExecutableAdapter(cap)
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {
+                    "test_kind": "unit",
+                    "argv": ["-c", "import sys; print('x' * 10000); print('y' * 10000, file=sys.stderr)"],
+                },
+                budget={"timeout_seconds": 5, "max_output_bytes": 1024},
+            )
+        self.assertEqual(result.status, "passed")
+        self.assertTrue(result.raw_evidence["stdout_truncated"])
+        self.assertTrue(result.raw_evidence["stderr_truncated"])
+        self.assertEqual(result.raw_evidence["output_limit_bytes"], 1024)
+        self.assertIn("LOWKEY_OUTPUT_TRUNCATED", result.raw_stdout)
+        self.assertIn("LOWKEY_OUTPUT_TRUNCATED", result.raw_stderr)
+        self.assertLess(len(result.raw_stdout), 1200)
+        self.assertLess(len(result.raw_stderr), 1200)
+
     def test_adapter_times_out_and_terminates_process(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
         adapter = ExecutableAdapter(cap)
