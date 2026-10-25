@@ -23,7 +23,7 @@ class VerificationCliTests(unittest.TestCase):
         self.assertIn("unit", forge["supported_test_kinds"])
         self.assertIn("fuzz", forge["supported_test_kinds"])
         slither = next(item for item in report["engines"] if item["name"] == "slither")
-        self.assertEqual(slither["test_kinds"], [])
+        self.assertEqual(tuple(slither["test_kinds"]), ())
 
     def test_campaign_manifest_executes_and_saves_native_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
