@@ -216,7 +216,7 @@ class SolidityFoundryGenerationAdapter:
         skipped = report.get("skipped") or []
         return GenerationRun(
             generator=self.capability.name,
-            status="drafted" if artifacts else ("partial" if skipped else "empty"),
+            status=("partial" if skipped else "drafted") if artifacts else ("partial" if skipped else "empty"),
             artifacts=artifacts,
             report_path=str(report_path),
             stdout=stdout.getvalue(),
@@ -312,6 +312,9 @@ def run_generation_command(config: dict[str, Any], args: list[str]) -> int:
     if run.status not in {"drafted", "partial"}:
         print(f"Generation status: {run.status}")
         return 2
+    if not run.artifacts:
+        print("No artifacts were generated; review the skip reasons above.")
+        return 1
     print(f"Generation plugin: {run.generator}")
     print(f"Structured artifacts: {len(run.artifacts)}")
     for artifact in run.artifacts:
