@@ -10,7 +10,7 @@ import io
 import shutil
 import socket
 from urllib import request as urllib_request
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
@@ -4019,7 +4019,11 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         return rendered
 
     if source == "runtime":
-        return "LOWKEY RUNTIME ERROR\n  " + text
+        details = text if len(text) <= 4000 else text[:4000] + "\n  [diagnostic truncated after 4000 characters]"
+        detail_lines = "\n".join("  " + line for line in details.splitlines()) or "  (no details)"
+        operation = f"  Operation: lk {command}\n" if command else ""
+        exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
+        return "ERROR [RUNTIME]\n" + operation + exit_code + "  Details:\n" + detail_lines
 
     # Lowkey validation/configuration failures use the same visible shape,
     # while preserving the existing detailed explanation and usage hints.
@@ -4050,7 +4054,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
         return f"ERROR [{category}]\n" + operation + exit_code + "  Details:\n" + detail_lines
 
-    operation = f"  Operation: lk {command}\\n" if command else ""
+    operation = f"  Operation: lk {command}\n" if command else ""
     exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
     details = text
     if len(details) > 4000:
@@ -15917,7 +15921,7 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
         print(f"  {command_text:<42} {reason}")
 
 
-def dispatch_command(cmd,args,config,from_batch=False):
+def _dispatch_command_impl(cmd,args,config,from_batch=False):
     # Contextual help is side-effect free: do not activate targets or execute
     # commands when the user is only asking for documentation.
     lowered_cmd = str(cmd or "").strip().lower()
@@ -16384,6 +16388,119 @@ def dispatch_command(cmd,args,config,from_batch=False):
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
         print("Run 'lk --help' for the command catalog or 'lk <command> --h' for command help.", file=sys.stderr)
         return 2
+
+
+_ERROR_DIAGNOSTIC_START = re.compile(
+    r"(?im)^\\s*(?:"
+    r"ERROR(?:\\s*\\[|\\s*:|\\b)|"
+    r"REVERT\\s*:|"
+    r"FATAL\\s*:|"
+    r"TRACEBACK \\(MOST RECENT CALL LAST\\)|"
+    r"EXCEPTION(?:\\s*:|\\b)|"
+    r"USAGE\\s*:|"
+    r"FAILED(?:\\s+TO)?\\b|"
+    r"COULD NOT\\b|"
+    r"CANNOT\\b|"
+    r"CONNECTION REFUSED\\b|"
+    r"TIMED OUT\\b|"
+    r"NO SUCH FILE OR DIRECTORY\\b|"
+    r"COMMAND NOT FOUND\\b"
+    r")"
+)
+
+
+def _is_error_diagnostic(output):
+    """Recognize errors printed directly by commands that bypass fail()."""
+    return bool(_ERROR_DIAGNOSTIC_START.search(str(output or "")))
+
+
+def _has_standard_error_shape(output):
+    """Avoid nesting an error that already passed through the shared formatter."""
+    return bool(
+        re.search(
+            r"(?im)^\\s*(?:ERROR \\[|LOWKEY RUNTIME ERROR\\b)",
+            str(output or ""),
+        )
+    )
+
+
+def dispatch_command(cmd, args, config, from_batch=False):
+    """Dispatch a command and normalize direct stderr errors through one renderer.
+
+    Many legacy handlers print directly to stderr. Capturing that stream at the
+    dispatcher means they receive the same classification as fail() and Cast
+    failures, without capturing stdout (which would hide interactive prompts).
+    """
+    status_before = _COMMAND_STATUS
+    captured_stderr = io.StringIO()
+    try:
+        with redirect_stderr(captured_stderr):
+            result = _dispatch_command_impl(cmd, args, config, from_batch=from_batch)
+    except SystemExit as exc:
+        # A few commands intentionally exit from inside their handler. Do not
+        # discard diagnostics just because the handler uses SystemExit.
+        diagnostic = captured_stderr.getvalue()
+        if diagnostic:
+            code = exc.code if isinstance(exc.code, int) and exc.code else 2
+            if _is_error_diagnostic(diagnostic):
+                rendered = (
+                    diagnostic.strip()
+                    if _has_standard_error_shape(diagnostic)
+                    else _format_cli_error(
+                        diagnostic.strip(),
+                        code=code,
+                        command=cmd,
+                        config=config,
+                        source="lowkey",
+                    )
+                )
+                print(rendered, file=sys.stderr)
+                record_status(code)
+            else:
+                sys.stderr.write(diagnostic)
+        raise
+
+    diagnostic = captured_stderr.getvalue()
+    returned_code = result if isinstance(result, int) else getattr(result, "code", None)
+    if returned_code is None and _COMMAND_STATUS != status_before and _COMMAND_STATUS != 0:
+        returned_code = _COMMAND_STATUS
+
+    has_error_text = _is_error_diagnostic(diagnostic)
+    is_failure = (isinstance(returned_code, int) and returned_code != 0) or has_error_text
+
+    if not is_failure:
+        if diagnostic:
+            sys.stderr.write(diagnostic)
+        return result
+
+    error_code = returned_code if isinstance(returned_code, int) and returned_code != 0 else 2
+    if diagnostic.strip():
+        rendered = (
+            diagnostic.strip()
+            if _has_standard_error_shape(diagnostic)
+            else _format_cli_error(
+                diagnostic.strip(),
+                code=error_code,
+                command=cmd,
+                config=config,
+                source="lowkey",
+            )
+        )
+        print(rendered, file=sys.stderr)
+    else:
+        rendered = _format_cli_error(
+            "",
+            code=error_code,
+            command=cmd,
+            config=config,
+            source="lowkey",
+        )
+        print(rendered, file=sys.stderr)
+
+    record_status(error_code)
+    if isinstance(returned_code, int) and returned_code != 0:
+        return result
+    return error_code
 
 
 def main():
