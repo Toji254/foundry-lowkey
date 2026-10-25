@@ -496,6 +496,23 @@ class LowkeyCastTests(unittest.TestCase):
             "  Next step: Check the number you passed and the function's input checks.",
         )
 
+    def test_legacy_machine_style_revert_is_reformatted_for_people(self):
+        legacy = (
+            "ERROR [REVERT]\\n"
+            "  Operation: lk send\\n"
+            "  Exit code: 1\\n"
+            "  Reason: invalid number\\n"
+            "  Transaction broadcast: no (gas estimation failed)."
+        )
+        rendered = lk._format_cli_error(legacy, code=1, command="send", source="cast")
+        self.assertTrue(rendered.startswith("Error: Transaction not sent"))
+        self.assertIn("Reason: invalid number", rendered)
+        self.assertIn("Next step:", rendered)
+        self.assertNotIn("ERROR [REVERT]", rendered)
+        self.assertNotIn("Operation: lk send", rendered)
+        self.assertNotIn("Exit code: 1", rendered)
+        self.assertNotIn("Transaction broadcast:", rendered)
+
     def test_solidity_panic_is_decoded(self):
         payload = "0x4e487b71" + f"{0x11:064x}"
         rendered = lk._format_cli_error(
@@ -706,7 +723,8 @@ class LowkeyCastTests(unittest.TestCase):
             source="cast",
         )
         self.assertIn("Error: Not enough funds to send this transaction", rendered)
-        self.assertIn("Transaction: Not sent", rendered)
+        self.assertIn("What happened: The node rejected the request", rendered)
+        self.assertNotIn("Transaction: Not sent", rendered)
 
     def test_run_cast_returns_formatted_failure_without_treating_error_as_success(self):
         target = "0x" + "1" * 40
