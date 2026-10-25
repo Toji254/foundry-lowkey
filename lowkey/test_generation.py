@@ -825,6 +825,7 @@ def _generation_assessment(
     is_abstract: bool,
     fuzz_property: dict[str, str] | None,
     target: str | None,
+    constructor_values: list[str] | None = None,
     recorded_poc: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Describe what each artifact actually contains, without equating scaffolds with tests."""
@@ -833,17 +834,29 @@ def _generation_assessment(
     for kind in selected:
         if kind == "unit":
             if local_deploy and not is_abstract and fuzz_property:
-                level, note = "executable-candidate", "Deployment smoke test and a narrow setter/getter assertion; not broad unit coverage."
+                if constructor_values:
+                    level, note = "requires-setup-review", "A narrow setter/getter assertion is generated, but constructor placeholders must be checked before execution."
+                else:
+                    level, note = "executable-candidate", "Deployment smoke test and a narrow setter/getter assertion; not broad unit coverage."
             elif local_deploy and not is_abstract:
-                level, note = "smoke-only", "Deployment smoke test plus TODOs; no business-behavior assertion was inferred."
+                if constructor_values:
+                    level, note = "requires-setup-review", "Smoke test only; constructor placeholders may violate deployment preconditions."
+                else:
+                    level, note = "smoke-only", "Deployment smoke test plus TODOs; no business-behavior assertion was inferred."
             else:
                 level, note = "blocked", "No safe automatic local deployment was inferred."
         elif kind == "fuzz":
-            level = "executable-candidate" if local_deploy and not is_abstract and fuzz_property else "scaffold"
-            note = "Fuzzes only the recognized direct setter/getter relation." if level == "executable-candidate" else "No executable property was inferred; add a property and valid input domain."
+            if local_deploy and not is_abstract and fuzz_property:
+                level = "requires-setup-review" if constructor_values else "executable-candidate"
+                note = "Fuzzes only the recognized direct setter/getter relation; review constructor placeholders first." if constructor_values else "Fuzzes only the recognized direct setter/getter relation."
+            else:
+                level, note = "scaffold", "No executable property was inferred; add a property and valid input domain."
         elif kind == "invariant":
-            level = "executable-candidate" if local_deploy and not is_abstract and fuzz_property else "scaffold"
-            note = "Checks the last successful direct setter write; this is not a protocol-wide invariant." if level == "executable-candidate" else "A handler and protocol invariant must be designed from intended behavior."
+            if local_deploy and not is_abstract and fuzz_property:
+                level = "requires-setup-review" if constructor_values else "executable-candidate"
+                note = "Checks the last successful direct setter write, but constructor placeholders must be reviewed first." if constructor_values else "Checks the last successful direct setter write; this is not a protocol-wide invariant."
+            else:
+                level, note = "scaffold", "A handler and protocol invariant must be designed from intended behavior."
         elif kind == "integration":
             level, note = "scaffold", "Peer deployment, configuration, and cross-contract assertions are not inferred automatically."
         elif kind == "fork":
@@ -1010,6 +1023,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
             is_abstract=is_abstract,
             fuzz_property=fuzz_property,
             target=target,
+            constructor_values=constructor_values,
             recorded_poc=poc_replay is not None,
         ),
         "poc_replay": poc_replay,
