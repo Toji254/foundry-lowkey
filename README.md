@@ -419,7 +419,7 @@ These generators are scaffolding and education aids; they do not automatically d
 The base Lowkey installer keeps third-party engines optional. On Linux x86_64, install the same pinned engine versions used by the live CI smoke tests from the repository root:
 
 ~~~bash
-./scripts/install-verification-engines.sh
+bash scripts/install-verification-engines.sh
 lk verification engines --json
 ~~~
 
