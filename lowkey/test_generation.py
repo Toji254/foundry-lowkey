@@ -750,6 +750,74 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
     return _fork_template(kind, name, target, import_path, fuzz_property, analysis, source_pragma)
 
 
+def _recorded_call_poc(
+    root: Path,
+    contract_name: str,
+    target: str | None,
+    source_pragma: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Create a replay-only fork test from a concrete call for the configured target."""
+    if not isinstance(target, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", target):
+        return None
+    version = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", source_pragma)
+    if version and (int(version.group(1)), int(version.group(2))) < (0, 8):
+        return None
+    try:
+        import generator as existing_generator
+        request = existing_generator._request_from_latest(root, expected_target=target)
+    except (ImportError, OSError, ValueError, RuntimeError):
+        return None
+    if not request or str(getattr(request, "target", "")).lower() != target.lower():
+        return None
+    calldata = str(getattr(request, "calldata", "") or "").removeprefix("0x")
+    if not calldata or len(calldata) % 2 or not re.fullmatch(r"[0-9a-fA-F]+", calldata):
+        return None
+    value = str(getattr(request, "value", "0") or "0")
+    function = str(getattr(request, "function", "") or "recordedCall")
+    try:
+        content = existing_generator._template_test(
+            contract_name,
+            target,
+            function,
+            value,
+            calldata,
+            source_import=None,
+            deploy_locally=False,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+    content = content.replace("pragma solidity ^0.8.20;", f"pragma solidity {source_pragma};", 1)
+    content = content.replace(
+        "vm.createSelectFork(rpcUrl);",
+        """uint256 requestedBlock = vm.envOr("LOWKEY_FORK_BLOCK", uint256(0));
+        if (requestedBlock == 0) {
+            vm.createSelectFork(rpcUrl);
+        } else {
+            vm.createSelectFork(rpcUrl, requestedBlock);
+        }
+        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", uint256(0));
+        if (expectedChainId != 0) {
+            assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");
+        }""",
+        1,
+    )
+    content = content.replace("contract LowkeyTest_", "contract LowkeyGeneratedPoc_", 1)
+    content = (
+        "// Lowkey test-gen replay candidate: this replays recorded calldata; it does NOT establish exploitability.\\n"
+        "// Pin LOWKEY_FORK_BLOCK and LOWKEY_EXPECTED_CHAIN_ID for reproducibility.\\n"
+        + content
+    )
+    return content, {
+        "mode": "recorded-call-replay",
+        "target": target,
+        "function": function,
+        "value": value,
+        "calldata_sha256": hashlib.sha256(bytes.fromhex(calldata)).hexdigest(),
+        "security_impact_assertion": False,
+        "note": "Replay only. Add exploit preconditions and a security-impact assertion before calling this a PoC.",
+    }
+
+
 def _generation_assessment(
     selected: list[str],
     *,
@@ -757,6 +825,7 @@ def _generation_assessment(
     is_abstract: bool,
     fuzz_property: dict[str, str] | None,
     target: str | None,
+    recorded_poc: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Describe what each artifact actually contains, without equating scaffolds with tests."""
     result: dict[str, dict[str, Any]] = {}
@@ -781,7 +850,10 @@ def _generation_assessment(
             level = "diagnostic-candidate" if valid_target else "requires-target"
             note = "Read-only fork diagnostics; add deployment-specific expected values and proxy/implementation checks." if valid_target else "Set a deployed target address before the fork draft can run."
         elif kind == "poc":
-            level, note = "scaffold", "A concrete exploit precondition, trigger, and impact assertion are required."
+            if recorded_poc:
+                level, note = "recorded-call-replay", "Replays a recorded call on a fork; it is not an exploit proof until impact assertions are added."
+            else:
+                level, note = "scaffold", "A concrete exploit precondition, trigger, and impact assertion are required."
         elif kind == "regression":
             level, note = "scaffold", "A known bug's trigger and post-fix expectation must be supplied."
         elif kind == "formal":
@@ -895,13 +967,21 @@ The generator does not claim coverage or invent protocol-specific assertions.
     target = config.get("target")
     generated: list[str] = []
     skipped: list[dict[str, str]] = []
+    poc_replay: dict[str, Any] | None = None
     for kind in selected:
         suffix = ".t.sol"
         if kind == "formal":
             suffix, _ = _formal_template(name, fuzz_property)
         filename = output_dir / f"LowkeyGenerated{kind.title()}_{_solidity_name(name)}{suffix}"
         try:
-            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
+            if kind == "poc":
+                replay = _recorded_call_poc(root, name, target, source_pragma)
+                if replay is not None:
+                    content, poc_replay = replay
+                else:
+                    content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
+            else:
+                content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
         except ValueError as exc:
             skipped.append({"type": kind, "reason": str(exc)})
             continue
@@ -930,7 +1010,9 @@ The generator does not claim coverage or invent protocol-specific assertions.
             is_abstract=is_abstract,
             fuzz_property=fuzz_property,
             target=target,
+            recorded_poc=poc_replay is not None,
         ),
+        "poc_replay": poc_replay,
         "generated": generated,
         "skipped": skipped,
         "warning": "Scaffolds are not protocol proofs. Complete TODO assertions before relying on them.",

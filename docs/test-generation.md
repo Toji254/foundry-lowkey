@@ -26,7 +26,7 @@ By default, files are written to `.audit/test-gen/<ContractName>/`. This is inte
 | Invariant | For a recognized direct setter, emits a Foundry handler and an executable invariant comparing the public getter with the handler's last successful write; otherwise leaves a TODO | Broader protocol invariants, valid action sequences and multi-actor accounting |
 | Integration | Local deployment and dependency-wiring guidance | Peer contracts, dependency addresses and cross-contract expectations |
 | Fork | Fork setup, chain-ID pinning via LOWKEY_EXPECTED_CHAIN_ID, optional block pinning via LOWKEY_FORK_BLOCK, target-code check, and read-only calls to recognized public scalar getters | Correct RPC, target, implementation/deployment match, and explicit expected values for deployment-specific properties |
-| PoC | Fork setup and reproduction guidance | Exploit calldata/preconditions and a security-impact assertion |
+| PoC | If a concrete recorded call matches the configured target, generates a chain/block-pinnable fork replay and records the calldata hash; otherwise a fork scaffold | Exploit preconditions and a security-impact assertion; replaying a call is not proof of exploitability |
 | Regression | Starter for an already fixed bug | Original preconditions, trigger and expected post-fix assertion |
 | Formal | Certora CVL `.spec` rule for a recognized setter/getter property, otherwise a formal-specification worksheet | Verifier setup, complete security properties, assumptions, and proof/counterexample review |
 

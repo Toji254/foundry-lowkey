@@ -833,5 +833,45 @@ contract Protocol {
         self.assertEqual(assessment["formal"]["level"], "worksheet")
         self.assertTrue(all(item["protocol_security_established"] is False for item in assessment.values()))
 
+
+    def test_poc_uses_matching_recorded_call_as_replay_not_security_proof(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            target = "0x1111111111111111111111111111111111111111"
+            fake_generator = SimpleNamespace(
+                _request_from_latest=lambda project_root, expected_target: SimpleNamespace(
+                    target=target, function="transfer", value="0", calldata="0xa9059cbb"
+                ),
+                _template_test=lambda contract, address, function, value, calldata, **kwargs: (
+                    'pragma solidity ^0.8.20;\\n'
+                    'contract LowkeyTest_Counter {\\n'
+                    'function setUp() public { vm.createSelectFork(rpcUrl); }\\n'
+                    '}\\n'
+                ),
+            )
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict("sys.modules", {"generator": fake_generator}), contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter", "target": target},
+                        ["--types", "poc"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            folder = root / ".audit" / "test-gen" / "Counter"
+            poc = (folder / "LowkeyGeneratedPoc_Counter.t.sol").read_text(encoding="utf-8")
+            report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+            self.assertIn("LOWKEY_FORK_BLOCK", poc)
+            self.assertIn("LOWKEY_EXPECTED_CHAIN_ID", poc)
+            self.assertIn("replays recorded calldata", poc)
+            self.assertEqual(report["poc_replay"]["mode"], "recorded-call-replay")
+            self.assertFalse(report["poc_replay"]["security_impact_assertion"])
+            self.assertEqual(report["generation_assessment"]["poc"]["level"], "recorded-call-replay")
+
 if __name__ == "__main__":
     unittest.main()
