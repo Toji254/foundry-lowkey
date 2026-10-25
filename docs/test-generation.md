@@ -24,7 +24,7 @@ By default, files are written to `.audit/test-gen/<ContractName>/`. This is inte
 | Fuzz | For a simple public integer state variable with a direct one-statement setter, generates an executable round-trip fuzz property; otherwise leaves a TODO scaffold | Other properties, valid input bounds, actors, approvals and expected result |
 | Invariant | For a recognized direct setter, emits a Foundry handler and an executable invariant comparing the public getter with the handler's last successful write; otherwise leaves a TODO | Broader protocol invariants, valid action sequences and multi-actor accounting |
 | Integration | Local deployment and dependency-wiring guidance | Peer contracts, dependency addresses and cross-contract expectations |
-| Fork | Fork setup and target-code smoke test | Correct archive RPC, chain/target and behavioral assertion |
+| Fork | Fork setup and target-code smoke test; adds a setter/getter behavior assertion when the source pattern is safe and the target is configured | Correct archive RPC, chain/target, deployed-version match and broader state-dependent assertions |
 | PoC | Fork setup and reproduction guidance | Exploit calldata/preconditions and a security-impact assertion |
 | Regression | Starter for an already fixed bug | Original preconditions, trigger and expected post-fix assertion |
 | Formal | Certora CVL `.spec` rule for a recognized setter/getter property, otherwise a formal-specification worksheet | Verifier setup, complete security properties, assumptions, and proof/counterexample review |
