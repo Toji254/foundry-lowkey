@@ -62,7 +62,7 @@ Every generated artifact should record: intended property, preconditions, actors
 - `light`: low-memory engines only; intended for an 8 GB machine.
 - `balanced`: low and medium memory engines.
 - `deep`: includes high-memory engines, still selected serially by default.
-- Campaign execution is serial; each process has a bounded timeout and preserves native stdout/stderr. The current budget contract bounds time, not yet measured live RAM/CPU.
+- Campaign execution is serial; each process has a bounded timeout and preserves native stdout/stderr. Forge fuzz/invariant runs scale with the profile (light: 32 fuzz runs / 16 invariant runs at depth 10; balanced: 256 / 64 at depth 20; deep: 1,024 / 256 at depth 50). These are execution budgets, not measured live RAM/CPU limits.
 - Never launch every fuzzer/solver concurrently by default. A future planner must account for RAM, CPU, project size, timeout, and explicit user budgets.
 
 ## Gaps still open
