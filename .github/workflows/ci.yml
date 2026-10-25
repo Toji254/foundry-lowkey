@@ -358,7 +358,7 @@ jobs:
           from pathlib import Path
           Path(".audit").mkdir(exist_ok=True)
           Path(".audit/mutants.json").write_text(json.dumps({
-              "command": ["forge", "test", "--match-path", "test/lowkey-generated/*"],
+              "command": ["forge", "test", "--match-path", "test/lowkey-generated/LowkeyGeneratedUnit_Fixture.t.sol"],
               "mutants": [{
                   "id": "set-count-off-by-one",
                   "file": "src/Fixture.sol",
