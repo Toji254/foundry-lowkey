@@ -32,6 +32,7 @@ class BehavioralValidationTests(unittest.TestCase):
                 [
                     {"id": "off-by-one", "file": "counter.py", "before": "return value + 1", "after": "return value"},
                     {"id": "comment-only", "file": "counter.py", "before": "# stable label", "after": "# changed label"},
+                    {"id": "syntax-invalid", "file": "counter.py", "before": "return value + 1", "after": "return ("},
                 ],
                 timeout_seconds=10,
             )
@@ -39,6 +40,7 @@ class BehavioralValidationTests(unittest.TestCase):
             self.assertEqual(report["baseline"]["status"], "passed")
             self.assertEqual(report["summary"]["killed"], 1)
             self.assertEqual(report["summary"]["survived"], 1)
+            self.assertEqual(report["summary"]["invalid"], 1)
             self.assertEqual(report["mutation_score"], 0.5)
             path = write_report(report, root / ".audit" / "mutation-report.json")
             saved = json.loads(path.read_text(encoding="utf-8"))
