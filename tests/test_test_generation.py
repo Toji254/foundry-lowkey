@@ -523,5 +523,24 @@ class TestGenerationTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn('import { Counter } from "../../../src/Counter.sol";', unit)
 
+
+    def test_dapptools_test_environment_override_is_respected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict(os.environ, {"FOUNDRY_TEST": "", "DAPP_TEST": "nested/spec"}), contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen({"target_contract": "Counter"}, ["--types", "unit"])
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            unit = (
+                root / ".audit" / "test-gen" / "Counter" /
+                "LowkeyGeneratedUnit_Counter.t.sol"
+            ).read_text(encoding="utf-8")
+            self.assertIn('import { Counter } from "../../../src/Counter.sol";', unit)
+
 if __name__ == "__main__":
     unittest.main()

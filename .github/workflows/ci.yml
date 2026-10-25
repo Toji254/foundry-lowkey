@@ -108,6 +108,14 @@ jobs:
               }
           }
           EOF
+          cat > src/ConfiguredFixture.sol <<'EOF'
+          pragma solidity ^0.8.20;
+          contract ConfiguredFixture {
+              uint256 public value;
+              constructor(uint256 initial) { value = initial; }
+              function setValue(uint256 next) external { value = next; }
+          }
+          EOF
           cat > test/Fixture.t.sol <<'EOF'
           pragma solidity ^0.8.20;
           import "forge-std/Test.sol";
@@ -136,10 +144,14 @@ jobs:
         working-directory: /tmp/lowkey-fixture
         run: |
           lk test-gen Fixture --types unit,fuzz,invariant --force --validate
+          lk test-gen ConfiguredFixture --types unit,fuzz,invariant --force --validate
           mkdir -p test/lowkey-generated
           cp .audit/test-gen/Fixture/LowkeyGeneratedUnit_Fixture.t.sol test/lowkey-generated/
           cp .audit/test-gen/Fixture/LowkeyGeneratedFuzz_Fixture.t.sol test/lowkey-generated/
           cp .audit/test-gen/Fixture/LowkeyGeneratedInvariant_Fixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedUnit_ConfiguredFixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedFuzz_ConfiguredFixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedInvariant_ConfiguredFixture.t.sol test/lowkey-generated/
           forge test --match-path 'test/lowkey-generated/.*Fixture.t.sol' -vv
 
       - name: Start Anvil
