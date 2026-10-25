@@ -612,6 +612,69 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("provider rejected an unknown request", generic)
         self.assertIn("Exit code: 1", generic)
 
+    def test_dispatcher_normalizes_direct_stderr_errors_and_sets_failure_status(self):
+        output = io.StringIO()
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            print("Error: required input was missing", file=sys.stderr)
+            return None
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("sample", [], {})
+
+        self.assertEqual(result, 2)
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("ERROR ["))
+        self.assertIn("Operation: lk sample", rendered)
+        self.assertIn("required input was missing", rendered)
+
+    def test_dispatcher_does_not_double_wrap_a_formatted_error(self):
+        output = io.StringIO()
+        formatted = lk._format_cli_error(
+            "execution reverted: invalid state",
+            command="send",
+            source="cast",
+        )
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            print(formatted, file=sys.stderr)
+            return 1
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("send", [], {})
+
+        self.assertEqual(result, 1)
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count("ERROR [REVERT]"), 1)
+        self.assertNotIn("ERROR [LOWKEY]", rendered)
+
+    def test_dispatcher_preserves_non_error_warnings(self):
+        output = io.StringIO()
+
+        def legacy_handler(cmd, args, config, from_batch=False):
+            print("Warning: optional metadata was unavailable", file=sys.stderr)
+            return 0
+
+        with patch.object(lk, "_dispatch_command_impl", side_effect=legacy_handler):
+            with redirect_stderr(output):
+                result = lk.dispatch_command("sample", [], {})
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.getvalue(), "Warning: optional metadata was unavailable\\n")
+
+    def test_runtime_failures_use_the_shared_error_heading(self):
+        rendered = lk._format_cli_error(
+            "TypeError: unexpected runtime state",
+            command="run",
+            code=2,
+            source="runtime",
+        )
+        self.assertTrue(rendered.startswith("ERROR [RUNTIME]"))
+        self.assertIn("Operation: lk run", rendered)
+        self.assertIn("TypeError: unexpected runtime state", rendered)
+
     def test_insufficient_funds_is_not_hidden_by_gas_estimation_wrapper(self):
         rendered = lk._format_cli_error(
             "Failed to estimate gas: insufficient funds for gas * price + value",
