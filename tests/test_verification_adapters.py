@@ -57,7 +57,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "src").mkdir()
-            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            (root / "foundry.toml").write_text('[profile.default]', encoding="utf-8")
             (root / "src" / "Vault.sol").write_text("pragma solidity ^0.8.20; contract Vault {}", encoding="utf-8")
             project = inspect_project(root)
         self.assertIn("foundry.toml", project["markers"])
@@ -147,7 +147,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             (root / "src").mkdir()
             (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
             (root / "src" / "Vault.sol").write_text("contract Vault {}", encoding="utf-8")
-            (root / "medusa.json").write_text("{}\\n", encoding="utf-8")
+            (root / "medusa.json").write_text("{}", encoding="utf-8")
             project = inspect_project(root)
             registry = default_registry(load_plugins=False)
             with patch("lowkey.verification_adapters.shutil.which", return_value="/usr/bin/medusa"):
