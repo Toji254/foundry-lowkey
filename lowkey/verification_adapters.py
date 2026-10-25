@@ -325,7 +325,7 @@ class EchidnaAdapter(NativeConfiguredAdapter):
         explicit, reason = super().request_configuration(project, request)
         if explicit is not None or request.get("argv") is not None:
             return explicit, reason
-        target, reason = _project_file(project.get("root"), request.get("target"))
+        target, reason = _project_file(project.get("root"), request.get("target"), suffix=".sol")
         if target is None:
             return None, "Echidna requires request.target pointing to a Solidity harness file; " + reason
         argv = [target]
@@ -354,7 +354,16 @@ class MedusaAdapter(NativeConfiguredAdapter):
         config_path, reason = _project_file(project.get("root"), config, suffix=".json")
         if config_path is None:
             return None, "Medusa requires a valid medusa.json-style config; " + reason
-        argv = ["fuzz", "--config", config_path]
+        # Medusa defaults to multiple worker threads; keep the default conservative
+        # for the light-profile / 8 GB workstation use case.
+        workers = request.get("workers", 1)
+        try:
+            workers = int(workers)
+        except (TypeError, ValueError):
+            return None, "request.workers must be an integer"
+        if not 1 <= workers <= 64:
+            return None, "request.workers must be between 1 and 64"
+        argv = ["fuzz", "--config", config_path, "--workers", str(workers)]
         target_contracts = request.get("target_contracts")
         if target_contracts:
             if isinstance(target_contracts, str):
