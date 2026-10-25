@@ -173,6 +173,9 @@ def run_cli(args: list[str]) -> int:
         print(f"Verification campaign: {report['test_kind']} ({report['profile']})")
         print(f"  Execution: {report['execution_mode']} (serial)")
         print(f"  Selected engines: {report['selected_count']}")
+        for item in report.get("considered_engines", []):
+            if item.get("status") != "selected":
+                print(f"  Not selected: {item['engine']} ({item['status']}) — {item['reason']}")
         for key, value in report["summary"].items():
             print(f"  {key}: {value}")
         print(f"  Report: {report.get('report_path', output)}")
