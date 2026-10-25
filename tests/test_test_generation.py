@@ -17,7 +17,7 @@ class TestGenerationTests(unittest.TestCase):
     def test_parse_types_defaults_to_all_supported_scaffolds(self):
         self.assertEqual(
             generation.parse_types(None),
-            ["unit", "fuzz", "invariant", "integration", "fork", "poc", "regression"],
+            ["unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal"],
         )
 
     def test_parse_types_deduplicates_and_rejects_unknown_values(self):
@@ -62,7 +62,7 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(len(names), 7)
             self.assertFalse((root / "test").exists())
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(report["generated"]), 7)
+            self.assertEqual(len(report["generated"]), 8)
             self.assertIn("not protocol proofs", report["warning"])
             self.assertIn("generated", output.getvalue())
             self.assertEqual(
@@ -77,6 +77,14 @@ class TestGenerationTests(unittest.TestCase):
                 fuzz_draft,
             )
             self.assertIn("assertEq(target.value(), fuzzValue);", fuzz_draft)
+            unit_draft = (folder / "LowkeyGeneratedUnit_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertIn("function test_setValue_updatesPublicState()", unit_draft)
+            invariant_draft = (folder / "LowkeyGeneratedInvariant_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertIn("function invariant_value_matchesLastSuccessfulSetterCall()", invariant_draft)
+            self.assertIn("targetContract(address(handler));", invariant_draft)
+            formal_spec = (folder / "LowkeyGeneratedFormal_Counter.spec").read_text(encoding="utf-8")
+            self.assertIn("rule setValue_round_trip(uint256 fuzzValue)", formal_spec)
+            self.assertIn("assert target.value() == fuzzValue;", formal_spec)
 
     def test_constructor_arguments_generate_local_drafts_with_safe_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -169,6 +177,35 @@ class TestGenerationTests(unittest.TestCase):
             self.assertIsNone(report["fuzz_property"])
             self.assertNotRegex(draft, r"(?m)^\s*function testFuzz_")
             self.assertIn("No safe direct-setter/public-integer-getter property was recognized", draft)
+
+
+    def test_custom_modifier_prevents_unsafe_setter_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            source_path = root / "src" / "Counter.sol"
+            source = source_path.read_text(encoding="utf-8")
+            source = source.replace(
+                "function setValue(uint256 next) external { value = next; }",
+                "function setValue(uint256 next) external onlyOwner { value = next; }",
+            )
+            source_path.write_text(source, encoding="utf-8")
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen({"target_contract": "Counter"}, ["--types", "fuzz,formal"])
+            finally:
+                os.chdir(previous)
+
+            self.assertEqual(code, 0)
+            folder = root / ".audit" / "test-gen" / "Counter"
+            report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+            self.assertIsNone(report["fuzz_property"])
+            fuzz = (folder / "LowkeyGeneratedFuzz_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertNotRegex(fuzz, r"(?m)^\\s*function testFuzz_")
+            formal = (folder / "LowkeyGeneratedFormal_Counter.md").read_text(encoding="utf-8")
+            self.assertIn("not an executable CVL spec yet", formal)
 
     def test_existing_draft_is_preserved_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
