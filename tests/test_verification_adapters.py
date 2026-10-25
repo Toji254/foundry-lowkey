@@ -130,6 +130,18 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(campaign["summary"]["passed"], 1)
         self.assertIn("campaign evidence", campaign["results"][0]["result"]["raw_stdout"])
 
+    def test_campaign_rejects_non_forge_engine_without_native_configuration(self):
+        cap = EngineCapability("echidna", sys.executable, ("fuzz",), memory_class="medium")
+        registry = CapabilityRegistry([ExecutableAdapter(cap)])
+        with tempfile.TemporaryDirectory() as root:
+            campaign = registry.run_campaign(
+                {"root": root}, "fuzz", request={}, profile="balanced",
+            )
+        self.assertEqual(campaign["selected_count"], 0)
+        rejected = next(item for item in campaign["considered_engines"] if item["engine"] == "echidna")
+        self.assertEqual(rejected["status"], "missing_configuration")
+        self.assertEqual(campaign["results"], [])
+
     def test_campaign_scales_fuzz_depth_and_timeout_by_profile(self):
         class CaptureAdapter:
             capability = EngineCapability("forge", "forge", ("fuzz",), memory_class="low")
