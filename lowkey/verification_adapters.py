@@ -84,12 +84,16 @@ class ExecutableAdapter:
     def supports(self, project: dict[str, Any], test_kind: str) -> tuple[bool, str]:
         if test_kind not in self.capability.test_kinds:
             return False, f"{self.capability.name} does not implement {test_kind} tests"
-        language = str(project.get("language") or "").lower()
-        if self.capability.languages and language not in self.capability.languages:
-            return False, f"language {language or 'unknown'} is unsupported"
-        build = str(project.get("build_system") or "").lower()
-        if self.capability.build_systems and build not in self.capability.build_systems:
-            return False, f"build system {build or 'unknown'} is unsupported"
+        languages = {str(value).lower() for value in (project.get("languages") or [])}
+        if project.get("language"):
+            languages.add(str(project["language"]).lower())
+        if self.capability.languages and not languages.intersection(self.capability.languages):
+            return False, f"languages {', '.join(sorted(languages)) or 'unknown'} are unsupported"
+        build_systems = {str(value).lower() for value in (project.get("build_systems") or [])}
+        if project.get("build_system"):
+            build_systems.add(str(project["build_system"]).lower())
+        if self.capability.build_systems and not build_systems.intersection(self.capability.build_systems):
+            return False, f"build systems {', '.join(sorted(build_systems)) or 'unknown'} are unsupported"
         markers = set(project.get("markers") or [])
         if self.capability.project_markers and not markers.intersection(self.capability.project_markers):
             return False, "required project markers were not detected"
@@ -276,6 +280,76 @@ class CapabilityRegistry:
                 "error": sum(row["result"]["status"] == "error" for row in results),
             },
         }
+
+
+def inspect_project(root: str | Path) -> dict[str, Any]:
+    """Detect project markers, languages, and build systems without network access."""
+    project_root = Path(root).expanduser().resolve()
+    if not project_root.is_dir():
+        raise ValueError(f"project root is not a directory: {project_root}")
+    marker_names = {
+        "foundry.toml", "brownie-config.yaml", "brownie-config.yml",
+        "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt",
+        "pom.xml", "build.gradle", "build.gradle.kts", "package.json",
+        "hardhat.config.js", "hardhat.config.cjs", "hardhat.config.ts",
+        "hardhat.config.mjs", "truffle-config.js", "ape-config.yaml",
+        "Move.toml", "Scarb.toml", "soroban",
+    }
+    markers = sorted(
+        name for name in marker_names
+        if (project_root / name).exists()
+    )
+    if any(project_root.glob("hardhat.config.*")):
+        markers.extend(name for name in ["hardhat.config"] if name not in markers)
+    build_systems: list[str] = []
+    if "foundry.toml" in markers:
+        build_systems.append("foundry")
+    if any(name.startswith("hardhat.config") for name in markers) or "hardhat.config" in markers:
+        build_systems.append("hardhat")
+    if any(name.startswith("brownie-config") for name in markers):
+        build_systems.append("brownie")
+    if "package.json" in markers:
+        build_systems.append("npm")
+    if "Cargo.toml" in markers:
+        build_systems.append("cargo")
+    if "go.mod" in markers:
+        build_systems.append("go")
+    if "pyproject.toml" in markers or "requirements.txt" in markers:
+        build_systems.append("python")
+    if "pom.xml" in markers or "build.gradle" in markers or "build.gradle.kts" in markers:
+        build_systems.append("jvm")
+    if "Move.toml" in markers:
+        build_systems.append("move")
+    if "Scarb.toml" in markers:
+        build_systems.append("scarb")
+    ignored = {".git", ".venv", "node_modules", "vendor", "target", "build", "dist", "out", "cache", ".audit"}
+    suffix_languages = {
+        ".sol": "solidity", ".vy": "vyper", ".rs": "rust", ".go": "go",
+        ".py": "python", ".ts": "typescript", ".tsx": "typescript",
+        ".js": "javascript", ".jsx": "javascript", ".java": "java",
+        ".move": "move", ".cairo": "cairo",
+    }
+    languages: set[str] = set()
+    for path in project_root.rglob("*"):
+        try:
+            relative = path.relative_to(project_root)
+        except ValueError:
+            continue
+        if any(part in ignored for part in relative.parts):
+            continue
+        if path.is_file() and path.suffix.lower() in suffix_languages:
+            languages.add(suffix_languages[path.suffix.lower()])
+    if "foundry" in build_systems or "hardhat" in build_systems or "brownie" in build_systems:
+        if any(language == "solidity" for language in languages):
+            languages.add("solidity")
+    return {
+        "root": str(project_root),
+        "markers": sorted(set(markers)),
+        "languages": sorted(languages),
+        "language": sorted(languages)[0] if languages else "",
+        "build_systems": sorted(set(build_systems)),
+        "build_system": build_systems[0] if build_systems else "",
+    }
 
 
 def default_registry() -> CapabilityRegistry:
