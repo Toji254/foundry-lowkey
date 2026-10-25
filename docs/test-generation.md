@@ -32,7 +32,7 @@ By default, files are written to `.audit/test-gen/<ContractName>/`. This is inte
 
 The local-deployment styles (unit, fuzz, invariant, integration and regression) support zero-argument constructors and simple constructor parameters with conservative placeholders for integer, address, boolean, string and bytes types. For example, `constructor(uint256 initial)` is scaffolded as `new ContractName(0)`, with a TODO to review the placeholder. These values are compile-oriented defaults, not evidence of valid protocol setup. Unknown or user-defined parameter types are skipped rather than guessed. For unit and fuzz tests, Lowkey currently emits an executable setter/getter assertion only when source inspection identifies a public integer state variable and a one-statement public/external setter assigning its sole parameter directly to that variable. It deliberately declines to infer through custom modifiers such as `onlyOwner`. For invariants, the same narrow pattern enables a handler that tracks the last successful write and an executable invariant checking the getter against that tracked value. These are narrow starter properties, not a substitute for protocol-specific accounting or authorization invariants. The `formal` option emits a Certora CVL `.spec` rule only for that recognized property; otherwise it emits a Markdown worksheet rather than an invented or vacuous proof. A generated spec has not been verified automatically. Fork and PoC drafts still need a configured target address and a valid `LOWKEY_RPC_URL` before execution.
 
-The import paths assume the generated Solidity files are eventually moved to `test/lowkey-generated/`. Review them before moving or running them. `--force` allows replacing existing drafts; without it Lowkey preserves existing files.
+The import paths assume generated Solidity files are eventually moved to `lowkey-generated/` under the active Foundry test directory (default: `test/`). Generated test files reuse the target source's Solidity pragma when one is present. Review drafts before moving or running them. `--force` allows replacing existing drafts; without it Lowkey preserves existing files. If the baseline project build fails, `--validate` reports `baseline-failed` and does not blame the generated drafts; if Forge is missing, it reports `unavailable` and exits nonzero.
 
 ## Evidence boundary
 
@@ -49,3 +49,6 @@ The generator does not claim to automatically reconstruct every protocol's econo
 
 
 Validation is a compiler check only. It does not execute assertions, verify a fork against live RPC state, or prove security. Formal specifications require their configured verifier and assumptions to be reviewed separately.
+
+
+The generated fork template is read-only by default. It does not infer writes from a local setter because a deployed proxy, implementation, permissions, or live state may differ. A missing target address intentionally leaves an explicit setup failure in the draft rather than pretending the test has checked a deployment.
