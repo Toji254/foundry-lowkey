@@ -217,11 +217,11 @@ class CapabilityRegistry:
             }
         return matrix
 
-    def select(
+    def plan(
         self, project: dict[str, Any], test_kind: str, *,
         profile: str = "balanced",
-    ) -> list[dict[str, Any]]:
-        """Return eligible engines, preferring lightweight tools on constrained runs."""
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Explain all selected and rejected engines for one bounded campaign."""
         if test_kind not in TEST_KINDS:
             raise ValueError(f"unknown test kind: {test_kind}")
         profiles = {
@@ -231,23 +231,42 @@ class CapabilityRegistry:
         }
         if profile not in profiles:
             raise ValueError(f"unknown resource profile: {profile}")
-        allowed = profiles[profile]
-        candidates = []
+        selected: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        order = {"low": 0, "medium": 1, "high": 2}
         for name, adapter in self._adapters.items():
             cap = adapter.capability
             ok, reason = adapter.supports(project, test_kind)
             if not ok:
+                rejected.append({
+                    "engine": name, "test_kind": test_kind,
+                    "memory_class": cap.memory_class, "status": "unsupported",
+                    "reason": reason,
+                })
                 continue
-            if cap.memory_class not in allowed:
+            if cap.memory_class not in profiles[profile]:
+                rejected.append({
+                    "engine": name, "test_kind": test_kind,
+                    "memory_class": cap.memory_class, "status": "profile_excluded",
+                    "reason": f"{cap.memory_class}-memory engine excluded by {profile} profile",
+                })
                 continue
-            candidates.append({
-                "engine": name,
-                "test_kind": test_kind,
-                "memory_class": cap.memory_class,
+            selected.append({
+                "engine": name, "test_kind": test_kind,
+                "memory_class": cap.memory_class, "status": "selected",
                 "reason": reason,
             })
-        order = {"low": 0, "medium": 1, "high": 2}
-        return sorted(candidates, key=lambda row: (order.get(row["memory_class"], 3), row["engine"]))
+        key = lambda row: (order.get(row["memory_class"], 3), row["engine"])
+        return {
+            "selected": sorted(selected, key=key),
+            "rejected": sorted(rejected, key=key),
+        }
+
+    def select(
+        self, project: dict[str, Any], test_kind: str, *,
+        profile: str = "balanced",
+    ) -> list[dict[str, Any]]:
+        return self.plan(project, test_kind, profile=profile)["selected"]
 
 
     def run_campaign(
@@ -263,7 +282,8 @@ class CapabilityRegistry:
         """
         request = dict(request or {})
         budget = dict(budget or {})
-        selected = self.select(project, test_kind, profile=profile)
+        plan = self.plan(project, test_kind, profile=profile)
+        selected = plan["selected"]
         profile_limits = {
             "light": {"timeout_seconds": 60, "fuzz_runs": 32, "invariant_runs": 16, "invariant_depth": 10},
             "balanced": {"timeout_seconds": 300, "fuzz_runs": 256, "invariant_runs": 64, "invariant_depth": 20},
@@ -301,6 +321,7 @@ class CapabilityRegistry:
             "test_kind": test_kind,
             "execution_mode": "serial",
             "selected_count": len(selected),
+            "considered_engines": plan["selected"] + plan["rejected"],
             "results": results,
             "summary": {
                 "passed": sum(row["result"]["status"] == "passed" for row in results),
