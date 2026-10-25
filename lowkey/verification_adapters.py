@@ -585,10 +585,10 @@ class CertoraAdapter(NativeConfiguredAdapter):
         output = result.raw_stdout + "\n" + result.raw_stderr
         completed = "Finished verification request" in output
         has_violation = bool(
-            re.search(r"(?im)^\\s*ERROR:\\s*Prover found violations", output)
-            or re.search(r"(?im)^\\s*\\[[^]]+\\]\\s*[^\\n]*?:\\s*FAIL\\b", output)
+            re.search(r"(?im)^\s*ERROR:\s*Prover found violations", output)
+            or re.search(r"(?im)^\s*\[[^]]+\]\s*[^\n]*?:\s*FAIL\b", output)
         )
-        has_pass = bool(re.search(r"(?im)^\\s*\\[[^]]+\\]\\s*[^\\n]*?:\\s*PASS\\b", output))
+        has_pass = bool(re.search(r"(?im)^\s*\[[^]]+\]\s*[^\n]*?:\s*PASS\b", output))
         submitted = bool(re.search(r"(?i)job submitted to server|job submitted", output))
 
         if result.status in {"passed", "failed"} and has_violation:
