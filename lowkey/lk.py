@@ -11196,6 +11196,18 @@ def run_selector_compare(config,args):
 def run_chisel(args):
     return run_tool("chisel",args)
 
+def run_test_gen_command(config, args):
+    """Generate project-aware starter files for multiple Solidity test styles."""
+    try:
+        from test_generation import run_test_gen
+    except ImportError as exc:
+        return fail(f"Test generator is unavailable: {exc}")
+    try:
+        return run_test_gen(config, args)
+    except Exception as exc:
+        return fail(f"Test generation failed: {exc}")
+
+
 def run_fuzz(args):
     values=list(args)
     mode=values.pop(0) if values and not values[0].startswith("-") else None
@@ -14884,6 +14896,7 @@ START HERE
   lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
+  lk test-gen [Contract]             Draft unit/fuzz/invariant/integration/fork/PoC test scaffolds.
   lk lab                             Start/rebuild a disposable local audit lab.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
@@ -15750,6 +15763,7 @@ def dispatch_command(cmd,args,config,from_batch=False):
     elif cmd in {"state-diff","statediff","state_diff"}: return run_state_diff(config,args)
     elif cmd=="as": return run_as(config,args)
     elif cmd in {"impersonate","impersonate-actor"}: return run_impersonate(config,args)
+    elif cmd in {"test-gen","testgen","generate-tests"}: return run_test_gen_command(config,args)
     elif cmd=="fuzz": return run_fuzz(args)
     elif cmd=="invariant": return run_invariant(config,args)
     elif cmd=="mutate": return run_mutate(args)
