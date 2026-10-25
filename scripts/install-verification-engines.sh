@@ -89,7 +89,7 @@ export PATH="$LOCAL_BIN:$PATH"
 echo
 echo "Installed / validated pinned Lowkey verification tools:"
 slither --version
-solc-select --version
+solc-select versions
 echidna --version
 medusa --help >/dev/null
 echo "Medusa: command starts successfully"
