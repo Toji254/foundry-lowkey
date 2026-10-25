@@ -3707,7 +3707,7 @@ def _decode_solidity_revert_reason(error_text):
     match = re.search(r"(?i)execution reverted:\s*([^,\r\n]+)", text)
     if match:
         reason = match.group(1).strip().strip('"' + "'")
-        if reason and not reason.lower().startswith(("0x", "custom error", "panic")):
+        if reason and not reason.lower().startswith("0x"):
             return reason
     return None
 
@@ -3954,11 +3954,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         )
 
     if source == "runtime":
-        return (
-            "ERROR [LOWKEY RUNTIME]\n"
-            f"  Details: {text}\n"
-            "  Result: Lowkey could not complete this command; no security conclusion should be inferred."
-        )
+        return "LOWKEY RUNTIME ERROR\\n  " + text
 
     # Lowkey's own validation errors already contain targeted usage/fix text.
     # Keep those messages stable, but normalize every failure returned by an
@@ -4218,17 +4214,30 @@ def run_cast(args,config,capture=False):
             print(apply_labels(err,config),file=sys.stderr)
         return code
     except FileNotFoundError:
-        message="Error: cast was not found in PATH. Install/update Foundry first."
-        result=CommandResult(message,127)
+        message = _format_cli_error(
+            "Cast executable not found in PATH. Install or update Foundry, then verify 'cast --version'.",
+            code=127,
+            command=cast_cmd,
+            source="cast",
+        )
+        result = CommandResult(message, 127)
         record_status(result.code)
-        if capture: return result
-        print(message,file=sys.stderr)
+        if capture:
+            return result
+        print(message, file=sys.stderr)
         return result.code
     except OSError as error:
-        result=CommandResult(f"Error executing cast: {error}",1)
+        message = _format_cli_error(
+            f"Error executing Cast: {error}",
+            code=1,
+            command=cast_cmd,
+            source="cast",
+        )
+        result = CommandResult(message, 1)
         record_status(result.code)
-        if capture: return result
-        print(str(result),file=sys.stderr)
+        if capture:
+            return result
+        print(str(result), file=sys.stderr)
         return result.code
 def run_balance(config,args=None):
     args=list(args or [])
@@ -16376,8 +16385,13 @@ def _safe_main() -> int:
         except Exception:
             root = None
 
-        print("LOWKEY RUNTIME ERROR", file=sys.stderr)
-        print(f"  {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            _format_cli_error(
+                f"{type(exc).__name__}: {exc}",
+                source="runtime",
+            ),
+            file=sys.stderr,
+        )
         if root:
             print(f"  project: {root}", file=sys.stderr)
             try:
