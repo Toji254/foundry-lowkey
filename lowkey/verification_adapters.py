@@ -331,7 +331,16 @@ class CapabilityRegistry:
                         "test", "--invariant-runs", str(limits["invariant_runs"]),
                         "--invariant-depth", str(limits["invariant_depth"]),
                     ]
-            result = by_name[name].run(project, engine_request, budget=budget)
+            try:
+                result = by_name[name].run(project, engine_request, budget=budget)
+            except Exception as exc:
+                # One broken adapter must not erase evidence from the rest of a campaign.
+                result = EngineResult(
+                    engine=name,
+                    status="error",
+                    summary=f"adapter raised {type(exc).__name__}: {exc}",
+                    raw_evidence={"exception_type": type(exc).__name__},
+                )
             results.append({
                 "selection": candidate,
                 "result": result.to_dict(),
