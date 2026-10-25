@@ -16391,23 +16391,22 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
 
 
 _ERROR_DIAGNOSTIC_START = re.compile(
-    r"(?im)^\\s*(?:"
-    r"ERROR(?:\\s*\\[|\\s*:|\\b)|"
-    r"REVERT\\s*:|"
-    r"FATAL\\s*:|"
-    r"TRACEBACK \\(MOST RECENT CALL LAST\\)|"
-    r"EXCEPTION(?:\\s*:|\\b)|"
-    r"USAGE\\s*:|"
-    r"FAILED(?:\\s+TO)?\\b|"
-    r"COULD NOT\\b|"
-    r"CANNOT\\b|"
-    r"CONNECTION REFUSED\\b|"
-    r"TIMED OUT\\b|"
-    r"NO SUCH FILE OR DIRECTORY\\b|"
-    r"COMMAND NOT FOUND\\b"
+    r"(?im)^\s*(?:"
+    r"ERROR(?:\s*\[|\s*:|\b)|"
+    r"REVERT\s*:|"
+    r"FATAL\s*:|"
+    r"TRACEBACK \(MOST RECENT CALL LAST\)|"
+    r"EXCEPTION(?:\s*:|\b)|"
+    r"USAGE\s*:|"
+    r"FAILED(?:\s+TO)?\b|"
+    r"COULD NOT\b|"
+    r"CANNOT\b|"
+    r"CONNECTION REFUSED\b|"
+    r"TIMED OUT\b|"
+    r"NO SUCH FILE OR DIRECTORY\b|"
+    r"COMMAND NOT FOUND\b"
     r")"
 )
-
 
 def _is_error_diagnostic(output):
     """Recognize errors printed directly by commands that bypass fail()."""
