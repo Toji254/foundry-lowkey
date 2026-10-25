@@ -814,7 +814,7 @@ def _recorded_call_poc(
         "value": value,
         "calldata_sha256": hashlib.sha256(bytes.fromhex(calldata)).hexdigest(),
         "security_impact_assertion": False,
-        "note": "Replay only. Add exploit preconditions and a security-impact assertion before calling this a PoC.",
+        "note": "Replay only. The fork executes the configured target address, not the local source; verify implementation/source identity and add exploit preconditions plus a security-impact assertion before calling this a PoC.",
     }
 
 
