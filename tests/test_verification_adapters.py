@@ -67,6 +67,17 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertNotIn("halmos", {x["engine"] for x in light})
         self.assertIn("halmos", {x["engine"] for x in deep})
 
+    def test_plan_explains_profile_exclusions(self):
+        registry = CapabilityRegistry([
+            ExecutableAdapter(EngineCapability("light-tool", sys.executable, ("formal",), memory_class="low")),
+            ExecutableAdapter(EngineCapability("heavy-tool", sys.executable, ("formal",), memory_class="high")),
+        ])
+        plan = registry.plan({}, "formal", profile="light")
+        self.assertEqual([row["engine"] for row in plan["selected"]], ["light-tool"])
+        excluded = next(row for row in plan["rejected"] if row["engine"] == "heavy-tool")
+        self.assertEqual(excluded["status"], "profile_excluded")
+        self.assertIn("light profile", excluded["reason"])
+
     def test_adapter_runs_argument_vector_and_preserves_output(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
         adapter = ExecutableAdapter(cap)
