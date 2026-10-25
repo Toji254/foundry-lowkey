@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lowkey.verification_adapters import (
-    CapabilityRegistry, EngineCapability, EngineResult, ExecutableAdapter,
+    CapabilityRegistry, CertoraAdapter, EchidnaAdapter, EngineCapability,
+    EngineResult, ExecutableAdapter, HalmosAdapter, MedusaAdapter,
     TEST_KINDS, default_registry, inspect_project,
 )
 
@@ -105,6 +106,46 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(broken["status"], "adapter_error")
         self.assertTrue(any("supports() raised RuntimeError" in row["error"] for row in campaign["plugin_errors"]))
         self.assertEqual(campaign["results"][0]["result"]["raw_stdout"], "healthy evidence")
+
+    def test_native_engine_builders_require_real_project_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src" / "Harness.sol").write_text("contract Harness {}", encoding="utf-8")
+            (root / "echidna.yaml").write_text("testMode: property\n", encoding="utf-8")
+            (root / "medusa.json").write_text("{}\n", encoding="utf-8")
+            (root / "rules.conf").write_text('{"files": ["src/Harness.sol"]}\n', encoding="utf-8")
+            project = {"root": str(root)}
+
+            echidna = EchidnaAdapter(EngineCapability("echidna", "echidna", ("fuzz",)))
+            argv, reason = echidna.request_configuration(
+                project, {"target": "src/Harness.sol", "contract": "Harness", "config": "echidna.yaml"}
+            )
+            self.assertEqual(argv, ["src/Harness.sol", "--contract", "Harness", "--config", "echidna.yaml"])
+            self.assertIn("validated", reason)
+            self.assertIsNone(echidna.request_configuration(project, {"target": "../outside.sol"})[0])
+
+            medusa = MedusaAdapter(EngineCapability("medusa", "medusa", ("fuzz",)))
+            argv, _ = medusa.request_configuration(project, {"target_contracts": ["Vault", "Token"]})
+            self.assertEqual(argv, ["fuzz", "--config", "medusa.json", "--target-contracts", "Vault, Token"])
+
+            halmos = HalmosAdapter(EngineCapability("halmos", "halmos", ("formal",)))
+            self.assertEqual(halmos.request_configuration(project, {})[0], ["--function", "test"])
+
+            certora = CertoraAdapter(EngineCapability("certora", "certoraRun", ("formal",)))
+            self.assertEqual(certora.request_configuration(project, {"config": "rules.conf"})[0], ["rules.conf"])
+            self.assertIsNone(certora.request_configuration(project, {"config": "../rules.conf"})[0])
+
+    def test_certora_cli_success_is_not_reported_as_proof_success(self):
+        adapter = CertoraAdapter(EngineCapability("certora", sys.executable, ("formal",), memory_class="high"))
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {"test_kind": "formal", "argv": ["-c", "print('job submitted')"]},
+                budget={"timeout_seconds": 5},
+            )
+        self.assertEqual(result.status, "submitted")
+        self.assertEqual(result.metadata["result_semantics"], "cli_success_is_not_proof_success")
 
     def test_registry_rejects_duplicate_names(self):
         cap = EngineCapability("forge", "forge", ("unit",))
