@@ -46,11 +46,14 @@ class EngineCapability:
             raise ValueError(
                 "engine capability memory_class must be one of: low, medium, high"
             )
-        unknown_kinds = sorted(set(self.test_kinds) - set(TEST_KINDS))
+        unknown_kinds = [
+            kind for kind in self.test_kinds
+            if not isinstance(kind, str) or kind not in TEST_KINDS
+        ]
         if unknown_kinds:
             raise ValueError(
-                "engine capability test_kinds contain unknown kinds: "
-                + ", ".join(unknown_kinds)
+                "engine capability test_kinds contain unknown or non-string kinds: "
+                + ", ".join(repr(kind) for kind in unknown_kinds)
             )
 
 
