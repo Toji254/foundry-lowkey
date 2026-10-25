@@ -520,7 +520,7 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
     return _fork_template(kind, name, target)
 
 
-def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
+def run_test_gen(config: dict[str, Any], args: list[str], *, project_root: str | Path | None = None) -> int:
     if any(str(arg).lower() in {"-h", "--help", "help"} for arg in args):
         print("""Lowkey test generator
 
@@ -584,7 +584,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     except ValueError as exc:
         return _error(str(exc))
 
-    root = Path.cwd().resolve()
+    root = Path(project_root).expanduser().resolve() if project_root is not None else Path.cwd().resolve()
     if not (root / "foundry.toml").exists():
         return _error("No foundry.toml found in the current directory. Run this from a Foundry project.")
     found = _contract_source(root, name)
