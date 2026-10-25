@@ -16417,7 +16417,7 @@ def _has_standard_error_shape(output):
     """Avoid nesting an error that already passed through the shared formatter."""
     return bool(
         re.search(
-            r"(?im)^\\s*(?:ERROR \\[|LOWKEY RUNTIME ERROR\\b)",
+            r"(?im)^\s*(?:ERROR \[|LOWKEY RUNTIME ERROR\b)",
             str(output or ""),
         )
     )
