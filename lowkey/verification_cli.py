@@ -127,6 +127,8 @@ def run_cli(args: list[str]) -> int:
         print(f"Project: {payload['project']['root']}")
         print(f"Languages: {', '.join(payload['project']['languages']) or 'unknown'}")
         print(f"Build systems: {', '.join(payload['project']['build_systems']) or 'unknown'}")
+        for error in payload.get("plugin_errors", []):
+            print(f"  Plugin load error [{error['plugin']}]: {error['error']}")
         for engine in payload["engines"]:
             state = "available" if engine["available"] else "not installed"
             print(f"  {engine['name']}: {state}")
