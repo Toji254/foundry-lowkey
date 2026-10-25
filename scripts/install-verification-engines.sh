@@ -27,6 +27,9 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$LOCAL_BIN:$HOME/.cargo/bin:$PATH"
+if [[ -n "${GITHUB_PATH:-}" ]]; then
+  printf '%s\\n' "$LOCAL_BIN" >> "${GITHUB_PATH}"
+fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "Error: uv installation finished but 'uv' is not on PATH." >&2
   exit 1
@@ -73,6 +76,7 @@ solc-select use 0.8.20
 
 # Persist the local executable directory for new interactive Bash sessions.
 bashrc="$HOME/.bashrc"
+: >> "$bashrc"
 marker="# Lowkey verification engines"
 if [[ -f "$bashrc" ]] && ! grep -Fq "$marker" "$bashrc"; then
   {
