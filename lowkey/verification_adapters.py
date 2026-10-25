@@ -299,6 +299,7 @@ class CapabilityRegistry:
         Per-engine native CLI arguments may be supplied in request.argv_by_engine.
         Missing arguments never trigger guessed Echidna/Medusa/solver configuration.
         """
+        campaign_started_at = time.monotonic()
         request = dict(request or {})
         budget = dict(budget or {})
         plan = self.plan(project, test_kind, profile=profile, request=request)
@@ -339,6 +340,10 @@ class CapabilityRegistry:
             "profile": profile,
             "test_kind": test_kind,
             "execution_mode": "serial",
+            "duration_seconds": round(time.monotonic() - campaign_started_at, 6),
+            "engine_duration_seconds": round(sum(
+                row["result"].get("duration_seconds") or 0 for row in results
+            ), 6),
             "selected_count": len(selected),
             "considered_engines": plan["selected"] + plan["rejected"],
             "plugin_errors": list(self.plugin_errors),
