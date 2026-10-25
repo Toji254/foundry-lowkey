@@ -324,6 +324,8 @@ jobs:
       - name: Generate and compile project-aware test artifacts
         working-directory: /tmp/lowkey-fixture
         run: |
+          export LOWKEY_RPC_URL=http://127.0.0.1:8545
+          lk target 0x1000000000000000000000000000000000000001
           lk test-gen Fixture --types unit,integration,invariant,exploit,regression,fuzz,formal --force
           python3 - <<'PY'
           import json
