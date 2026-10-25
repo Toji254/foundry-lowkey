@@ -498,10 +498,10 @@ class LowkeyCastTests(unittest.TestCase):
 
     def test_legacy_machine_style_revert_is_reformatted_for_people(self):
         legacy = (
-            "ERROR [REVERT]\\n"
-            "  Operation: lk send\\n"
-            "  Exit code: 1\\n"
-            "  Reason: invalid number\\n"
+            "ERROR [REVERT]\n"
+            "  Operation: lk send\n"
+            "  Exit code: 1\n"
+            "  Reason: invalid number\n"
             "  Transaction broadcast: no (gas estimation failed)."
         )
         rendered = lk._format_cli_error(legacy, code=1, command="send", source="cast")
