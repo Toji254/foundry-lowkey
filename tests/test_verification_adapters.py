@@ -169,6 +169,28 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(rejected["status"], "missing_configuration")
         self.assertIn("does not exist", rejected["reason"])
 
+    def test_halmos_requires_recognized_symbolic_result_markers(self):
+        adapter = HalmosAdapter(EngineCapability("halmos", sys.executable, ("formal",), memory_class="high"))
+        with tempfile.TemporaryDirectory() as root:
+            failed = adapter.run(
+                {"root": root},
+                {"test_kind": "formal", "argv": ["-c", "print('[FAIL] check_supply')"]},
+                budget={"timeout_seconds": 5},
+            )
+            passed = adapter.run(
+                {"root": root},
+                {"test_kind": "formal", "argv": ["-c", "print('[PASS] check_supply')"]},
+                budget={"timeout_seconds": 5},
+            )
+            unclear = adapter.run(
+                {"root": root},
+                {"test_kind": "formal", "argv": ["-c", "print('finished')"]},
+                budget={"timeout_seconds": 5},
+            )
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(passed.status, "passed")
+        self.assertEqual(unclear.status, "inconclusive")
+
     def test_certora_cli_success_is_not_reported_as_proof_success(self):
         adapter = CertoraAdapter(EngineCapability("certora", sys.executable, ("formal",), memory_class="high"))
         with tempfile.TemporaryDirectory() as root:
