@@ -270,6 +270,147 @@ class ExecutableAdapter:
         )
 
 
+class NativeConfiguredAdapter(ExecutableAdapter):
+    """Adapter with a conservative native command builder for a known engine."""
+
+    def request_configuration(
+        self, project: dict[str, Any], request: dict[str, Any],
+    ) -> tuple[list[str] | None, str]:
+        explicit = request.get("argv")
+        if isinstance(explicit, list) and all(isinstance(arg, str) for arg in explicit):
+            return explicit, "explicit native argv supplied"
+        if explicit is not None:
+            return None, "request.argv must be a list of native CLI argument strings"
+        return None, "engine-specific configuration is required"
+
+    def request_ready(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[bool, str]:
+        argv, reason = self.request_configuration(project, request)
+        return argv is not None, reason
+
+    def run(
+        self, project: dict[str, Any], request: dict[str, Any], *,
+        budget: dict[str, Any],
+    ) -> EngineResult:
+        prepared = dict(request)
+        if "argv" not in prepared:
+            argv, reason = self.request_configuration(project, prepared)
+            if argv is None:
+                return EngineResult(self.capability.name, "unsupported", summary=reason)
+            prepared["argv"] = argv
+        return super().run(project, prepared, budget=budget)
+
+
+def _project_file(root_value: Any, value: Any, *, suffix: str | None = None) -> tuple[str | None, str]:
+    """Resolve an existing project-relative config/target without path traversal."""
+    if not isinstance(root_value, (str, Path)) or not root_value:
+        return None, "project root is required"
+    if not isinstance(value, str) or not value.strip():
+        return None, "a project-relative file path is required"
+    raw = Path(value)
+    if raw.is_absolute() or ".." in raw.parts:
+        return None, "file path must be relative to the project root and must not contain '..'"
+    root = Path(root_value).expanduser().resolve()
+    resolved = (root / raw).resolve()
+    if not resolved.is_relative_to(root):
+        return None, "file path escapes the project root"
+    if not resolved.is_file():
+        return None, f"file does not exist: {value}"
+    if suffix and resolved.suffix.lower() != suffix:
+        return None, f"file must use the {suffix} suffix: {value}"
+    return str(raw), ""
+
+
+class EchidnaAdapter(NativeConfiguredAdapter):
+    def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
+        explicit, reason = super().request_configuration(project, request)
+        if explicit is not None or request.get("argv") is not None:
+            return explicit, reason
+        target, reason = _project_file(project.get("root"), request.get("target"))
+        if target is None:
+            return None, "Echidna requires request.target pointing to a Solidity harness file; " + reason
+        argv = [target]
+        contract = request.get("contract")
+        if contract:
+            if not isinstance(contract, str) or not contract.strip():
+                return None, "request.contract must be a non-empty contract name"
+            argv.extend(["--contract", contract])
+        config = request.get("config")
+        if config:
+            config_path, reason = _project_file(project.get("root"), config, suffix=".yaml")
+            if config_path is None:
+                config_path, reason = _project_file(project.get("root"), config, suffix=".yml")
+            if config_path is None:
+                return None, "Echidna config is invalid: " + reason
+            argv.extend(["--config", config_path])
+        return argv, "Echidna harness and optional config validated"
+
+
+class MedusaAdapter(NativeConfiguredAdapter):
+    def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
+        explicit, reason = super().request_configuration(project, request)
+        if explicit is not None or request.get("argv") is not None:
+            return explicit, reason
+        config = request.get("config") or "medusa.json"
+        config_path, reason = _project_file(project.get("root"), config, suffix=".json")
+        if config_path is None:
+            return None, "Medusa requires a valid medusa.json-style config; " + reason
+        argv = ["fuzz", "--config", config_path]
+        target_contracts = request.get("target_contracts")
+        if target_contracts:
+            if isinstance(target_contracts, str):
+                target_contracts = [target_contracts]
+            if not isinstance(target_contracts, list) or not all(
+                isinstance(item, str) and item.strip() for item in target_contracts
+            ):
+                return None, "request.target_contracts must be a string or list of contract names"
+            argv.extend(["--target-contracts", ", ".join(target_contracts)])
+        timeout = request.get("engine_timeout_seconds")
+        if timeout is not None:
+            try:
+                timeout = int(timeout)
+            except (TypeError, ValueError):
+                return None, "request.engine_timeout_seconds must be an integer"
+            if timeout < 1:
+                return None, "request.engine_timeout_seconds must be positive"
+            argv.extend(["--timeout", str(timeout)])
+        return argv, "Medusa config and optional target overrides validated"
+
+
+class HalmosAdapter(NativeConfiguredAdapter):
+    def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
+        explicit, reason = super().request_configuration(project, request)
+        if explicit is not None or request.get("argv") is not None:
+            return explicit, reason
+        function = request.get("function", "test")
+        if not isinstance(function, str) or not function.strip():
+            return None, "request.function must be a non-empty function filter"
+        return ["--function", function], "Foundry/Halmos function filter selected"
+
+
+class CertoraAdapter(NativeConfiguredAdapter):
+    def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
+        explicit, reason = super().request_configuration(project, request)
+        if explicit is not None or request.get("argv") is not None:
+            return explicit, reason
+        config_path, reason = _project_file(project.get("root"), request.get("config"), suffix=".conf")
+        if config_path is None:
+            return None, "Certora requires an existing JSON5 .conf file; " + reason
+        return [config_path], "Certora configuration file validated"
+
+    def run(
+        self, project: dict[str, Any], request: dict[str, Any], *,
+        budget: dict[str, Any],
+    ) -> EngineResult:
+        result = super().run(project, request, budget=budget)
+        if result.status == "passed":
+            # A zero CLI exit may only mean that a remote verification job was
+            # submitted; do not misreport it as a proven property.
+            result.status = "submitted"
+            result.summary = "Certora CLI exited successfully; proof outcome is not established by this exit code"
+            result.metadata["result_semantics"] = "cli_success_is_not_proof_success"
+        return result
+
+
 class CapabilityRegistry:
     """Registry for adapters; selection is capability- and budget-driven."""
 
@@ -278,6 +419,27 @@ class CapabilityRegistry:
         self.plugin_errors: list[dict[str, str]] = []
         for adapter in adapters or []:
             self.register(adapter)
+
+    def _request_ready(
+        self, name: str, adapter: ToolAdapter, project: dict[str, Any],
+        request: dict[str, Any],
+    ) -> tuple[bool, str]:
+        checker = getattr(adapter, "request_ready", None)
+        if not callable(checker):
+            raw_args = request.get("argv")
+            if name == "forge" or (
+                isinstance(raw_args, list) and all(isinstance(arg, str) for arg in raw_args)
+            ):
+                return True, "explicit native argv supplied"
+            return False, "explicit native argv/harness configuration is required for this engine"
+        try:
+            decision = checker(project, request)
+            if not isinstance(decision, tuple) or len(decision) != 2 or not isinstance(decision[0], bool):
+                raise TypeError("request_ready() must return (bool, reason)")
+            return decision[0], str(decision[1])
+        except Exception as exc:
+            self._record_adapter_error(name, "request_ready()", exc)
+            return False, f"adapter configuration check failed: {type(exc).__name__}: {exc}"
 
     def register(self, adapter: ToolAdapter) -> None:
         name = adapter.capability.name.strip().lower()
@@ -375,14 +537,16 @@ class CapabilityRegistry:
                 continue
             if request is not None and name != "forge":
                 per_engine = request.get("argv_by_engine") or {}
-                has_native_args = (
-                    isinstance(per_engine, dict) and name in per_engine
-                ) or isinstance(request.get("argv"), list)
-                if not has_native_args:
+                engine_request = dict(request)
+                engine_request.pop("argv_by_engine", None)
+                if isinstance(per_engine, dict) and name in per_engine:
+                    engine_request["argv"] = per_engine[name]
+                configured, config_reason = self._request_ready(name, adapter, project, engine_request)
+                if not configured:
                     rejected.append({
                         "engine": name, "test_kind": test_kind,
                         "memory_class": cap.memory_class, "status": "missing_configuration",
-                        "reason": "explicit native argv/harness configuration is required for this engine",
+                        "reason": config_reason,
                     })
                     continue
             if cap.memory_class not in profiles[profile]:
@@ -485,6 +649,7 @@ class CapabilityRegistry:
             "results": results,
             "summary": {
                 "passed": sum(row["result"]["status"] == "passed" for row in results),
+                "submitted": sum(row["result"]["status"] == "submitted" for row in results),
                 "failed": sum(row["result"]["status"] == "failed" for row in results),
                 "timeout": sum(row["result"]["status"] == "timeout" for row in results),
                 "unsupported": sum(row["result"]["status"] == "unsupported" for row in results),
@@ -570,15 +735,14 @@ def default_registry(*, load_plugins: bool = True) -> CapabilityRegistry:
     entry-point group. A factory returns one ToolAdapter or a list/tuple of
     adapters. Plugin failures are retained for inspection.
     """
-    specs = [
-        EngineCapability("forge", "forge", ("unit", "integration", "invariant", "exploit", "regression", "fuzz"), ("solidity",), ("foundry",), ("foundry.toml",), memory_class="low", notes="Native Forge tests/fuzz/invariant; formal proof is not implied."),
-        EngineCapability("echidna", "echidna", ("invariant", "fuzz"), ("solidity",), ("foundry", "hardhat"), memory_class="medium", notes="Property-based smart-contract fuzzing."),
-        EngineCapability("medusa", "medusa", ("invariant", "fuzz"), ("solidity",), ("foundry", "hardhat"), memory_class="medium", notes="Coverage-guided EVM fuzzing."),
-        EngineCapability("halmos", "halmos", ("formal", "unit", "regression"), ("solidity",), ("foundry",), memory_class="high", notes="Symbolic testing; bounded by solver/model assumptions."),
-        EngineCapability("certora", "certoraRun", ("formal",), ("solidity",), memory_class="high", notes="Requires configured rules/specifications and external service/tool setup."),
-        EngineCapability("slither", "slither", (), ("solidity",), ("foundry", "hardhat", "brownie"), memory_class="low", notes="Static analysis, not a test executor or formal proof engine."),
+    adapters: list[ToolAdapter] = [
+        ExecutableAdapter(EngineCapability("forge", "forge", ("unit", "integration", "invariant", "exploit", "regression", "fuzz"), ("solidity",), ("foundry",), ("foundry.toml",), memory_class="low", notes="Native Forge tests/fuzz/invariant; formal proof is not implied.")),
+        EchidnaAdapter(EngineCapability("echidna", "echidna", ("invariant", "fuzz"), ("solidity",), ("foundry", "hardhat"), memory_class="medium", notes="Requires an explicit harness source; config is optional.")),
+        MedusaAdapter(EngineCapability("medusa", "medusa", ("invariant", "fuzz"), ("solidity",), ("foundry", "hardhat"), memory_class="medium", notes="Uses medusa.json and native medusa fuzz command.")),
+        HalmosAdapter(EngineCapability("halmos", "halmos", ("formal", "unit", "regression"), ("solidity",), ("foundry",), memory_class="high", notes="Symbolic testing; bounded by solver/model assumptions.")),
+        CertoraAdapter(EngineCapability("certora", "certoraRun", ("formal",), ("solidity",), memory_class="high", notes="Requires an explicit .conf; successful CLI exit is not proof success.")),
+        ExecutableAdapter(EngineCapability("slither", "slither", (), ("solidity",), ("foundry", "hardhat", "brownie"), memory_class="low", notes="Static analysis, not a test executor or formal proof engine.")),
     ]
-    adapters: list[ToolAdapter] = [ExecutableAdapter(spec) for spec in specs]
     registry = CapabilityRegistry(adapters)
     if load_plugins:
         try:
