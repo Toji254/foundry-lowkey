@@ -248,13 +248,25 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
     def test_certora_cli_success_is_not_reported_as_proof_success(self):
         adapter = CertoraAdapter(EngineCapability("certora", sys.executable, ("formal",), memory_class="high"))
         with tempfile.TemporaryDirectory() as root:
-            result = adapter.run(
-                {"root": root},
-                {"test_kind": "formal", "argv": ["-c", "print('job submitted')"]},
-                budget={"timeout_seconds": 5},
-            )
-        self.assertEqual(result.status, "submitted")
-        self.assertEqual(result.metadata["result_semantics"], "cli_success_is_not_proof_success")
+            def run(output, exit_code=0):
+                script = f"print({output!r}); raise SystemExit({exit_code})"
+                return adapter.run(
+                    {"root": root},
+                    {"test_kind": "formal", "argv": ["-c", script]},
+                    budget={"timeout_seconds": 5},
+                )
+            submitted = run("Job submitted to server")
+            passed = run("Finished verification request\\n[rule] supplyInvariant: PASS")
+            failed = run("Finished verification request\\nERROR: Prover found violations\\n[rule] supplyInvariant: FAIL", 1)
+            tool_error = run("configuration parsing failed", 1)
+        self.assertEqual(submitted.status, "submitted")
+        self.assertEqual(submitted.metadata["result_semantics"], "certora_job_submitted")
+        self.assertEqual(passed.status, "passed")
+        self.assertEqual(passed.metadata["result_semantics"], "certora_completed_pass")
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.metadata["result_semantics"], "certora_completed_with_violations")
+        self.assertEqual(tool_error.status, "error")
+        self.assertEqual(tool_error.metadata["result_semantics"], "certora_cli_execution_error")
 
     def test_registry_rejects_duplicate_names(self):
         cap = EngineCapability("forge", "forge", ("unit",))
