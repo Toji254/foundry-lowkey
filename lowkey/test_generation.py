@@ -21,7 +21,7 @@ try:
 except ImportError:  # keep partial installs diagnosable
     analyse_contract = render_test_plan = unit_access_control_tests = mask_solidity = None
 
-TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal")
+TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "exploit", "fork", "poc", "regression", "formal")
 
 
 def parse_types(raw: str | None) -> list[str]:
@@ -903,6 +903,8 @@ def _generation_assessment(
                 level, note = "scaffold", "A handler and protocol invariant must be designed from intended behavior."
         elif kind == "integration":
             level, note = "scaffold", "Peer deployment, configuration, and cross-contract assertions are not inferred automatically."
+        elif kind == "exploit":
+            level, note = "scaffold", "A concrete exploit precondition, trigger, and measurable security-impact assertion are required."
         elif kind == "fork":
             level = "diagnostic-candidate" if valid_target else "requires-target"
             note = "Read-only fork diagnostics; add deployment-specific expected values and proxy/implementation checks." if valid_target else "Set a deployed target address before the fork draft can run."
@@ -931,7 +933,7 @@ def run_test_gen(config: dict[str, Any], args: list[str], *, project_root: str |
         print("""Lowkey test generator
 
 Usage:
-  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,fork,poc,regression,formal]
+  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,exploit,fork,poc,regression,formal]
               [--output-dir .audit/test-gen] [--force] [--validate] [--strict]
 
 Types:
@@ -939,6 +941,7 @@ Types:
   fuzz         Executable setter/getter fuzz property when safely recognized; otherwise a TODO
   invariant    Handler/property scaffold; protocol invariants must be supplied
   integration  Local peer-contract wiring scaffold
+  exploit      Exploit-harness scaffold; add a concrete trigger and impact assertion
   fork         Read-only fork checks against the configured target
   poc          Fork-based reproduction scaffold
   regression   Starter for locking in a previously fixed bug

@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "tests" / "fixtures" / "test-generation-ecosystem.json"
 REQUIRED_TYPES = {
-    "unit", "fuzz", "invariant", "integration",
+    "unit", "fuzz", "invariant", "integration", "exploit",
     "fork", "poc", "regression", "formal",
 }
 

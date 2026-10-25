@@ -20,7 +20,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "tests" / "fixtures" / "test-generation-ecosystem.json"
-SOLIDITY_TYPES = "unit,fuzz,invariant,integration,fork,poc,regression"
+SOLIDITY_TYPES = "unit,fuzz,invariant,integration,exploit,fork,poc,regression"
 ALL_TYPES = SOLIDITY_TYPES + ",formal"
 DECLARATION = re.compile(
     r"\b(?:abstract\s+)?contract\s+([A-Za-z_]\w*)\b"

@@ -509,6 +509,7 @@ def render_test_plan(analysis: dict[str, Any], generated_types: list[str]) -> st
         ("Fuzz", "Fuzz meaningful inputs with boundary-biased values and valid preconditions; assert a precise property rather than merely executing calls."),
         ("Invariant", "Define accounting conservation, solvency, role isolation, state-machine legality and token/balance consistency where relevant. Ensure handlers make successful state changes."),
         ("Integration", "Configure actual peer contracts and dependencies; examine callbacks and non-standard token behavior when relevant."),
+        ("Exploit", "Specify a concrete attacker precondition, trigger, and measurable security impact; do not treat a generic harness scaffold as an exploit proof."),
         ("Fork", "Pin chain/block when reproducibility matters; verify target code, proxy implementation and critical dependency addresses; compare deployed state with explicit expectations."),
         ("PoC / regression", "Record exact preconditions, trigger, violated property, measurable asset/state impact and a regression assertion that detects the original bug."),
         ("Formal", "State assumptions and properties precisely, check for vacuity and unsound external summaries, run the configured verifier and review counterexamples. A spec is not a proof."),
