@@ -456,6 +456,9 @@ FINDING
 
 The context is deliberately project-scoped. Lowkey configuration under `~/.lowkey/` remains for reusable user settings, wallets, aliases, and RPC preferences; `.audit/` is the audit evidence shared by the tools working on the current Foundry project.
 
+
+Use `lk test-gen Counter --types unit,fuzz,invariant --validate` to compile temporary copies of generated drafts with `forge build`. This checks compilation only; it does not execute tests or establish protocol security.
+
 ### Connected investigation evidence
 
 When a Slither signal is focused, concrete evidence produced by `lk changes` is attached directly to that signal. The link is automatic, so the investigation keeps the detector context and the actual state mutation together:

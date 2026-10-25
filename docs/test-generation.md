@@ -9,6 +9,7 @@ lk test-gen Counter
 lk test-gen Counter --types unit,fuzz,invariant
 lk test-gen Counter --types fork,poc --output-dir .audit/drafts
 lk test-gen Counter --types all --force
+lk test-gen Counter --types unit,fuzz,invariant --validate
 lk test-gen Counter --types formal
 ```
 
@@ -16,7 +17,7 @@ If no contract name is supplied, Lowkey uses the active configured contract name
 
 ## What it creates
 
-By default, files are written to `.audit/test-gen/<ContractName>/`. This is intentional: drafts do not enter Foundry's regular test discovery and therefore cannot silently change the project's normal test result. A JSON report lists generated/skipped types and a source-analysis summary. A test-plan.md records recognized protocol shapes, security-relevant source cues, dependency imports, existing test inventory, reusable .audit/evidence files, and a plan for all seven test families plus formal verification.
+By default, files are written to `.audit/test-gen/<ContractName>/`. This is intentional: drafts do not enter Foundry's regular test discovery and therefore cannot silently change the project's normal test result. `--validate` first builds the untouched project, then stages uniquely named temporary copies under the active Foundry test directory and runs `forge build` again. It never executes test functions, removes the temporary files afterward, and records both build results in `report.json`. A JSON report lists generated/skipped types and a source-analysis summary. A test-plan.md records recognized protocol shapes, security-relevant source cues, dependency imports, existing test inventory, reusable .audit/evidence files, and a plan for all seven test families plus formal verification.
 
 | Type | Starter contents | What still needs human/project input |
 |---|---|---|
@@ -45,3 +46,6 @@ The analysis is deliberately syntax-aware about comments and string literals. It
 Unit drafts may add an unauthenticated-caller test only when an explicit onlyOwner modifier protects an uncomplicated state-mutating function body. The test remains a candidate and should be reviewed for project semantics. Fork drafts are read-only by default; Lowkey no longer infers a write against a deployed address merely because the local source contains a simple setter. Configure LOWKEY_RPC_URL, and optionally LOWKEY_FORK_BLOCK and LOWKEY_EXPECTED_CHAIN_ID, to make the fork reproducible.
 
 The generator does not claim to automatically reconstruct every protocol's economic rules. Invariant handlers, realistic integration fixtures, exploit preconditions, and formal assumptions require the specific properties and environmental model to be established. See the generated test plan for recognized evidence and prioritized test families.
+
+
+Validation is a compiler check only. It does not execute assertions, verify a fork against live RPC state, or prove security. Formal specifications require their configured verifier and assumptions to be reviewed separately.

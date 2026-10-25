@@ -135,7 +135,7 @@ jobs:
       - name: Generate and execute test-generation fixtures
         working-directory: /tmp/lowkey-fixture
         run: |
-          lk test-gen Fixture --types unit,fuzz,invariant --force
+          lk test-gen Fixture --types unit,fuzz,invariant --force --validate
           mkdir -p test/lowkey-generated
           cp .audit/test-gen/Fixture/LowkeyGeneratedUnit_Fixture.t.sol test/lowkey-generated/
           cp .audit/test-gen/Fixture/LowkeyGeneratedFuzz_Fixture.t.sol test/lowkey-generated/

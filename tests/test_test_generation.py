@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -365,6 +366,62 @@ class TestGenerationTests(unittest.TestCase):
             result = analyse_contract(root, "Demo", source_path, sample)
             self.assertIn("access control", result["security_surfaces"])
             self.assertEqual(result["functions"][0]["name"], "changeOwner")
+
+
+    def test_validate_compiles_temporary_drafts_without_running_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                completed = subprocess.CompletedProcess(["forge", "build"], 0, "compile ok", "")
+                with patch("test_generation.shutil.which", return_value="/fake/forge"), patch(
+                    "test_generation.subprocess.run", return_value=completed
+                ) as run:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        code = generation.run_test_gen(
+                            {"target_contract": "Counter"},
+                            ["--types", "unit", "--validate"],
+                        )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["validation"]["status"], "passed")
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.args[0], ["/fake/forge", "build"])
+            self.assertEqual(run.call_args.kwargs["cwd"], root)
+            self.assertIn("test functions were not executed", report["validation"]["detail"])
+            self.assertFalse((root / "test" / "lowkey-generated").exists())
+
+    def test_generated_pragma_and_import_follow_foundry_project_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\nsrc = "src"\ntest = "spec"\n', encoding="utf-8"
+            )
+            source_path = root / "src" / "Counter.sol"
+            source_path.write_text(
+                source_path.read_text(encoding="utf-8").replace(
+                    "pragma solidity ^0.8.20;", "pragma solidity ^0.8.24;"
+                ),
+                encoding="utf-8",
+            )
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen({"target_contract": "Counter"}, ["--types", "unit"])
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            unit = (root / ".audit" / "test-gen" / "Counter" / "LowkeyGeneratedUnit_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertIn("pragma solidity ^0.8.24;", unit)
+            self.assertIn('import { Counter } from "../../src/Counter.sol";', unit)
 
 if __name__ == "__main__":
     unittest.main()

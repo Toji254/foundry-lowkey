@@ -8,7 +8,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -244,11 +247,161 @@ def _constructor_values(raw: str | None) -> list[str] | None:
     return values
 
 
+def _foundry_test_dir(root: Path) -> Path:
+    """Read the active Foundry profile's configured test directory."""
+    config_path = root / "foundry.toml"
+    test_dir = "test"
+    if config_path.exists():
+        try:
+            import tomllib
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            active_profile = os.environ.get("FOUNDRY_PROFILE", "default")
+            profile_config = config.get("profile", {}).get(active_profile, {})
+            test_dir = profile_config.get("test") or config.get("test") or test_dir
+        except (OSError, ValueError, ImportError, AttributeError):
+            pass
+    if not isinstance(test_dir, str) or not test_dir.strip():
+        test_dir = "test"
+    path = Path(test_dir).expanduser()
+    return (path if path.is_absolute() else root / path).resolve()
+
+
+def _solidity_pragma(source: str) -> str:
+    """Reuse the target source's compiler range when available."""
+    searchable = mask_solidity(source) if mask_solidity else source
+    match = re.search(r"\bpragma\s+solidity\s+([^;]+);", searchable)
+    if not match:
+        return "^0.8.20"
+    pragma = source[match.start(1):match.end(1)].strip()
+    return pragma if re.fullmatch(r"[0-9A-Za-z.^<>=+*~|()\s-]+", pragma) else "^0.8.20"
+
+
 def _rel_import(root: Path, source_path: Path) -> str:
-    # Generated source is intended to be moved into test/lowkey-generated.
-    relative = Path("test") / "lowkey-generated"
-    target = Path(os.path.relpath(source_path, root / relative))
-    return PurePosixPath(target).as_posix()
+    # Drafts are meant to be moved into lowkey-generated under the configured test directory.
+    destination = _foundry_test_dir(root) / "lowkey-generated"
+    return PurePosixPath(os.path.relpath(source_path, destination)).as_posix()
+
+
+def _validate_generated(root: Path, generated: list[str], output_dir: Path | None = None) -> dict[str, Any]:
+    """Compile temporary copies of generated Solidity drafts without executing tests."""
+    solidity_files: list[Path] = []
+    for raw_path in generated:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+        if path.name.endswith(".t.sol") and path.is_file():
+            solidity_files.append(path.resolve())
+    if output_dir is not None and output_dir.is_dir():
+        solidity_files.extend(path.resolve() for path in output_dir.glob("*.t.sol") if path.is_file())
+    solidity_files = sorted(set(solidity_files))
+    result: dict[str, Any] = {
+        "requested": True,
+        "status": "not-applicable" if not solidity_files else "pending",
+        "command": ["forge", "build"],
+        "baseline_exit_code": None,
+        "exit_code": None,
+        "detail": "",
+    }
+    if not solidity_files:
+        result["detail"] = "No generated Solidity drafts were available to compile. Formal specs are not validated by Forge."
+        return result
+    forge_bin = shutil.which("forge")
+    if not forge_bin:
+        result["status"] = "unavailable"
+        result["detail"] = "forge was not found on PATH; drafts were written but not compile-validated."
+        return result
+
+    try:
+        baseline = subprocess.run(
+            [forge_bin, "build"], cwd=root, capture_output=True, text=True,
+            timeout=180, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        result["status"] = "baseline-failed"
+        result["detail"] = "Baseline forge build timed out before generated drafts were added."
+        result["stdout_tail"] = str(exc.stdout or "")[-4000:]
+        result["stderr_tail"] = str(exc.stderr or "")[-4000:]
+        return result
+    except OSError as exc:
+        result["status"] = "unavailable"
+        result["detail"] = "Could not run baseline forge build: " + str(exc)
+        return result
+    result["baseline_exit_code"] = baseline.returncode
+    if baseline.returncode != 0:
+        result["status"] = "baseline-failed"
+        result["exit_code"] = baseline.returncode
+        result["detail"] = "The project fails to build before generated drafts are added; draft compilation was not evaluated."
+        result["stdout_tail"] = (baseline.stdout or "")[-4000:]
+        result["stderr_tail"] = (baseline.stderr or "")[-4000:]
+        return result
+
+    destination = _foundry_test_dir(root) / "lowkey-generated"
+    created_dirs: list[Path] = []
+    cursor = destination
+    while not cursor.exists():
+        created_dirs.append(cursor)
+        if cursor.parent == cursor:
+            break
+        cursor = cursor.parent
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        result["status"] = "unavailable"
+        result["detail"] = "Cannot create temporary validation directory: " + str(exc)
+        for directory in created_dirs:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        return result
+
+    token = uuid.uuid4().hex[:12]
+    temporary_files: list[Path] = []
+    try:
+        for source_path in solidity_files:
+            content = source_path.read_text(encoding="utf-8")
+            searchable = mask_solidity(content) if mask_solidity else content
+            declarations = re.findall(r"\b(?:abstract\s+)?contract\s+([A-Za-z_]\w*)", searchable)
+            for declaration in declarations:
+                unique_name = "LowkeyValidation_" + token + "_" + declaration
+                content = re.sub(r"\b" + re.escape(declaration) + r"\b", unique_name, content)
+            temp_path = destination / ("LowkeyValidation_" + token + "_" + source_path.name)
+            temp_path.write_text(content, encoding="utf-8")
+            temporary_files.append(temp_path)
+
+        completed = subprocess.run(
+            [forge_bin, "build"], cwd=root, capture_output=True, text=True,
+            timeout=180, check=False,
+        )
+        result["exit_code"] = completed.returncode
+        result["stdout_tail"] = (completed.stdout or "")[-4000:]
+        result["stderr_tail"] = (completed.stderr or "")[-4000:]
+        result["status"] = "passed" if completed.returncode == 0 else "failed"
+        result["detail"] = (
+            "Generated Solidity drafts compiled successfully; test functions were not executed."
+            if completed.returncode == 0 else
+            "The project built before staging drafts but failed to compile with temporary generated drafts."
+        )
+    except subprocess.TimeoutExpired as exc:
+        result["status"] = "failed"
+        result["detail"] = "forge build timed out after 180 seconds."
+        result["stdout_tail"] = str(exc.stdout or "")[-4000:]
+        result["stderr_tail"] = str(exc.stderr or "")[-4000:]
+    except OSError as exc:
+        result["status"] = "unavailable"
+        result["detail"] = "Could not stage or compile generated drafts: " + str(exc)
+    finally:
+        for path in temporary_files:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        for directory in created_dirs:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    return result
 
 
 def _solidity_name(name: str) -> str:
@@ -260,16 +413,17 @@ def _solidity_name(name: str) -> str:
 
 def _local_template(kind: str, name: str, import_path: str, constructor_values: list[str],
                     fuzz_property: dict[str, str] | None = None,
-                    analysis: dict[str, Any] | None = None) -> str:
+                    analysis: dict[str, Any] | None = None,
+                    source_pragma: str = "^0.8.20") -> str:
     ident = _solidity_name(name)
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
     constructor_arguments = ", ".join(constructor_values)
     deploy_expression = f"new {name}({constructor_arguments})"
     common = f'''// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity {source_pragma};
 
 // LowkeyCast-generated STARTER, not proof of protocol correctness.
-// Move to test/lowkey-generated and review all TODOs before relying on it.
+// Move into lowkey-generated under the configured Foundry test directory.
 import {{Test}} from "forge-std/Test.sol";
 import {{ {name} }} from "{import_path}";
 
@@ -300,7 +454,10 @@ import {{ {name} }} from "{import_path}";
     }}
 
     function test_deployment_has_runtime_code() public view {{
-        assertGt(address(target).code.length, 0);
+        address deployed = address(target);
+        uint256 codeSize;
+        assembly { codeSize := extcodesize(deployed) }
+        assertGt(codeSize, 0);
     }}
 
     // TODO: Add unit tests for expected state changes, access control,
@@ -469,14 +626,23 @@ A guessed assertion could be incorrect or vacuous. Add a formal rule only after 
 
 def _fork_template(kind: str, name: str, target: str | None, import_path: str,
                    fuzz_property: dict[str, str] | None,
-                   analysis: dict[str, Any] | None = None) -> str:
+                   analysis: dict[str, Any] | None = None,
+                   source_pragma: str = "^0.8.20") -> str:
     """Generate fork diagnostics without mutating a deployed protocol by default."""
     ident = _solidity_name(name)
     addr = target.lower() if isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) else "address(0)"
     target_literal = addr if addr == "address(0)" else f"address({addr})"
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
+    version_match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", source_pragma)
+    chainid_supported = not version_match or (int(version_match.group(1)), int(version_match.group(2))) >= (0, 8)
+    chain_id_check = (
+        '        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", block.chainid);'
+        '\n        assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");'
+        if chainid_supported else
+        '        // Solidity before 0.8.0 has no block.chainid builtin; pin the chain externally.'
+    )
     body = f'''// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity {source_pragma};
 
 // LowkeyCast-generated fork diagnostic. Configure LOWKEY_RPC_URL before running.
 // Tests run against a local Foundry fork; they do not send transactions to mainnet.
@@ -487,6 +653,10 @@ contract {generated} is Test {{
     address internal constant TARGET = {target_literal};
     {name} internal target;
 
+    function _codeSize(address account) internal view returns (uint256 size) {{
+        assembly {{ size := extcodesize(account) }}
+    }}
+
     function setUp() public {{
         string memory rpcUrl = vm.envString("LOWKEY_RPC_URL");
         uint256 requestedBlock = vm.envOr("LOWKEY_FORK_BLOCK", uint256(0));
@@ -496,14 +666,13 @@ contract {generated} is Test {{
             vm.createSelectFork(rpcUrl, requestedBlock);
         }}
         require(TARGET != address(0), "Set a real target address before running");
-        assertGt(TARGET.code.length, 0, "Target has no code on selected fork");
-        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", block.chainid);
-        assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");
+        assertGt(_codeSize(TARGET), 0, "Target has no code on selected fork");
+        {chain_id_check}
         target = {name}(TARGET);
     }}
 
     function test_fork_target_has_runtime_code() public view {{
-        assertGt(TARGET.code.length, 0, "Target has no runtime code");
+        assertGt(_codeSize(TARGET), 0, "Target has no runtime code");
     }}
 
 '''
@@ -546,7 +715,8 @@ contract {generated} is Test {{
 def _render(kind: str, name: str, import_path: str, target: str | None,
             local_deploy: bool, constructor_values: list[str] | None,
             is_abstract: bool, fuzz_property: dict[str, str] | None,
-            analysis: dict[str, Any] | None = None) -> str:
+            analysis: dict[str, Any] | None = None,
+            source_pragma: str = "^0.8.20") -> str:
     if kind == "formal":
         return _formal_template(name, fuzz_property)[1]
     if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:
@@ -557,8 +727,8 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
                 f"{kind} needs constructor argument types with supported placeholder values; "
                 "this constructor contains an unsupported or unrecognized type"
             )
-        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None, analysis)
-    return _fork_template(kind, name, target, import_path, fuzz_property, analysis)
+        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None, analysis, source_pragma)
+    return _fork_template(kind, name, target, import_path, fuzz_property, analysis, source_pragma)
 
 
 def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
@@ -567,22 +737,23 @@ def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
 
 Usage:
   lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,fork,poc,regression,formal]
-              [--output-dir .audit/test-gen] [--force]
+              [--output-dir .audit/test-gen] [--force] [--validate]
 
 Types:
   unit         Local deployment smoke test + unit-test TODOs
   fuzz         Executable setter/getter fuzz property when safely recognized; otherwise a TODO
   invariant    Handler/property scaffold; protocol invariants must be supplied
   integration  Local peer-contract wiring scaffold
-  fork         Fork smoke test against the configured target
+  fork         Read-only fork checks against the configured target
   poc          Fork-based reproduction scaffold
   regression   Starter for locking in a previously fixed bug
   formal       Certora CVL rule for recognized properties, or a formal-spec worksheet
 
 Generated drafts are saved outside Foundry's test directory by default, so they
 will not silently affect the project's existing test suite. Review the report,
-complete TODOs, and move approved files into test/ before running Forge.
+complete TODOs, and move approved files into the configured Foundry test directory before running Forge.
 The generator does not claim coverage or invent protocol-specific assertions.
+--validate compiles temporary generated drafts with forge build; it never executes tests.
 """)
         return 0
 
@@ -590,6 +761,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     types_raw: str | None = None
     output_dir = Path(".audit/test-gen")
     force = False
+    validate = False
     positionals: list[str] = []
     index = 0
     while index < len(args):
@@ -610,6 +782,8 @@ The generator does not claim coverage or invent protocol-specific assertions.
             output_dir = Path(value.split("=", 1)[1]).expanduser()
         elif value == "--force":
             force = True
+        elif value == "--validate":
+            validate = True
         elif value.startswith("-"):
             return _error(f"Unknown option: {value}")
         else:
@@ -644,6 +818,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     }
     analysis["_source_text"] = source
     import_path = _rel_import(root, source_path)
+    source_pragma = _solidity_pragma(source)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
     output_dir = output_dir / _solidity_name(name)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -657,7 +832,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
             suffix, _ = _formal_template(name, fuzz_property)
         filename = output_dir / f"LowkeyGenerated{kind.title()}_{_solidity_name(name)}{suffix}"
         try:
-            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis)
+            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
         except ValueError as exc:
             skipped.append({"type": kind, "reason": str(exc)})
             continue
@@ -675,13 +850,17 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "constructor": "abstract-contract" if is_abstract else ("unknown" if constructor_args is None else ("zero-argument" if not constructor_args.strip() else ("arguments-required" if constructor_values is not None else "unsupported-arguments"))),
         "constructor_parameters": constructor_args,
         "constructor_placeholders": constructor_values,
+        "solidity_pragma": source_pragma,
         "fuzz_property": fuzz_property,
         "analysis": {key: value for key, value in analysis.items() if not key.startswith("_")},
         "requested_types": selected,
         "generated": generated,
         "skipped": skipped,
         "warning": "Scaffolds are not protocol proofs. Complete TODO assertions before relying on them.",
+        "validation": {"requested": False, "status": "not-requested"},
     }
+    if validate:
+        report["validation"] = _validate_generated(root, generated, output_dir)
     plan_path = output_dir / "test-plan.md"
     if plan_path.exists() and not force:
         plan_path = output_dir / "test-plan.latest.md"
@@ -701,8 +880,13 @@ The generator does not claim coverage or invent protocol-specific assertions.
     for item in skipped:
         print(f"  skipped    {item['type']}: {item['reason']}")
     print("Review TODOs: no protocol-specific behavior or invariant is inferred automatically.")
+    validation = report["validation"]
+    if validation.get("requested"):
+        print(f"Validation: {validation.get('status')} - {validation.get('detail', '')}")
     print(f"Plan: {plan_path.relative_to(root) if plan_path.is_relative_to(root) else plan_path}")
     print(f"Report: {report_path.relative_to(root) if report_path.is_relative_to(root) else report_path}")
+    if validate and report["validation"].get("status") not in ("passed", "not-applicable"):
+        return 1
     return 0
 
 
