@@ -231,6 +231,53 @@ class CapabilityRegistry:
         return sorted(candidates, key=lambda row: (order.get(row["memory_class"], 3), row["engine"]))
 
 
+    def run_campaign(
+        self, project: dict[str, Any], test_kind: str, *,
+        request: dict[str, Any] | None = None,
+        budget: dict[str, Any] | None = None,
+        profile: str = "balanced",
+    ) -> dict[str, Any]:
+        """Execute compatible engines serially and preserve every native result.
+
+        Per-engine native CLI arguments may be supplied in request.argv_by_engine.
+        Missing arguments never trigger guessed Echidna/Medusa/solver configuration.
+        """
+        request = dict(request or {})
+        budget = dict(budget or {})
+        selected = self.select(project, test_kind, profile=profile)
+        by_name = {name: adapter for name, adapter in self._adapters.items()}
+        results: list[dict[str, Any]] = []
+        argv_by_engine = request.get("argv_by_engine") or {}
+        if not isinstance(argv_by_engine, dict):
+            raise ValueError("request.argv_by_engine must be a mapping of engine name to argv list")
+        for candidate in selected:
+            name = candidate["engine"]
+            engine_request = dict(request)
+            engine_request.pop("argv_by_engine", None)
+            engine_request["test_kind"] = test_kind
+            if name in argv_by_engine:
+                engine_request["argv"] = argv_by_engine[name]
+            result = by_name[name].run(project, engine_request, budget=budget)
+            results.append({
+                "selection": candidate,
+                "result": result.to_dict(),
+            })
+        return {
+            "profile": profile,
+            "test_kind": test_kind,
+            "execution_mode": "serial",
+            "selected_count": len(selected),
+            "results": results,
+            "summary": {
+                "passed": sum(row["result"]["status"] == "passed" for row in results),
+                "failed": sum(row["result"]["status"] == "failed" for row in results),
+                "timeout": sum(row["result"]["status"] == "timeout" for row in results),
+                "unsupported": sum(row["result"]["status"] == "unsupported" for row in results),
+                "error": sum(row["result"]["status"] == "error" for row in results),
+            },
+        }
+
+
 def default_registry() -> CapabilityRegistry:
     """Describe common engines without claiming they are installed or runnable."""
     specs = [
