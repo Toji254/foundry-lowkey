@@ -18,8 +18,11 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - `EngineCapability` declares test kinds, language/build support, project markers, RPC needs, and resource class.
 - `ToolAdapter` defines `available()`, `supports(project, test_kind)`, and bounded `run(project, request, budget)`.
 - `EngineResult` normalizes status/exit code/summary/artifacts while retaining raw stdout, stderr, raw evidence, and metadata.
-- `CapabilityRegistry` inventories adapters and selects only available, compatible tools under `light`, `balanced`, or `deep` profiles.
-- `default_registry()` is a capability catalogue, not a guarantee that any executable is installed or that every advertised workflow has an execution adapter.
+- `CapabilityRegistry` inventories adapters, selects available compatible tools under `light`, `balanced`, or `deep` profiles, and runs selected engines serially through `run_campaign()`.
+- Native command arguments are explicit (`argv` or `argv_by_engine`); the registry does not guess tool-specific harness/spec syntax. Forge defaults to `forge test` only when no Forge argument vector is supplied.
+- `default_registry()` is a candidate catalogue, not a guarantee that an executable is installed or that every advertised workflow has an engine-specific integration.
+- `lowkey/test_generation.py` adds project-aware Solidity/Foundry drafts for unit, integration, invariant, exploit, regression, fuzz, and formal categories, plus fork/PoC variants. It recognizes only a narrow direct integer setter/getter property; unsupported constructor types are skipped rather than guessed.
+- `lk test-gen <ContractName> --types ...` routes to the project-aware generator. Bare `lk test-gen` retains the existing last-send reproduction workflow for backward compatibility.
 
 ## Initial engine map
 
@@ -51,12 +54,15 @@ Every generated artifact should record: intended property, preconditions, actors
 - `light`: low-memory engines only; intended for an 8 GB machine.
 - `balanced`: low and medium memory engines.
 - `deep`: includes high-memory engines, still selected serially by default.
+- Campaign execution is serial; each process has a bounded timeout and preserves native stdout/stderr. The current budget contract bounds time, not yet measured live RAM/CPU.
 - Never launch every fuzzer/solver concurrently by default. A future planner must account for RAM, CPU, project size, timeout, and explicit user budgets.
 
 ## Gaps still open
 
-- The common interface exists, but concrete execution adapters beyond the declarative executable adapter are not implemented by this first change.
-- The generator still needs property-preserving, project-specific generation for all seven categories.
+- The common bounded process adapter and serial campaign runner exist, but tool-specific argument builders/configuration parsers for Echidna, Medusa, Halmos, and Certora remain open. Those engines must receive explicit native arguments/harnesses/specifications.
+- Project-aware generation is currently Solidity/Foundry-specific. Other language/build-system generation adapters and a shared generation plugin contract remain open.
+- Integration, exploit, and regression outputs are honest starters unless concrete setup/bug evidence is supplied; they are not automatically meaningful tests yet.
+- The recognized setter/getter fuzz/invariant/formal path needs compilation and real engine validation, including checking for vacuous or invalid specifications.
 - Mutation/buggy-fixture validation and mutation-score gates remain to be built.
 - Real-project benchmark matrix and reproducible campaign reports remain incomplete.
 - Capability claims need per-tool version checks, supported-project checks, integration tests, and evidence provenance.
