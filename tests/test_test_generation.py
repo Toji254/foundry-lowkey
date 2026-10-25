@@ -639,5 +639,36 @@ class TestGenerationTests(unittest.TestCase):
         self.assertIn("safe-transfer callbacks", plan)
         self.assertIn("candidate checks suggested by source/interface cues", plan)
 
+
+    def test_validation_ignores_stale_solidity_files_not_generated_this_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            stale_dir = root / ".audit" / "test-gen" / "Counter"
+            stale_dir.mkdir(parents=True)
+            (stale_dir / "OldDraft.t.sol").write_text(
+                "pragma solidity ^0.8.20; contract OldDraftTest {}",
+                encoding="utf-8",
+            )
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch("test_generation.shutil.which", return_value="/fake/forge"), patch(
+                    "test_generation.subprocess.run"
+                ) as run, contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter"},
+                        ["--types", "formal", "--validate"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 1)
+            run.assert_not_called()
+            report = json.loads(
+                (stale_dir / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["validation"]["status"], "not-applicable")
+            self.assertIn("No generated Solidity drafts", report["validation"]["detail"])
+
 if __name__ == "__main__":
     unittest.main()
