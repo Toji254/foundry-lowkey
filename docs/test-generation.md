@@ -27,7 +27,7 @@ By default, files are written to `.audit/test-gen/<ContractName>/`. This is inte
 | PoC | Fork setup and reproduction guidance | Exploit calldata/preconditions and a security-impact assertion |
 | Regression | Starter for an already fixed bug | Original preconditions, trigger and expected post-fix assertion |
 
-The local-deployment styles (unit, fuzz, invariant, integration and regression) are currently generated only when Lowkey finds a concrete contract with a zero-argument constructor. If construction requires arguments, those types are skipped with a reason rather than emitting a likely-invalid deployment expression. Fork and PoC drafts still need a configured target address and a valid `LOWKEY_RPC_URL` before execution.
+The local-deployment styles (unit, fuzz, invariant, integration and regression) support zero-argument constructors and simple constructor parameters with conservative placeholders for integer, address, boolean, string and bytes types. For example, `constructor(uint256 initial)` is scaffolded as `new ContractName(0)`, with a TODO to review the placeholder. These values are compile-oriented defaults, not evidence of valid protocol setup. Unknown or user-defined parameter types are skipped rather than guessed. Fork and PoC drafts still need a configured target address and a valid `LOWKEY_RPC_URL` before execution.
 
 The import paths assume the generated Solidity files are eventually moved to `test/lowkey-generated/`. Review them before moving or running them. `--force` allows replacing existing drafts; without it Lowkey preserves existing files.
 
