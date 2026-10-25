@@ -152,7 +152,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         matrix = registry.support_matrix({"language": "solidity", "build_system": "foundry"})
         self.assertTrue(matrix["python-test"]["available"])
         self.assertTrue(matrix["python-test"]["test_kinds"]["unit"]["supported"])
-        self.assertIn("unsupported", matrix["python-test"]["test_kinds"]["fuzz"]["reason"]) if False else None
+        self.assertTrue(matrix["python-test"]["test_kinds"]["fuzz"]["supported"])
 
     def test_unknown_test_kind_and_profile_fail_explicitly(self):
         registry = default_registry()
