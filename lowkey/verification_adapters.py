@@ -7,6 +7,9 @@ and project-specific generation remain owned by their native engines.
 from __future__ import annotations
 
 import shutil
+import subprocess
+import os
+import signal
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -98,7 +101,74 @@ class ExecutableAdapter:
         self, project: dict[str, Any], request: dict[str, Any], *,
         budget: dict[str, Any],
     ) -> EngineResult:
-        raise NotImplementedError("Concrete adapters implement bounded execution")
+        """Run a bounded native command without a shell.
+
+        Native argument construction is explicit: the registry never guesses
+        an engine's target/harness syntax or silently claims a proof.
+        """
+        root_value = project.get("root")
+        if not root_value:
+            return EngineResult(self.capability.name, "unsupported", summary="project root is required")
+        root = Path(str(root_value)).expanduser().resolve()
+        if not root.is_dir():
+            return EngineResult(self.capability.name, "unsupported", summary=f"project root is not a directory: {root}")
+        test_kind = str(request.get("test_kind") or "")
+        available, reason = self.supports(project, test_kind)
+        if not available:
+            return EngineResult(self.capability.name, "unsupported", summary=reason)
+        raw_args = request.get("argv")
+        if raw_args is None and self.capability.name == "forge":
+            raw_args = ["test"]
+        if not isinstance(raw_args, list) or not all(isinstance(arg, str) for arg in raw_args):
+            return EngineResult(
+                self.capability.name, "unsupported",
+                summary="request.argv must be a list of native CLI arguments; no shell is used",
+            )
+        try:
+            timeout = max(1, min(int(budget.get("timeout_seconds", 120)), 7200))
+        except (TypeError, ValueError):
+            timeout = 120
+        command = [self.capability.command, *raw_args]
+        try:
+            process = subprocess.Popen(
+                command, cwd=root, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                start_new_session=(os.name == "posix"),
+            )
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+                code = process.returncode
+                status = "passed" if code == 0 else "failed"
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.kill()
+                except OSError:
+                    pass
+                try:
+                    stdout, stderr = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        if os.name == "posix":
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except OSError:
+                        pass
+                    stdout, stderr = process.communicate()
+                code, status = 124, "timeout"
+                stderr = (stderr or "") + f"\nLOWKEY_TIMEOUT_SECONDS={timeout}"
+        except OSError as exc:
+            return EngineResult(self.capability.name, "error", exit_code=127, summary=str(exc))
+        return EngineResult(
+            engine=self.capability.name, status=status, exit_code=code,
+            summary=f"{' '.join(command)} exited with {code}",
+            raw_stdout=stdout or "", raw_stderr=stderr or "",
+            raw_evidence={"argv": command, "cwd": str(root), "timeout_seconds": timeout},
+            metadata={"test_kind": test_kind, "project": str(root)},
+        )
 
 
 class CapabilityRegistry:
