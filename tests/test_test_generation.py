@@ -593,5 +593,29 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(report["validation"]["status"], "not-applicable")
             self.assertIn("Formal specs are not validated by Forge", report["validation"]["detail"])
 
+
+    def test_test_plan_includes_protocol_specific_obligations_for_detected_profile(self):
+        from test_generation_analysis import render_test_plan
+
+        plan = render_test_plan(
+            {
+                "contract": "Token",
+                "source": "src/Token.sol",
+                "inheritance": [],
+                "profiles": ["ERC-20-like token", "ERC-721-like NFT"],
+                "security_surfaces": {},
+                "existing_tests": {"file_count": 0, "function_count": 0, "files": []},
+                "functions": [],
+                "imports": [],
+                "audit_evidence": {"files": [], "signals": [], "note": "No evidence"},
+                "limitations": [],
+            },
+            ["unit", "invariant"],
+        )
+        self.assertIn("Profile-specific test obligations", plan)
+        self.assertIn("allowance consumption", plan)
+        self.assertIn("safe-transfer callbacks", plan)
+        self.assertIn("candidate checks suggested by source/interface cues", plan)
+
 if __name__ == "__main__":
     unittest.main()

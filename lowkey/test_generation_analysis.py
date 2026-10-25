@@ -347,6 +347,57 @@ def unit_access_control_tests(analysis: dict[str, Any], contract_source: str) ->
     return tests
 
 
+PROFILE_TEST_CHECKLISTS: dict[str, list[str]] = {
+    "ERC-20-like token": [
+        "Check zero-value transfers, self-transfers, insufficient balances, and recipient balance deltas.",
+        "Check allowance consumption, infinite-allowance semantics, and unauthorized approval changes.",
+        "Check mint/burn supply changes and totalSupply consistency; enumerate a closed actor set before asserting sum(balances) == totalSupply.",
+        "Check non-standard token return behavior and fee-on-transfer/rebasing assumptions where integrations depend on them.",
+    ],
+    "ERC-721-like NFT": [
+        "Check ownerOf before/after transfer, approval clearing, operator approvals, and unauthorized transfer reverts.",
+        "Check safe-transfer callbacks for valid receivers, rejecting receivers, and reentrant receiver behavior.",
+        "Check mint/burn token-existence boundaries, duplicate mint prevention, and approvals for nonexistent tokens.",
+    ],
+    "ERC-4626-like vault": [
+        "Check deposit/mint/withdraw/redeem asset-share deltas and rounding direction at zero, one-unit, and large values.",
+        "Check preview/max methods against actual operations under the same state and caller assumptions.",
+        "Model donation/inflation attacks, first-depositor behavior, empty-vault transitions, fees, and rounding dust.",
+        "Assert asset accounting only against the vault's documented treatment of fees, donations, rebasing, and strategy assets.",
+    ],
+    "escrow": [
+        "Model the lifecycle as a state machine; release and refund must not both succeed for the same escrow.",
+        "Check buyer/seller/arbitrator authorization, deadlines, cancellation, and exact boundary timestamps.",
+        "Attempt duplicate claims and reentrant receiver/token callbacks; compare credited liabilities with held assets.",
+    ],
+    "lending / collateral": [
+        "Test health-factor and liquidation-threshold boundaries immediately above, at, and below the threshold.",
+        "Check collateral/debt deltas across borrow, repay, deposit, withdraw, and liquidation, including partial and full repayment.",
+        "Test stale/invalid oracle data, decimal mismatches, extreme prices, rounding, bad debt, and insolvency handling.",
+    ],
+    "staking / rewards": [
+        "Check reward accrual across stake/unstake/claim ordering and exact reward-period boundaries.",
+        "Test late stakers, repeated claims, zero stake, reward exhaustion, rounding dust, and denominator changes.",
+        "Assert reward liabilities against funded rewards and verify users cannot claim another user's accrued rewards.",
+    ],
+    "bridge / cross-chain": [
+        "Check replay protection over message ID, source chain, sender, destination chain, and nonce/domain.",
+        "Test duplicate, out-of-order, invalid-proof, expired, and wrong-destination messages.",
+        "Check pause/emergency paths and that finalized messages cannot mint/release assets twice.",
+    ],
+    "oracle consumer": [
+        "Test stale rounds, zero/negative answers, incomplete rounds, future timestamps, decimals, and extreme values.",
+        "Check behavior when the oracle reverts or returns malformed data and whether actions fail closed.",
+        "Exercise price movement around liquidation, mint, redemption, or settlement thresholds.",
+    ],
+    "governance": [
+        "Test proposal threshold and quorum boundaries, vote snapshots, duplicate voting, and vote-weight changes.",
+        "Check timelock minimum delay, queued/cancelled/executed transitions, and replay of execution payloads.",
+        "Verify proposer, voter, guardian, and executor role separation; test malicious targets and failed execution recovery.",
+    ],
+}
+
+
 def render_test_plan(analysis: dict[str, Any], generated_types: list[str]) -> str:
     lines = [
         "# LowkeyCast test-generation plan: " + analysis.get("contract", "unknown"),
@@ -381,6 +432,19 @@ def render_test_plan(analysis: dict[str, Any], generated_types: list[str]) -> st
         ("Formal", "State assumptions and properties precisely, check for vacuity and unsound external summaries, run the configured verifier and review counterexamples. A spec is not a proof."),
     ]:
         lines.extend(["### " + heading, detail, ""])
+    matched_profiles = [profile for profile in analysis.get("profiles", []) if profile in PROFILE_TEST_CHECKLISTS]
+    lines += ["", "## Profile-specific test obligations", ""]
+    if matched_profiles:
+        lines.append("These are candidate checks suggested by source/interface cues. Confirm the protocol specification and assumptions before turning them into assertions.")
+        lines.append("")
+        for profile in matched_profiles:
+            lines.append("### " + profile)
+            for obligation in PROFILE_TEST_CHECKLISTS[profile]:
+                lines.append("- " + obligation)
+            lines.append("")
+    else:
+        lines.append("No known protocol profile was confidently recognized; derive obligations from the specification, dependencies, and audit evidence.")
+        lines.append("")
     lines += ["## Public/external functions", ""]
     for fn in analysis.get("functions", [])[:100]:
         suffix = " — modifiers: " + ", ".join(fn["modifiers"]) if fn.get("modifiers") else ""
