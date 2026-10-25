@@ -30,6 +30,10 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "memory_class must be one of"):
             EngineCapability("custom", "custom-tool", ("unit",), memory_class="unlimited")
 
+    def test_engine_capability_rejects_unknown_test_kinds(self):
+        with self.assertRaisesRegex(ValueError, "unknown kinds: mystery"):
+            EngineCapability("custom", "custom-tool", ("unit", "mystery"))
+
     def test_engine_capability_accepts_supported_memory_classes(self):
         for memory_class in ("low", "medium", "high"):
             with self.subTest(memory_class=memory_class):
