@@ -505,7 +505,9 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
             local_deploy: bool, constructor_values: list[str] | None,
             is_abstract: bool, fuzz_property: dict[str, str] | None) -> str:
     if kind == "formal":
-        return _formal_template(name, fuzz_property)
+        # The template helper also returns the file suffix; callers write only
+        # the content here because the suffix is selected by run_test_gen().
+        return _formal_template(name, fuzz_property)[1]
     if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:
         if is_abstract:
             raise ValueError(f"{kind} cannot automatically deploy an abstract contract")
