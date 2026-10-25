@@ -4065,6 +4065,24 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
     return rendered
 
 
+def _lowkey_command_error(message, code=2, *, capture=False, command=None, config=None, target=None):
+    """Build/emit Lowkey-owned command errors through the shared formatter."""
+    rendered = _format_cli_error(
+        message,
+        code=code,
+        command=command,
+        config=config,
+        target=target,
+        source="lowkey",
+    )
+    result = CommandResult(rendered, code)
+    record_status(code)
+    if capture:
+        return result
+    print(str(result), file=sys.stderr)
+    return result.code
+
+
 def _format_revert_error(error_text, config=None, target=None):
     """Backward-compatible wrapper around Lowkey's shared error formatter."""
     return _format_cli_error(
@@ -4093,11 +4111,10 @@ def run_cast(args,config,capture=False):
         token=remaining[index]
         if token in {"--as","--actor"}:
             if index+1 >= len(remaining):
-                result=CommandResult(f"Error: {token} needs an actor name",2)
-                record_status(result.code)
-                if capture: return result
-                print(str(result),file=sys.stderr)
-                return result.code
+                return _lowkey_command_error(
+                    f"Error: {token} needs an actor name", 2, capture=capture,
+                    command="send" if cast_cmd == "send" else cast_cmd, config=config, target=target
+                )
             actor_override=remaining[index+1]
             index += 2
             continue
@@ -4108,22 +4125,18 @@ def run_cast(args,config,capture=False):
     if cast_cmd == "send":
         if "--actors" in remaining:
             if actor_override:
-                result=CommandResult("Error: --actors cannot be combined with --actor/--as.",2)
-                record_status(result.code)
-                if capture: return result
-                print(str(result),file=sys.stderr)
-                return result.code
+                return _lowkey_command_error(
+                    "Error: --actors cannot be combined with --actor/--as.", 2,
+                    capture=capture, command=cast_cmd, config=config, target=target
+                )
             remaining = [token for token in remaining if token != "--actors"]
             return run_multi_actor_send(config, remaining)
         try:
             remaining = normalize_send_options(remaining)
         except ValueError as error:
-            result=CommandResult(f"Error: {error}",2)
-            record_status(result.code)
-            if capture:
-                return result
-            print(str(result), file=sys.stderr)
-            return result.code
+            return _lowkey_command_error(
+                f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
+            )
 
     if cast_cmd in {"call","send","storage"}:
         if remaining and is_address(remaining[0]):
@@ -4140,10 +4153,10 @@ def run_cast(args,config,capture=False):
                 target=named_target
                 remaining.pop(0)
         if not target:
-            result=CommandResult("Error: no target set. Use lk target <address> or pass one explicitly.",2)
-            record_status(result.code)
-            if capture: return result
-            print(str(result),file=sys.stderr); return result.code
+            return _lowkey_command_error(
+                "Error: no target set. Use lk target <address> or pass one explicitly.",
+                2, capture=capture, command=cast_cmd, config=config, target=target
+            )
         cmd=["cast",cast_cmd,target]
     else: cmd=["cast",cast_cmd]
     function_item=None
@@ -4162,10 +4175,9 @@ def run_cast(args,config,capture=False):
         if "(" not in remaining[0] or ")" not in remaining[0]:
             try: remaining[0]=resolve_function(remaining[0],target,config)
             except ValueError as error:
-                result=CommandResult(f"Error: {error}",2)
-                record_status(result.code)
-                print(str(result),file=sys.stderr)
-                return result if capture else result.code
+                return _lowkey_command_error(
+                    f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
+                )
         try:
             abi=load_abi(target,config)
             matches=matching_functions(abi,remaining[0]) if abi else []
@@ -4173,10 +4185,9 @@ def run_cast(args,config,capture=False):
                 function_item=matches[0]
                 remaining[1:]=prepare_argument_values(config,matches[0],remaining[1:])
         except ValueError as error:
-            result=CommandResult(f"Error: {error}",2)
-            record_status(result.code)
-            print(str(result),file=sys.stderr)
-            return result if capture else result.code
+            return _lowkey_command_error(
+                f"Error: {error}", 2, capture=capture, command=cast_cmd, config=config, target=target
+            )
     preview="--preview" in remaining or "--dry-run" in remaining
     confirm="--confirm" in remaining
     bypass="--yes" in remaining
