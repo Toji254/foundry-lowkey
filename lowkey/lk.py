@@ -3981,7 +3981,10 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             else:
                 next_step = "Check the function's require/revert conditions and the values you supplied."
 
-            if is_send and is_gas_estimation and not transaction_hash:
+            if kind == "SOLIDITY PANIC":
+                title = "Contract hit a Solidity panic"
+                what = "The EVM stopped execution on an invalid operation. The decoded panic reason describes the failure, but the contract's intended rule must be checked separately."
+            elif is_send and is_gas_estimation and not transaction_hash:
                 title = "Transaction not sent"
                 what = "The contract rejected the call while Lowkey was estimating gas, before submitting the transaction."
             elif is_send and transaction_hash:
