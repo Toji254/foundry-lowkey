@@ -528,7 +528,7 @@ Usage:
 
 Types:
   unit         Local deployment smoke test + unit-test TODOs
-  fuzz         Fuzz-test scaffold; the property and valid input range are TODOs
+  fuzz         Executable setter/getter fuzz property when safely recognized; otherwise a TODO
   invariant    Handler/property scaffold; protocol invariants must be supplied
   integration  Local peer-contract wiring scaffold
   fork         Fork smoke test against the configured target
