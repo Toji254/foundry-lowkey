@@ -22,6 +22,7 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - `CapabilityRegistry` inventories adapters, selects available compatible tools under `light`, `balanced`, or `deep` profiles, and runs selected engines serially through `run_campaign()`.
 - Campaign reports include total wall-clock duration and the sum of measured engine durations, making runtime comparisons reproducible alongside each engine's raw evidence.
 - Adapter exceptions are normalized as per-engine `error` results, so one faulty plugin does not discard later engine evidence from the same serial campaign.
+- Exceptions from plugin `available()` and `supports()` checks are isolated too: the affected engine is reported as unavailable or `adapter_error`, the reason is retained in `plugin_errors`, and healthy engines can still be planned and run.
 - Native command arguments are explicit (`argv` or `argv_by_engine`); the registry does not guess tool-specific harness/spec syntax. Forge defaults to `forge test` only when no Forge argument vector is supplied.
 - `default_registry()` is a candidate catalogue, not a guarantee that an executable is installed or that every advertised workflow has an engine-specific integration.
 - `lowkey/test_generation.py` adds project-aware Solidity/Foundry drafts for unit, integration, invariant, exploit, regression, fuzz, and formal categories, plus fork/PoC variants. It recognizes only a narrow direct integer setter/getter property; unsupported constructor types are skipped rather than guessed.
@@ -70,6 +71,7 @@ Every generated artifact should record: intended property, preconditions, actors
 - `balanced`: low and medium memory engines.
 - `deep`: includes high-memory engines, still selected serially by default.
 - Campaign execution is serial; each process has a bounded timeout. Stdout/stderr are drained concurrently but only a bounded prefix is retained in memory (default 256 KiB per stream; configurable with `budget.max_output_bytes`, clamped to 1 KiB–4 MiB). Reports explicitly mark truncated streams, while the retained raw evidence remains directly inspectable. This limits Python-side capture memory, not the child process's own memory or total CPU/disk/network use. Forge fuzz/invariant runs scale with the profile (light: 32 fuzz runs / 16 invariant runs at depth 10; balanced: 256 / 64 at depth 20; deep: 1,024 / 256 at depth 50). These are execution budgets, not measured live RAM/CPU limits.
+- On POSIX, if an engine exits but a spawned descendant keeps inherited output pipes open, Lowkey attempts to terminate the remaining process group and records cleanup evidence. This is best-effort process cleanup, not a security sandbox or a hard resource limit.
 - Never launch every fuzzer/solver concurrently by default. Current selection uses declared memory classes and per-engine timeouts; live RAM/CPU sampling, project-size estimates, and adaptive budget adjustment remain open.
 
 ## Gaps still open
