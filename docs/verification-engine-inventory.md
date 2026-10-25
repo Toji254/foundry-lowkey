@@ -38,7 +38,8 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - `lowkey/verification_benchmark.py` adds manifest-driven benchmark runs with per-case project labels, manifest hashes, git revision, aggregate killed/survived/invalid/timeout counts, and an optional mutation-score gate. Use `lk verification-benchmark manifest.json --min-mutation-score 0.80` to enforce the gate.
 
 - `lowkey/verification_cli.py` exposes `lk verification engines [--json]` and `lk verification run manifest.json --profile light|balanced|deep`. Campaign manifests provide the test kind, per-engine native argv, and time budget; execution stays serial and writes raw results to a JSON report. The planner records both selected engines and rejected engines with explicit compatibility or profile-exclusion reasons.
-\n## Initial engine map
+
+## Initial engine map
 
 | Engine | Potential role | Important boundary |
 |---|---|---|
