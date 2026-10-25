@@ -46,6 +46,12 @@ class EngineCapability:
             raise ValueError(
                 "engine capability memory_class must be one of: low, medium, high"
             )
+        unknown_kinds = sorted(set(self.test_kinds) - set(TEST_KINDS))
+        if unknown_kinds:
+            raise ValueError(
+                "engine capability test_kinds contain unknown kinds: "
+                + ", ".join(unknown_kinds)
+            )
 
 
 @dataclass
