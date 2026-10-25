@@ -3788,7 +3788,7 @@ def _decode_contract_revert(error_text, config=None, target=None):
 
     # Some providers render Panic(uint256) as text instead of returning its ABI data.
     panic_text = re.search(
-        r"(?i)\\bpanic(?:\\s+code)?\\s*\\(?\\s*(0x[0-9a-f]+|[0-9]+)\\s*\\)?",
+        r"(?i)\bpanic(?:\s+code)?\s*\(?\s*(0x[0-9a-f]+|[0-9]+)\s*\)?",
         text,
     )
     if panic_text:
@@ -3895,7 +3895,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
     looks_reverted = (
         "execution reverted" in lowered
         or ("revert" in lowered and bool(list(_explicit_revert_payloads(text))))
-        or bool(re.search(r"(?i)\\bpanic(?:\\s+code)?\\s*\\(?\\s*(?:0x)?[0-9a-f]+\\s*\\)?", text))
+        or bool(re.search(r"(?i)\bpanic(?:\s+code)?\s*\(?\s*(?:0x)?[0-9a-f]+\s*\)?", text))
         or any(
             payload.lower().startswith(("0x08c379a0", "0x4e487b71"))
             for payload in _revert_payloads(text)
