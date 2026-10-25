@@ -100,7 +100,9 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
 
         registry = CapabilityRegistry([BrokenAdapter(), HealthyAdapter()])
         with tempfile.TemporaryDirectory() as root:
-            campaign = registry.run_campaign({"root": root}, "unit", profile="light")
+            campaign = registry.run_campaign(
+                {"root": root}, "unit", request={"argv": []}, profile="light",
+            )
         self.assertEqual(campaign["summary"]["passed"], 1)
         broken = next(row for row in campaign["considered_engines"] if row["engine"] == "broken-plugin")
         self.assertEqual(broken["status"], "adapter_error")
