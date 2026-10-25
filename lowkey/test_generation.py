@@ -89,6 +89,63 @@ def _constructor_args(source: str, name: str) -> str | None:
     return constructor.group(1).strip()
 
 
+def _split_parameters(raw: str) -> list[str]:
+    """Split a Solidity parameter list on top-level commas."""
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(raw):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(raw[start:index].strip())
+            start = index + 1
+    tail = raw[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _constructor_values(raw: str | None) -> list[str] | None:
+    """Return conservative, compile-safe placeholders for simple constructor types.
+
+    Unknown/user-defined types intentionally return None instead of guessing.
+    These defaults only make a draft deployable; they do not model valid protocol
+    setup or prove that zero values are meaningful.
+    """
+    if raw is None:
+        return None
+    if not raw.strip():
+        return []
+
+    values: list[str] = []
+    for declaration in _split_parameters(raw):
+        tokens = declaration.split()
+        if not tokens:
+            return None
+        solidity_type = tokens[0]
+
+        if solidity_type == "address" and len(tokens) > 1 and tokens[1] == "payable":
+            values.append("payable(address(0))")
+        elif solidity_type == "address":
+            values.append("address(0)")
+        elif re.fullmatch(r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?", solidity_type):
+            values.append("0")
+        elif solidity_type == "bool":
+            values.append("false")
+        elif solidity_type == "string":
+            values.append('""')
+        elif solidity_type == "bytes":
+            values.append('bytes("")')
+        elif re.fullmatch(r"bytes(?:[1-9]|[12][0-9]|3[0-2])", solidity_type):
+            values.append(f"{solidity_type}(0)")
+        else:
+            return None
+    return values
+
+
 def _rel_import(root: Path, source_path: Path) -> str:
     # Generated source is intended to be moved into test/lowkey-generated.
     relative = Path("test") / "lowkey-generated"
@@ -103,9 +160,10 @@ def _solidity_name(name: str) -> str:
     return clean
 
 
-def _local_template(kind: str, name: str, import_path: str) -> str:
+def _local_template(kind: str, name: str, import_path: str, constructor_values: list[str]) -> str:
     ident = _solidity_name(name)
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
+    deploy_expression = f"new {name}({\", \".join(constructor_values)})"
     common = f'''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
@@ -115,12 +173,14 @@ import {{Test}} from "forge-std/Test.sol";
 import {{ {name} }} from "{import_path}";
 
 '''
+    if constructor_values:
+        common += "// TODO: Review the compile-safe constructor placeholder values before relying on generated tests.\n\n"
     if kind == "unit":
         body = f'''contract {generated} is Test {{
     {name} internal target;
 
     function setUp() public {{
-        target = new {name}();
+        target = {deploy_expression};
     }}
 
     function test_deployment_has_runtime_code() public view {{
@@ -136,7 +196,7 @@ import {{ {name} }} from "{import_path}";
     {name} internal target;
 
     function setUp() public {{
-        target = new {name}();
+        target = {deploy_expression};
     }}
 
     // TODO: Add a testFuzz_ function for a property you can state precisely.
@@ -153,7 +213,7 @@ import {{ {name} }} from "{import_path}";
     {name} internal target;
 
     function setUp() public {{
-        target = new {name}();
+        target = {deploy_expression};
     }}
 
     // TODO: Write a Handler that performs valid protocol actions, then target
@@ -167,7 +227,7 @@ import {{ {name} }} from "{import_path}";
     {name} internal target;
 
     function setUp() public {{
-        target = new {name}();
+        target = {deploy_expression};
     }}
 
     // TODO: Deploy or configure the real peer contracts (tokens, oracle, router,
@@ -180,7 +240,7 @@ import {{ {name} }} from "{import_path}";
     {name} internal target;
 
     function setUp() public {{
-        target = new {name}();
+        target = {deploy_expression};
     }}
 
     // TODO: Preserve a specific previously failing behavior here.
@@ -231,13 +291,17 @@ contract {generated} is Test {{
 
 
 def _render(kind: str, name: str, import_path: str, target: str | None,
-            local_deploy: bool) -> str:
+            local_deploy: bool, constructor_values: list[str] | None,
+            is_abstract: bool) -> str:
     if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:
-        if not local_deploy:
+        if is_abstract:
+            raise ValueError(f"{kind} cannot automatically deploy an abstract contract")
+        if not local_deploy or constructor_values is None:
             raise ValueError(
-                f"{kind} requires a zero-argument constructor for automatic local deployment"
+                f"{kind} needs constructor argument types with supported placeholder values; "
+                "this constructor contains an unsupported or unrecognized type"
             )
-        return _local_template(kind, name, import_path)
+        return _local_template(kind, name, import_path, constructor_values)
     return _fork_template(kind, name, target)
 
 
@@ -311,8 +375,9 @@ The generator does not claim coverage or invent protocol-specific assertions.
         return _error(f"Could not find contract '{name}' under {_source_root(root)}.")
     source_path, source = found
     constructor_args = _constructor_args(source, name)
+    constructor_values = _constructor_values(constructor_args)
     is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
-    local_deploy = constructor_args == "" and not is_abstract
+    local_deploy = constructor_values is not None and not is_abstract
     import_path = _rel_import(root, source_path)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
     output_dir = output_dir / _solidity_name(name)
@@ -324,7 +389,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     for kind in selected:
         filename = output_dir / f"LowkeyGenerated{kind.title()}_{_solidity_name(name)}.t.sol"
         try:
-            content = _render(kind, name, import_path, target, local_deploy)
+            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract)
         except ValueError as exc:
             skipped.append({"type": kind, "reason": str(exc)})
             continue
@@ -339,7 +404,9 @@ The generator does not claim coverage or invent protocol-specific assertions.
     report = {
         "contract": name,
         "source": str(source_path.relative_to(root)),
-        "constructor": "abstract-contract" if is_abstract else ("zero-argument" if local_deploy else ("arguments-required" if constructor_args else "unknown")),
+        "constructor": "abstract-contract" if is_abstract else ("unknown" if constructor_args is None else ("zero-argument" if not constructor_args.strip() else ("arguments-required" if constructor_values is not None else "unsupported-arguments"))),
+        "constructor_parameters": constructor_args,
+        "constructor_placeholders": constructor_values,
         "requested_types": selected,
         "generated": generated,
         "skipped": skipped,
