@@ -545,7 +545,20 @@ jobs:
       - name: Install pinned external engine versions
         run: |
           python -m pip install --upgrade pip
-          python -m pip install slither-analyzer crytic-compile solc-select
+          python -m pip install "slither-analyzer==0.11.6" "crytic-compile==0.4.2" "solc-select==1.2.0"
+
+          python - <<'PY'
+          from importlib.metadata import version
+          expected = {
+              "slither-analyzer": "0.11.6",
+              "crytic-compile": "0.4.2",
+              "solc-select": "1.2.0",
+          }
+          for package, expected_version in expected.items():
+              actual = version(package)
+              assert actual == expected_version, (package, actual, expected_version)
+              print(f"PASS: {package}=={actual}")
+          PY
 
           curl -fsSL https://github.com/crytic/echidna/releases/download/v2.3.3/echidna-2.3.3-x86_64-linux.tar.gz -o /tmp/echidna.tar.gz
           mkdir -p /tmp/echidna-unpack
@@ -574,7 +587,13 @@ jobs:
 
           python -m venv /tmp/lowkey-certora-venv
           /tmp/lowkey-certora-venv/bin/pip install --upgrade pip
-          /tmp/lowkey-certora-venv/bin/pip install certora-cli
+          /tmp/lowkey-certora-venv/bin/pip install "certora-cli==8.20.2"
+          /tmp/lowkey-certora-venv/bin/python - <<'PY'
+          from importlib.metadata import version
+          actual = version("certora-cli")
+          assert actual == "8.20.2", actual
+          print(f"PASS: certora-cli=={actual}")
+          PY
           echo "/tmp/lowkey-certora-venv/bin" >> "$GITHUB_PATH"
           /tmp/lowkey-certora-venv/bin/certoraRun --help
       - name: Build real Solidity fixture for fuzz and symbolic testing

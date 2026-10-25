@@ -81,12 +81,29 @@ Every generated artifact should record: intended property, preconditions, actors
 - On POSIX, if an engine exits but a spawned descendant keeps inherited output pipes open, Lowkey attempts to terminate the remaining process group and records cleanup evidence. This is best-effort process cleanup, not a security sandbox or a hard resource limit.
 - Never launch every fuzzer/solver concurrently by default. Linux process-group RSS sampling is now available when an explicit `max_memory_mb` budget is supplied; automatic per-profile RAM caps, CPU sampling, project-size estimates, and adaptive budget adjustment remain open.
 
-## Gaps still open
+## Validation evidence and remaining release blockers
 
-- Initial native command builders now exist for Echidna, Medusa, Halmos, and Certora, with explicit config/harness requirements and conservative defaults. Echidna, Medusa, and Halmos have conservative native-result interpretation covered by unit tests, but live execution against installed versions, version-specific CLI compatibility, and pinned real-project integration fixtures remain open. In particular, Certora's remote proof status is not yet fetched or parsed by Lowkey.
-- The generation plugin contract exists, but project-aware generation is currently Solidity/Foundry-specific. Other language/build-system generators remain open.
-- Integration, exploit, and regression outputs are honest starters unless concrete setup/bug evidence is supplied; they are not automatically meaningful tests yet.
-- The recognized setter/getter fuzz/invariant/formal path needs compilation and real engine validation, including checking for vacuous or invalid specifications.
-- Mutation execution and optional mutation-score gates exist, but broad buggy-fixture validation and trustworthy mutation-score measurements across project families remain open.
-- Reproducible campaign and benchmark report formats exist. The real-project matrix is still a plan until pinned project revisions have actually been run and results retained.
-- Capability claims need per-tool version checks, supported-project checks, integration tests, and evidence provenance.
+### Live CI evidence (25 October 2026)
+
+The [CI workflow](../.github/workflows/ci.yml) has separate real-project smoke gates:
+
+- **Forge:** a fresh Foundry fixture is detected as Solidity + Foundry; Lowkey executes a real Forge unit test through `lk verification run`, checks the normalized `passed` result, and verifies native output is preserved in the campaign report.
+- **Echidna 2.3.3 and Medusa 1.5.1:** Lowkey runs live fuzz campaigns against the same small Solidity fixture and the workflow asserts both campaign results are `passed`.
+- **Halmos 0.3.3:** Lowkey runs a `check_*` symbolic test and checks native PASS evidence is normalized as `passed`.
+- **Slither 0.11.6:** Slither compiles and analyzes the fixture. The deliberately simple fixture emits a compiler-version detector finding; successful analysis means the tool ran, not that the fixture is security-clean.
+- **Certora CLI 8.20.2:** installation and CLI startup are checked, but CI does not submit a remote proof because that requires authorized credentials and may invoke a paid service. Therefore remote proof submission/completion is not marked live-validated.
+- **Generation/mutation:** CI generates all seven Solidity/Foundry artifact classes, compiles generated Solidity drafts, runs the mutation harness against a seeded setter mutant, and asserts that the mutant is killed.
+
+The [validated integration commit](https://github.com/Toji254/foundry-lowkey/commit/8a2a9292e7ebe80f44db7fc842b0cd98b3dae84c) has a [successful CI run](https://github.com/Toji254/foundry-lowkey/actions/runs/40228444653) across all five jobs, including live Forge and external-engine jobs. The workflow now pins the observed external-tool versions directly and asserts the Python package versions instead of relying on an unpinned latest install.
+
+### Remaining work
+
+- **Certora remote proof:** the adapter requests native CLI wait-for-results behavior by default and parses CLI output conservatively, but no authenticated remote proof run has been performed and no separate Certora REST polling client is implemented. A real authorized proof run is still required before claiming end-to-end Certora proof validation.
+- **Generator scope:** the generation adapter currently supports Solidity + Foundry only. Other language/build-system generators are not implemented.
+- **Test substance:** the direct integer setter/getter path generates executable candidate properties. Many integration, exploit, regression, fork, and custom protocol cases remain review-required drafts until concrete dependencies, attack conditions, expected outcomes, and oracles are supplied. Compilation alone is not behavioral validation.
+- **Mutation generality:** CI demonstrates one meaningful mutant is killed. That is a regression gate for this fixture, not a trustworthy mutation score across protocol families or arbitrary projects.
+- **Real-project corpus:** `docs/test-generation-ecosystem-benchmark.md` describes a broader evaluation protocol, but the full multi-repository corpus has not yet been run and retained as result evidence. Do not describe it as completed.
+- **Formal-specification quality:** generated CVL is a candidate specification for a narrow recognized property. A real Certora proof and review of assumptions/vacuity are still outstanding.
+- **Resource isolation:** campaigns use serial execution, timeouts, bounded output capture, and optional sampled Linux process-group RSS limits. This is not an OS sandbox and does not yet impose hard CPU, disk, or network limits.
+
+These boundaries are release constraints, not hidden successes. The live tests prove compatibility for the specific fixture and tool versions above; they do not establish universal support, broad vulnerability recall, or security certification.
