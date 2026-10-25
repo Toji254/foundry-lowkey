@@ -4028,7 +4028,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             return text
         if lowered.startswith("usage:") or any(marker in lowered for marker in (
             "unknown lowkey command", "unknown lk ", "unknown option",
-            "unexpected argument", "needs an actor name",
+            "unexpected argument", "needs an actor name", "--repeat", "--times",
         )):
             category = "USAGE"
         elif any(marker in lowered for marker in (
