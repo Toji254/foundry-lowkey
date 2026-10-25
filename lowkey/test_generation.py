@@ -12,7 +12,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc", "regression")
+TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal")
 
 
 def parse_types(raw: str | None) -> list[str]:
@@ -266,6 +266,17 @@ import {{ {name} }} from "{import_path}";
 '''
     if constructor_values:
         common += "// TODO: Review the compile-safe constructor placeholder values before relying on generated tests.\n\n"
+    setter_unit_test = ""
+    if fuzz_property:
+        setter = fuzz_property["setter"]
+        parameter_type = fuzz_property["type"]
+        state = fuzz_property["state"]
+        setter_unit_test = f"""
+    function test_{setter}_updatesPublicState({parameter_type} nextValue) public {{
+        target.{setter}(nextValue);
+        assertEq(target.{state}(), nextValue);
+    }}
+"""
     if kind == "unit":
         body = f'''contract {generated} is Test {{
     {name} internal target;
@@ -280,7 +291,7 @@ import {{ {name} }} from "{import_path}";
 
     // TODO: Add unit tests for expected state changes, access control,
     // boundary values, revert reasons, emitted events, and accounting.
-}}
+{setter_unit_test}}}
 '''
     elif kind == "fuzz":
         if fuzz_property:
@@ -318,7 +329,43 @@ import {{ {name} }} from "{import_path}";
 }}
 '''
     elif kind == "invariant":
-        body = f'''contract {generated} is Test {{
+        if fuzz_property:
+            setter = fuzz_property["setter"]
+            parameter_type = fuzz_property["type"]
+            state = fuzz_property["state"]
+            handler = f"LowkeyInvariantHandler_{ident}"
+            body = f'''contract {handler} {{
+    {name} internal immutable target;
+    {parameter_type} public expectedValue;
+
+    constructor({name} target_) {{
+        target = target_;
+        expectedValue = target_.{state}();
+    }}
+
+    function {setter}({parameter_type} nextValue) external {{
+        target.{setter}(nextValue);
+        expectedValue = nextValue;
+    }}
+}}
+
+contract {generated} is Test {{
+    {name} internal target;
+    {handler} internal handler;
+
+    function setUp() public {{
+        target = {deploy_expression};
+        handler = new {handler}(target);
+        targetContract(address(handler));
+    }}
+
+    function invariant_{state}_matchesLastSuccessfulSetterCall() public view {{
+        assertEq(target.{state}(), handler.expectedValue());
+    }}
+}}
+'''
+        else:
+            body = f'''contract {generated} is Test {{
     {name} internal target;
 
     function setUp() public {{
