@@ -606,7 +606,7 @@ class CertoraAdapter(NativeConfiguredAdapter):
         elif result.status == "passed":
             # A zero CLI exit may only mean a remote job was submitted. If no
             # explicit completed result is present, never infer proof success.
-            result.status = "submitted" if submitted or not (completed and has_pass) else "inconclusive"
+            result.status = "submitted" if submitted else "inconclusive"
             result.summary = (
                 "Certora job was submitted; proof outcome is not established"
                 if result.status == "submitted"
