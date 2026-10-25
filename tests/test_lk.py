@@ -490,9 +490,11 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(lk._decode_solidity_revert_reason(error), "invalid number")
         self.assertEqual(
             lk._format_revert_error(error),
-            "ERROR [REVERT]\n"
+            "Error: Transaction not sent\n"
             "  Reason: invalid number\n"
-            "  Transaction broadcast: no (gas estimation failed).",
+            "  What happened: The contract rejected the call while Lowkey was estimating gas, before submitting the transaction.\n"
+            "  Next step: Check the function's require/revert conditions and the values you supplied.\n"
+            "  Transaction: Not sent. The RPC rejected the call before broadcasting a transaction.",
         )
 
     def test_solidity_panic_is_decoded(self):
@@ -502,7 +504,7 @@ class LowkeyCastTests(unittest.TestCase):
             command="send",
             source="cast",
         )
-        self.assertIn("ERROR [SOLIDITY PANIC]", rendered)
+        self.assertIn("Contract hit a Solidity panic", rendered)
         self.assertIn("arithmetic overflow or underflow", rendered)
         self.assertIn("panic code 0x11", rendered)
 
@@ -533,7 +535,7 @@ class LowkeyCastTests(unittest.TestCase):
                 command="send",
                 source="cast",
             )
-        self.assertIn("ERROR [CUSTOM REVERT]", rendered)
+        self.assertIn("Contract rejected the request", rendered)
         self.assertIn("LimitExceeded(uint256)", rendered)
         self.assertIn("attempted: 500", rendered)
         self.assertIn("0x12345678", rendered)
@@ -557,7 +559,7 @@ class LowkeyCastTests(unittest.TestCase):
             source="cast",
         )
         self.assertIn("empty revert data", rendered)
-        self.assertIn("ERROR [REVERT]", rendered)
+        self.assertIn("Contract call reverted", rendered)
 
     def test_revert_formatter_preserves_plain_text_reason(self):
         error = "execution reverted: custom error payload unavailable"
@@ -568,15 +570,15 @@ class LowkeyCastTests(unittest.TestCase):
     def test_lowkey_validation_errors_use_shared_error_shape_and_keep_hints(self):
         message = "Error: No RPC is configured. Start Anvil or set an RPC with lk rpc <url>."
         rendered = lk._format_cli_error(message, code=2, command="balance", source="lowkey")
-        self.assertIn("ERROR [CONFIGURATION]", rendered)
-        self.assertIn("Operation: lk balance", rendered)
+        self.assertIn("Error: Lowkey needs configuration before it can continue", rendered)
+        self.assertNotIn("Operation: lk balance", rendered)
         self.assertIn("No RPC is configured", rendered)
         self.assertIn("lk rpc <url>", rendered)
 
         output = io.StringIO()
         with redirect_stderr(output):
             lk.fail("Usage: lk read <function> [args]", code=2)
-        self.assertIn("ERROR [USAGE]", output.getvalue())
+        self.assertIn("Error: Check the command syntax", output.getvalue())
         self.assertIn("Usage: lk read <function> [args]", output.getvalue())
 
     def test_shared_error_formatter_classifies_non_contract_failures(self):
@@ -585,7 +587,7 @@ class LowkeyCastTests(unittest.TestCase):
             command="call",
             source="cast",
         )
-        self.assertIn("ERROR [RPC CONNECTION]", rpc_error)
+        self.assertIn("Error: Couldn't connect to the RPC node", rpc_error)
         self.assertIn("lk rpc", rpc_error)
 
         timeout_error = lk._format_cli_error(
@@ -593,14 +595,14 @@ class LowkeyCastTests(unittest.TestCase):
             command="read",
             source="cast",
         )
-        self.assertIn("ERROR [TIMEOUT]", timeout_error)
+        self.assertIn("Error: The command timed out", timeout_error)
 
         invalid_input = lk._format_cli_error(
             "unexpected argument --mystery",
             command="send",
             source="cast",
         )
-        self.assertIn("ERROR [INVALID INPUT]", invalid_input)
+        self.assertIn("Error: Invalid command input", invalid_input)
         self.assertIn("lk send --h", invalid_input)
 
         generic = lk._format_cli_error(
@@ -609,9 +611,9 @@ class LowkeyCastTests(unittest.TestCase):
             command="send",
             source="cast",
         )
-        self.assertIn("ERROR [COMMAND]", generic)
+        self.assertIn("Error: The command failed", generic)
         self.assertIn("provider rejected an unknown request", generic)
-        self.assertIn("Exit code: 1", generic)
+        self.assertNotIn("Exit code: 1", generic)
 
     def test_dispatcher_normalizes_direct_stderr_errors_and_sets_failure_status(self):
         output = io.StringIO()
@@ -626,8 +628,8 @@ class LowkeyCastTests(unittest.TestCase):
 
         self.assertEqual(result, 2)
         rendered = output.getvalue()
-        self.assertTrue(rendered.startswith("ERROR ["))
-        self.assertIn("Operation: lk sample", rendered)
+        self.assertTrue(rendered.startswith("Error:"))
+        self.assertNotIn("Operation: lk sample", rendered)
         self.assertIn("required input was missing", rendered)
 
     def test_dispatcher_does_not_double_wrap_a_formatted_error(self):
@@ -648,10 +650,9 @@ class LowkeyCastTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         rendered = output.getvalue()
-        self.assertEqual(rendered.count("ERROR [REVERT]"), 1)
-        self.assertNotIn("ERROR [LOWKEY]", rendered)
-        self.assertIn("Operation: lk send", rendered)
-        self.assertIn("Exit code: 1", rendered)
+        self.assertEqual(rendered.count("Error:"), 1)
+        self.assertNotIn("Operation: lk send", rendered)
+        self.assertNotIn("Exit code: 1", rendered)
 
     def test_dispatcher_explains_when_external_tool_diagnostic_bypassed_stderr(self):
         output = io.StringIO()
@@ -666,9 +667,9 @@ class LowkeyCastTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         rendered = output.getvalue()
-        self.assertTrue(rendered.startswith("ERROR [LOWKEY]"))
-        self.assertIn("Operation: lk forge", rendered)
-        self.assertIn("Exit code: 1", rendered)
+        self.assertTrue(rendered.startswith("Error:"))
+        self.assertNotIn("Operation: lk forge", rendered)
+        self.assertNotIn("Exit code: 1", rendered)
         self.assertIn("no Python-level stderr was captured", rendered)
         self.assertIn("external tool may have written its detailed diagnostic", rendered)
 
@@ -693,8 +694,9 @@ class LowkeyCastTests(unittest.TestCase):
             code=2,
             source="runtime",
         )
-        self.assertTrue(rendered.startswith("ERROR [RUNTIME]"))
-        self.assertIn("Operation: lk run", rendered)
+        self.assertTrue(rendered.startswith("Error: Lowkey encountered an internal error"))
+        self.assertNotIn("Operation: lk run", rendered)
+        self.assertNotIn("Exit code: 2", rendered)
         self.assertIn("TypeError: unexpected runtime state", rendered)
 
     def test_insufficient_funds_is_not_hidden_by_gas_estimation_wrapper(self):
@@ -704,7 +706,7 @@ class LowkeyCastTests(unittest.TestCase):
             command="send",
             source="cast",
         )
-        self.assertIn("ERROR [INSUFFICIENT FUNDS]", rendered)
+        self.assertIn("Error: Not enough funds to send this transaction", rendered)
         self.assertIn("Transaction broadcast: no", rendered)
 
     def test_run_cast_returns_formatted_failure_without_treating_error_as_success(self):
@@ -727,9 +729,9 @@ class LowkeyCastTests(unittest.TestCase):
             result = lk.run_cast(["send", "setNumber(uint256)", "53"], config, capture=True)
 
         self.assertEqual(result.code, 1)
-        self.assertIn("ERROR [REVERT]", result.text)
+        self.assertIn("Error: Transaction not sent", result.text)
         self.assertIn("Reason: invalid number", result.text)
-        self.assertIn("Transaction broadcast: no", result.text)
+        self.assertIn("Transaction: Not sent", result.text)
         self.assertNotIn("Failed to estimate gas:", result.text)
 
     def test_failed_send_preserves_transaction_hash_when_cast_returns_one(self):
@@ -757,7 +759,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(result.code, 1)
         self.assertEqual(config["last_tx"], tx_hash)
         self.assertIn("Reason: invalid number", result.text)
-        self.assertIn(f"Transaction broadcast: yes ({tx_hash})", result.text)
+        self.assertIn(f"Transaction: Submitted; transaction hash {tx_hash}", result.text)
 
     def test_lab_numeric_grouping_is_normalized(self):
         self.assertEqual(
