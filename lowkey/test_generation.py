@@ -883,7 +883,15 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "validation": {"requested": False, "status": "not-requested"},
     }
     if validate:
-        report["validation"] = _validate_generated(root, generated)
+        validation = _validate_generated(root, generated)
+        if "formal" in selected:
+            validation["unvalidated_types"] = ["formal"]
+            if validation.get("status") == "passed":
+                validation["status"] = "partial"
+                validation["detail"] += " Solidity drafts compiled, but the generated formal specification was not checked by Forge."
+            elif validation.get("status") == "not-applicable":
+                validation["detail"] += " Formal specifications require their configured verifier; Forge cannot validate them."
+        report["validation"] = validation
     plan_path = output_dir / "test-plan.md"
     if plan_path.exists() and not force:
         plan_path = output_dir / "test-plan.latest.md"

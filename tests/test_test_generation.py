@@ -698,5 +698,31 @@ class TestGenerationTests(unittest.TestCase):
             multi_plan = render_test_plan(multi_analysis, ["unit"])
             self.assertIn("single and batch mint", multi_plan)
 
+    def test_mixed_solidity_and_formal_validation_reports_partial_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                completed = subprocess.CompletedProcess(["forge", "build"], 0, "compile ok", "")
+                with patch("test_generation.shutil.which", return_value="/fake/forge"), patch(
+                    "test_generation.subprocess.run", return_value=completed
+                ) as run, contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter"},
+                        ["--types", "unit,formal", "--force", "--validate"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 1)
+            self.assertEqual(run.call_count, 2)
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["validation"]["status"], "partial")
+            self.assertEqual(report["validation"]["unvalidated_types"], ["formal"])
+            self.assertIn("formal specification was not checked by Forge", report["validation"]["detail"])
+
 if __name__ == "__main__":
     unittest.main()
