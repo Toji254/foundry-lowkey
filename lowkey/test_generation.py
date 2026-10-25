@@ -261,7 +261,8 @@ def _foundry_test_dir(root: Path) -> Path:
             profile_config = profiles.get(active_profile, {})
             default_config = profiles.get("default", {})
             test_dir = (
-                profile_config.get("test")
+                os.environ.get("FOUNDRY_TEST")
+                or profile_config.get("test")
                 or default_config.get("test")
                 or config.get("test")
                 or test_dir
