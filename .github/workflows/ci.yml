@@ -527,3 +527,199 @@ jobs:
           assert report["duration_seconds"] >= 0, report
           print("PASS: Lowkey completed a real Forge campaign and retained native stdout/evidence")
           PY
+
+  verification-live-external-engines:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          check-latest: true
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Lowkey
+        run: |
+          ./install.sh
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+      - name: Install pinned external engine versions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install slither-analyzer crytic-compile solc-select
+
+          curl -fsSL https://github.com/crytic/echidna/releases/download/v2.3.3/echidna-2.3.3-x86_64-linux.tar.gz -o /tmp/echidna.tar.gz
+          mkdir -p /tmp/echidna-unpack
+          tar -xzf /tmp/echidna.tar.gz -C /tmp/echidna-unpack
+          ECHIDNA_BIN="$(find /tmp/echidna-unpack -type f -name echidna -print -quit)"
+          test -n "$ECHIDNA_BIN"
+          sudo install -m 0755 "$ECHIDNA_BIN" /usr/local/bin/echidna
+          echidna --version
+
+          curl -fsSL https://github.com/crytic/medusa/releases/download/v1.5.1/medusa-linux-x64.tar.gz -o /tmp/medusa.tar.gz
+          mkdir -p /tmp/medusa-unpack
+          tar -xzf /tmp/medusa.tar.gz -C /tmp/medusa-unpack
+          MEDUSA_BIN="$(find /tmp/medusa-unpack -type f -name medusa -print -quit)"
+          test -n "$MEDUSA_BIN"
+          sudo install -m 0755 "$MEDUSA_BIN" /usr/local/bin/medusa
+          medusa --help
+
+          solc-select install 0.8.20
+          solc-select use 0.8.20
+
+          python -m venv /tmp/lowkey-halmos-venv
+          /tmp/lowkey-halmos-venv/bin/pip install --upgrade pip
+          /tmp/lowkey-halmos-venv/bin/pip install halmos==0.3.3
+          echo "/tmp/lowkey-halmos-venv/bin" >> "$GITHUB_PATH"
+          halmos --help
+
+          python -m venv /tmp/lowkey-certora-venv
+          /tmp/lowkey-certora-venv/bin/pip install --upgrade pip
+          /tmp/lowkey-certora-venv/bin/pip install certora-cli
+          echo "/tmp/lowkey-certora-venv/bin" >> "$GITHUB_PATH"
+          certoraRun --help
+      - name: Build real Solidity fixture for fuzz and symbolic testing
+        run: |
+          mkdir -p /tmp/lowkey-external-fixture/src /tmp/lowkey-external-fixture/test
+          cat > /tmp/lowkey-external-fixture/foundry.toml <<'EOF'
+          [profile.default]
+          src = "src"
+          test = "test"
+          out = "out"
+          solc_version = "0.8.20"
+          EOF
+          cat > /tmp/lowkey-external-fixture/src/InvariantHarness.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          contract InvariantHarness {
+              uint256 public value;
+              uint256 public mirror;
+              function set(uint256 next) external {
+                  value = next;
+                  mirror = next;
+              }
+              function echidna_values_match() public view returns (bool) {
+                  return value == mirror;
+              }
+          }
+          EOF
+          cat > /tmp/lowkey-external-fixture/test/InvariantHarness.t.sol <<'EOF'
+          // SPDX-License-Identifier: MIT
+          pragma solidity ^0.8.20;
+          import "../src/InvariantHarness.sol";
+          contract InvariantHarnessTest {
+              function testSetAndRead() public {
+                  InvariantHarness target = new InvariantHarness();
+                  target.set(42);
+                  require(target.value() == 42 && target.mirror() == 42, "set/read mismatch");
+              }
+              function testFuzzSetAndRead(uint256 next) public {
+                  InvariantHarness target = new InvariantHarness();
+                  target.set(next);
+                  require(target.value() == next && target.mirror() == next, "fuzz set/read mismatch");
+              }
+          }
+          EOF
+          cat > /tmp/lowkey-external-fixture/echidna.yaml <<'EOF'
+          testMode: property
+          testLimit: 32
+          seqLen: 4
+          workers: 1
+          EOF
+          cd /tmp/lowkey-external-fixture
+          medusa init
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("medusa.json")
+          config = json.loads(path.read_text(encoding="utf-8"))
+          fuzzing = config.setdefault("fuzzing", {})
+          fuzzing["workers"] = 1
+          fuzzing["timeout"] = 15
+          fuzzing["testLimit"] = 100
+          fuzzing["targetContracts"] = ["InvariantHarness"]
+          fuzzing["deploymentOrder"] = ["InvariantHarness"]
+          testing = fuzzing.setdefault("testing", {})
+          properties = testing.setdefault("propertyTesting", {})
+          properties["enabled"] = True
+          properties["testPrefixes"] = ["echidna_"]
+          compilation = config.setdefault("compilation", {})
+          compilation["platform"] = "crytic-compile"
+          platform = compilation.setdefault("platformConfig", {})
+          platform["target"] = "."
+          platform["args"] = ["--foundry-compile-all"]
+          path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+          json.loads(path.read_text(encoding="utf-8"))
+          PY
+          forge build
+      - name: Run live Echidna and Medusa campaigns through Lowkey
+        working-directory: /tmp/lowkey-external-fixture
+        run: |
+          echidna --version
+          medusa --help >/dev/null
+          cat > fuzz-campaign.json <<'EOF'
+          {
+            "test_kind": "fuzz",
+            "profile": "balanced",
+            "budget": {"timeout_seconds": 120, "max_output_bytes": 1048576},
+            "request": {
+              "argv_by_engine": {
+                "forge": ["test", "--match-test", "testFuzzSetAndRead", "--fuzz-runs", "16"]
+              },
+              "engine_config_by_engine": {
+                "echidna": {
+                  "target": "src/InvariantHarness.sol",
+                  "contract": "InvariantHarness",
+                  "config": "echidna.yaml"
+                },
+                "medusa": {
+                  "config": "medusa.json",
+                  "target_contracts": ["InvariantHarness"],
+                  "engine_timeout_seconds": 15,
+                  "workers": 1
+                }
+              }
+            }
+          }
+          EOF
+          lk verification run fuzz-campaign.json --profile balanced --output .audit/verification/fuzz-campaign.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/verification/fuzz-campaign.json", encoding="utf-8"))
+          results = {item["result"]["engine"]: item["result"] for item in report["results"]}
+          assert {"forge", "echidna", "medusa"} <= set(results), report["considered_engines"]
+          for engine in ("forge", "echidna", "medusa"):
+              assert results[engine]["status"] == "passed", (engine, results[engine])
+              assert results[engine]["duration_seconds"] is not None, (engine, results[engine])
+          print("PASS: live Forge, Echidna, and Medusa campaigns completed with normalized results")
+          PY
+      - name: Run a live Halmos symbolic campaign through Lowkey
+        working-directory: /tmp/lowkey-external-fixture
+        run: |
+          cat > halmos-campaign.json <<'EOF'
+          {
+            "test_kind": "formal",
+            "profile": "deep",
+            "budget": {"timeout_seconds": 120, "max_output_bytes": 1048576},
+            "request": {
+              "engine_config_by_engine": {
+                "halmos": {"function": "testSetAndRead"}
+              }
+            }
+          }
+          EOF
+          lk verification run halmos-campaign.json --profile deep --output .audit/verification/halmos-campaign.json
+          python3 - <<'PY'
+          import json
+          report = json.load(open(".audit/verification/halmos-campaign.json", encoding="utf-8"))
+          assert report["selected_count"] == 1, report["considered_engines"]
+          result = report["results"][0]["result"]
+          assert result["engine"] == "halmos", result
+          assert result["status"] == "passed", result
+          assert "[PASS]" in result["raw_stdout"] + result["raw_stderr"], result
+          print("PASS: live Halmos symbolic result was normalized from native PASS evidence")
+          PY
+      - name: Confirm Certora CLI installation without submitting a paid remote proof
+        run: |
+          certoraRun --help >/tmp/lowkey-certora-help.txt
+          grep -qi 'conf' /tmp/lowkey-certora-help.txt
+          echo "PASS: Certora CLI starts. Remote proof execution/polling requires authorized credentials and is intentionally not invoked in CI."
