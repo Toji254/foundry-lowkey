@@ -177,6 +177,15 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertTrue(matrix["python-test"]["test_kinds"]["unit"]["supported"])
         self.assertTrue(matrix["python-test"]["test_kinds"]["fuzz"]["supported"])
 
+    def test_entry_point_plugins_register_through_documented_contract(self):
+        adapter = ExecutableAdapter(EngineCapability("third-party", sys.executable, ("unit",), memory_class="low"))
+        point = type("EntryPoint", (), {"name": "fixture-plugin", "load": lambda self: (lambda: adapter)})()
+        with patch("lowkey.verification_adapters.entry_points") as discover:
+            discover.return_value.select.return_value = [point]
+            registry = default_registry(load_plugins=True)
+        self.assertIn("third-party", {row["name"] for row in registry.inventory()})
+        self.assertEqual(registry.plugin_errors, [])
+
     def test_unknown_test_kind_and_profile_fail_explicitly(self):
         registry = default_registry()
         with self.assertRaisesRegex(ValueError, "unknown test kind"):
