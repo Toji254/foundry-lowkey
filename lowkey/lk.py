@@ -3810,13 +3810,29 @@ def _decode_contract_revert(error_text, config=None, target=None):
                     "data": payload,
                 }
 
-    # Some RPC implementations include a readable reason but no usable bytes.
+    # Prefer a plain-text reason before treating an unknown selector as a
+    # custom error. Some provider messages contain both a human reason and data.
     textual_reason = _decode_solidity_revert_reason(text)
     if textual_reason:
         return {"kind": "REVERT", "reason": textual_reason, "selector": None, "data": None}
 
     if "execution reverted" in lowered:
-        empty_data = bool(re.search(r'''(?i)\b(?:data|revert data|return data)\s*[:=]\s*["']?0x["']?''', text))
+        for payload in payloads:
+            selector = payload[:10].lower()
+            if selector not in {"0x08c379a0", "0x4e487b71"}:
+                return {
+                    "kind": "CUSTOM REVERT",
+                    "reason": (
+                        f"unknown custom error selector {selector}; it is not defined "
+                        "in the selected contract ABI"
+                    ),
+                    "selector": selector,
+                    "data": payload,
+                }
+        empty_data = bool(re.search(
+            r'''(?i)\b(?:data|revert data|return data)\s*[:=]\s*["']?0x["']?''',
+            text,
+        ))
         if empty_data:
             reason = "contract reverted without a reason (empty revert data)"
         else:
@@ -3894,9 +3910,30 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
 
     if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
         return (
-            "ERROR [TRANSACTION NONCE/FEES]\n"
-            f"  Details: {text}\n"
+            "ERROR [TRANSACTION NONCE/FEES]\\n"
+            f"  Details: {text}\\n"
             "  Next: inspect the sender nonce and pending transactions before retrying."
+        )
+
+    if any(marker in lowered for marker in (
+        "unexpected argument", "unknown argument", "unknown option",
+        "unrecognized option", "invalid value", "invalid type",
+        "missing required argument", "could not parse argument",
+    )):
+        return (
+            "ERROR [INVALID INPUT]\\n"
+            f"  Details: {text}\\n"
+            + (f"  Next: review 'lk {command} --h' for accepted arguments and examples.\\n" if command else "")
+        ).rstrip()
+
+    if any(marker in lowered for marker in (
+        "no such file or directory", "command not found", "executable file not found",
+        "not found in path", "no module named",
+    )):
+        return (
+            "ERROR [MISSING DEPENDENCY OR FILE]\\n"
+            f"  Details: {text}\\n"
+            "  Next: verify the named executable/module/path exists and that required tools are installed."
         )
 
     if source == "runtime":
