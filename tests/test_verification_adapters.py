@@ -124,7 +124,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             argv, reason = echidna.request_configuration(
                 project, {"target": "src/Harness.sol", "contract": "Harness", "config": "echidna.yaml"}
             )
-            self.assertEqual(argv, ["src/Harness.sol", "--contract", "Harness", "--config", "echidna.yaml"])
+            self.assertEqual(argv, ["src/Harness.sol", "--contract", "Harness", "--config", "echidna.yaml", "--format", "json"])
             self.assertIn("validated", reason)
             self.assertIsNone(echidna.request_configuration(project, {"target": "../outside.sol"})[0])
 
@@ -168,6 +168,27 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         rejected = next(row for row in missing["rejected"] if row["engine"] == "medusa")
         self.assertEqual(rejected["status"], "missing_configuration")
         self.assertIn("does not exist", rejected["reason"])
+
+    def test_echidna_requires_and_interprets_json_campaign_result(self):
+        adapter = EchidnaAdapter(EngineCapability("echidna", sys.executable, ("fuzz",), memory_class="medium"))
+        with tempfile.TemporaryDirectory() as root:
+            project = {"root": root}
+            def run(code):
+                return adapter.run(
+                    project,
+                    {"test_kind": "fuzz", "argv": ["-c", f"print({code!r})"]},
+                    budget={"timeout_seconds": 5},
+                )
+            passed = run('{"success": true, "tests": [{"name": "echidna_supply", "status": "passed"}]}')
+            failed = run('{"success": false, "tests": [{"name": "echidna_supply", "status": "solved"}]}')
+            error = run('{"success": true, "error": "compiler failed", "tests": []}')
+            unclear = run("not-json")
+        self.assertEqual(passed.status, "passed")
+        self.assertEqual(passed.metadata["result_semantics"], "echidna_json_campaign_success")
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(error.status, "error")
+        self.assertEqual(unclear.status, "inconclusive")
+        self.assertIn("native_result", passed.raw_evidence)
 
     def test_halmos_requires_recognized_symbolic_result_markers(self):
         adapter = HalmosAdapter(EngineCapability("halmos", sys.executable, ("formal",), memory_class="high"))
