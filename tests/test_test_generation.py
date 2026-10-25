@@ -736,7 +736,7 @@ class TestGenerationTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
             self.assertEqual(code, 1)
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 3)
             report = json.loads(
                 (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
             )
