@@ -357,7 +357,7 @@ jobs:
                   "before": "count = value;",
                   "after": "count = value + 1;"
               }]
-          }, indent=2) + "\\n")
+          }, indent=2))
           PY
           lk mutation-check .audit/mutants.json --timeout 120
           python3 - <<'PY'
