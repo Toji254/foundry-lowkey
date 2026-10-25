@@ -14587,13 +14587,14 @@ COMMAND_HELP = {
     "cheatcodes": _help_entry("Show or run useful Foundry cheatcode helpers.", "lk cheatcodes [args...]", "lk cheatcodes", "Use it when you need controlled local callers, balances, time, or storage.", related=["lk forge", "lk matrix"]),
     "test-gen": _help_entry(
         "Generate project-aware starter files for several Solidity test styles.",
-        "lk test-gen <Contract> [--types all|unit,fuzz,...] [--output-dir <dir>] [--force]",
+        "lk test-gen <Contract> [--types all|unit,fuzz,...,formal] [--output-dir <dir>] [--force]",
         "lk test-gen Counter --types unit,fuzz,invariant",
         "Use it to create reviewable test scaffolds, then fill in assertions and project-specific setup.",
         forms=[
             ("lk test-gen <Contract> --types unit,fuzz", "Generate local unit and fuzz drafts.", "lk test-gen Counter --types unit,fuzz"),
             ("lk test-gen <Contract> --types fork,poc", "Generate fork and PoC starter drafts.", "lk test-gen Counter --types fork,poc"),
             ("lk test-gen <Contract> --types all", "Request every supported starter type.", "lk test-gen Counter --types all"),
+            ("lk test-gen <Contract> --types formal", "Generate a formal verification rule or worksheet.", "lk test-gen Counter --types formal"),
         ],
         related=["lk generate test", "lk test", "lk trace"],
     ),
