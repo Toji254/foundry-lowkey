@@ -45,6 +45,12 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown or non-string kinds: 7"):
             EngineCapability("custom", "custom-tool", ("unit", 7))
 
+    def test_engine_capability_rejects_non_string_memory_class(self):
+        for memory_class in (None, [], {}):
+            with self.subTest(memory_class=memory_class):
+                with self.assertRaisesRegex(ValueError, "memory_class must be one of"):
+                    EngineCapability("custom", "custom-tool", ("unit",), memory_class=memory_class)
+
     def test_engine_capability_accepts_supported_memory_classes(self):
         for memory_class in ("low", "medium", "high"):
             with self.subTest(memory_class=memory_class):
