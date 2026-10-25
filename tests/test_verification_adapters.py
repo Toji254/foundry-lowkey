@@ -149,6 +149,32 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             self.assertEqual(certora.request_configuration(project, {"config": "rules.conf"})[0], ["rules.conf"])
             self.assertIsNone(certora.request_configuration(project, {"config": "../rules.conf"})[0])
 
+    def test_medusa_native_exit_codes_distinguish_failure_from_tool_error(self):
+        adapter = MedusaAdapter(EngineCapability(
+            "medusa", sys.executable, ("fuzz",), memory_class="medium"
+        ))
+        with tempfile.TemporaryDirectory() as root:
+            def run(exit_code):
+                return adapter.run(
+                    {"root": root},
+                    {"test_kind": "fuzz", "argv": [
+                        "-c", f"raise SystemExit({exit_code})"
+                    ]},
+                    budget={"timeout_seconds": 5},
+                )
+            failed = run(7)
+            general_error = run(1)
+            handled_error = run(6)
+            passed = run(0)
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.metadata["result_semantics"], "medusa_native_test_failure_exit_7")
+        self.assertIn("failing fuzz test", failed.summary)
+        self.assertEqual(general_error.status, "error")
+        self.assertEqual(handled_error.status, "error")
+        self.assertEqual(general_error.metadata["result_semantics"], "medusa_native_execution_error")
+        self.assertEqual(passed.status, "passed")
+        self.assertEqual(passed.metadata["result_semantics"], "medusa_exit_success")
+
     def test_default_registry_plans_medusa_only_with_valid_config(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
