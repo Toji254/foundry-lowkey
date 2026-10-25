@@ -78,6 +78,20 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(result.status, "timeout")
         self.assertEqual(result.exit_code, 124)
 
+    def test_campaign_runs_selected_adapters_serially(self):
+        cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
+        registry = CapabilityRegistry([ExecutableAdapter(cap)])
+        with tempfile.TemporaryDirectory() as root:
+            campaign = registry.run_campaign(
+                {"root": root}, "unit",
+                request={"argv_by_engine": {"python-test": ["-c", "print('campaign evidence')"]}},
+                budget={"timeout_seconds": 5}, profile="light",
+            )
+        self.assertEqual(campaign["execution_mode"], "serial")
+        self.assertEqual(campaign["selected_count"], 1)
+        self.assertEqual(campaign["summary"]["passed"], 1)
+        self.assertIn("campaign evidence", campaign["results"][0]["result"]["raw_stdout"])
+
     def test_engine_result_keeps_native_evidence(self):
         result = EngineResult("forge", "failed", 1, raw_stdout="failed", raw_evidence={"trace": ["0xabc"]})
         serialized = result.to_dict()
