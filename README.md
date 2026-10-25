@@ -205,7 +205,9 @@ lk import IERC721Receiver
 # Browse the installed dependency tree
 lk import packages
 
-# Deterministic concept search — no AI required
+# Global symbol + learning search — includes known reference imports
+lk import search ERC20
+lk import search token
 lk import search nft
 lk import search oracle
 lk import search access
@@ -228,6 +230,8 @@ lk import --install --dry-run ERC721
 lk import --json ERC721
 lk import --copy-only ERC721
 ~~~
+
+The interactive browser keeps `/<term>` scoped to the list on screen. Use `g` from any list to search project source, installed dependencies, and Lowkey's known reference catalog; `r` resets the list. A `REFERENCE ONLY` result means the dependency is not installed. For the full import and install guidance, look up the symbol directly with `lk import ERC20`.
 
 A symbol card shows:
 
