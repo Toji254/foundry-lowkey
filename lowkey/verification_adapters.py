@@ -293,7 +293,7 @@ class NativeConfiguredAdapter(ExecutableAdapter):
         budget: dict[str, Any],
     ) -> EngineResult:
         prepared = dict(request)
-        if "argv" not in prepared:
+        if prepared.get("argv") is None:
             argv, reason = self.request_configuration(project, prepared)
             if argv is None:
                 return EngineResult(self.capability.name, "unsupported", summary=reason)
@@ -614,7 +614,8 @@ class CapabilityRegistry:
         """Execute compatible engines serially and preserve every native result.
 
         Per-engine native CLI arguments may be supplied in request.argv_by_engine.
-        Missing arguments never trigger guessed Echidna/Medusa/solver configuration.
+        Native builders require explicit harness/config files and never invent missing
+        specifications or target contracts.
         """
         campaign_started_at = time.monotonic()
         request = dict(request or {})
