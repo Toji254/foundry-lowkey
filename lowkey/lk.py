@@ -3712,12 +3712,29 @@ def _decode_solidity_revert_reason(error_text):
     return None
 
 
+def _explicit_revert_payloads(error_text):
+    """Extract data fields explicitly attached to JSON-RPC/provider errors."""
+    text = str(error_text or "")
+    pattern = r'''(?i)(?:revert data|return data|data)\s*[:=]\s*["']?(0x[0-9a-f]+)'''
+    seen = set()
+    for match in re.finditer(pattern, text):
+        payload = match.group(1)
+        if len(payload[2:]) % 2 == 0 and payload.lower() not in seen:
+            seen.add(payload.lower())
+            yield payload
+
+
 def _revert_payloads(error_text):
-    """Yield plausible ABI revert-data payloads from arbitrary Cast/RPC text."""
-    for match in re.finditer(r"(?i)0x[0-9a-f]{8,}", str(error_text or "")):
+    """Yield explicit revert data first, followed by other possible hex payloads."""
+    text = str(error_text or "")
+    seen = set()
+    for payload in _explicit_revert_payloads(text):
+        seen.add(payload.lower())
+        yield payload
+    for match in re.finditer(r"(?i)0x[0-9a-f]{8,}", text):
         payload = match.group(0)
-        hex_data = payload[2:]
-        if len(hex_data) % 2 == 0:
+        if len(payload[2:]) % 2 == 0 and payload.lower() not in seen:
+            seen.add(payload.lower())
             yield payload
 
 
@@ -3817,7 +3834,7 @@ def _decode_contract_revert(error_text, config=None, target=None):
         return {"kind": "REVERT", "reason": textual_reason, "selector": None, "data": None}
 
     if "execution reverted" in lowered:
-        for payload in payloads:
+        for payload in _explicit_revert_payloads(text):
             selector = payload[:10].lower()
             if selector not in {"0x08c379a0", "0x4e487b71"}:
                 return {
@@ -3868,6 +3885,13 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                 lines.append("  Transaction broadcast: not confirmed; check the transaction/receipt before retrying.")
             return "\n".join(lines)
 
+    if "insufficient funds" in lowered or "insufficient balance for gas" in lowered:
+        lines = ["ERROR [INSUFFICIENT FUNDS]", f"  Details: {text}",
+                 "  Next: check the sender's native-token balance and the transaction's gas/value requirements."]
+        if command == "send" and is_gas_estimation:
+            lines.append("  Transaction broadcast: no (gas estimation failed).")
+        return "\n".join(lines)
+
     # A gas-estimation failure can have a useful provider reason without being
     # a Solidity revert (e.g. fee, balance, or transaction-parameter rejection).
     if is_gas_estimation:
@@ -3901,17 +3925,10 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             "  Next: check whether the command or RPC is still responsive, then retry."
         )
 
-    if "insufficient funds" in lowered or "insufficient balance for gas" in lowered:
-        lines = ["ERROR [INSUFFICIENT FUNDS]", f"  Details: {text}",
-                 "  Next: check the sender's native-token balance and the transaction's gas/value requirements."]
-        if command == "send" and is_gas_estimation:
-            lines.append("  Transaction broadcast: no (gas estimation failed).")
-        return "\n".join(lines)
-
     if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
         return (
-            "ERROR [TRANSACTION NONCE/FEES]\\n"
-            f"  Details: {text}\\n"
+            "ERROR [TRANSACTION NONCE/FEES]\n"
+            f"  Details: {text}\n"
             "  Next: inspect the sender nonce and pending transactions before retrying."
         )
 
@@ -3921,9 +3938,9 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         "missing required argument", "could not parse argument",
     )):
         return (
-            "ERROR [INVALID INPUT]\\n"
-            f"  Details: {text}\\n"
-            + (f"  Next: review 'lk {command} --h' for accepted arguments and examples.\\n" if command else "")
+            "ERROR [INVALID INPUT]\n"
+            f"  Details: {text}\n"
+            + (f"  Next: review 'lk {command} --h' for accepted arguments and examples.\n" if command else "")
         ).rstrip()
 
     if any(marker in lowered for marker in (
@@ -3931,8 +3948,8 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         "not found in path", "no module named",
     )):
         return (
-            "ERROR [MISSING DEPENDENCY OR FILE]\\n"
-            f"  Details: {text}\\n"
+            "ERROR [MISSING DEPENDENCY OR FILE]\n"
+            f"  Details: {text}\n"
             "  Next: verify the named executable/module/path exists and that required tools are installed."
         )
 
