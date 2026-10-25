@@ -734,7 +734,6 @@ jobs:
           assert "[PASS]" in result["raw_stdout"] + result["raw_stderr"], result
           print("PASS: live Halmos symbolic result was normalized from native PASS evidence")
           PY
-          PY
       - name: Confirm Certora CLI installation without submitting a paid remote proof
         run: |
           certoraRun --help >/tmp/lowkey-certora-help.txt
