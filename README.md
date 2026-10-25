@@ -440,7 +440,7 @@ lk test-gen TokenSale --types unit,fuzz,invariant,integration,fork,poc,regressio
 lk test-gen TokenSale --types unit,fuzz,invariant --force --validate
 ~~~
 
-`--validate` compiles generated drafts; it does **not** execute tests or prove correctness. Review report TODOs, complete assertions, and move approved tests into the Foundry test directory before relying on them.
+`--validate` builds the untouched project, compiles the generated drafts in a temporary Foundry test location, and executes eligible local unit/fuzz/invariant candidates. Fork/PoC scaffolds and artifacts without executable local assertions remain compile-only. Review report TODOs, complete assertions, and treat passing candidate tests as evidence for those cases—not proof of protocol-wide security.
 
 ## Shared audit context
 

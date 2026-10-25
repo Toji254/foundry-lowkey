@@ -948,7 +948,7 @@ Generated drafts are saved outside Foundry's test directory by default, so they
 will not silently affect the project's existing test suite. Review the report,
 complete TODOs, and move approved files into the configured Foundry test directory before running Forge.
 The generator does not claim coverage or invent protocol-specific assertions.
---validate compiles temporary generated drafts with forge build; it never executes tests.
+--validate builds the baseline, compiles generated drafts, then executes eligible local unit/fuzz/invariant candidates with forge test. Fork/PoC/non-executable drafts are compile-only; passing tests are not proof of protocol security.
 --strict fails if selected types remain scaffolds/unverified, and also requires --validate to pass.
 """)
         return 0
@@ -1140,7 +1140,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     print("Generation assessment:")
     for kind, assessment in report["generation_assessment"].items():
         print(f"  {kind}: {assessment['level']} — {assessment['note']}")
-    print("No generated artifact establishes protocol security; validation is compile-only.")
+    print("Without --validate, generation is compile-only. With --validate, eligible local unit/fuzz/invariant candidates are compiled and executed. No generated artifact establishes protocol security.")
     if strict and strict_blockers:
         print("Strict readiness check failed:")
         for blocker in strict_blockers:
