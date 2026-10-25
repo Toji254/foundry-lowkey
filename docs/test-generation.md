@@ -20,14 +20,14 @@ By default, files are written to `.audit/test-gen/<ContractName>/`. This is inte
 | Type | Starter contents | What still needs human/project input |
 |---|---|---|
 | Unit | Local deployment smoke test | Expected state changes, authorization, revert behavior, events and accounting |
-| Fuzz | Local deployment and fuzz-test shape | Property, valid input bounds, actors, approvals and expected result |
+| Fuzz | For a simple public integer state variable with a direct one-statement setter, generates an executable round-trip fuzz property; otherwise leaves a TODO scaffold | Other properties, valid input bounds, actors, approvals and expected result |
 | Invariant | Local deployment and handler/property guidance | Valid action handler and protocol-level invariant |
 | Integration | Local deployment and dependency-wiring guidance | Peer contracts, dependency addresses and cross-contract expectations |
 | Fork | Fork setup and target-code smoke test | Correct archive RPC, chain/target and behavioral assertion |
 | PoC | Fork setup and reproduction guidance | Exploit calldata/preconditions and a security-impact assertion |
 | Regression | Starter for an already fixed bug | Original preconditions, trigger and expected post-fix assertion |
 
-The local-deployment styles (unit, fuzz, invariant, integration and regression) support zero-argument constructors and simple constructor parameters with conservative placeholders for integer, address, boolean, string and bytes types. For example, `constructor(uint256 initial)` is scaffolded as `new ContractName(0)`, with a TODO to review the placeholder. These values are compile-oriented defaults, not evidence of valid protocol setup. Unknown or user-defined parameter types are skipped rather than guessed. Fork and PoC drafts still need a configured target address and a valid `LOWKEY_RPC_URL` before execution.
+The local-deployment styles (unit, fuzz, invariant, integration and regression) support zero-argument constructors and simple constructor parameters with conservative placeholders for integer, address, boolean, string and bytes types. For example, `constructor(uint256 initial)` is scaffolded as `new ContractName(0)`, with a TODO to review the placeholder. These values are compile-oriented defaults, not evidence of valid protocol setup. Unknown or user-defined parameter types are skipped rather than guessed. For fuzzing, Lowkey currently emits an executable round-trip property only when source inspection identifies a public integer state variable and a one-statement public/external setter assigning its sole parameter directly to that variable. For other contracts, it leaves a clearly labelled TODO instead of fabricating a property. Fork and PoC drafts still need a configured target address and a valid `LOWKEY_RPC_URL` before execution.
 
 The import paths assume the generated Solidity files are eventually moved to `test/lowkey-generated/`. Review them before moving or running them. `--force` allows replacing existing drafts; without it Lowkey preserves existing files.
 
