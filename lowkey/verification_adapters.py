@@ -206,7 +206,7 @@ class ExecutableAdapter:
             if truncated["stderr"]:
                 stderr += marker
             if status == "timeout":
-                stderr += f"\\nLOWKEY_TIMEOUT_SECONDS={timeout}"
+                stderr += f"\nLOWKEY_TIMEOUT_SECONDS={timeout}"
         except OSError as exc:
             return EngineResult(self.capability.name, "error", exit_code=127, summary=str(exc))
         return EngineResult(
