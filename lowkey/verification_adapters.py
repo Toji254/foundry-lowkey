@@ -37,6 +37,16 @@ class EngineCapability:
     memory_class: str = "medium"
     notes: str = ""
 
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("engine capability name must not be empty")
+        if not self.command.strip():
+            raise ValueError("engine capability command must not be empty")
+        if self.memory_class not in {"low", "medium", "high"}:
+            raise ValueError(
+                "engine capability memory_class must be one of: low, medium, high"
+            )
+
 
 @dataclass
 class EngineResult:
