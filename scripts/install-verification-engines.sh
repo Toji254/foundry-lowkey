@@ -37,6 +37,7 @@ fi
 
 uv python install 3.12
 uv tool install --python 3.12 --force slither-analyzer==0.11.6 --with crytic-compile==0.4.2
+uv tool install --python 3.12 --force crytic-compile==0.4.2
 uv tool install --python 3.12 --force solc-select==1.2.0
 uv tool install --python 3.12 --force halmos==0.3.3
 uv tool install --python 3.12 --force certora-cli==8.20.2
