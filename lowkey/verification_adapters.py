@@ -9,6 +9,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import os
+import json
 from importlib.metadata import entry_points
 import signal
 import threading
@@ -354,6 +355,15 @@ class MedusaAdapter(NativeConfiguredAdapter):
         config_path, reason = _project_file(project.get("root"), config, suffix=".json")
         if config_path is None:
             return None, "Medusa requires a valid medusa.json-style config; " + reason
+        try:
+            with (Path(project["root"]).expanduser().resolve() / config_path).open(
+                "r", encoding="utf-8"
+            ) as config_file:
+                config_data = json.load(config_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            return None, f"Medusa config is not valid JSON: {exc}"
+        if not isinstance(config_data, dict):
+            return None, "Medusa config JSON must be an object"
         # Medusa defaults to multiple worker threads; keep the default conservative
         # for the light-profile / 8 GB workstation use case.
         workers = request.get("workers", 1)
