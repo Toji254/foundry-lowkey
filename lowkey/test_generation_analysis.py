@@ -208,7 +208,11 @@ def _existing_tests(root: Path, configured_test_dir: Path | None = None) -> dict
                 continue
             names = re.findall(r"\bfunction\s+((?:test|invariant|echidna_)\w*)\s*\(", clean)
             count += len(names)
-            files.append({"path": path.relative_to(root).as_posix(), "functions": names[:60]})
+            try:
+                relative_path = path.relative_to(root).as_posix()
+            except ValueError:
+                relative_path = str(path)
+            files.append({"path": relative_path, "functions": names[:60]})
     return {"file_count": len(files), "function_count": count, "files": files[:100]}
 
 
