@@ -12,6 +12,11 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+try:
+    from test_generation_analysis import analyse_contract, render_test_plan, unit_access_control_tests, mask_solidity
+except ImportError:  # keep partial installs diagnosable
+    analyse_contract = render_test_plan = unit_access_control_tests = mask_solidity = None
+
 TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal")
 
 
@@ -61,37 +66,33 @@ def _contract_source(root: Path, name: str) -> tuple[Path, str] | None:
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        if pattern.search(source):
+        searchable = mask_solidity(source) if mask_solidity else source
+        if pattern.search(searchable):
             return path, source
     return None
 
 
 def _contract_body(source: str, name: str) -> str | None:
+    searchable = mask_solidity(source) if mask_solidity else source
     match = re.search(
         r"\b(?:abstract\s+)?contract\s+" + re.escape(name) + r"\b[^\{]*\{",
-        source,
+        searchable,
     )
     if not match:
         return None
     start = match.end()
-    depth = 1
-    end = start
-    while end < len(source) and depth:
-        if source[end] == "{":
-            depth += 1
-        elif source[end] == "}":
-            depth -= 1
-        end += 1
-    if depth:
+    closing = _matching_brace(searchable, start - 1)
+    if closing is None:
         return None
-    return source[start:end - 1]
+    return source[start:closing]
 
 
 def _constructor_args(source: str, name: str) -> str | None:
     body = _contract_body(source, name)
     if body is None:
         return None
-    constructor = re.search(r"\bconstructor\s*\(([^)]*)\)", body)
+    searchable = mask_solidity(body) if mask_solidity else body
+    constructor = re.search(r"\bconstructor\s*\(([^)]*)\)", searchable)
     if not constructor:
         return ""
     return constructor.group(1).strip()
@@ -127,12 +128,13 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
     body = _contract_body(source, name)
     if body is None:
         return None
+    searchable = mask_solidity(body) if mask_solidity else body
 
     integer_type = r"(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)"
     states: dict[str, str] = {}
     for match in re.finditer(
         rf"(?m)^\s*({integer_type})\s+public\s+([A-Za-z_]\w*)\s*;",
-        body,
+        searchable,
     ):
         states[match.group(2)] = match.group(1)
 
@@ -143,7 +145,7 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
         r"\bfunction\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*"
         r"(?:external|public)\b[^{}]*\{"
     )
-    for match in function_pattern.finditer(body):
+    for match in function_pattern.finditer(searchable):
         parameters = _split_parameters(match.group(2))
         if len(parameters) != 1:
             continue
@@ -163,11 +165,10 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
             continue
 
         opening = match.end() - 1
-        closing = _matching_brace(body, opening)
+        closing = _matching_brace(searchable, opening)
         if closing is None:
             continue
-        function_body = body[opening + 1:closing]
-        function_body = re.sub(r"/\*.*?\*/|//[^\n]*", "", function_body, flags=re.S).strip()
+        function_body = searchable[opening + 1:closing].strip()
 
         for state_name, state_type in states.items():
             if _normalise_integer_type(parameter_type) != _normalise_integer_type(state_type):
@@ -258,7 +259,8 @@ def _solidity_name(name: str) -> str:
 
 
 def _local_template(kind: str, name: str, import_path: str, constructor_values: list[str],
-                    fuzz_property: dict[str, str] | None = None) -> str:
+                    fuzz_property: dict[str, str] | None = None,
+                    analysis: dict[str, Any] | None = None) -> str:
     ident = _solidity_name(name)
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
     constructor_arguments = ", ".join(constructor_values)
@@ -286,6 +288,9 @@ import {{ {name} }} from "{import_path}";
         assertEq(target.{state}(), expected);
     }}
 """
+    extra_access_tests = "\n".join(unit_access_control_tests(analysis or {}, (analysis or {}).get("_source_text", "")) if unit_access_control_tests else [])
+    if extra_access_tests:
+        extra_access_tests = "\n" + extra_access_tests + "\n"
     if kind == "unit":
         body = f'''contract {generated} is Test {{
     {name} internal target;
@@ -300,7 +305,7 @@ import {{ {name} }} from "{import_path}";
 
     // TODO: Add unit tests for expected state changes, access control,
     // boundary values, revert reasons, emitted events, and accounting.
-{setter_unit_test}}}
+{setter_unit_test}{extra_access_tests}}}
 '''
     elif kind == "fuzz":
         if fuzz_property:
@@ -463,7 +468,9 @@ A guessed assertion could be incorrect or vacuous. Add a formal rule only after 
 
 
 def _fork_template(kind: str, name: str, target: str | None, import_path: str,
-                   fuzz_property: dict[str, str] | None) -> str:
+                   fuzz_property: dict[str, str] | None,
+                   analysis: dict[str, Any] | None = None) -> str:
+    """Generate fork diagnostics without mutating a deployed protocol by default."""
     ident = _solidity_name(name)
     addr = target.lower() if isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) else "address(0)"
     target_literal = addr if addr == "address(0)" else f"address({addr})"
@@ -471,7 +478,8 @@ def _fork_template(kind: str, name: str, target: str | None, import_path: str,
     body = f'''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// LowkeyCast-generated starter. Configure LOWKEY_RPC_URL before running.
+// LowkeyCast-generated fork diagnostic. Configure LOWKEY_RPC_URL before running.
+// Tests run against a local Foundry fork; they do not send transactions to mainnet.
 import {{Test}} from "forge-std/Test.sol";
 import {{ {name} }} from "{import_path}";
 
@@ -481,49 +489,64 @@ contract {generated} is Test {{
 
     function setUp() public {{
         string memory rpcUrl = vm.envString("LOWKEY_RPC_URL");
-        vm.createSelectFork(rpcUrl);
+        uint256 requestedBlock = vm.envOr("LOWKEY_FORK_BLOCK", uint256(0));
+        if (requestedBlock == 0) {{
+            vm.createSelectFork(rpcUrl);
+        }} else {{
+            vm.createSelectFork(rpcUrl, requestedBlock);
+        }}
         require(TARGET != address(0), "Set a real target address before running");
         assertGt(TARGET.code.length, 0, "Target has no code on selected fork");
+        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", block.chainid);
+        assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");
         target = {name}(TARGET);
+    }}
+
+    function test_fork_target_has_runtime_code() public view {{
+        assertGt(TARGET.code.length, 0, "Target has no runtime code");
     }}
 
 '''
     if kind == "fork":
-        body += '''    function test_fork_target_has_code() public view {
-        assertGt(TARGET.code.length, 0);
-    }
-
-'''
-        if fuzz_property:
-            setter = fuzz_property["setter"]
-            parameter_type = fuzz_property["type"]
-            state = fuzz_property["state"]
-            body += f'''    function testFork_{setter}_round_trip() public {{
-        {parameter_type} expected = {parameter_type}(1);
-        target.{setter}(expected);
-        assertEq(target.{state}(), expected);
+        state_variables = (analysis or {}).get("state_variables", [])
+        generated_getters = 0
+        for state in state_variables:
+            if state.get("visibility") != "public":
+                continue
+            getter = str(state.get("name") or "")
+            if not re.fullmatch(r"[A-Za-z_]\w*", getter):
+                continue
+            body += f'''    function testFork_{getter}_publicGetterIsCallable() public view {{
+        (bool ok, bytes memory result) = TARGET.staticcall(
+            abi.encodeWithSignature("{getter}()")
+        );
+        assertTrue(ok, "Public getter reverted on selected fork");
+        assertGt(result.length, 0, "Public getter returned no encoded data");
     }}
 
-    // This assertion is generated only for a source-recognized direct setter.
-    // Confirm the fork target is the expected implementation/version.
 '''
-        else:
-            body += '''    // TODO: Assert the expected behavior against this chain's actual state.
+            generated_getters += 1
+        if generated_getters == 0:
+            body += '''    // TODO: Add a read-only assertion against a known deployment invariant,
+    // such as an expected owner, implementation address, oracle configuration,
+    // or a block-pinned accounting value. No expected value was inferred.
 '''
-        body += '''}
+        body += '''    // Writes are deliberately not generated from a local source pattern:
+    // authorization, proxy routing, and live state may differ from local source.
+}
 '''
     else:
-        body += '''    // TODO: Add concrete exploit preconditions, trigger, and a security-impact assertion.
-    // No suspected bug was supplied, so Lowkey cannot truthfully generate a PoC.
-    // For call-specific recorded evidence, use the existing lk generate test.
+        body += '''    // TODO: Add a concrete exploit precondition, trigger, and measurable
+    // security-impact assertion backed by a finding or recorded execution.
+    // No suspected vulnerability was supplied, so a generic PoC would be fiction.
 }
 '''
     return body
 
-
 def _render(kind: str, name: str, import_path: str, target: str | None,
             local_deploy: bool, constructor_values: list[str] | None,
-            is_abstract: bool, fuzz_property: dict[str, str] | None) -> str:
+            is_abstract: bool, fuzz_property: dict[str, str] | None,
+            analysis: dict[str, Any] | None = None) -> str:
     if kind == "formal":
         return _formal_template(name, fuzz_property)[1]
     if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:
@@ -534,8 +557,8 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
                 f"{kind} needs constructor argument types with supported placeholder values; "
                 "this constructor contains an unsupported or unrecognized type"
             )
-        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None)
-    return _fork_template(kind, name, target, import_path, fuzz_property)
+        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None, analysis)
+    return _fork_template(kind, name, target, import_path, fuzz_property, analysis)
 
 
 def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
@@ -613,6 +636,13 @@ The generator does not claim coverage or invent protocol-specific assertions.
     is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
     local_deploy = constructor_values is not None and not is_abstract
     fuzz_property = _find_simple_fuzz_property(source, name)
+    analysis = analyse_contract(root, name, source_path, source) if analyse_contract else {
+        "contract": name, "source": str(source_path), "functions": [], "state_variables": [],
+        "security_surfaces": {}, "profiles": [], "imports": [], "existing_tests": {},
+        "audit_evidence": {"files": [], "signals": [], "note": "Analysis module unavailable."},
+        "limitations": ["Evidence analysis module unavailable; reinstall LowkeyCast."],
+    }
+    analysis["_source_text"] = source
     import_path = _rel_import(root, source_path)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
     output_dir = output_dir / _solidity_name(name)
@@ -627,7 +657,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
             suffix, _ = _formal_template(name, fuzz_property)
         filename = output_dir / f"LowkeyGenerated{kind.title()}_{_solidity_name(name)}{suffix}"
         try:
-            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property)
+            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis)
         except ValueError as exc:
             skipped.append({"type": kind, "reason": str(exc)})
             continue
@@ -646,11 +676,18 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "constructor_parameters": constructor_args,
         "constructor_placeholders": constructor_values,
         "fuzz_property": fuzz_property,
+        "analysis": {key: value for key, value in analysis.items() if not key.startswith("_")},
         "requested_types": selected,
         "generated": generated,
         "skipped": skipped,
         "warning": "Scaffolds are not protocol proofs. Complete TODO assertions before relying on them.",
     }
+    plan_path = output_dir / "test-plan.md"
+    if plan_path.exists() and not force:
+        plan_path = output_dir / "test-plan.latest.md"
+    plan_content = render_test_plan({key: value for key, value in analysis.items() if not key.startswith("_")}, selected) if render_test_plan else "# Test plan unavailable\n\nReinstall LowkeyCast to restore the analysis module.\n"
+    plan_path.write_text(plan_content, encoding="utf-8")
+
     report_path = output_dir / "report.json"
     if report_path.exists() and not force:
         report_path = output_dir / "report.latest.json"
@@ -664,6 +701,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     for item in skipped:
         print(f"  skipped    {item['type']}: {item['reason']}")
     print("Review TODOs: no protocol-specific behavior or invariant is inferred automatically.")
+    print(f"Plan: {plan_path.relative_to(root) if plan_path.is_relative_to(root) else plan_path}")
     print(f"Report: {report_path.relative_to(root) if report_path.is_relative_to(root) else report_path}")
     return 0
 

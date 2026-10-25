@@ -50,6 +50,7 @@ jobs:
           test -f "$HOME/.lowkey/import_helper.py"
           test -f "$HOME/.lowkey/break_playbook.py"
           test -f "$HOME/.lowkey/break_engine.py"
+          test -f "$HOME/.lowkey/test_generation_analysis.py"
           test -f "$HOME/.lowkey/benchmark.py"
           test -f "$HOME/.lowkey/analysis_adapters.py"
           test -f "$HOME/.lowkey/solidity_cheatsheet.py"
@@ -60,6 +61,7 @@ jobs:
           grep -q '/import_helper.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_playbook.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_engine.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/test_generation_analysis.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/analysis_adapters.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/solidity_cheatsheet.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/solidity_cheat_topics.py":' "$HOME/.lowkey/install-manifest.json"
@@ -98,6 +100,8 @@ jobs:
                   count += value;
                   emit Ping(value);
               }
+              uint256 public value;
+              function setValue(uint256 next) external { value = next; }
               function deposit(uint256 amount) external payable {
                   require(amount == msg.value, "attach eth");
                   count += amount;
@@ -127,6 +131,16 @@ jobs:
               }
           }
           EOF
+
+      - name: Generate and execute test-generation fixtures
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          lk test-gen Fixture --types unit,fuzz,invariant --force
+          mkdir -p test/lowkey-generated
+          cp .audit/test-gen/Fixture/LowkeyGeneratedUnit_Fixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/Fixture/LowkeyGeneratedFuzz_Fixture.t.sol test/lowkey-generated/
+          cp .audit/test-gen/Fixture/LowkeyGeneratedInvariant_Fixture.t.sol test/lowkey-generated/
+          forge test --match-path 'test/lowkey-generated/.*Fixture.t.sol' -vv
 
       - name: Start Anvil
         run: |

@@ -83,8 +83,13 @@ class TestGenerationTests(unittest.TestCase):
             self.assertIn("function invariant_value_matchesLastSuccessfulSetterCall()", invariant_draft)
             self.assertIn("targetContract(address(handler));", invariant_draft)
             fork_draft = (folder / "LowkeyGeneratedFork_Counter.t.sol").read_text(encoding="utf-8")
-            self.assertIn("function testFork_setValue_round_trip()", fork_draft)
+            self.assertIn("function testFork_value_publicGetterIsCallable()", fork_draft)
+            self.assertIn('abi.encodeWithSignature("value()")', fork_draft)
+            self.assertNotIn("target.setValue(expected)", fork_draft)
             self.assertIn("target = Counter(TARGET);", fork_draft)
+            self.assertTrue((folder / "test-plan.md").is_file())
+            self.assertIn("Test plan by family", (folder / "test-plan.md").read_text(encoding="utf-8"))
+            self.assertIn("security_surfaces", report["analysis"])
             formal_spec = (folder / "LowkeyGeneratedFormal_Counter.spec").read_text(encoding="utf-8")
             self.assertIn("rule setValue_round_trip(uint256 fuzzValue)", formal_spec)
             self.assertIn("assert target.value() == fuzzValue;", formal_spec)
@@ -307,6 +312,59 @@ class TestGenerationTests(unittest.TestCase):
             )
 
 
+
+
+    def test_generates_narrow_non_owner_test_for_unconditional_only_owner_mutator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            source_path = root / "src" / "Counter.sol"
+            source = source_path.read_text(encoding="utf-8").replace(
+                "uint256 public value;",
+                "uint256 public value;\n"
+                "bool public paused;\n"
+                "address public owner;\n"
+                "constructor() { owner = msg.sender; }\n"
+                "modifier onlyOwner() { require(msg.sender == owner); _; }\n"
+                "function pause() external onlyOwner { paused = true; }",
+            )
+            source_path.write_text(source, encoding="utf-8")
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter"},
+                        ["--types", "unit"],
+                    )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 0)
+            unit = (root / ".audit" / "test-gen" / "Counter" / "LowkeyGeneratedUnit_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertIn("function test_nonOwnerCannotCall_pause()", unit)
+            self.assertIn("vm.prank(address(0xBEEF));", unit)
+            self.assertIn("vm.expectRevert();", unit)
+
+    def test_analysis_masks_comments_and_quoted_strings_before_finding_security_cues(self):
+        from test_generation_analysis import analyse_contract, mask_solidity
+        sample = (
+            'contract Demo {\n'
+            '  // onlyOwner should not count when commented out\n'
+            '  string public note = "delegatecall and onlyRole";\n'
+            '  address public owner;\n'
+            '  function changeOwner(address next) external onlyOwner { owner = next; }\n'
+            '}\n'
+        )
+        clean = mask_solidity(sample)
+        self.assertNotIn("onlyOwner should not count", clean)
+        self.assertNotIn("delegatecall and onlyRole", clean)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_path = root / "Demo.sol"
+            source_path.write_text(sample, encoding="utf-8")
+            result = analyse_contract(root, "Demo", source_path, sample)
+            self.assertIn("access control", result["security_surfaces"])
+            self.assertEqual(result["functions"][0]["name"], "changeOwner")
 
 if __name__ == "__main__":
     unittest.main()

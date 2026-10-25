@@ -378,6 +378,8 @@ The generated matrix test uses the saved actor and calls the target through a lo
 
 ### Test generation
 
+`lk test-gen <Contract> --types all` now writes both selected test drafts and a `test-plan.md` describing the contract shapes and security-relevant source cues it recognized, locally resolvable imports, existing Solidity tests, and available saved audit evidence. The report distinguishes source-based hypotheses from established behavior. Fork drafts are read-only by default and can be pinned with `LOWKEY_FORK_BLOCK` and checked against `LOWKEY_EXPECTED_CHAIN_ID`; they do not infer state-changing calls merely from a local setter.
+
 Turn the last recorded send into a Forge reproduction:
 
 ~~~bash

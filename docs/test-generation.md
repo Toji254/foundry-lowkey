@@ -1,6 +1,6 @@
-# Multi-type test scaffolding
+# Evidence-backed Solidity test generation
 
-Lowkey exposes `lk test-gen` for generating starter files for several Solidity test styles.
+Lowkey exposes `lk test-gen` for generating test drafts and an evidence-linked test plan for a contract. The generator makes conservative inferences; it must not imply that a heuristic, a generated file, or a passing smoke test proves security.
 
 ## Usage
 
@@ -16,7 +16,7 @@ If no contract name is supplied, Lowkey uses the active configured contract name
 
 ## What it creates
 
-By default, files are written to `.audit/test-gen/<ContractName>/`. This is intentional: drafts do not enter Foundry's regular test discovery and therefore cannot silently change the project's normal test result. A JSON report lists generated and skipped types.
+By default, files are written to `.audit/test-gen/<ContractName>/`. This is intentional: drafts do not enter Foundry's regular test discovery and therefore cannot silently change the project's normal test result. A JSON report lists generated/skipped types and a source-analysis summary. A test-plan.md records recognized protocol shapes, security-relevant source cues, dependency imports, existing test inventory, reusable .audit/evidence files, and a plan for all seven test families plus formal verification.
 
 | Type | Starter contents | What still needs human/project input |
 |---|---|---|
@@ -24,7 +24,7 @@ By default, files are written to `.audit/test-gen/<ContractName>/`. This is inte
 | Fuzz | For a simple public integer state variable with a direct one-statement setter, generates an executable round-trip fuzz property; otherwise leaves a TODO scaffold | Other properties, valid input bounds, actors, approvals and expected result |
 | Invariant | For a recognized direct setter, emits a Foundry handler and an executable invariant comparing the public getter with the handler's last successful write; otherwise leaves a TODO | Broader protocol invariants, valid action sequences and multi-actor accounting |
 | Integration | Local deployment and dependency-wiring guidance | Peer contracts, dependency addresses and cross-contract expectations |
-| Fork | Fork setup and target-code smoke test; adds a setter/getter behavior assertion when the source pattern is safe and the target is configured | Correct archive RPC, chain/target, deployed-version match and broader state-dependent assertions |
+| Fork | Fork setup, chain-ID pinning via LOWKEY_EXPECTED_CHAIN_ID, optional block pinning via LOWKEY_FORK_BLOCK, target-code check, and read-only calls to recognized public scalar getters | Correct RPC, target, implementation/deployment match, and explicit expected values for deployment-specific properties |
 | PoC | Fork setup and reproduction guidance | Exploit calldata/preconditions and a security-impact assertion |
 | Regression | Starter for an already fixed bug | Original preconditions, trigger and expected post-fix assertion |
 | Formal | Certora CVL `.spec` rule for a recognized setter/getter property, otherwise a formal-specification worksheet | Verifier setup, complete security properties, assumptions, and proof/counterexample review |
@@ -36,3 +36,12 @@ The import paths assume the generated Solidity files are eventually moved to `te
 ## Evidence boundary
 
 These are starter drafts, not automatic claims of test coverage. An ABI and function names alone do not establish intended business behavior, valid protocol states, or invariants. Lowkey leaves assertions and setup that depend on those assumptions as TODOs. For a call-specific reproduction based on recorded evidence, the existing `lk generate test` flow remains available. Running tests is separate from generating the drafts.
+
+
+## Evidence-aware generation and validation boundaries
+
+The analysis is deliberately syntax-aware about comments and string literals. It summarizes public/external functions, simple state variables, events, inheritance names, locally resolvable imports, existing Solidity test functions, recognized protocol profiles, security-surface cues, and saved audit-evidence files. These are search signals and test-planning inputs, not findings.
+
+Unit drafts may add an unauthenticated-caller test only when an explicit onlyOwner modifier protects an uncomplicated state-mutating function body. The test remains a candidate and should be reviewed for project semantics. Fork drafts are read-only by default; Lowkey no longer infers a write against a deployed address merely because the local source contains a simple setter. Configure LOWKEY_RPC_URL, and optionally LOWKEY_FORK_BLOCK and LOWKEY_EXPECTED_CHAIN_ID, to make the fork reproducible.
+
+The generator does not claim to automatically reconstruct every protocol's economic rules. Invariant handlers, realistic integration fixtures, exploit preconditions, and formal assumptions require the specific properties and environmental model to be established. See the generated test plan for recognized evidence and prioritized test families.
