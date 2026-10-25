@@ -575,7 +575,20 @@ class CertoraAdapter(NativeConfiguredAdapter):
         config_path, reason = _project_file(project.get("root"), request.get("config"), suffix=".conf")
         if config_path is None:
             return None, "Certora requires an existing JSON5 .conf file; " + reason
-        return [config_path], "Certora configuration file validated"
+        wait_for_results = request.get("wait_for_results", True)
+        if not isinstance(wait_for_results, bool):
+            return None, "request.wait_for_results must be a boolean"
+        # Certora's default outside CI can exit after submitting a remote job.
+        # Wait for the native CLI's final rule results so a campaign cannot
+        # mislabel job submission as verification completion.
+        argv = [config_path, "--wait_for_results"]
+        if not wait_for_results:
+            argv.append("NONE")
+        return argv, (
+            "Certora configuration validated; waiting for final proof results"
+            if wait_for_results
+            else "Certora configuration validated; submission-only mode explicitly requested"
+        )
 
     def run(
         self, project: dict[str, Any], request: dict[str, Any], *,

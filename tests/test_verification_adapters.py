@@ -146,7 +146,21 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             self.assertEqual(halmos.request_configuration(project, {})[0], ["--function", "test"])
 
             certora = CertoraAdapter(EngineCapability("certora", "certoraRun", ("formal",)))
-            self.assertEqual(certora.request_configuration(project, {"config": "rules.conf"})[0], ["rules.conf"])
+            self.assertEqual(
+                certora.request_configuration(project, {"config": "rules.conf"})[0],
+                ["rules.conf", "--wait_for_results"],
+            )
+            self.assertEqual(
+                certora.request_configuration(
+                    project, {"config": "rules.conf", "wait_for_results": False}
+                )[0],
+                ["rules.conf", "--wait_for_results", "NONE"],
+            )
+            self.assertIsNone(
+                certora.request_configuration(
+                    project, {"config": "rules.conf", "wait_for_results": "yes"}
+                )[0]
+            )
             self.assertIsNone(certora.request_configuration(project, {"config": "../rules.conf"})[0])
 
     def test_medusa_native_exit_codes_distinguish_failure_from_tool_error(self):
