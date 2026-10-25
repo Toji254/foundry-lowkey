@@ -8271,6 +8271,15 @@ def _lab_constructor_default(contract, label, ptype):
         if name in {"version", "poolversion"}:
             return "v1"
 
+    # Keep a useful, generic raw-integer lab suggestion without guessing units.
+    # Narrow integer types receive 1 instead when 1,000,000 would overflow.
+    integer_match = re.fullmatch(r"(u?int)(\d+)?", str(ptype))
+    if integer_match:
+        signed = integer_match.group(1) == "int"
+        bits = int(integer_match.group(2) or "256")
+        maximum = (1 << (bits - 1)) - 1 if signed else (1 << bits) - 1
+        return "1000000" if maximum >= 1000000 else "1"
+
     return None
 
 
@@ -8356,6 +8365,8 @@ def _lab_scalar_value(config, accounts, contract, label, ptype, *, nested=False,
 
     if default is not None:
         print(f"  Suggested : {default}")
+        if ptype.startswith(("uint", "int")):
+            print("  Suggestion note: generic raw integer; unit and meaning are not inferred from the ABI.")
 
     prompt = f"  Value{' [Enter = ' + default + ']' if default is not None else ''}: "
     value = input(prompt).strip()
