@@ -141,6 +141,23 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             self.assertEqual(certora.request_configuration(project, {"config": "rules.conf"})[0], ["rules.conf"])
             self.assertIsNone(certora.request_configuration(project, {"config": "../rules.conf"})[0])
 
+    def test_default_registry_plans_medusa_only_with_valid_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            (root / "src" / "Vault.sol").write_text("contract Vault {}", encoding="utf-8")
+            (root / "medusa.json").write_text("{}\\n", encoding="utf-8")
+            project = inspect_project(root)
+            registry = default_registry(load_plugins=False)
+            with patch("lowkey.verification_adapters.shutil.which", return_value="/usr/bin/medusa"):
+                valid = registry.plan(project, "fuzz", profile="balanced", request={"config": "medusa.json"})
+                missing = registry.plan(project, "fuzz", profile="balanced", request={"config": "missing.json"})
+        self.assertIn("medusa", {row["engine"] for row in valid["selected"]})
+        rejected = next(row for row in missing["rejected"] if row["engine"] == "medusa")
+        self.assertEqual(rejected["status"], "missing_configuration")
+        self.assertIn("does not exist", rejected["reason"])
+
     def test_certora_cli_success_is_not_reported_as_proof_success(self):
         adapter = CertoraAdapter(EngineCapability("certora", sys.executable, ("formal",), memory_class="high"))
         with tempfile.TemporaryDirectory() as root:
