@@ -739,3 +739,9 @@ jobs:
           certoraRun --help >/tmp/lowkey-certora-help.txt
           grep -qi 'conf' /tmp/lowkey-certora-help.txt
           echo "PASS: Certora CLI starts. Remote proof execution/polling requires authorized credentials and is intentionally not invoked in CI."
+      - name: Exercise Slither static analysis on the fixture
+        working-directory: /tmp/lowkey-external-fixture
+        run: |
+          slither --version
+          slither . --fail-none
+          echo "PASS: Slither compiled and analyzed the live Foundry fixture"
