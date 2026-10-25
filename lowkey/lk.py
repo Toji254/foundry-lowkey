@@ -4044,11 +4044,11 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             category = "LOWKEY"
         details = text
         if len(details) > 4000:
-            details = details[:4000] + "\\n  [diagnostic truncated after 4000 characters]"
-        detail_lines = "\\n".join("  " + line for line in details.splitlines()) or "  (no details)"
-        operation = f"  Operation: lk {command}\\n" if command else ""
-        exit_code = f"  Exit code: {code}\\n" if isinstance(code, int) and code else ""
-        return f"ERROR [{category}]\\n" + operation + exit_code + "  Details:\\n" + detail_lines
+            details = details[:4000] + "\n  [diagnostic truncated after 4000 characters]"
+        detail_lines = "\n".join("  " + line for line in details.splitlines()) or "  (no details)"
+        operation = f"  Operation: lk {command}\n" if command else ""
+        exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
+        return f"ERROR [{category}]\n" + operation + exit_code + "  Details:\n" + detail_lines
 
     operation = f"  Operation: lk {command}\\n" if command else ""
     exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
