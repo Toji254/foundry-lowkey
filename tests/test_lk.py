@@ -484,6 +484,90 @@ class LowkeyCastTests(unittest.TestCase):
             "1000000000000000000",
         )
 
+    def test_numeric_constructor_guidance_offers_raw_integer_without_assuming_eth(self):
+        raw_output = io.StringIO()
+        with redirect_stdout(raw_output):
+            lk._print_numeric_unit_reference("count", "uint256")
+        raw_text = raw_output.getvalue()
+        self.assertIn("NUMERIC INPUT OPTIONS", raw_text)
+        self.assertIn("Raw integer", raw_text)
+        self.assertIn("1000000", raw_text)
+        self.assertIn("uint/int types do not specify", raw_text)
+        self.assertIn("does not suggest an ETH amount", raw_text)
+        self.assertNotIn("Optional ETH units", raw_text)
+
+        amount_output = io.StringIO()
+        with redirect_stdout(amount_output):
+            lk._print_numeric_unit_reference("amount", "uint256")
+        amount_text = amount_output.getvalue()
+        self.assertIn("Raw integer", amount_text)
+        self.assertIn("Optional ETH units", amount_text)
+        self.assertIn("only if the contract expects", amount_text)
+        self.assertNotIn("ETH-denominated input detected", amount_text)
+
+    def test_constructor_numeric_help_preserves_an_existing_suggestion(self):
+        output = io.StringIO()
+        with redirect_stdout(output), patch("builtins.input", return_value=""):
+            value = lk._lab_scalar_value(
+                {},
+                [],
+                "ExampleContract",
+                "count",
+                "uint256",
+                default="1000000",
+                param={"name": "count", "type": "uint256"},
+            )
+        self.assertEqual(value, "1000000")
+        self.assertIn("Suggested : 1000000", output.getvalue())
+        self.assertIn("Raw integer", output.getvalue())
+
+    def test_read_warns_for_state_changing_abi_function_without_contract_specific_names(self):
+        target = "0x" + "1" * 40
+        abi = [{
+            "type": "function",
+            "name": "updateCount",
+            "stateMutability": "nonpayable",
+            "inputs": [{"name": "nextCount", "type": "uint256"}],
+            "outputs": [],
+        }]
+        with patch.object(lk, "resolve_target_ref", return_value=None), patch.object(
+            lk, "load_abi", return_value=abi
+        ):
+            warning = lk._read_state_change_warning(
+                ["updateCount", "5"],
+                {"target": target},
+            )
+        self.assertIn("updateCount(uint256)", warning)
+        self.assertIn("state-changing", warning)
+        self.assertIn("state changes are discarded", warning)
+        self.assertIn("may print 0x", warning)
+        self.assertIn("lk send updateCount(uint256)", warning)
+        self.assertIn("lk changes updateCount(uint256)", warning)
+
+    def test_read_does_not_warn_for_view_or_pure_abi_functions(self):
+        target = "0x" + "1" * 40
+        abi = [
+            {
+                "type": "function",
+                "name": "count",
+                "stateMutability": "view",
+                "inputs": [],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+            {
+                "type": "function",
+                "name": "calculate",
+                "stateMutability": "pure",
+                "inputs": [{"name": "left", "type": "uint256"}],
+                "outputs": [{"name": "", "type": "uint256"}],
+            },
+        ]
+        with patch.object(lk, "load_abi", return_value=abi):
+            self.assertIsNone(lk._read_state_change_warning(["count"], {"target": target}))
+            self.assertIsNone(
+                lk._read_state_change_warning(["calculate", "3"], {"target": target})
+            )
+
     def test_wizard_treats_positional_value_as_argument_and_infers_send(self):
         target = "0x" + "1" * 40
         abi = [{
