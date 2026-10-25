@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "purpose": "External compatibility corpus for evaluating Lowkey test generation against diverse public EVM projects. Representative sample, not exhaustive ecosystem coverage.",
+  "policy": {
+    "implementation_must_not_branch_on_repository_identity": true,
+    "expected_behavior_must_be_grounded_in_project_evidence": true,
+    "missing_specification_must_be_reported_not_invented": true,
+    "record_compile_execution_and_mutation_results_separately": true
+  },
+  "projects": [
+    {
+      "id": "openzeppelin-contracts",
+      "repository": "https://github.com/OpenZeppelin/openzeppelin-contracts",
+      "target_candidates": [
+        "ERC20",
+        "ERC721",
+        "ERC4626",
+        "AccessControl",
+        "TimelockController",
+        "ERC1967Proxy"
+      ],
+      "architectural_challenges": [
+        "inheritance",
+        "abstract bases",
+        "custom errors",
+        "events",
+        "access control",
+        "hooks and callbacks",
+        "upgradeable patterns",
+        "constructor setup"
+      ],
+      "required_evidence": [
+        "source and inherited declarations",
+        "existing test behavior",
+        "constructor and initializer requirements"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ]
+    },
+    {
+      "id": "uniswap-v2-core",
+      "repository": "https://github.com/Uniswap/v2-core",
+      "target_candidates": [
+        "UniswapV2Pair",
+        "UniswapV2Factory"
+      ],
+      "architectural_challenges": [
+        "AMM accounting",
+        "reserve transitions",
+        "fee arithmetic",
+        "callback paths",
+        "multi-contract deployment"
+      ],
+      "required_evidence": [
+        "pair/factory wiring",
+        "token mocks",
+        "existing invariant and arithmetic expectations"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ]
+    },
+    {
+      "id": "uniswap-v4-core",
+      "repository": "https://github.com/Uniswap/v4-core",
+      "target_candidates": [
+        "PoolManager",
+        "ProtocolFees"
+      ],
+      "architectural_challenges": [
+        "singleton architecture",
+        "hooks",
+        "transient storage",
+        "callback ordering",
+        "custom types and libraries"
+      ],
+      "required_evidence": [
+        "hook contracts and permissions",
+        "pool lifecycle",
+        "currency and fee semantics",
+        "supported EVM/compiler configuration"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ]
+    },
+    {
+      "id": "aave-v3-core",
+      "repository": "https://github.com/aave/aave-v3-core",
+      "target_candidates": [
+        "Pool",
+        "AToken",
+        "VariableDebtToken",
+        "LiquidationLogic"
+      ],
+      "architectural_challenges": [
+        "lending accounting",
+        "health factors",
+        "liquidation",
+        "interest indexes",
+        "libraries and proxy wiring"
+      ],
+      "required_evidence": [
+        "reserve configuration",
+        "risk parameters",
+        "deployment fixtures",
+        "rounding rules and accounting invariants"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ]
+    },
+    {
+      "id": "morpho-blue",
+      "repository": "https://github.com/morpho-org/morpho-blue",
+      "target_candidates": [
+        "Morpho"
+      ],
+      "architectural_challenges": [
+        "market identifiers",
+        "collateral accounting",
+        "interest accrual",
+        "liquidation",
+        "precision and rounding"
+      ],
+      "required_evidence": [
+        "market creation inputs",
+        "oracle/IRM dependencies",
+        "protocol accounting rules",
+        "existing adversarial tests"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ]
+    },
+    {
+      "id": "layerzero-v2",
+      "repository": "https://github.com/LayerZero-Labs/LayerZero-v2",
+      "target_candidates": [
+        "EndpointV2",
+        "MessagingChannel",
+        "MessagingContext"
+      ],
+      "architectural_challenges": [
+        "cross-chain message state",
+        "replay protection",
+        "peer configuration",
+        "libraries and external dependencies"
+      ],
+      "required_evidence": [
+        "message lifecycle",
+        "nonce semantics",
+        "endpoint/library wiring",
+        "trusted peer and configuration assumptions"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ]
+    },
+    {
+      "id": "solady",
+      "repository": "https://github.com/Vectorized/solady",
+      "target_candidates": [
+        "ERC20",
+        "ERC721",
+        "SafeTransferLib",
+        "LibString"
+      ],
+      "architectural_challenges": [
+        "assembly-heavy code",
+        "library linking",
+        "gas-sensitive paths",
+        "low-level call behavior"
+      ],
+      "required_evidence": [
+        "compiler and optimizer settings",
+        "library harnesses",
+        "edge-case and revert expectations"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ]
+    },
+    {
+      "id": "forge-std",
+      "repository": "https://github.com/foundry-rs/forge-std",
+      "target_candidates": [
+        "Test"
+      ],
+      "architectural_challenges": [
+        "test-only framework rather than a protocol",
+        "non-application repository classification"
+      ],
+      "required_evidence": [
+        "project purpose and build configuration"
+      ],
+      "categories_to_evaluate": [
+        "unit",
+        "fuzz",
+        "invariant",
+        "integration",
+        "fork",
+        "poc",
+        "regression",
+        "formal"
+      ],
+      "expected_outcome": "Correctly classify this as a test framework or unsupported target instead of inventing protocol tests."
+    }
+  ]
+}

@@ -23,6 +23,22 @@ if str(MODULE_DIR) not in sys.path:
 import audit_context
 import walkthrough
 try:
+    import generation_plugins
+except ImportError:
+    generation_plugins = None
+try:
+    import behavioral_validation
+except ImportError:
+    behavioral_validation = None
+try:
+    import verification_benchmark
+except ImportError:
+    verification_benchmark = None
+try:
+    import verification_cli
+except ImportError:
+    verification_cli = None
+try:
     import question_engine
 except ImportError:
     question_engine = None
@@ -15306,7 +15322,22 @@ COMMAND_HELP = {
         related=["lk cheatcodes"],
     ),
     "cheatcodes": _help_entry("Show or run useful Foundry cheatcode helpers.", "lk cheatcodes [args...]", "lk cheatcodes", "Use it when you need controlled local callers, balances, time, or storage.", related=["lk forge", "lk matrix"]),
-    "test-gen": _help_entry("Turn the latest useful transaction/evidence into a Forge test.", "lk test-gen", "lk test-gen", "Use it after reproducing behavior and wanting a regression test.", related=["lk generate test", "lk trace"]),
+    "test-gen": _help_entry(
+        "Generate project-aware starter files from a Solidity contract, or turn the latest useful transaction/evidence into a Forge reproduction when no contract is supplied.",
+        "lk test-gen <ContractName> [--types unit,fuzz,invariant,integration,fork,poc,regression,formal] [options]",
+        "lk test-gen Vault --types unit,fuzz,invariant --validate",
+        "Generate project-aware starter files for review. Drafts default to .audit/test-gen and compile-only validation does not prove security. Running lk test-gen with no arguments preserves the legacy last-send reproduction workflow.",
+        forms=[
+            ("lk test-gen <ContractName>", "Generate starter test drafts for a contract from the active Foundry project.", "lk test-gen Vault"),
+            ("--types <list|all>", "Select unit, fuzz, invariant, integration, fork, poc, regression, and/or formal artifacts.", "lk test-gen Vault --types unit,fuzz,invariant"),
+            ("--output-dir <path>", "Write generated drafts and the report to a selected directory; defaults to .audit/test-gen.", "lk test-gen Vault --output-dir .audit/review"),
+            ("--validate", "Compile temporary generated Solidity drafts with Forge; does not execute them or establish protocol security.", "lk test-gen Vault --types unit,fuzz --validate"),
+            ("--strict", "Fail when any selected artifact remains a scaffold/unverified or when validation is not fully passed.", "lk test-gen Vault --types unit,fuzz --validate --strict"),
+            ("--force", "Replace drafts with the same generated filenames.", "lk test-gen Vault --types unit,fuzz --force"),
+            ("No-argument legacy mode", "With no arguments, replay the latest useful transaction/evidence into a Forge regression test.", "lk test-gen"),
+        ],
+        related=["lk generate test", "lk trace", "lk verification engines"],
+    ),
     "forge": _help_entry("Pass a native Forge command through Lowkey.", "lk forge <forge-command> [args...]", "lk forge test -vvvv", "Use it when you need a Forge feature that Lowkey does not wrap separately.", related=["lk build", "lk test"]),
     "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
@@ -15775,6 +15806,11 @@ TRANSACTION FORENSICS
 REPRODUCE / ATTACK / TEST
   lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
   lk test-gen                      Turn the latest send into a Forge test.
+  lk test-gen <Contract> [options]  Generate project-aware unit/fuzz/invariant/etc. test drafts.
+  lk verification engines [--json]  Inventory installed verification engines and capabilities.
+  lk verification run <manifest>    Run a bounded, serial multi-engine verification campaign.
+  lk verification-benchmark <file>  Run a manifest-driven verification benchmark.
+  lk mutation-check <manifest>      Validate a test suite against explicit source mutants.
   lk generate test '<function(parameter TYPES...)>' <VALUES...>
                                    Generate a reusable Forge test.
                                    FUNCTION SIGNATURE = function name + parameter TYPES.
@@ -16553,7 +16589,25 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         elif action=="trace": run_trace(config,[])
         elif action=="logs": run_logs(config,[])
         else: run_receipt(config)
-    elif cmd=="test-gen": run_test_gen(config)
+    elif cmd=="test-gen":
+        # Preserve the legacy last-send workflow when no arguments are supplied.
+        if args:
+            if generation_plugins is None:
+                return fail("Generation plugin registry is not installed. Re-run install.sh.")
+            return generation_plugins.run_generation_command(config, args)
+        return run_test_gen(config)
+    elif cmd=="mutation-check":
+        if behavioral_validation is None:
+            return fail("Mutation validation module is not installed. Re-run install.sh.")
+        return behavioral_validation.run_cli(args)
+    elif cmd=="verification-benchmark":
+        if verification_benchmark is None:
+            return fail("Verification benchmark module is not installed. Re-run install.sh.")
+        return verification_benchmark.run_cli(args)
+    elif cmd=="verification":
+        if verification_cli is None:
+            return fail("Verification engine CLI is not installed. Re-run install.sh.")
+        return verification_cli.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
@@ -16750,7 +16804,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","test-gen","mutation-check","verification-benchmark","verification","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }

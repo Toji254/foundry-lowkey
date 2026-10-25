@@ -414,6 +414,34 @@ The deployment generator uses the compiled ABI to externalize constructor inputs
 
 These generators are scaffolding and education aids; they do not automatically declare that behavior is vulnerable.
 
+## Verification engine registry and campaigns
+
+Inspect which verification tools are installed and which project/test kinds each supports:
+
+~~~bash
+lk verification engines
+lk verification engines --json
+~~~
+
+Run a bounded serial campaign from a JSON manifest with explicit engine configuration and resource budgets:
+
+~~~bash
+lk verification run .audit/verification/campaign.json --profile balanced
+~~~
+
+Use `lk mutation-check manifest.json` to test whether an existing suite detects explicit behavioral mutants, and `lk verification-benchmark manifest.json` to evaluate multiple project cases. Baseline failures, compiler/setup errors, timeouts, and mutants not killed are reported separately.
+
+## Project-aware test generation
+
+Generate reviewable test drafts for one contract; generated files are written to `.audit/test-gen` instead of the configured Foundry test folder by default:
+
+~~~bash
+lk test-gen TokenSale --types unit,fuzz,invariant,integration,fork,poc,regression,formal --force
+lk test-gen TokenSale --types unit,fuzz,invariant --force --validate
+~~~
+
+`--validate` compiles generated drafts; it does **not** execute tests or prove correctness. Review report TODOs, complete assertions, and move approved tests into the Foundry test directory before relying on them.
+
 ## Shared audit context
 
 All Lowkey subsystems are designed to share one project-scoped audit state instead of operating as isolated wrappers. The state lives under `.audit/`.
