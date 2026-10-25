@@ -11,6 +11,7 @@ import subprocess
 import os
 from importlib.metadata import entry_points
 import signal
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -43,6 +44,7 @@ class EngineResult:
     engine: str
     status: str
     exit_code: int | None = None
+    duration_seconds: float | None = None
     summary: str = ""
     artifacts: list[str] = field(default_factory=list)
     raw_stdout: str = ""
@@ -134,6 +136,7 @@ class ExecutableAdapter:
         except (TypeError, ValueError):
             timeout = 120
         command = [self.capability.command, *raw_args]
+        started_at = time.monotonic()
         try:
             process = subprocess.Popen(
                 command, cwd=root, stdin=subprocess.DEVNULL,
@@ -170,6 +173,7 @@ class ExecutableAdapter:
         return EngineResult(
             engine=self.capability.name, status=status, exit_code=code,
             summary=f"{' '.join(command)} exited with {code}",
+            duration_seconds=round(time.monotonic() - started_at, 6),
             raw_stdout=stdout or "", raw_stderr=stderr or "",
             raw_evidence={"argv": command, "cwd": str(root), "timeout_seconds": timeout},
             metadata={"test_kind": test_kind, "project": str(root)},
