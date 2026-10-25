@@ -748,5 +748,28 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(analysis["existing_tests"]["file_count"], 1)
             self.assertEqual(analysis["existing_tests"]["files"][0]["path"], str(test_file))
 
+
+    def test_test_plan_covers_defi_and_account_abstraction_edge_cases(self):
+        from test_generation_analysis import render_test_plan
+
+        plan = render_test_plan(
+            {
+                "contract": "Protocol",
+                "source": "src/Protocol.sol",
+                "inheritance": [],
+                "profiles": ["AMM / DEX", "ERC-4337 account abstraction", "Merkle claims / airdrop"],
+                "security_surfaces": {},
+                "existing_tests": {"file_count": 0, "function_count": 0, "files": []},
+                "functions": [],
+                "imports": [],
+                "audit_evidence": {"files": [], "signals": [], "note": "No evidence"},
+                "limitations": [],
+            },
+            ["fuzz", "invariant"],
+        )
+        self.assertIn("price-impact manipulation", plan)
+        self.assertIn("UserOperation hash domain separation", plan)
+        self.assertIn("duplicate claims", plan)
+
 if __name__ == "__main__":
     unittest.main()

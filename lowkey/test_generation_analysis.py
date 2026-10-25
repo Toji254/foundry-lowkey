@@ -271,6 +271,11 @@ def analyse_contract(
         "bridge / cross-chain": (("messageroot", "relay(", "finalize(", "sourcechain", "destinationchain"), 2),
         "oracle consumer": (("latestrounddata(", "latestanswer(", "pricefeed", "oracle"), 1),
         "governance": (("propose(", "castvote(", "quorum(", "proposalthreshold"), 2),
+        "AMM / DEX": (("swap(", "getreserves(", "addliquidity(", "removeliquidity(", "sqrtpricex96", "tickspacing"), 2),
+        "ERC-4337 account abstraction": (("validateuserop(", "entrypoint", "userophash", "paymaster", "executeuserop("), 2),
+        "flash-loan / callback": (("flashloan(", "executeoperation(", "onflashloan(", "flashloanreceiver"), 2),
+        "Merkle claims / airdrop": (("merkleroot", "proof", "claim(", "claimed"), 3),
+        "NFT marketplace": (("listing", "cancellisting", "royalty", "safetransferfrom", "buy("), 3),
     }
     for profile, (tokens, threshold) in profile_rules.items():
         if sum(token in lower for token in tokens) >= threshold:
@@ -443,6 +448,31 @@ PROFILE_TEST_CHECKLISTS: dict[str, list[str]] = {
         "Test proposal threshold and quorum boundaries, vote snapshots, duplicate voting, and vote-weight changes.",
         "Check timelock minimum delay, queued/cancelled/executed transitions, and replay of execution payloads.",
         "Verify proposer, voter, guardian, and executor role separation; test malicious targets and failed execution recovery.",
+    ],
+    "AMM / DEX": [
+        "Test swap slippage/deadline boundaries, fee arithmetic, reserve or tick accounting, and zero-liquidity transitions.",
+        "Check price-impact manipulation, donation/reserve desynchronization, rounding dust, and multi-swap sequences.",
+        "Verify liquidity mint/burn shares against the documented invariant and test callbacks/reentrancy around token transfers.",
+    ],
+    "ERC-4337 account abstraction": [
+        "Test UserOperation hash domain separation, chain/EntryPoint binding, nonce replay, and signature validation boundaries.",
+        "Check validation/execution separation, sender deployment, aggregator behavior, and paymaster deposit/refund accounting.",
+        "Exercise malformed operations, gas/fee edge cases, bundler simulation differences, and unauthorized EntryPoint calls.",
+    ],
+    "flash-loan / callback": [
+        "Verify callback initiator, asset, amount, and fee are authenticated and cannot be replayed or spoofed.",
+        "Test exact repayment requirements, underpayment, multiple assets, callback reentrancy, and state changes before repayment.",
+        "Check failures revert the whole operation and that callback success cannot be forged by returning an unexpected value.",
+    ],
+    "Merkle claims / airdrop": [
+        "Test valid/invalid proofs, duplicate claims, leaf domain separation, and replay across campaigns or chains.",
+        "Exercise duplicate leaves, sorted-pair assumptions, zero allocations, claim deadlines, and root replacement.",
+        "Check total claimed versus funded allocation only where the full claimant set and accounting model are known.",
+    ],
+    "NFT marketplace": [
+        "Test listing ownership/approval, stale or cancelled listings, duplicate fills, and atomic asset/payment transfer.",
+        "Check fee/royalty rounding, recipient changes, zero-price edge cases, and reentrancy across NFT/token callbacks.",
+        "Verify signed orders bind chain, marketplace, token ID, price, nonce, expiry, and cancellation state.",
     ],
 }
 
