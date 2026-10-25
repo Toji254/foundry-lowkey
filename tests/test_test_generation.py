@@ -154,6 +154,38 @@ class TestGenerationTests(unittest.TestCase):
             self.assertIn("Generate project-aware starter files", help_result.stdout)
             self.assertIn("--types", help_result.stdout)
 
+            # Running the scaffold generator must not trigger the legacy
+            # evidence-based PoC refresh workflow.
+            project = Path(home) / "fixture"
+            project.mkdir()
+            self._project(project)
+            generated = subprocess.run(
+                [
+                    str(Path(home) / ".foundry" / "bin" / "lk"),
+                    "test-gen",
+                    "Counter",
+                    "--types",
+                    "unit,fuzz",
+                ],
+                cwd=project,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                generated.returncode,
+                0,
+                generated.stdout + "\\n" + generated.stderr,
+            )
+            self.assertTrue(
+                (project / ".audit" / "test-gen" / "Counter" / "report.json").is_file()
+            )
+            self.assertFalse((project / "script" / "LowkeyPoC_Counter.s.sol").exists())
+            self.assertFalse(
+                (project / ".audit" / "poc" / "LowkeyPoc_Counter.json").exists()
+            )
+
 
 
 if __name__ == "__main__":
