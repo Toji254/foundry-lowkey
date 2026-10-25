@@ -6,6 +6,7 @@ Lowkey deliberately does not invent protocol assertions from names or ABI alone.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path, PurePosixPath
@@ -91,7 +92,7 @@ def _constructor_args(source: str, name: str) -> str | None:
 def _rel_import(root: Path, source_path: Path) -> str:
     # Generated source is intended to be moved into test/lowkey-generated.
     relative = Path("test") / "lowkey-generated"
-    target = Path(__import__("os").path.relpath(source_path, root / relative))
+    target = Path(os.path.relpath(source_path, root / relative))
     return PurePosixPath(target).as_posix()
 
 
@@ -192,7 +193,7 @@ import {{ {name} }} from "{import_path}";
 
 def _fork_template(kind: str, name: str, target: str | None) -> str:
     ident = _solidity_name(name)
-    addr = target if target and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) else "address(0)"
+    addr = target.lower() if isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) else "address(0)"
     target_literal = addr if addr == "address(0)" else f"address({addr})"
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
     body = f'''// SPDX-License-Identifier: MIT
