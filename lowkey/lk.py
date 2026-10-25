@@ -39,6 +39,10 @@ try:
 except ImportError:
     verification_benchmark = None
 try:
+    import verification_cli
+except ImportError:
+    verification_cli = None
+try:
     import question_engine
 except ImportError:
     question_engine = None
@@ -15785,6 +15789,8 @@ REPRODUCE / ATTACK / TEST
   lk test-gen <Contract> --types ... Generate project-aware test drafts through adapters.
   lk mutation-check <manifest.json>  Run isolated mutation validation and report a score.
   lk verification-benchmark <manifest> Run a manifest-driven benchmark and enforce gates.
+  lk verification engines [--json]   Inventory installed verification engines.
+  lk verification run <manifest>    Run a bounded, serial multi-engine campaign.
   lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
   lk fuzz [args...]                Run Forge fuzz tests.
   lk invariant [args...]           Run Forge invariant tests.
@@ -16570,6 +16576,10 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         if verification_benchmark is None:
             return fail("Verification benchmark module is not installed. Re-run install.sh.")
         return verification_benchmark.run_cli(args)
+    elif cmd=="verification":
+        if verification_cli is None:
+            return fail("Verification engine CLI is not installed. Re-run install.sh.")
+        return verification_cli.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
@@ -16766,7 +16776,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","mutation-check","verification-benchmark","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","test-gen","mutation-check","verification-benchmark","verification","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
@@ -16794,6 +16804,7 @@ def main():
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
         "audit": {"run", "pipeline"},
+        "verification": {"engines", "run"},
         "walkthrough": {"test", "seed"},
         "walk": {"test", "seed"},
         "generate": {"test", "script", "contract"},
