@@ -89,6 +89,8 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             )
         self.assertEqual(result.status, "passed")
         self.assertIn("native evidence", result.raw_stdout)
+        self.assertIsNotNone(result.duration_seconds)
+        self.assertGreaterEqual(result.duration_seconds, 0)
         self.assertEqual(result.raw_evidence["cwd"], root)
 
     def test_adapter_reports_nonzero_exit_without_losing_stderr(self):
