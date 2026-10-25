@@ -1,11 +1,12 @@
 import unittest
 import sys
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from lowkey.verification_adapters import (
     CapabilityRegistry, EngineCapability, EngineResult, ExecutableAdapter,
-    TEST_KINDS, default_registry,
+    TEST_KINDS, default_registry, inspect_project,
 )
 
 
@@ -15,6 +16,32 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             set(TEST_KINDS),
             {"unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal"},
         )
+
+    def test_project_inspection_detects_foundry_and_solidity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            (root / "src" / "Vault.sol").write_text("pragma solidity ^0.8.20; contract Vault {}", encoding="utf-8")
+            project = inspect_project(root)
+        self.assertIn("foundry.toml", project["markers"])
+        self.assertIn("solidity", project["languages"])
+        self.assertIn("foundry", project["build_systems"])
+
+    def test_registry_selects_using_detected_project_descriptor(self):
+        cap = EngineCapability(
+            "python-test", sys.executable, ("unit",), ("solidity",), ("foundry",),
+            ("foundry.toml",), memory_class="low",
+        )
+        registry = CapabilityRegistry([ExecutableAdapter(cap)])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
+            (root / "src" / "Vault.sol").write_text("pragma solidity ^0.8.20; contract Vault {}", encoding="utf-8")
+            project = inspect_project(root)
+            selected = registry.select(project, "unit", profile="light")
+        self.assertEqual([item["engine"] for item in selected], ["python-test"])
 
     def test_registry_rejects_duplicate_names(self):
         cap = EngineCapability("forge", "forge", ("unit",))
