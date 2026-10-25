@@ -3954,6 +3954,74 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             return "Not sent. The RPC rejected the call before broadcasting a transaction."
         return "Not confirmed. Check the sender nonce and receipt before retrying."
 
+    # Convert old machine-style errors emitted by older Lowkey subcommands or
+    # stored command output into the same human-friendly format as new errors.
+    legacy = re.match(r"(?is)^\\s*ERROR\\s*\\[([^\\]]+)\\]\\s*(?:\\r?\\n|$)(.*)$", text)
+    if legacy:
+        legacy_kind = legacy.group(1).strip().upper()
+        body = legacy.group(2).strip()
+        reason_match = re.search(r"(?im)^\\s*Reason:\\s*(.*)$", body)
+        detail_match = re.search(r"(?im)^\\s*Details?:\\s*(.*)$", body)
+        reason = (reason_match.group(1).strip() if reason_match else
+                  detail_match.group(1).strip() if detail_match else None)
+        what_match = re.search(r"(?im)^\\s*What happened:\\s*(.*)$", body)
+        next_match = re.search(r"(?im)^\\s*Next(?: step)?:\\s*(.*)$", body)
+        legacy_tx = re.search(r"(?im)^\\s*Transaction broadcast:\\s*(.*)$", body)
+        selector_match = re.search(r"(?im)^\\s*Selector:\\s*(.*)$", body)
+        raw_data_match = re.search(r"(?im)^\\s*Raw revert data:\\s*(.*)$", body)
+        technical = "; ".join(
+            part for part in (
+                f"selector {selector_match.group(1).strip()}" if selector_match else None,
+                f"revert data {raw_data_match.group(1).strip()}" if raw_data_match else None,
+            ) if part
+        ) or None
+        category_titles = {
+            "INSUFFICIENT FUNDS": "Not enough funds to send this transaction" if is_send else "Insufficient funds",
+            "GAS ESTIMATION": "Transaction not sent",
+            "RPC CONNECTION": "Couldn't connect to the RPC node",
+            "TIMEOUT": "The command timed out",
+            "TRANSACTION NONCE/FEES": "The node rejected the transaction's nonce or fee settings",
+            "INVALID INPUT": "Invalid command input",
+            "MISSING DEPENDENCY OR FILE": "A required tool, file, or module wasn't found",
+            "CONFIGURATION": "Lowkey needs configuration before it can continue",
+            "USAGE": "Check the command syntax",
+            "RUNTIME": "Lowkey encountered an internal error",
+            "LOWKEY": "Lowkey couldn't complete the command",
+            "COMMAND": "The command failed",
+        }
+        if legacy_kind in {"REVERT", "CUSTOM REVERT", "SOLIDITY PANIC"}:
+            if legacy_kind == "SOLIDITY PANIC":
+                title = "Contract hit a Solidity panic"
+            elif is_send and ("gas estimation failed" in body.lower() or is_gas_estimation):
+                title = "Transaction not sent"
+            elif is_send:
+                title = "Contract rejected the send request"
+            else:
+                title = "Contract call reverted"
+            reason = reason or "The contract rejected the call, but Lowkey could not recover a readable reason."
+            what = what_match.group(1).strip() if what_match else (
+                "The call was rejected by the contract. Lowkey did not assume it was safe to continue."
+            )
+            next_step = next_match.group(1).strip() if next_match else (
+                "Check the function's validation conditions and the values you supplied."
+            )
+            tx = (
+                "Not sent; gas estimation failed."
+                if is_send and ("gas estimation failed" in body.lower() or is_gas_estimation)
+                else transaction_status() if is_send
+                else "No transaction was sent; this was a simulated call."
+            )
+            return _friendly_error(title, reason=reason, what=what, next_step=next_step,
+                                   transaction=tx, technical=technical)
+        title = category_titles.get(legacy_kind, "Lowkey couldn't complete the command")
+        what = what_match.group(1).strip() if what_match else None
+        next_step = next_match.group(1).strip() if next_match else (
+            "Check the reason above and correct the input, configuration, or dependency."
+        )
+        tx = transaction_status() if is_send else None
+        return _friendly_error(title, reason=reason or body or "No additional details were provided.",
+                               what=what, next_step=next_step, transaction=tx, technical=technical)
+
     if looks_reverted:
         decoded = _decode_contract_revert(text, config=config, target=target)
         if decoded:
@@ -16497,12 +16565,12 @@ def _is_error_diagnostic(output):
 
 
 def _has_standard_error_shape(output):
-    """Avoid nesting a message that already uses Lowkey's human-readable format."""
-    text = str(output or "")
-    if re.search(r"(?im)^\s*(?:ERROR \[|LOWKEY RUNTIME ERROR\b)", text):
-        return True
+    """Identify the current human-readable format, not legacy machine-style headings."""
     return bool(
-        re.search(r"(?im)^Error: .+\n\s{2}(?:Reason|What happened|Next step|Transaction|Technical details):", text)
+        re.search(
+            r"(?im)^Error: .+\n\s{2}(?:Reason|What happened|Next step|Transaction|Technical details):",
+            str(output or ""),
+        )
     )
 
 
