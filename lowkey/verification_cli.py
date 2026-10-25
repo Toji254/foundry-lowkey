@@ -190,6 +190,33 @@ def run_cli(args: list[str]) -> int:
         for key, value in report["summary"].items():
             print(f"  {key}: {value}")
         print(f"  Report: {report.get('report_path', output)}")
+        failure_statuses = {
+            "failed", "timeout", "resource_limit", "error", "unsupported",
+            "inconclusive", "submitted",
+        }
+        diagnostic_results = [
+            item.get("result", {})
+            for item in report.get("results", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("result"), dict)
+            and item["result"].get("status") in failure_statuses
+        ]
+        if diagnostic_results:
+            print("  Engine diagnostics:")
+            for result in diagnostic_results:
+                print(
+                    f"    {result.get('engine', 'unknown')}: "
+                    f"{result.get('status', 'unknown')} — "
+                    f"{result.get('summary') or 'no summary supplied'}"
+                )
+                for stream_name in ("raw_stderr", "raw_stdout"):
+                    stream = str(result.get(stream_name) or "").strip()
+                    if not stream:
+                        continue
+                    lines = stream.splitlines()
+                    print(f"      {stream_name} (last {min(20, len(lines))} lines):")
+                    for line in lines[-20:]:
+                        print(f"        {line}")
         if report["selected_count"] == 0:
             return 2
         if any(report["summary"].get(key, 0) for key in ("failed", "timeout", "resource_limit", "error", "unsupported", "inconclusive", "submitted")):
