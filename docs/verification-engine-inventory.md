@@ -23,7 +23,8 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - Campaign reports include total wall-clock duration and the sum of measured engine durations, making runtime comparisons reproducible alongside each engine's raw evidence.
 - Adapter exceptions are normalized as per-engine `error` results, so one faulty plugin does not discard later engine evidence from the same serial campaign.
 - Exceptions from plugin `available()` and `supports()` checks are isolated too: the affected engine is reported as unavailable or `adapter_error`, the reason is retained in `plugin_errors`, and healthy engines can still be planned and run.
-- Native command arguments are explicit (`argv` or `argv_by_engine`); the registry does not guess tool-specific harness/spec syntax. Forge defaults to `forge test` only when no Forge argument vector is supplied.
+- Native command arguments can be explicit (`argv` or `argv_by_engine`) or built by conservative engine-specific adapters. Echidna requires an existing harness file, Medusa requires an existing JSON config (defaults to `medusa.json`), Halmos defaults to a `--function test` filter, and Certora requires an existing `.conf`. Config/target paths must stay inside the project root. These builders validate inputs; they do not synthesize missing harnesses or specifications.
+- Certora CLI exit code zero is reported as `submitted`, not `passed`, because a successful CLI invocation alone does not establish that every proof rule passed.
 - `default_registry()` is a candidate catalogue, not a guarantee that an executable is installed or that every advertised workflow has an engine-specific integration.
 - `lowkey/test_generation.py` adds project-aware Solidity/Foundry drafts for unit, integration, invariant, exploit, regression, fuzz, and formal categories, plus fork/PoC variants. It recognizes only a narrow direct integer setter/getter property; unsupported constructor types are skipped rather than guessed.
 - `lk test-gen <ContractName> --types ...` routes to the project-aware generator. Bare `lk test-gen` retains the existing last-send reproduction workflow for backward compatibility.
@@ -76,7 +77,7 @@ Every generated artifact should record: intended property, preconditions, actors
 
 ## Gaps still open
 
-- The common bounded process adapter and serial campaign runner exist, but tool-specific argument builders/configuration parsers for Echidna, Medusa, Halmos, and Certora remain open. Those engines must receive explicit native arguments/harnesses/specifications.
+- Initial native command builders now exist for Echidna, Medusa, Halmos, and Certora, with explicit config/harness requirements and conservative defaults. Live execution against installed versions, version-specific CLI compatibility, native result parsing, and pinned real-project integration fixtures remain open. In particular, Certora's remote proof status is not yet fetched or parsed by Lowkey.
 - The generation plugin contract exists, but project-aware generation is currently Solidity/Foundry-specific. Other language/build-system generators remain open.
 - Integration, exploit, and regression outputs are honest starters unless concrete setup/bug evidence is supplied; they are not automatically meaningful tests yet.
 - The recognized setter/getter fuzz/invariant/formal path needs compilation and real engine validation, including checking for vacuous or invalid specifications.
