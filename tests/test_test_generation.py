@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -105,6 +106,54 @@ class TestGenerationTests(unittest.TestCase):
                 self.assertEqual(file.read_text(encoding="utf-8"), "user edit\n")
             finally:
                 os.chdir(previous)
+
+
+    def test_installer_packages_generator_and_exposes_new_help(self):
+        with tempfile.TemporaryDirectory() as home:
+            env = os.environ.copy()
+            env["HOME"] = home
+            installed = subprocess.run(
+                ["bash", str(ROOT / "install.sh")],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                installed.returncode,
+                0,
+                installed.stdout + "\\n" + installed.stderr,
+            )
+
+            runtime = Path(home) / ".lowkey"
+            generator_module = runtime / "test_generation.py"
+            self.assertTrue(generator_module.is_file())
+            manifest = json.loads(
+                (runtime / "install-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertIn(str(generator_module), manifest["files"])
+
+            help_result = subprocess.run(
+                [
+                    str(Path(home) / ".foundry" / "bin" / "lk"),
+                    "test-gen",
+                    "--help",
+                ],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(
+                help_result.returncode,
+                0,
+                help_result.stdout + "\\n" + help_result.stderr,
+            )
+            self.assertIn("Generate project-aware starter files", help_result.stdout)
+            self.assertIn("--types", help_result.stdout)
+
 
 
 if __name__ == "__main__":
