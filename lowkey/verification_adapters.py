@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import os
 import json
+import re
 from importlib.metadata import entry_points
 import signal
 import threading
@@ -406,6 +407,27 @@ class HalmosAdapter(NativeConfiguredAdapter):
         return ["--function", function], "Foundry/Halmos function filter selected"
 
 
+    def run(
+        self, project: dict[str, Any], request: dict[str, Any], *,
+        budget: dict[str, Any],
+    ) -> EngineResult:
+        result = super().run(project, request, budget=budget)
+        if result.status != "passed":
+            return result
+        output = result.raw_stdout + "\n" + result.raw_stderr
+        if re.search(r"\[FAIL\]", output):
+            result.status = "failed"
+            result.summary = "Halmos output contains a symbolic test failure"
+            result.metadata["result_semantics"] = "halmos_failure_marker_detected"
+        elif re.search(r"\[PASS\]", output):
+            result.metadata["result_semantics"] = "halmos_pass_marker_detected"
+        else:
+            result.status = "inconclusive"
+            result.summary = "Halmos exited successfully but emitted no recognized [PASS]/[FAIL] test result"
+            result.metadata["result_semantics"] = "halmos_result_not_recognized"
+        return result
+
+
 class CertoraAdapter(NativeConfiguredAdapter):
     def request_configuration(self, project: dict[str, Any], request: dict[str, Any]) -> tuple[list[str] | None, str]:
         explicit, reason = super().request_configuration(project, request)
@@ -689,6 +711,7 @@ class CapabilityRegistry:
             "summary": {
                 "passed": sum(row["result"]["status"] == "passed" for row in results),
                 "submitted": sum(row["result"]["status"] == "submitted" for row in results),
+                "inconclusive": sum(row["result"]["status"] == "inconclusive" for row in results),
                 "failed": sum(row["result"]["status"] == "failed" for row in results),
                 "timeout": sum(row["result"]["status"] == "timeout" for row in results),
                 "unsupported": sum(row["result"]["status"] == "unsupported" for row in results),
