@@ -206,6 +206,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(report["summary"]["passed"], 1)
         self.assertEqual(report["results"][0]["result"]["status"], "error")
         self.assertIn("adapter fixture failure", report["results"][0]["result"]["summary"])
+        self.assertGreaterEqual(report["results"][0]["result"]["duration_seconds"], 0)
         self.assertIn("42", report["results"][1]["result"]["raw_stdout"])
 
     def test_unknown_test_kind_and_profile_fail_explicitly(self):
