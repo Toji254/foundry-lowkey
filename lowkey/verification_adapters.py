@@ -702,6 +702,14 @@ class CapabilityRegistry:
             raise ValueError("request.engine_config_by_engine must map engine names to config objects")
         plan = self.plan(project, test_kind, profile=profile, request=request)
         selected = plan["selected"]
+        rejected = plan["rejected"]
+        selection_summary = {
+            "selected": len(selected),
+            "unsupported": sum(row["status"] == "unsupported" for row in rejected),
+            "missing_configuration": sum(row["status"] == "missing_configuration" for row in rejected),
+            "profile_excluded": sum(row["status"] == "profile_excluded" for row in rejected),
+            "adapter_error": sum(row["status"] == "adapter_error" for row in rejected),
+        }
         profile_limits = {
             "light": {"timeout_seconds": 60, "fuzz_runs": 32, "invariant_runs": 16, "invariant_depth": 10},
             "balanced": {"timeout_seconds": 300, "fuzz_runs": 256, "invariant_runs": 64, "invariant_depth": 20},
@@ -755,6 +763,7 @@ class CapabilityRegistry:
                 row["result"].get("duration_seconds") or 0 for row in results
             ), 6),
             "selected_count": len(selected),
+            "selection_summary": selection_summary,
             "considered_engines": plan["selected"] + plan["rejected"],
             "plugin_errors": list(self.plugin_errors),
             "results": results,
