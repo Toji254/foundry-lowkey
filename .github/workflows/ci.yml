@@ -345,6 +345,30 @@ jobs:
           assert "assert target.count() == fuzzValue" in formal.read_text()
           PY
           forge build
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          Path(".audit").mkdir(exist_ok=True)
+          Path(".audit/mutants.json").write_text(json.dumps({
+              "command": ["forge", "test"],
+              "mutants": [{
+                  "id": "set-count-off-by-one",
+                  "file": "src/Fixture.sol",
+                  "before": "count = value;",
+                  "after": "count = value + 1;"
+              }]
+          }, indent=2) + "\\n")
+          PY
+          lk mutation-check .audit/mutants.json --timeout 120
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path(".audit/verification/mutation-report.json").read_text())
+          assert report["status"] == "completed", report
+          assert report["baseline"]["status"] == "passed", report
+          assert report["summary"]["killed"] == 1, report
+          assert report["mutation_score"] == 1.0, report
+          PY
 
   vyper-integration:
     runs-on: ubuntu-latest
