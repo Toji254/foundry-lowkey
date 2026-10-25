@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "tests" / "fixtures" / "test-generation-ecosystem.json"
 REQUIRED_TYPES = {
     "unit", "fuzz", "invariant", "integration",
-    "fork", "poc", "regression", "formal",
+    "exploit", "fork", "poc", "regression", "formal",
 }
 
 
