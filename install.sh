@@ -49,13 +49,13 @@ copy_if_needed() {
 
 # Stage and compile the Python runtime first. Do not publish an install manifest
 # until every runtime module passes syntax validation.
-for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py generation_plugins.py behavioral_validation.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py; do
+for file in bootstrap.py lk.py forge_tools.py generator.py slither_tools.py audit_context.py project_detection.py clone_tools.py walkthrough.py walkthrough_benchmarks.py walkthrough_finding_patterns.py break_playbook.py break_engine.py audit_engine.py benchmark.py system_model.py project_tools.py question_engine.py analysis_adapters.py verification_adapters.py test_generation.py generation_plugins.py behavioral_validation.py verification_benchmark.py import_helper.py solidity_cheatsheet.py solidity_cheat_topics.py solidity_cheat_data.py solidity_connect_data.py; do
   cp "$REPO_DIR/lowkey/$file" "$STAGE_DIR/$file"
 done
 
 cp "$REPO_DIR/bin/lk" "$STAGE_DIR/bin-lk"
 
-python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py"
+python3 -m py_compile   "$STAGE_DIR/bootstrap.py"   "$STAGE_DIR/lk.py"   "$STAGE_DIR/forge_tools.py"   "$STAGE_DIR/generator.py"   "$STAGE_DIR/slither_tools.py"   "$STAGE_DIR/audit_context.py"   "$STAGE_DIR/project_detection.py"   "$STAGE_DIR/clone_tools.py"   "$STAGE_DIR/break_playbook.py" "$STAGE_DIR/break_engine.py"   "$STAGE_DIR/audit_engine.py"   "$STAGE_DIR/benchmark.py"   "$STAGE_DIR/system_model.py"   "$STAGE_DIR/project_tools.py"   "$STAGE_DIR/question_engine.py"   "$STAGE_DIR/analysis_adapters.py"   "$STAGE_DIR/verification_adapters.py"   "$STAGE_DIR/test_generation.py"   "$STAGE_DIR/generation_plugins.py"   "$STAGE_DIR/behavioral_validation.py"   "$STAGE_DIR/verification_benchmark.py"   "$STAGE_DIR/import_helper.py"   "$STAGE_DIR/solidity_cheatsheet.py"   "$STAGE_DIR/solidity_cheat_topics.py"   "$STAGE_DIR/solidity_cheat_data.py"   "$STAGE_DIR/solidity_connect_data.py"
 bash -n "$REPO_DIR/bin/lk"
 
 # Publish exactly the validated stage so the manifest always describes the
@@ -78,6 +78,7 @@ cp "$STAGE_DIR/verification_adapters.py" "$TARGET_LOWKEY_DIR/verification_adapte
 cp "$STAGE_DIR/test_generation.py" "$TARGET_LOWKEY_DIR/test_generation.py"
 cp "$STAGE_DIR/generation_plugins.py" "$TARGET_LOWKEY_DIR/generation_plugins.py"
 cp "$STAGE_DIR/behavioral_validation.py" "$TARGET_LOWKEY_DIR/behavioral_validation.py"
+cp "$STAGE_DIR/verification_benchmark.py" "$TARGET_LOWKEY_DIR/verification_benchmark.py"
 cp "$STAGE_DIR/import_helper.py" "$TARGET_LOWKEY_DIR/import_helper.py"
 cp "$STAGE_DIR/solidity_cheatsheet.py" "$TARGET_LOWKEY_DIR/solidity_cheatsheet.py"
 cp "$STAGE_DIR/solidity_cheat_topics.py" "$TARGET_LOWKEY_DIR/solidity_cheat_topics.py"
@@ -145,6 +146,7 @@ installed = {
     str(lowkey_dir / "test_generation.py"): sha256(lowkey_dir / "test_generation.py"),
     str(lowkey_dir / "generation_plugins.py"): sha256(lowkey_dir / "generation_plugins.py"),
     str(lowkey_dir / "behavioral_validation.py"): sha256(lowkey_dir / "behavioral_validation.py"),
+    str(lowkey_dir / "verification_benchmark.py"): sha256(lowkey_dir / "verification_benchmark.py"),
     str(lowkey_dir / "import_helper.py"): sha256(lowkey_dir / "import_helper.py"),
     str(lowkey_dir / "solidity_cheatsheet.py"): sha256(lowkey_dir / "solidity_cheatsheet.py"),
     str(lowkey_dir / "solidity_cheat_topics.py"): sha256(lowkey_dir / "solidity_cheat_topics.py"),
@@ -195,6 +197,7 @@ Files copied:
   - $TARGET_LOWKEY_DIR/test_generation.py
   - $TARGET_LOWKEY_DIR/generation_plugins.py
   - $TARGET_LOWKEY_DIR/behavioral_validation.py
+  - $TARGET_LOWKEY_DIR/verification_benchmark.py
   - $TARGET_LOWKEY_DIR/import_helper.py
   - $TARGET_LOWKEY_DIR/solidity_cheatsheet.py
   - $TARGET_LOWKEY_DIR/solidity_cheat_topics.py
