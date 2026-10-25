@@ -40,10 +40,13 @@ def parse_types(raw: str | None) -> list[str]:
     return values
 
 
+def _foundry_config_path(root: Path) -> Path:
+    """Resolve the Foundry config selected for this invocation."""
+    configured = Path(os.environ.get("FOUNDRY_CONFIG", "foundry.toml")).expanduser()
+    return (configured if configured.is_absolute() else root / configured).resolve()
 def _source_root(root: Path) -> Path:
     """Resolve the active Foundry source directory without guessing a different profile."""
-    configured_path = Path(os.environ.get("FOUNDRY_CONFIG", "foundry.toml")).expanduser()
-    config_path = configured_path if configured_path.is_absolute() else root / configured_path
+    config_path = _foundry_config_path(root)
     src = os.environ.get("FOUNDRY_SRC") or "src"
     if config_path.exists():
         try:
@@ -256,8 +259,7 @@ def _constructor_values(raw: str | None) -> list[str] | None:
 
 def _foundry_test_dir(root: Path) -> Path:
     """Read the active Foundry profile's configured test directory."""
-    configured_path = Path(os.environ.get("FOUNDRY_CONFIG", "foundry.toml")).expanduser()
-    config_path = configured_path if configured_path.is_absolute() else root / configured_path
+    config_path = _foundry_config_path(root)
     test_dir = "test"
     if config_path.exists():
         try:
@@ -815,8 +817,9 @@ The generator does not claim coverage or invent protocol-specific assertions.
         return _error(str(exc))
 
     root = Path.cwd().resolve()
-    if not (root / "foundry.toml").exists():
-        return _error("No foundry.toml found in the current directory. Run this from a Foundry project.")
+    config_path = _foundry_config_path(root)
+    if not config_path.is_file():
+        return _error(f"No Foundry config found at {config_path}. Run this from a Foundry project.")
     found = _contract_source(root, name)
     if not found:
         return _error(f"Could not find contract '{name}' under {_source_root(root)}.")

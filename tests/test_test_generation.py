@@ -558,6 +558,7 @@ class TestGenerationTests(unittest.TestCase):
                 '[profile.ci]\nsrc = "contracts"\ntest = "spec"\n',
                 encoding="utf-8",
             )
+            (root / "foundry.toml").unlink()
             spec = root / "spec"
             spec.mkdir()
             (spec / "Existing.t.sol").write_text(
