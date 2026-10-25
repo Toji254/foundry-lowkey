@@ -670,5 +670,30 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(report["validation"]["status"], "not-applicable")
             self.assertIn("No generated Solidity drafts", report["validation"]["detail"])
 
+    def test_profiles_use_inherited_standard_evidence_and_include_niche_obligations(self):
+        from test_generation_analysis import analyse_contract, render_test_plan
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "src"
+            source_dir.mkdir()
+            source_path = source_dir / "Vault.sol"
+            source = "pragma solidity ^0.8.20; contract Vault is ERC4626, UUPSUpgradeable {}"
+            source_path.write_text(source, encoding="utf-8")
+            analysis = analyse_contract(root, "Vault", source_path, source)
+            self.assertIn("ERC-4626-like vault", analysis["profiles"])
+            self.assertIn("proxy / upgradeable", analysis["profiles"])
+            plan = render_test_plan(analysis, ["unit", "invariant"])
+            self.assertIn("donation/inflation attacks", plan)
+            self.assertIn("initializer front-running", plan)
+
+            multi_source_path = source_dir / "MultiToken.sol"
+            multi_source = "pragma solidity ^0.8.20; contract MultiToken is ERC1155 {}"
+            multi_source_path.write_text(multi_source, encoding="utf-8")
+            multi_analysis = analyse_contract(root, "MultiToken", multi_source_path, multi_source)
+            self.assertIn("ERC-1155-like multi-token", multi_analysis["profiles"])
+            multi_plan = render_test_plan(multi_analysis, ["unit"])
+            self.assertIn("single and batch mint", multi_plan)
+
 if __name__ == "__main__":
     unittest.main()

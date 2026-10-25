@@ -265,6 +265,23 @@ def analyse_contract(
     for profile, (tokens, threshold) in profile_rules.items():
         if sum(token in lower for token in tokens) >= threshold:
             profiles.append(profile)
+
+    # Inherited standards often expose their API without repeating function names
+    # in the child source, so include explicit base-contract evidence as well.
+    inherited_profile_rules = {
+        "ERC20": "ERC-20-like token",
+        "ERC721": "ERC-721-like NFT",
+        "ERC4626": "ERC-4626-like vault",
+        "ERC1155": "ERC-1155-like multi-token",
+    }
+    for base in inheritance:
+        compact = re.sub(r"[^A-Za-z0-9]", "", base).upper()
+        for marker, profile in inherited_profile_rules.items():
+            if marker in compact and profile not in profiles:
+                profiles.append(profile)
+    if re.search(r"\b(?:UUPSUpgradeable|ERC1967Proxy|Initializable)\b|\bupgradeToAndCall\b|\bdelegatecall\b", source, flags=re.I):
+        if "proxy / upgradeable" not in profiles:
+            profiles.append("proxy / upgradeable")
     imports = []
     for match in re.finditer(r"\bimport\b[^;]*;", mask_solidity(source)):
         raw = source[match.start():match.end()]
@@ -370,6 +387,16 @@ PROFILE_TEST_CHECKLISTS: dict[str, list[str]] = {
         "Check ownerOf before/after transfer, approval clearing, operator approvals, and unauthorized transfer reverts.",
         "Check safe-transfer callbacks for valid receivers, rejecting receivers, and reentrant receiver behavior.",
         "Check mint/burn token-existence boundaries, duplicate mint prevention, and approvals for nonexistent tokens.",
+    ],
+    "ERC-1155-like multi-token": [
+        "Check per-token balances and supply assumptions across single and batch mint, burn, and transfer operations.",
+        "Test operator approvals, unauthorized transfers, zero amounts, duplicate token IDs in batches, and array-length mismatch reverts.",
+        "Exercise receiver callbacks for accepted/rejected single and batch transfers, including reentrancy-sensitive state updates.",
+    ],
+    "proxy / upgradeable": [
+        "Check initializer and reinitializer access, one-time initialization, and implementation-constructor locking.",
+        "Test upgrade authorization, invalid implementations, storage-layout compatibility, and preservation of critical state.",
+        "Attempt initializer front-running and verify admin/owner/role separation across proxy and implementation.",
     ],
     "ERC-4626-like vault": [
         "Check deposit/mint/withdraw/redeem asset-share deltas and rounding direction at zero, one-unit, and large values.",
