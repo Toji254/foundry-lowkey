@@ -928,5 +928,45 @@ contract Protocol {
             self.assertEqual(report["strict_blockers"], [])
             self.assertEqual(report["validation"]["status"], "passed")
 
+
+    def test_test_plan_covers_additional_defi_and_infrastructure_profiles(self):
+        from test_generation_analysis import render_test_plan
+
+        profiles = [
+            "AMM / DEX",
+            "ERC-4337 account abstraction",
+            "flash-loan / callback",
+            "Merkle claims / airdrop",
+            "NFT marketplace",
+            "proxy / upgradeable",
+            "ERC-1155-like multi-token",
+        ]
+        plan = render_test_plan(
+            {
+                "contract": "Protocol",
+                "source": "src/Protocol.sol",
+                "inheritance": [],
+                "profiles": profiles,
+                "security_surfaces": {},
+                "existing_tests": {"file_count": 0, "function_count": 0, "files": []},
+                "functions": [],
+                "imports": [],
+                "audit_evidence": {"files": [], "signals": [], "note": "No evidence"},
+                "limitations": [],
+            },
+            ["unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal"],
+        )
+        for obligation in (
+            "price-impact manipulation",
+            "UserOperation hash domain separation",
+            "callback initiator",
+            "leaf domain separation",
+            "signed orders bind chain",
+            "initializer and reinitializer",
+            "duplicate token IDs",
+        ):
+            with self.subTest(obligation=obligation):
+                self.assertIn(obligation, plan)
+
 if __name__ == "__main__":
     unittest.main()
