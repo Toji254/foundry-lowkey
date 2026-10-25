@@ -492,9 +492,8 @@ class LowkeyCastTests(unittest.TestCase):
             lk._format_revert_error(error),
             "Error: Transaction not sent\n"
             "  Reason: invalid number\n"
-            "  What happened: The contract rejected the call while Lowkey was estimating gas, before submitting the transaction.\n"
-            "  Next step: Check the function's require/revert conditions and the values you supplied.\n"
-            "  Transaction: Not sent. The RPC rejected the call before broadcasting a transaction.",
+            "  What happened: The contract rejected the call while Lowkey checked whether it could run. No transaction was submitted.\n"
+            "  Next step: Check the number you passed and the function's input checks.",
         )
 
     def test_solidity_panic_is_decoded(self):
@@ -731,7 +730,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(result.code, 1)
         self.assertIn("Error: Transaction not sent", result.text)
         self.assertIn("Reason: invalid number", result.text)
-        self.assertIn("Transaction: Not sent", result.text)
+        self.assertIn("No transaction was submitted", result.text)
         self.assertNotIn("Failed to estimate gas:", result.text)
 
     def test_failed_send_preserves_transaction_hash_when_cast_returns_one(self):
