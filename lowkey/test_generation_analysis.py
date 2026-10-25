@@ -1,6 +1,7 @@
 """Evidence-oriented Solidity source analysis for LowkeyCast test generation."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -320,6 +321,7 @@ def analyse_contract(
         "schema_version": 1,
         "contract": name,
         "source": source_path.relative_to(root).as_posix() if source_path.is_relative_to(root) else str(source_path),
+        "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
         "inheritance": inheritance,
         "profiles": profiles,
         "functions": [{k: fn[k] for k in ("name", "line", "visibility", "signature", "parameters", "returns", "modifiers", "view", "pure", "payable")} for fn in functions if fn["visibility"] in ("external", "public")],
@@ -486,6 +488,7 @@ def render_test_plan(analysis: dict[str, Any], generated_types: list[str]) -> st
         "## Project surface",
         "",
         "- Source: " + str(analysis.get("source", "unknown")),
+        "- Source SHA-256: `" + str(analysis.get("source_sha256", "not available")) + "`",
         "- Inheritance: " + (", ".join(analysis.get("inheritance", [])) or "not recognized"),
         "- Candidate profiles: " + (", ".join(analysis.get("profiles", [])) or "none confidently recognized"),
         "- Existing Solidity test files: " + str(analysis.get("existing_tests", {}).get("file_count", 0)),

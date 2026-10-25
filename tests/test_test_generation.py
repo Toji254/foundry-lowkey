@@ -367,6 +367,7 @@ class TestGenerationTests(unittest.TestCase):
             result = analyse_contract(root, "Demo", source_path, sample)
             self.assertIn("access control", result["security_surfaces"])
             self.assertEqual(result["functions"][0]["name"], "changeOwner")
+            self.assertEqual(len(result["source_sha256"]), 64)
 
 
     def test_validate_compiles_temporary_drafts_without_running_them(self):
@@ -642,6 +643,7 @@ class TestGenerationTests(unittest.TestCase):
             ["unit", "invariant"],
         )
         self.assertIn("Profile-specific test obligations", plan)
+        self.assertIn("Source SHA-256:", plan)
         self.assertIn("allowance consumption", plan)
         self.assertIn("safe-transfer callbacks", plan)
         self.assertIn("candidate checks suggested by source/interface cues", plan)
