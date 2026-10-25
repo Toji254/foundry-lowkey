@@ -5,6 +5,7 @@ Lowkey deliberately does not invent protocol assertions from names or ABI alone.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -824,6 +825,8 @@ The generator does not claim coverage or invent protocol-specific assertions.
     if not found:
         return _error(f"Could not find contract '{name}' under {_source_root(root)}.")
     source_path, source = found
+    source_label = source_path.relative_to(root).as_posix() if source_path.is_relative_to(root) else str(source_path)
+    source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
     constructor_args = _constructor_args(source, name)
     constructor_values = _constructor_values(constructor_args)
     is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
@@ -865,7 +868,8 @@ The generator does not claim coverage or invent protocol-specific assertions.
 
     report = {
         "contract": name,
-        "source": str(source_path.relative_to(root)),
+        "source": source_label,
+        "source_sha256": source_sha256,
         "constructor": "abstract-contract" if is_abstract else ("unknown" if constructor_args is None else ("zero-argument" if not constructor_args.strip() else ("arguments-required" if constructor_values is not None else "unsupported-arguments"))),
         "constructor_parameters": constructor_args,
         "constructor_placeholders": constructor_values,
@@ -892,7 +896,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     print(f"Test-generation drafts for {name}")
-    print(f"Source: {source_path.relative_to(root)}")
+    print(f"Source: {source_label}")
     print(f"Output: {output_dir.relative_to(root) if output_dir.is_relative_to(root) else output_dir}")
     for path in generated:
         print(f"  generated  {path}")

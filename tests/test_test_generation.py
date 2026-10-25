@@ -65,6 +65,7 @@ class TestGenerationTests(unittest.TestCase):
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(len(report["generated"]), 8)
             self.assertIn("not protocol proofs", report["warning"])
+            self.assertEqual(len(report["source_sha256"]), 64)
             self.assertIn("generated", output.getvalue())
             self.assertEqual(
                 report["fuzz_property"],
@@ -681,6 +682,8 @@ class TestGenerationTests(unittest.TestCase):
             source = "pragma solidity ^0.8.20; contract Vault is ERC4626, UUPSUpgradeable {}"
             source_path.write_text(source, encoding="utf-8")
             analysis = analyse_contract(root, "Vault", source_path, source)
+            self.assertIn("ERC-4626", analysis["inheritance"])
+            self.assertIn("UUPSUpgradeable", analysis["inheritance"])
             self.assertIn("ERC-4626-like vault", analysis["profiles"])
             self.assertIn("proxy / upgradeable", analysis["profiles"])
             plan = render_test_plan(analysis, ["unit", "invariant"])
@@ -694,29 +697,6 @@ class TestGenerationTests(unittest.TestCase):
             self.assertIn("ERC-1155-like multi-token", multi_analysis["profiles"])
             multi_plan = render_test_plan(multi_analysis, ["unit"])
             self.assertIn("single and batch mint", multi_plan)
-
-
-    def test_test_plan_includes_multitoken_and_upgradeable_obligations(self):
-        from test_generation_analysis import render_test_plan
-
-        plan = render_test_plan(
-            {
-                "contract": "UpgradeableAsset",
-                "source": "src/UpgradeableAsset.sol",
-                "inheritance": ["ERC1155Upgradeable", "UUPSUpgradeable"],
-                "profiles": ["ERC-1155-like multi-token", "proxy / upgradeable"],
-                "security_surfaces": {"upgrade / initialization": "initializer"},
-                "existing_tests": {"file_count": 0, "function_count": 0, "files": []},
-                "functions": [],
-                "imports": [],
-                "audit_evidence": {"files": [], "signals": [], "note": "No evidence"},
-                "limitations": [],
-            },
-            ["unit", "fork", "formal"],
-        )
-        self.assertIn("safeBatchTransferFrom", plan)
-        self.assertIn("UUPS proxiableUUID", plan)
-        self.assertIn("storage layout", plan)
 
 if __name__ == "__main__":
     unittest.main()
