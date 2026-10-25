@@ -173,14 +173,15 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         adapter = EchidnaAdapter(EngineCapability("echidna", sys.executable, ("fuzz",), memory_class="medium"))
         with tempfile.TemporaryDirectory() as root:
             project = {"root": root}
-            def run(code):
+            def run(code, exit_code=0):
+                script = f"print({code!r}); raise SystemExit({exit_code})"
                 return adapter.run(
                     project,
-                    {"test_kind": "fuzz", "argv": ["-c", f"print({code!r})"]},
+                    {"test_kind": "fuzz", "argv": ["-c", script]},
                     budget={"timeout_seconds": 5},
                 )
             passed = run('{"success": true, "tests": [{"name": "echidna_supply", "status": "passed"}]}')
-            failed = run('{"success": false, "tests": [{"name": "echidna_supply", "status": "solved"}]}')
+            failed = run('{"success": false, "tests": [{"name": "echidna_supply", "status": "solved"}]}', exit_code=1)
             error = run('{"success": true, "error": "compiler failed", "tests": []}')
             unclear = run("not-json")
         self.assertEqual(passed.status, "passed")
