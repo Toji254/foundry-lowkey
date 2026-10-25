@@ -6,6 +6,18 @@ The generator must work from evidence in an unfamiliar project, not from reposit
 
 The manifest is a benchmark plan, not evidence that these repositories have already passed. Results must only be described as completed after the pinned repository revision has actually been checked and the report retained.
 
+## Running the corpus
+
+From a checkout with LowkeyCast and Foundry installed, run:
+
+```bash
+python3 scripts/test-gen-ecosystem-benchmark.py
+```
+
+The runner shallow-clones each manifest repository into an isolated temporary workspace, records each immutable checkout SHA, discovers candidate declarations, records the baseline Foundry build, generates all eight artifact families, and separately invokes validation for the seven Solidity families. It writes a machine-readable report to `.audit/test-gen-ecosystem-benchmark.json`. Use `--limit-projects 1` for a smoke run, `--targets-per-project 1` to reduce work, and `--work-dir PATH --keep-workspaces` to retain cloned repositories for investigation. The runner exits nonzero if any project could not be evaluated; inspect per-project statuses instead of treating a partial run as a pass.
+
+The current runner does not implement mutation campaigns yet. A green run is therefore evidence about repository discovery, generation, and the generator's available validation path—not proof that generated tests kill deliberate faults. Mutation testing remains a separate release gate.
+
 ## Required evaluation protocol
 
 1. Record the exact repository URL, commit SHA, tool versions, compiler profile, remappings, dependencies, and target contract.
