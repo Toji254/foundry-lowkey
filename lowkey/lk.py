@@ -161,7 +161,13 @@ def record_status(code):
     return code
 
 def fail(message, code=2):
-    print(message, file=sys.stderr)
+    # Shared formatter recognizes external/runtime failures while preserving
+    # Lowkey's own specific validation messages and their usage hints.
+    try:
+        rendered = _format_cli_error(message, code=code, source="lowkey")
+    except Exception:
+        rendered = str(message)
+    print(rendered, file=sys.stderr)
     return record_status(code)
 
 def is_tx_hash(value):
@@ -4075,7 +4081,29 @@ def run_cast(args,config,capture=False):
             fallback = _rpc_read_fallback(config, target, function_item, remaining[1:])
             if fallback is not None:
                 out, err, code = fallback, "", 0
-        final=out or err; log_session(safe_cmd,final)
+        final=out or err
+        log_session(safe_cmd, final)
+
+        # Any unsuccessful Cast operation goes through the same formatter.
+        # Handle failure before parsing output as a transaction receipt/result:
+        # otherwise provider error text written to stdout can look like success.
+        if code != 0:
+            raw_error = err or out or final
+            rendered_error = _format_cli_error(
+                raw_error,
+                code=code,
+                command=cast_cmd,
+                config=config,
+                target=target,
+                source="cast",
+            )
+            record_status(code)
+            result = CommandResult(rendered_error, code)
+            if capture:
+                return result
+            print(apply_labels(rendered_error, config), file=sys.stderr)
+            return code
+
         if cast_cmd=="send" and out:
             match=re.search(r"transactionHash(?:\s|:)+([0-9A-Fa-fx]{66})",out)
             if match:
@@ -4132,8 +4160,7 @@ def run_cast(args,config,capture=False):
             else:
                 print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
         if err:
-            if code != 0 and "execution reverted" in err.lower():
-                err = _format_revert_error(err)
+            # Some successful commands emit non-fatal diagnostics on stderr.
             print(apply_labels(err,config),file=sys.stderr)
         return code
     except FileNotFoundError:
