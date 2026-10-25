@@ -106,6 +106,9 @@ jobs:
                   count += value;
                   emit Ping(value);
               }
+              function setCount(uint256 value) external {
+                  count = value;
+              }
               function deposit(uint256 amount) external payable {
                   require(amount == msg.value, "attach eth");
                   count += amount;
@@ -317,6 +320,31 @@ jobs:
           lk forge debug --help
           test $? -ne 0
 
+
+      - name: Generate and compile project-aware test artifacts
+        working-directory: /tmp/lowkey-fixture
+        run: |
+          lk test-gen Fixture --types unit,integration,invariant,exploit,regression,fuzz,formal --force
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import shutil
+          report = json.loads(pathlib.Path(".audit/test-gen/Fixture/report.json").read_text())
+          required = {"unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal"}
+          assert required.issubset(set(report["requested_types"]))
+          assert len(report["generated"]) == 7, report
+          assert report["fuzz_property"]["setter"] == "setCount", report
+          generated = pathlib.Path("test/lowkey-generated")
+          generated.mkdir(parents=True, exist_ok=True)
+          for item in report["generated"]:
+              source = pathlib.Path(item)
+              if source.suffix == ".sol":
+                  shutil.copy2(source, generated / source.name)
+          formal = pathlib.Path(".audit/test-gen/Fixture/LowkeyGeneratedFormal_Fixture.spec")
+          assert formal.is_file(), "recognized formal property should generate a CVL spec"
+          assert "assert target.count() == fuzzValue" in formal.read_text()
+          PY
+          forge build
 
   vyper-integration:
     runs-on: ubuntu-latest
