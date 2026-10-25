@@ -4007,7 +4007,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
 
     if any(marker in lowered for marker in (
         "no such file or directory", "command not found", "executable file not found",
-        "not found in path", "no module named",
+        "not found in path", "not found on path", "no module named",
     )):
         rendered = (
             "ERROR [MISSING DEPENDENCY OR FILE]\n"
@@ -9838,7 +9838,7 @@ def run_foundry(args, capture=False, cwd=None):
     if timed_out:
         message = _format_cli_error(
             (
-                f"Forge {command_name} exceeded {timeout}s and its process group "
+                f"Timed out: Forge {command_name} exceeded {timeout}s and its process group "
                 "was terminated. No security conclusion is supported by this run. "
                 "Adjust LOWKEY_FORGE_TIMEOUT (30-7200s) if needed."
             ),
@@ -12539,11 +12539,11 @@ def run_raw(config,args):
     code, out, err = cast_output(["cast"] + args)
     log_session(safe, out or err)
     if code != 0:
-        detail = "\\n".join(part for part in (err, out) if part).strip()
+        detail = "\n".join(part for part in (err, out) if part).strip()
         rendered = _format_cli_error(
             detail,
             code=code,
-            command="raw " + str(args[0]),
+            command="raw",
             config=config,
             target=config.get("target"),
             source="cast",
