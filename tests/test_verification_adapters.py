@@ -17,6 +17,27 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             {"unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal"},
         )
 
+    def test_engine_capability_rejects_blank_name_or_command(self):
+        for name, command, message in (
+            ("   ", "forge", "name must not be empty"),
+            ("forge", "  ", "command must not be empty"),
+        ):
+            with self.subTest(name=name, command=command):
+                with self.assertRaisesRegex(ValueError, message):
+                    EngineCapability(name, command, ("unit",))
+
+    def test_engine_capability_rejects_unknown_memory_class(self):
+        with self.assertRaisesRegex(ValueError, "memory_class must be one of"):
+            EngineCapability("custom", "custom-tool", ("unit",), memory_class="unlimited")
+
+    def test_engine_capability_accepts_supported_memory_classes(self):
+        for memory_class in ("low", "medium", "high"):
+            with self.subTest(memory_class=memory_class):
+                self.assertEqual(
+                    EngineCapability("custom", "custom-tool", ("unit",), memory_class=memory_class).memory_class,
+                    memory_class,
+                )
+
     def test_project_inspection_detects_foundry_and_solidity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
