@@ -23,6 +23,10 @@ if str(MODULE_DIR) not in sys.path:
 import audit_context
 import walkthrough
 try:
+    import test_generation
+except ImportError:
+    test_generation = None
+try:
     import question_engine
 except ImportError:
     question_engine = None
@@ -16535,7 +16539,14 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         elif action=="trace": run_trace(config,[])
         elif action=="logs": run_logs(config,[])
         else: run_receipt(config)
-    elif cmd=="test-gen": run_test_gen(config)
+    elif cmd=="test-gen":
+        # Preserve the legacy no-argument last-send reproduction workflow.
+        # Arguments opt into project-aware multi-artifact generation.
+        if args or any(str(arg).lower() in HELP_FLAGS for arg in args):
+            if test_generation is None:
+                return fail("Project-aware test generator is not installed. Re-run install.sh.")
+            return test_generation.run_test_gen(config, args)
+        return run_test_gen(config)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
