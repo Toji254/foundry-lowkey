@@ -35,6 +35,10 @@ try:
 except ImportError:
     behavioral_validation = None
 try:
+    import verification_benchmark
+except ImportError:
+    verification_benchmark = None
+try:
     import question_engine
 except ImportError:
     question_engine = None
@@ -16561,6 +16565,10 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         if behavioral_validation is None:
             return fail("Mutation validation module is not installed. Re-run install.sh.")
         return behavioral_validation.run_cli(args)
+    elif cmd=="verification-benchmark":
+        if verification_benchmark is None:
+            return fail("Verification benchmark module is not installed. Re-run install.sh.")
+        return verification_benchmark.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
@@ -16757,7 +16765,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","mutation-check","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","test-gen","mutation-check","verification-benchmark","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
