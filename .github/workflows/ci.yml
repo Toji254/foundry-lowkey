@@ -153,6 +153,10 @@ jobs:
           cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedFuzz_ConfiguredFixture.t.sol test/lowkey-generated/
           cp .audit/test-gen/ConfiguredFixture/LowkeyGeneratedInvariant_ConfiguredFixture.t.sol test/lowkey-generated/
           forge test --match-path 'test/lowkey-generated/.*Fixture.t.sol' -vv
+          # Keep the general integration fixture identical to its original one-contract setup.
+          rm -f src/ConfiguredFixture.sol
+          rm -f test/lowkey-generated/*ConfiguredFixture.t.sol
+          rm -rf .audit/test-gen/ConfiguredFixture out/ConfiguredFixture.sol
 
       - name: Start Anvil
         run: |
