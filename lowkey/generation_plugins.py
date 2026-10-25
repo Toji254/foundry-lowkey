@@ -99,7 +99,7 @@ class SolidityFoundryGenerationAdapter:
         name="solidity-foundry",
         languages=("solidity",),
         build_systems=("foundry",),
-        artifact_kinds=("unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal"),
+        artifact_kinds=("unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal", "fork", "poc"),
         notes="Conservative Solidity source analysis; unsupported setup is skipped, and drafts are not proof.",
     )
 
