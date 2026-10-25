@@ -550,7 +550,7 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("Contract rejected the send request", rendered)
         self.assertIn("0xdeadbeef", rendered)
         self.assertIn("no contract ABI was available to resolve it", rendered)
-        self.assertIn(f"Raw revert data: {payload}", rendered)
+        self.assertIn(f"revert data {payload}", rendered)
 
     def test_empty_revert_is_not_reported_as_a_known_reason(self):
         rendered = lk._format_cli_error(
