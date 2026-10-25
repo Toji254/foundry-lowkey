@@ -15784,6 +15784,7 @@ REPRODUCE / ATTACK / TEST
   lk generate deployment <Contract> Generate a deployment script.
   lk test-gen <Contract> --types ... Generate project-aware test drafts through adapters.
   lk mutation-check <manifest.json>  Run isolated mutation validation and report a score.
+  lk verification-benchmark <manifest> Run a manifest-driven benchmark and enforce gates.
   lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
   lk fuzz [args...]                Run Forge fuzz tests.
   lk invariant [args...]           Run Forge invariant tests.
