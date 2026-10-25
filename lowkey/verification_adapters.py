@@ -11,6 +11,7 @@ import subprocess
 import os
 from importlib.metadata import entry_points
 import signal
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -138,44 +139,69 @@ class ExecutableAdapter:
         command = [self.capability.command, *raw_args]
         started_at = time.monotonic()
         try:
-            process = subprocess.Popen(
-                command, cwd=root, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                start_new_session=(os.name == "posix"),
-            )
-            try:
-                stdout, stderr = process.communicate(timeout=timeout)
-                code = process.returncode
-                status = "passed" if code == 0 else "failed"
-            except subprocess.TimeoutExpired:
+            output_limit = max(1024, min(int(budget.get("max_output_bytes", 262144)), 4194304))
+        except (TypeError, ValueError):
+            output_limit = 262144
+
+        def read_bounded(stream: Any) -> tuple[str, bool]:
+            stream.seek(0)
+            raw = stream.read(output_limit + 1)
+            truncated = len(raw) > output_limit
+            if truncated:
+                raw = raw[:output_limit]
+                raw += b"\n[LOWKEY_OUTPUT_TRUNCATED; see output_limit_bytes in raw_evidence]"
+            return raw.decode("utf-8", errors="replace"), truncated
+
+        try:
+            # Redirect to disk-backed temporary files: communicate() with PIPE can
+            # buffer arbitrarily large fuzz/solver output in RAM on small machines.
+            with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
+                process = subprocess.Popen(
+                    command, cwd=root, stdin=subprocess.DEVNULL,
+                    stdout=stdout_file, stderr=stderr_file,
+                    start_new_session=(os.name == "posix"),
+                )
                 try:
-                    if os.name == "posix":
-                        os.killpg(process.pid, signal.SIGTERM)
-                    else:
-                        process.kill()
-                except OSError:
-                    pass
-                try:
-                    stdout, stderr = process.communicate(timeout=3)
+                    process.communicate(timeout=timeout)
+                    code = process.returncode
+                    status = "passed" if code == 0 else "failed"
                 except subprocess.TimeoutExpired:
                     try:
                         if os.name == "posix":
-                            os.killpg(process.pid, signal.SIGKILL)
+                            os.killpg(process.pid, signal.SIGTERM)
                         else:
                             process.kill()
                     except OSError:
                         pass
-                    stdout, stderr = process.communicate()
-                code, status = 124, "timeout"
-                stderr = (stderr or "") + f"\nLOWKEY_TIMEOUT_SECONDS={timeout}"
+                    try:
+                        process.communicate(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            if os.name == "posix":
+                                os.killpg(process.pid, signal.SIGKILL)
+                            else:
+                                process.kill()
+                        except OSError:
+                            pass
+                        process.communicate()
+                    code, status = 124, "timeout"
+                stdout, stdout_truncated = read_bounded(stdout_file)
+                stderr, stderr_truncated = read_bounded(stderr_file)
+                if status == "timeout":
+                    stderr += f"\nLOWKEY_TIMEOUT_SECONDS={timeout}"
         except OSError as exc:
             return EngineResult(self.capability.name, "error", exit_code=127, summary=str(exc))
         return EngineResult(
             engine=self.capability.name, status=status, exit_code=code,
             summary=f"{' '.join(command)} exited with {code}",
             duration_seconds=round(time.monotonic() - started_at, 6),
-            raw_stdout=stdout or "", raw_stderr=stderr or "",
-            raw_evidence={"argv": command, "cwd": str(root), "timeout_seconds": timeout},
+            raw_stdout=stdout, raw_stderr=stderr,
+            raw_evidence={
+                "argv": command, "cwd": str(root), "timeout_seconds": timeout,
+                "output_limit_bytes": output_limit,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+            },
             metadata={"test_kind": test_kind, "project": str(root)},
         )
 
