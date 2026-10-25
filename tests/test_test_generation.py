@@ -450,5 +450,58 @@ class TestGenerationTests(unittest.TestCase):
             self.assertNotIn("target.setValue(", fork)
             self.assertNotIn("target.setValue(fuzzValue)", fork)
 
+
+    def test_validate_does_not_blame_drafts_when_baseline_build_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                failed = subprocess.CompletedProcess(["forge", "build"], 1, "", "existing compile error")
+                with patch("test_generation.shutil.which", return_value="/fake/forge"), patch(
+                    "test_generation.subprocess.run", return_value=failed
+                ) as run:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        code = generation.run_test_gen(
+                            {"target_contract": "Counter"},
+                            ["--types", "unit", "--validate"],
+                        )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 1)
+            self.assertEqual(run.call_count, 1)
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["validation"]["status"], "baseline-failed")
+            self.assertEqual(report["validation"]["baseline_exit_code"], 1)
+            self.assertIn("fails to build before generated drafts", report["validation"]["detail"])
+
+    def test_validate_reports_missing_forge_without_claiming_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch("test_generation.shutil.which", return_value=None), patch(
+                    "test_generation.subprocess.run"
+                ) as run:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        code = generation.run_test_gen(
+                            {"target_contract": "Counter"},
+                            ["--types", "unit", "--validate"],
+                        )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(code, 1)
+            run.assert_not_called()
+            report = json.loads(
+                (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["validation"]["status"], "unavailable")
+            self.assertIn("forge was not found", report["validation"]["detail"])
+
 if __name__ == "__main__":
     unittest.main()
