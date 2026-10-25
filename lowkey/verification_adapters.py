@@ -540,6 +540,15 @@ class CapabilityRegistry:
         }
         if profile not in profiles:
             raise ValueError(f"unknown resource profile: {profile}")
+        if request is not None:
+            argv_map = request.get("argv_by_engine") or {}
+            config_map = request.get("engine_config_by_engine") or {}
+            if not isinstance(argv_map, dict):
+                raise ValueError("request.argv_by_engine must be a mapping of engine name to argv list")
+            if not isinstance(config_map, dict) or not all(
+                isinstance(value, dict) for value in config_map.values()
+            ):
+                raise ValueError("request.engine_config_by_engine must map engine names to config objects")
         selected: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
         order = {"low": 0, "medium": 1, "high": 2}
@@ -556,9 +565,12 @@ class CapabilityRegistry:
                 continue
             if request is not None and name != "forge":
                 per_engine = request.get("argv_by_engine") or {}
+                config_by_engine = request.get("engine_config_by_engine") or {}
                 engine_request = dict(request)
                 engine_request.pop("argv_by_engine", None)
-                if isinstance(per_engine, dict) and name in per_engine:
+                engine_request.pop("engine_config_by_engine", None)
+                engine_request.update(config_by_engine.get(name, {}))
+                if name in per_engine:
                     engine_request["argv"] = per_engine[name]
                 configured, config_reason = self._request_ready(name, adapter, project, engine_request)
                 if not configured:
@@ -607,6 +619,14 @@ class CapabilityRegistry:
         campaign_started_at = time.monotonic()
         request = dict(request or {})
         budget = dict(budget or {})
+        argv_by_engine = request.get("argv_by_engine") or {}
+        config_by_engine = request.get("engine_config_by_engine") or {}
+        if not isinstance(argv_by_engine, dict):
+            raise ValueError("request.argv_by_engine must be a mapping of engine name to argv list")
+        if not isinstance(config_by_engine, dict) or not all(
+            isinstance(value, dict) for value in config_by_engine.values()
+        ):
+            raise ValueError("request.engine_config_by_engine must map engine names to config objects")
         plan = self.plan(project, test_kind, profile=profile, request=request)
         selected = plan["selected"]
         profile_limits = {
@@ -618,13 +638,12 @@ class CapabilityRegistry:
         budget.setdefault("timeout_seconds", limits["timeout_seconds"])
         by_name = {name: adapter for name, adapter in self._adapters.items()}
         results: list[dict[str, Any]] = []
-        argv_by_engine = request.get("argv_by_engine") or {}
-        if not isinstance(argv_by_engine, dict):
-            raise ValueError("request.argv_by_engine must be a mapping of engine name to argv list")
         for candidate in selected:
             name = candidate["engine"]
             engine_request = dict(request)
             engine_request.pop("argv_by_engine", None)
+            engine_request.pop("engine_config_by_engine", None)
+            engine_request.update(config_by_engine.get(name, {}))
             engine_request["test_kind"] = test_kind
             if name in argv_by_engine:
                 engine_request["argv"] = argv_by_engine[name]
