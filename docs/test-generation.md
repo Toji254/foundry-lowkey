@@ -25,8 +25,9 @@ By default, files are written to `.audit/test-gen/<ContractName>/`. This is inte
 | Integration | Local deployment and dependency-wiring guidance | Peer contracts, dependency addresses and cross-contract expectations |
 | Fork | Fork setup and target-code smoke test | Correct archive RPC, chain/target and behavioral assertion |
 | PoC | Fork setup and reproduction guidance | Exploit calldata/preconditions and a security-impact assertion |
+| Regression | Starter for an already fixed bug | Original preconditions, trigger and expected post-fix assertion |
 
-The local-deployment styles are currently generated only when Lowkey can see a zero-argument constructor. If construction requires arguments, those types are skipped with a reason rather than emitting a likely-invalid deployment expression. Fork and PoC drafts still need a configured target address and a valid `LOWKEY_RPC_URL` before execution.
+The local-deployment styles (unit, fuzz, invariant, integration and regression) are currently generated only when Lowkey finds a concrete contract with a zero-argument constructor. If construction requires arguments, those types are skipped with a reason rather than emitting a likely-invalid deployment expression. Fork and PoC drafts still need a configured target address and a valid `LOWKEY_RPC_URL` before execution.
 
 The import paths assume the generated Solidity files are eventually moved to `test/lowkey-generated/`. Review them before moving or running them. `--force` allows replacing existing drafts; without it Lowkey preserves existing files.
 
