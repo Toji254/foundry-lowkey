@@ -3833,7 +3833,7 @@ def _decode_contract_revert(error_text, config=None, target=None):
     if textual_reason:
         return {"kind": "REVERT", "reason": textual_reason, "selector": None, "data": None}
 
-    if "execution reverted" in lowered:
+    if "execution reverted" in lowered or ("revert" in lowered and _explicit_revert_payloads(text)):
         for payload in _explicit_revert_payloads(text):
             selector = payload[:10].lower()
             if selector not in {"0x08c379a0", "0x4e487b71"}:
@@ -3868,10 +3868,10 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         lowered = text.lower()
 
     is_gas_estimation = "failed to estimate gas" in lowered
-    looks_reverted = "execution reverted" in lowered or any(
+    looks_reverted = ("execution reverted" in lowered or ("revert" in lowered and bool(list(_explicit_revert_payloads(text)))) or any(
         payload.lower().startswith(("0x08c379a0", "0x4e487b71"))
         for payload in _revert_payloads(text)
-    )
+    ))
     if looks_reverted:
         decoded = _decode_contract_revert(text, config=config, target=target)
         if decoded:
@@ -3926,14 +3926,25 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         detail = text
         lines = ["ERROR [RPC CONNECTION]", f"  Details: {detail}",
                  "  Next: check the active RPC with 'lk rpc' and verify that the node/network is reachable."]
+        if command == "send":
+            if transaction_hash:
+                lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
+            else:
+                lines.append("  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying.")
         return "\n".join(lines)
 
     if "timed out" in lowered or "timeout" in lowered:
-        return (
+        rendered = (
             "ERROR [TIMEOUT]\n"
             f"  Details: {text}\n"
             "  Next: check whether the command or RPC is still responsive, then retry."
         )
+        if command == "send":
+            if transaction_hash:
+                rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
+            else:
+                rendered += "\n  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying."
+        return rendered
 
     if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
         rendered = (
@@ -3953,21 +3964,30 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         "unrecognized option", "invalid value", "invalid type",
         "missing required argument", "could not parse argument",
     )):
-        return (
+        rendered = (
             "ERROR [INVALID INPUT]\n"
             f"  Details: {text}\n"
             + (f"  Next: review 'lk {command} --h' for accepted arguments and examples.\n" if command else "")
         ).rstrip()
+        if command == "send":
+            if transaction_hash:
+                rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
+            else:
+                rendered += "\n  Transaction broadcast: no (input validation failed)."
+        return rendered
 
     if any(marker in lowered for marker in (
         "no such file or directory", "command not found", "executable file not found",
         "not found in path", "no module named",
     )):
-        return (
+        rendered = (
             "ERROR [MISSING DEPENDENCY OR FILE]\n"
             f"  Details: {text}\n"
             "  Next: verify the named executable/module/path exists and that required tools are installed."
         )
+        if command == "send":
+            rendered += "\n  Transaction broadcast: no (the command could not be executed)."
+        return rendered
 
     if source == "runtime":
         return "LOWKEY RUNTIME ERROR\n  " + text
