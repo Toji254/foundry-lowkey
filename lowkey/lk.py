@@ -3264,6 +3264,51 @@ def _function_item_for_command(command,args,config):
     matches=matching_functions(abi,query)
     return (matches[0] if len(matches)==1 else None),abi
 
+
+def _read_state_change_warning(args, config):
+    """Explain why a state-changing ABI function is inappropriate for the read command.
+
+    This is deliberately ABI-driven and does not depend on a contract name or
+    any particular function. Unknown/ambiguous functions keep the normal
+    command path so Lowkey does not guess about an unresolved signature.
+    """
+    values = [str(value).strip() for value in (args or [])]
+    target = config.get("target") if isinstance(config, dict) else None
+
+    if values and is_address(values[0]):
+        target = values.pop(0)
+    elif len(values) >= 2:
+        try:
+            root = audit_context.foundry_project_root()
+            named_target = resolve_target_ref(config, values[0], root=root)
+        except Exception:
+            named_target = None
+        if named_target:
+            target = named_target
+            values.pop(0)
+
+    if not target or not values:
+        return None
+
+    abi = load_abi(target, config)
+    matches = matching_functions(abi, values[0]) if abi else []
+    if len(matches) != 1:
+        return None
+
+    item = matches[0]
+    if item.get("stateMutability") in {"view", "pure"}:
+        return None
+
+    signature = format_signature(item)
+    return (
+        f"'{signature}' is state-changing, so lk read cannot persist its effects. "
+        "lk read uses a simulated call; state changes are discarded, and a function "
+        "with no return values may print 0x. "
+        f"Use 'lk send {signature} <args...>' to submit a transaction, or "
+        f"'lk changes {signature} <args...>' to inspect a temporary state-diff simulation."
+    )
+
+
 def _function_interaction_recommendations(command,args,config):
     """Build recommendations from the actual ABI function just used."""
     canonical=_canonical_help_command(str(command or "").strip().lower())
@@ -8136,19 +8181,23 @@ def _numeric_field_is_value_like(label):
 
 
 def _print_numeric_unit_reference(label, ptype):
+    """Show numeric input choices without inferring a unit from the ABI or name."""
     if not str(ptype).startswith(("uint", "int")):
         return
+
+    print()
+    print("NUMERIC INPUT OPTIONS")
+    print("---------------------")
+    print("  Raw integer : a number such as 1000000 is passed through unchanged.")
+    print("  Separators  : commas/underscores are accepted, e.g. 1,000,000.")
+    print("  Unit note   : uint/int types do not specify what the number measures.")
     if _numeric_field_is_value_like(label):
-        print()
-        print("NUMERIC UNIT REFERENCE")
-        print("----------------------")
-        print("  1 ETH      = 1,000,000,000,000,000,000 wei")
-        print("  1 gwei     = 1,000,000,000 wei")
-        print("  1 wei      = 0.000000000000000001 ETH")
-        print("  0.001 ETH  = 1,000,000,000,000,000 wei")
-        print("  ETH-denominated input detected. Examples: 0.5 ETH, 10 gwei, 1 wei")
+        print("  Optional ETH units: 0.5 ETH, 10 gwei, or 1 wei (converted to wei).")
+        print("  Check first : use ETH units only if the contract expects a wei-denominated amount.")
+        print("  Reference   : 1 ETH = 1000000000000000000 wei; 1 gwei = 1000000000 wei.")
     else:
-        print("  Raw integer field. No ETH unit conversion is suggested for this field.")
+        print("  Field hint  : this name does not suggest an ETH amount.")
+        print("  Use plain integers unless you know the contract expects a wei-denominated amount.")
     print()
 
 
@@ -8253,7 +8302,11 @@ def _lab_constructor_meaning(label, ptype, param=None):
         return "Text value."
 
     if normalized.startswith(("uint", "int")):
-        return "Integer value. Commas and underscores are accepted as visual separators; ETH/gwei/wei units are supported."
+        return (
+            "Integer value. The ABI does not specify its unit; plain numbers are passed "
+            "through, and ETH/gwei/wei notation is a convenience only when the contract "
+            "expects a wei-denominated amount."
+        )
 
     if normalized == "bytes":
         return "Dynamic bytes. Enter hex, for example 0x1234."
@@ -15651,6 +15704,9 @@ def dispatch_command(cmd,args,config,from_batch=False):
                 "       lk read <target> <function> [args]\n"
                 "A bare address is a contract target, not a function call."
             )
+        warning = _read_state_change_warning(args, config)
+        if warning:
+            return fail(warning)
         return run_cast(["call",*args],config)
     elif cmd in {"send"}:
         return run_cast(["send",*args],config)
