@@ -16809,7 +16809,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","mutation-check","verification-benchmark","verification","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","test-gen","mutation-check","verification-benchmark","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
@@ -16827,12 +16827,21 @@ def main():
     final_root = audit_context.foundry_project_root()
     _sync_audit_context(config, final_root)
     footer_status = result_code
-    _print_recommended_next_commands(
-        command_name if 'command_name' in locals() else command,
-        sys.argv[2:],
-        footer_status,
-        config,
+    # Machine-readable engine inventory must be valid JSON without Lowkey's
+    # normal recommendation footer appended to stdout.
+    machine_readable_verification = (
+        str(command).strip().lower() == "verification"
+        and len(sys.argv) > 2
+        and str(sys.argv[2]).strip().lower() == "engines"
+        and "--json" in sys.argv[3:]
     )
+    if not machine_readable_verification:
+        _print_recommended_next_commands(
+            command_name if 'command_name' in locals() else command,
+            sys.argv[2:],
+            footer_status,
+            config,
+        )
     command_name = str(sys.argv[1] or "").strip().lower()
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
