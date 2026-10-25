@@ -405,7 +405,7 @@ class TestGenerationTests(unittest.TestCase):
                 (root / ".audit" / "test-gen" / "Counter" / "report.json").read_text(encoding="utf-8")
             )
             self.assertEqual(report["validation"]["status"], "passed")
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 3)
             self.assertEqual(run.call_args.args[0], ["/fake/forge", "build"])
             self.assertEqual(run.call_args.kwargs["cwd"], root)
             self.assertIn("test functions were not executed", report["validation"]["detail"])

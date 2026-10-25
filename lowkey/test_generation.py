@@ -375,6 +375,7 @@ def _validate_generated(root: Path, generated: list[str]) -> dict[str, Any]:
 
     token = uuid.uuid4().hex[:12]
     temporary_files: list[Path] = []
+    executable_files: list[Path] = []
     try:
         for source_path in solidity_files:
             content = source_path.read_text(encoding="utf-8")
@@ -386,6 +387,15 @@ def _validate_generated(root: Path, generated: list[str]) -> dict[str, Any]:
             temp_path = destination / ("LowkeyValidation_" + token + "_" + source_path.name)
             temp_path.write_text(content, encoding="utf-8")
             temporary_files.append(temp_path)
+            # Execute only local test families whose generated source actually
+            # contains a test/invariant function. Fork/PoC drafts need external
+            # deployment context and are intentionally compile-only here.
+            if source_path.name.startswith((
+                "LowkeyGeneratedUnit_", "LowkeyGeneratedFuzz_", "LowkeyGeneratedInvariant_"
+            )) and re.search(
+                r"\\bfunction\\s+(?:test[A-Za-z0-9_]*|invariant_[A-Za-z0-9_]*)\\s*\\(", searchable
+            ):
+                executable_files.append(temp_path)
 
         completed = subprocess.run(
             [forge_bin, "build"], cwd=root, capture_output=True, text=True,
@@ -394,12 +404,46 @@ def _validate_generated(root: Path, generated: list[str]) -> dict[str, Any]:
         result["exit_code"] = completed.returncode
         result["stdout_tail"] = (completed.stdout or "")[-4000:]
         result["stderr_tail"] = (completed.stderr or "")[-4000:]
-        result["status"] = "passed" if completed.returncode == 0 else "failed"
-        result["detail"] = (
-            "Generated Solidity drafts compiled successfully; test functions were not executed."
-            if completed.returncode == 0 else
-            "The project built before staging drafts but failed to compile with temporary generated drafts."
-        )
+        if completed.returncode != 0:
+            result["status"] = "failed"
+            result["detail"] = "The project built before staging drafts but failed to compile with temporary generated drafts."
+        elif not executable_files:
+            result["status"] = "compiled-only"
+            result["detail"] = "Generated Solidity drafts compiled, but no executable local unit/fuzz/invariant tests were generated. Compile success is not test validation."
+        else:
+            executions = []
+            for test_path in executable_files:
+                relative_path = test_path.relative_to(root).as_posix()
+                try:
+                    executed = subprocess.run(
+                        [forge_bin, "test", "--match-path", relative_path],
+                        cwd=root, capture_output=True, text=True, timeout=300, check=False,
+                    )
+                    executions.append({
+                        "path": relative_path,
+                        "exit_code": executed.returncode,
+                        "stdout_tail": (executed.stdout or "")[-3000:],
+                        "stderr_tail": (executed.stderr or "")[-3000:],
+                    })
+                except subprocess.TimeoutExpired as exc:
+                    executions.append({
+                        "path": relative_path, "exit_code": None,
+                        "stdout_tail": str(exc.stdout or "")[-3000:],
+                        "stderr_tail": str(exc.stderr or "")[-3000:],
+                        "error": "forge test timed out after 300 seconds",
+                    })
+                except OSError as exc:
+                    executions.append({
+                        "path": relative_path, "exit_code": None, "error": str(exc),
+                    })
+            result["test_executions"] = executions
+            tests_passed = all(item.get("exit_code") == 0 for item in executions)
+            result["status"] = "passed" if tests_passed else "failed"
+            result["detail"] = (
+                f"Generated drafts compiled and {len(executions)} local unit/fuzz/invariant test file(s) executed successfully. This does not establish protocol-wide security."
+                if tests_passed else
+                "Generated drafts compiled, but one or more generated local test files failed or could not be executed."
+            )
     except subprocess.TimeoutExpired as exc:
         result["status"] = "failed"
         result["detail"] = "forge build timed out after 180 seconds."
