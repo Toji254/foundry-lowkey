@@ -505,21 +505,24 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertIn("only if the contract expects", amount_text)
         self.assertNotIn("ETH-denominated input detected", amount_text)
 
-    def test_constructor_numeric_help_preserves_an_existing_suggestion(self):
+    def test_constructor_numeric_prompt_keeps_generic_suggestion_and_accepts_enter(self):
         output = io.StringIO()
         with redirect_stdout(output), patch("builtins.input", return_value=""):
-            value = lk._lab_scalar_value(
+            value = lk._lab_prompt_value(
                 {},
                 [],
                 "ExampleContract",
-                "count",
-                "uint256",
-                default="1000000",
-                param={"name": "count", "type": "uint256"},
+                {"name": "count", "type": "uint256"},
+                path="params[1]",
             )
         self.assertEqual(value, "1000000")
         self.assertIn("Suggested : 1000000", output.getvalue())
+        self.assertIn("generic raw integer", output.getvalue())
         self.assertIn("Raw integer", output.getvalue())
+
+        # A small integer type must not receive an overflowing suggestion.
+        self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "uint8"), "1")
+        self.assertEqual(lk._lab_constructor_default("ExampleContract", "count", "int8"), "1")
 
     def test_read_warns_for_state_changing_abi_function_without_contract_specific_names(self):
         target = "0x" + "1" * 40
