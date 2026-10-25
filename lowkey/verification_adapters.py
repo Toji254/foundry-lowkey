@@ -565,7 +565,8 @@ class HalmosAdapter(NativeConfiguredAdapter):
         explicit, reason = super().request_configuration(project, request)
         if explicit is not None or request.get("argv") is not None:
             return explicit, reason
-        function = request.get("function", "test")
+        # Halmos uses check_* as its symbolic-test convention, unlike Forge's test_*.
+        function = request.get("function", "check_")
         if not isinstance(function, str) or not function.strip():
             return None, "request.function must be a non-empty function filter"
         return ["--function", function], "Foundry/Halmos function filter selected"

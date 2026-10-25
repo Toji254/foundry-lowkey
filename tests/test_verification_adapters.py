@@ -143,7 +143,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             self.assertIsNone(medusa.request_configuration(project, {"config": "bad-medusa.json"})[0])
 
             halmos = HalmosAdapter(EngineCapability("halmos", "halmos", ("formal",)))
-            self.assertEqual(halmos.request_configuration(project, {})[0], ["--function", "test"])
+            self.assertEqual(halmos.request_configuration(project, {})[0], ["--function", "check_"])
 
             certora = CertoraAdapter(EngineCapability("certora", "certoraRun", ("formal",)))
             self.assertEqual(
