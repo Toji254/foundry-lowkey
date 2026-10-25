@@ -27,6 +27,7 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - Certora CLI exit code zero is reported as `submitted`, not `passed`, because a successful CLI invocation alone does not establish that every proof rule passed.
 - Halmos output is normalized using its `[PASS]`/`[FAIL]` test markers. A zero exit with no recognized result marker is `inconclusive`, not a pass; the CLI exits nonzero for inconclusive campaigns.
 - Echidna's native builder requests JSON campaign output and reads the documented `success` field. Missing/malformed JSON is `inconclusive`; a campaign-level error is `error`, and `success: false` is `failed`. Raw process evidence and parsed native JSON are retained together.
+- Medusa exit code `7` is normalized as a native fuzz-test failure; documented general/handled error codes `1` and `6` are reported as execution `error`, not a discovered contract failure. Other outcomes retain raw process evidence; live version-specific compatibility still needs validation.
 - A campaign containing a Certora `submitted` result exits nonzero until the remote proof outcome is available; a submitted job is not a completed verification.
 - `default_registry()` is a candidate catalogue, not a guarantee that an executable is installed or that every advertised workflow has an engine-specific integration.
 - `lowkey/test_generation.py` adds project-aware Solidity/Foundry drafts for unit, integration, invariant, exploit, regression, fuzz, and formal categories, plus fork/PoC variants. It recognizes only a narrow direct integer setter/getter property; unsupported constructor types are skipped rather than guessed.
@@ -50,7 +51,7 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 |---|---|---|
 | Forge | Unit, integration, fuzz, invariant, exploit/regression tests | Executable test behavior depends on generated properties and fixtures |
 | Echidna | Stateful property-based fuzzing | Requires compatible harness/properties and EVM project support |
-| Medusa | Coverage-guided EVM fuzzing | Requires compatible setup and properties/harness |
+| Medusa | Coverage-guided EVM fuzzing | Requires compatible setup and properties/harness; exit code 7 means test failure, codes 1/6 mean execution error |
 | Halmos | Symbolic tests | Solver/model bounds apply; not an unqualified proof of all behavior |
 | Certora | Specification-driven formal verification | Requires meaningful rules/specifications and configured tool/service |
 | Slither | Static analysis | Not a test executor and not a formal proof engine |
@@ -82,7 +83,7 @@ Every generated artifact should record: intended property, preconditions, actors
 
 ## Gaps still open
 
-- Initial native command builders now exist for Echidna, Medusa, Halmos, and Certora, with explicit config/harness requirements and conservative defaults. Live execution against installed versions, version-specific CLI compatibility, native result parsing, and pinned real-project integration fixtures remain open. In particular, Certora's remote proof status is not yet fetched or parsed by Lowkey.
+- Initial native command builders now exist for Echidna, Medusa, Halmos, and Certora, with explicit config/harness requirements and conservative defaults. Echidna, Medusa, and Halmos have conservative native-result interpretation covered by unit tests, but live execution against installed versions, version-specific CLI compatibility, and pinned real-project integration fixtures remain open. In particular, Certora's remote proof status is not yet fetched or parsed by Lowkey.
 - The generation plugin contract exists, but project-aware generation is currently Solidity/Foundry-specific. Other language/build-system generators remain open.
 - Integration, exploit, and regression outputs are honest starters unless concrete setup/bug evidence is supplied; they are not automatically meaningful tests yet.
 - The recognized setter/getter fuzz/invariant/formal path needs compilation and real engine validation, including checking for vacuous or invalid specifications.
