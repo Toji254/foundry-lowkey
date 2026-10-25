@@ -92,7 +92,7 @@ class ReliabilityRoutingTests(unittest.TestCase):
                     code = lk._safe_main()
             self.assertEqual(code, 2)
             rendered = err.getvalue()
-            self.assertIn("LOWKEY RUNTIME ERROR", rendered)
+            self.assertIn("ERROR [RUNTIME]", rendered)
             self.assertIn("REVIEW NEEDED", rendered)
             self.assertNotIn("Traceback", rendered)
             self.assertTrue(evidence.is_file())
