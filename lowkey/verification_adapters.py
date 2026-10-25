@@ -450,8 +450,11 @@ def default_registry(*, load_plugins: bool = True) -> CapabilityRegistry:
                 provided = factory()
                 candidates = list(provided) if isinstance(provided, (list, tuple)) else [provided]
                 for adapter in candidates:
-                    if not isinstance(adapter, ToolAdapter):
-                        raise TypeError("plugin factory must return ToolAdapter instances")
+                    if not hasattr(adapter, "capability") or not all(
+                        callable(getattr(adapter, method, None))
+                        for method in ("available", "supports", "run")
+                    ):
+                        raise TypeError("plugin factory must return objects implementing ToolAdapter")
                     registry.register(adapter)
             except Exception as exc:
                 registry.plugin_errors.append({
