@@ -514,7 +514,7 @@ class LowkeyCastTests(unittest.TestCase):
             command="send",
             source="cast",
         )
-        self.assertIn("ERROR [SOLIDITY PANIC]", rendered)
+        self.assertIn("Contract hit a Solidity panic", rendered)
         self.assertIn("arithmetic overflow or underflow", rendered)
         self.assertIn("panic code 0x11", rendered)
 
@@ -535,7 +535,7 @@ class LowkeyCastTests(unittest.TestCase):
                 command="send",
                 source="cast",
             )
-        self.assertIn("Contract rejected the request", rendered)
+        self.assertIn("Contract rejected the send request", rendered)
         self.assertIn("LimitExceeded(uint256)", rendered)
         self.assertIn("attempted: 500", rendered)
         self.assertIn("0x12345678", rendered)
@@ -547,7 +547,7 @@ class LowkeyCastTests(unittest.TestCase):
             command="send",
             source="cast",
         )
-        self.assertIn("ERROR [CUSTOM REVERT]", rendered)
+        self.assertIn("Contract rejected the send request", rendered)
         self.assertIn("0xdeadbeef", rendered)
         self.assertIn("no contract ABI was available to resolve it", rendered)
         self.assertIn(f"Raw revert data: {payload}", rendered)
@@ -558,13 +558,13 @@ class LowkeyCastTests(unittest.TestCase):
             command="send",
             source="cast",
         )
-        self.assertIn("empty revert data", rendered)
-        self.assertIn("Contract call reverted", rendered)
+        self.assertIn("without providing an error message", rendered)
+        self.assertIn("Contract rejected the send request", rendered)
 
     def test_revert_formatter_preserves_plain_text_reason(self):
         error = "execution reverted: custom error payload unavailable"
         rendered = lk._format_cli_error(error, command="call", source="cast")
-        self.assertIn("ERROR [REVERT]", rendered)
+        self.assertIn("Contract call reverted", rendered)
         self.assertIn("Reason: custom error payload unavailable", rendered)
 
     def test_lowkey_validation_errors_use_shared_error_shape_and_keep_hints(self):
@@ -707,7 +707,7 @@ class LowkeyCastTests(unittest.TestCase):
             source="cast",
         )
         self.assertIn("Error: Not enough funds to send this transaction", rendered)
-        self.assertIn("Transaction broadcast: no", rendered)
+        self.assertIn("Transaction: Not sent", rendered)
 
     def test_run_cast_returns_formatted_failure_without_treating_error_as_success(self):
         target = "0x" + "1" * 40
