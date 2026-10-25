@@ -14585,7 +14585,7 @@ COMMAND_HELP = {
         related=["lk cheatcodes"],
     ),
     "cheatcodes": _help_entry("Show or run useful Foundry cheatcode helpers.", "lk cheatcodes [args...]", "lk cheatcodes", "Use it when you need controlled local callers, balances, time, or storage.", related=["lk forge", "lk matrix"]),
-    "test-gen": _help_entry("Turn the latest useful transaction/evidence into a Forge test.", "lk test-gen", "lk test-gen", "Use it after reproducing behavior and wanting a regression test.", related=["lk generate test", "lk trace"]),
+    "test-gen": _help_entry("Generate project-aware starter files for several Solidity test styles.", "lk test-gen <Contract> [--types all|unit,fuzz,...] [--output-dir <dir>] [--force]", "lk test-gen Counter --types unit,fuzz,invariant", "Use it to create reviewable test scaffolds, then fill in assertions and project-specific setup.", related=["lk generate test", "lk test", "lk trace"]),
     "forge": _help_entry("Pass a native Forge command through Lowkey.", "lk forge <forge-command> [args...]", "lk forge test -vvvv", "Use it when you need a Forge feature that Lowkey does not wrap separately.", related=["lk build", "lk test"]),
     "build": _help_entry("Compile the current project.", "lk build", "lk build", "Use it before trusting artifacts, ABI data, or storage layout.", related=["lk test", "lk lab"]),
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
@@ -14896,7 +14896,7 @@ START HERE
   lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
-  lk test-gen [Contract]             Draft unit/fuzz/invariant/integration/fork/PoC/regression scaffolds.
+  lk test-gen [Contract]             Generate unit/fuzz/invariant/integration/fork/PoC/regression test scaffolds.
   lk lab                             Start/rebuild a disposable local audit lab.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
@@ -15054,7 +15054,7 @@ TRANSACTION FORENSICS
 
 REPRODUCE / ATTACK / TEST
   lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
-  lk test-gen                      Turn the latest send into a Forge test.
+  lk test-gen [Contract]           Generate draft scaffolds for selected Solidity test styles.
   lk generate test '<function(parameter TYPES...)>' <VALUES...>
                                    Generate a reusable Forge test.
                                    FUNCTION SIGNATURE = function name + parameter TYPES.
@@ -15831,7 +15831,6 @@ def dispatch_command(cmd,args,config,from_batch=False):
         elif action=="trace": run_trace(config,[])
         elif action=="logs": run_logs(config,[])
         else: run_receipt(config)
-    elif cmd=="test-gen": run_test_gen(config)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
