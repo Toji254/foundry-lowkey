@@ -68,7 +68,7 @@ Every generated artifact should record: intended property, preconditions, actors
 - `light`: low-memory engines only; intended for an 8 GB machine.
 - `balanced`: low and medium memory engines.
 - `deep`: includes high-memory engines, still selected serially by default.
-- Campaign execution is serial; each process has a bounded timeout and preserves native stdout/stderr. Forge fuzz/invariant runs scale with the profile (light: 32 fuzz runs / 16 invariant runs at depth 10; balanced: 256 / 64 at depth 20; deep: 1,024 / 256 at depth 50). These are execution budgets, not measured live RAM/CPU limits.
+- Campaign execution is serial; each process has a bounded timeout. Stdout/stderr are drained concurrently but only a bounded prefix is retained in memory (default 256 KiB per stream; configurable with `budget.max_output_bytes`, clamped to 1 KiB–4 MiB). Reports explicitly mark truncated streams, while the retained raw evidence remains directly inspectable. This limits Python-side capture memory, not the child process's own memory or total CPU/disk/network use. Forge fuzz/invariant runs scale with the profile (light: 32 fuzz runs / 16 invariant runs at depth 10; balanced: 256 / 64 at depth 20; deep: 1,024 / 256 at depth 50). These are execution budgets, not measured live RAM/CPU limits.
 - Never launch every fuzzer/solver concurrently by default. Current selection uses declared memory classes and per-engine timeouts; live RAM/CPU sampling, project-size estimates, and adaptive budget adjustment remain open.
 
 ## Gaps still open
