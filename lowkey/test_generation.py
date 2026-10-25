@@ -245,7 +245,7 @@ def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
         print("""Lowkey test generator
 
 Usage:
-  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,fork,poc]
+  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,fork,poc,regression]
               [--output-dir .audit/test-gen] [--force]
 
 Types:
@@ -255,6 +255,7 @@ Types:
   integration  Local peer-contract wiring scaffold
   fork         Fork smoke test against the configured target
   poc          Fork-based reproduction scaffold
+  regression   Starter for locking in a previously fixed bug
 
 Generated drafts are saved outside Foundry's test directory by default, so they
 will not silently affect the project's existing test suite. Review the report,
@@ -309,7 +310,7 @@ The generator does not claim coverage or invent protocol-specific assertions.
         return _error(f"Could not find contract '{name}' under {_source_root(root)}.")
     source_path, source = found
     constructor_args = _constructor_args(source, name)
-    is_abstract = bool(re.search(r"\\babstract\\s+contract\\s+" + re.escape(name) + r"\\b", source))
+    is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
     local_deploy = constructor_args == "" and not is_abstract
     import_path = _rel_import(root, source_path)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
