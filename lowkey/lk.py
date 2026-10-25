@@ -4098,8 +4098,8 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         )
 
     if source == "lowkey":
-        if text.startswith(("Error: ", "ERROR [", "LOWKEY RUNTIME ERROR")):
-            # Preserve a specific user-facing message already rendered by a lower layer.
+        if _has_standard_error_shape(text):
+            # Preserve a complete user-facing message already rendered by a lower layer.
             return text
         if lowered.startswith("usage:") or any(marker in lowered for marker in (
             "unknown lowkey command", "unknown lk ", "unknown option",
@@ -16494,34 +16494,23 @@ def _is_error_diagnostic(output):
 
 
 def _has_standard_error_shape(output):
-    """Avoid nesting an error that already passed through the shared formatter."""
+    """Avoid nesting a message that already uses Lowkey's human-readable format."""
+    text = str(output or "")
+    if re.search(r"(?im)^\s*(?:ERROR \[|LOWKEY RUNTIME ERROR\b)", text):
+        return True
     return bool(
-        re.search(
-            r"(?im)^\s*(?:ERROR \[|LOWKEY RUNTIME ERROR\b)",
-            str(output or ""),
-        )
+        re.search(r"(?im)^Error: .+\n\s{2}(?:Reason|What happened|Next step|Transaction|Technical details):", text)
     )
 
 
 def _ensure_error_context(output, command=None, code=None):
-    """Add consistent operation/exit context without nesting formatted errors."""
-    lines = str(output or "").strip().splitlines()
-    if not lines:
-        lines = ["ERROR [COMMAND]", "  Details: The command failed without diagnostic output."]
-
-    if command and not any(re.match(r"(?i)^\s*Operation:", line) for line in lines):
-        lines.insert(1, f"  Operation: lk {command}")
-
-    if isinstance(code, int) and code != 0 and not any(
-        re.match(r"(?i)^\s*Exit code:", line) for line in lines
-    ):
-        operation_index = next(
-            (index for index, line in enumerate(lines) if re.match(r"(?i)^\s*Operation:", line)),
-            0,
-        )
-        lines.insert(operation_index + 1, f"  Exit code: {code}")
-
-    return "\n".join(lines)
+    """Keep user-facing errors focused; process status remains available to the shell."""
+    text = str(output or "").strip()
+    if not text:
+        return "Error: The command failed without diagnostic output."
+    # Command names and exit codes are shell/debug metadata, not the explanation
+    # a user needs to decide what to do next.
+    return text
 
 
 def dispatch_command(cmd, args, config, from_batch=False):
