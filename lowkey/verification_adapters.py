@@ -136,9 +136,9 @@ class CapabilityRegistry:
         if test_kind not in TEST_KINDS:
             raise ValueError(f"unknown test kind: {test_kind}")
         profiles = {
-            "light": {"low": 0, "medium": 0, "high": 0},
-            "balanced": {"low": 0, "medium": 1, "high": 0},
-            "deep": {"low": 0, "medium": 1, "high": 1},
+            "light": {"low"},
+            "balanced": {"low", "medium"},
+            "deep": {"low", "medium", "high"},
         }
         if profile not in profiles:
             raise ValueError(f"unknown resource profile: {profile}")
