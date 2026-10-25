@@ -9,7 +9,7 @@ Status: initial architecture inventory; capability claims must be verified per c
 - `lowkey/analysis_adapters.py`: repository/language/build detection and optional security-analysis command planning. Its current adapters are analysis-plan entries, not a universal test-execution plugin interface.
 - `lowkey/audit_context.py`: project-scoped shared context/evidence used to connect findings, traces, state changes, and generated PoCs.
 - `lowkey/benchmark.py`, walkthrough benchmarks, finding patterns, and CI: useful regression/triage assets, but source-triage benchmarks do not establish vulnerability recall, mutation score, or generated-test quality.
-- `tests/test_generator.py`, `tests/test_analysis_adapters.py`, and related suites: substantial regression coverage for existing behavior. This branch inventory is based on repository source inspection; tests have not been executed by this document.
+- `tests/test_generator.py`, `tests/test_analysis_adapters.py`, and related suites: substantial regression coverage for existing behavior. The current implementation is covered by the repository CI suite; a green CI run validates these tested paths, not every external engine or arbitrary project.
 
 ## First adapter contract
 
@@ -33,7 +33,8 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 - `lk mutation-check manifest.json` exposes the mutation runner. The manifest supplies a native argv array and mutation definitions. A failed baseline produces no mutation score; compile/setup failures are not automatically counted as killed behavioral bugs.
 
 - `lowkey/verification_benchmark.py` adds manifest-driven benchmark runs with per-case project labels, manifest hashes, git revision, aggregate killed/survived/invalid/timeout counts, and an optional mutation-score gate. Use `lk verification-benchmark manifest.json --min-mutation-score 0.80` to enforce the gate.
-\n- `lowkey/verification_cli.py` exposes `lk verification engines [--json]` and `lk verification run manifest.json --profile light|balanced|deep`. Campaign manifests provide the test kind, per-engine native argv, and time budget; execution stays serial and writes raw results to a JSON report.
+
+- `lowkey/verification_cli.py` exposes `lk verification engines [--json]` and `lk verification run manifest.json --profile light|balanced|deep`. Campaign manifests provide the test kind, per-engine native argv, and time budget; execution stays serial and writes raw results to a JSON report. The planner records both selected engines and rejected engines with explicit compatibility or profile-exclusion reasons.
 \n## Initial engine map
 
 | Engine | Potential role | Important boundary |
@@ -65,7 +66,7 @@ Every generated artifact should record: intended property, preconditions, actors
 - `balanced`: low and medium memory engines.
 - `deep`: includes high-memory engines, still selected serially by default.
 - Campaign execution is serial; each process has a bounded timeout and preserves native stdout/stderr. Forge fuzz/invariant runs scale with the profile (light: 32 fuzz runs / 16 invariant runs at depth 10; balanced: 256 / 64 at depth 20; deep: 1,024 / 256 at depth 50). These are execution budgets, not measured live RAM/CPU limits.
-- Never launch every fuzzer/solver concurrently by default. A future planner must account for RAM, CPU, project size, timeout, and explicit user budgets.
+- Never launch every fuzzer/solver concurrently by default. Current selection uses declared memory classes and per-engine timeouts; live RAM/CPU sampling, project-size estimates, and adaptive budget adjustment remain open.
 
 ## Gaps still open
 
