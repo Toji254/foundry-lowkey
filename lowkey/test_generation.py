@@ -163,7 +163,8 @@ def _solidity_name(name: str) -> str:
 def _local_template(kind: str, name: str, import_path: str, constructor_values: list[str]) -> str:
     ident = _solidity_name(name)
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
-    deploy_expression = f"new {name}({\", \".join(constructor_values)})"
+    constructor_arguments = ", ".join(constructor_values)
+    deploy_expression = f"new {name}({constructor_arguments})"
     common = f'''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
