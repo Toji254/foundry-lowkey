@@ -34,7 +34,7 @@ Usage:
 Campaign manifest:
   {
     "test_kind": "fuzz",
-    "budget": {"timeout_seconds": 120},
+    "budget": {"timeout_seconds": 120, "max_memory_mb": 2048},
     "request": {
       "engine_config_by_engine": {
         "echidna": {"target": "test/EchidnaTarget.sol", "contract": "EchidnaTarget", "config": "echidna.yaml"},
