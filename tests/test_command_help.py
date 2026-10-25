@@ -707,6 +707,23 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("lk import", script)
         self.assertIn("importable packages", script)
 
+    def test_import_help_explains_search_modes_and_solidity_import_choices(self):
+        code, output = self.capture_dispatch("import", "-h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk import", output)
+        self.assertIn("lk import search <term>", output)
+        self.assertIn("project source, installed dependencies, and Lowkey's known reference catalog", output)
+        self.assertIn("Implementation vs interface", output)
+        self.assertIn("concrete implementation such as ERC20 contains reusable token behavior", output)
+        self.assertIn("interface such as IERC20 describes calls to make against an existing token", output)
+        self.assertIn("REFERENCE ONLY", output)
+        self.assertIn("not proof the file exists locally", output)
+        self.assertIn("Scoped search vs global search", output)
+        self.assertIn("filters the list currently on screen only", output)
+        self.assertIn("--install --dry-run ERC20", output)
+        self.assertIn("Named import vs whole-file import", output)
+        self.assertIn("lk import --copy-only IERC20", output)
+
     def test_question_help_is_contextual(self):
         code, output = self.capture_dispatch("q", "--h")
         self.assertEqual(code, 0)

@@ -81,11 +81,19 @@ INSTALL INTELLIGENCE:
     Show the deeper package/version/dependency/project-usage/audit details.
 
   lk import search nft
-    Search deterministic learning tags, roles, use cases, and import paths.
+  lk import search ERC20
+    Search project source, installed dependencies, and the reference catalog.
 
   lk import explain/usage/related/audit ERC721
     Jump directly to the conceptual explanation, project usage, related
     components, or auditor questions for a symbol.
+
+BROWSER SEARCH SCOPE:
+  /<term> filters only the list you are currently viewing.
+  g starts a global search across project source, installed dependencies, and
+  Lowkey's known reference catalog. r resets the current list.
+  A "REFERENCE ONLY" result means its dependency is not installed yet.
+  Use lk import <symbol> for the full import, usage, and install guidance.
 
 The lookup mode is standalone: it does not select targets, change RPC/ABI/audit
 state, send transactions, or write project files. Only explicit --install mode
@@ -1188,6 +1196,8 @@ def search_imports(query: str, root: Path, maps) -> int:
     scored.sort(key=lambda x: (-x[0], x[1].name.lower(), kind_label(x[1])))
     print(f"\nLOWKEY // IMPORT SEARCH • {query.strip()}")
     print("=" * 76)
+    print("SCOPE: project source + installed dependencies + known reference catalog")
+    print("Use lk import <symbol> for the full copy-ready import and install guidance.\n")
     for _score, item in scored[:20]:
         print(f"{item.name} [{kind_label(item)}]")
         print(f"  import: {item.import_path}")
@@ -1321,16 +1331,21 @@ def search_tokens(query: str) -> list[str]:
     return [q.lower()] if q else []
 
 
-def choose(items, renderer, label):
-    if not items:
-        print(f"No {label} found.")
-        return None
-    current = items
+def choose(items, renderer, label, root: Path | None = None, maps=None):
+    """Choose from a scoped list, with a separate escape hatch for global search."""
+    all_items = list(items)
+    current = list(all_items)
+    show_current = True
     while True:
-        for i, item in enumerate(current, 1):
-            print(renderer(i, item))
+        if show_current:
+            for i, item in enumerate(current, 1):
+                print(renderer(i, item))
+            show_current = False
         try:
-            a = input("\nSelect number, /search, b=back, q=quit: ").strip()
+            a = input(
+                "\nSelect number, /filter this list, g=global search, "
+                "r=reset, b=back, q=quit: "
+            ).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
@@ -1338,18 +1353,43 @@ def choose(items, renderer, label):
             raise SystemExit(0)
         if a.lower() == "b":
             return None
+        if a.lower() == "r":
+            current = list(all_items)
+            show_current = True
+            continue
+        if a.lower() == "g":
+            try:
+                query = input(
+                    "\nSearch all imports/concepts (project + installed dependencies + reference catalog): "
+                ).strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return None
+            if not query:
+                continue
+            if root is None or maps is None:
+                print("Global search needs project context. Run: lk import search <term>")
+            else:
+                search_imports(query, root, maps)
+            continue
         if a.startswith("/"):
-            tokens = search_tokens(a[1:])
+            query = a[1:].strip()
+            tokens = search_tokens(query)
             if not tokens:
                 print("Enter a symbol, import path, or Solidity import declaration after '/'.")
                 continue
-            rendered = [renderer(0, x).lower() for x in current]
+            rendered = [renderer(0, x).lower() for x in all_items]
             matches = [
-                x for x, text in zip(current, rendered)
+                x for x, text in zip(all_items, rendered)
                 if any(token in text for token in tokens)
             ]
             if not matches:
-                print(f"No matches for '{a[1:].strip()}'.")
+                print(f"No matches for '{query}' in the current {label} list.")
+                print("This filter only searches the list you are viewing; it does not search")
+                print("other categories, packages, or reference-only imports.")
+                print("Use 'g' for global search, or run: lk import search <term>")
+                current = []
+                show_current = False
                 continue
             exact_symbols = [
                 x for x in matches
@@ -1358,11 +1398,12 @@ def choose(items, renderer, label):
             if len(exact_symbols) == 1:
                 return exact_symbols[0]
             current = matches
+            show_current = True
             continue
         try:
             return current[int(a) - 1]
         except (ValueError, IndexError):
-            print("Invalid selection.")
+            print("Invalid selection. Use a shown number, /filter, g, r, b, or q.")
 
 
 def sym_render(i, s):
@@ -1564,7 +1605,7 @@ def browse_package(p: Package, root: Path, maps):
         print("  3. Libraries")
         print("  4. Structs / enums / types / errors / constants")
         print("  5. Source files")
-        print("  6. Search this package")
+        print("  6. Search this package only")
         print("  b. Back")
         a = input("\nSelect: ").strip().lower()
         if a == "b":
@@ -1576,18 +1617,18 @@ def browse_package(p: Package, root: Path, maps):
         if a == "5":
             items = [(x, extract(x, root, maps)) for x in sol_files(p.path)]
             items = [x for x in items if x[1]]
-            s = choose(items, file_render, "source files")
+            s = choose(items, file_render, f"source files in package {p.name}", root, maps)
             if s:
                 show_file(s)
         elif a == "6":
-            q = input("Search package for: ").strip().lower()
+            q = input("Search this package only: ").strip().lower()
             if q:
                 items = []
                 for source in sol_files(p.path):
                     syms = extract(source, root, maps)
                     if q in source.as_posix().lower() or any(q in x.name.lower() for x in syms):
                         items.extend(syms)
-                s = choose(items, sym_render, "package matches")
+                s = choose(items, sym_render, f"matches in package {p.name}", root, maps)
                 if s:
                     show_symbol(s, root, maps)
         elif a in kinds:
@@ -1596,7 +1637,7 @@ def browse_package(p: Package, root: Path, maps):
                 syms += [s for s in extract(source, root, maps) if s.kind in kinds[a]]
             syms = sorted({(s.kind, s.name, s.import_path): s for s in syms}.values(),
                           key=lambda s: (s.name.lower(), s.kind, str(s.source)))
-            s = choose(syms, sym_render, "symbols")
+            s = choose(syms, sym_render, f"symbols in package {p.name}", root, maps)
             if s:
                 show_symbol(s, root)
         else:
@@ -1880,7 +1921,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
                 if install:
                     return install_symbols(known_matches, root, dry_run=dry_run)
                 return 0
-            s = choose(known_matches, sym_render, 'known import references')
+            s = choose(known_matches, sym_render, 'known import references', root, maps)
             if s:
                 show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
                 if install:
@@ -1899,7 +1940,7 @@ def import_query(query: str, root: Path, maps, install: bool = False, dry_run: b
         print('Try: lk import /<symbol>, lk import <symbol>, or lk import files')
         return 2
 
-    s = choose(matches, sym_render, 'matching importable symbols')
+    s = choose(matches, sym_render, 'matching importable symbols', root, maps)
     if s:
         show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
     return 0
@@ -1962,31 +2003,31 @@ def run_category(category: str, root: Path, maps, install: bool = False, dry_run
         return run_learning_command(category, root, maps, json_mode=json_mode, copy_only=copy_only, verbose=verbose)
     if cat in {"packages", "package", "deps"}:
         header("INSTALLED PACKAGES")
-        p = choose(packages(root, maps), pkg_render, "installed packages")
+        p = choose(packages(root, maps), pkg_render, "installed packages", root, maps)
         if p:
             browse_package(p, root, maps)
         return 0
     if cat in {"contracts", "contract"}:
         header("CONTRACTS / ABSTRACT CONTRACTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "contract"], sym_render, "contracts")
+        s = choose([x for x in all_symbols(root, maps) if x.kind == "contract"], sym_render, "contracts", root, maps)
         if s:
             show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
     if cat in {"interfaces", "interface"}:
         header("INTERFACES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "interface"], sym_render, "interfaces")
+        s = choose([x for x in all_symbols(root, maps) if x.kind == "interface"], sym_render, "interfaces", root, maps)
         if s:
             show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
     if cat in {"libraries", "library"}:
         header("SOLIDITY LIBRARIES")
-        s = choose([x for x in all_symbols(root, maps) if x.kind == "library"], sym_render, "libraries")
+        s = choose([x for x in all_symbols(root, maps) if x.kind == "library"], sym_render, "libraries", root, maps)
         if s:
             show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
     if cat in {"types", "structs", "errors", "type"}:
         header("STRUCTS / ENUMS / TYPES / ERRORS / CONSTANTS")
-        s = choose([x for x in all_symbols(root, maps) if x.kind in {"struct", "enum", "type", "error", "constant"}], sym_render, "types")
+        s = choose([x for x in all_symbols(root, maps) if x.kind in {"struct", "enum", "type", "error", "constant"}], sym_render, "types", root, maps)
         if s:
             show_symbol(s, root, maps, json_mode=json_mode, copy_only=copy_only)
         return 0
@@ -1994,7 +2035,7 @@ def run_category(category: str, root: Path, maps, install: bool = False, dry_run
         header("IMPORTABLE SOURCE FILES")
         items = [(p, extract(p, root, maps)) for p in list(sol_files(root / "src")) + list(sol_files(root / "lib"))]
         items = [x for x in items if x[1]]
-        s = choose(items, file_render, "source files")
+        s = choose(items, file_render, "source files", root, maps)
         if s:
             show_file(s)
         return 0
@@ -2037,7 +2078,7 @@ def interactive(root: Path, maps) -> int:
     print("  6. Source files")
     print("  7. Forge import mappings")
     print("  8. Common reference imports")
-    print("  9. Search import concepts (nft, oracle, access, token, reentrancy)")
+    print("  9. Global search (project, dependencies, reference catalog)")
     print("  q. Quit")
     while True:
         a = input("\nSelect: ").strip().lower()
@@ -2045,7 +2086,7 @@ def interactive(root: Path, maps) -> int:
             return 0
         cat = {"1":"packages","2":"contracts","3":"interfaces","4":"libraries","5":"types","6":"files","7":"mappings","8":"common"}.get(a)
         if a == "9":
-            query = input("Search concept: ").strip()
+            query = input("Search all imports and concepts: ").strip()
             if query:
                 search_imports(query, root, maps)
             continue

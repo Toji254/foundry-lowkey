@@ -117,6 +117,55 @@ class ImportHelperTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_scoped_filter_explains_no_match_and_offers_global_reference_search(self):
+        tmp, root = self.project()
+        try:
+            maps = helper.remappings(root)
+            local_contract = helper.Symbol(
+                "A", "contract", root / "src" / "A.sol", "A.sol", 2
+            )
+            out = io.StringIO()
+            with patch("builtins.input", side_effect=["/ERC20", "g", "ERC20", "b"]):
+                with contextlib.redirect_stdout(out):
+                    selected = helper.choose(
+                        [local_contract], helper.sym_render, "contracts", root, maps
+                    )
+            rendered = out.getvalue()
+            self.assertIsNone(selected)
+            self.assertIn("No matches for 'ERC20' in the current contracts list.", rendered)
+            self.assertIn("This filter only searches the list you are viewing", rendered)
+            self.assertIn("Use 'g' for global search", rendered)
+            self.assertIn(
+                "SCOPE: project source + installed dependencies + known reference catalog",
+                rendered,
+            )
+            self.assertIn("ERC20 [contract]", rendered)
+            self.assertIn("IERC20 [interface]", rendered)
+            self.assertIn("(reference only — dependency not installed)", rendered)
+            # A failed scoped filter must not redraw the old list and imply it matched.
+            self.assertEqual(rendered.count("A [contract]"), 1)
+        finally:
+            tmp.cleanup()
+
+    def test_interactive_menu_labels_global_search_scope(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with patch("builtins.input", side_effect=["9", "ERC20", "q"]):
+                with contextlib.redirect_stdout(out):
+                    result = helper.interactive(root, helper.remappings(root))
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn(
+                "9. Global search (project, dependencies, reference catalog)",
+                rendered,
+            )
+            self.assertIn("SCOPE: project source + installed dependencies + known reference catalog", rendered)
+            self.assertIn("ERC20 [contract]", rendered)
+            self.assertIn("IERC20 [interface]", rendered)
+        finally:
+            tmp.cleanup()
+
     def test_direct_import_query_finds_symbol_without_category(self):
         tmp, root = self.project()
         try:
