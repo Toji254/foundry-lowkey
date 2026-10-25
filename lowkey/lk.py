@@ -23,6 +23,26 @@ if str(MODULE_DIR) not in sys.path:
 import audit_context
 import walkthrough
 try:
+    import test_generation
+except ImportError:
+    test_generation = None
+try:
+    import generation_plugins
+except ImportError:
+    generation_plugins = None
+try:
+    import behavioral_validation
+except ImportError:
+    behavioral_validation = None
+try:
+    import verification_benchmark
+except ImportError:
+    verification_benchmark = None
+try:
+    import verification_cli
+except ImportError:
+    verification_cli = None
+try:
     import question_engine
 except ImportError:
     question_engine = None
@@ -15784,6 +15804,11 @@ REPRODUCE / ATTACK / TEST
                                      lk generate test 'createRecord(address,uint256)' <addr> <amount>
   lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
   lk generate deployment <Contract> Generate a deployment script.
+  lk test-gen <Contract> --types ... Generate project-aware test drafts through adapters.
+  lk mutation-check <manifest.json>  Run isolated mutation validation and report a score.
+  lk verification-benchmark <manifest> Run a manifest-driven benchmark and enforce gates.
+  lk verification engines [--json]   Inventory installed verification engines.
+  lk verification run <manifest>    Run a bounded, serial multi-engine campaign.
   lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
   lk fuzz [args...]                Run Forge fuzz tests.
   lk invariant [args...]           Run Forge invariant tests.
@@ -16553,7 +16578,26 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
         elif action=="trace": run_trace(config,[])
         elif action=="logs": run_logs(config,[])
         else: run_receipt(config)
-    elif cmd=="test-gen": run_test_gen(config)
+    elif cmd=="test-gen":
+        # Preserve the legacy no-argument last-send reproduction workflow.
+        # Arguments opt into project-aware generation routed through plugins.
+        if args:
+            if generation_plugins is None:
+                return fail("Generation plugin registry is not installed. Re-run install.sh.")
+            return generation_plugins.run_generation_command(config, args)
+        return run_test_gen(config)
+    elif cmd=="mutation-check":
+        if behavioral_validation is None:
+            return fail("Mutation validation module is not installed. Re-run install.sh.")
+        return behavioral_validation.run_cli(args)
+    elif cmd=="verification-benchmark":
+        if verification_benchmark is None:
+            return fail("Verification benchmark module is not installed. Re-run install.sh.")
+        return verification_benchmark.run_cli(args)
+    elif cmd=="verification":
+        if verification_cli is None:
+            return fail("Verification engine CLI is not installed. Re-run install.sh.")
+        return verification_cli.run_cli(args)
     elif cmd in {"c","s","st"}: run_cast([cmd]+args,config)
     else:
         print(f"Error: unknown Lowkey command '{cmd}'.", file=sys.stderr)
@@ -16750,7 +16794,7 @@ def main():
         result_code = _COMMAND_STATUS
     evidence_commands={
         "scan","slither","changes","state-diff","trace","logs","tx","receipt",
-        "send","probe","test-gen","fuzz","invariant","mutate","symbolic","brutalize",
+        "send","probe","test-gen","mutation-check","verification-benchmark","verification","fuzz","invariant","mutate","symbolic","brutalize",
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
@@ -16778,6 +16822,7 @@ def main():
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
         "audit": {"run", "pipeline"},
+        "verification": {"engines", "run"},
         "walkthrough": {"test", "seed"},
         "walk": {"test", "seed"},
         "generate": {"test", "script", "contract"},
