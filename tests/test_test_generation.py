@@ -65,6 +65,18 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(len(report["generated"]), 7)
             self.assertIn("not protocol proofs", report["warning"])
             self.assertIn("generated", output.getvalue())
+            self.assertEqual(
+                report["fuzz_property"],
+                {"setter": "setValue", "parameter": "next", "type": "uint256", "state": "value"},
+            )
+            fuzz_draft = (
+                folder / "LowkeyGeneratedFuzz_Counter.t.sol"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "function testFuzz_setValue_preservesStoredValue(uint256 fuzzValue)",
+                fuzz_draft,
+            )
+            self.assertIn("assertEq(target.value(), fuzzValue);", fuzz_draft)
 
     def test_constructor_arguments_generate_local_drafts_with_safe_placeholders(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +138,37 @@ class TestGenerationTests(unittest.TestCase):
                 {item["type"] for item in report["skipped"]},
                 {"unit", "fuzz"},
             )
+
+
+    def test_fuzz_remains_a_todo_when_no_direct_setter_property_is_recognized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._project(root, "constructor(uint256 initial) { value = initial; }")
+            source_path = root / "src" / "Counter.sol"
+            source = source_path.read_text(encoding="utf-8")
+            source = source.replace(
+                "function setValue(uint256 next) external { value = next; }",
+                "function increase(uint256 amount) external { value += amount; }",
+            )
+            source_path.write_text(source, encoding="utf-8")
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = generation.run_test_gen(
+                        {"target_contract": "Counter"},
+                        ["--types", "fuzz"],
+                    )
+            finally:
+                os.chdir(previous)
+
+            self.assertEqual(code, 0)
+            folder = root / ".audit" / "test-gen" / "Counter"
+            draft = (folder / "LowkeyGeneratedFuzz_Counter.t.sol").read_text(encoding="utf-8")
+            report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+            self.assertIsNone(report["fuzz_property"])
+            self.assertNotRegex(draft, r"(?m)^\s*function testFuzz_")
+            self.assertIn("No safe direct-setter/public-integer-getter property was recognized", draft)
 
     def test_existing_draft_is_preserved_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
