@@ -4047,14 +4047,14 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                 reason = "The contract reverted without providing an error message."
                 next_step = "Check the function's requirements and use lk trace if a transaction was submitted."
             else:
-                next_step = "Check the function's require/revert conditions and the values you supplied."
+                next_step = "Check the number you passed and the function's input checks."
 
             if kind == "SOLIDITY PANIC":
                 title = "Contract hit a Solidity panic"
                 what = "The EVM stopped execution on an invalid operation. The decoded panic reason describes the failure, but the contract's intended rule must be checked separately."
             elif is_send and is_gas_estimation and not transaction_hash:
                 title = "Transaction not sent"
-                what = "The contract rejected the call while Lowkey was estimating gas, before submitting the transaction."
+                what = "The contract rejected the call while Lowkey checked whether it could run. No transaction was submitted."
             elif is_send and transaction_hash:
                 title = "The submitted transaction reported a revert"
                 what = "A transaction hash was returned. Check its receipt to confirm whether it was mined and how it finished."
@@ -4065,7 +4065,12 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                 title = "Contract call reverted"
                 what = "This call was simulated; it stopped at the revert and did not save state changes."
 
-            transaction = transaction_status() if is_send else "No transaction was sent; this was a simulated call."
+            transaction = (
+                transaction_status()
+                if is_send and not (is_gas_estimation and not transaction_hash)
+                else "No transaction was sent; this was a simulated call." if not is_send
+                else None
+            )
             return _friendly_error(
                 title,
                 reason=reason,
@@ -4082,7 +4087,6 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             reason="The sending account cannot cover the transaction value and required network fees.",
             what="The node rejected the request because the account's native-token balance is too low.",
             next_step="Check the sender's balance with lk balance and reduce the transaction value or fund the account.",
-            transaction=transaction_status() if is_send else None,
             technical=_clean_error_detail(text),
         )
 
@@ -4101,7 +4105,6 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             reason=_clean_error_detail(detail) or "The node rejected the transaction during gas estimation.",
             what="Lowkey checks whether a transaction can execute before broadcasting it. This check failed, so no transaction was submitted.",
             next_step="Check the function arguments, account balance, and transaction value/fee settings.",
-            transaction=transaction_status(),
             technical=None if detail == "The node rejected the transaction during gas estimation." else _clean_error_detail(text),
         )
 
