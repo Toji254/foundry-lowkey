@@ -78,6 +78,34 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             selected = registry.select(project, "unit", profile="light")
         self.assertEqual([item["engine"] for item in selected], ["python-test"])
 
+    def test_broken_plugin_capability_check_does_not_abort_campaign(self):
+        class BrokenAdapter:
+            capability = EngineCapability("broken-plugin", "broken", ("unit",), memory_class="low")
+            def available(self):
+                return True
+            def supports(self, project, test_kind):
+                raise RuntimeError("plugin metadata unavailable")
+            def run(self, project, request, *, budget):
+                raise AssertionError("unsupported plugin must not run")
+
+        class HealthyAdapter:
+            capability = EngineCapability("healthy-plugin", sys.executable, ("unit",), memory_class="low")
+            def available(self):
+                return True
+            def supports(self, project, test_kind):
+                return True, "fixture supports this test"
+            def run(self, project, request, *, budget):
+                return EngineResult("healthy-plugin", "passed", 0, raw_stdout="healthy evidence")
+
+        registry = CapabilityRegistry([BrokenAdapter(), HealthyAdapter()])
+        with tempfile.TemporaryDirectory() as root:
+            campaign = registry.run_campaign({"root": root}, "unit", profile="light")
+        self.assertEqual(campaign["summary"]["passed"], 1)
+        broken = next(row for row in campaign["considered_engines"] if row["engine"] == "broken-plugin")
+        self.assertEqual(broken["status"], "adapter_error")
+        self.assertTrue(any("supports() raised RuntimeError" in row["error"] for row in campaign["plugin_errors"]))
+        self.assertEqual(campaign["results"][0]["result"]["raw_stdout"], "healthy evidence")
+
     def test_registry_rejects_duplicate_names(self):
         cap = EngineCapability("forge", "forge", ("unit",))
         registry = CapabilityRegistry([ExecutableAdapter(cap)])
