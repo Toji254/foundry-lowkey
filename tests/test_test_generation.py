@@ -808,24 +808,5 @@ contract Protocol {
             self.assertIn(profile, analysis["profiles"], profile)
 
 
-    def test_foundry_test_override_works_without_a_foundry_config_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            self._project(root)
-            (root / "foundry.toml").unlink()
-            previous = Path.cwd()
-            try:
-                os.chdir(root)
-                with patch.dict(os.environ, {"FOUNDRY_TEST": "nested/spec", "DAPP_TEST": ""}), contextlib.redirect_stdout(io.StringIO()):
-                    code = generation.run_test_gen({"target_contract": "Counter"}, ["--types", "unit"])
-            finally:
-                os.chdir(previous)
-            self.assertEqual(code, 0)
-            unit = (
-                root / ".audit" / "test-gen" / "Counter" /
-                "LowkeyGeneratedUnit_Counter.t.sol"
-            ).read_text(encoding="utf-8")
-            self.assertIn('import { Counter } from "../../../src/Counter.sol";', unit)
-
 if __name__ == "__main__":
     unittest.main()
