@@ -150,12 +150,21 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             (root / "foundry.toml").write_text('[profile.default]\\nsrc = "src"\\n', encoding="utf-8")
             (root / "src" / "Vault.sol").write_text("contract Vault {}", encoding="utf-8")
             (root / "medusa.json").write_text("{}", encoding="utf-8")
+            (root / "echidna.yaml").write_text("testMode: property", encoding="utf-8")
             project = inspect_project(root)
             registry = default_registry(load_plugins=False)
-            with patch("lowkey.verification_adapters.shutil.which", return_value="/usr/bin/medusa"):
-                valid = registry.plan(project, "fuzz", profile="balanced", request={"config": "medusa.json"})
+            with patch("lowkey.verification_adapters.shutil.which", return_value="/usr/bin/tool"):
+                valid = registry.plan(
+                    project, "fuzz", profile="balanced",
+                    request={"engine_config_by_engine": {
+                        "echidna": {"target": "src/Vault.sol", "config": "echidna.yaml"},
+                        "medusa": {"config": "medusa.json", "target_contracts": ["Vault"]},
+                    }},
+                )
                 missing = registry.plan(project, "fuzz", profile="balanced", request={"config": "missing.json"})
-        self.assertIn("medusa", {row["engine"] for row in valid["selected"]})
+        selected = {row["engine"] for row in valid["selected"]}
+        self.assertIn("medusa", selected)
+        self.assertIn("echidna", selected)
         rejected = next(row for row in missing["rejected"] if row["engine"] == "medusa")
         self.assertEqual(rejected["status"], "missing_configuration")
         self.assertIn("does not exist", rejected["reason"])
