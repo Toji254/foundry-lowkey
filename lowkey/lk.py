@@ -4029,7 +4029,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             technical_parts = []
             selector = decoded.get("selector")
             data = decoded.get("data")
-            if selector:
+            if selector and kind == "CUSTOM REVERT":
                 technical_parts.append(f"selector {selector}")
             if data and (kind == "CUSTOM REVERT" or not reason):
                 technical_parts.append(f"revert data {data}")
