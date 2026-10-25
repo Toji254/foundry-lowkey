@@ -3859,7 +3859,7 @@ def _decode_contract_revert(error_text, config=None, target=None):
     return None
 
 
-def _format_cli_error(error_text, *, code=None, command=None, config=None, target=None, source="cast"):
+def _format_cli_error(error_text, *, code=None, command=None, config=None, target=None, transaction_hash=None, source="cast"):
     """Central error formatter for CLI, RPC, EVM revert, and runtime failures."""
     text = str(error_text or "").strip()
     lowered = text.lower()
@@ -3879,17 +3879,24 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                      f"  Reason: {decoded['reason']}"]
             if decoded.get("kind") == "CUSTOM REVERT" and decoded.get("selector"):
                 lines.append(f"  Selector: {decoded['selector']}")
-            if is_gas_estimation:
+            if transaction_hash:
+                lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
+            elif is_gas_estimation:
                 lines.append("  Transaction broadcast: no (gas estimation failed).")
             elif command == "send":
-                lines.append("  Transaction broadcast: not confirmed; check the transaction/receipt before retrying.")
+                lines.append("  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying.")
             return "\n".join(lines)
 
     if "insufficient funds" in lowered or "insufficient balance for gas" in lowered:
         lines = ["ERROR [INSUFFICIENT FUNDS]", f"  Details: {text}",
                  "  Next: check the sender's native-token balance and the transaction's gas/value requirements."]
-        if command == "send" and is_gas_estimation:
-            lines.append("  Transaction broadcast: no (gas estimation failed).")
+        if command == "send":
+            if transaction_hash:
+                lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
+            elif is_gas_estimation:
+                lines.append("  Transaction broadcast: no (gas estimation failed).")
+            else:
+                lines.append("  Transaction broadcast: no (the node rejected the transaction).")
         return "\n".join(lines)
 
     # A gas-estimation failure can have a useful provider reason without being
@@ -3903,8 +3910,11 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             detail,
         ).strip()
         detail = detail.split(", data:", 1)[0].strip().rstrip(":")
-        lines = ["ERROR [GAS ESTIMATION]", f"  Reason: {detail or 'the provider rejected the transaction during estimation'}",
-                 "  Transaction broadcast: no (gas estimation failed)."]
+        lines = ["ERROR [GAS ESTIMATION]", f"  Reason: {detail or 'the provider rejected the transaction during estimation'}"]
+        if transaction_hash:
+            lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
+        else:
+            lines.append("  Transaction broadcast: no (gas estimation failed).")
         return "\n".join(lines)
 
     if any(marker in lowered for marker in (
@@ -3926,11 +3936,17 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         )
 
     if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
-        return (
+        rendered = (
             "ERROR [TRANSACTION NONCE/FEES]\n"
             f"  Details: {text}\n"
             "  Next: inspect the sender nonce and pending transactions before retrying."
         )
+        if command == "send":
+            if transaction_hash:
+                rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
+            else:
+                rendered += "\n  Transaction broadcast: no (the node rejected the nonce/fee parameters)."
+        return rendered
 
     if any(marker in lowered for marker in (
         "unexpected argument", "unknown argument", "unknown option",
@@ -3969,7 +3985,13 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
     if len(details) > 4000:
         details = details[:4000] + "\n  [diagnostic truncated after 4000 characters]"
     detail_lines = "\n".join("  " + line for line in details.splitlines()) or "  (no details)"
-    return "ERROR [COMMAND]\n" + operation + exit_code + "  Details:\n" + detail_lines
+    rendered = "ERROR [COMMAND]\n" + operation + exit_code + "  Details:\n" + detail_lines
+    if command == "send":
+        if transaction_hash:
+            rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
+        else:
+            rendered += "\n  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying."
+    return rendered
 
 
 def _format_revert_error(error_text, config=None, target=None):
@@ -4139,12 +4161,22 @@ def run_cast(args,config,capture=False):
         # otherwise provider error text written to stdout can look like success.
         if code != 0:
             raw_error = err or out or final
+            tx_match = re.search(r"(?i)transactionHash(?:\s|:)+([0-9a-fx]{66})", out or "")
+            failed_tx_hash = tx_match.group(1) if tx_match else None
+            if cast_cmd == "send" and failed_tx_hash:
+                # A nonzero exit does not erase evidence that a transaction hash
+                # was returned. Preserve it so the user can inspect the receipt.
+                config["last_tx"] = failed_tx_hash
+                config["last_tx_block"] = None
+                if not config.get("_ephemeral"):
+                    save_config(config)
             rendered_error = _format_cli_error(
                 raw_error,
                 code=code,
                 command=cast_cmd,
                 config=config,
                 target=target,
+                transaction_hash=failed_tx_hash,
                 source="cast",
             )
             record_status(code)
