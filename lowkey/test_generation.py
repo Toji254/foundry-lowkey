@@ -750,6 +750,53 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
     return _fork_template(kind, name, target, import_path, fuzz_property, analysis, source_pragma)
 
 
+def _generation_assessment(
+    selected: list[str],
+    *,
+    local_deploy: bool,
+    is_abstract: bool,
+    fuzz_property: dict[str, str] | None,
+    target: str | None,
+) -> dict[str, dict[str, Any]]:
+    """Describe what each artifact actually contains, without equating scaffolds with tests."""
+    result: dict[str, dict[str, Any]] = {}
+    valid_target = isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) is not None
+    for kind in selected:
+        if kind == "unit":
+            if local_deploy and not is_abstract and fuzz_property:
+                level, note = "executable-candidate", "Deployment smoke test and a narrow setter/getter assertion; not broad unit coverage."
+            elif local_deploy and not is_abstract:
+                level, note = "smoke-only", "Deployment smoke test plus TODOs; no business-behavior assertion was inferred."
+            else:
+                level, note = "blocked", "No safe automatic local deployment was inferred."
+        elif kind == "fuzz":
+            level = "executable-candidate" if local_deploy and not is_abstract and fuzz_property else "scaffold"
+            note = "Fuzzes only the recognized direct setter/getter relation." if level == "executable-candidate" else "No executable property was inferred; add a property and valid input domain."
+        elif kind == "invariant":
+            level = "executable-candidate" if local_deploy and not is_abstract and fuzz_property else "scaffold"
+            note = "Checks the last successful direct setter write; this is not a protocol-wide invariant." if level == "executable-candidate" else "A handler and protocol invariant must be designed from intended behavior."
+        elif kind == "integration":
+            level, note = "scaffold", "Peer deployment, configuration, and cross-contract assertions are not inferred automatically."
+        elif kind == "fork":
+            level = "diagnostic-candidate" if valid_target else "requires-target"
+            note = "Read-only fork diagnostics; add deployment-specific expected values and proxy/implementation checks." if valid_target else "Set a deployed target address before the fork draft can run."
+        elif kind == "poc":
+            level, note = "scaffold", "A concrete exploit precondition, trigger, and impact assertion are required."
+        elif kind == "regression":
+            level, note = "scaffold", "A known bug's trigger and post-fix expectation must be supplied."
+        elif kind == "formal":
+            level = "candidate-rule" if fuzz_property else "worksheet"
+            note = "Narrow setter/getter CVL candidate only; it is not proof until the verifier runs and assumptions are reviewed." if level == "candidate-rule" else "No executable formal rule was inferred."
+        else:
+            level, note = "unknown", "No assessment is available for this type."
+        result[kind] = {
+            "level": level,
+            "protocol_security_established": False,
+            "note": note,
+        }
+    return result
+
+
 def run_test_gen(config: dict[str, Any], args: list[str]) -> int:
     if any(str(arg).lower() in {"-h", "--help", "help"} for arg in args):
         print("""Lowkey test generator
@@ -877,6 +924,13 @@ The generator does not claim coverage or invent protocol-specific assertions.
         "fuzz_property": fuzz_property,
         "analysis": {key: value for key, value in analysis.items() if not key.startswith("_")},
         "requested_types": selected,
+        "generation_assessment": _generation_assessment(
+            selected,
+            local_deploy=local_deploy,
+            is_abstract=is_abstract,
+            fuzz_property=fuzz_property,
+            target=target,
+        ),
         "generated": generated,
         "skipped": skipped,
         "warning": "Scaffolds are not protocol proofs. Complete TODO assertions before relying on them.",
@@ -910,7 +964,10 @@ The generator does not claim coverage or invent protocol-specific assertions.
         print(f"  generated  {path}")
     for item in skipped:
         print(f"  skipped    {item['type']}: {item['reason']}")
-    print("Review TODOs: no protocol-specific behavior or invariant is inferred automatically.")
+    print("Generation assessment:")
+    for kind, assessment in report["generation_assessment"].items():
+        print(f"  {kind}: {assessment['level']} — {assessment['note']}")
+    print("No generated artifact establishes protocol security; validation is compile-only.")
     validation = report["validation"]
     if validation.get("requested"):
         print(f"Validation: {validation.get('status')} - {validation.get('detail', '')}")

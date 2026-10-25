@@ -66,6 +66,12 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(len(report["generated"]), 8)
             self.assertIn("not protocol proofs", report["warning"])
             self.assertEqual(len(report["source_sha256"]), 64)
+            self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
+            self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "executable-candidate")
+            self.assertEqual(report["generation_assessment"]["invariant"]["level"], "executable-candidate")
+            self.assertEqual(report["generation_assessment"]["integration"]["level"], "scaffold")
+            self.assertEqual(report["generation_assessment"]["poc"]["protocol_security_established"], False)
+            self.assertIn("compile-only", output.getvalue())
             self.assertIn("generated", output.getvalue())
             self.assertEqual(
                 report["fuzz_property"],
@@ -807,6 +813,25 @@ contract Protocol {
         ):
             self.assertIn(profile, analysis["profiles"], profile)
 
+
+
+    def test_generation_assessment_does_not_overstate_scaffolds(self):
+        assessment = generation._generation_assessment(
+            ["unit", "fuzz", "invariant", "integration", "fork", "poc", "regression", "formal"],
+            local_deploy=True,
+            is_abstract=False,
+            fuzz_property=None,
+            target=None,
+        )
+        self.assertEqual(assessment["unit"]["level"], "smoke-only")
+        self.assertEqual(assessment["fuzz"]["level"], "scaffold")
+        self.assertEqual(assessment["invariant"]["level"], "scaffold")
+        self.assertEqual(assessment["integration"]["level"], "scaffold")
+        self.assertEqual(assessment["fork"]["level"], "requires-target")
+        self.assertEqual(assessment["poc"]["level"], "scaffold")
+        self.assertEqual(assessment["regression"]["level"], "scaffold")
+        self.assertEqual(assessment["formal"]["level"], "worksheet")
+        self.assertTrue(all(item["protocol_security_established"] is False for item in assessment.values()))
 
 if __name__ == "__main__":
     unittest.main()
