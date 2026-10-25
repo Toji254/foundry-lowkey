@@ -138,6 +138,7 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
             )
         self.assertEqual(result.status, "timeout")
         self.assertEqual(result.exit_code, 124)
+        self.assertIn("\\nLOWKEY_TIMEOUT_SECONDS=1", result.raw_stderr)
 
     def test_campaign_runs_selected_adapters_serially(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
