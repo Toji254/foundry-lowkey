@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import platform
 import subprocess
 import sys
@@ -42,7 +43,11 @@ def run_benchmark(
     manifest = json.loads(raw_manifest.decode("utf-8"))
     if not isinstance(manifest, dict) or not isinstance(manifest.get("cases"), list):
         raise ValueError("benchmark manifest must be an object with a cases array")
-    workspace = Path(workspace_root).expanduser().resolve() if workspace_root else manifest_file.parent.resolve()
+    workspace = Path(workspace_root).expanduser().resolve() if workspace_root else Path.cwd().resolve()
+    if min_mutation_score is not None and (
+        not math.isfinite(min_mutation_score) or min_mutation_score < 0 or min_mutation_score > 1
+    ):
+        raise ValueError("min_mutation_score must be between 0 and 1")
     if not workspace.is_dir():
         raise ValueError(f"workspace root is not a directory: {workspace}")
     cases = []
