@@ -63,9 +63,10 @@ contract Counter {
 
     def test_unsupported_constructor_is_reported_not_guessed(self):
         source = """pragma solidity ^0.8.20;
+interface IERC20 {}
 contract NeedsDependency {
-    address public immutable dependency;
-    constructor(address dependency_) { dependency = dependency_; }
+    IERC20 public immutable dependency;
+    constructor(IERC20 dependency_) { dependency = dependency_; }
 }
 """
         with tempfile.TemporaryDirectory() as directory:
