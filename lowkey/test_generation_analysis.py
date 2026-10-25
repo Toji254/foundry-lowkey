@@ -285,7 +285,7 @@ def analyse_contract(
         for marker, profile in inherited_profile_rules.items():
             if marker in compact and profile not in profiles:
                 profiles.append(profile)
-    if re.search(r"\b(?:UUPSUpgradeable|ERC1967Proxy|Initializable)\b|\bupgradeToAndCall\b|\bdelegatecall\b", source, flags=re.I):
+    if re.search(r"\b(?:UUPSUpgradeable|ERC1967Proxy|Initializable)\b|\bupgradeToAndCall\b|\bdelegatecall\b", full, flags=re.I):
         if "proxy / upgradeable" not in profiles:
             profiles.append("proxy / upgradeable")
     imports = []
