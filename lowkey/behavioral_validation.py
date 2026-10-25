@@ -7,6 +7,8 @@ as evidence that a test killed a behavioral mutant.
 from __future__ import annotations
 
 import hashlib
+import os
+import signal
 import json
 import shutil
 import subprocess
@@ -41,6 +43,7 @@ def _run(root: Path, argv: list[str], timeout: int) -> dict[str, Any]:
         process = subprocess.Popen(
             argv, cwd=root, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=(os.name == "posix"),
         )
         try:
             stdout, stderr = process.communicate(timeout=timeout)
@@ -51,8 +54,24 @@ def _run(root: Path, argv: list[str], timeout: int) -> dict[str, Any]:
                 "stderr": stderr or "",
             }
         except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.kill()
+            except OSError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except OSError:
+                    pass
+                stdout, stderr = process.communicate()
             return {
                 "status": "timeout", "exit_code": 124,
                 "stdout": stdout or "", "stderr": (stderr or "") + f"\nLOWKEY_TIMEOUT_SECONDS={timeout}",
@@ -64,7 +83,7 @@ def _run(root: Path, argv: list[str], timeout: int) -> dict[str, Any]:
 def _copy_project(source: Path, destination: Path) -> None:
     def ignore(_directory: str, names: list[str]) -> set[str]:
         return {name for name in names if name in IGNORED_COPY_DIRS}
-    shutil.copytree(source, destination, ignore=ignore, symlinks=False)
+    shutil.copytree(source, destination, ignore=ignore, symlinks=True)
 
 
 def validate_mutations(
@@ -110,6 +129,9 @@ def validate_mutations(
             }
 
         for index, mutant in enumerate(mutants):
+            if not isinstance(mutant, dict):
+                results.append({"id": f"mutant-{index + 1}", "status": "invalid", "reason": "each mutant must be an object"})
+                continue
             mutant_id = str(mutant.get("id") or f"mutant-{index + 1}")
             relative = Path(str(mutant.get("file") or ""))
             if relative.is_absolute() or not relative.parts or ".." in relative.parts:
