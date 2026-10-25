@@ -11,7 +11,7 @@ import subprocess
 import os
 from importlib.metadata import entry_points
 import signal
-import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -143,52 +143,70 @@ class ExecutableAdapter:
         except (TypeError, ValueError):
             output_limit = 262144
 
-        def read_bounded(stream: Any) -> tuple[str, bool]:
-            stream.seek(0)
-            raw = stream.read(output_limit + 1)
-            truncated = len(raw) > output_limit
-            if truncated:
-                raw = raw[:output_limit]
-                raw += b"\n[LOWKEY_OUTPUT_TRUNCATED; see output_limit_bytes in raw_evidence]"
-            return raw.decode("utf-8", errors="replace"), truncated
+        captured = {"stdout": bytearray(), "stderr": bytearray()}
+        truncated = {"stdout": False, "stderr": False}
+
+        def drain(pipe: Any, name: str) -> None:
+            # Drain continuously to avoid child-process deadlock, but retain only
+            # a bounded prefix so noisy fuzzers/solvers cannot exhaust RAM.
+            while True:
+                chunk = pipe.read(65536)
+                if not chunk:
+                    break
+                remaining = output_limit - len(captured[name])
+                if remaining > 0:
+                    captured[name].extend(chunk[:remaining])
+                if len(chunk) > max(remaining, 0):
+                    truncated[name] = True
+            pipe.close()
 
         try:
-            # Redirect to disk-backed temporary files: communicate() with PIPE can
-            # buffer arbitrarily large fuzz/solver output in RAM on small machines.
-            with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
-                process = subprocess.Popen(
-                    command, cwd=root, stdin=subprocess.DEVNULL,
-                    stdout=stdout_file, stderr=stderr_file,
-                    start_new_session=(os.name == "posix"),
-                )
+            process = subprocess.Popen(
+                command, cwd=root, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False,
+                bufsize=0, start_new_session=(os.name == "posix"),
+            )
+            readers = [
+                threading.Thread(target=drain, args=(process.stdout, "stdout"), daemon=True),
+                threading.Thread(target=drain, args=(process.stderr, "stderr"), daemon=True),
+            ]
+            for reader in readers:
+                reader.start()
+            try:
+                process.wait(timeout=timeout)
+                code = process.returncode
+                status = "passed" if code == 0 else "failed"
+            except subprocess.TimeoutExpired:
                 try:
-                    process.communicate(timeout=timeout)
-                    code = process.returncode
-                    status = "passed" if code == 0 else "failed"
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     try:
                         if os.name == "posix":
-                            os.killpg(process.pid, signal.SIGTERM)
+                            os.killpg(process.pid, signal.SIGKILL)
                         else:
                             process.kill()
                     except OSError:
                         pass
-                    try:
-                        process.communicate(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            if os.name == "posix":
-                                os.killpg(process.pid, signal.SIGKILL)
-                            else:
-                                process.kill()
-                        except OSError:
-                            pass
-                        process.communicate()
-                    code, status = 124, "timeout"
-                stdout, stdout_truncated = read_bounded(stdout_file)
-                stderr, stderr_truncated = read_bounded(stderr_file)
-                if status == "timeout":
-                    stderr += f"\nLOWKEY_TIMEOUT_SECONDS={timeout}"
+                    process.wait()
+                code, status = 124, "timeout"
+            for reader in readers:
+                reader.join(timeout=5)
+            stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
+            stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
+            marker = "\\n[LOWKEY_OUTPUT_TRUNCATED; retained at most output_limit_bytes]"
+            if truncated["stdout"]:
+                stdout += marker
+            if truncated["stderr"]:
+                stderr += marker
+            if status == "timeout":
+                stderr += f"\\nLOWKEY_TIMEOUT_SECONDS={timeout}"
         except OSError as exc:
             return EngineResult(self.capability.name, "error", exit_code=127, summary=str(exc))
         return EngineResult(
@@ -199,8 +217,8 @@ class ExecutableAdapter:
             raw_evidence={
                 "argv": command, "cwd": str(root), "timeout_seconds": timeout,
                 "output_limit_bytes": output_limit,
-                "stdout_truncated": stdout_truncated,
-                "stderr_truncated": stderr_truncated,
+                "stdout_truncated": truncated["stdout"],
+                "stderr_truncated": truncated["stderr"],
             },
             metadata={"test_kind": test_kind, "project": str(root)},
         )
