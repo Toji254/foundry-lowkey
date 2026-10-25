@@ -200,7 +200,7 @@ class ExecutableAdapter:
                 reader.join(timeout=5)
             stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
             stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
-            marker = "\\n[LOWKEY_OUTPUT_TRUNCATED; retained at most output_limit_bytes]"
+            marker = "\n[LOWKEY_OUTPUT_TRUNCATED; retained at most output_limit_bytes]"
             if truncated["stdout"]:
                 stdout += marker
             if truncated["stderr"]:
