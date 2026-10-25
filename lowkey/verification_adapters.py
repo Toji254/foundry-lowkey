@@ -344,7 +344,46 @@ class EchidnaAdapter(NativeConfiguredAdapter):
             if config_path is None:
                 return None, "Echidna config is invalid: " + reason
             argv.extend(["--config", config_path])
-        return argv, "Echidna harness and optional config validated"
+        # JSON output gives Lowkey a machine-readable campaign result rather
+        # than inferring success from an exit code alone.
+        if "--format" not in argv:
+            argv.extend(["--format", "json"])
+        return argv, "Echidna harness/config validated; JSON result output enabled"
+
+    def run(
+        self, project: dict[str, Any], request: dict[str, Any], *,
+        budget: dict[str, Any],
+    ) -> EngineResult:
+        result = super().run(project, request, budget=budget)
+        if result.status != "passed":
+            return result
+        try:
+            payload = json.loads(result.raw_stdout)
+        except (json.JSONDecodeError, TypeError):
+            result.status = "inconclusive"
+            result.summary = "Echidna exited successfully but did not emit a parseable JSON campaign result"
+            result.metadata["result_semantics"] = "echidna_json_result_missing_or_invalid"
+            return result
+        if not isinstance(payload, dict) or not isinstance(payload.get("success"), bool):
+            result.status = "inconclusive"
+            result.summary = "Echidna JSON output lacks the documented boolean campaign success field"
+            result.metadata["result_semantics"] = "echidna_campaign_success_missing"
+            result.raw_evidence = {"process": result.raw_evidence, "native_result": payload}
+            return result
+        result.raw_evidence = {"process": result.raw_evidence, "native_result": payload}
+        result.metadata["native_campaign_success"] = payload["success"]
+        result.metadata["native_test_count"] = len(payload.get("tests", [])) if isinstance(payload.get("tests"), list) else None
+        if payload.get("error"):
+            result.status = "error"
+            result.summary = f"Echidna campaign error: {payload['error']}"
+            result.metadata["result_semantics"] = "echidna_campaign_error"
+        elif payload["success"]:
+            result.metadata["result_semantics"] = "echidna_json_campaign_success"
+        else:
+            result.status = "failed"
+            result.summary = "Echidna reported campaign success=false (a property failed or campaign did not satisfy its checks)"
+            result.metadata["result_semantics"] = "echidna_json_campaign_failure"
+        return result
 
 
 class MedusaAdapter(NativeConfiguredAdapter):
