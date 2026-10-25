@@ -3469,5 +3469,59 @@ class WalkthroughTests(unittest.TestCase):
         self.assertNotIn("raw word", rendered)
 
 
+    def test_eip1967_implementation_reads_the_address_from_storage(self):
+        proxy = "0x" + "2" * 40
+        implementation = "0x" + "1" * 40
+        slot_value = "0x" + "0" * 24 + implementation[2:]
+        with patch.object(walkthrough, "_rpc_call", return_value=slot_value) as rpc:
+            self.assertEqual(
+                walkthrough._eip1967_implementation("http://127.0.0.1:8545", proxy),
+                implementation,
+            )
+        rpc.assert_called_once_with(
+            "http://127.0.0.1:8545",
+            "eth_getStorageAt",
+            [proxy, walkthrough.EIP1967_IMPLEMENTATION_SLOT, "latest"],
+        )
+
+    def test_eip1967_implementation_rejects_zero_and_malformed_slots(self):
+        address = "0x" + "2" * 40
+        with patch.object(walkthrough, "_rpc_call", return_value="0x" + "0" * 64):
+            self.assertIsNone(
+                walkthrough._eip1967_implementation("http://127.0.0.1:8545", address)
+            )
+        with patch.object(walkthrough, "_rpc_call", return_value="0x1234"):
+            self.assertIsNone(
+                walkthrough._eip1967_implementation("http://127.0.0.1:8545", address)
+            )
+
+    def test_proxy_lookup_requires_live_code_and_matching_implementation_slot(self):
+        implementation = "0x" + "1" * 40
+        old_proxy = "0x" + "2" * 40
+        latest_proxy = "0x" + "3" * 40
+        deployments = [
+            {"address": implementation, "contract": "Vault", "run_timestamp": 1},
+            {"address": old_proxy, "contract": "ERC1967Proxy", "run_timestamp": 2},
+            {"address": latest_proxy, "contract": "UUPSProxy", "run_timestamp": 3},
+        ]
+
+        def slot(_rpc, method, params):
+            self.assertEqual(method, "eth_getStorageAt")
+            if params[0] == old_proxy:
+                return "0x" + "0" * 24 + implementation[2:]
+            if params[0] == latest_proxy:
+                return "0x" + "0" * 24 + implementation[2:]
+            return "0x" + "0" * 64
+
+        with patch.object(walkthrough, "_runtime_code", return_value="0x6001"), \
+             patch.object(walkthrough, "_rpc_call", side_effect=slot):
+            found = walkthrough._find_live_proxy_for_implementation(
+                "http://127.0.0.1:8545", implementation, deployments
+            )
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], latest_proxy)
+        self.assertEqual(found[1]["contract"], "UUPSProxy")
+
+
 if __name__ == "__main__":
     unittest.main()

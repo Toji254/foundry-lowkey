@@ -50,6 +50,7 @@ ARROW = "────▶"
 DOTTED = "⋯⋯⋯▶"
 RETURN = "◀────"
 EXTERNAL = "⇢"
+EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 STATE = "◆"
 ACTOR = "◉"
 EVENT = "✦"
@@ -210,6 +211,60 @@ def _rpc_call(url: str, method: str, params: list[Any] | None = None) -> Any:
         return data.get("result") if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+def _eip1967_implementation(rpc: str, address: str) -> str | None:
+    """Return the implementation proven by a live address's ERC-1967 slot."""
+    if not rpc or not is_address(address):
+        return None
+    raw = _rpc_call(
+        rpc,
+        "eth_getStorageAt",
+        [address, EIP1967_IMPLEMENTATION_SLOT, "latest"],
+    )
+    if not isinstance(raw, str):
+        return None
+    match = re.fullmatch(r"0x([0-9a-fA-F]{64})", raw.strip())
+    if not match:
+        return None
+    implementation = "0x" + match.group(1)[-40:]
+    if implementation.lower() == "0x" + "0" * 40:
+        return None
+    return implementation
+
+
+def _find_live_proxy_for_implementation(
+    rpc: str,
+    implementation: str,
+    deployments: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]] | None:
+    """Find only a deployed, live proxy whose ERC-1967 slot proves the match."""
+    if not rpc or not is_address(implementation):
+        return None
+    expected = implementation.lower()
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for item in deployments:
+        if not isinstance(item, dict):
+            continue
+        address = str(item.get("address") or "")
+        if not is_address(address) or address.lower() == expected:
+            continue
+        if _normalize_code(_runtime_code(rpc, address)) in {"", "0x"}:
+            continue
+        resolved = _eip1967_implementation(rpc, address)
+        if resolved and resolved.lower() == expected:
+            matches.append((address, item))
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda pair: (
+            int(pair[1].get("run_timestamp") or 0),
+            float(pair[1].get("time") or 0),
+            str(pair[1].get("file") or ""),
+        ),
+        reverse=True,
+    )
+    return matches[0]
 
 
 def _cmd(args: list[str], cwd: Path | None = None, timeout: int = 30) -> tuple[int, str, str]:
@@ -8020,6 +8075,62 @@ def _target_from_host(
         selected = aliases.get(contract)
         if selected:
             target = selected
+
+    # Resolve an implementation address to its live proxy only when current
+    # Foundry deployment evidence and the proxy's ERC-1967 slot prove the link.
+    # Keep the implementation ABI/contract label so calls decode correctly.
+    if is_address(target):
+        try:
+            proxy_rpc = (
+                host.effective_rpc(config)
+                if hasattr(host, "effective_rpc")
+                else config.get("rpc")
+            )
+        except Exception:
+            proxy_rpc = config.get("rpc")
+        discover = getattr(host, "discover_deployments", None)
+        deployments: list[dict[str, Any]] = []
+        if proxy_rpc and callable(discover):
+            try:
+                discovered = discover(root)
+                deployments = [
+                    item for item in (discovered or []) if isinstance(item, dict)
+                ]
+            except Exception:
+                deployments = []
+        original_target = str(target)
+        proxy = _find_live_proxy_for_implementation(
+            str(proxy_rpc or ""), original_target, deployments
+        )
+        if proxy:
+            proxy_address, _proxy_record = proxy
+            if not config.get("target_contract"):
+                implementation_record = next(
+                    (
+                        item for item in deployments
+                        if str(item.get("address") or "").lower()
+                        == original_target.lower()
+                    ),
+                    None,
+                )
+                if implementation_record and implementation_record.get("contract"):
+                    config["target_contract"] = str(implementation_record["contract"])
+            abi_paths = config.get("abi_paths")
+            if isinstance(abi_paths, dict):
+                implementation_abi = abi_paths.get(original_target)
+                if implementation_abi:
+                    abi_paths[proxy_address] = implementation_abi
+            project_roots = config.setdefault("project_roots", {})
+            if isinstance(project_roots, dict):
+                previous_root = project_roots.get(original_target)
+                project_roots[proxy_address] = previous_root or str(root.resolve())
+            target = proxy_address
+            config["target"] = proxy_address
+            if hasattr(host, "save_config"):
+                try:
+                    host.save_config(config)
+                except Exception:
+                    pass
 
     if auto and not contract:
         system = config.get("lab_system") if isinstance(config.get("lab_system"), dict) else {}
