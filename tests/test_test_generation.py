@@ -382,14 +382,14 @@ class TestGenerationTests(unittest.TestCase):
             self.assertEqual(len(result["source_sha256"]), 64)
 
 
-    def test_validate_compiles_temporary_drafts_without_running_them(self):
+    def test_validate_compiles_and_executes_generated_local_tests(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root)
             previous = Path.cwd()
             try:
                 os.chdir(root)
-                completed = subprocess.CompletedProcess(["forge", "build"], 0, "compile ok", "")
+                completed = subprocess.CompletedProcess(["forge", "build"], 0, "ok", "")
                 with patch("test_generation.shutil.which", return_value="/fake/forge"), patch(
                     "test_generation.subprocess.run", return_value=completed
                 ) as run:
@@ -406,9 +406,14 @@ class TestGenerationTests(unittest.TestCase):
             )
             self.assertEqual(report["validation"]["status"], "passed")
             self.assertEqual(run.call_count, 3)
-            self.assertEqual(run.call_args.args[0], ["/fake/forge", "build"])
+            self.assertEqual(run.call_args_list[0].args[0], ["/fake/forge", "build"])
+            self.assertEqual(run.call_args_list[1].args[0], ["/fake/forge", "build"])
+            executed_command = run.call_args_list[2].args[0]
+            self.assertEqual(executed_command[:2], ["/fake/forge", "test"])
+            self.assertIn("--match-path", executed_command)
             self.assertEqual(run.call_args.kwargs["cwd"], root)
-            self.assertIn("test functions were not executed", report["validation"]["detail"])
+            self.assertIn("test_executions", report["validation"])
+            self.assertIn("executed successfully", report["validation"]["detail"])
             self.assertFalse((root / "test" / "lowkey-generated").exists())
 
     def test_generated_pragma_and_import_follow_foundry_project_configuration(self):
