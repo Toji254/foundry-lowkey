@@ -4006,8 +4006,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
                 "Check the function's validation conditions and the values you supplied."
             )
             tx = (
-                "Not sent; gas estimation failed."
-                if is_send and ("gas estimation failed" in body.lower() or is_gas_estimation)
+                None if is_send and ("gas estimation failed" in body.lower() or is_gas_estimation)
                 else transaction_status() if is_send
                 else "No transaction was sent; this was a simulated call."
             )
@@ -4018,7 +4017,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         next_step = next_match.group(1).strip() if next_match else (
             "Check the reason above and correct the input, configuration, or dependency."
         )
-        tx = transaction_status() if is_send else None
+        tx = transaction_status() if is_send and legacy_kind != "GAS ESTIMATION" else None
         return _friendly_error(title, reason=reason or body or "No additional details were provided.",
                                what=what, next_step=next_step, transaction=tx, technical=technical)
 
