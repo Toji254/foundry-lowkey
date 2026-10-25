@@ -225,7 +225,13 @@ def analyse_contract(
     if extracted:
         body, clean, header, contract_offset = extracted
         functions = _parse_functions(body, clean, source.count("\n", 0, contract_offset) + 1)
-        inheritance = re.findall(r"\bis\s+([A-Za-z_]\w*)", header)
+        inheritance_match = re.search(r"\bis\b", mask_solidity(header))
+        if inheritance_match:
+            inheritance_clause = header[inheritance_match.end():]
+            for base_clause in _split(inheritance_clause):
+                base_match = re.match(r"\s*([A-Za-z_]\w*)", mask_solidity(base_clause))
+                if base_match and base_match.group(1) not in inheritance:
+                    inheritance.append(base_match.group(1))
         simple_type = r"(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|address|bool|bytes(?:[1-9]|[12][0-9]|3[0-2])?|string)"
         for m in re.finditer(r"(?m)^\s*(" + simple_type + r")\s+((?:(?:public|private|internal|constant|immutable|override)\s+)*)([A-Za-z_]\w*)\s*(?:=[^;]*)?;", clean):
             modifiers = m.group(2).split()

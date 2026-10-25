@@ -681,6 +681,8 @@ class TestGenerationTests(unittest.TestCase):
             source = "pragma solidity ^0.8.20; contract Vault is ERC4626, UUPSUpgradeable {}"
             source_path.write_text(source, encoding="utf-8")
             analysis = analyse_contract(root, "Vault", source_path, source)
+            self.assertIn("ERC-4626", analysis["inheritance"])
+            self.assertIn("UUPSUpgradeable", analysis["inheritance"])
             self.assertIn("ERC-4626-like vault", analysis["profiles"])
             self.assertIn("proxy / upgradeable", analysis["profiles"])
             plan = render_test_plan(analysis, ["unit", "invariant"])
