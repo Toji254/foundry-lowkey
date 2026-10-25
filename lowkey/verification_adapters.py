@@ -44,13 +44,13 @@ class EngineResult:
     engine: str
     status: str
     exit_code: int | None = None
-    duration_seconds: float | None = None
     summary: str = ""
     artifacts: list[str] = field(default_factory=list)
     raw_stdout: str = ""
     raw_stderr: str = ""
     raw_evidence: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    duration_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
