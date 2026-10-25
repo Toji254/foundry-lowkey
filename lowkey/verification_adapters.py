@@ -337,7 +337,10 @@ def inspect_project(root: str | Path) -> dict[str, Any]:
         build_systems.append("move")
     if "Scarb.toml" in markers:
         build_systems.append("scarb")
-    ignored = {".git", ".venv", "node_modules", "vendor", "target", "build", "dist", "out", "cache", ".audit"}
+    ignored = {
+        ".git", ".venv", "venv", "node_modules", "vendor", "lib", "target",
+        "build", "dist", "out", "cache", ".audit", "__pycache__", ".pytest_cache",
+    }
     suffix_languages = {
         ".sol": "solidity", ".vy": "vyper", ".rs": "rust", ".go": "go",
         ".py": "python", ".ts": "typescript", ".tsx": "typescript",
@@ -345,15 +348,12 @@ def inspect_project(root: str | Path) -> dict[str, Any]:
         ".move": "move", ".cairo": "cairo",
     }
     languages: set[str] = set()
-    for path in project_root.rglob("*"):
-        try:
-            relative = path.relative_to(project_root)
-        except ValueError:
-            continue
-        if any(part in ignored for part in relative.parts):
-            continue
-        if path.is_file() and path.suffix.lower() in suffix_languages:
-            languages.add(suffix_languages[path.suffix.lower()])
+    for directory, dirnames, filenames in os.walk(project_root):
+        dirnames[:] = [name for name in dirnames if name not in ignored]
+        for filename in filenames:
+            suffix = Path(filename).suffix.lower()
+            if suffix in suffix_languages:
+                languages.add(suffix_languages[suffix])
     if "foundry" in build_systems or "hardhat" in build_systems or "brownie" in build_systems:
         if any(language == "solidity" for language in languages):
             languages.add("solidity")
