@@ -26,6 +26,14 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     EngineCapability(name, command, ("unit",))
 
+    def test_engine_capability_rejects_non_string_metadata(self):
+        with self.assertRaisesRegex(ValueError, "name must be a non-empty string"):
+            EngineCapability(None, "forge", ("unit",))
+        with self.assertRaisesRegex(ValueError, "command must be a non-empty string"):
+            EngineCapability("forge", None, ("unit",))
+        with self.assertRaisesRegex(ValueError, "test_kinds must be a tuple or list"):
+            EngineCapability("forge", "forge", None)
+
     def test_engine_capability_rejects_unknown_memory_class(self):
         with self.assertRaisesRegex(ValueError, "memory_class must be one of"):
             EngineCapability("custom", "custom-tool", ("unit",), memory_class="unlimited")
@@ -166,6 +174,28 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(result.status, "timeout")
         self.assertEqual(result.exit_code, 124)
         self.assertIn("\nLOWKEY_TIMEOUT_SECONDS=1", result.raw_stderr)
+
+    def test_adapter_cleans_up_descendant_holding_output_pipe(self):
+        if sys.platform != "linux":
+            self.skipTest("process-group descendant cleanup is POSIX-specific")
+        cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
+        adapter = ExecutableAdapter(cap)
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {
+                    "test_kind": "unit",
+                    "argv": [
+                        "-c",
+                        "import subprocess,sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); print('parent done')",
+                    ],
+                },
+                budget={"timeout_seconds": 5, "max_output_bytes": 1024},
+            )
+        self.assertEqual(result.status, "passed")
+        self.assertIn("parent done", result.raw_stdout)
+        self.assertTrue(result.raw_evidence["orphan_process_group_terminated"])
+        self.assertFalse(result.raw_evidence["reader_threads_stuck_after_cleanup"])
 
     def test_campaign_runs_selected_adapters_serially(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
