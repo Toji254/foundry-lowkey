@@ -5,14 +5,23 @@ Lowkey deliberately does not invent protocol assertions from names or ABI alone.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-TEST_TYPES = ("unit", "integration", "invariant", "exploit", "regression", "fuzz", "formal", "fork", "poc")
+try:
+    from test_generation_analysis import analyse_contract, render_test_plan, unit_access_control_tests, mask_solidity
+except ImportError:  # keep partial installs diagnosable
+    analyse_contract = render_test_plan = unit_access_control_tests = mask_solidity = None
+
+TEST_TYPES = ("unit", "fuzz", "invariant", "integration", "exploit", "fork", "poc", "regression", "formal")
 
 
 def parse_types(raw: str | None) -> list[str]:
@@ -32,22 +41,32 @@ def parse_types(raw: str | None) -> list[str]:
     return values
 
 
+def _foundry_config_path(root: Path) -> Path:
+    """Resolve the Foundry config selected for this invocation."""
+    configured = Path(os.environ.get("FOUNDRY_CONFIG", "foundry.toml")).expanduser()
+    return (configured if configured.is_absolute() else root / configured).resolve()
 def _source_root(root: Path) -> Path:
-    src = "src"
-    config = root / "foundry.toml"
-    if config.exists():
+    """Resolve the active Foundry source directory without guessing a different profile."""
+    config_path = _foundry_config_path(root)
+    src = os.environ.get("FOUNDRY_SRC") or "src"
+    if config_path.exists():
         try:
             import tomllib
-            data = tomllib.loads(config.read_text(encoding="utf-8"))
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            profiles = config.get("profile", {})
+            active_profile = os.environ.get("FOUNDRY_PROFILE", "default")
+            profile_config = profiles.get(active_profile, {})
+            default_config = profiles.get("default", {})
             src = (
-                data.get("profile", {}).get("default", {}).get("src")
-                or data.get("src")
+                os.environ.get("FOUNDRY_SRC")
+                or profile_config.get("src")
+                or default_config.get("src")
+                or config.get("src")
                 or src
             )
-        except (OSError, ValueError, ImportError):
+        except (OSError, ValueError, ImportError, AttributeError):
             pass
     return (root / str(src)).resolve()
-
 
 def _contract_source(root: Path, name: str) -> tuple[Path, str] | None:
     source_root = _source_root(root)
@@ -61,37 +80,33 @@ def _contract_source(root: Path, name: str) -> tuple[Path, str] | None:
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        if pattern.search(source):
+        searchable = mask_solidity(source) if mask_solidity else source
+        if pattern.search(searchable):
             return path, source
     return None
 
 
 def _contract_body(source: str, name: str) -> str | None:
+    searchable = mask_solidity(source) if mask_solidity else source
     match = re.search(
         r"\b(?:abstract\s+)?contract\s+" + re.escape(name) + r"\b[^\{]*\{",
-        source,
+        searchable,
     )
     if not match:
         return None
     start = match.end()
-    depth = 1
-    end = start
-    while end < len(source) and depth:
-        if source[end] == "{":
-            depth += 1
-        elif source[end] == "}":
-            depth -= 1
-        end += 1
-    if depth:
+    closing = _matching_brace(searchable, start - 1)
+    if closing is None:
         return None
-    return source[start:end - 1]
+    return source[start:closing]
 
 
 def _constructor_args(source: str, name: str) -> str | None:
     body = _contract_body(source, name)
     if body is None:
         return None
-    constructor = re.search(r"\bconstructor\s*\(([^)]*)\)", body)
+    searchable = mask_solidity(body) if mask_solidity else body
+    constructor = re.search(r"\bconstructor\s*\(([^)]*)\)", searchable)
     if not constructor:
         return ""
     return constructor.group(1).strip()
@@ -127,12 +142,13 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
     body = _contract_body(source, name)
     if body is None:
         return None
+    searchable = mask_solidity(body) if mask_solidity else body
 
     integer_type = r"(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)"
     states: dict[str, str] = {}
     for match in re.finditer(
         rf"(?m)^\s*({integer_type})\s+public\s+([A-Za-z_]\w*)\s*;",
-        body,
+        searchable,
     ):
         states[match.group(2)] = match.group(1)
 
@@ -143,7 +159,7 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
         r"\bfunction\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*"
         r"(?:external|public)\b[^{}]*\{"
     )
-    for match in function_pattern.finditer(body):
+    for match in function_pattern.finditer(searchable):
         parameters = _split_parameters(match.group(2))
         if len(parameters) != 1:
             continue
@@ -163,11 +179,10 @@ def _find_simple_fuzz_property(source: str, name: str) -> dict[str, str] | None:
             continue
 
         opening = match.end() - 1
-        closing = _matching_brace(body, opening)
+        closing = _matching_brace(searchable, opening)
         if closing is None:
             continue
-        function_body = body[opening + 1:closing]
-        function_body = re.sub(r"/\*.*?\*/|//[^\n]*", "", function_body, flags=re.S).strip()
+        function_body = searchable[opening + 1:closing].strip()
 
         for state_name, state_type in states.items():
             if _normalise_integer_type(parameter_type) != _normalise_integer_type(state_type):
@@ -243,11 +258,212 @@ def _constructor_values(raw: str | None) -> list[str] | None:
     return values
 
 
+def _foundry_test_dir(root: Path) -> Path:
+    """Read the active Foundry profile's configured test directory."""
+    config_path = _foundry_config_path(root)
+    test_dir = "test"
+    if config_path.exists():
+        try:
+            import tomllib
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            profiles = config.get("profile", {})
+            active_profile = os.environ.get("FOUNDRY_PROFILE", "default")
+            profile_config = profiles.get(active_profile, {})
+            default_config = profiles.get("default", {})
+            test_dir = (
+                os.environ.get("FOUNDRY_TEST")
+                or os.environ.get("DAPP_TEST")
+                or profile_config.get("test")
+                or default_config.get("test")
+                or config.get("test")
+                or test_dir
+            )
+        except (OSError, ValueError, ImportError, AttributeError):
+            pass
+    if not isinstance(test_dir, str) or not test_dir.strip():
+        test_dir = "test"
+    path = Path(test_dir).expanduser()
+    return (path if path.is_absolute() else root / path).resolve()
+
+
+def _solidity_pragma(source: str) -> str:
+    """Reuse the target source's compiler range when available."""
+    searchable = mask_solidity(source) if mask_solidity else source
+    match = re.search(r"\bpragma\s+solidity\s+([^;]+);", searchable)
+    if not match:
+        return "^0.8.20"
+    pragma = source[match.start(1):match.end(1)].strip()
+    return pragma if re.fullmatch(r"[0-9A-Za-z.^<>=+*~|()\s-]+", pragma) else "^0.8.20"
+
+
 def _rel_import(root: Path, source_path: Path) -> str:
-    # Generated source is intended to be moved into test/lowkey-generated.
-    relative = Path("test") / "lowkey-generated"
-    target = Path(os.path.relpath(source_path, root / relative))
-    return PurePosixPath(target).as_posix()
+    # Drafts are meant to be moved into lowkey-generated under the configured test directory.
+    destination = _foundry_test_dir(root) / "lowkey-generated"
+    return PurePosixPath(os.path.relpath(source_path, destination)).as_posix()
+
+
+def _validate_generated(root: Path, generated: list[str]) -> dict[str, Any]:
+    """Compile only drafts written for this invocation; never validate unrelated stale files."""
+    solidity_files: list[Path] = []
+    for raw_path in generated:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+        if path.name.endswith(".t.sol") and path.is_file():
+            solidity_files.append(path.resolve())
+    solidity_files = sorted(set(solidity_files))
+    result: dict[str, Any] = {
+        "requested": True,
+        "status": "not-applicable" if not solidity_files else "pending",
+        "command": ["forge", "build"],
+        "baseline_exit_code": None,
+        "exit_code": None,
+        "detail": "",
+    }
+    if not solidity_files:
+        result["detail"] = "No generated Solidity drafts were available to compile. Formal specs are not validated by Forge."
+        return result
+    forge_bin = shutil.which("forge")
+    if not forge_bin:
+        result["status"] = "unavailable"
+        result["detail"] = "forge was not found on PATH; drafts were written but not compile-validated."
+        return result
+
+    try:
+        baseline = subprocess.run(
+            [forge_bin, "build"], cwd=root, capture_output=True, text=True,
+            timeout=180, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        result["status"] = "baseline-failed"
+        result["detail"] = "Baseline forge build timed out before generated drafts were added."
+        result["stdout_tail"] = str(exc.stdout or "")[-4000:]
+        result["stderr_tail"] = str(exc.stderr or "")[-4000:]
+        return result
+    except OSError as exc:
+        result["status"] = "unavailable"
+        result["detail"] = "Could not run baseline forge build: " + str(exc)
+        return result
+    result["baseline_exit_code"] = baseline.returncode
+    if baseline.returncode != 0:
+        result["status"] = "baseline-failed"
+        result["exit_code"] = baseline.returncode
+        result["detail"] = "The project fails to build before generated drafts are added; draft compilation was not evaluated."
+        result["stdout_tail"] = (baseline.stdout or "")[-4000:]
+        result["stderr_tail"] = (baseline.stderr or "")[-4000:]
+        return result
+
+    destination = _foundry_test_dir(root) / "lowkey-generated"
+    created_dirs: list[Path] = []
+    cursor = destination
+    while not cursor.exists():
+        created_dirs.append(cursor)
+        if cursor.parent == cursor:
+            break
+        cursor = cursor.parent
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        result["status"] = "unavailable"
+        result["detail"] = "Cannot create temporary validation directory: " + str(exc)
+        for directory in created_dirs:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        return result
+
+    token = uuid.uuid4().hex[:12]
+    temporary_files: list[Path] = []
+    executable_files: list[Path] = []
+    try:
+        for source_path in solidity_files:
+            content = source_path.read_text(encoding="utf-8")
+            searchable = mask_solidity(content) if mask_solidity else content
+            declarations = re.findall(r"\b(?:abstract\s+)?contract\s+([A-Za-z_]\w*)", searchable)
+            for declaration in declarations:
+                unique_name = "LowkeyValidation_" + token + "_" + declaration
+                content = re.sub(r"\b" + re.escape(declaration) + r"\b", unique_name, content)
+            temp_path = destination / ("LowkeyValidation_" + token + "_" + source_path.name)
+            temp_path.write_text(content, encoding="utf-8")
+            temporary_files.append(temp_path)
+            # Execute only local test families whose generated source actually
+            # contains a test/invariant function. Fork/PoC drafts need external
+            # deployment context and are intentionally compile-only here.
+            if source_path.name.startswith((
+                "LowkeyGeneratedUnit_", "LowkeyGeneratedFuzz_", "LowkeyGeneratedInvariant_"
+            )) and re.search(
+                r"\bfunction\s+(?:test[A-Za-z0-9_]*|invariant_[A-Za-z0-9_]*)\s*\(", searchable
+            ):
+                executable_files.append(temp_path)
+
+        completed = subprocess.run(
+            [forge_bin, "build"], cwd=root, capture_output=True, text=True,
+            timeout=180, check=False,
+        )
+        result["exit_code"] = completed.returncode
+        result["stdout_tail"] = (completed.stdout or "")[-4000:]
+        result["stderr_tail"] = (completed.stderr or "")[-4000:]
+        if completed.returncode != 0:
+            result["status"] = "failed"
+            result["detail"] = "The project built before staging drafts but failed to compile with temporary generated drafts."
+        elif not executable_files:
+            result["status"] = "compiled-only"
+            result["detail"] = "Generated Solidity drafts compiled, but no executable local unit/fuzz/invariant tests were generated. Compile success is not test validation."
+        else:
+            executions = []
+            for test_path in executable_files:
+                relative_path = test_path.relative_to(root).as_posix()
+                try:
+                    executed = subprocess.run(
+                        [forge_bin, "test", "--match-path", relative_path],
+                        cwd=root, capture_output=True, text=True, timeout=300, check=False,
+                    )
+                    executions.append({
+                        "path": relative_path,
+                        "exit_code": executed.returncode,
+                        "stdout_tail": (executed.stdout or "")[-3000:],
+                        "stderr_tail": (executed.stderr or "")[-3000:],
+                    })
+                except subprocess.TimeoutExpired as exc:
+                    executions.append({
+                        "path": relative_path, "exit_code": None,
+                        "stdout_tail": str(exc.stdout or "")[-3000:],
+                        "stderr_tail": str(exc.stderr or "")[-3000:],
+                        "error": "forge test timed out after 300 seconds",
+                    })
+                except OSError as exc:
+                    executions.append({
+                        "path": relative_path, "exit_code": None, "error": str(exc),
+                    })
+            result["test_executions"] = executions
+            tests_passed = all(item.get("exit_code") == 0 for item in executions)
+            result["status"] = "passed" if tests_passed else "failed"
+            result["detail"] = (
+                f"Generated drafts compiled and {len(executions)} local unit/fuzz/invariant test file(s) executed successfully. This does not establish protocol-wide security."
+                if tests_passed else
+                "Generated drafts compiled, but one or more generated local test files failed or could not be executed."
+            )
+    except subprocess.TimeoutExpired as exc:
+        result["status"] = "failed"
+        result["detail"] = "forge build timed out after 180 seconds."
+        result["stdout_tail"] = str(exc.stdout or "")[-4000:]
+        result["stderr_tail"] = str(exc.stderr or "")[-4000:]
+    except OSError as exc:
+        result["status"] = "unavailable"
+        result["detail"] = "Could not stage or compile generated drafts: " + str(exc)
+    finally:
+        for path in temporary_files:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        for directory in created_dirs:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    return result
 
 
 def _solidity_name(name: str) -> str:
@@ -258,16 +474,18 @@ def _solidity_name(name: str) -> str:
 
 
 def _local_template(kind: str, name: str, import_path: str, constructor_values: list[str],
-                    fuzz_property: dict[str, str] | None = None) -> str:
+                    fuzz_property: dict[str, str] | None = None,
+                    analysis: dict[str, Any] | None = None,
+                    source_pragma: str = "^0.8.20") -> str:
     ident = _solidity_name(name)
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
     constructor_arguments = ", ".join(constructor_values)
     deploy_expression = f"new {name}({constructor_arguments})"
     common = f'''// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity {source_pragma};
 
 // LowkeyCast-generated STARTER, not proof of protocol correctness.
-// Move to test/lowkey-generated and review all TODOs before relying on it.
+// Move into lowkey-generated under the configured Foundry test directory.
 import {{Test}} from "forge-std/Test.sol";
 import {{ {name} }} from "{import_path}";
 
@@ -286,6 +504,9 @@ import {{ {name} }} from "{import_path}";
         assertEq(target.{state}(), expected);
     }}
 """
+    extra_access_tests = "\n".join(unit_access_control_tests(analysis or {}, (analysis or {}).get("_source_text", "")) if unit_access_control_tests else [])
+    if extra_access_tests:
+        extra_access_tests = "\n" + extra_access_tests + "\n"
     if kind == "unit":
         body = f'''contract {generated} is Test {{
     {name} internal target;
@@ -295,12 +516,15 @@ import {{ {name} }} from "{import_path}";
     }}
 
     function test_deployment_has_runtime_code() public view {{
-        assertGt(address(target).code.length, 0);
+        address deployed = address(target);
+        uint256 codeSize;
+        assembly {{ codeSize := extcodesize(deployed) }}
+        assertGt(codeSize, 0);
     }}
 
     // TODO: Add unit tests for expected state changes, access control,
     // boundary values, revert reasons, emitted events, and accounting.
-{setter_unit_test}}}
+{setter_unit_test}{extra_access_tests}}}
 '''
     elif kind == "fuzz":
         if fuzz_property:
@@ -462,51 +686,101 @@ A guessed assertion could be incorrect or vacuous. Add a formal rule only after 
     return ".md", content
 
 
-def _fork_template(kind: str, name: str, target: str | None) -> str:
+def _fork_template(kind: str, name: str, target: str | None, import_path: str,
+                   fuzz_property: dict[str, str] | None,
+                   analysis: dict[str, Any] | None = None,
+                   source_pragma: str = "^0.8.20") -> str:
+    """Generate fork diagnostics without mutating a deployed protocol by default."""
     ident = _solidity_name(name)
     addr = target.lower() if isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) else "address(0)"
     target_literal = addr if addr == "address(0)" else f"address({addr})"
     generated = f"LowkeyGenerated{kind.title()}_{ident}"
+    version_match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", source_pragma)
+    chainid_supported = not version_match or (int(version_match.group(1)), int(version_match.group(2))) >= (0, 8)
+    chain_id_check = (
+        '        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", uint256(0));'
+        '\n        if (expectedChainId != 0) assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");'
+        if chainid_supported else
+        '        // Solidity before 0.8.0 has no block.chainid builtin; pin the chain externally.'
+    )
     body = f'''// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity {source_pragma};
 
-// LowkeyCast-generated starter. Configure LOWKEY_RPC_URL before running.
+// LowkeyCast-generated fork diagnostic. Set LOWKEY_RPC_URL; pin LOWKEY_FORK_BLOCK and
+// LOWKEY_EXPECTED_CHAIN_ID for reproducible, chain-checked audit evidence.
+// Tests run against a local Foundry fork; they do not send transactions to mainnet.
 import {{Test}} from "forge-std/Test.sol";
+import {{ {name} }} from "{import_path}";
 
 contract {generated} is Test {{
     address internal constant TARGET = {target_literal};
+    {name} internal target;
+
+    function _codeSize(address account) internal view returns (uint256 size) {{
+        assembly {{ size := extcodesize(account) }}
+    }}
 
     function setUp() public {{
         string memory rpcUrl = vm.envString("LOWKEY_RPC_URL");
-        vm.createSelectFork(rpcUrl);
+        uint256 requestedBlock = vm.envOr("LOWKEY_FORK_BLOCK", uint256(0));
+        if (requestedBlock == 0) {{
+            vm.createSelectFork(rpcUrl);
+        }} else {{
+            vm.createSelectFork(rpcUrl, requestedBlock);
+        }}
         require(TARGET != address(0), "Set a real target address before running");
-        assertGt(TARGET.code.length, 0, "Target has no code on selected fork");
+        assertGt(_codeSize(TARGET), 0, "Target has no code on selected fork");
+        {chain_id_check}
+        target = {name}(TARGET);
+    }}
+
+    function test_fork_target_has_runtime_code() public view {{
+        assertGt(_codeSize(TARGET), 0, "Target has no runtime code");
     }}
 
 '''
     if kind == "fork":
-        body += '''    function test_fork_target_has_code() public view {
-        assertGt(TARGET.code.length, 0);
-    }
+        state_variables = (analysis or {}).get("state_variables", [])
+        generated_getters = 0
+        for state in state_variables:
+            if state.get("visibility") != "public":
+                continue
+            getter = str(state.get("name") or "")
+            if not re.fullmatch(r"[A-Za-z_]\w*", getter):
+                continue
+            body += f'''    function testFork_{getter}_publicGetterIsCallable() public view {{
+        (bool ok, bytes memory result) = TARGET.staticcall(
+            abi.encodeWithSignature("{getter}()")
+        );
+        assertTrue(ok, "Public getter reverted on selected fork");
+        assertGt(result.length, 0, "Public getter returned no encoded data");
+    }}
 
-    // TODO: Assert the expected behavior against this chain's actual state.
+'''
+            generated_getters += 1
+        if generated_getters == 0:
+            body += '''    // TODO: Add a read-only assertion against a known deployment invariant,
+    // such as an expected owner, implementation address, oracle configuration,
+    // or a block-pinned accounting value. No expected value was inferred.
+'''
+        body += '''    // Writes are deliberately not generated from a local source pattern:
+    // authorization, proxy routing, and live state may differ from local source.
 }
 '''
     else:
-        body += '''    // TODO: Add the concrete call/preconditions and the security property
-    // that demonstrates impact. A successful low-level call is not a finding.
-    // For call-specific recorded evidence, use the existing lk generate test.
+        body += '''    // TODO: Add a concrete exploit precondition, trigger, and measurable
+    // security-impact assertion backed by a finding or recorded execution.
+    // No suspected vulnerability was supplied, so a generic PoC would be fiction.
 }
 '''
     return body
 
-
 def _render(kind: str, name: str, import_path: str, target: str | None,
             local_deploy: bool, constructor_values: list[str] | None,
-            is_abstract: bool, fuzz_property: dict[str, str] | None) -> str:
+            is_abstract: bool, fuzz_property: dict[str, str] | None,
+            analysis: dict[str, Any] | None = None,
+            source_pragma: str = "^0.8.20") -> str:
     if kind == "formal":
-        # The template helper also returns the file suffix; callers write only
-        # the content here because the suffix is selected by run_test_gen().
         return _formal_template(name, fuzz_property)[1]
     if kind in {"unit", "fuzz", "invariant", "integration", "regression"}:
         if is_abstract:
@@ -516,8 +790,142 @@ def _render(kind: str, name: str, import_path: str, target: str | None,
                 f"{kind} needs constructor argument types with supported placeholder values; "
                 "this constructor contains an unsupported or unrecognized type"
             )
-        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None)
-    return _fork_template(kind, name, target)
+        return _local_template(kind, name, import_path, constructor_values, fuzz_property if kind in {"unit", "fuzz", "invariant"} else None, analysis, source_pragma)
+    return _fork_template(kind, name, target, import_path, fuzz_property, analysis, source_pragma)
+
+
+def _recorded_call_poc(
+    root: Path,
+    contract_name: str,
+    target: str | None,
+    source_pragma: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Create a replay-only fork test from a concrete call for the configured target."""
+    if not isinstance(target, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", target):
+        return None
+    version = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)", source_pragma)
+    if version and (int(version.group(1)), int(version.group(2))) < (0, 8):
+        return None
+    try:
+        import generator as existing_generator
+        request = existing_generator._request_from_latest(root, expected_target=target)
+    except (ImportError, OSError, ValueError, RuntimeError):
+        return None
+    if not request or str(getattr(request, "target", "")).lower() != target.lower():
+        return None
+    calldata = str(getattr(request, "calldata", "") or "").removeprefix("0x")
+    if not calldata or len(calldata) % 2 or not re.fullmatch(r"[0-9a-fA-F]+", calldata):
+        return None
+    value = str(getattr(request, "value", "0") or "0")
+    function = str(getattr(request, "function", "") or "recordedCall")
+    try:
+        content = existing_generator._template_test(
+            contract_name,
+            target,
+            function,
+            value,
+            calldata,
+            source_import=None,
+            deploy_locally=False,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+    content = content.replace("pragma solidity ^0.8.20;", f"pragma solidity {source_pragma};", 1)
+    content = content.replace(
+        "vm.createSelectFork(rpcUrl);",
+        """uint256 requestedBlock = vm.envOr("LOWKEY_FORK_BLOCK", uint256(0));
+        if (requestedBlock == 0) {
+            vm.createSelectFork(rpcUrl);
+        } else {
+            vm.createSelectFork(rpcUrl, requestedBlock);
+        }
+        uint256 expectedChainId = vm.envOr("LOWKEY_EXPECTED_CHAIN_ID", uint256(0));
+        if (expectedChainId != 0) {
+            assertEq(block.chainid, expectedChainId, "Unexpected fork chain ID");
+        }""",
+        1,
+    )
+    content = content.replace("contract LowkeyTest_", "contract LowkeyGeneratedPoc_", 1)
+    content = (
+        "// Lowkey test-gen replay candidate: this replays recorded calldata; it does NOT establish exploitability.\\n"
+        "// Pin LOWKEY_FORK_BLOCK and LOWKEY_EXPECTED_CHAIN_ID for reproducibility.\\n"
+        + content
+    )
+    return content, {
+        "mode": "recorded-call-replay",
+        "target": target,
+        "function": function,
+        "value": value,
+        "calldata_sha256": hashlib.sha256(bytes.fromhex(calldata)).hexdigest(),
+        "security_impact_assertion": False,
+        "note": "Replay only. The fork executes the configured target address, not the local source; verify implementation/source identity and add exploit preconditions plus a security-impact assertion before calling this a PoC.",
+    }
+
+
+def _generation_assessment(
+    selected: list[str],
+    *,
+    local_deploy: bool,
+    is_abstract: bool,
+    fuzz_property: dict[str, str] | None,
+    target: str | None,
+    constructor_values: list[str] | None = None,
+    recorded_poc: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Describe what each artifact actually contains, without equating scaffolds with tests."""
+    result: dict[str, dict[str, Any]] = {}
+    valid_target = isinstance(target, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", target) is not None
+    for kind in selected:
+        if kind == "unit":
+            if local_deploy and not is_abstract and fuzz_property:
+                if constructor_values:
+                    level, note = "requires-setup-review", "A narrow setter/getter assertion is generated, but constructor placeholders must be checked before execution."
+                else:
+                    level, note = "executable-candidate", "Deployment smoke test and a narrow setter/getter assertion; not broad unit coverage."
+            elif local_deploy and not is_abstract:
+                if constructor_values:
+                    level, note = "requires-setup-review", "Smoke test only; constructor placeholders may violate deployment preconditions."
+                else:
+                    level, note = "smoke-only", "Deployment smoke test plus TODOs; no business-behavior assertion was inferred."
+            else:
+                level, note = "blocked", "No safe automatic local deployment was inferred."
+        elif kind == "fuzz":
+            if local_deploy and not is_abstract and fuzz_property:
+                level = "requires-setup-review" if constructor_values else "executable-candidate"
+                note = "Fuzzes only the recognized direct setter/getter relation; review constructor placeholders first." if constructor_values else "Fuzzes only the recognized direct setter/getter relation."
+            else:
+                level, note = "scaffold", "No executable property was inferred; add a property and valid input domain."
+        elif kind == "invariant":
+            if local_deploy and not is_abstract and fuzz_property:
+                level = "requires-setup-review" if constructor_values else "executable-candidate"
+                note = "Checks the last successful direct setter write, but constructor placeholders must be reviewed first." if constructor_values else "Checks the last successful direct setter write; this is not a protocol-wide invariant."
+            else:
+                level, note = "scaffold", "A handler and protocol invariant must be designed from intended behavior."
+        elif kind == "integration":
+            level, note = "scaffold", "Peer deployment, configuration, and cross-contract assertions are not inferred automatically."
+        elif kind == "fork":
+            level = "diagnostic-candidate" if valid_target else "requires-target"
+            note = "Read-only fork diagnostics; add deployment-specific expected values and proxy/implementation checks." if valid_target else "Set a deployed target address before the fork draft can run."
+        elif kind == "poc":
+            if recorded_poc:
+                level, note = "recorded-call-replay", "Replays a recorded call on a fork; it is not an exploit proof until impact assertions are added."
+            else:
+                level, note = "scaffold", "A concrete PoC precondition, trigger, and impact assertion are required."
+        elif kind == "exploit":
+            level, note = "scaffold", "A concrete exploit precondition, trigger, and measurable security-impact assertion must be grounded in a finding or recorded execution."
+        elif kind == "regression":
+            level, note = "scaffold", "A known bug's trigger and post-fix expectation must be supplied."
+        elif kind == "formal":
+            level = "candidate-rule" if fuzz_property else "worksheet"
+            note = "Narrow setter/getter CVL candidate only; it is not proof until the verifier runs and assumptions are reviewed." if level == "candidate-rule" else "No executable formal rule was inferred."
+        else:
+            level, note = "unknown", "No assessment is available for this type."
+        result[kind] = {
+            "level": level,
+            "protocol_security_established": False,
+            "note": note,
+        }
+    return result
 
 
 def run_test_gen(config: dict[str, Any], args: list[str], *, project_root: str | Path | None = None) -> int:
@@ -525,24 +933,25 @@ def run_test_gen(config: dict[str, Any], args: list[str], *, project_root: str |
         print("""Lowkey test generator
 
 Usage:
-  lk test-gen [ContractName] [--types all|unit,integration,invariant,exploit,regression,fuzz,formal,fork,poc]
-              [--output-dir .audit/test-gen] [--force]
+  lk test-gen [ContractName] [--types all|unit,fuzz,invariant,integration,exploit,fork,poc,regression,formal]
+              [--output-dir .audit/test-gen] [--force] [--validate] [--strict]
 
 Types:
-  unit         Local deployment smoke test + recognized direct state properties
-  integration  Local peer-contract wiring scaffold
+  unit         Local deployment smoke test + unit-test TODOs
+  fuzz         Executable setter/getter fuzz property when safely recognized; otherwise a TODO
   invariant    Handler/property scaffold; protocol invariants must be supplied
-  exploit      Fork-based exploit reproduction scaffold
-  regression   Starter for locking in a previously fixed bug
-  fuzz         Fuzz test with a recognized direct setter/getter property when safe
-  formal       Certora CVL rule for recognized properties, or a formal-spec worksheet
-  fork         Fork smoke test against the configured target
+  integration  Local peer-contract wiring scaffold
+  fork         Read-only fork checks against the configured target
   poc          Fork-based reproduction scaffold
+  regression   Starter for locking in a previously fixed bug
+  formal       Certora CVL rule for recognized properties, or a formal-spec worksheet
 
 Generated drafts are saved outside Foundry's test directory by default, so they
 will not silently affect the project's existing test suite. Review the report,
-complete TODOs, and move approved files into test/ before running Forge.
+complete TODOs, and move approved files into the configured Foundry test directory before running Forge.
 The generator does not claim coverage or invent protocol-specific assertions.
+--validate builds the baseline, compiles generated drafts, then executes eligible local unit/fuzz/invariant candidates with forge test. Fork/PoC/non-executable drafts are compile-only; passing tests are not proof of protocol security.
+--strict fails if selected types remain scaffolds/unverified, and also requires --validate to pass.
 """)
         return 0
 
@@ -550,6 +959,8 @@ The generator does not claim coverage or invent protocol-specific assertions.
     types_raw: str | None = None
     output_dir = Path(".audit/test-gen")
     force = False
+    validate = False
+    strict = False
     positionals: list[str] = []
     index = 0
     while index < len(args):
@@ -570,6 +981,10 @@ The generator does not claim coverage or invent protocol-specific assertions.
             output_dir = Path(value.split("=", 1)[1]).expanduser()
         elif value == "--force":
             force = True
+        elif value == "--validate":
+            validate = True
+        elif value == "--strict":
+            strict = True
         elif value.startswith("-"):
             return _error(f"Unknown option: {value}")
         else:
@@ -584,19 +999,30 @@ The generator does not claim coverage or invent protocol-specific assertions.
     except ValueError as exc:
         return _error(str(exc))
 
-    root = Path(project_root).expanduser().resolve() if project_root is not None else Path.cwd().resolve()
-    if not (root / "foundry.toml").exists():
-        return _error("No foundry.toml found in the current directory. Run this from a Foundry project.")
+    root = Path(project_root).expanduser().resolve() if project_root else Path.cwd().resolve()
+    config_path = _foundry_config_path(root)
+    if not config_path.is_file():
+        return _error(f"No Foundry config found at {config_path}. Run this from a Foundry project.")
     found = _contract_source(root, name)
     if not found:
         return _error(f"Could not find contract '{name}' under {_source_root(root)}.")
     source_path, source = found
+    source_label = source_path.relative_to(root).as_posix() if source_path.is_relative_to(root) else str(source_path)
+    source_sha256 = hashlib.sha256(source.encode("utf-8")).hexdigest()
     constructor_args = _constructor_args(source, name)
     constructor_values = _constructor_values(constructor_args)
     is_abstract = bool(re.search(r"\babstract\s+contract\s+" + re.escape(name) + r"\b", source))
     local_deploy = constructor_values is not None and not is_abstract
     fuzz_property = _find_simple_fuzz_property(source, name)
+    analysis = analyse_contract(root, name, source_path, source, _foundry_test_dir(root)) if analyse_contract else {
+        "contract": name, "source": str(source_path), "functions": [], "state_variables": [],
+        "security_surfaces": {}, "profiles": [], "imports": [], "existing_tests": {},
+        "audit_evidence": {"files": [], "signals": [], "note": "Analysis module unavailable."},
+        "limitations": ["Evidence analysis module unavailable; reinstall LowkeyCast."],
+    }
+    analysis["_source_text"] = source
     import_path = _rel_import(root, source_path)
+    source_pragma = _solidity_pragma(source)
     output_dir = output_dir if output_dir.is_absolute() else root / output_dir
     output_dir = output_dir / _solidity_name(name)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -604,13 +1030,21 @@ The generator does not claim coverage or invent protocol-specific assertions.
     target = config.get("target")
     generated: list[str] = []
     skipped: list[dict[str, str]] = []
+    poc_replay: dict[str, Any] | None = None
     for kind in selected:
         suffix = ".t.sol"
         if kind == "formal":
             suffix, _ = _formal_template(name, fuzz_property)
         filename = output_dir / f"LowkeyGenerated{kind.title()}_{_solidity_name(name)}{suffix}"
         try:
-            content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property)
+            if kind == "poc":
+                replay = _recorded_call_poc(root, name, target, source_pragma)
+                if replay is not None:
+                    content, poc_replay = replay
+                else:
+                    content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
+            else:
+                content = _render(kind, name, import_path, target, local_deploy, constructor_values, is_abstract, fuzz_property, analysis, source_pragma)
         except ValueError as exc:
             skipped.append({"type": kind, "reason": str(exc)})
             continue
@@ -622,32 +1056,108 @@ The generator does not claim coverage or invent protocol-specific assertions.
         label = filename.relative_to(root) if filename.is_relative_to(root) else filename
         generated.append(str(label))
 
+    generation_assessment = _generation_assessment(
+        selected,
+        local_deploy=local_deploy,
+        is_abstract=is_abstract,
+        fuzz_property=fuzz_property,
+        target=target,
+        constructor_values=constructor_values,
+        recorded_poc=poc_replay is not None,
+    )
+    for skipped_item in skipped:
+        generation_assessment[skipped_item["type"]] = {
+            "level": "not-generated",
+            "protocol_security_established": False,
+            "note": skipped_item["reason"],
+        }
+
+    strict_blockers = [
+        {"type": kind, "level": item["level"], "note": item["note"]}
+        for kind, item in generation_assessment.items()
+        if item["level"] != "executable-candidate"
+    ]
+
     report = {
         "contract": name,
-        "source": str(source_path.relative_to(root)),
+        "source": source_label,
+        "source_sha256": source_sha256,
         "constructor": "abstract-contract" if is_abstract else ("unknown" if constructor_args is None else ("zero-argument" if not constructor_args.strip() else ("arguments-required" if constructor_values is not None else "unsupported-arguments"))),
         "constructor_parameters": constructor_args,
         "constructor_placeholders": constructor_values,
+        "solidity_pragma": source_pragma,
         "fuzz_property": fuzz_property,
+        "analysis": {key: value for key, value in analysis.items() if not key.startswith("_")},
         "requested_types": selected,
+        "strict": strict,
+        "generation_assessment": generation_assessment,
+        "strict_blockers": strict_blockers,
+        "poc_replay": poc_replay,
         "generated": generated,
         "skipped": skipped,
         "warning": "Scaffolds are not protocol proofs. Complete TODO assertions before relying on them.",
+        "validation": {"requested": False, "status": "not-requested"},
     }
+    if validate:
+        validation = _validate_generated(root, generated)
+        if "formal" in selected:
+            validation["unvalidated_types"] = ["formal"]
+            if validation.get("status") == "passed":
+                validation["status"] = "partial"
+                validation["detail"] += " Solidity drafts compiled, but the generated formal specification was not checked by Forge."
+            elif validation.get("status") == "not-applicable":
+                validation["detail"] += " Formal specifications require their configured verifier; Forge cannot validate them."
+        report["validation"] = validation
+    if strict:
+        if not validate:
+            strict_blockers.append({
+                "type": "validation",
+                "level": "not-requested",
+                "note": "Use --validate so Forge compiles the generated Solidity drafts before strict readiness can pass.",
+            })
+        elif report["validation"].get("status") != "passed":
+            strict_blockers.append({
+                "type": "validation",
+                "level": report["validation"].get("status", "unknown"),
+                "note": report["validation"].get("detail", "Generated drafts were not fully validated."),
+            })
+    plan_path = output_dir / "test-plan.md"
+    if plan_path.exists() and not force:
+        plan_path = output_dir / "test-plan.latest.md"
+    plan_content = render_test_plan({key: value for key, value in analysis.items() if not key.startswith("_")}, selected) if render_test_plan else "# Test plan unavailable\n\nReinstall LowkeyCast to restore the analysis module.\n"
+    plan_path.write_text(plan_content, encoding="utf-8")
+
     report_path = output_dir / "report.json"
     if report_path.exists() and not force:
         report_path = output_dir / "report.latest.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     print(f"Test-generation drafts for {name}")
-    print(f"Source: {source_path.relative_to(root)}")
+    print(f"Source: {source_label}")
     print(f"Output: {output_dir.relative_to(root) if output_dir.is_relative_to(root) else output_dir}")
     for path in generated:
         print(f"  generated  {path}")
     for item in skipped:
         print(f"  skipped    {item['type']}: {item['reason']}")
-    print("Review TODOs: no protocol-specific behavior or invariant is inferred automatically.")
+    print("Generation assessment:")
+    for kind, assessment in report["generation_assessment"].items():
+        print(f"  {kind}: {assessment['level']} — {assessment['note']}")
+    print("Without --validate, generation is compile-only. With --validate, eligible local unit/fuzz/invariant candidates are compiled and executed. No generated artifact establishes protocol security.")
+    if strict and strict_blockers:
+        print("Strict readiness check failed:")
+        for blocker in strict_blockers:
+            print(f"  {blocker['type']}: {blocker['level']} — {blocker['note']}")
+    validation = report["validation"]
+    if validation.get("requested"):
+        print(f"Validation: {validation.get('status')} - {validation.get('detail', '')}")
+    print(f"Plan: {plan_path.relative_to(root) if plan_path.is_relative_to(root) else plan_path}")
     print(f"Report: {report_path.relative_to(root) if report_path.is_relative_to(root) else report_path}")
+    if validate and report["validation"].get("status") != "passed":
+        # A requested validation that could not compile any Solidity draft is not a pass.
+        # In particular, Forge cannot validate Certora CVL/worksheet output.
+        return 1
+    if strict and strict_blockers:
+        return 1
     return 0
 
 
