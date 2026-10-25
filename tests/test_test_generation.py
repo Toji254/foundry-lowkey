@@ -771,5 +771,39 @@ class TestGenerationTests(unittest.TestCase):
         self.assertIn("UserOperation hash domain separation", plan)
         self.assertIn("duplicate claims", plan)
 
+
+    def test_source_cues_recognize_amm_account_abstraction_flashloan_and_claim_profiles(self):
+        from test_generation_analysis import analyse_contract
+
+        source = """pragma solidity ^0.8.20;
+contract Protocol {
+    address public entryPoint;
+    bytes32 public merkleRoot;
+    bool public claimed;
+    function swap() external {}
+    function getReserves() external {}
+    function validateUserOp() external {}
+    function flashLoan() external {}
+    function onFlashLoan() external {}
+    function claim(bytes32[] calldata proof) external {}
+    function cancelListing() external {}
+    function royalty() external {}
+    function safeTransferFrom() external {}
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_path = root / "Protocol.sol"
+            source_path.write_text(source, encoding="utf-8")
+            analysis = analyse_contract(root, "Protocol", source_path, source)
+        for profile in (
+            "AMM / DEX",
+            "ERC-4337 account abstraction",
+            "flash-loan / callback",
+            "Merkle claims / airdrop",
+            "NFT marketplace",
+        ):
+            self.assertIn(profile, analysis["profiles"], profile)
+
 if __name__ == "__main__":
     unittest.main()
