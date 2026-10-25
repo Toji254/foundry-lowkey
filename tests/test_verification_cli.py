@@ -1,7 +1,9 @@
 import json
+import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +26,26 @@ class VerificationCliTests(unittest.TestCase):
         self.assertIn("fuzz", forge["supported_test_kinds"])
         slither = next(item for item in report["engines"] if item["name"] == "slither")
         self.assertEqual(tuple(slither["test_kinds"]), ())
+
+    def test_submitted_remote_proof_does_not_return_success_exit_code(self):
+        report = {
+            "test_kind": "formal",
+            "profile": "deep",
+            "execution_mode": "serial",
+            "selected_count": 1,
+            "considered_engines": [],
+            "summary": {
+                "passed": 0, "submitted": 1, "inconclusive": 0,
+                "failed": 0, "timeout": 0, "unsupported": 0, "error": 0,
+            },
+            "report_path": ".audit/verification/campaign.json",
+        }
+        output = io.StringIO()
+        with patch.object(verification_cli, "run_campaign_manifest", return_value=report):
+            with redirect_stdout(output):
+                code = verification_cli.run_cli(["run", "campaign.json"])
+        self.assertEqual(code, 1)
+        self.assertIn("submitted: 1", output.getvalue())
 
     def test_campaign_manifest_executes_and_saves_native_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
