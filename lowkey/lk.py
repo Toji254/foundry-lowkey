@@ -3956,19 +3956,19 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
 
     # Convert old machine-style errors emitted by older Lowkey subcommands or
     # stored command output into the same human-friendly format as new errors.
-    legacy = re.match(r"(?is)^\\s*ERROR\\s*\\[([^\\]]+)\\]\\s*(?:\\r?\\n|$)(.*)$", text)
+    legacy = re.match(r"(?is)^\s*ERROR\s*\[([^\]]+)\]\s*(?:\r?\n|$)(.*)$", text)
     if legacy:
         legacy_kind = legacy.group(1).strip().upper()
         body = legacy.group(2).strip()
-        reason_match = re.search(r"(?im)^\\s*Reason:\\s*(.*)$", body)
-        detail_match = re.search(r"(?im)^\\s*Details?:\\s*(.*)$", body)
+        reason_match = re.search(r"(?im)^\s*Reason:\s*(.*)$", body)
+        detail_match = re.search(r"(?im)^\s*Details?:\s*(.*)$", body)
         reason = (reason_match.group(1).strip() if reason_match else
                   detail_match.group(1).strip() if detail_match else None)
-        what_match = re.search(r"(?im)^\\s*What happened:\\s*(.*)$", body)
-        next_match = re.search(r"(?im)^\\s*Next(?: step)?:\\s*(.*)$", body)
-        legacy_tx = re.search(r"(?im)^\\s*Transaction broadcast:\\s*(.*)$", body)
-        selector_match = re.search(r"(?im)^\\s*Selector:\\s*(.*)$", body)
-        raw_data_match = re.search(r"(?im)^\\s*Raw revert data:\\s*(.*)$", body)
+        what_match = re.search(r"(?im)^\s*What happened:\s*(.*)$", body)
+        next_match = re.search(r"(?im)^\s*Next(?: step)?:\s*(.*)$", body)
+        legacy_tx = re.search(r"(?im)^\s*Transaction broadcast:\s*(.*)$", body)
+        selector_match = re.search(r"(?im)^\s*Selector:\s*(.*)$", body)
+        raw_data_match = re.search(r"(?im)^\s*Raw revert data:\s*(.*)$", body)
         technical = "; ".join(
             part for part in (
                 f"selector {selector_match.group(1).strip()}" if selector_match else None,
