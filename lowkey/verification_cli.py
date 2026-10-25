@@ -53,16 +53,13 @@ def engine_inventory(root: Path | None = None) -> dict[str, Any]:
     project = inspect_project(project_root)
     registry = default_registry()
     inventory = registry.inventory()
+    matrix = registry.support_matrix(project)
     for engine in inventory:
-        cap_name = engine["name"]
-        adapter = next(adapter for adapter in registry._adapters.values() if adapter.capability.name == cap_name)
-        support = {}
-        for kind in TEST_KINDS:
-            ok, reason = adapter.supports(project, kind)
-            if ok:
-                support[kind] = reason
-        engine["supported_test_kinds"] = support
-        engine["notes"] = engine.get("notes", "")
+        support = matrix[engine["name"]]
+        engine["support_matrix"] = support["test_kinds"]
+        engine["supported_test_kinds"] = [
+            kind for kind, item in support["test_kinds"].items() if item["supported"]
+        ]
     return {"project": project, "engines": inventory}
 
 
@@ -108,8 +105,8 @@ def run_campaign_manifest(
         if not destination.is_absolute():
             destination = root / destination
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(json.dumps(campaign, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         campaign["report_path"] = str(destination)
+        destination.write_text(json.dumps(campaign, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return campaign
 
 
