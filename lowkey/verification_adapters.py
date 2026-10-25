@@ -314,11 +314,17 @@ class ExecutableAdapter:
                 stderr += marker
             if status == "timeout":
                 stderr += f"\nLOWKEY_TIMEOUT_SECONDS={timeout}"
+            elif status == "resource_limit":
+                stderr += f"\nLOWKEY_RESOURCE_LIMIT_MB={memory_limit_mb}"
         except OSError as exc:
             return EngineResult(self.capability.name, "error", exit_code=127, summary=str(exc))
         return EngineResult(
             engine=self.capability.name, status=status, exit_code=code,
-            summary=f"{' '.join(command)} exited with {code}",
+            summary=(
+                f"{' '.join(command)} exceeded the {memory_limit_mb} MiB process-group RSS budget"
+                if status == "resource_limit"
+                else f"{' '.join(command)} exited with {code}"
+            ),
             duration_seconds=round(time.monotonic() - started_at, 6),
             raw_stdout=stdout, raw_stderr=stderr,
             raw_evidence={
