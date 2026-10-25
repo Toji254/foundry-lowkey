@@ -74,9 +74,9 @@ Every generated artifact should record: intended property, preconditions, actors
 ## Gaps still open
 
 - The common bounded process adapter and serial campaign runner exist, but tool-specific argument builders/configuration parsers for Echidna, Medusa, Halmos, and Certora remain open. Those engines must receive explicit native arguments/harnesses/specifications.
-- Project-aware generation is currently Solidity/Foundry-specific. Other language/build-system generation adapters and a shared generation plugin contract remain open.
+- The generation plugin contract exists, but project-aware generation is currently Solidity/Foundry-specific. Other language/build-system generators remain open.
 - Integration, exploit, and regression outputs are honest starters unless concrete setup/bug evidence is supplied; they are not automatically meaningful tests yet.
 - The recognized setter/getter fuzz/invariant/formal path needs compilation and real engine validation, including checking for vacuous or invalid specifications.
-- Mutation/buggy-fixture validation and mutation-score gates remain to be built.
-- Real-project benchmark matrix and reproducible campaign reports remain incomplete.
+- Mutation execution and optional mutation-score gates exist, but broad buggy-fixture validation and trustworthy mutation-score measurements across project families remain open.
+- Reproducible campaign and benchmark report formats exist. The real-project matrix is still a plan until pinned project revisions have actually been run and results retained.
 - Capability claims need per-tool version checks, supported-project checks, integration tests, and evidence provenance.
