@@ -393,7 +393,7 @@ def _validate_generated(root: Path, generated: list[str]) -> dict[str, Any]:
             if source_path.name.startswith((
                 "LowkeyGeneratedUnit_", "LowkeyGeneratedFuzz_", "LowkeyGeneratedInvariant_"
             )) and re.search(
-                r"\\bfunction\\s+(?:test[A-Za-z0-9_]*|invariant_[A-Za-z0-9_]*)\\s*\\(", searchable
+                r"\bfunction\s+(?:test[A-Za-z0-9_]*|invariant_[A-Za-z0-9_]*)\s*\(", searchable
             ):
                 executable_files.append(temp_path)
 
