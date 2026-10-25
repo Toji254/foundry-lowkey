@@ -99,6 +99,37 @@ class ToolAdapter(Protocol):
         """Run one bounded campaign and preserve native output/evidence."""
 
 
+def _process_group_rss_bytes(process_group_id: int) -> int | None:
+    """Return summed resident memory for a POSIX process group on Linux."""
+    proc_root = Path("/proc")
+    if os.name != "posix" or not proc_root.is_dir():
+        return None
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        entries = list(proc_root.iterdir())
+    except (OSError, ValueError, AttributeError):
+        return None
+    total_pages = 0
+    found = False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8")
+            close_paren = stat.rfind(")")
+            if close_paren < 0:
+                continue
+            fields = stat[close_paren + 2:].split()
+            if len(fields) < 22 or int(fields[2]) != process_group_id:
+                continue
+            resident_pages = int((entry / "statm").read_text(encoding="ascii").split()[1])
+            total_pages += resident_pages
+            found = True
+        except (OSError, ValueError, IndexError, PermissionError):
+            continue
+    return total_pages * page_size if found else None
+
+
 class ExecutableAdapter:
     """Minimal adapter base for tools whose availability is executable-based."""
 
@@ -159,6 +190,16 @@ class ExecutableAdapter:
             timeout = max(1, min(int(budget.get("timeout_seconds", 120)), 7200))
         except (TypeError, ValueError):
             timeout = 120
+        memory_limit_mb = budget.get("max_memory_mb")
+        if memory_limit_mb is not None:
+            try:
+                memory_limit_mb = int(memory_limit_mb)
+            except (TypeError, ValueError):
+                return EngineResult(self.capability.name, "unsupported", summary="budget.max_memory_mb must be a positive integer")
+            if memory_limit_mb < 1:
+                return EngineResult(self.capability.name, "unsupported", summary="budget.max_memory_mb must be a positive integer")
+            if os.name != "posix" or not Path("/proc").is_dir():
+                return EngineResult(self.capability.name, "unsupported", summary="budget.max_memory_mb enforcement currently requires Linux /proc process-group accounting")
         command = [self.capability.command, *raw_args]
         started_at = time.monotonic()
         try:
@@ -197,16 +238,33 @@ class ExecutableAdapter:
             ]
             for reader in readers:
                 reader.start()
-            try:
-                process.wait(timeout=timeout)
-                code = process.returncode
-                status = "passed" if code == 0 else "failed"
-            except subprocess.TimeoutExpired:
+            deadline = started_at + timeout
+            peak_rss_bytes = 0
+            timed_out = False
+            resource_limit_exceeded = False
+            while True:
+                code = process.poll()
+                if code is not None:
+                    status = "passed" if code == 0 else "failed"
+                    break
+                if memory_limit_mb is not None:
+                    rss_bytes = _process_group_rss_bytes(process.pid)
+                    if rss_bytes is not None:
+                        peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
+                        if rss_bytes > memory_limit_mb * 1024 * 1024:
+                            resource_limit_exceeded = True
+                            break
+                remaining_seconds = deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    timed_out = True
+                    break
+                time.sleep(min(0.1, remaining_seconds))
+            if timed_out or resource_limit_exceeded:
                 try:
                     if os.name == "posix":
                         os.killpg(process.pid, signal.SIGTERM)
                     else:
-                        process.kill()
+                        process.terminate()
                 except OSError:
                     pass
                 try:
@@ -220,7 +278,10 @@ class ExecutableAdapter:
                     except OSError:
                         pass
                     process.wait()
-                code, status = 124, "timeout"
+                if resource_limit_exceeded:
+                    code, status = 137, "resource_limit"
+                else:
+                    code, status = 124, "timeout"
             # A tool may exit while a child it spawned still holds inherited
             # stdout/stderr pipes open. Do not leave daemon drain threads or
             # background descendants behind after a campaign.
@@ -262,6 +323,9 @@ class ExecutableAdapter:
             raw_stdout=stdout, raw_stderr=stderr,
             raw_evidence={
                 "argv": command, "cwd": str(root), "timeout_seconds": timeout,
+                "max_memory_mb": memory_limit_mb,
+                "peak_process_group_rss_bytes": peak_rss_bytes if memory_limit_mb is not None else None,
+                "resource_limit_exceeded": resource_limit_exceeded,
                 "output_limit_bytes": output_limit,
                 "stdout_truncated": truncated["stdout"],
                 "stderr_truncated": truncated["stderr"],
@@ -773,6 +837,7 @@ class CapabilityRegistry:
                 "inconclusive": sum(row["result"]["status"] == "inconclusive" for row in results),
                 "failed": sum(row["result"]["status"] == "failed" for row in results),
                 "timeout": sum(row["result"]["status"] == "timeout" for row in results),
+                "resource_limit": sum(row["result"]["status"] == "resource_limit" for row in results),
                 "unsupported": sum(row["result"]["status"] == "unsupported" for row in results),
                 "error": sum(row["result"]["status"] == "error" for row in results),
             },
