@@ -3893,14 +3893,49 @@ def _decode_contract_revert(error_text, config=None, target=None):
     return None
 
 
+def _friendly_error(title, *, reason=None, what=None, next_step=None, transaction=None, technical=None):
+    """Render error messages for people first; keep optional diagnostics secondary."""
+    lines = [f"Error: {title}"]
+    if reason:
+        reason_lines = str(reason).strip().splitlines()
+        if reason_lines:
+            lines.append(f"  Reason: {reason_lines[0].strip()}")
+            lines.extend(f"  {line.strip()}" for line in reason_lines[1:] if line.strip())
+    if what:
+        lines.append(f"  What happened: {what}")
+    if next_step:
+        lines.append(f"  Next step: {next_step}")
+    if transaction:
+        lines.append(f"  Transaction: {transaction}")
+    if technical:
+        detail = str(technical).strip()
+        if len(detail) > 2000:
+            detail = detail[:2000] + "\n[technical details truncated]"
+        lines.append(f"  Technical details: {detail}")
+    return "\n".join(lines)
+
+
+def _clean_error_detail(text):
+    """Remove common wrappers without discarding the underlying diagnostic."""
+    detail = str(text or "").strip()
+    detail = re.sub(r"(?i)^(?:error|fatal|exception)\s*:\s*", "", detail).strip()
+    detail = re.sub(
+        r"(?i)^server returned an error response:\s*(?:error code \d+\s*:\s*)?",
+        "",
+        detail,
+    ).strip()
+    return detail
+
+
 def _format_cli_error(error_text, *, code=None, command=None, config=None, target=None, transaction_hash=None, source="cast"):
-    """Central error formatter for CLI, RPC, EVM revert, and runtime failures."""
+    """Use one approachable, action-oriented format for Lowkey, RPC, and EVM errors."""
     text = str(error_text or "").strip()
     lowered = text.lower()
     if not text:
         text = "The command failed without diagnostic output."
         lowered = text.lower()
 
+    is_send = str(command or "").lower() in {"send", "s"}
     is_gas_estimation = "failed to estimate gas" in lowered
     looks_reverted = (
         "execution reverted" in lowered
@@ -3911,37 +3946,76 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             for payload in _revert_payloads(text)
         )
     )
+
+    def transaction_status():
+        if transaction_hash:
+            return f"Submitted; transaction hash {transaction_hash}. Use lk receipt to check the final status."
+        if is_gas_estimation:
+            return "Not sent. The RPC rejected the call before broadcasting a transaction."
+        return "Not confirmed. Check the sender nonce and receipt before retrying."
+
     if looks_reverted:
         decoded = _decode_contract_revert(text, config=config, target=target)
         if decoded:
-            lines = [f"ERROR [{decoded['kind']}]",
-                     f"  Reason: {decoded['reason']}"]
-            if decoded.get("kind") == "CUSTOM REVERT" and decoded.get("selector"):
-                lines.append(f"  Selector: {decoded['selector']}")
-                if decoded.get("data"):
-                    lines.append(f"  Raw revert data: {decoded['data']}")
-            if transaction_hash:
-                lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
-            elif is_gas_estimation:
-                lines.append("  Transaction broadcast: no (gas estimation failed).")
-            elif command == "send":
-                lines.append("  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying.")
-            return "\n".join(lines)
+            kind = decoded.get("kind")
+            reason = str(decoded.get("reason") or "The contract reverted without a readable reason.")
+            technical_parts = []
+            selector = decoded.get("selector")
+            data = decoded.get("data")
+            if selector:
+                technical_parts.append(f"selector {selector}")
+            if data and (kind == "CUSTOM REVERT" or not reason):
+                technical_parts.append(f"revert data {data}")
+
+            if kind == "CUSTOM REVERT" and reason.lower().startswith("unknown custom error selector"):
+                reason = "The contract returned a custom error that Lowkey could not identify."
+                technical_parts.append(str(decoded.get("reason") or ""))
+                next_step = "Load the matching contract ABI with lk abi <artifact>, then repeat the call to decode the custom error."
+            elif kind == "CUSTOM REVERT":
+                next_step = "Read the named custom error and its arguments, then check which input or contract condition triggered it."
+            elif kind == "SOLIDITY PANIC":
+                next_step = "Review the arithmetic, array indexes, and bounds related to this panic."
+            elif "empty revert data" in reason.lower():
+                reason = "The contract reverted without providing an error message."
+                next_step = "Check the function's requirements and use lk trace if a transaction was submitted."
+            else:
+                next_step = "Check the function's require/revert conditions and the values you supplied."
+
+            if is_send and is_gas_estimation and not transaction_hash:
+                title = "Transaction not sent"
+                what = "The contract rejected the call while Lowkey was estimating gas, before submitting the transaction."
+            elif is_send and transaction_hash:
+                title = "The submitted transaction reported a revert"
+                what = "A transaction hash was returned. Check its receipt to confirm whether it was mined and how it finished."
+            elif is_send:
+                title = "Couldn't confirm whether the transaction was sent"
+                what = "The send command reported a revert, but Lowkey has no transaction hash to confirm submission."
+            else:
+                title = "Contract call reverted"
+                what = "This call was simulated; it stopped at the revert and did not save state changes."
+
+            transaction = transaction_status() if is_send else "No transaction was sent; this was a simulated call."
+            return _friendly_error(
+                title,
+                reason=reason,
+                what=what,
+                next_step=next_step,
+                transaction=transaction,
+                technical="; ".join(part for part in technical_parts if part) or None,
+            )
 
     if "insufficient funds" in lowered or "insufficient balance for gas" in lowered:
-        lines = ["ERROR [INSUFFICIENT FUNDS]", f"  Details: {text}",
-                 "  Next: check the sender's native-token balance and the transaction's gas/value requirements."]
-        if command == "send":
-            if transaction_hash:
-                lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
-            elif is_gas_estimation:
-                lines.append("  Transaction broadcast: no (gas estimation failed).")
-            else:
-                lines.append("  Transaction broadcast: no (the node rejected the transaction).")
-        return "\n".join(lines)
+        title = "Not enough funds to send this transaction" if is_send else "Insufficient funds"
+        return _friendly_error(
+            title,
+            reason="The sending account cannot cover the transaction value and required network fees.",
+            what="The node rejected the request because the account's native-token balance is too low.",
+            next_step="Check the sender's balance with lk balance and reduce the transaction value or fund the account.",
+            transaction=transaction_status() if is_send else None,
+            technical=_clean_error_detail(text),
+        )
 
-    # A gas-estimation failure can have a useful provider reason without being
-    # a Solidity revert (e.g. fee, balance, or transaction-parameter rejection).
+    # Gas estimation can fail for reasons other than a Solidity revert.
     if is_gas_estimation:
         match = re.search(r"(?is)failed to estimate gas\s*:?\s*(.*)", text)
         detail = match.group(1).strip() if match else text
@@ -3951,12 +4025,14 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
             detail,
         ).strip()
         detail = detail.split(", data:", 1)[0].strip().rstrip(":")
-        lines = ["ERROR [GAS ESTIMATION]", f"  Reason: {detail or 'the provider rejected the transaction during estimation'}"]
-        if transaction_hash:
-            lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
-        else:
-            lines.append("  Transaction broadcast: no (gas estimation failed).")
-        return "\n".join(lines)
+        return _friendly_error(
+            "Transaction not sent",
+            reason=_clean_error_detail(detail) or "The node rejected the transaction during gas estimation.",
+            what="Lowkey checks whether a transaction can execute before broadcasting it. This check failed, so no transaction was submitted.",
+            next_step="Check the function arguments, account balance, and transaction value/fee settings.",
+            transaction=transaction_status(),
+            technical=None if detail == "The node rejected the transaction during gas estimation." else _clean_error_detail(text),
+        )
 
     if any(marker in lowered for marker in (
         "connection refused", "failed to connect", "could not connect",
@@ -3964,121 +4040,113 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         "no such host", "failed to fetch", "error sending request",
         "connection timed out", "remote end closed connection",
     )):
-        detail = text
-        lines = ["ERROR [RPC CONNECTION]", f"  Details: {detail}",
-                 "  Next: check the active RPC with 'lk rpc' and verify that the node/network is reachable."]
-        if command == "send":
-            if transaction_hash:
-                lines.append(f"  Transaction broadcast: yes ({transaction_hash}).")
-            else:
-                lines.append("  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying.")
-        return "\n".join(lines)
+        return _friendly_error(
+            "Couldn't connect to the RPC node",
+            reason="Lowkey could not reach the configured blockchain node.",
+            what="The request could not be sent to or answered by the RPC endpoint.",
+            next_step="Check the active endpoint with lk rpc and make sure Anvil or the remote node is running and reachable.",
+            transaction=transaction_status() if is_send else None,
+            technical=_clean_error_detail(text),
+        )
 
     if "timed out" in lowered or "timeout" in lowered:
-        rendered = (
-            "ERROR [TIMEOUT]\n"
-            f"  Details: {text}\n"
-            "  Next: check whether the command or RPC is still responsive, then retry."
+        return _friendly_error(
+            "The command timed out",
+            reason=_clean_error_detail(text),
+            what="Lowkey did not receive a complete response before the time limit.",
+            next_step="Check whether the RPC node or external tool is still responsive. If this was a send, check its receipt/nonce before retrying.",
+            transaction=transaction_status() if is_send else None,
         )
-        if command == "send":
-            if transaction_hash:
-                rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
-            else:
-                rendered += "\n  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying."
-        return rendered
 
     if "nonce too low" in lowered or "replacement transaction underpriced" in lowered:
-        rendered = (
-            "ERROR [TRANSACTION NONCE/FEES]\n"
-            f"  Details: {text}\n"
-            "  Next: inspect the sender nonce and pending transactions before retrying."
+        return _friendly_error(
+            "The node rejected the transaction's nonce or fee settings",
+            reason=_clean_error_detail(text),
+            what="The sender's nonce or replacement fee does not match the node's pending transaction state.",
+            next_step="Inspect the sender's pending transactions and nonce before attempting another send.",
+            transaction=transaction_status() if is_send else None,
         )
-        if command == "send":
-            if transaction_hash:
-                rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
-            else:
-                rendered += "\n  Transaction broadcast: no (the node rejected the nonce/fee parameters)."
-        return rendered
 
     if any(marker in lowered for marker in (
         "unexpected argument", "unknown argument", "unknown option",
         "unrecognized option", "invalid value", "invalid type",
         "missing required argument", "could not parse argument",
     )):
-        rendered = (
-            "ERROR [INVALID INPUT]\n"
-            f"  Details: {text}\n"
-            + (f"  Next: review 'lk {command} --h' for accepted arguments and examples.\n" if command else "")
-        ).rstrip()
-        if command == "send":
-            if transaction_hash:
-                rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
-            else:
-                rendered += "\n  Transaction broadcast: no (input validation failed)."
-        return rendered
+        return _friendly_error(
+            "Invalid command input",
+            reason=_clean_error_detail(text),
+            next_step=(f"Run lk {command} --h to see accepted arguments and examples." if command else "Check the command's help for accepted arguments and examples."),
+            transaction="Not sent; the command input was rejected." if is_send else None,
+        )
 
     if any(marker in lowered for marker in (
         "no such file or directory", "command not found", "executable file not found",
         "not found in path", "not found on path", "no module named",
     )):
-        rendered = (
-            "ERROR [MISSING DEPENDENCY OR FILE]\n"
-            f"  Details: {text}\n"
-            "  Next: verify the named executable/module/path exists and that required tools are installed."
+        return _friendly_error(
+            "A required tool, file, or module wasn't found",
+            reason=_clean_error_detail(text),
+            next_step="Check the path and install or restore the missing dependency.",
+            transaction="Not sent; the required command could not run." if is_send else None,
         )
-        if command == "send":
-            rendered += "\n  Transaction broadcast: no (the command could not be executed)."
-        return rendered
 
     if source == "runtime":
-        details = text if len(text) <= 4000 else text[:4000] + "\n  [diagnostic truncated after 4000 characters]"
-        detail_lines = "\n".join("  " + line for line in details.splitlines()) or "  (no details)"
-        operation = f"  Operation: lk {command}\n" if command else ""
-        exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
-        return "ERROR [RUNTIME]\n" + operation + exit_code + "  Details:\n" + detail_lines
+        return _friendly_error(
+            "Lowkey encountered an internal error",
+            reason=_clean_error_detail(text),
+            next_step="Retry once. If this happens again, share this message and the runtime evidence file under .audit/evidence.",
+        )
 
-    # Lowkey validation/configuration failures use the same visible shape,
-    # while preserving the existing detailed explanation and usage hints.
     if source == "lowkey":
-        if text.startswith(("ERROR [", "LOWKEY RUNTIME ERROR")):
+        if text.startswith(("Error: ", "ERROR [", "LOWKEY RUNTIME ERROR")):
+            # Preserve a specific user-facing message already rendered by a lower layer.
             return text
         if lowered.startswith("usage:") or any(marker in lowered for marker in (
             "unknown lowkey command", "unknown lk ", "unknown option",
             "unexpected argument", "needs an actor name", "--repeat", "--times",
         )):
-            category = "USAGE"
-        elif any(marker in lowered for marker in (
+            return _friendly_error(
+                "Check the command syntax",
+                reason=_clean_error_detail(text),
+                next_step=(f"Run lk {command} --h for command usage." if command else "Run lk --help for the command list."),
+            )
+        if any(marker in lowered for marker in (
             "no target", "set target first", "no rpc", "rpc is not configured",
             "not configured", "no address or target selected",
         )):
-            category = "CONFIGURATION"
-        elif any(marker in lowered for marker in (
+            return _friendly_error(
+                "Lowkey needs configuration before it can continue",
+                reason=_clean_error_detail(text),
+                next_step="Set the required target, RPC endpoint, or actor, then repeat the command.",
+            )
+        if any(marker in lowered for marker in (
             "not found", "could not resolve", "unavailable", "not installed",
         )):
-            category = "DEPENDENCY OR RESOURCE"
-        else:
-            category = "LOWKEY"
-        details = text
-        if len(details) > 4000:
-            details = details[:4000] + "\n  [diagnostic truncated after 4000 characters]"
-        detail_lines = "\n".join("  " + line for line in details.splitlines()) or "  (no details)"
-        operation = f"  Operation: lk {command}\n" if command else ""
-        exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
-        return f"ERROR [{category}]\n" + operation + exit_code + "  Details:\n" + detail_lines
+            return _friendly_error(
+                "A required resource wasn't found",
+                reason=_clean_error_detail(text),
+                next_step="Check the name/path and verify the required dependency is installed.",
+            )
+        return _friendly_error(
+            "Lowkey couldn't complete the command",
+            reason=_clean_error_detail(text),
+            next_step="Review the reason above, correct the input or configuration, and try again.",
+        )
 
-    operation = f"  Operation: lk {command}\n" if command else ""
-    exit_code = f"  Exit code: {code}\n" if isinstance(code, int) and code else ""
-    details = text
-    if len(details) > 4000:
-        details = details[:4000] + "\n  [diagnostic truncated after 4000 characters]"
-    detail_lines = "\n".join("  " + line for line in details.splitlines()) or "  (no details)"
-    rendered = "ERROR [COMMAND]\n" + operation + exit_code + "  Details:\n" + detail_lines
-    if command == "send":
-        if transaction_hash:
-            rendered += f"\n  Transaction broadcast: yes ({transaction_hash})."
-        else:
-            rendered += "\n  Transaction broadcast: not confirmed; inspect the receipt/nonce before retrying."
-    return rendered
+    detail = _clean_error_detail(text)
+    if is_send:
+        return _friendly_error(
+            "The command failed",
+            reason=detail,
+            what="Lowkey could not determine a more specific cause from the available diagnostic.",
+            next_step="Check the arguments and RPC status. If the command was a send, confirm the receipt/nonce before retrying.",
+            transaction=transaction_status(),
+        )
+    return _friendly_error(
+        "The command failed",
+        reason=detail,
+        next_step="Check the message above, the command's help, and the active RPC/configuration.",
+    )
 
 
 def _lowkey_command_error(message, code=2, *, capture=False, command=None, config=None, target=None):
