@@ -827,6 +827,8 @@ class CapabilityRegistry:
         return {
             "profile": profile,
             "test_kind": test_kind,
+            "budget": dict(budget),
+            "profile_limits": dict(limits),
             "execution_mode": "serial",
             "duration_seconds": round(time.monotonic() - campaign_started_at, 6),
             "engine_duration_seconds": round(sum(
