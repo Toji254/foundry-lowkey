@@ -14896,7 +14896,7 @@ START HERE
   lk doctor                          Check Python, Forge, Cast, Anvil, and optional tools.
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
-  lk test-gen [Contract]             Draft unit/fuzz/invariant/integration/fork/PoC test scaffolds.
+  lk test-gen [Contract]             Draft unit/fuzz/invariant/integration/fork/PoC/regression scaffolds.
   lk lab                             Start/rebuild a disposable local audit lab.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
