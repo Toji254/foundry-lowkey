@@ -3670,6 +3670,55 @@ def _rpc_read_fallback(config, target, function_item, values):
         return None
     return result
 
+def _decode_solidity_revert_reason(error_text):
+    """Decode Solidity Error(string) revert data embedded in an RPC/Cast error."""
+    text = str(error_text or "")
+    for match in re.finditer(r"(?i)\\b(0x08c379a0[0-9a-f]+)\\b", text):
+        payload = match.group(1)[2:]
+        arguments = payload[8:]
+        # Error(string) uses an ABI offset followed by a length and UTF-8 bytes.
+        if len(arguments) < 128:
+            continue
+        try:
+            offset = int(arguments[:64], 16)
+            if offset % 32 != 0 or offset < 32:
+                continue
+            length_start = offset * 2
+            if length_start + 64 > len(arguments):
+                continue
+            byte_length = int(arguments[length_start:length_start + 64], 16)
+            byte_start = length_start + 64
+            byte_end = byte_start + byte_length * 2
+            if byte_end > len(arguments):
+                continue
+            reason = bytes.fromhex(arguments[byte_start:byte_end]).decode("utf-8").strip()
+            if reason:
+                return reason
+        except (ValueError, UnicodeDecodeError, OverflowError):
+            continue
+
+    # Some clients include the decoded reason in the text but omit revert data.
+    match = re.search(r"(?i)execution reverted:\\s*([^,\\r\\n]+)", text)
+    if match:
+        reason = match.group(1).strip().strip('"' + "'")
+        if reason and not reason.lower().startswith(("0x", "custom error", "panic")):
+            return reason
+    return None
+
+
+def _format_revert_error(error_text):
+    """Prefer a concise decoded reason while preserving opaque failures verbatim."""
+    text = str(error_text or "").strip()
+    reason = _decode_solidity_revert_reason(text)
+    if not reason:
+        return "REVERT: " + text if "execution reverted" in text.lower() else text
+
+    rendered = "REVERT: " + reason
+    if "failed to estimate gas" in text.lower():
+        rendered += "\\nTransaction broadcast: no (the call reverted during gas estimation)."
+    return rendered
+
+
 def run_cast(args,config,capture=False):
     if not args:
         result=CommandResult("",2)
@@ -3875,7 +3924,8 @@ def run_cast(args,config,capture=False):
             else:
                 print(humanize_value(apply_labels(out,config), assume_wei=(cast_cmd == "balance")))
         if err:
-            if code!=0 and "execution reverted" in err.lower(): err="REVERT: "+err
+            if code != 0 and "execution reverted" in err.lower():
+                err = _format_revert_error(err)
             print(apply_labels(err,config),file=sys.stderr)
         return code
     except FileNotFoundError:
