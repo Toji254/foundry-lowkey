@@ -3954,7 +3954,7 @@ def _format_cli_error(error_text, *, code=None, command=None, config=None, targe
         )
 
     if source == "runtime":
-        return "LOWKEY RUNTIME ERROR\\n  " + text
+        return "LOWKEY RUNTIME ERROR\n  " + text
 
     # Lowkey's own validation errors already contain targeted usage/fix text.
     # Keep those messages stable, but normalize every failure returned by an
