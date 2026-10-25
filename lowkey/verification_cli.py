@@ -60,7 +60,7 @@ def engine_inventory(root: Path | None = None) -> dict[str, Any]:
         engine["supported_test_kinds"] = [
             kind for kind, item in support["test_kinds"].items() if item["supported"]
         ]
-    return {"project": project, "engines": inventory}
+    return {"project": project, "engines": inventory, "plugin_errors": registry.plugin_errors}
 
 
 def run_campaign_manifest(
