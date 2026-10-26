@@ -25,6 +25,52 @@ TEST_KINDS = (
 )
 
 
+
+
+def classify_forge_execution_failure(
+    stdout: str, stderr: str, exit_code: int | None,
+) -> dict[str, Any] | None:
+    """Separate Forge execution/setup failures from failed protocol assertions."""
+    if exit_code in (None, 0):
+        return None
+    output = f"{stdout}\n{stderr}"
+    rpc_patterns = (
+        r"connection refused",
+        r"failed to retrieve chain id",
+        r"failed to get chain id",
+        r"tcp connect error",
+        r"error sending request",
+        r"could not connect to (?:the )?(?:rpc|endpoint|server)",
+        r"failed to connect to (?:the )?(?:rpc|endpoint|server)",
+        r"failed to fetch (?:the )?(?:chain id|block)",
+    )
+    if any(re.search(pattern, output, re.IGNORECASE) for pattern in rpc_patterns):
+        return {
+            "status": "error",
+            "summary": "Forge could not reach the configured RPC/fork endpoint; no security result was established",
+            "result_semantics": "forge_rpc_unavailable",
+            "failure_classification": "rpc_unavailable",
+        }
+
+    setup_failures = re.findall(
+        r"(?m)^.*\\[FAIL:.*\\]\\s+setUp\\(\\)(?:\\s+\\(gas:.*\\))?\\s*$",
+        output,
+    )
+    test_body_failures = re.findall(
+        r"(?m)^.*\\[FAIL:.*\\]\\s+(?:test\\w*|invariant\\w*)\\s*\\(",
+        output,
+    )
+    if setup_failures and not test_body_failures:
+        return {
+            "status": "error",
+            "summary": "Forge test setup failed before test bodies could establish a security result",
+            "result_semantics": "forge_test_setup_failure",
+            "failure_classification": "test_setup_failure",
+            "setup_failure_lines": [line.strip() for line in setup_failures],
+        }
+    return None
+
+
 def lowkey_generated_test_safety_issue(source: str) -> tuple[str, str] | None:
     """Detect legacy Lowkey-generated harnesses that cannot safely establish a result."""
     is_state_diff = bool(
@@ -434,27 +480,40 @@ class ExecutableAdapter:
                 stderr += f"\nLOWKEY_RESOURCE_LIMIT_MB={memory_limit_mb}"
         except OSError as exc:
             return EngineResult(self.capability.name, "error", exit_code=127, summary=str(exc))
+        failure_classification = None
+        summary = (
+            f"{' '.join(command)} exceeded the {memory_limit_mb} MiB process-group RSS budget"
+            if status == "resource_limit"
+            else f"{' '.join(command)} exited with {code}"
+        )
+        metadata = {"test_kind": test_kind, "project": str(root)}
+        if self.capability.name.casefold() == "forge" and code != 0 and status == "failed":
+            failure_classification = classify_forge_execution_failure(stdout, stderr, code)
+            if failure_classification:
+                status = failure_classification["status"]
+                summary = failure_classification["summary"]
+                metadata["result_semantics"] = failure_classification["result_semantics"]
+                metadata["failure_classification"] = failure_classification["failure_classification"]
+        raw_evidence = {
+            "argv": command, "cwd": str(root), "timeout_seconds": timeout,
+            "max_memory_mb": memory_limit_mb,
+            "peak_process_group_rss_bytes": peak_rss_bytes if memory_limit_mb is not None else None,
+            "resource_limit_exceeded": resource_limit_exceeded,
+            "output_limit_bytes": output_limit,
+            "stdout_truncated": truncated["stdout"],
+            "stderr_truncated": truncated["stderr"],
+            "orphan_process_group_terminated": orphan_process_group_terminated,
+            "reader_threads_stuck_after_cleanup": any(reader.is_alive() for reader in readers),
+        }
+        if failure_classification:
+            raw_evidence["failure_classification"] = failure_classification
         return EngineResult(
             engine=self.capability.name, status=status, exit_code=code,
-            summary=(
-                f"{' '.join(command)} exceeded the {memory_limit_mb} MiB process-group RSS budget"
-                if status == "resource_limit"
-                else f"{' '.join(command)} exited with {code}"
-            ),
+            summary=summary,
             duration_seconds=round(time.monotonic() - started_at, 6),
             raw_stdout=stdout, raw_stderr=stderr,
-            raw_evidence={
-                "argv": command, "cwd": str(root), "timeout_seconds": timeout,
-                "max_memory_mb": memory_limit_mb,
-                "peak_process_group_rss_bytes": peak_rss_bytes if memory_limit_mb is not None else None,
-                "resource_limit_exceeded": resource_limit_exceeded,
-                "output_limit_bytes": output_limit,
-                "stdout_truncated": truncated["stdout"],
-                "stderr_truncated": truncated["stderr"],
-                "orphan_process_group_terminated": orphan_process_group_terminated,
-                "reader_threads_stuck_after_cleanup": any(reader.is_alive() for reader in readers),
-            },
-            metadata={"test_kind": test_kind, "project": str(root)},
+            raw_evidence=raw_evidence,
+            metadata=metadata,
         )
 
 
