@@ -16352,6 +16352,7 @@ START HERE
   lk lab                             Start/rebuild a disposable local audit lab.
   lk lab --ai-review                 Add an optional, unverified protocol review.
   lk ai status                       Show optional AI provider status.
+  lk memory status                   Inspect native project/global experience memory.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
