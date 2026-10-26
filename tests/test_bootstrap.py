@@ -627,6 +627,33 @@ class NativeRoutingSafetyRegressionTests(unittest.TestCase):
                 result = bootstrap.project_test_command(info, root)
             self.assertEqual(result[1], ["pytest"])
 
+    def test_uv_project_prefers_uv_run_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "pyproject.toml", '[project]\\nname = "demo"\\n')
+            self.write(root, "tests/test_smoke.py", "def test_smoke(): pass\\n")
+            info = {"root": str(root), "backend": "python", "stacks": ["python"]}
+            with patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/uv" if name == "uv" else None,
+            ):
+                result = bootstrap.project_test_command(info, root)
+            self.assertEqual(result[1], ["uv", "run", "pytest"])
+            self.assertEqual(result[2], "pyproject.toml + uv")
+
+    def test_local_venv_is_used_without_uv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            python = self.write(root, ".venv/bin/python", "")
+            python.chmod(0o755)
+            self.write(root, "tests/test_smoke.py", "def test_smoke(): pass\\n")
+            info = {"root": str(root), "backend": "python", "stacks": ["python"]}
+            with patch.object(bootstrap.shutil, "which", side_effect=lambda name: None):
+                result = bootstrap.project_test_command(info, root)
+            self.assertEqual(result[1], [str(python), "-m", "pytest"])
+            self.assertEqual(result[2], "project Python environment")
+
     def test_go_project_selects_go_native_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
