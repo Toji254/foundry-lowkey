@@ -10312,30 +10312,64 @@ def run_lab(config,args):
                     print(f"ACTIVE PROJECT: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
                     break
                 print("Please enter one of the project numbers, or q.")
-    # Optional semantic review is strictly opt-in and advisory only.
-    if ai_review_requested and not any(str(argument).lower() == "stop" for argument in args):
-        requested_contract = next(
-            (str(argument) for argument in args
-             if not str(argument).startswith("-") and str(argument).lower() != "stop"),
-            None,
-        )
+    # Optional protocol reasoning has two explicit modes: manual review on demand,
+    # or deterministic complexity-triggered assistance after the user selects auto.
+    # Neither mode grants the model authority over targets, tool execution, or deployment.
+    _ai_is_stop = any(str(argument).lower() == "stop" for argument in args)
+    requested_contract = next(
+        (str(argument) for argument in args
+         if not str(argument).startswith("-")
+         and str(argument).lower() not in {"stop", "auto", "help", "-h", "--help"}),
+        None,
+    )
+    _ai_review_reason = "explicit --ai-review request" if ai_review_requested else None
+    _ai_review_mode = "manual" if ai_review_requested else None
+    _ai_harness = None
+    _ai_status = None
+
+    if not _ai_is_stop and (_ai_review_mode is not None or not ai_review_requested):
         try:
             try:
-                import ai_harness
+                import ai_harness as _ai_harness
             except ImportError:
-                from lowkey import ai_harness
-            ai_status = ai_harness.status()
-            if not ai_status.get("usable"):
+                from lowkey import ai_harness as _ai_harness
+            _ai_status = _ai_harness.status()
+            if _ai_review_mode is None and _ai_status.get("usable") and _ai_status.get("auto_assist"):
+                _reason = _ai_harness.auto_review_reason(root, requested_contract)
+                if _reason:
+                    _ai_review_mode = "auto"
+                    _ai_review_reason = _reason
+        except Exception:
+            # Status/heuristic failures never affect the deterministic lab path.
+            _ai_harness = None
+            _ai_status = None
+
+    if _ai_review_mode is not None and not _ai_is_stop:
+        try:
+            if _ai_harness is None:
+                try:
+                    import ai_harness as _ai_harness
+                except ImportError:
+                    from lowkey import ai_harness as _ai_harness
+            if _ai_status is None:
+                _ai_status = _ai_harness.status()
+            if not _ai_status.get("usable"):
                 print(
                     "INFO  Optional AI protocol review skipped "
-                    f"({ai_status.get('reason') or 'not available'}); native lab setup continues."
+                    f"({_ai_status.get('reason') or 'not available'}); native lab setup continues."
                 )
             else:
-                review = ai_harness.review_project_protocol(root, requested_contract)
+                review = _ai_harness.review_project_protocol(root, requested_contract)
                 meta = review.get("_lowkey_meta", {})
                 print()
-                print("OPTIONAL AI PROTOCOL REVIEW — UNVERIFIED")
-                print("========================================")
+                if _ai_review_mode == "auto":
+                    print("AUTO-ASSIST PROTOCOL REVIEW — UNVERIFIED")
+                    print("=======================================")
+                    print("Trigger: " + json.dumps(str(_ai_review_reason), ensure_ascii=True))
+                else:
+                    print("OPTIONAL AI PROTOCOL REVIEW — UNVERIFIED")
+                    print("========================================")
+                    print("Trigger: explicit user request")
                 print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
                 print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
                 if meta.get("context_sha256"):
