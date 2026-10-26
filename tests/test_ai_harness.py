@@ -727,5 +727,13 @@ class AIHarnessTests(unittest.TestCase):
             self.assertLessEqual(payload["context_bytes"], ai.MAX_CONTEXT_BYTES)
 
 
+    def test_human_context_preview_escapes_terminal_control_characters(self):
+        rendered = "\n".join(
+            ai._human_context_lines("source_excerpt", "before\x1b[31mred\x1b[0m")
+        )
+        self.assertNotIn("\x1b", rendered)
+        self.assertIn(r"\x1b[31m", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()
