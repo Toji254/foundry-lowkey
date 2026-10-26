@@ -222,6 +222,12 @@ class AIHarnessTests(unittest.TestCase):
             self.assertLessEqual(total_bytes, ai.MAX_CONTEXT_BYTES)
             self.assertTrue(context["approved_experience"])
 
+    def test_openai_provider_uses_safe_default_endpoint(self):
+        cfg = ai.configure(provider="openai", model="example-model", api_key="test-key")
+        self.assertEqual(cfg["base_url"], "https://api.openai.com/v1")
+        self.assertTrue(ai.status()["usable"])
+        self.assertNotIn("test-key", ai.config_path().read_text(encoding="utf-8"))
+
     def test_local_ollama_needs_no_key(self):
         ai.configure(provider="ollama", model="qwen2.5-coder")
         self.assertTrue(ai.status()["usable"])
