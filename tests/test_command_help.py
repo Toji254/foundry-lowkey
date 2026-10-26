@@ -1010,6 +1010,79 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("lk ask buyNft", rendered)
 
 
+    def test_verification_root_and_nested_pages_document_usage_and_flags(self):
+        code, output = self.capture_dispatch("verification", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification", output)
+        self.assertIn("lk verification engines", output)
+        self.assertIn("lk verification run", output)
+        self.assertIn("lk verify", output)
+
+        code, output = self.capture_dispatch("verification", "engines", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification engines", output)
+        self.assertIn("--json", output)
+        self.assertIn("machine-readable JSON", output)
+        self.assertIn("lk verification engines --json", output)
+
+        # The shorter command must reach the exact same nested help page.
+        code, alias_output = self.capture_dispatch("verify", "engines", "-h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification engines", alias_output)
+        self.assertIn("--json", alias_output)
+
+        code, output = self.capture_dispatch("verification", "run", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP  •  lk verification run", output)
+        self.assertIn("--profile <light|balanced|deep>", output)
+        self.assertIn("--output <path>", output)
+        self.assertIn("campaign.json --profile=deep", output)
+        self.assertIn(".audit/verification/campaign.json", output)
+
+    def test_mutation_and_generation_help_lists_supported_flags(self):
+        code, output = self.capture_dispatch("mutation-check", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk mcheck", output)
+        self.assertIn("--output <path>", output)
+        self.assertIn("--timeout <seconds>", output)
+        self.assertIn("Default: 300", output)
+        self.assertIn("--timeout=SECONDS", output)
+
+        code, output = self.capture_dispatch("verification-benchmark", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--workspace <dir>", "--output <path>", "--min-mutation-score <0..1>"):
+            self.assertIn(option, output)
+        self.assertIn("0.8 means 80%", output)
+        self.assertIn("lk vbench", output)
+
+        code, output = self.capture_dispatch("generate", "test", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--value <amount>", "--calldata <hex>", "--output, -o <file>", "--force"):
+            self.assertIn(option, output)
+        self.assertIn("Default: 0 ETH", output)
+        self.assertIn("lk gen", output)
+
+        code, output = self.capture_dispatch("generate", "poc", "--h")
+        self.assertEqual(code, 0)
+        for option in ("--impact-assertion <condition>", "--value <amount>", "--calldata <hex>", "--output, -o <file>", "--force"):
+            self.assertIn(option, output)
+        self.assertIn("Required.", output)
+        self.assertIn("candidate", output.lower())
+
+        code, output = self.capture_dispatch("generate", "deployment", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("--output, -o <file>", output)
+        self.assertIn("--force", output)
+        self.assertIn("dry-run", output.lower())
+
+    def test_long_command_shortcuts_are_visible_in_full_help(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            lk.print_help()
+        rendered = output.getvalue()
+        for command in ("lk gen", "lk verify", "lk vbench", "lk mcheck", "lk cov"):
+            self.assertIn(command, rendered)
+
     def test_coverage_help_documents_lcov_and_short_alias(self):
         code, output = self.capture_dispatch("coverage", "--h")
         self.assertEqual(code, 0)
