@@ -129,13 +129,13 @@ class BootstrapTests(unittest.TestCase):
             self.write(
                 root,
                 ".gitmodules",
-                '[submodule "sample"]\\n\\tpath = lib/sample\\n\\turl = https://example.com/sample.git\\n',
+                '[submodule "sample"]\n\tpath = lib/sample\n\turl = https://example.com/sample.git\n',
             )
             submodule = root / "lib" / "sample"
             submodule.mkdir(parents=True)
             self.write(submodule, "README.md", "partially checked out")
             (submodule / ".git").write_text(
-                "gitdir: ../../.git/modules/lib/sample\\n",
+                "gitdir: ../../.git/modules/lib/sample\n",
                 encoding="utf-8",
             )
 
@@ -146,7 +146,7 @@ class BootstrapTests(unittest.TestCase):
                         (),
                         {
                             "returncode": 0,
-                            "stdout": str(submodule.resolve()) + "\\n",
+                            "stdout": str(submodule.resolve()) + "\n",
                             "stderr": "",
                         },
                     )()
@@ -156,7 +156,7 @@ class BootstrapTests(unittest.TestCase):
                         (),
                         {
                             "returncode": 0,
-                            "stdout": "src/Expected.sol\\0",
+                            "stdout": "src/Expected.sol\0",
                             "stderr": "",
                         },
                     )()
