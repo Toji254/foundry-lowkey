@@ -7181,10 +7181,23 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     ], capture=True)
     output = result.text
     changed_sources = _project_source_mutations(root, before_sources)
+    # The harness exists only to execute this promotion once. Remove it after
+    # measuring source mutations so future ordinary Forge runs do not inherit
+    # an auto-generated test that writes local state as a side effect.
+    cleanup_error = None
+    try:
+        Path(test_path).unlink(missing_ok=True)
+    except OSError as exc:
+        cleanup_error = str(exc)
     if changed_sources:
         return fail(
             "Error: project-owned fixture changed first-party source. Lowkey aborted. Changed: "
             + ", ".join(changed_sources)
+        )
+    if cleanup_error:
+        return fail(
+            "Error: Lowkey could not remove its temporary project-fixture harness: "
+            + cleanup_error
         )
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-50:]) if output else "forge test failed"
