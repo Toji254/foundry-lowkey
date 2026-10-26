@@ -273,6 +273,7 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
         "temperature": 0.1, "max_tokens": int(config.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)),
         "response_format": {"type": "json_object"}, "stream": False,
     }
+    started, outcome = time.monotonic(), "error"
     try:
         try:
             import provider_adapters
