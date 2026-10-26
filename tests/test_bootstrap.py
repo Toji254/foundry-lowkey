@@ -123,6 +123,53 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(state["missing"], ["lib/sample"])
             self.assertEqual(state["orphaned"], [])
 
+    def test_tracked_submodule_with_missing_tracked_files_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                ".gitmodules",
+                '[submodule "sample"]\\n\\tpath = lib/sample\\n\\turl = https://example.com/sample.git\\n',
+            )
+            submodule = root / "lib" / "sample"
+            submodule.mkdir(parents=True)
+            self.write(submodule, "README.md", "partially checked out")
+            (submodule / ".git").write_text(
+                "gitdir: ../../.git/modules/lib/sample\\n",
+                encoding="utf-8",
+            )
+
+            def fake_run(command, **kwargs):
+                if "rev-parse" in command:
+                    return type(
+                        "Result",
+                        (),
+                        {
+                            "returncode": 0,
+                            "stdout": str(submodule.resolve()) + "\\n",
+                            "stderr": "",
+                        },
+                    )()
+                if "ls-files" in command:
+                    return type(
+                        "Result",
+                        (),
+                        {
+                            "returncode": 0,
+                            "stdout": "src/Expected.sol\\0",
+                            "stderr": "",
+                        },
+                    )()
+                raise AssertionError(f"Unexpected Git command: {command}")
+
+            with patch.object(bootstrap, "_tracked_gitlink", return_value=True), patch.object(
+                bootstrap.subprocess, "run", side_effect=fake_run
+            ):
+                state = bootstrap._submodule_state(root)
+
+            self.assertEqual(state["missing"], ["lib/sample"])
+            self.assertEqual(state["orphaned"], [])
+
     def test_bootstrap_plan_targets_only_missing_git_submodules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
