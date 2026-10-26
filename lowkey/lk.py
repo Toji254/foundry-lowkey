@@ -6653,9 +6653,9 @@ def discover_local_lab_fixture(root=".", requested=None):
 
 
 def _fixture_state_files(root, safe_name):
-    # Foundry projects may restrict vm.writeFile via fs_permissions. Keep the
-    # promoted fixture snapshot under Forge's permitted snapshot directory.
-    state_dir = Path(root).resolve() / ".forge-snapshots" / "lowkey"
+    # Foundry's build output is writable under its normal project permissions;
+    # an arbitrary hidden directory is not necessarily permitted by fs_permissions.
+    state_dir = Path(root).resolve() / "out" / "lowkey"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir / f"fixture_state_{safe_name}.json"
 
@@ -10242,6 +10242,17 @@ def run_lab(config,args):
         )
         if fixture_code == 0:
             return 0
+        # Never obscure the concrete project-fixture failure by retrying a
+        # direct deployment of the very locked implementation we were trying
+        # to avoid. Generic fallback remains appropriate for ordinary contracts.
+        if auto_selected:
+            for candidate_path in local_artifact_paths(root):
+                candidate_artifact = read_artifact(candidate_path) or {}
+                if artifact_contract_name(candidate_path, candidate_artifact).lower() != str(auto_selected).lower():
+                    continue
+                if artifact_is_locked_implementation(root, candidate_path, candidate_artifact):
+                    return fixture_code
+                break
         print(
             "INFO  discovered project fixture could not be promoted; "
             "falling back to generic artifact deployment."
