@@ -14886,7 +14886,7 @@ COMMAND_HELP = {
         "lk import ERC20",
         "Use this while writing a contract or test and you are unsure what to import. The help distinguishes a concrete implementation you can inherit from, an interface for calling an existing contract, and a reference entry whose dependency is not installed yet.",
         forms=[
-            ("lk import", "Open the interactive browser. Choose a category, use /term to filter the current list, g for global search, r to reset a filter, b to go back, or q to quit.", "lk import"),
+            ("lk import", "Open the browser. Choose 1-9 to open a section. In a list, enter a number to open an item, /term to filter that list, g to search everywhere, r to clear the filter, b to return to the main menu, or q to quit. At the main menu, b explains that you are already at the top.", "lk import"),
             ("lk import <symbol>", "Look up a name such as Token, ERC20, or IERC20. Lowkey shows the source, exact import line, purpose, and available install guidance. Reference entries can appear even when the package is not installed.", "lk import ERC20"),
             ("lk import <path>", "Inspect a Solidity file by its Foundry remapped or package import path. A file lookup lists symbols it exports; it does not mean you should inherit from every symbol in that file.", "lk import @openzeppelin/contracts/token/ERC20/IERC20.sol"),
             ("lk import search <term>", "Search project source, installed dependencies, and Lowkey's known reference catalog using symbol names, import paths, roles, tags, and use cases. This is global search, unlike /term inside a picker.", "lk import search ERC20"),
@@ -14899,9 +14899,9 @@ COMMAND_HELP = {
         ],
         options=[
             ("--dry-run", "Use with --install to show the planned Forge install command without executing it or changing the project.", "lk import --install --dry-run ERC20"),
-            ("--copy-only", "Print only the copy-ready Solidity import line, without the learning details.", "lk import --copy-only IERC20"),
+            ("--copy-only / --copy", "Print only the copy-ready Solidity import line, without the learning details. --copy is a shorter spelling of --copy-only.", "lk import --copy-only IERC20"),
             ("--json", "Emit machine-readable symbol, source, import, learning, and audit metadata for scripts or other tools.", "lk import --json IERC20"),
-            ("--verbose / -v", "Show deeper package/version/commit details, dependency information, project usage, compatibility notes, common mistakes, and audit questions.", "lk import --verbose ERC20"),
+            ("--verbose / -v", "Show deeper package/version/commit details, dependency information, project usage, compatibility notes, common mistakes, and audit questions. -v is the short spelling.", "lk import -v ERC20"),
             ("Implementation vs interface", "A concrete implementation such as ERC20 contains reusable token behavior you can inherit from. An interface such as IERC20 describes calls to make against an existing token. For a token sale, you typically use IERC20 to interact with the token address; you do not inherit the sale contract from IERC20.", "lk import ERC20  # implementation; lk import IERC20  # interface"),
             ("REFERENCE ONLY", "Lowkey knows a documented reference for this symbol, but the dependency is not present in the project's installed source. The displayed path is a reference path, not proof the file exists locally. Read the install guidance before choosing the explicit --install mode.", "lk import --verbose ERC20"),
             ("Scoped search vs global search", "/term filters the list currently on screen only. Use g in a picker or lk import search <term> to search across project source, installed dependencies, and known references. A no-match in one list does not mean the symbol does not exist elsewhere.", "lk import search IERC20"),
