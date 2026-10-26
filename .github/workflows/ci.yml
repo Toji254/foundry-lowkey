@@ -709,6 +709,9 @@ jobs:
           print("PASS: Lowkey completed a real Forge campaign and retained native stdout/evidence")
           PY
 
+      - name: Exercise real campaign-to-finding correlation through Forge
+        run: python3 scripts/verification-correlation-e2e.py
+
       - name: Exercise a real finding through targeted generation and Forge
         run: python3 scripts/verification-investigation-e2e.py
 

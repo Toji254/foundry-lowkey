@@ -34,7 +34,7 @@ def investigate_signal(
     audit_context: Any,
     constructor_args: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Generate and execute only the recognized onlyOwner/non-owner-revert property."""
+    """Generate and execute a recognized onlyOwner/onlyRole outsider-revert property."""
     root = Path(project_root).expanduser().resolve()
     signal_id = str(signal_id or "").strip()
     if not signal_id:
@@ -196,17 +196,26 @@ def investigate_signal(
             continue
         target = matches[0]
         modifiers = target.get("modifiers") or []
-        if not isinstance(modifiers, (list, tuple, set)) or "onlyOwner" not in modifiers:
+        if not isinstance(modifiers, (list, tuple, set)):
+            continue
+        if "onlyOwner" in modifiers:
+            authorization_modifier = "onlyOwner"
+            test_prefix = "test_nonOwnerCannotCall_"
+        elif "onlyRole" in modifiers:
+            authorization_modifier = "onlyRole"
+            test_prefix = "test_nonRoleHolderCannotCall_"
+        else:
             continue
         target_tests = []
         for fragment in helper_tests:
-            fn_match = re.search(r"\bfunction\s+(test_nonOwnerCannotCall_[A-Za-z0-9_]+)\s*\(", fragment)
+            fn_match = re.search(r"\bfunction\s+(test_(?:nonOwnerCannotCall|nonRoleHolderCannotCall)_[A-Za-z0-9_]+)\s*\(", fragment)
             call_match = re.search(r"\btarget\s*\.\s*([A-Za-z_]\w*)\s*\(", fragment)
-            if fn_match and call_match and call_match.group(1) == function_name:
+            if fn_match and fn_match.group(1).startswith(test_prefix) and call_match and call_match.group(1) == function_name:
                 target_tests.append(fn_match.group(1))
         if target_tests:
             candidates.append({
                 "contract": contract, "target": target, "test_name": target_tests[0],
+                "authorization_modifier": authorization_modifier,
                 "constructor_raw": test_generation._constructor_args(source, contract),
             })
 
@@ -230,9 +239,10 @@ def investigate_signal(
                       f"{contract} expects {ctor_count} constructor argument(s); {len(constructor_args or [])} supplied.",
                       source_digest=source_digest)
 
+    authorization_name = "owner" if candidate["authorization_modifier"] == "onlyOwner" else "required role"
     property_text = (
-        f"Non-owner calls to {target.get('signature') or function_name} must revert; "
-        "the source declares onlyOwner and its state-changing body matches the complete-test generator."
+        f"Calls by an account without {authorization_name} authorization to {target.get('signature') or function_name} must revert; "
+        f"the source declares {candidate['authorization_modifier']} and its state-changing body matches the complete-test generator."
     )
     relative_output = Path(".audit") / "investigations" / slug / "generated"
     gen_args = [contract, "--types", "unit", "--output-dir", relative_output.as_posix(), "--validate", "--force"]

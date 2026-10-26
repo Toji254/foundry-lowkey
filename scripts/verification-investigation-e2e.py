@@ -183,6 +183,93 @@ def main() -> int:
         print(f"Generated test: {test_relative}")
         print(f"Forge result: {report['status']} (expected review lead)")
         print(f"Evidence: {record['id']} attached to the original signal; finding remains unconfirmed")
+
+        # Additional supported pattern: an outsider must not satisfy onlyRole.
+        role_source = root / "src" / "RoleVault.sol"
+        role_source.write_text(
+            """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract RoleVault {
+    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+    mapping(bytes32 => mapping(address => bool)) private roleMembers;
+    uint256 public limit;
+
+    constructor() { roleMembers[OPERATOR_ROLE][msg.sender] = true; }
+
+    modifier onlyRole(bytes32 role) {
+        require(roleMembers[role][msg.sender], "missing role");
+        _;
+    }
+
+    function setLimit(uint256 nextValue) external onlyRole(OPERATOR_ROLE) {
+        limit = nextValue;
+    }
+}
+""",
+            encoding="utf-8",
+        )
+        run([forge, "build"], root)
+        role_signal = audit_context.add_signal(
+            {
+                "tool": "slither",
+                "category": "static-analysis",
+                "check": "access-control",
+                "title": "Role authorization boundary review",
+                "description": "A caller without OPERATOR_ROLE must not change the configured limit.",
+                "impact": "Medium",
+                "confidence": "Medium",
+                "file": "src/RoleVault.sol",
+                "line": 12,
+                "function": "setLimit(uint256)",
+            },
+            root,
+        )
+        role_run = subprocess.run(
+            [lk, "verification", "investigate", str(role_signal["id"])],
+            cwd=root, text=True, capture_output=True, timeout=360, check=False,
+        )
+        if role_run.returncode != 0:
+            raise AssertionError(
+                "Expected the real onlyRole investigation test to pass (exit 0); "
+                f"got {role_run.returncode}.\nstdout:\n{role_run.stdout[-10000:]}\nstderr:\n{role_run.stderr[-10000:]}"
+            )
+        if "Status         : passed" not in role_run.stdout or "Evidence       : attached" not in role_run.stdout:
+            raise AssertionError(f"onlyRole result/evidence missing from CLI output:\n{role_run.stdout}")
+        role_reports = []
+        for path in (root / ".audit" / "investigations").glob("*/investigation.json"):
+            candidate_report = json.loads(path.read_text(encoding="utf-8"))
+            if candidate_report.get("signal_id") == role_signal["id"]:
+                role_reports.append((path, candidate_report))
+        if len(role_reports) != 1:
+            raise AssertionError(f"Expected one onlyRole report; found {len(role_reports)}")
+        _, role_report = role_reports[0]
+        if role_report.get("status") != "passed" or role_report.get("target_test_name") != "test_nonRoleHolderCannotCall_setLimit":
+            raise AssertionError(f"onlyRole property was not targeted: {role_report}")
+        role_test_path = (root / str(role_report.get("targeted_test"))).resolve()
+        if not role_test_path.is_relative_to(root) or not role_test_path.is_file():
+            raise AssertionError(f"onlyRole generated test is missing/outside the project: {role_test_path}")
+        if hashlib.sha256(role_test_path.read_bytes()).hexdigest() != role_report.get("targeted_test_sha256"):
+            raise AssertionError("onlyRole test digest does not match its report")
+        role_native = role_report.get("native_evidence") or {}
+        role_execution = role_native.get("execution")
+        if not isinstance(role_execution, dict) or role_execution.get("exit_code") != 0:
+            raise AssertionError(f"onlyRole test lacks real passing Forge evidence: {role_execution!r}")
+        role_output = "\n".join(str(role_execution.get(key) or "") for key in ("stdout_tail", "stderr_tail"))
+        if "test_nonRoleHolderCannotCall_setLimit" not in role_output or "[PASS]" not in role_output:
+            raise AssertionError(f"onlyRole execution output does not show its exact passing test:\n{role_output}")
+        stored_role_signal = next(
+            (item for item in audit_context.signals(root) if item.get("id") == role_signal["id"]), None
+        )
+        role_evidence = [
+            item for item in (stored_role_signal or {}).get("evidence", [])
+            if isinstance(item, dict) and item.get("kind") == "targeted-test-investigation"
+        ]
+        if len(role_evidence) != 1 or role_evidence[0].get("security_finding_confirmed") is not False:
+            raise AssertionError("onlyRole result was not attached once as unconfirmed evidence")
+        print("PASS: onlyRole targeted investigation generated and executed a real passing outsider-revert test")
+        print(f"Role signal: {role_signal['id']}")
+        print(f"Generated test: {role_report['targeted_test']}")
     return 0
 
 

@@ -342,14 +342,21 @@ def analyse_contract(
 
 
 def unit_access_control_tests(analysis: dict[str, Any], contract_source: str) -> list[str]:
-    """Generate narrow non-owner tests for plainly unconditional onlyOwner methods."""
+    """Generate narrow outsider-revert tests for simple onlyOwner/onlyRole methods."""
     extracted = _extract(contract_source, analysis.get("contract", ""))
     if not extracted:
         return []
     body, clean, _, _ = extracted
     tests, used = [], {}
     for fn in _parse_functions(body, clean, 1):
-        if fn["visibility"] not in ("external", "public") or "onlyOwner" not in fn["modifiers"]:
+        if fn["visibility"] not in ("external", "public"):
+            continue
+        modifiers = fn["modifiers"]
+        if "onlyOwner" in modifiers:
+            test_prefix = "test_nonOwnerCannotCall_"
+        elif "onlyRole" in modifiers:
+            test_prefix = "test_nonRoleHolderCannotCall_"
+        else:
             continue
         code = mask_solidity(fn["body"])
         if re.search(r"\b(require|revert|if|while|for|try|catch)\b|[A-Za-z_]\w*\s*\.\s*[A-Za-z_]\w*\s*\(", code):
@@ -384,7 +391,7 @@ def unit_access_control_tests(analysis: dict[str, Any], contract_source: str) ->
         used[fn["name"]] = index + 1
         suffix = "" if index == 0 else "_" + str(index + 1)
         tests.append(
-            "    function test_nonOwnerCannotCall_" + fn["name"] + suffix + "() public {\n"
+            "    function " + test_prefix + fn["name"] + suffix + "() public {\n"
             "        vm.prank(address(0xBEEF));\n"
             "        vm.expectRevert();\n"
             "        target." + fn["name"] + "(" + ", ".join(args) + ");\n"

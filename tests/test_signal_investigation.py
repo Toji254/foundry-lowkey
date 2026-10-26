@@ -99,6 +99,62 @@ contract Vault {
             self.assertEqual(second["evidence_id"], result["evidence_id"])
             self.assertEqual(len(evidence), 1)
 
+    def test_only_role_signal_selects_role_holder_test(self):
+        source = """// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract RoleVault {
+    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+    mapping(bytes32 => mapping(address => bool)) private roleMembers;
+    uint256 public limit;
+    constructor() { roleMembers[OPERATOR_ROLE][msg.sender] = true; }
+    modifier onlyRole(bytes32 role) {
+        require(roleMembers[role][msg.sender], "missing role");
+        _;
+    }
+    function setLimit(uint256 nextValue) external onlyRole(OPERATOR_ROLE) { limit = nextValue; }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(Path(tmp), source)
+            signal = self._signal(root, function="setLimit(uint256)")
+            def fake_role_generator(_config, args, *, project_root):
+                project = Path(project_root)
+                relative = Path(args[args.index("--output-dir") + 1])
+                generated_root = project / relative / "RoleVault"
+                generated_root.mkdir(parents=True, exist_ok=True)
+                test_name = "test_nonRoleHolderCannotCall_setLimit"
+                test_path = generated_root / "LowkeyGeneratedUnit_RoleVault.t.sol"
+                test_path.write_text(
+                    "contract LowkeyGeneratedUnit_RoleVault { "
+                    f"function {test_name}() public {{}} }}\n",
+                    encoding="utf-8",
+                )
+                report = {
+                    "generated": [test_path.relative_to(project).as_posix()],
+                    "skipped": [],
+                    "generation_assessment": {"unit": {"level": "executable-candidate"}},
+                    "validation": {
+                        "status": "passed", "detail": "role fixture validated",
+                        "baseline_exit_code": 0, "exit_code": 0,
+                        "test_executions": [{
+                            "path": "test/lowkey-generated/LowkeyValidation_deadbeef_LowkeyGeneratedUnit_RoleVault.t.sol",
+                            "exit_code": 0,
+                            "stdout_tail": f"[PASS] {test_name}() (gas: 1234)",
+                            "stderr_tail": "",
+                        }],
+                    },
+                }
+                (generated_root / "report.json").write_text(json.dumps(report), encoding="utf-8")
+                return 0
+            with patch("lowkey.test_generation.run_test_gen", side_effect=fake_role_generator):
+                result = signal_investigation.investigate_signal(
+                    signal["id"], project_root=root, audit_context=audit_context,
+                )
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["target_test_name"], "test_nonRoleHolderCannotCall_setLimit")
+            self.assertIn("onlyRole", result["property"])
+            self.assertTrue(result["evidence_attached"])
+
     def test_unsupported_finding_writes_reason_without_generating_a_test(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._project(Path(tmp))
