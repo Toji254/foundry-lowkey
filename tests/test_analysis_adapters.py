@@ -261,6 +261,26 @@ class AnalysisAdapterTests(unittest.TestCase):
             names = {item["name"] for item in plan}
             self.assertEqual(names, {"cargo-audit", "cargo-geiger"})
 
+    def test_slither_plan_uses_non_failing_findings_mode_for_triage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            info = {
+                "root": str(root),
+                "backend": "foundry",
+                "stacks": ["foundry"],
+                "languages": {"solidity": 1},
+            }
+            with patch.object(
+                analysis_adapters.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/slither" if name == "slither" else None,
+            ):
+                plan = analysis_adapters.security_analysis_plan(info)
+
+            slither_item = next(item for item in plan if item["name"] == "slither")
+            self.assertIn("--fail-none", slither_item["command"])
+            self.assertEqual(slither_item["command"][0], "slither")
+
     def test_security_runner_records_native_tool_results(self):
         from types import SimpleNamespace
 
