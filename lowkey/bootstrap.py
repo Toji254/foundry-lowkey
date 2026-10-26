@@ -1523,6 +1523,19 @@ def run_bootstrap(
             and action_signature(action) not in attempted_submodule_actions
         ]
         if not pending_submodules:
+            unresolved_submodules = [
+                action for action in plan["actions"]
+                if action["kind"] in submodule_kinds
+            ]
+            if unresolved_submodules:
+                unresolved_paths = ", ".join(
+                    str(action["evidence"]) for action in unresolved_submodules
+                )
+                print(
+                    "FAIL  git-submodule: recovery commands completed but "
+                    f"dependencies remain incomplete: {unresolved_paths}"
+                )
+                failures = failures or 1
             break
 
         stage_failed = False
