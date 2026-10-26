@@ -2068,31 +2068,49 @@ def run_category(category: str, root: Path, maps, install: bool = False, dry_run
 
 
 def interactive(root: Path, maps) -> int:
-    header("IMPORT BROWSER")
-    print("A standalone learning lookup. It does not touch audit/target/RPC state.\n")
-    print("  1. Installed packages")
-    print("  2. Contracts / abstract contracts")
-    print("  3. Interfaces")
-    print("  4. Solidity libraries")
-    print("  5. Structs / enums / types / errors / constants")
-    print("  6. Source files")
-    print("  7. Forge import mappings")
-    print("  8. Common reference imports")
-    print("  9. Global search (project, dependencies, reference catalog)")
-    print("  q. Quit")
+    """Open the import category menu and redraw it after returning from a submenu."""
     while True:
+        header("IMPORT BROWSER")
+        print("A standalone learning lookup. It does not touch audit/target/RPC state.\n")
+        print("  1. Installed packages")
+        print("  2. Contracts / abstract contracts")
+        print("  3. Interfaces")
+        print("  4. Solidity libraries")
+        print("  5. Structs / enums / types / errors / constants")
+        print("  6. Source files")
+        print("  7. Forge import mappings")
+        print("  8. Common reference imports")
+        print("  9. Global search (project, dependencies, reference catalog)")
+        print("  q. Quit")
+
         a = input("\nSelect: ").strip().lower()
         if a == "q":
             return 0
-        cat = {"1":"packages","2":"contracts","3":"interfaces","4":"libraries","5":"types","6":"files","7":"mappings","8":"common"}.get(a)
+
+        cat = {
+            "1": "packages",
+            "2": "contracts",
+            "3": "interfaces",
+            "4": "libraries",
+            "5": "types",
+            "6": "files",
+            "7": "mappings",
+            "8": "common",
+        }.get(a)
+
         if a == "9":
             query = input("Search all imports and concepts: ").strip()
             if query:
                 search_imports(query, root, maps)
+            # Show the category menu again after global search, too.
             continue
+
         if not cat:
             print("Pick 1-9 or q.")
             continue
+
+        # Category pickers and package browsers return here when the user
+        # enters "b" for back. The next loop redraws the complete menu.
         run_category(cat, root, maps)
 
 
