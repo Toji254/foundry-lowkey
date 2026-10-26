@@ -470,6 +470,117 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(toolchain["category"], "toolchain_mismatch")
         self.assertFalse(toolchain["repairable"])
 
+    def test_failure_classifier_treats_missing_foundry_lib_imports_as_dependencies(self):
+        diagnostic = (
+            'Error (6275): Source "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol" '
+            "not found: File not found. "
+            'error="/home/project/lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol": '
+            "No such file or directory (os error 2)"
+        )
+        result = bootstrap.classify_build_failure(diagnostic, ["build"])
+
+        self.assertEqual(result["category"], "dependency")
+        self.assertTrue(result["repairable"])
+
+    def test_failure_classifier_does_not_mislabel_compiler_missing_files_as_missing_tool(self):
+        compiler_error = bootstrap.classify_build_failure(
+            'Source "lib/openzeppelin-contracts/contracts/access/Ownable.sol" not found: '
+            "File not found. No such file or directory (os error 2)",
+            ["build"],
+        )
+        missing_executable = bootstrap.classify_build_failure(
+            "Error executing build: [Errno 2] No such file or directory: '/usr/bin/build'",
+            ["build"],
+        )
+
+        self.assertEqual(compiler_error["category"], "dependency")
+        self.assertEqual(missing_executable["category"], "missing_tool")
+        self.assertFalse(missing_executable["repairable"])
+
+    def test_bootstrap_recovers_broken_submodule_head_and_preserves_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".git").mkdir()
+            worktree = root / "lib" / "openzeppelin-contracts"
+            worktree.mkdir(parents=True)
+            self.write(worktree, "partial.txt", "preserve this file")
+
+            command = [
+                "git", "submodule", "update", "--init", "--force",
+                "--", "lib/openzeppelin-contracts",
+            ]
+            action = {
+                "kind": "git-submodule",
+                "cwd": root,
+                "command": command,
+                "evidence": "broken submodule test fixture",
+            }
+
+            def plan(actions):
+                return {
+                    "project_root": str(root),
+                    "workspace_root": str(root),
+                    "dependency_root": str(root),
+                    "runtime_requirements": {},
+                    "actions": actions,
+                }
+
+            plans = [
+                plan([action]),
+                plan([]),
+            ]
+            update_calls = 0
+            calls = []
+
+            class Result:
+                def __init__(self, code=0, stdout="", stderr=""):
+                    self.returncode = code
+                    self.stdout = stdout
+                    self.stderr = stderr
+
+            def fake_run(actual_command, **kwargs):
+                nonlocal update_calls
+                calls.append((actual_command, kwargs.get("cwd")))
+                if actual_command == command:
+                    update_calls += 1
+                    if update_calls == 1:
+                        return Result(
+                            128,
+                            stderr=(
+                                "fatal: Unable to find current revision in submodule path "
+                                "'lib/openzeppelin-contracts'\\n"
+                            ),
+                        )
+                    return Result(
+                        0,
+                        stdout="Submodule path 'lib/openzeppelin-contracts': checked out pinned revision\\n",
+                    )
+                if actual_command == ["git", "rev-parse", "--absolute-git-dir"]:
+                    return Result(0, stdout=str(root / ".git") + "\\n")
+                if actual_command == [
+                    "git", "submodule", "deinit", "--force", "--",
+                    "lib/openzeppelin-contracts",
+                ]:
+                    return Result(0, stdout="Submodule unregistered\\n")
+                raise AssertionError(f"Unexpected command: {actual_command}")
+
+            with patch.object(
+                bootstrap, "bootstrap_plan", side_effect=plans
+            ), patch.object(
+                bootstrap.subprocess, "run", side_effect=fake_run
+            ):
+                code = bootstrap.run_bootstrap({"root": str(root)})
+
+            backups = list((root / ".git" / "lowkey-recovery-backups").glob("*.incomplete"))
+            self.assertEqual(code, 0)
+            self.assertEqual(update_calls, 2)
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(
+                (backups[0] / "partial.txt").read_text(encoding="utf-8"),
+                "preserve this file",
+            )
+            self.assertFalse(worktree.exists())
+
     def test_build_command_uses_vyper_compiler_for_single_vyper_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
