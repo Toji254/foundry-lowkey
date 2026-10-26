@@ -1201,6 +1201,7 @@ def bootstrap_project(
     *,
     force: bool = False,
     reason: str = "prepare",
+    required_paths: Sequence[str] = (),
 ) -> int:
     """Prepare the selected project through Lowkey's shared bootstrap engine."""
     if run_shared_bootstrap is None:
@@ -1213,6 +1214,14 @@ def bootstrap_project(
         timeout = _native_timeout()
     except NameError:
         timeout = 180
+    if required_paths:
+        return run_shared_bootstrap(
+            info,
+            force=force,
+            reason=reason,
+            timeout=timeout,
+            required_paths=required_paths,
+        )
     return run_shared_bootstrap(info, force=force, reason=reason, timeout=timeout)
 
 

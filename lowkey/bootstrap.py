@@ -377,6 +377,75 @@ def _submodule_repository_roots(root: Path) -> list[Path]:
 
 
 
+def _required_nested_submodule_targets(
+    repo_root: Path,
+    project_root: Path,
+    required_paths: Sequence[str],
+) -> list[tuple[Path, str]]:
+    """Return only incomplete nested submodules traversed by required source paths.
+
+    The project's own .gitmodules is always considered by the main planner.
+    Nested libraries often declare their own test/tooling dependencies, so they
+    are inspected only when a compiler diagnostic identifies a missing path
+    passing through that nested submodule. Every target remains pinned by the
+    parent repository's gitlink.
+    """
+    root = repo_root.resolve()
+    try:
+        project_prefix = project_root.resolve().relative_to(root)
+    except ValueError:
+        project_prefix = Path(".")
+
+    targets: list[tuple[Path, str]] = []
+    seen: set[tuple[Path, str]] = set()
+    for raw_path in required_paths or ():
+        normalized = str(raw_path).strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        source_path = Path(normalized)
+        if (
+            not normalized
+            or source_path.is_absolute()
+            or ".." in source_path.parts
+        ):
+            continue
+
+        combined = (project_prefix / source_path).as_posix()
+        while combined.startswith("./"):
+            combined = combined[2:]
+        if combined in {"", "."}:
+            continue
+
+        current = root
+        remaining = combined
+        for _depth in range(32):
+            matches: list[str] = []
+            for relative, _url in _declared_submodules(current):
+                candidate = Path(relative).as_posix().strip("/")
+                if remaining == candidate or remaining.startswith(candidate + "/"):
+                    matches.append(candidate)
+            if not matches:
+                break
+
+            relative = max(matches, key=len)
+            if not _submodule_checkout_complete(current, relative):
+                key = (current.resolve(), relative)
+                if key not in seen:
+                    seen.add(key)
+                    targets.append(key)
+                # Restore only the first missing submodule along this path.
+                # The next planning pass can then inspect its own .gitmodules.
+                break
+
+            child = (current / relative).resolve()
+            if not (child / ".gitmodules").is_file():
+                break
+            remaining = remaining[len(relative):].lstrip("/")
+            current = child
+
+    return targets
+
+
 
 def _pnpm_major(lock_text: str) -> int | None:
     match = re.search(
@@ -1271,6 +1340,7 @@ def bootstrap_plan(
     *,
     force: bool = False,
     reason: str = "prepare",
+    required_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build a safe, repository-derived repair plan without executing it."""
     selected_root = Path((info or {}).get("root") or root).expanduser().resolve()
@@ -1278,21 +1348,26 @@ def bootstrap_plan(
     repo_root = _git_root(selected_root)
     actions: list[dict[str, Any]] = []
 
-    # Process dependency repositories one level at a time. A root submodule
-    # may itself declare nested Git submodules, but those declarations cannot be
-    # inspected until its checkout exists. The execution phase replans after each
-    # successful stage, so we don't use --recursive for long network operations.
-    for submodule_repo in _submodule_repository_roots(repo_root):
-        if not (submodule_repo / ".gitmodules").is_file():
-            continue
-        submodules = _submodule_state(submodule_repo)
-        if not submodules["missing"]:
-            continue
+    def add_submodule_actions(
+        submodule_repo: Path,
+        state: dict[str, Any],
+        only_paths: set[str] | None = None,
+    ) -> None:
+        """Append repairs for all missing project submodules or selected nested paths."""
+        missing = [
+            relative for relative in state["missing"]
+            if only_paths is None or relative in only_paths
+        ]
+        orphaned = [
+            (relative, url) for relative, url in state["orphaned"]
+            if only_paths is None or relative in only_paths
+        ]
+        if not missing and not orphaned:
+            return
 
-        orphaned_paths = {relative for relative, _ in submodules["orphaned"]}
+        orphaned_paths = {relative for relative, _url in orphaned}
         tracked_missing = [
-            relative
-            for relative in submodules["missing"]
+            relative for relative in missing
             if relative not in orphaned_paths
         ]
         try:
@@ -1311,8 +1386,9 @@ def bootstrap_plan(
                 ),
             })
             for relative in tracked_missing:
-                # Keep each dependency independent. A slow repository must not
-                # block unrelated missing libraries from being restored.
+                # Each target is a direct declared dependency of this repository.
+                # No recursive operation is used: unrelated upstream tooling is
+                # not required just because a dependency has its own .gitmodules.
                 actions.append({
                     "kind": "git-submodule",
                     "cwd": submodule_repo,
@@ -1325,13 +1401,34 @@ def bootstrap_plan(
                         f"in dependency repository {repo_label}"
                     ),
                 })
-        for relative, url in submodules["orphaned"]:
+
+        for relative, url in orphaned:
             actions.append({
                 "kind": "git-submodule-recovery",
                 "cwd": submodule_repo,
                 "command": ["git", "clone", "--depth", "1", url, relative],
                 "evidence": f"orphaned .gitmodules entry in {repo_label}: {relative}",
             })
+
+    # Always honor the consuming project's direct, pinned submodules. Do not
+    # walk into every completed dependency: upstream .gitmodules frequently
+    # declares development-only dependencies that aren't needed by this project.
+    root_state = _submodule_state(repo_root)
+    add_submodule_actions(repo_root, root_state)
+
+    # A nested dependency is considered only when a real failed source path
+    # identifies it. Restore the first missing submodule along that path; after
+    # that checkout, run_bootstrap replans and can follow the same path deeper.
+    for nested_repo, relative in _required_nested_submodule_targets(
+        repo_root, selected_root, required_paths
+    ):
+        if nested_repo.resolve() == repo_root.resolve():
+            # The root repository's missing direct dependencies are already
+            # included above, regardless of which source path triggered repair.
+            continue
+        nested_state = _submodule_state(nested_repo)
+        if relative in nested_state["missing"]:
+            add_submodule_actions(nested_repo, nested_state, {relative})
 
     node = _node_install_command(selected_root)
     if node:
@@ -1429,6 +1526,7 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
                 "category": "dependency",
                 "repairable": True,
                 "reason": "The missing source is a namespaced package import; Lowkey treats it as dependency resolution.",
+                "missing_source_paths": [source_path],
             }
         if source_path.startswith(("lib/", "./lib/")):
             return {
@@ -1438,6 +1536,7 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
                     "The missing source is inside Foundry's conventional library directory; "
                     "Lowkey will inspect declared dependencies before retrying."
                 ),
+                "missing_source_paths": [source_path],
             }
         if source_path.startswith(("contracts/", "src/", "./contracts/", "./src/")):
             return {
@@ -1636,9 +1735,12 @@ def run_bootstrap(
     force: bool = False,
     reason: str = "prepare",
     timeout: int = 900,
+    required_paths: Sequence[str] = (),
 ) -> int:
     """Execute a previously reasoned repair plan."""
-    plan = bootstrap_plan(info, root, force=force, reason=reason)
+    plan = bootstrap_plan(
+        info, root, force=force, reason=reason, required_paths=required_paths
+    )
     actions = plan["actions"]
 
     print("\nLOWKEY PROJECT BOOTSTRAP")
@@ -1746,7 +1848,9 @@ def run_bootstrap(
 
         # Refresh dependency discovery even after a partial failure so remaining
         # non-submodule bootstrap work can still be planned from current state.
-        plan = bootstrap_plan(info, root, force=force, reason=reason)
+        plan = bootstrap_plan(
+            info, root, force=force, reason=reason, required_paths=required_paths
+        )
         if stage_failed:
             break
     else:

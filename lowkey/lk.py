@@ -7959,6 +7959,7 @@ def _run_project_build(config, root):
                 project,
                 force=True,
                 reason=str(classification.get("category") or "dependency"),
+                required_paths=classification.get("missing_source_paths", ()),
             )
             if repair_code != 0:
                 print(
@@ -8040,6 +8041,7 @@ def _run_project_build(config, root):
             project,
             force=True,
             reason=str(classification.get("category") or "dependency"),
+            required_paths=classification.get("missing_source_paths", ()),
         )
         if repair_code != 0:
             print(
@@ -12420,6 +12422,7 @@ def run_native_project_command(config, command_name, args):
             args,
             force=True,
             reason=category,
+            required_paths=classification.get("missing_source_paths", ()),
         )
         if repair_code != 0:
             print(

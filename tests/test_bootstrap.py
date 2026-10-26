@@ -319,6 +319,111 @@ class BootstrapTests(unittest.TestCase):
             ],
         )
 
+    def test_nested_development_submodules_are_not_bootstrapped_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".git").mkdir()
+            parent = root / "lib" / "parent"
+            parent.mkdir(parents=True)
+            (parent / ".git").write_text("gitdir: ../../.git/modules/lib/parent\n", encoding="utf-8")
+            self.write(
+                root,
+                ".gitmodules",
+                '[submodule "parent"]\n\tpath = lib/parent\n\turl = https://example.com/parent.git\n',
+            )
+            self.write(
+                parent,
+                ".gitmodules",
+                '[submodule "tools"]\n\tpath = vendor/tools\n\turl = https://example.com/tools.git\n',
+            )
+            child = parent / "vendor" / "tools"
+            child.mkdir(parents=True)
+            (child / ".git").write_text("gitdir: ../../.git/modules/vendor/tools\n", encoding="utf-8")
+
+            def checkout_complete(repository, relative):
+                return pathlib.Path(repository).resolve() == root.resolve() and relative == "lib/parent"
+
+            with patch.object(bootstrap, "_tracked_gitlink", return_value=True), patch.object(
+                bootstrap, "_submodule_checkout_complete", side_effect=checkout_complete
+            ), patch.object(
+                bootstrap.shutil, "which", side_effect=lambda name: "/usr/bin/git" if name == "git" else None
+            ):
+                plan = bootstrap.bootstrap_plan(
+                    {"root": str(root), "backend": "foundry", "stacks": ["foundry"]},
+                    root,
+                )
+
+            self.assertEqual(
+                [item for item in plan["actions"] if item["kind"].startswith("git-submodule")],
+                [],
+                "upstream development submodules must not be treated as project dependencies",
+            )
+
+    def test_missing_source_path_targets_only_the_required_nested_submodule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".git").mkdir()
+            parent = root / "lib" / "parent"
+            parent.mkdir(parents=True)
+            (parent / ".git").write_text("gitdir: ../../.git/modules/lib/parent\n", encoding="utf-8")
+            self.write(
+                root,
+                ".gitmodules",
+                '[submodule "parent"]\n\tpath = lib/parent\n\turl = https://example.com/parent.git\n',
+            )
+            self.write(
+                parent,
+                ".gitmodules",
+                '[submodule "required"]\n\tpath = vendor/required\n\turl = https://example.com/required.git\n'
+                '[submodule "unused-tools"]\n\tpath = vendor/unused-tools\n\turl = https://example.com/unused-tools.git\n',
+            )
+            required = parent / "vendor" / "required"
+            required.mkdir(parents=True)
+            (required / ".git").write_text("gitdir: ../../.git/modules/vendor/required\n", encoding="utf-8")
+            unused = parent / "vendor" / "unused-tools"
+            unused.mkdir(parents=True)
+            (unused / ".git").write_text("gitdir: ../../.git/modules/vendor/unused-tools\n", encoding="utf-8")
+
+            def tracked_gitlink(repository, relative):
+                return relative in {"lib/parent", "vendor/required", "vendor/unused-tools"}
+
+            def checkout_complete(repository, relative):
+                repo_path = pathlib.Path(repository).resolve()
+                return repo_path == root.resolve() and relative == "lib/parent"
+
+            with patch.object(bootstrap, "_tracked_gitlink", side_effect=tracked_gitlink), patch.object(
+                bootstrap, "_submodule_checkout_complete", side_effect=checkout_complete
+            ), patch.object(
+                bootstrap.shutil, "which", side_effect=lambda name: "/usr/bin/git" if name == "git" else None
+            ):
+                plan = bootstrap.bootstrap_plan(
+                    {"root": str(root), "backend": "foundry", "stacks": ["foundry"]},
+                    root,
+                    required_paths=["lib/parent/vendor/required/src/Required.sol"],
+                    reason="dependency",
+                )
+
+            updates = [
+                item for item in plan["actions"]
+                if item["kind"] == "git-submodule"
+                and item["command"][:3] == ["git", "submodule", "update"]
+            ]
+            self.assertEqual(len(updates), 1)
+            self.assertEqual(updates[0]["cwd"], parent)
+            self.assertEqual(
+                updates[0]["command"],
+                ["git", "submodule", "update", "--init", "--force", "--", "vendor/required"],
+            )
+
+    def test_missing_foundry_source_classifier_preserves_path_for_targeted_repair(self):
+        source = "lib/parent/vendor/required/src/Required.sol"
+        classification = bootstrap.classify_build_failure(
+            f'Source "{source}" not found: File not found.',
+            ["forge", "build"],
+        )
+        self.assertEqual(classification["category"], "dependency")
+        self.assertEqual(classification["missing_source_paths"], [source])
+
     def test_node_runtime_pin_prefers_matching_installed_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
