@@ -1175,3 +1175,36 @@ if __name__ == "__main__":
             self.assertIsNone(contract)
             self.assertIsNone(artifact)
             self.assertIn("initializer-locked implementation", error)
+
+
+    def test_native_lab_script_uses_foundry_configured_script_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\n'
+                'src = "src"\n'
+                'test = "test"\n'
+                'script = "deployment"\n',
+                encoding="utf-8",
+            )
+            script_dir = root / "deployment"
+            script_dir.mkdir()
+            script = script_dir / "Bootstrap.s.sol"
+            script.write_text(
+                "pragma solidity ^0.8.20;\n"
+                "contract DemoDeployer {\n"
+                "    function run() external {\n"
+                "        vm.startBroadcast();\n"
+                "        new DemoApplication();\n"
+                "        vm.stopBroadcast();\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                lk.audit_context,
+                "foundry_project_root",
+                side_effect=lambda value: str(value),
+            ):
+                selected = lk.discover_local_lab_script(root, "DemoApplication")
+            self.assertEqual(Path(selected).resolve(), script.resolve())
