@@ -84,6 +84,74 @@ class GenerationPluginTests(unittest.TestCase):
 
 
 
+    def test_solidity_artifact_is_behaviorally_validated_when_temporary_test_passes(self):
+        import sys
+        import types
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "foundry.toml").write_text(
+                '[profile.default]\\nsrc = "src"\\n', encoding="utf-8"
+            )
+            source = (
+                "pragma solidity ^0.8.20; contract Counter { uint256 public count; "
+                "function setCount(uint256 value) external { count = value; } }"
+            )
+            (root / "src" / "Counter.sol").write_text(source, encoding="utf-8")
+            output_root = root / ".audit" / "test-gen" / "Counter"
+            output_root.mkdir(parents=True)
+
+            fake = types.ModuleType("test_generation")
+            fake._solidity_name = lambda value: value
+            fake._contract_source = lambda source_root, contract: (
+                Path(source_root) / "src" / "Counter.sol", source
+            )
+
+            def write_validated_report(config, args, *, project_root):
+                (output_root / "report.latest.json").write_text(json.dumps({
+                    "contract": "Counter",
+                    "source": "src/Counter.sol",
+                    "source_sha256": "source-hash",
+                    "requested_types": ["unit"],
+                    "generated": [
+                        ".audit/test-gen/Counter/LowkeyGeneratedUnit_Counter.t.sol"
+                    ],
+                    "skipped": [],
+                    "fuzz_property": {
+                        "state": "count",
+                        "setter": "setCount",
+                        "type": "uint256",
+                    },
+                    "validation": {
+                        "requested": True,
+                        "status": "passed",
+                        "test_executions": [{
+                            "path": (
+                                "test/lowkey-generated/"
+                                "LowkeyValidation_deadbeef_LowkeyGeneratedUnit_Counter.t.sol"
+                            ),
+                            "exit_code": 0,
+                        }],
+                    },
+                }), encoding="utf-8")
+                return 0
+
+            fake.run_test_gen = write_validated_report
+            project = inspect_project(root)
+            with patch.dict(sys.modules, {"test_generation": fake}):
+                runs = GenerationRegistry([SolidityFoundryGenerationAdapter()]).generate(
+                    project,
+                    {"contract": "Counter", "types": ["unit"], "validate": True},
+                )
+
+            self.assertEqual(len(runs), 1)
+            run = runs[0]
+            self.assertEqual(run.status, "generated")
+            self.assertEqual(len(run.artifacts), 1)
+            self.assertEqual(run.artifacts[0].status, "behaviorally-validated")
+            self.assertEqual(run.artifacts[0].metadata["validation_status"], "passed")
+
     def test_generator_uses_fresh_latest_report_instead_of_stale_report_json(self):
         import sys
         import types
