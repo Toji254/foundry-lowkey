@@ -174,8 +174,10 @@ class AIHarnessTests(unittest.TestCase):
         result = ai.validate_ai_recommendations(raw, context, [])
         self.assertEqual(len(result["recommendations"]), 1)
         self.assertEqual(result["recommendations"][0]["command"], "lk read owner")
-        self.assertEqual(result["candidate_count"], 1)
-        self.assertEqual(result["discarded_count"], 0)
+        # candidate_count is the model's raw count before validation; one of
+        # the two suggestions is accepted and one is discarded by the checks.
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["discarded_count"], 1)
         self.assertTrue(result["ai_generated"])
         self.assertEqual(result["origin"], "configured-model")
         self.assertEqual(result["recommendations"][0]["source"]["symbol"], "withdraw")
