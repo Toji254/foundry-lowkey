@@ -1116,10 +1116,22 @@ if __name__ == "__main__":
             self.assertIsNotNone(fixture)
             self.assertEqual(fixture["fixture_kind"], "test")
             self.assertEqual(fixture["create_function"], "test_createPool_success")
-            generated = lk._generate_test_fixture_lab_script(root, fixture)
+            state_path = root / "out" / "lowkey" / "fixture_state_FactoryFlowTest.json"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            permissions = (
+                '[{ access = "read", path = "./out" }, '
+                '{ access = "read-write", path = "out/lowkey/fixture_state_FactoryFlowTest.json" }]'
+            )
+            generated = lk._generate_test_fixture_lab_script(
+                root, fixture, state_path, fs_permissions=permissions
+            )
             generated_text = generated.read_text(encoding="utf-8")
             self.assertIn("this.test_createPool_success();", generated_text)
             self.assertIn("vm.dumpState(", generated_text)
+            self.assertIn(
+                "forge-config: default.fs_permissions = " + permissions,
+                generated_text,
+            )
 
     def test_fixture_clone_implementation_parser(self):
         implementation = "1234567890abcdef1234567890abcdef12345678"
@@ -1293,7 +1305,10 @@ if __name__ == "__main__":
             self.assertIsNone(error)
             self.assertIn('access = "read", path = "./out"', encoded)
             self.assertIn('access = "read", path = "./src"', encoded)
-            self.assertIn('access = "read-write", path = "out/lowkey"', encoded)
+            self.assertIn(
+                'access = "read-write", path = "out/lowkey/fixture_state.json"',
+                encoded,
+            )
             self.assertNotIn('access = "read-write", path = "./"', encoded)
             forge.assert_called_once_with(["config", "--json"], capture=True, cwd=str(root.resolve()))
 
