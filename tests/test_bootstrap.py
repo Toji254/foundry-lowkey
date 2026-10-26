@@ -158,7 +158,7 @@ class BootstrapTests(unittest.TestCase):
                     ["git", "submodule", "update", "--init", "--recursive"],
                 ],
             )
-            self.assertTrue(all(Path(item["cwd"]) == root.resolve() for item in actions))
+            self.assertTrue(all(pathlib.Path(item["cwd"]) == root.resolve() for item in actions))
 
     def test_node_runtime_pin_prefers_matching_installed_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
