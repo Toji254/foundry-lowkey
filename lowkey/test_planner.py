@@ -184,6 +184,8 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
         granted_permissions=grants,
     )
     status = ai_harness.status()
+    normalized["ai_generated"] = True
+    normalized["origin"] = "configured-model"
     normalized["_lowkey_meta"] = {
         "ai_generated": True,
         "origin": "configured-model",

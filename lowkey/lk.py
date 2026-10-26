@@ -228,7 +228,7 @@ def _maybe_explain_error(record):
             from lowkey import error_context, error_advisor
         if not error_context.auto_error_explain_enabled():
             return
-        print("\nOptional AI error explanation (commands are suggestions only):", file=sys.stderr)
+        print("\n@ AI OUTPUT — OPTIONAL ERROR EXPLANATION (suggestions only):", file=sys.stderr)
         result = error_advisor.maybe_auto_explain(record)
         if result:
             print(result, file=sys.stderr)

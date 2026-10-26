@@ -165,6 +165,8 @@ def diagnose_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "project_label": record.get("project_label"),
     }
     validated["deterministic_hints"] = hints
+    validated["ai_generated"] = True
+    validated["origin"] = "configured-model"
     validated["execution_policy"] = "No suggested command was executed."
     return validated
 

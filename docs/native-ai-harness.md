@@ -237,7 +237,7 @@ The internal request_structured API is for Lowkey-owned callers. It is deliberat
 
 ## Readable output by default
 
-Model-derived prose is visibly labelled with `@ AI OUTPUT` (or `@ AI CANDIDATE` inside the review ledger) so it is not mistaken for a native Lowkey result. JSON remains valid JSON and carries `ai_generated: true` and `origin: "configured-model"` metadata where the report is model-derived. Lowkey's native recommendations are labelled separately from model suggestions.
+Model-derived prose is visibly labelled with `@ AI OUTPUT` (or `@ AI CANDIDATE` inside the review ledger) so it is not mistaken for a native Lowkey result. JSON remains valid JSON and includes top-level `ai_generated: true` and `origin: "configured-model"` fields plus matching audit metadata where the report is model-derived. Lowkey's native recommendations are labelled separately from model suggestions.
 
 Lowkey's AI commands are intended to be understandable without reading internal JSON. Commands such as `lk ai status`, `lk ai runtime`, `lk ai keys list`, `lk ai errors status`, `lk ai security-review`, `lk ai test-plan`, and `lk ai ledger` print short explanations and next steps by default. Use `--json` where supported when another tool needs the structured data.
 

@@ -976,6 +976,8 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
         required_fields=("summary", "contract_roles", "invariants", "open_questions", "deployment_considerations"),
     )
     _validate_protocol_review_output(result)
+    result["ai_generated"] = True
+    result["origin"] = "configured-model"
     result["_lowkey_meta"] = {
         "ai_generated": True,
         "origin": "configured-model",
@@ -993,7 +995,6 @@ AI_RECOMMENDATION_COMMAND_FORMS = (
     "lk ask <short function or code question>",
     "lk functions",
     "lk status",
-    "lk trace <transaction-hash>",
     "lk events",
     "lk logs",
     "lk changes <source-backed function> [values...]",
@@ -1005,7 +1006,7 @@ AI_RECOMMENDATION_COMMAND_FORMS = (
     "lk findings",
 )
 _AI_RECOMMENDATION_COMMAND_ROOTS = {
-    "read", "fn", "ask", "functions", "status", "trace", "events", "logs",
+    "read", "fn", "ask", "functions", "status", "events", "logs",
     "changes", "proxy", "recon", "roles", "questions", "q", "findings",
 }
 _AI_RECOMMENDATION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./:=+\-\[\]\(\),]+$")
@@ -1026,7 +1027,7 @@ def _safe_ai_recommendation_command(value: Any) -> str | None:
         return None
     if any(not _AI_RECOMMENDATION_TOKEN_RE.fullmatch(token) for token in tokens):
         return None
-    if tokens[1] in {"read", "fn", "ask", "trace", "changes"} and len(tokens) < 3:
+    if tokens[1] in {"read", "fn", "ask", "changes"} and len(tokens) < 3:
         return None
     if tokens[1] in {"functions", "status", "proxy", "recon", "roles", "questions", "q", "findings", "events", "logs"} and len(tokens) != 2:
         return None
@@ -1077,6 +1078,16 @@ def validate_ai_recommendations(
         excerpt = known_sources.get(source_path)
         if not excerpt or not symbol or symbol.casefold() not in excerpt.casefold():
             continue
+        command_tokens = command.split()
+        command_root = command_tokens[1]
+        if command_root in {"read", "fn", "ask", "changes"}:
+            target = command_tokens[2].split("(", 1)[0]
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", target):
+                continue
+            # A legitimate source citation is not enough: the command target
+            # itself must exist as an identifier in the cited excerpt.
+            if not re.search(r"\b" + re.escape(target) + r"\b", excerpt, re.IGNORECASE):
+                continue
         normalized_command = " ".join(command.lower().split())
         if normalized_command in native_commands or normalized_command in seen:
             continue

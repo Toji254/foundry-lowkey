@@ -152,16 +152,23 @@ class AIHarnessTests(unittest.TestCase):
                     "command": "lk read balanceOf [account]",
                     "source": {"path": "src/Missing.sol", "symbol": "balanceOf"},
                 },
+                {
+                    "title": "Unsupported command target",
+                    "why": "The command target is not present in the cited source.",
+                    "command": "lk read balanceOf",
+                    "source": {"path": "src/Vault.sol", "symbol": "withdraw"},
+                },
             ]
         }
         result = ai.validate_ai_recommendations(raw, context, [{"command": "lk read owner", "reason": "native"}])
         self.assertEqual(result["recommendations"], [])
-        raw["recommendations"] = [raw["recommendations"][0]]
+        raw["recommendations"] = [raw["recommendations"][0], raw["recommendations"][4]]
         result = ai.validate_ai_recommendations(raw, context, [])
         self.assertEqual(len(result["recommendations"]), 1)
         self.assertEqual(result["recommendations"][0]["command"], "lk read owner")
         self.assertTrue(result["ai_generated"])
         self.assertEqual(result["origin"], "configured-model")
+        self.assertEqual(result["recommendations"][0]["source"]["symbol"], "withdraw")
 
     def test_model_derived_text_renderers_have_visible_ai_watermarks(self):
         from lowkey import error_advisor, security_review, test_planner

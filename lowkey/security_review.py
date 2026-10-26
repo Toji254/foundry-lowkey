@@ -175,6 +175,8 @@ def review_project_security(root: str | Path, contract_name: str | None = None) 
         granted_permissions=grants,
     )
     status = ai_harness.status()
+    normalized["ai_generated"] = True
+    normalized["origin"] = "configured-model"
     normalized["_lowkey_meta"] = {
         "source_files_included": context.get("source_files_included", len(context.get("source_files", []))),
         "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
