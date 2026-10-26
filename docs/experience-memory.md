@@ -25,7 +25,7 @@ lk memory approve LESSON_ID --validation-kind test --validation "tests/test_proj
 
 Proposed lessons do not enter AI context. Approval requires a validation type (test, reproduction, or manual-review) plus a specific note recording the evidence. This is a human promotion step; Lowkey does not claim that writing the note independently validates the lesson.
 
-Only deliberately approved lessons are offered as compact reference context when an AI task is explicitly called. Project lessons remain scoped to that project's canonical filesystem path. Moving the project changes the scope key. To promote a lesson for reuse across projects, explicitly request it:
+Only deliberately approved lessons are offered as compact reference context when an AI task is explicitly called. When source context is available, the selector ranks lesson titles, tags, relevance notes, and content against the current protocol before applying the size limit. Project lessons remain scoped to that project's canonical filesystem path. Moving the project changes the scope key. To promote a lesson for reuse across projects, explicitly request it:
 
 ~~~bash
 lk memory approve LESSON_ID --validation-kind reproduction --validation "Reproduced on the controlled fixture; regression test retained" --global
