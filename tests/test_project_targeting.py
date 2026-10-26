@@ -1147,6 +1147,53 @@ if __name__ == "__main__":
                 generated_text,
             )
 
+    def test_fixture_target_prefers_proxy_from_snapshot_storage_over_locked_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "src").mkdir(parents=True, exist_ok=True)
+            source = root / "src" / "Template.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Template { "
+                "constructor() { _disableInitializers(); } "
+                "function _disableInitializers() internal {} "
+                "function initialize() external {} }",
+                encoding="utf-8",
+            )
+            artifact_path = root / "out" / "Template.sol" / "Template.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(json.dumps({
+                "contractName": "Template",
+                "sourceName": "src/Template.sol",
+                "abi": [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6001"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+            implementation = "0x" + "1" * 40
+            proxy = "0x" + "2" * 40
+            slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+            accounts = {
+                implementation.lower(): {"storage": {}},
+                proxy.lower(): {"storage": {slot: "0x" + "0" * 24 + implementation[2:]}},
+            }
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", implementation]:
+                    return lk.CommandResult("0x6000", 0)
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x6001", 0)
+                return lk.CommandResult("", 1)
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+                target = lk._find_fixture_target(
+                    root,
+                    {implementation.lower(): "0x6000", proxy.lower(): "0x6001"},
+                    "Template",
+                    "http://127.0.0.1:8545",
+                    snapshot_accounts=accounts,
+                )
+
+            self.assertEqual(target, proxy.lower())
+
     def test_fixture_clone_implementation_parser(self):
         implementation = "1234567890abcdef1234567890abcdef12345678"
         runtime = "0x363d3d373d3d3d363d73" + implementation + "5af43d82803e903d91602b57fd5bf3"
