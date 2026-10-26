@@ -7073,6 +7073,7 @@ def _materialize_fixture_state(root, rpc, state_path, target_contract, target_hi
         target_contract,
         rpc,
         preferred_addresses=target_hints,
+        snapshot_accounts={str(address).lower(): account for address, account in accounts.items()},
     )
     if not target:
         return None, (
@@ -7199,7 +7200,7 @@ def _fixture_proxy_implementation(address, runtime_code, rpc):
     return None, None
 
 
-def _find_fixture_target(root, code_map, target_contract, rpc, preferred_addresses=None):
+def _find_fixture_target(root, code_map, target_contract, rpc, preferred_addresses=None, snapshot_accounts=None):
     artifact_path, artifact = _fixture_target_artifact(root, target_contract)
     normalizer = _artifact_runtime_normalizer(artifact)
     if normalizer is None:
@@ -7220,7 +7221,27 @@ def _find_fixture_target(root, code_map, target_contract, rpc, preferred_address
         if normalizer(runtime):
             matches.append((2 if locked else 0, index, address))
             continue
-        implementation, kind = _fixture_proxy_implementation(address, runtime, rpc)
+        # Prefer the state snapshot's EIP-1967 slot before probing RPC. The
+        # fixture snapshot is the authoritative post-test state; this also avoids
+        # losing proxy identity when RPC tooling cannot decode the slot.
+        implementation, kind = None, None
+        account = (snapshot_accounts or {}).get(address) or {}
+        storage = account.get("storage") or {}
+        implementation_slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+        if isinstance(storage, dict):
+            for slot, value in storage.items():
+                if str(slot).lower() != implementation_slot:
+                    continue
+                raw = str(value or "").lower().removeprefix("0x")
+                if len(raw) >= 40:
+                    candidate = "0x" + raw[-40:]
+                    if is_address(candidate) and int(candidate, 16) != 0:
+                        implementation, kind = candidate.lower(), "proxy"
+                        break
+        if not implementation:
+            implementation, kind = _fixture_embedded_implementation(runtime), "clone"
+        if not implementation:
+            implementation, kind = _fixture_proxy_implementation(address, runtime, rpc)
         if not implementation:
             continue
         implementation_result = run_cast(
@@ -7228,6 +7249,9 @@ def _find_fixture_target(root, code_map, target_contract, rpc, preferred_address
         )
         implementation_runtime = str(implementation_result.text or "").strip().lower()
         if implementation_result.code == 0 and normalizer(implementation_runtime):
+            # A locked implementation is never an operational target when a
+            # proxy/clone exists. Rank all operational instances ahead of the
+            # implementation itself, independent of snapshot address order.
             matches.append((0 if locked else 1, index, address))
     if not matches:
         return None
