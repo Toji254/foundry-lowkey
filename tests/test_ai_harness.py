@@ -76,7 +76,7 @@ class AIHarnessTests(unittest.TestCase):
     def test_command_help_exposes_each_command_flag_and_nested_variation(self):
         cases = [
             (["status", "--help"], ["--json"]),
-            (["preview", "--help"], ["--root", "--contract", "--show-context"]),
+            (["preview", "--help"], ["--root", "--contract", "--show-context", "--json-context"]),
             (["setup", "--help"], ["--provider", "--model", "--base-url", "--api-key-env", "--timeout", "--max-output-tokens"]),
             (["recommendations", "--help"], ["status", "auto", "manual", "--json"]),
             (["keys", "--help"], ["list", "add", "remove", "clear"]),
@@ -702,7 +702,22 @@ class AIHarnessTests(unittest.TestCase):
                 with contextlib.redirect_stdout(full):
                     self.assertEqual(ai.main(["preview", "--root", str(root), "--show-context"]), 0)
                 send.assert_not_called()
-            payload = json.loads(full.getvalue())
+            readable = full.getvalue()
+            self.assertIn("HUMAN-READABLE", readable)
+            self.assertIn("Provider request: NOT SENT", readable)
+            self.assertIn("Vault.sol", readable)
+            self.assertIn("Source excerpt", readable)
+            self.assertIn("[REDACTED]", readable)
+            self.assertNotIn("PREVIEW_SECRET_DO_NOT_SEND", readable)
+            self.assertNotIn("TEST_ONLY", readable)
+            self.assertNotIn('"context": {', readable)
+
+            structured = io.StringIO()
+            with patch.object(ai, "urlopen", side_effect=AssertionError("preview must not contact a provider")) as send:
+                with contextlib.redirect_stdout(structured):
+                    self.assertEqual(ai.main(["preview", "--root", str(root), "--json-context"]), 0)
+                send.assert_not_called()
+            payload = json.loads(structured.getvalue())
             self.assertTrue(payload["preview_only"])
             self.assertFalse(payload["provider_request_made"])
             serialized = json.dumps(payload["context"])
