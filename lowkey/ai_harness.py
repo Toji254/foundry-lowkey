@@ -1345,7 +1345,7 @@ OUTPUT & SAFETY
 - Preview redaction is best-effort; inspect the selected context before sharing.
 - Use --json only on commands that list it. Use --json-context for the complete machine-readable preview.
 - Lowkey's native recommendations stay separate from optional AI recommendations.
-- Help aliases: --h, --help, -h, and help. Use a valid command before requesting its detailed help.
+- Help aliases: --h, --help, -h, and help. Use 'lk ai --help' for the overview or 'lk ai <command> --help' for details.
 ''' 
 
 
@@ -1392,7 +1392,7 @@ def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None)
         "errors": ("auto_explain_errors", "automatic AI error explanations"),
     }.get(action)
     if setting is None:
-        return render_ai_help(None)
+        return "Unknown AI setting group. Run 'lk ai --help' for available commands."
     key, label = setting
     enabled = bool(cfg.get(key, False))
     lines = [
