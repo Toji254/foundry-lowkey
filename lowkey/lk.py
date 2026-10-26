@@ -5701,10 +5701,15 @@ def _project_target_entries(config, root=None):
 def _target_entry_is_protocol(root, entry):
     """Return True for contracts that belong to the protocol, not its test/fixture support."""
     name = str(entry.get("name") or entry.get("contract") or "").strip()
-    lowered_name = name.lower()
-    if any(token in lowered_name for token in ("mock", "fixture", "test")):
+    # Classify Solidity-style name tokens, not arbitrary substrings:
+    # "ContestFactory" is application code, while "ConfidencePoolFactoryTest"
+    # and "MockAgreement" are normally test/support contracts.
+    tokenized_name = re.sub(r"([a-z0-9])([A-Z])", r"\\1_\\2", name).lower()
+    name_tokens = {token for token in re.split(r"[^a-z0-9]+", tokenized_name) if token}
+    if name_tokens & {"mock", "fixture", "test"}:
         return False
-    if lowered_name in {"erc1967proxy", "erc1967beaconproxy", "stake_token"}:
+    lowered_name = tokenized_name.replace("_", "")
+    if lowered_name in {"erc1967proxy", "erc1967beaconproxy"}:
         return False
 
     artifact = entry.get("artifact")
