@@ -6685,19 +6685,18 @@ def discover_local_lab_fixture(root=".", requested=None):
     return candidates[0] if candidates else None
 
 
-def _fixture_fs_permissions_override(root, state_path):
-    """Temporarily add permission to write one fixture-state file.
+def _temporary_fixture_foundry_config(root, state_path, safe_name):
+    """Create a one-run Foundry config that grants write access only to the snapshot directory.
 
-    Foundry's default filesystem sandbox often denies vm.dumpState even under
-    out/. Read the effective Foundry configuration, preserve its existing
-    permissions, and add a more-specific read-write rule for Lowkey's snapshot
-    directory. The caller applies this only to one Forge subprocess; project
-    foundry.toml and the user's shell environment remain unchanged.
+    Foundry intentionally ignores generic FOUNDRY_FS_PERMISSIONS env overrides.
+    Instead, copy the active project's config and override fs_permissions in the
+    selected profile. The effective config output is used to preserve inherited
+    permissions; the user's foundry.toml is never edited.
     """
     root_path = Path(root).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
     try:
-        relative_path = state_path.relative_to(root_path).as_posix()
+        relative_state = state_path.relative_to(root_path).as_posix()
     except ValueError:
         return None, "fixture snapshot path is outside the active Foundry project"
 
@@ -6705,68 +6704,148 @@ def _fixture_fs_permissions_override(root, state_path):
     if result.code != 0:
         detail = "\n".join(str(result.text or "").splitlines()[-12:])
         return None, (
-            "could not read the effective Foundry fs_permissions before writing "
+            "could not read the effective Foundry configuration before writing "
             "the local fixture snapshot"
             + (f":\n{detail}" if detail else "")
         )
 
     output = str(result.text or "").strip()
     try:
-        config = json.loads(output)
+        effective_config = json.loads(output)
     except json.JSONDecodeError:
-        # Some Forge versions may put a short informational prefix before JSON.
-        start = output.find("{")
-        end = output.rfind("}")
-        if start < 0 or end < start:
+        first = output.find("{")
+        last = output.rfind("}")
+        if first < 0 or last < first:
             return None, "forge config --json did not return valid JSON"
         try:
-            config = json.loads(output[start:end + 1])
+            effective_config = json.loads(output[first:last + 1])
         except json.JSONDecodeError as exc:
             return None, f"forge config --json returned invalid JSON: {exc}"
-
-    if not isinstance(config, dict):
+    if not isinstance(effective_config, dict):
         return None, "forge config --json did not return a configuration object"
 
-    existing = config.get("fs_permissions") or []
-    if not isinstance(existing, list):
-        return None, "Foundry fs_permissions is not an array; refusing to override it blindly"
+    permissions = effective_config.get("fs_permissions") or []
+    if not isinstance(permissions, list):
+        return None, "effective Foundry fs_permissions is not an array"
 
-    permissions = []
-    seen = set()
-    for item in existing:
+    def quote(value):
+        return json.dumps(str(value), ensure_ascii=False)
+
+    entries = []
+    for item in permissions:
         if not isinstance(item, dict):
             continue
         access = str(item.get("access") or "").strip().lower()
         path = str(item.get("path") or "").strip()
-        if not access or not path:
-            continue
-        key = (access, path)
-        if key in seen:
-            continue
-        seen.add(key)
-        permissions.append({"access": access, "path": path})
+        if access and path:
+            entries.append(
+                "{ access = " + quote(access) + ", path = " + quote(path) + " }"
+            )
+    # Foundry resolves the longest matching path. Granting only this specific
+    # directory does not widen any unrelated path in a project's existing policy.
+    entries.append(
+        "{ access = " + quote("read-write") +
+        ", path = " + quote(relative_state) + " }"
+    )
+    permissions_toml = "[" + ", ".join(entries) + "]"
 
-    # An exact directory rule is more specific than a project-wide read-only
-    # rule and does not grant write access to unrelated project files.
-    lowkey_directory = Path(relative_path).parent.as_posix()
-    if lowkey_directory in {"", "."}:
-        return None, "fixture snapshot directory unexpectedly resolved to the project root"
+    profile = str(os.environ.get("FOUNDRY_PROFILE") or "default").strip() or "default"
+    env_config = os.environ.get("FOUNDRY_CONFIG")
+    base_config_path = Path(env_config).expanduser() if env_config else root_path / "foundry.toml"
+    if not base_config_path.is_absolute():
+        base_config_path = root_path / base_config_path
+    try:
+        raw_config = base_config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raw_config = ""
+    except OSError as exc:
+        return None, f"could not read active Foundry config {base_config_path}: {exc}"
 
-    permissions = [
-        item for item in permissions
-        if str(item.get("path") or "").removeprefix("./").rstrip("/") != lowkey_directory
-    ]
-    permissions.append({"access": "read-write", "path": lowkey_directory})
+    lines = raw_config.splitlines()
+    selected_header = re.compile(r"^\s*\[\s*profile\." + re.escape(profile) + r"\s*\]\s*(?:#.*)?$")
+    header_pattern = re.compile(r"^\s*\[")
+    section_start = None
+    section_end = len(lines)
+    for index, line in enumerate(lines):
+        if selected_header.match(line):
+            section_start = index
+            for later in range(index + 1, len(lines)):
+                if header_pattern.match(lines[later]):
+                    section_end = later
+                    break
+            break
 
-    def toml_string(value):
-        return json.dumps(str(value), ensure_ascii=False)
+    new_assignment = "fs_permissions = " + permissions_toml
 
-    encoded = "[" + ", ".join(
-        "{ access = " + toml_string(item["access"]) +
-        ", path = " + toml_string(item["path"]) + " }"
-        for item in permissions
-    ) + "]"
-    return encoded, None
+    def assignment_end(start_index):
+        """Return the last line of a TOML array assignment, respecting quoted strings."""
+        first_line = lines[start_index]
+        equals = first_line.find("=")
+        if equals < 0:
+            return None
+        balance = 0
+        started = False
+        in_double = False
+        in_single = False
+        escaped = False
+        for line_index in range(start_index, len(lines)):
+            text = lines[line_index][equals + 1:] if line_index == start_index else lines[line_index]
+            for char in text:
+                if in_double:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == '"':
+                        in_double = False
+                    continue
+                if in_single:
+                    if char == "'":
+                        in_single = False
+                    continue
+                if char == "#":
+                    break
+                if char == '"':
+                    in_double = True
+                elif char == "'":
+                    in_single = True
+                elif char == "[":
+                    balance += 1
+                    started = True
+                elif char == "]":
+                    balance -= 1
+                    if started and balance == 0:
+                        return line_index
+        return None
+
+    if section_start is None:
+        # Appending a profile override preserves top-level values and any
+        # existing sections without editing or duplicating an existing table.
+        lines.extend(["", f"[profile.{profile}]", new_assignment])
+    else:
+        perm_index = None
+        perm_end = None
+        for index in range(section_start + 1, section_end):
+            if re.match(r"^\s*fs_permissions\s*=", lines[index]):
+                perm_index = index
+                perm_end = assignment_end(index)
+                if perm_end is None or perm_end >= section_end:
+                    return None, "could not safely replace the active profile's fs_permissions entry"
+                break
+        if perm_index is not None:
+            lines[perm_index:perm_end + 1] = [new_assignment]
+        else:
+            lines.insert(section_end, new_assignment)
+
+    lowkey_dir = Path(state_path.parent)
+    config_dir = root_path / "out" / "lowkey"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / f".foundry-lab-{re.sub(r'[^A-Za-z0-9_]', '_', safe_name)}-{os.getpid()}.toml"
+    try:
+        config_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    except OSError as exc:
+        return None, f"could not create temporary Foundry lab config: {exc}"
+    return config_path, None
 
 
 def _fixture_state_files(root, safe_name):
@@ -7290,30 +7369,35 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print("Helper  : Forge executes in its test context; no broadcast to a remote chain.")
 
     before_sources = _project_source_fingerprint(root)
-    fs_permissions, permission_error = _fixture_fs_permissions_override(root, state_path)
-    if permission_error:
+    temporary_config, config_error = _temporary_fixture_foundry_config(
+        root, state_path, safe_name
+    )
+    if config_error:
         try:
             Path(test_path).unlink(missing_ok=True)
         except OSError:
             pass
-        return fail("Error: Lowkey could not safely prepare project fixture state export. " + permission_error)
+        return fail("Error: Lowkey could not safely prepare project fixture state export. " + config_error)
 
-    # Apply the precise permission rule to this Forge process only. Never alter
-    # foundry.toml or permanently broaden the filesystem sandbox.
-    old_fs_permissions = os.environ.get("FOUNDRY_FS_PERMISSIONS")
-    os.environ["FOUNDRY_FS_PERMISSIONS"] = fs_permissions
+    # Use the copied project config for this Forge test only. The user config is
+    # not edited, and the temporary override is removed after execution.
+    old_foundry_config = os.environ.get("FOUNDRY_CONFIG")
+    os.environ.pop("FOUNDRY_CONFIG", None)
     try:
         result = run_foundry([
-            "test", "--match-path", relative_test,
+            "test", "--config-path", str(temporary_config),
+            "--match-path", relative_test,
             "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
             "--match-test", "testLowkeyLabStateDump",
             "--disable-block-gas-limit", "-vv",
         ], capture=True, cwd=str(Path(root).resolve()))
     finally:
-        if old_fs_permissions is None:
-            os.environ.pop("FOUNDRY_FS_PERMISSIONS", None)
-        else:
-            os.environ["FOUNDRY_FS_PERMISSIONS"] = old_fs_permissions
+        if old_foundry_config is not None:
+            os.environ["FOUNDRY_CONFIG"] = old_foundry_config
+        try:
+            Path(temporary_config).unlink(missing_ok=True)
+        except OSError:
+            pass
     output = result.text
     changed_sources = _project_source_mutations(root, before_sources)
     # The harness exists only to execute this promotion once. Remove it after
