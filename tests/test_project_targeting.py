@@ -1472,3 +1472,64 @@ if __name__ == "__main__":
             self.assertFalse(lk._target_entry_is_protocol(root, {"name": "ConfidencePoolFactoryTest"}))
             self.assertFalse(lk._target_entry_is_protocol(root, {"name": "MockAgreement"}))
             self.assertFalse(lk._target_entry_is_protocol(root, {"name": "ERC1967Proxy"}))
+
+
+    def test_local_lab_prefers_unit_fixture_over_fork_integration_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            fork_dir = root / "test" / "fork"
+            fork_dir.mkdir(parents=True)
+            (fork_dir / "BattleChainFactoryIntegration.fork.t.sol").write_text(
+                "pragma solidity ^0.8.20;\n"
+                "contract BattleChainFactoryIntegrationForkTest {\n"
+                "    function setUp() public {\n"
+                "        try vm.envString(\"BATTLECHAIN_TESTNET_RPC\") returns (string memory) {\n"
+                "            vm.createSelectFork(\"battlechain_testnet\", 16000);\n"
+                "        } catch { vm.skip(true); }\n"
+                "    }\n"
+                "    function testCreatePoolAgainstLiveAgreementSucceeds() external {\n"
+                "        new ConfidencePoolFactory();\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            unit_dir = root / "test" / "unit"
+            unit_dir.mkdir(parents=True)
+            unit_path = unit_dir / "ConfidencePoolFactory.t.sol"
+            unit_path.write_text(
+                "pragma solidity ^0.8.20;\n"
+                "contract ConfidencePoolFactoryTest {\n"
+                "    function setUp() public {}\n"
+                "    function test_createPool_success() external {\n"
+                "        new ConfidencePoolFactory();\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            fixture = lk.discover_local_lab_fixture(root, "ConfidencePoolFactory")
+
+            self.assertIsNotNone(fixture)
+            self.assertEqual(fixture["relative"], "test/unit/ConfidencePoolFactory.t.sol")
+            self.assertEqual(fixture["contract"], "ConfidencePoolFactoryTest")
+            self.assertEqual(fixture["create_function"], "test_createPool_success")
+
+    def test_local_fixture_discovery_rejects_fork_cheatcodes_outside_fork_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            test_dir = root / "test" / "integration"
+            test_dir.mkdir(parents=True)
+            (test_dir / "RemoteFactoryTest.t.sol").write_text(
+                "pragma solidity ^0.8.20;\n"
+                "contract RemoteFactoryTest {\n"
+                "    function setUp() public {\n"
+                "        vm.createSelectFork(\"remote\", 42);\n"
+                "    }\n"
+                "    function test_createPool() external {\n"
+                "        new Factory();\n"
+                "    }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(lk.discover_local_lab_fixture(root, "Factory"))
