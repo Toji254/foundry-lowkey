@@ -1373,7 +1373,7 @@ def _human_context_lines(label: str, value: Any, indent: int = 0) -> list[str]:
             lines.append(f"{prefix}  (none)")
         for index, item in enumerate(value, start=1):
             if not isinstance(item, Mapping):
-                lines.append(f"{prefix}  [{index}] {item}")
+                lines.append(f"{prefix}  [{index}] {_safe_terminal_text(str(item))}")
                 continue
             path = _safe_terminal_text(str(item.get("path", "(unknown path)")))
             source = str(item.get("source_excerpt", ""))
@@ -1421,7 +1421,7 @@ def _human_context_lines(label: str, value: Any, indent: int = 0) -> list[str]:
 
     if isinstance(value, str) and "\n" in value:
         lines = [f"{prefix}{heading}:"]
-        lines.extend(f"{prefix}  {line}" for line in value.splitlines())
+        lines.extend(f"{prefix}  {_safe_terminal_text(line)}" for line in value.splitlines())
         return lines
 
     rendered = "(empty)" if value is None or value == "" else _safe_terminal_text(str(value))
