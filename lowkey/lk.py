@@ -6505,96 +6505,143 @@ def run_auto_target(config,name=None):
 
 
 def _local_test_fixture_candidates(root, requested=None):
-    """Discover test contracts that can be promoted into disposable local lab harnesses."""
+    """Discover project-owned Foundry helpers or successful tests that build state."""
     root = Path(audit_context.foundry_project_root(root) or root).resolve()
     wanted = str(requested or "").strip().lower()
-    roots = [root / "test", root / "tests"]
-    candidates = []
+    source_files = []
+    for search_root in (root / "test", root / "tests"):
+        if search_root.is_dir():
+            source_files.extend(sorted(search_root.rglob("*.sol")))
+    source_files = list(dict.fromkeys(source_files))
+    source_cache = {}
+    for path in source_files:
+        try:
+            source_cache[path.resolve()] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source_cache[path.resolve()] = ""
 
-    for search_root in roots:
-        if not search_root.is_dir():
+    def setup_mode_for(path, text):
+        setup = re.search(r"\bfunction\s+setUp\s*\(\s*\)\s*([^{]*)\{", text)
+        if setup:
+            return "override" if re.search(r"\bvirtual\b", setup.group(1)) else "body"
+        declaration = re.search(
+            r"\bcontract\s+[A-Za-z_]\w*\s+is\s+([^{}]+)\{", text
+        )
+        if not declaration:
+            return None
+        bases = re.findall(r"\b([A-Za-z_]\w*)\b", declaration.group(1))
+        for base in bases:
+            for other_path, other_source in source_cache.items():
+                if other_path == path.resolve() or not re.search(
+                    r"\bcontract\s+" + re.escape(base) + r"\b", other_source
+                ):
+                    continue
+                base_setup = re.search(
+                    r"\bfunction\s+setUp\s*\(\s*\)\s*([^{]*)\{", other_source
+                )
+                if base_setup and re.search(r"\bvirtual\b", base_setup.group(1)):
+                    return "override"
+        return None
+
+    candidates = []
+    for path in source_files:
+        relative = path.relative_to(root).as_posix()
+        parts = {part.lower() for part in path.relative_to(root).parts[:-1]}
+        if parts & {"mocks", "mock", "fixtures", "fixture", ".lowkey"}:
+            continue
+        text = source_cache.get(path.resolve(), "")
+        if not text:
+            continue
+        setup_mode = setup_mode_for(path, text)
+        if not setup_mode:
+            continue
+        contract_match = re.search(r"\bcontract\s+([A-Za-z_][A-Za-z0-9_]*)\b", text)
+        if not contract_match:
+            continue
+        fixture_contract = contract_match.group(1)
+        base_score = 40 if path.name.lower().endswith(".t.sol") else 0
+        if "test" in path.name.lower():
+            base_score += 10
+        if wanted and wanted in text.lower():
+            base_score += 300
+        if fixture_contract.lower() == wanted:
+            base_score += 500
+
+        helper = None
+        for match in re.finditer(
+            r"(?m)\bfunction\s+(_?(?:create|deploy)[A-Za-z0-9_]*)\s*\(\s*\)\s*"
+            r"(internal|public|external)\b([^{]*)\{",
+            text,
+        ):
+            returns_match = re.search(r"\breturns\s*\(([^)]*)\)", match.group(3), re.S)
+            if not returns_match:
+                continue
+            returns_text = returns_match.group(1).strip()
+            if re.search(r"\b(address|bytes|[A-Za-z_]\w*\s+[A-Za-z_]\w*)\b", returns_text):
+                helper = {
+                    "name": match.group(1),
+                    "visibility": match.group(2),
+                    "tuple_return": bool(re.search(r"\bbytes\b", returns_text)),
+                }
+                break
+        if helper:
+            candidates.append({
+                "score": base_score + 50,
+                "relative": relative,
+                "path": str(path),
+                "contract": fixture_contract,
+                "create_function": helper["name"],
+                "helper_visibility": helper["visibility"],
+                "tuple_return": helper["tuple_return"],
+                "fixture_kind": "helper",
+                "setup_mode": setup_mode,
+            })
             continue
 
-        for path in sorted(search_root.rglob("*.sol")):
-            relative = path.relative_to(root).as_posix()
-            parts = {part.lower() for part in path.relative_to(search_root).parts[:-1]}
-            if parts & {"mocks", "mock", "fixtures", "fixture"}:
+        test_matches = list(re.finditer(
+            r"(?m)\bfunction\s+(test[A-Za-z_]\w*)\s*\(\s*\)\s*(public|external)\b[^{}]*\{",
+            text,
+        ))
+        for index, match in enumerate(test_matches):
+            method = match.group(1)
+            lowered = method.lower()
+            if any(word in lowered for word in (
+                "revert", "fuzz", "invariant", "panic", "fail", "invalid",
+            )):
                 continue
-            try:
-                source = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+            end = test_matches[index + 1].start() if index + 1 < len(test_matches) else len(text)
+            body = text[match.start():end]
+            if re.search(r"\b(expectRevert|expectPartialRevert|expectCallRevert)\s*\(", body):
                 continue
-
             if not re.search(
-                r"(?m)\bfunction\s+setUp\s*\(\s*\)\s+(?:public|external|internal)\b",
-                source,
+                r"\bnew\s+[A-Za-z_]\w*|\bClones\s*\.\s*clone|"
+                r"\bERC1967Proxy\s*\(|\bcreate2?\s*\(|"
+                r"\.create[A-Z_]\w*\s*\(|\.deploy[A-Z_]\w*\s*\(",
+                body,
+                re.I,
             ):
                 continue
-
-            create_match = re.search(
-                r"(?m)\bfunction\s+(_?createPool)\s*\(\s*\)\s+(?:internal|public|external)\b([^{]*)\{",
-                source,
-            )
-            if not create_match:
-                continue
-
-            declaration = create_match.group(0)
-            returns_match = re.search(r"\breturns\s*\(([^)]*)\)", declaration, re.S)
-            returns_text = returns_match.group(1) if returns_match else ""
-
-            contract_match = None
-            for declaration in re.finditer(
-                r"\bcontract\s+([A-Za-z_][A-Za-z0-9_]*)\b",
-                source,
-            ):
-                if declaration.start() <= create_match.start():
-                    contract_match = declaration
-                else:
-                    break
-            if not contract_match:
-                continue
-            fixture_contract = contract_match.group(1)
-
-            base_score = 0
-            basename = path.name.lower()
-            compact = re.sub(r"[^a-z0-9]", "", basename)
-            if basename.endswith(".t.sol"):
-                base_score += 40
-            if "test" in compact:
-                base_score += 10
-            if "base" in compact:
-                base_score += 15
-            if "regression" in compact:
-                base_score += 10
-            base_score += 20
-
-            contract = fixture_contract
-            score = base_score
-            if wanted:
-                wanted_compact = re.sub(r"[^a-z0-9]", "", wanted)
-                if wanted_compact and wanted_compact in re.sub(r"[^a-z0-9]", "", source.lower()):
-                    score += 300
-                if contract.lower() == wanted:
-                    score += 500
-                elif wanted_compact in contract.lower():
-                    score += 150
-            if "test" in contract.lower() or "harness" in contract.lower():
-                score += 20
+            score = base_score + 20
+            if wanted and wanted in method.lower():
+                score += 180
             candidates.append({
                 "score": score,
                 "relative": relative,
                 "path": str(path),
-                "contract": contract,
-                    "create_function": create_match.group(1),
-                    "tuple_return": bool(re.search(r"\bbytes\b", returns_text)),
-                })
+                "contract": fixture_contract,
+                "create_function": method,
+                "helper_visibility": match.group(2),
+                "tuple_return": False,
+                "fixture_kind": "test",
+                "setup_mode": setup_mode,
+            })
 
     return sorted(
         candidates,
         key=lambda item: (
             -int(item.get("score") or 0),
             str(item.get("relative") or ""),
-            str(item.get("contract") or ""),
+            str(item.get("create_function") or ""),
         ),
     )
 
@@ -6614,7 +6661,7 @@ def _fixture_state_files(root, safe_name):
 
 
 def _generate_test_fixture_lab_script(root, candidate, state_path=None):
-    """Generate a test contract so Forge executes the fixture in its native test context."""
+    """Generate a disposable harness around a project-owned setup/helper/test."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
     if state_path is None:
         state_path = root_path / ".audit" / "lab" / "fixture-state.json"
@@ -6622,45 +6669,24 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None):
     relative = str(candidate["relative"]).replace("\\", "/")
     contract = str(candidate["contract"])
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", contract)
-
     state_literal = os.path.relpath(state_path, root_path).replace("\\", "/")
-    create_call = (
-        f"address target;\n        (target, ) = {candidate['create_function']}();"
-        if candidate.get("tuple_return")
-        else f"address target = {candidate['create_function']}();"
-    )
-    test_dir = root_path / "test" / "foundry" / ".lowkey"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    test_path = test_dir / f"LowkeyAutoFixture_{safe_name}.t.sol"
+    method = str(candidate["create_function"])
+    fixture_kind = str(candidate.get("fixture_kind") or "helper")
+    setup_mode = str(candidate.get("setup_mode") or "override")
 
-    code = f'''// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+    target_marker = ""
+    if fixture_kind == "test":
+        fixture_call = f"this.{method}();"
+    else:
+        visibility = str(candidate.get("helper_visibility") or "internal")
+        helper_ref = f"this.{method}" if visibility == "external" else method
+        if candidate.get("tuple_return"):
+            fixture_call = f"address target;\n        (target, ) = {helper_ref}();"
+        else:
+            fixture_call = f"address target = address({helper_ref}());"
+        target_marker = '        console2.log("LOWKEY_TARGET:", target);'
 
-import {{ {contract} }} from "{relative}";
-import {{ console2 }} from "forge-std/console2.sol";
-import {{ Vm }} from "forge-std/Vm.sol";
-
-/// @dev Runs the discovered project fixture using Forge's native test runner.
-/// The state dump is taken from inside setUp(), immediately after the fixture
-/// finishes, while the setup-created contracts are still observable.
-contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
-    function setUp() public override {{
-        vm.startStateDiffRecording();
-        super.setUp();
-
-        // Some project fixtures expose setup through an internal createPool()
-        // helper rather than their setUp(). Invoke that helper inside the native
-        // test context so the created application state is captured.
-        if ("__CREATE_FIXTURE__" == "__CREATE_FIXTURE__") {{
-            // __CREATE_FIXTURE_CALL__ is replaced by Lowkey at generation time.
-{create_call}
-            console2.log("LOWKEY_TARGET:", target);
-        }}
-
-        // Keep this project-agnostic: report every contract account actually
-        // created during the fixture. Lowkey later matches those candidates
-        // against the requested artifact's runtime bytecode.
-        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
+    state_capture = f"""        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
         for (uint256 i = 0; i < accesses.length; ++i) {{
             if (
                 accesses[i].kind == Vm.AccountAccessKind.Create &&
@@ -6669,12 +6695,40 @@ contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
                 console2.log("LOWKEY_CREATE:", accesses[i].account);
             }}
         }}
+        vm.dumpState("{state_literal}");"""
 
-        vm.dumpState("{state_literal}");
+    if setup_mode == "override":
+        harness = f"""    function setUp() public override {{
+        vm.startStateDiffRecording();
+        super.setUp();
+        {fixture_call}
+{target_marker}
+{state_capture}
     }}
 
     function testLowkeyLabStateDump() public {{}}
-}}
+"""
+    else:
+        harness = f"""    function testLowkeyLabStateDump() public {{
+        vm.startStateDiffRecording();
+        {fixture_call}
+{target_marker}
+{state_capture}
+    }}
+"""
+    test_dir = root_path / "test" / "foundry" / ".lowkey"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    test_path = test_dir / f"LowkeyAutoFixture_{safe_name}.t.sol"
+    code = f'''// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {{ {contract} }} from "{relative}";
+import {{ console2 }} from "forge-std/console2.sol";
+import {{ Vm }} from "forge-std/Vm.sol";
+
+/// @dev Runs project-owned setup logic and exports the complete local state.
+contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
+{harness}}}
 '''
     test_path.write_text(code, encoding="utf-8")
     return test_path
@@ -6957,43 +7011,160 @@ def _artifact_runtime_normalizer(artifact):
     return normalize
 
 
+def _fixture_embedded_implementation(runtime_code):
+    """Recognize EIP-1167 minimal-proxy runtime bytecode."""
+    runtime = str(runtime_code or "").strip().lower().removeprefix("0x")
+    for pattern in (
+        r"363d3d373d3d3d363d73([0-9a-f]{40})5af43d82803e903d91602b57fd5bf3",
+        r"3d3d3d3d363d3d37363d73([0-9a-f]{40})5af43d82803e903d91602b57fd5bf3",
+    ):
+        match = re.search(pattern, runtime)
+        if match:
+            return "0x" + match.group(1)
+    return None
+
+
+def _fixture_proxy_implementation(address, runtime_code, rpc):
+    """Resolve an EIP-1967 proxy or EIP-1167 clone without assuming contract names."""
+    implementation = _fixture_embedded_implementation(runtime_code)
+    if implementation:
+        return implementation, "clone"
+    slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+    result = run_cast(["storage", address, slot, "--rpc-url", str(rpc)], config={}, capture=True)
+    if result.code == 0:
+        words = re.findall(r"0x[0-9a-fA-F]{64}", str(result.text or ""))
+        if words:
+            candidate = "0x" + words[-1][-40:]
+            if is_address(candidate) and int(candidate, 16) != 0:
+                return candidate, "proxy"
+    return None, None
+
+
 def _find_fixture_target(root, code_map, target_contract, rpc, preferred_addresses=None):
-    _, artifact = _fixture_target_artifact(root, target_contract)
+    artifact_path, artifact = _fixture_target_artifact(root, target_contract)
     normalizer = _artifact_runtime_normalizer(artifact)
     if normalizer is None:
         return None
-
-    ordered = []
-    seen = set()
-    for address in preferred_addresses or []:
+    locked = artifact_is_locked_implementation(root, artifact_path, artifact)
+    ordered, seen = [], set()
+    for address in list(preferred_addresses or []) + list(code_map):
         key = str(address or "").strip().lower()
         if key in code_map and key not in seen:
             ordered.append(key)
             seen.add(key)
-    for address in code_map:
-        key = str(address or "").strip().lower()
-        if key not in seen:
-            ordered.append(key)
-            seen.add(key)
-
     matches = []
-    for address in ordered:
-        code_result = run_cast(
-            ["code", address, "--rpc-url", str(rpc)],
-            config={},
-            capture=True,
+    for index, address in enumerate(ordered):
+        result = run_cast(["code", address, "--rpc-url", str(rpc)], config={}, capture=True)
+        runtime = str(result.text or "").strip().lower()
+        if result.code != 0 or runtime in {"", "0x", "0X"}:
+            continue
+        if normalizer(runtime):
+            matches.append((2 if locked else 0, index, address))
+            continue
+        implementation, kind = _fixture_proxy_implementation(address, runtime, rpc)
+        if not implementation:
+            continue
+        implementation_result = run_cast(
+            ["code", implementation, "--rpc-url", str(rpc)], config={}, capture=True
         )
-        runtime = str(code_result.text or "").strip().lower()
-        if code_result.code == 0 and normalizer(runtime):
-            matches.append(address)
+        implementation_runtime = str(implementation_result.text or "").strip().lower()
+        if implementation_result.code == 0 and normalizer(implementation_runtime):
+            matches.append((0 if locked else 1, index, address))
+    if not matches:
+        return None
+    matches.sort()
+    return matches[0][2]
 
-    if len(matches) == 1:
-        return matches[0]
-    return matches[0] if matches else None
+
+def _fixture_snapshot_implementation(address, account, runtime_code, code_by_address, rpc):
+    implementation = _fixture_embedded_implementation(runtime_code)
+    kind = "clone" if implementation else None
+    if not implementation:
+        storage = account.get("storage") or {}
+        slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+        if isinstance(storage, dict):
+            for key, value in storage.items():
+                if str(key).lower() != slot:
+                    continue
+                raw = str(value or "").lower().removeprefix("0x")
+                if len(raw) >= 40:
+                    candidate = "0x" + raw[-40:]
+                    if is_address(candidate) and int(candidate, 16) != 0:
+                        implementation, kind = candidate.lower(), "proxy"
+                        break
+    if not implementation:
+        implementation, kind = _fixture_proxy_implementation(address, runtime_code, rpc)
+    if implementation and implementation.lower() in code_by_address:
+        return implementation.lower(), kind
+    return None, None
+
+
+def _remember_fixture_application_targets(config, root, state_path, rpc, primary_contract, primary_address):
+    """Remember additional live proxy/clone instances matching first-party app artifacts."""
+    try:
+        snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    accounts, _ = _fixture_accounts_map(snapshot)
+    if not isinstance(accounts, dict):
+        return []
+    accounts_by_lower = {str(key).lower(): value for key, value in accounts.items()}
+    code_by_address = {
+        str(address).lower(): str(account.get("code") or "0x").lower()
+        for address, account in accounts_by_lower.items()
+        if isinstance(account, dict) and str(account.get("code") or "0x").lower() not in {"", "0x"}
+    }
+    if not code_by_address:
+        return []
+
+    root_path = Path(root).expanduser().resolve()
+    discovered = []
+    for artifact_path in local_artifact_paths(str(root_path)):
+        artifact = read_artifact(artifact_path) or {}
+        if not artifact_is_deployable(artifact) or not artifact_is_project_application(
+            str(root_path), artifact_path, artifact
+        ):
+            continue
+        name = artifact_contract_name(artifact_path, artifact)
+        normalizer = _artifact_runtime_normalizer(artifact)
+        if normalizer is None:
+            continue
+        locked = artifact_is_locked_implementation(root_path, artifact_path, artifact)
+        matches = []
+        for address, runtime in code_by_address.items():
+            account = accounts_by_lower.get(address) or {}
+            if normalizer(runtime):
+                kind = "direct"
+            else:
+                implementation, kind = _fixture_snapshot_implementation(
+                    address, account, runtime, code_by_address, rpc
+                )
+                if not implementation or not normalizer(code_by_address.get(implementation, "")):
+                    continue
+            rank = (0 if kind in {"proxy", "clone"} else 2) if locked else (
+                0 if kind == "direct" else 1
+            )
+            matches.append((rank, address, kind))
+        if not matches:
+            continue
+        matches.sort()
+        _, address, kind = matches[0]
+        if str(name).lower() == str(primary_contract or "").lower() and address.lower() == str(primary_address or "").lower():
+            continue
+        if any(row["address"].lower() == address.lower() for row in discovered):
+            continue
+        discovered.append({"contract": name, "address": address, "artifact": artifact_path, "kind": kind})
+
+    for row in discovered:
+        remember_project_target(config, root_path, row["contract"], row["address"])
+        config.setdefault("abi_paths", {})[row["address"]] = row["artifact"]
+    if discovered:
+        save_config(config)
+    return discovered
 
 
 def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=None):
-    """Run a discovered Foundry fixture natively as a test, then promote its state to Anvil."""
+    """Run a project-owned Foundry setup/test path and materialize its full state."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
     state_path = _fixture_state_files(root, safe_name)
     test_path = _generate_test_fixture_lab_script(root, fixture, state_path)
@@ -7008,40 +7179,26 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     _ensure_lab_deployer(config, accounts[0], 0, select_if_empty=False)
     print(f"Deployer: lab-deployer ({accounts[0]}) [Anvil #0]")
     print("Mode    : promoted project test fixture")
-    print("Action  : running the fixture through Forge's native test runner, then materializing its full state into local Anvil...")
-    print("Helper  : no broadcast; Forge invokes the fixture setUp() normally.")
+    print("Action  : executing project-owned setup/test logic, then materializing its full local state...")
+    print("Helper  : Forge executes in its test context; no broadcast to a remote chain.")
 
-    result = run_foundry(
-        [
-            "test",
-            "--match-path",
-            relative_test,
-            "--match-contract",
-            f"LowkeyAutoFixtureTest_{safe_name}",
-            "--match-test",
-            "testLowkeyLabStateDump",
-            "--disable-block-gas-limit",
-            "-vv",
-        ],
-        capture=True,
-    )
-
+    before_sources = _project_source_fingerprint(root)
+    result = run_foundry([
+        "test", "--match-path", relative_test,
+        "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
+        "--match-test", "testLowkeyLabStateDump",
+        "--disable-block-gas-limit", "-vv",
+    ], capture=True)
     output = result.text
-
     changed_sources = _project_source_mutations(root, before_sources)
     if changed_sources:
         return fail(
-            "Error: the project-native lab script changed first-party source files. "
-            "Lowkey aborted target selection and will not continue with a mutated source tree. "
-            "Changed: " + ", ".join(changed_sources)
+            "Error: project-owned fixture changed first-party source. Lowkey aborted. Changed: "
+            + ", ".join(changed_sources)
         )
-
     if result.code != 0:
         tail = "\n".join(output.splitlines()[-50:]) if output else "forge test failed"
-        return fail(
-            "Error: Lowkey fixture test failed.\n" + tail,
-            result.code,
-        )
+        return fail("Error: Lowkey project fixture failed.\n" + tail, result.code)
 
     target_name = str(requested or fixture.get("target_contract") or "")
     target_hints = parse_lab_markers(output, "LOWKEY_CREATE")
@@ -7050,7 +7207,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     )
     if not target:
         return fail(
-            "Error: Lowkey fixture test succeeded, but Anvil state materialization failed.\n"
+            "Error: project fixture executed, but local state materialization/target matching failed.\n"
             + str(materialize_error or "unknown materialization error")
         )
 
@@ -7058,10 +7215,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     if target_name:
         for candidate_path in local_artifact_paths(root):
             candidate_artifact = read_artifact(candidate_path) or {}
-            if (
-                artifact_contract_name(candidate_path, candidate_artifact).lower()
-                == target_name.lower()
-            ):
+            if artifact_contract_name(candidate_path, candidate_artifact).lower() == target_name.lower():
                 artifact = candidate_path
                 break
 
@@ -7071,13 +7225,20 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         "type": "test-fixture-full-state",
         "fixture": fixture.get("relative"),
         "contract": fixture.get("contract"),
+        "fixture_action": fixture.get("create_function"),
         "state_file": str(state_path),
     }
     set_lab_target(config, root, target, contract_name, artifact)
-
+    additional_targets = _remember_fixture_application_targets(
+        config, root, state_path, rpc, contract_name, target
+    )
     print(f"Target  : {contract_name} @ {apply_labels(target, config)}")
     print(f"ABI     : {artifact or 'auto-discovered from build artifacts'}")
     print(f"Harness : {fixture['relative']}::{fixture['contract']}")
+    if additional_targets:
+        print("DISCOVERED PROJECT TARGETS")
+        for row in additional_targets:
+            print(f"  {row['contract']:<28} {apply_labels(row['address'], config)} [{row['kind']}]")
     _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
@@ -7183,18 +7344,74 @@ _LAB_SAFE_ENV_NAMES = frozenset({
     "SENDER_ADDRESS",
 })
 
-def _lab_script_unresolved_env_names(script):
+def _lab_script_unresolved_env_names(script, root=None):
+    """Find required deployment variables not supplied by project config or environment.
+
+    vm.envOr has a Solidity-side default. Required values may live in the process
+    environment, the project's .env, or Foundry's configured env_file. Only names
+    are inspected; Lowkey never prints secrets or invents project addresses.
+    """
+    script_path = Path(script).expanduser().resolve()
     try:
-        source = Path(script).read_text(encoding="utf-8", errors="replace")
+        source = script_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         source = ""
-    names = set(
-        re.findall(
-            r"vm\.env(?:Bool|Uint|Address|String|Or)\s*\(\s*\"([A-Za-z_][A-Za-z0-9_]*)\"",
-            source,
+    required_names = set(re.findall(
+        r"vm\.env(?!Or)[A-Za-z0-9_]*\s*\(\s*[\"']([A-Za-z_][A-Za-z0-9_]*)[\"']",
+        source,
+    ))
+    if not required_names:
+        return []
+
+    root_path = Path(root).expanduser().resolve() if root else None
+    if root_path is None:
+        root_path = next(
+            (parent for parent in script_path.parents if (parent / "foundry.toml").is_file()),
+            script_path.parent,
         )
+
+    configured_names = {
+        key for key, value in os.environ.items()
+        if isinstance(value, str) and value.strip()
+    }
+    env_files = [root_path / ".env"]
+    try:
+        foundry_text = (root_path / "foundry.toml").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        foundry_text = ""
+    for raw_value in re.findall(
+        r"(?m)^\s*env_file\s*=\s*(.+?)\s*(?:#.*)?$",
+        foundry_text,
+    ):
+        for env_path in re.findall(r'["\']([^"\']+)["\']', raw_value):
+            candidate = Path(env_path).expanduser()
+            env_files.append(candidate if candidate.is_absolute() else root_path / candidate)
+
+    for env_path in dict.fromkeys(env_files):
+        try:
+            lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = re.match(
+                r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$",
+                line,
+            )
+            if not match:
+                continue
+            name, value = match.groups()
+            value = value.split(" #", 1)[0].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1].strip()
+            if value:
+                configured_names.add(name)
+
+    return sorted(
+        name for name in required_names
+        if name.upper() not in _LAB_SAFE_ENV_NAMES and name not in configured_names
     )
-    return sorted(name for name in names if name.upper() not in _LAB_SAFE_ENV_NAMES)
 
 
 def discover_local_lab_script(root=".", requested=None):
@@ -7217,7 +7434,7 @@ def discover_local_lab_script(root=".", requested=None):
     # This also prevents a production-oriented Deploy.s.sol from winning merely
     # because its filename looks deployable.
     for path in candidates:
-        if _lab_script_unresolved_env_names(path):
+        if _lab_script_unresolved_env_names(path, root=root):
             continue
         return path
 
@@ -7353,6 +7570,32 @@ def artifact_has_initializer(artifact):
         for item in abi
     )
 
+def artifact_is_locked_implementation(root, artifact_path, artifact):
+    """Detect initializer-bearing implementations whose constructor locks initialization."""
+    if not artifact_has_initializer(artifact):
+        return False
+    root_path = Path(root).expanduser().resolve()
+    source_name = artifact_source_name(artifact, artifact_path, root_path)
+    if not source_name:
+        source_name = source_contract_fallback(
+            root_path, artifact_contract_name(artifact_path, artifact)
+        )
+    if not source_name:
+        return False
+    source_path = Path(source_name)
+    if not source_path.is_absolute():
+        source_path = root_path / source_path
+    try:
+        source_text = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(re.search(
+        r"\bconstructor\s*\([^)]*\)[^{]*\{[^}]*\b_disableInitializers\s*\(",
+        source_text,
+        re.S,
+    ))
+
+
 def artifact_is_deployable(artifact):
     if not isinstance(artifact, dict):
         return False
@@ -7362,6 +7605,7 @@ def artifact_is_deployable(artifact):
     else:
         obj = str(bytecode or "")
     return bool(obj and obj not in {"0x", "0X"})
+
 
 def source_contract_fallback(root, contract_name):
     """Find first-party source for an artifact across supported EVM project layouts."""
@@ -7525,46 +7769,66 @@ def discover_audit_target_contract(root):
         scores.setdefault(key, 0)
 
         lowered = key
+        # Whole-protocol bootstrap should prefer entry points over child contracts.
         if lowered.endswith((
             "factory", "router", "manager", "coordinator", "controller",
-            "registry", "gateway", "vault", "pool",
+            "gateway", "proxy", "dispatcher", "orchestrator",
         )):
-            scores[key] += 100
-
+            scores[key] += 180
+        elif lowered.endswith(("registry", "vault", "market", "exchange", "bridge")):
+            scores[key] += 140
+        elif lowered.endswith(("pool", "escrow", "auction", "strategy", "token")):
+            scores[key] += 70
         if artifact_has_initializer(artifact):
-            scores[key] += 20
-
+            scores[key] += 15
         if owned:
             scores[key] += 10
 
-        if signal_match:
-            for signal in signals:
-                if Path(str(signal.get("file") or "")).stem.lower() == key:
-                    impact = str(signal.get("impact") or "").lower()
-                    scores[key] += {
-                        "critical": 250, "high": 100, "medium": 50,
-                        "low": 10, "informational": 2,
-                    }.get(impact, 5)
+        matching_signals = [
+            signal for signal in signals
+            if Path(str(signal.get("file") or "")).stem.lower() == key
+        ]
+        impact_weights = {
+            "critical": 25, "high": 20, "medium": 15,
+            "low": 8, "informational": 2,
+        }
+        scores[key] += max(
+            (
+                impact_weights.get(str(signal.get("impact") or "").lower(), 3)
+                for signal in matching_signals
+            ),
+            default=0,
+        )
 
     if not artifacts:
         return None
 
-    # A source-backed contract referencing another known application contract is
-    # a useful conservative root signal. Never require it.
+    # Infer creator -> child relationships from first-party source with common
+    # deployment primitives rather than names from any particular protocol.
     contract_names = set(artifacts.values())
-    for key, source in list(sources.items()):
+    for key, source_name in list(sources.items()):
         try:
-            source_text = (root_path / source).read_text(
+            source_text = (root_path / source_name).read_text(
                 encoding="utf-8", errors="replace"
             )
         except OSError:
             source_text = ""
-        for other in contract_names:
-            if other.lower() == key:
-                continue
-            if re.search(r"\b" + re.escape(other) + r"\b", source_text):
-                scores[key] += 30
-                break
+        creates_or_wraps = bool(re.search(
+            r"\bnew\s+[A-Za-z_]\w*|\bclone(?:Deterministic)?\s*\(|"
+            r"\bcreate2?\s*\(|\bERC1967Proxy\s*\(|"
+            r"\bUpgradeableBeacon\s*\(",
+            source_text,
+            re.I,
+        ))
+        references_child = any(
+            other.lower() != key
+            and re.search(r"\bI?" + re.escape(other) + r"\b", source_text)
+            for other in contract_names
+        )
+        if creates_or_wraps and references_child:
+            scores[key] += 120
+        elif references_child:
+            scores[key] += 25
 
     ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
     return artifacts[ranked[0][0]] if ranked else None
@@ -8297,55 +8561,37 @@ def parse_lab_observations(output):
 
 
 def _lab_script_environment(script, rpc, key, accounts):
-    """Derive safe local defaults for common deployment-script environment variables."""
+    """Derive safe local defaults; never guess project-specific addresses."""
     try:
         source = Path(script).read_text(encoding="utf-8", errors="replace")
     except OSError:
         source = ""
-
-    names = set(
-        re.findall(
-            r"vm\.env(?:Bool|Uint|Address|String|Or)\s*\(\s*\"([A-Za-z_][A-Za-z0-9_]*)\"",
-            source,
-        )
-    )
+    names = set(re.findall(
+        r"vm\.env(?:Bool|Uint|Address|String|Or)\s*\(\s*[\"']([A-Za-z_][A-Za-z0-9_]*)[\"']",
+        source,
+    ))
     account0 = accounts[0] if accounts else None
-
     assignments = {}
     for name in names:
         upper = name.upper()
         if upper in {
-            "PRIVATE_KEY",
-            "DEPLOYER_PRIVATE_KEY",
-            "ADMIN_PRIVATE_KEY",
-            "OWNER_PRIVATE_KEY",
-            "SENDER_PRIVATE_KEY",
-            "BROADCAST_PRIVATE_KEY",
+            "PRIVATE_KEY", "DEPLOYER_PRIVATE_KEY", "ADMIN_PRIVATE_KEY",
+            "OWNER_PRIVATE_KEY", "SENDER_PRIVATE_KEY", "BROADCAST_PRIVATE_KEY",
         }:
             assignments[name] = str(int(str(key), 16))
         elif upper in {"IS_TESTNET", "TESTNET", "LOCAL_LAB", "ANVIL"}:
             assignments[name] = "true"
         elif upper in {
-            "RPC_URL",
-            "ETH_RPC_URL",
-            "ANVIL_RPC_URL",
-            "LOCAL_RPC_URL",
-            "DEPLOYMENT_RPC_URL",
+            "RPC_URL", "ETH_RPC_URL", "ANVIL_RPC_URL",
+            "LOCAL_RPC_URL", "DEPLOYMENT_RPC_URL",
         }:
             assignments[name] = str(rpc)
         elif upper in {
-            "DEPLOYER",
-            "DEPLOYER_ADDRESS",
-            "OWNER",
-            "OWNER_ADDRESS",
-            "ADMIN",
-            "ADMIN_ADDRESS",
-            "SENDER",
-            "SENDER_ADDRESS",
+            "DEPLOYER", "DEPLOYER_ADDRESS", "OWNER", "OWNER_ADDRESS",
+            "ADMIN", "ADMIN_ADDRESS", "SENDER", "SENDER_ADDRESS",
         } and account0:
             assignments[name] = str(account0)
-
-    return assignments, sorted(name for name in names if name not in assignments)
+    return assignments, _lab_script_unresolved_env_names(script)
 
 
 _LAB_SOURCE_OUTPUT_SENTINELS = (
@@ -8671,6 +8917,7 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
 
     target = parse_lab_marker(output)
     selected_record = None
+    deployments = []
 
     if not target:
         deployments = discover_deployments(root)
@@ -8686,6 +8933,51 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
                 selected_record = matching[0]
         if selected_record is not None:
             target = selected_record.get("address")
+
+    if selected_record and is_address(target):
+        selected_name = str(selected_record.get("contract") or "")
+        selected_artifact = None
+        for candidate_path in local_artifact_paths(root):
+            candidate_data = read_artifact(candidate_path) or {}
+            if (
+                artifact_contract_name(candidate_path, candidate_data).lower() == selected_name.lower()
+                and artifact_is_project_application(root, candidate_path, candidate_data)
+            ):
+                selected_artifact = (candidate_path, candidate_data)
+                break
+        if selected_artifact and artifact_is_locked_implementation(
+            root, selected_artifact[0], selected_artifact[1]
+        ):
+            implementation_address = str(target).lower()
+            selected_file = selected_record.get("file")
+            for deployment in deployments:
+                if not isinstance(deployment, dict):
+                    continue
+                if str(deployment.get("address") or "").lower() == implementation_address:
+                    continue
+                if selected_file and deployment.get("file") != selected_file:
+                    continue
+                candidate_address = deployment.get("address")
+                if not is_address(candidate_address):
+                    continue
+                code_result = run_cast(["code", candidate_address, "--rpc-url", str(rpc)], config={}, capture=True)
+                runtime = str(code_result.text or "").strip().lower()
+                if code_result.code != 0 or runtime in {"", "0x", "0X"}:
+                    continue
+                linked_implementation, linked_kind = _fixture_proxy_implementation(
+                    candidate_address, runtime, rpc
+                )
+                if (
+                    linked_kind == "proxy"
+                    and linked_implementation
+                    and linked_implementation.lower() == implementation_address
+                ):
+                    print(
+                        f"INFO  selected configured proxy {candidate_address} "
+                        f"for initializer-locked implementation {selected_name}"
+                    )
+                    target = candidate_address
+                    break
 
     if not target:
         matches = re.findall(
@@ -9348,6 +9640,15 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
 
     _score, contract, path, artifact, constructor_inputs, fqn = candidate
 
+    locked_implementation = artifact_is_locked_implementation(root, path, artifact)
+    if mode == "auto" and locked_implementation:
+        return fail(
+            f"Lowkey identified {contract} as an initializer-locked implementation, not a usable protocol instance. "
+            "Automatic setup needs a project deployment script or project-owned fixture that creates its proxy/clone "
+            "and dependencies. Lowkey will not silently mark an implementation-only deployment ready. For explicit "
+            "implementation inspection, use 'lk lab --artifact " + str(contract) + "'."
+        )
+
     print("LOWKEY LOCAL AUDIT LAB")
     print("======================")
     print(f"Project : {root}")
@@ -9380,12 +9681,16 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
         )
 
     has_initializer = artifact_has_initializer(artifact)
+    locked_implementation = artifact_is_locked_implementation(root, path, artifact)
     if has_initializer:
         print(f"Target  : {contract} @ {target}")
         print(f"ABI     : {path}")
-        print("Status  : DEPLOYED IMPLEMENTATION")
-        print("Note    : this artifact exposes initialize(); a proxy/initializer may be required.")
-        print("         Lowkey used the project's own deployment script first when one was available.")
+        print("Status  : IMPLEMENTATION ONLY" if locked_implementation else "Status  : DEPLOYED IMPLEMENTATION")
+        if locked_implementation:
+            print("Note    : this implementation locks its initializer; it is not a configured proxy/clone.")
+        else:
+            print("Note    : this artifact exposes initialize(); a proxy/initializer may be required.")
+        print("         A live bytecode match proves deployment, not protocol readiness.")
 
     current_actor = config.get("actor")
     current_entry = config.get("wallets", {}).get(current_actor) if current_actor else None
@@ -9409,6 +9714,10 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
     print(f"Constructor caller : lab-deployer ({accounts[0]}) [Anvil #0]")
     _print_lab_owner_identity(config, target)
     _print_security_scope(root)
+    if locked_implementation:
+        print("Lab     : IMPLEMENTATION ONLY — no initialized proxy/clone or operational protocol setup was established.")
+        print("Next    : use the project's native deployment/test setup before state-changing protocol experiments.")
+        return 0
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
 
