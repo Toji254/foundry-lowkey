@@ -1261,7 +1261,7 @@ AI_HELP_GUIDE = r'''AI COMMAND INDEX
 COMMAND FORMS & OPTIONS
 -----------------------
 status [--json]
-preview [--root DIR] [--contract NAME] [--show-context]
+preview [--root DIR] [--contract NAME] [--show-context | --json-context]
 mode {manual|auto}
 recommendations {status|auto|manual} [--json]
 setup --provider {deepseek|gemini|openai|openai-compatible|ollama} --model MODEL
@@ -1344,6 +1344,114 @@ def render_ai_help(parser: Any) -> str:
     return "\n".join(lines)
 
 
+def _human_context_lines(label: str, value: Any, indent: int = 0) -> list[str]:
+    """Render context as readable terminal text without changing the provider payload."""
+    prefix = " " * indent
+    heading = label.replace("_", " ").strip().capitalize()
+
+    if label == "source_excerpt" and isinstance(value, str):
+        lines = [
+            f"{prefix}Source excerpt (redacted; inspect before sharing):",
+            f"{prefix}  --- BEGIN SOURCE EXCERPT ---",
+        ]
+        lines.extend(f"{prefix}  {line}" for line in value.splitlines())
+        lines.append(f"{prefix}  --- END SOURCE EXCERPT ---")
+        return lines
+
+    if label == "source_files" and isinstance(value, list):
+        lines = [f"{prefix}Selected source files ({len(value)}):"]
+        if not value:
+            lines.append(f"{prefix}  (none)")
+        for index, item in enumerate(value, start=1):
+            if not isinstance(item, Mapping):
+                lines.append(f"{prefix}  [{index}] {item}")
+                continue
+            path = str(item.get("path", "(unknown path)"))
+            source = str(item.get("source_excerpt", ""))
+            marker_count = (
+                source.count("[REDACTED]")
+                + source.count("[REDACTED PRIVATE KEY BLOCK]")
+            )
+            lines.append(
+                f"{prefix}  [{index}] {path} "
+                f"({len(source.encode('utf-8')):,} excerpt bytes; "
+                f"{marker_count} redaction marker(s))"
+            )
+            for key, nested in item.items():
+                if key in {"path", "source_excerpt"}:
+                    continue
+                lines.extend(_human_context_lines(str(key), nested, indent + 4))
+            if source:
+                lines.extend(_human_context_lines("source_excerpt", source, indent + 4))
+            else:
+                lines.append(f"{prefix}    Source excerpt: (empty)")
+        return lines
+
+    if isinstance(value, Mapping):
+        lines = [f"{prefix}{heading}:"]
+        if not value:
+            lines.append(f"{prefix}  (none)")
+        for key, nested in value.items():
+            lines.extend(_human_context_lines(str(key), nested, indent + 2))
+        return lines
+
+    if isinstance(value, list):
+        lines = [f"{prefix}{heading} ({len(value)} item(s)):"]
+        if not value:
+            lines.append(f"{prefix}  (none)")
+        for index, nested in enumerate(value, start=1):
+            if isinstance(nested, Mapping):
+                lines.append(f"{prefix}  [{index}]")
+                if not nested:
+                    lines.append(f"{prefix}    (empty)")
+                for key, item_value in nested.items():
+                    lines.extend(_human_context_lines(str(key), item_value, indent + 4))
+            else:
+                lines.extend(_human_context_lines(f"[{index}]", nested, indent + 2))
+        return lines
+
+    if isinstance(value, str) and "\n" in value:
+        lines = [f"{prefix}{heading}:"]
+        lines.extend(f"{prefix}  {line}" for line in value.splitlines())
+        return lines
+
+    rendered = "(empty)" if value is None or value == "" else str(value)
+    return [f"{prefix}{heading}: {rendered}"]
+
+
+def render_human_context_preview(
+    context: Mapping[str, Any],
+    *,
+    project_root: Path,
+    context_bytes: int,
+    context_limit: int,
+    redaction_markers: int,
+) -> str:
+    """Render the exact selected context in a human-readable, local-only preview."""
+    source_files = context.get("source_files", [])
+    lines = [
+        "LOWKEY AI CONTEXT PREVIEW — HUMAN-READABLE",
+        "==========================================",
+        "Provider request: NOT SENT (this preview is local-only)",
+        f"Project: {project_root.expanduser().resolve()}",
+        f"Requested contract: {context.get('requested_contract') or '(not specified)'}",
+        f"Selected source files: {len(source_files) if isinstance(source_files, list) else 0}",
+        f"Context size: {context_bytes:,} / {context_limit:,} bytes",
+        f"Redaction markers found: {redaction_markers}",
+        "Safety note: redaction is best-effort; zero markers does not prove no secrets exist.",
+    ]
+    if context_bytes > context_limit:
+        lines.extend([
+            "",
+            "WARNING: this context exceeds the request limit and cannot be sent as-is.",
+        ])
+    lines.extend(["", "FULL CONTEXT CONTENT", "--------------------"])
+    for key, value in context.items():
+        lines.extend(_human_context_lines(str(key), value))
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
@@ -1365,9 +1473,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     preview.add_argument("--root", default=".", help="project directory (default: current directory)")
     preview.add_argument("--contract", help="prioritize source matching this contract name; not an exclusive filter")
-    preview.add_argument(
+    context_output = preview.add_mutually_exclusive_group()
+    context_output.add_argument(
         "--show-context", action="store_true",
-        help="print the full redacted context as JSON for a local privacy review",
+        help="print the full redacted context in a human-readable layout",
+    )
+    context_output.add_argument(
+        "--json-context", action="store_true",
+        help="print the full redacted context as JSON for scripting",
     )
     mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
     mode.add_argument("value", choices=("manual", "auto"), help="manual = only on request (default); auto = opt in to complexity-triggered review")
@@ -1703,7 +1816,7 @@ def main(argv: list[str] | None = None) -> int:
                 + str(item.get("source_excerpt", "")).count("[REDACTED PRIVATE KEY BLOCK]")
                 for item in source_files if isinstance(item, dict)
             )
-            if parsed.show_context:
+            if parsed.json_context:
                 print(json.dumps({
                     "preview_only": True,
                     "provider_request_made": False,
@@ -1711,6 +1824,15 @@ def main(argv: list[str] | None = None) -> int:
                     "context_limit_bytes": MAX_CONTEXT_BYTES,
                     "context": context,
                 }, indent=2, ensure_ascii=False, sort_keys=True))
+                return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
+            if parsed.show_context:
+                print(render_human_context_preview(
+                    context,
+                    project_root=Path(parsed.root).expanduser(),
+                    context_bytes=context_bytes,
+                    context_limit=MAX_CONTEXT_BYTES,
+                    redaction_markers=redaction_markers,
+                ))
                 return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
             print("AI context preview (local only; no provider request made).")
             print("==================")
@@ -1742,7 +1864,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"  - {str(item.get('title', item.get('id', 'lesson')))} "
                         f"({item.get('scope', 'unknown')} scope)"
                     )
-            print("Use --show-context to inspect the complete redacted payload locally.")
+            print("Use --show-context for readable context or --json-context for machine-readable JSON.")
             return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
         if parsed.action == "recommendations":
             cfg = load_config()
