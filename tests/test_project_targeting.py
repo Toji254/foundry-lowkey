@@ -1195,6 +1195,57 @@ if __name__ == "__main__":
 
             self.assertEqual(target, proxy.lower())
 
+    def test_fixture_promotion_recovers_proxy_when_target_selector_returns_locked_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "Template.sol"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Template { "
+                "constructor() { _disableInitializers(); } "
+                "function _disableInitializers() internal {} "
+                "function initialize() external {} }",
+                encoding="utf-8",
+            )
+            artifact_path = root / "out" / "Template.sol" / "Template.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(json.dumps({
+                "contractName": "Template",
+                "sourceName": "src/Template.sol",
+                "abi": [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6001"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+
+            implementation = "0x" + "1" * 40
+            proxy = "0x" + "2" * 40
+            slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+            snapshot = {
+                implementation: {"code": "0x6000", "storage": {}},
+                proxy: {
+                    "code": "0x6001",
+                    "storage": {slot: "0x" + "0" * 24 + implementation[2:]},
+                },
+            }
+            state_path = root / "out" / "lowkey" / "fixture_state_Template.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", implementation]:
+                    return lk.CommandResult("0x6000", 0)
+                if args[:2] == ["code", proxy]:
+                    return lk.CommandResult("0x6001", 0)
+                return lk.CommandResult("", 1)
+
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast):
+                recovered = lk._find_fixture_operational_instance(
+                    root, state_path, "Template", implementation,
+                    "http://127.0.0.1:8545",
+                )
+
+            self.assertEqual(recovered, (proxy.lower(), "proxy"))
+
     def test_fixture_clone_implementation_parser(self):
         implementation = "1234567890abcdef1234567890abcdef12345678"
         runtime = "0x363d3d373d3d3d363d73" + implementation + "5af43d82803e903d91602b57fd5bf3"
