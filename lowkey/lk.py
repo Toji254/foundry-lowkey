@@ -7211,6 +7211,19 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
             + str(materialize_error or "unknown materialization error")
         )
 
+    target_artifact_path, target_artifact_data = _fixture_target_artifact(root, target_name)
+    if target_artifact_path and artifact_is_locked_implementation(
+        root, target_artifact_path, target_artifact_data
+    ):
+        target_result = run_cast(["code", target, "--rpc-url", str(rpc)], config={}, capture=True)
+        target_runtime = str(target_result.text or "").strip().lower()
+        target_normalizer = _artifact_runtime_normalizer(target_artifact_data)
+        if target_result.code == 0 and target_normalizer and target_normalizer(target_runtime):
+            return fail(
+                f"Error: fixture exposed only the initializer-locked {target_name} implementation. "
+                "It did not establish a proxy/clone as an operational target, so Lowkey will not mark the lab ready."
+            )
+
     artifact = None
     if target_name:
         for candidate_path in local_artifact_paths(root):
@@ -7428,16 +7441,26 @@ def discover_local_lab_script(root=".", requested=None):
         if path not in candidates:
             candidates.append(path)
 
-    # Auto lab is disposable/local-only. A deployment script that requires an
-    # address, moderator, registry, token, or other project-specific environment
-    # value cannot be safely invented by Lowkey, so do not execute it implicitly.
-    # This also prevents a production-oriented Deploy.s.sol from winning merely
-    # because its filename looks deployable.
+    # Prefer project-native deployments, but never invent required addresses.
+    # When configuration is incomplete, explain why and continue to fixture
+    # discovery instead of silently dropping to a random artifact.
+    skipped = []
     for path in candidates:
-        if _lab_script_unresolved_env_names(path, root=root):
+        missing = _lab_script_unresolved_env_names(path, root=root)
+        if missing:
+            skipped.append((path, missing))
             continue
         return path
 
+    for path, missing in skipped:
+        try:
+            display_path = Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+        except (OSError, ValueError):
+            display_path = str(path)
+        print(
+            f"INFO  project deployment script skipped ({display_path}): "
+            "required configuration is missing for " + ", ".join(missing)
+        )
     return None
 
 def parse_lab_markers(output, marker):
@@ -8800,6 +8823,14 @@ def _validate_project_lab_target(
             continue
         for artifact_name, artifact_path, _ in application_artifacts:
             if artifact_name.strip().lower() == contract_name.lower():
+                artifact_data = read_artifact(artifact_path) or {}
+                if artifact_is_locked_implementation(
+                    root_path, artifact_path, artifact_data
+                ) and not implementation:
+                    return None, None, (
+                        f"{artifact_name} is an initializer-locked implementation and the selected address "
+                        "is not a proxy or clone. No operational protocol target was found."
+                    )
                 return artifact_name, artifact_path, None
 
     # Fall back to exact live runtime-bytecode matching when deployment
@@ -8811,6 +8842,14 @@ def _validate_project_lab_target(
             continue
         for artifact_name, artifact_path, deployed in application_artifacts:
             if deployed and deployed.lower() == candidate_runtime.lower():
+                artifact_data = read_artifact(artifact_path) or {}
+                if artifact_is_locked_implementation(
+                    root_path, artifact_path, artifact_data
+                ) and not implementation:
+                    return None, None, (
+                        f"{artifact_name} is an initializer-locked implementation and the selected address "
+                        "is not a proxy or clone. No operational protocol target was found."
+                    )
                 return artifact_name, artifact_path, None
 
     # Preserve the fail-closed behavior, but expose the evidence chain so a
