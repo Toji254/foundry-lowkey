@@ -15,6 +15,7 @@ class AIHarnessTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         env = patch.dict(os.environ, {
             "XDG_CONFIG_HOME": str(Path(self.tmp.name) / "config"),
+            "XDG_DATA_HOME": str(Path(self.tmp.name) / "data"),
             "XDG_STATE_HOME": str(Path(self.tmp.name) / "state"),
         })
         env.start()
