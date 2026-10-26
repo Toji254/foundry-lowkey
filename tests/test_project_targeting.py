@@ -1533,3 +1533,52 @@ if __name__ == "__main__":
             )
 
             self.assertIsNone(lk.discover_local_lab_fixture(root, "Factory"))
+
+
+    def test_local_fixture_does_not_report_ready_when_foundry_skips_without_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "test").mkdir(exist_ok=True)
+            harness = root / "test" / ".lowkey" / "LowkeyFixture.t.sol"
+            harness.parent.mkdir(parents=True)
+            harness.write_text("// temporary harness\n", encoding="utf-8")
+            state_path = root / "out" / "lowkey" / "fixture_state.json"
+            state_path.parent.mkdir(parents=True)
+            fixture = {
+                "relative": "test/unit/FactoryTest.t.sol",
+                "contract": "FactoryTest",
+                "create_function": "test_createPool",
+                "fixture_kind": "test",
+                "setup_mode": "body",
+            }
+            errors = []
+
+            def fake_fail(message, code=1):
+                errors.append(str(message))
+                return code
+
+            with patch.object(lk, "_fixture_state_files", return_value=state_path), \
+                 patch.object(lk, "_fixture_fs_permissions_override", return_value=('[{ access = "read-write", path = "out/lowkey/fixture_state.json" }]', None)), \
+                 patch.object(lk, "_generate_test_fixture_lab_script", return_value=harness), \
+                 patch.object(lk, "_project_source_fingerprint", return_value={}), \
+                 patch.object(lk, "_project_source_mutations", return_value=[]), \
+                 patch.object(lk, "_ensure_lab_deployer"), \
+                 patch.object(lk, "run_foundry", return_value=lk.CommandResult(
+                     "Ran 1 test for FactoryTest.t.sol:FactoryTest\n[SKIP] test_createPool()\nSuite result: 0 passed, 1 skipped",
+                     0,
+                 )):
+                result = lk.run_test_fixture_lab(
+                    {},
+                    root,
+                    fixture,
+                    "http://127.0.0.1:8545",
+                    ["0x" + "1" * 40],
+                    "0x" + "2" * 64,
+                    "Factory",
+                )
+
+            self.assertEqual(result, 1)
+            self.assertTrue(errors)
+            self.assertIn("without exporting its state snapshot", errors[0])
+            self.assertFalse(harness.exists())
+            self.assertFalse(state_path.exists())
