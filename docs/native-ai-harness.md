@@ -62,6 +62,20 @@ The preview uses the same context-building function as the explicit protocol rev
 
 This is a useful preflight, not a guarantee that the best-effort redactor recognizes every possible secret. Review the actual payload before opting into remote analysis.
 
+## Test the installed CLI without an AI provider
+
+After pulling the branch and running `bash install.sh`, execute the same local-only CLI smoke check used by integration CI:
+
+~~~bash
+bash scripts/test-native-ai-harness.sh
+~~~
+
+The script checks the installed `lk ai` and `lk memory` command routes, verifies that preview makes no provider request, and confirms the payload excludes test/dependency source and redacts its deliberate test secret. It uses a temporary fixture and removes it on exit. It does not configure or enable an AI provider. The Python regression tests are separate:
+
+~~~bash
+python3 -m unittest tests.test_ai_harness tests.test_experience_memory -v
+~~~
+
 ## Manual and automatic assistance modes
 
 The default is **manual**: Lowkey does not make a model request unless you explicitly run \`lk lab --ai-review\`.
