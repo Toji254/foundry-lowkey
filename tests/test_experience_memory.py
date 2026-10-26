@@ -78,6 +78,37 @@ class ExperienceMemoryTests(unittest.TestCase):
         self.assertEqual({item["scope"] for item in context}, {"project", "global"})
         self.assertEqual(len(memory.list_lessons(status="approved", scope="global", root=self.project)), 1)
 
+    def test_failed_global_promotion_rolls_back_project_approval(self):
+        proposal = memory.propose_lesson(
+            kind="protocol-pattern",
+            title="Factory registers created pool",
+            lesson="Confirm the factory registry after creating an instance.",
+            root=self.project,
+        )
+        original_save = memory._save_lessons
+
+        def fail_global_write(path, store):
+            if path.name == "skills.json":
+                raise OSError("simulated global store failure")
+            return original_save(path, store)
+
+        with patch.object(memory, "_save_lessons", side_effect=fail_global_write):
+            with self.assertRaises(memory.MemoryError):
+                memory.approve_lesson(
+                    proposal["id"],
+                    validation_kind="test",
+                    validation="A retained Foundry regression test validates the registry behavior.",
+                    global_scope=True,
+                    root=self.project,
+                )
+        project_items = memory.list_lessons(status="all", scope="project", root=self.project)
+        item = next(value for value in project_items if value["id"] == proposal["id"])
+        self.assertEqual(item["status"], "proposed")
+        self.assertFalse(any(
+            value["id"] == proposal["id"]
+            for value in memory.list_lessons(status="all", scope="global", root=self.project)
+        ))
+
     def test_approved_lesson_cannot_be_rejected(self):
         proposal = memory.propose_lesson(
             kind="project-fact", title="Pool is factory-created",
