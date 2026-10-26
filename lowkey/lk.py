@@ -7283,15 +7283,138 @@ def _fixture_snapshot_implementation(address, account, runtime_code, code_by_add
 
 
 
-def _find_fixture_operational_instance(root, state_path, target_contract, implementation_address, rpc):
-    """Recover an operational proxy/clone that points to a locked implementation.
+def _fixture_contract_base_names(source_path, contract_name):
+    """Read Solidity base-contract names from the named declaration in a source file."""
+    try:
+        source_text = Path(source_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
 
-    This is a promotion-time fallback, not a heuristic deployment: the candidate
-    must exist in the fixture's exported state, point to an implementation whose
-    runtime matches the requested artifact, and have live non-empty runtime code
-    on the configured local RPC. Fixture setup can deploy the same implementation
-    artifact more than once, so address equality with the first selected instance
-    is too strict.
+    # Comments must not be allowed to manufacture an inheritance relationship.
+    source_text = re.sub(r"/\*.*?\*/|//[^\r\n]*", "", source_text, flags=re.S)
+    declaration = re.search(
+        r"\b(?:abstract\s+)?contract\s+" + re.escape(str(contract_name)) +
+        r"\b(?P<header>[^{};]*)\{",
+        source_text,
+        re.S,
+    )
+    if not declaration:
+        return []
+    inheritance = re.search(r"\bis\s+(?P<bases>.+)$", declaration.group("header"), re.S)
+    if not inheritance:
+        return []
+
+    # Split only at top-level commas (base constructors may contain commas).
+    entries, current, depth = [], [], 0
+    for char in inheritance.group("bases"):
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        if char == "," and depth == 0:
+            entries.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current:
+        entries.append("".join(current))
+
+    names = []
+    for entry in entries:
+        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", entry)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def _fixture_artifact_inherits_contract(root, artifact_path, artifact, ancestor_contract):
+    """Check source-backed Solidity inheritance, including transitive base contracts."""
+    root_path = Path(root).expanduser().resolve()
+    ancestor = str(ancestor_contract or "").strip().lower()
+    if not ancestor:
+        return False
+
+    initial_name = artifact_contract_name(artifact_path, artifact)
+    if initial_name.lower() == ancestor:
+        return True
+
+    source_name = artifact_source_name(artifact, artifact_path, root_path)
+    if not source_name:
+        source_name = source_contract_fallback(root_path, initial_name)
+    if not source_name:
+        return False
+    initial_path = Path(source_name)
+    if not initial_path.is_absolute():
+        initial_path = root_path / initial_path
+    if not initial_path.is_file():
+        return False
+
+    pending = [(initial_name, initial_path)]
+    visited = set()
+    while pending:
+        current_name, current_path = pending.pop()
+        try:
+            path_key = str(current_path.resolve()).lower()
+        except OSError:
+            path_key = str(current_path).lower()
+        visit_key = (str(current_name).lower(), path_key)
+        if visit_key in visited:
+            continue
+        visited.add(visit_key)
+
+        if str(current_name).lower() == ancestor:
+            return True
+
+        for base_name in _fixture_contract_base_names(current_path, current_name):
+            if base_name.lower() == ancestor:
+                return True
+            base_source = source_contract_fallback(root_path, base_name)
+            if not base_source:
+                continue
+            base_path = Path(base_source)
+            if not base_path.is_absolute():
+                base_path = root_path / base_path
+            if base_path.is_file():
+                pending.append((base_name, base_path))
+    return False
+
+
+def _fixture_runtime_matches_target_or_upgrade(root, target_contract, implementation_runtime):
+    """Match a runtime to the target artifact or a source-proven derived contract.
+
+    A proxy may have been upgraded during a project test to an implementation
+    derived from the requested contract. Runtime similarity alone is insufficient:
+    the runtime must match a local deployable project artifact and that artifact
+    must declare the requested contract in its Solidity inheritance chain.
+    """
+    target_name = str(target_contract or "").strip().lower()
+    if not target_name:
+        return False
+
+    for artifact_path in local_artifact_paths(str(root)):
+        artifact = read_artifact(artifact_path) or {}
+        if not artifact_is_deployable(artifact):
+            continue
+        normalizer = _artifact_runtime_normalizer(artifact)
+        if normalizer is None or not normalizer(implementation_runtime):
+            continue
+
+        name = artifact_contract_name(artifact_path, artifact)
+        if name.lower() == target_name:
+            return True
+        if not artifact_is_project_application(str(root), artifact_path, artifact):
+            continue
+        if _fixture_artifact_inherits_contract(root, artifact_path, artifact, target_name):
+            return True
+    return False
+
+
+def _find_fixture_operational_instance(root, state_path, target_contract, implementation_address, rpc):
+    """Recover an operational proxy/clone pointing to the target or a source-proven upgrade.
+
+    The candidate must exist in exported fixture state, point to a deployed runtime
+    matching the target artifact or a first-party derived artifact, and have live
+    non-empty runtime code on the configured local RPC.
     """
     try:
         snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
@@ -7334,7 +7457,9 @@ def _find_fixture_operational_instance(root, state_path, target_contract, implem
         if not implementation:
             continue
         implementation_runtime = code_by_address.get(implementation.lower(), "")
-        if not implementation_runtime or not normalizer(implementation_runtime):
+        if not implementation_runtime or not _fixture_runtime_matches_target_or_upgrade(
+            root, target_contract, implementation_runtime
+        ):
             continue
 
         live = run_cast(["code", address, "--rpc-url", str(rpc)], config={}, capture=True)
