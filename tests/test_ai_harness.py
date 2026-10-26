@@ -161,6 +161,31 @@ class AIHarnessTests(unittest.TestCase):
             self.assertNotIn(pending["title"], json.dumps(experience))
             self.assertEqual(result["summary"], response["summary"])
 
+    def test_source_context_excludes_tests_scripts_dependencies_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("src", "test", "scripts", "lib", "vendor"):
+                (root / name).mkdir()
+            (root / "src" / "Vault.sol").write_text("contract Vault {}", encoding="utf-8")
+            (root / "test" / "Vault.t.sol").write_text("contract LeakTest { string constant SECRET = 'test-only'; }", encoding="utf-8")
+            (root / "scripts" / "Deploy.sol").write_text("contract Deploy { }", encoding="utf-8")
+            (root / "lib" / "Dependency.sol").write_text("contract Dependency { }", encoding="utf-8")
+            (root / "vendor" / "Vendor.sol").write_text("contract Vendor { }", encoding="utf-8")
+            outside = root.parent / (root.name + "-outside.sol")
+            outside.write_text("contract ExternalSecret { }", encoding="utf-8")
+            self.addCleanup(lambda: outside.unlink(missing_ok=True))
+            try:
+                (root / "src" / "Linked.sol").symlink_to(outside)
+            except (OSError, NotImplementedError):
+                pass
+            context = ai._source_context(root, "Vault")
+            serialized = json.dumps(context)
+            self.assertIn("Vault.sol", serialized)
+            self.assertNotIn("SECRET", serialized)
+            self.assertNotIn("Dependency.sol", serialized)
+            self.assertNotIn("Vendor.sol", serialized)
+            self.assertNotIn("ExternalSecret", serialized)
+
     def test_large_source_and_approved_memory_fit_context_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
