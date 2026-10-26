@@ -1355,3 +1355,36 @@ if __name__ == "__main__":
                 generated.relative_to(root).as_posix(),
                 "specs/.lowkey/LowkeyAutoFixture_PoolFactoryTest.t.sol",
             )
+
+
+    def test_foundry_path_discovery_respects_active_profile_and_environment_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            config_path = root / "foundry-ci.toml"
+            config_path.write_text(
+                '[profile.default]\n'
+                'test = "default-tests"\n'
+                'script = "default-scripts"\n'
+                '[profile.ci]\n'
+                'test = "ci-tests"\n'
+                'script = "ci-scripts"\n',
+                encoding="utf-8",
+            )
+            for name in ("default-tests", "default-scripts", "ci-tests", "ci-scripts",
+                         "env-tests", "env-scripts"):
+                (root / name).mkdir()
+            with patch.dict(os.environ, {
+                "FOUNDRY_CONFIG": str(config_path),
+                "FOUNDRY_PROFILE": "ci",
+            }, clear=False):
+                os.environ.pop("FOUNDRY_TEST", None)
+                os.environ.pop("DAPP_TEST", None)
+                os.environ.pop("FOUNDRY_SCRIPT", None)
+                os.environ.pop("DAPP_SCRIPT", None)
+                self.assertEqual(lk._foundry_test_roots(root)[0], (root / "ci-tests").resolve())
+                self.assertEqual(lk._foundry_script_roots(root)[0], (root / "ci-scripts").resolve())
+
+                os.environ["FOUNDRY_TEST"] = "env-tests"
+                os.environ["FOUNDRY_SCRIPT"] = "env-scripts"
+                self.assertEqual(lk._foundry_test_roots(root)[0], (root / "env-tests").resolve())
+                self.assertEqual(lk._foundry_script_roots(root)[0], (root / "env-scripts").resolve())
