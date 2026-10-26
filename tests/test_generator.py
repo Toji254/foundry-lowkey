@@ -786,10 +786,12 @@ class LowkeyGeneratorTests(unittest.TestCase):
                         ["test", "createPool(address,address,uint256,uint256,address,address[])"],
                     )
             self.assertEqual(result, 0)
-            generated = next((root / "test").glob("LowkeyTest_*.t.sol"))
+            generated = next((root / ".audit" / "test-drafts").glob("LowkeyTest_*.t.sol"))
+            self.assertFalse((root / "test").exists())
             source = generated.read_text(encoding="utf-8")
             self.assertIn("PLACEHOLDER", source)
             self.assertIn("createPool(address,address,uint256,uint256,address,address[])", source)
+            self.assertIn(".audit/test-drafts/", output.getvalue() if "output" in locals() else str(generated))
 
     def test_generate_poc_allows_focused_signal_without_concrete_send(self):
         target = "0x" + "2" * 40
