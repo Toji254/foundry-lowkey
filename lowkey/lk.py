@@ -6630,6 +6630,19 @@ def _local_test_fixture_candidates(root, requested=None):
         text = source_cache.get(path.resolve(), "")
         if not text:
             continue
+
+        # "lk lab" always creates a local Anvil. Fork suites may exit 0 while
+        # Foundry skips every test if a remote RPC env variable is unset. Such
+        # tests are not valid local-state bootstraps. Detect by path/behavior,
+        # not any project-specific contract name.
+        if "fork" in {part.lower() for part in path.relative_to(root).parts[:-1]}:
+            continue
+        if re.search(
+            r"\\bvm\\s*\\.\\s*(?:createSelectFork|createFork|selectFork|rollFork|activeFork)\\s*\\(",
+            text,
+        ):
+            continue
+
         setup_mode = setup_mode_for(path, text)
         if not setup_mode:
             continue
@@ -7313,6 +7326,11 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     """Run a project-owned Foundry setup/test path and materialize its full state."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
     state_path = _fixture_state_files(root, safe_name)
+    # Never reuse an old state export if this fixture skips or omits dumpState.
+    try:
+        Path(state_path).unlink(missing_ok=True)
+    except OSError as exc:
+        return fail("Error: could not clear the previous fixture snapshot: " + str(exc))
     fs_permissions, permission_error = _fixture_fs_permissions_override(root, state_path)
     if permission_error:
         return fail("Error: Lowkey could not safely prepare project fixture state export. " + permission_error)
@@ -7362,8 +7380,20 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
             + cleanup_error
         )
     if result.code != 0:
-        tail = "\n".join(output.splitlines()[-50:]) if output else "forge test failed"
-        return fail("Error: Lowkey project fixture failed.\n" + tail, result.code)
+        tail = "\\n".join(output.splitlines()[-50:]) if output else "forge test failed"
+        return fail("Error: Lowkey project fixture failed.\\n" + tail, result.code)
+    if not Path(state_path).is_file():
+        diagnostic_lines = [
+            line.strip() for line in output.splitlines()
+            if re.search(r"\\b(skip|skipped|vm\\.skip|no tests ran|0 passed)\\b", line, re.I)
+        ]
+        detail = "\\n".join(diagnostic_lines[-8:])
+        return fail(
+            "Error: Foundry completed the selected fixture without exporting its state snapshot. "
+            "The test may have been skipped or did not execute Lowkey's snapshot hook; Lowkey will not "
+            "promote this into a live local protocol."
+            + (("\\n" + detail) if detail else "")
+        )
 
     target_name = str(requested or fixture.get("target_contract") or "")
     target_hints = parse_lab_markers(output, "LOWKEY_CREATE")
