@@ -485,6 +485,8 @@ def lessons_for_context(
             ),
             reverse=True,
         )
+        if query_tokens:
+            ranked = [record for record in ranked if _lesson_relevance(record, query_tokens) > 0]
         for record in ranked[:max(0, limit)]:
             picked.append({
                 "id": record.get("id"), "scope": scope, "kind": record.get("kind"),
