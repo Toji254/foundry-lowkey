@@ -10276,11 +10276,16 @@ def run_native_lab(config, root, project):
     return 0
 
 def run_lab(config,args):
+    args = list(args or [])
+    ai_review_requested = "--ai-review" in args
+    if ai_review_requested:
+        args = [argument for argument in args if argument != "--ai-review"]
     if args and args[0].lower() in {"help","-h","--help"}:
         print("Usage:")
         print("  lk lab [Contract]")
         print("  lk lab --generic [Contract]")
         print("  lk lab --artifact <Contract>")
+        print("  lk lab --ai-review  # optional unverified protocol review")
         print("  lk lab stop")
         print("")
         print("MODES")
@@ -10363,6 +10368,85 @@ def run_lab(config,args):
                     print(f"ACTIVE PROJECT: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
                     break
                 print("Please enter one of the project numbers, or q.")
+    # Optional protocol reasoning has two explicit modes: manual review on demand,
+    # or deterministic complexity-triggered assistance after the user selects auto.
+    # Neither mode grants the model authority over targets, tool execution, or deployment.
+    _ai_is_stop = any(str(argument).lower() == "stop" for argument in args)
+    requested_contract = next(
+        (str(argument) for argument in args
+         if not str(argument).startswith("-")
+         and str(argument).lower() not in {"stop", "auto", "help", "-h", "--help"}),
+        None,
+    )
+    _ai_review_reason = "explicit --ai-review request" if ai_review_requested else None
+    _ai_review_mode = "manual" if ai_review_requested else None
+    _ai_harness = None
+    _ai_status = None
+
+    if not _ai_is_stop and (_ai_review_mode is not None or not ai_review_requested):
+        try:
+            try:
+                import ai_harness as _ai_harness
+            except ImportError:
+                from lowkey import ai_harness as _ai_harness
+            _ai_status = _ai_harness.status()
+            if _ai_review_mode is None and _ai_status.get("usable") and _ai_status.get("auto_assist"):
+                _reason = _ai_harness.automatic_review_reason(root, requested_contract, _ai_status)
+                if _reason:
+                    _ai_review_mode = "auto"
+                    _ai_review_reason = _reason
+        except Exception:
+            # Status/heuristic failures never affect the deterministic lab path.
+            _ai_harness = None
+            _ai_status = None
+
+    if _ai_review_mode is not None and not _ai_is_stop:
+        try:
+            if _ai_harness is None:
+                try:
+                    import ai_harness as _ai_harness
+                except ImportError:
+                    from lowkey import ai_harness as _ai_harness
+            if _ai_status is None:
+                _ai_status = _ai_harness.status()
+            if not _ai_status.get("usable"):
+                print(
+                    "INFO  Optional AI protocol review skipped "
+                    f"({_ai_status.get('reason') or 'not available'}); native lab setup continues."
+                )
+            else:
+                review = _ai_harness.review_project_protocol(root, requested_contract)
+                meta = review.get("_lowkey_meta", {})
+                print()
+                if _ai_review_mode == "auto":
+                    print("AUTO-ASSIST PROTOCOL REVIEW — UNVERIFIED")
+                    print("=======================================")
+                    print("Trigger: " + json.dumps(str(_ai_review_reason), ensure_ascii=True))
+                else:
+                    print("OPTIONAL AI PROTOCOL REVIEW — UNVERIFIED")
+                    print("========================================")
+                    print("Trigger: explicit user request")
+                print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
+                print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
+                if meta.get("context_sha256"):
+                    print(f"Context SHA-256: {meta['context_sha256']}")
+                print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=True))
+                for label, key in (
+                    ("Contract roles", "contract_roles"),
+                    ("Candidate invariants", "invariants"),
+                    ("Open questions", "open_questions"),
+                    ("Deployment considerations", "deployment_considerations"),
+                ):
+                    values = review.get(key, [])
+                    if not values:
+                        continue
+                    print(f"\n{label}:")
+                    for item in values[:8]:
+                        print("  - " + json.dumps(item, ensure_ascii=True, sort_keys=True)[:1200])
+                print("\nContinuing with Lowkey's native lab logic; AI output does not alter deployment choices.")
+        except Exception as exc:
+            print(f"INFO  Optional AI protocol review failed ({type(exc).__name__}); native lab setup continues.")
+
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
 
@@ -15481,7 +15565,7 @@ COMMAND_HELP = {
     ),
     "lab": _help_entry(
         "Create a disposable local EVM lab for safe contract interaction and audit experiments.",
-        "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop",
+        "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab --ai-review | lk lab stop",
         "lk lab MyContract",
         "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
         forms=[
@@ -15497,6 +15581,7 @@ COMMAND_HELP = {
         options=[
             ("--generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic MyContract"),
             ("--artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact MyContract"),
+            ("--ai-review", "Request optional unverified protocol reasoning; native lab logic remains authoritative.", "lk lab --ai-review"),
         ],
         related=["lk target", "lk walkthrough", "lk status"],
     ),
@@ -16667,6 +16752,9 @@ START HERE
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
   lk lab                             Start/rebuild a disposable local audit lab.
+  lk lab --ai-review                 Add an optional, unverified protocol review.
+  lk ai status                       Show optional AI provider status.
+  lk memory status                   Inspect native project/global experience memory.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
