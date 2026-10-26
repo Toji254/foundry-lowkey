@@ -27,6 +27,51 @@ class AIHarnessTests(unittest.TestCase):
         self.assertFalse(value["configured"])
         self.assertFalse(value["usable"])
 
+    def test_mode_is_manual_by_default_and_can_be_switched(self):
+        self.assertEqual(ai.status()["mode"], "manual")
+        self.assertFalse(ai.status()["auto_assist"])
+        with patch("builtins.print"):
+            self.assertEqual(ai.main(["mode", "auto"]), 0)
+        self.assertEqual(ai.status()["mode"], "auto")
+        self.assertTrue(ai.status()["auto_assist"])
+        with patch("builtins.print"):
+            self.assertEqual(ai.main(["mode", "manual"]), 0)
+        self.assertEqual(ai.status()["mode"], "manual")
+
+    def test_automatic_review_decision_requires_auto_mode_and_usable_provider(self):
+        with patch.object(ai, "auto_review_reason", return_value="proxy/factory composition") as complexity:
+            self.assertIsNone(ai.automatic_review_reason(
+                Path(self.tmp.name), current_status={"usable": True, "auto_assist": False}
+            ))
+            complexity.assert_not_called()
+            self.assertIsNone(ai.automatic_review_reason(
+                Path(self.tmp.name), current_status={"usable": False, "auto_assist": True}
+            ))
+            complexity.assert_not_called()
+            self.assertEqual(
+                ai.automatic_review_reason(
+                    Path(self.tmp.name), current_status={"usable": True, "auto_assist": True}
+                ),
+                "proxy/factory composition",
+            )
+            complexity.assert_called_once()
+
+    def test_complexity_heuristic_only_triggers_for_multi_contract_composition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text("contract Vault {}", encoding="utf-8")
+            self.assertIsNone(ai.auto_review_reason(root))
+            (root / "src" / "Factory.sol").write_text(
+                "contract Factory { address public implementation; }", encoding="utf-8"
+            )
+            (root / "src" / "Proxy.sol").write_text(
+                "contract Proxy { address public implementation; }", encoding="utf-8"
+            )
+            reason = ai.auto_review_reason(root)
+            self.assertIsNotNone(reason)
+            self.assertIn("protocol-composition", reason)
+
     def test_api_key_is_separate_and_permissions_are_private(self):
         ai.configure(provider="deepseek", model="deepseek-flash", api_key="example-secret")
         self.assertNotIn("example-secret", ai.config_path().read_text(encoding="utf-8"))
