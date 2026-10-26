@@ -101,6 +101,65 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(node_actions[0]["command"], ["npm", "install"])
             self.assertIn("Hardhat binary missing", node_actions[0]["evidence"])
 
+    def test_git_submodule_directory_with_only_git_metadata_is_uninitialized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(
+                root,
+                ".gitmodules",
+                '[submodule "sample"]\\n\\tpath = lib/sample\\n\\turl = https://example.com/sample.git\\n',
+            )
+            (root / ".git").mkdir()
+            submodule = root / "lib" / "sample"
+            submodule.mkdir(parents=True)
+            (submodule / ".git").write_text(
+                "gitdir: ../../.git/modules/lib/sample\\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(bootstrap, "_tracked_gitlink", return_value=True):
+                state = bootstrap._submodule_state(root)
+
+            self.assertEqual(state["missing"], ["lib/sample"])
+            self.assertEqual(state["orphaned"], [])
+
+    def test_bootstrap_plan_recovers_missing_submodules_without_force(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.write(root, "foundry.toml", "[profile.default]\\n")
+            self.write(
+                root,
+                ".gitmodules",
+                '[submodule "sample"]\\n\\tpath = lib/sample\\n\\turl = https://example.com/sample.git\\n',
+            )
+            (root / ".git").mkdir()
+            submodule = root / "lib" / "sample"
+            submodule.mkdir(parents=True)
+            (submodule / ".git").write_text(
+                "gitdir: ../../.git/modules/lib/sample\\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(bootstrap, "_tracked_gitlink", return_value=True), patch.object(
+                bootstrap.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/git" if name == "git" else None,
+            ):
+                plan = bootstrap.bootstrap_plan(
+                    {"root": str(root), "backend": "foundry", "stacks": ["foundry"]},
+                    root,
+                )
+
+            actions = [item for item in plan["actions"] if item["kind"] == "git-submodule"]
+            self.assertEqual(
+                [item["command"] for item in actions],
+                [
+                    ["git", "submodule", "sync", "--recursive"],
+                    ["git", "submodule", "update", "--init", "--recursive"],
+                ],
+            )
+            self.assertTrue(all(Path(item["cwd"]) == root.resolve() for item in actions))
+
     def test_node_runtime_pin_prefers_matching_installed_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
