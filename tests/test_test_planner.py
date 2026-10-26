@@ -103,7 +103,7 @@ class TestPlannerTests(unittest.TestCase):
             "limitations": ["External fork tests need a reachable RPC endpoint."],
             "_lowkey_meta": {"plan_id": "TP-example", "report_path": ".audit/ai-review/test-plans/TP-example.json"},
         })
-        self.assertIn("LOWKEY TEST IDEAS", rendered)
+        self.assertIn("@ AI OUTPUT — TEST IDEAS (UNVERIFIED)", rendered)
         self.assertIn("this is a plan, not test code", rendered.lower())
         self.assertIn("Write order: Write first", rendered)
         self.assertIn("Prevent a bug from coming back", rendered)

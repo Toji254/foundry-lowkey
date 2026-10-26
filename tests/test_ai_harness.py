@@ -52,7 +52,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertNotIn("COMPLETE COMMAND REFERENCE", help_text)
         self.assertNotIn("Key failover:", help_text)
 
-    def test_help_alias_and_command_specific_help_include_examples(self):    def test_help_alias_and_command_specific_help_include_examples(self):
+    def test_help_alias_and_command_specific_help_include_examples(self):
         for alias in (["help"], ["--h"], ["-h"]):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
