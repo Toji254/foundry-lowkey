@@ -6638,7 +6638,7 @@ def _local_test_fixture_candidates(root, requested=None):
         if "fork" in {part.lower() for part in path.relative_to(root).parts[:-1]}:
             continue
         if re.search(
-            r"\\bvm\\s*\\.\\s*(?:createSelectFork|createFork|selectFork|rollFork|activeFork)\\s*\\(",
+            r"\bvm\s*\.\s*(?:createSelectFork|createFork|selectFork|rollFork|activeFork)\s*\(",
             text,
         ):
             continue
@@ -7380,19 +7380,19 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
             + cleanup_error
         )
     if result.code != 0:
-        tail = "\\n".join(output.splitlines()[-50:]) if output else "forge test failed"
-        return fail("Error: Lowkey project fixture failed.\\n" + tail, result.code)
+        tail = "\n".join(output.splitlines()[-50:]) if output else "forge test failed"
+        return fail("Error: Lowkey project fixture failed.\n" + tail, result.code)
     if not Path(state_path).is_file():
         diagnostic_lines = [
             line.strip() for line in output.splitlines()
-            if re.search(r"\\b(skip|skipped|vm\\.skip|no tests ran|0 passed)\\b", line, re.I)
+            if re.search(r"\b(skip|skipped|vm\.skip|no tests ran|0 passed)\b", line, re.I)
         ]
-        detail = "\\n".join(diagnostic_lines[-8:])
+        detail = "\n".join(diagnostic_lines[-8:])
         return fail(
             "Error: Foundry completed the selected fixture without exporting its state snapshot. "
             "The test may have been skipped or did not execute Lowkey's snapshot hook; Lowkey will not "
             "promote this into a live local protocol."
-            + (("\\n" + detail) if detail else "")
+            + (("\n" + detail) if detail else "")
         )
 
     target_name = str(requested or fixture.get("target_contract") or "")
