@@ -311,7 +311,7 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
     excluded = {
         ".git", ".audit", "node_modules", "out", "cache", "artifacts", "broadcast",
         ".venv", "venv", "target", "lib", "vendor", "deps", "dependencies",
-        "test", "tests", "script", "scripts", "mock", "mocks", "fixture", "fixtures",
+        "test", "tests", "mock", "mocks", "fixture", "fixtures",
     }
     paths: list[Path] = []
     for current, dirs, names in os.walk(root, followlinks=False):
@@ -371,7 +371,7 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
     return {
         "project_label": root.name, "requested_contract": contract_name,
         "source_files": items, "source_files_included": len(items),
-        "note": "Bounded excerpts of first-party production source only; tests, mocks, scripts, dependencies and build output are excluded.",
+        "note": "Bounded excerpts of first-party production source and deployment scripts; test/mock/fixture directories, dependencies and build output are excluded.",
     }
 
 
