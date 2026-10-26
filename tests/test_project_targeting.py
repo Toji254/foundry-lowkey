@@ -1402,3 +1402,63 @@ if __name__ == "__main__":
                 os.environ["FOUNDRY_SCRIPT"] = "env-scripts"
                 self.assertEqual(lk._foundry_test_roots(root)[0], (root / "env-tests").resolve())
                 self.assertEqual(lk._foundry_script_roots(root)[0], (root / "env-scripts").resolve())
+
+
+    def test_native_lab_validation_resolves_minimal_clone_to_locked_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "src").mkdir(parents=True, exist_ok=True)
+            source_path = root / "src" / "PoolTemplate.sol"
+            source_path.write_text(
+                "pragma solidity ^0.8.20; contract PoolTemplate { "
+                "constructor() { _disableInitializers(); } "
+                "function _disableInitializers() internal {} "
+                "function initialize() external {} }",
+                encoding="utf-8",
+            )
+            artifact_path = root / "out" / "PoolTemplate.sol" / "PoolTemplate.json"
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            implementation_runtime = "0x6000"
+            artifact = {
+                "contractName": "PoolTemplate",
+                "sourceName": "src/PoolTemplate.sol",
+                "abi": [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6001"},
+                "deployedBytecode": {"object": implementation_runtime},
+            }
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            implementation = "0x" + "2" * 40
+            clone = "0x" + "3" * 40
+            runtime = (
+                "0x363d3d373d3d3d363d73"
+                + implementation[2:]
+                + "5af43d82803e903d91602b57fd5bf3"
+            )
+            calls = []
+
+            def fake_run_cast(args, config=None, capture=False):
+                calls.append(list(args))
+                if args[:2] == ["code", clone]:
+                    return lk.CommandResult(runtime, 0)
+                return lk.CommandResult("", 1)
+
+            deployment_file = root / "broadcast" / "Deploy.s.sol" / "31337" / "run-latest.json"
+            record = {
+                "contract": "PoolTemplate",
+                "address": implementation,
+                "file": str(deployment_file),
+                "run_timestamp": 123,
+            }
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast), \\
+                 patch.object(lk, "discover_deployments", return_value=[record]):
+                contract, resolved_artifact, error = lk._validate_project_lab_target(
+                    {"abi_paths": {}, "target_contract": None},
+                    root,
+                    "http://127.0.0.1:8545",
+                    clone,
+                    requested="PoolTemplate",
+                )
+            self.assertIsNone(error)
+            self.assertEqual(contract, "PoolTemplate")
+            self.assertEqual(Path(resolved_artifact).resolve(), artifact_path.resolve())
+            self.assertEqual(calls, [["code", clone, "--rpc-url", "http://127.0.0.1:8545"]])
