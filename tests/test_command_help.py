@@ -735,6 +735,9 @@ class CommandHelpTests(unittest.TestCase):
         self.assertIn("--install --dry-run ERC20", output)
         self.assertIn("Named import vs whole-file import", output)
         self.assertIn("lk import --copy-only IERC20", output)
+        self.assertIn("--copy-only / --copy", output)
+        self.assertIn("--verbose / -v", output)
+        self.assertIn("b to go back one menu level", output)
 
     def test_question_help_is_contextual(self):
         code, output = self.capture_dispatch("q", "--h")
