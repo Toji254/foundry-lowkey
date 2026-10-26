@@ -1326,6 +1326,33 @@ if __name__ == "__main__":
                     "http://127.0.0.1:8545",
                 )
             self.assertEqual(recovered, (proxy.lower(), "proxy"))
+            self.assertEqual(
+                lk._fixture_target_implementation_artifact(
+                    root, state_path, proxy, "Template", "http://127.0.0.1:8545"
+                ),
+                str(derived_artifact),
+            )
+
+            with patch.object(
+                lk, "_live_runtime",
+                side_effect=lambda config, address: {
+                    proxy.lower(): "0x6001",
+                    actual_implementation.lower(): "0x6002",
+                }.get(str(address).lower()),
+            ), patch.object(lk, "_minimal_proxy_implementation", return_value=None), \\
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
+                 patch.object(lk, "cast_output", return_value=(0, actual_implementation, "")):
+                live_match = lk._live_target_artifact_match(
+                    {
+                        "target_contract": "Template",
+                        "rpc": "http://127.0.0.1:8545",
+                        "project_roots": {proxy.lower(): str(root)},
+                        "abi_paths": {proxy.lower(): str(base_artifact)},
+                    },
+                    proxy,
+                    json.loads(base_artifact.read_text(encoding="utf-8")),
+                )
+            self.assertEqual(live_match, "clone-or-proxy")
 
             # Matching bytecode is not sufficient if the source does not inherit
             # from the requested target.
@@ -1340,6 +1367,31 @@ if __name__ == "__main__":
                     "http://127.0.0.1:8545",
                 )
             self.assertIsNone(rejected)
+            self.assertIsNone(
+                lk._fixture_target_implementation_artifact(
+                    root, state_path, proxy, "Template", "http://127.0.0.1:8545"
+                )
+            )
+            with patch.object(
+                lk, "_live_runtime",
+                side_effect=lambda config, address: {
+                    proxy.lower(): "0x6001",
+                    actual_implementation.lower(): "0x6002",
+                }.get(str(address).lower()),
+            ), patch.object(lk, "_minimal_proxy_implementation", return_value=None), \\
+                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
+                 patch.object(lk, "cast_output", return_value=(0, actual_implementation, "")):
+                rejected_live_match = lk._live_target_artifact_match(
+                    {
+                        "target_contract": "Template",
+                        "rpc": "http://127.0.0.1:8545",
+                        "project_roots": {proxy.lower(): str(root)},
+                        "abi_paths": {proxy.lower(): str(base_artifact)},
+                    },
+                    proxy,
+                    json.loads(base_artifact.read_text(encoding="utf-8")),
+                )
+            self.assertIsNone(rejected_live_match)
 
     def test_fixture_clone_implementation_parser(self):
         implementation = "1234567890abcdef1234567890abcdef12345678"

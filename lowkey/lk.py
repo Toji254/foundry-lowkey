@@ -6061,6 +6061,20 @@ def _live_target_artifact_match(config, address, artifact):
         implementation_runtime = _live_runtime(config, implementation)
         if implementation_runtime and _artifact_runtime_matches("", artifact, implementation_runtime):
             return "clone-or-proxy"
+
+        # The proxy may currently use a source-proven derived implementation (for
+        # example, a test fixture that upgrades to a V2 mock). Match its runtime
+        # to a compiled artifact and verify inheritance from the configured target.
+        root = configured_project_root(address, config)
+        target_name = artifact_contract_name("", artifact) or config.get("target_contract")
+        if (
+            root
+            and implementation_runtime
+            and _fixture_runtime_matches_target_or_upgrade(
+                root, target_name, implementation_runtime
+            )
+        ):
+            return "clone-or-proxy"
     return None
 
 
@@ -7379,18 +7393,13 @@ def _fixture_artifact_inherits_contract(root, artifact_path, artifact, ancestor_
     return False
 
 
-def _fixture_runtime_matches_target_or_upgrade(root, target_contract, implementation_runtime):
-    """Match a runtime to the target artifact or a source-proven derived contract.
-
-    A proxy may have been upgraded during a project test to an implementation
-    derived from the requested contract. Runtime similarity alone is insufficient:
-    the runtime must match a local deployable project artifact and that artifact
-    must declare the requested contract in its Solidity inheritance chain.
-    """
+def _fixture_target_artifact_for_runtime(root, target_contract, implementation_runtime):
+    """Return an artifact matching a target runtime or its source-proven derived contract."""
     target_name = str(target_contract or "").strip().lower()
-    if not target_name:
-        return False
+    if not target_name or not implementation_runtime:
+        return None
 
+    matches = []
     for artifact_path in local_artifact_paths(str(root)):
         artifact = read_artifact(artifact_path) or {}
         if not artifact_is_deployable(artifact):
@@ -7401,13 +7410,69 @@ def _fixture_runtime_matches_target_or_upgrade(root, target_contract, implementa
 
         name = artifact_contract_name(artifact_path, artifact)
         if name.lower() == target_name:
-            return True
-        # Test fixtures can intentionally upgrade a proxy to a test-only mock
-        # derived from the real contract. The source-backed inheritance check,
-        # not an "application source" classification, is the relevant safety gate.
-        if _fixture_artifact_inherits_contract(root, artifact_path, artifact, target_name):
-            return True
-    return False
+            rank = 0
+        elif _fixture_artifact_inherits_contract(root, artifact_path, artifact, target_name):
+            # The implementation source explicitly derives from the requested
+            # contract. This includes legitimate test-only upgrade implementations.
+            rank = 1
+        else:
+            continue
+        matches.append((rank, str(artifact_path), artifact_path))
+
+    if not matches:
+        return None
+    matches.sort()
+    return matches[0][2]
+
+
+def _fixture_runtime_matches_target_or_upgrade(root, target_contract, implementation_runtime):
+    """Validate a deployed runtime against the target or a source-proven derived artifact."""
+    return _fixture_target_artifact_for_runtime(
+        root, target_contract, implementation_runtime
+    ) is not None
+
+
+def _fixture_target_implementation_artifact(root, state_path, target_address, target_contract, rpc):
+    """Resolve a proxy's current implementation to the ABI artifact matching its runtime."""
+    try:
+        snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    accounts, _ = _fixture_accounts_map(snapshot)
+    if not isinstance(accounts, dict):
+        return None
+
+    accounts_by_lower = {
+        str(address).lower(): account
+        for address, account in accounts.items()
+        if isinstance(account, dict)
+    }
+    address = str(target_address or "").lower()
+    account = accounts_by_lower.get(address)
+    if not account:
+        return None
+
+    code_by_address = {
+        str(candidate).lower(): str(data.get("code") or "0x").strip().lower()
+        for candidate, data in accounts.items()
+        if isinstance(data, dict)
+        and str(data.get("code") or "0x").strip().lower() not in {"", "0x"}
+    }
+    runtime = code_by_address.get(address, "")
+    if not runtime:
+        return None
+
+    implementation, _ = _fixture_snapshot_implementation(
+        address, account, runtime, code_by_address, rpc
+    )
+    if not implementation:
+        return None
+    implementation_runtime = code_by_address.get(implementation.lower(), "")
+    if not implementation_runtime:
+        return None
+    return _fixture_target_artifact_for_runtime(
+        root, target_contract, implementation_runtime
+    )
 
 
 def _find_fixture_operational_instance(root, state_path, target_contract, implementation_address, rpc):
@@ -7626,6 +7691,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
             + str(materialize_error or "unknown materialization error")
         )
 
+    recovered_operational_proxy = False
     target_artifact_path, target_artifact_data = _fixture_target_artifact(root, target_name)
     if target_artifact_path and artifact_is_locked_implementation(
         root, target_artifact_path, target_artifact_data
@@ -7658,6 +7724,7 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
                         f"{candidate}"
                     )
                     target = candidate
+                    recovered_operational_proxy = True
                 else:
                     recovered = None
             if not recovered:
@@ -7667,13 +7734,20 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
                     "The lab will not be marked ready without an operational target."
                 )
 
-    artifact = None
-    if target_name:
-        for candidate_path in local_artifact_paths(root):
-            candidate_artifact = read_artifact(candidate_path) or {}
-            if artifact_contract_name(candidate_path, candidate_artifact).lower() == target_name.lower():
-                artifact = candidate_path
-                break
+    artifact = target_artifact_path
+    if recovered_operational_proxy:
+        implementation_artifact = _fixture_target_implementation_artifact(
+            root, state_path, target, target_name, rpc
+        )
+        if implementation_artifact:
+            artifact = implementation_artifact
+            implementation_name = artifact_contract_name(
+                implementation_artifact, read_artifact(implementation_artifact) or {}
+            )
+            print(
+                "INFO  using ABI from validated proxy implementation artifact: "
+                + str(implementation_name)
+            )
 
     contract_name = target_name or str(fixture.get("contract") or "auto-detected")
     _ensure_lab_deployer(config, accounts[0], 0)
