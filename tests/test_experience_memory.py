@@ -78,6 +78,40 @@ class ExperienceMemoryTests(unittest.TestCase):
         self.assertEqual({item["scope"] for item in context}, {"project", "global"})
         self.assertEqual(len(memory.list_lessons(status="approved", scope="global", root=self.project)), 1)
 
+    def test_context_ranks_approved_lessons_by_current_protocol_relevance(self):
+        factory = memory.propose_lesson(
+            kind="protocol-pattern",
+            title="Factory registers every created pool",
+            lesson="Check the factory registry mapping after a pool is created.",
+            when_relevant="Factory-created pools and child registries.",
+            tags=["factory", "registry"],
+            root=self.project,
+        )
+        memory.approve_lesson(
+            factory["id"], validation_kind="test",
+            validation="The Foundry factory regression test verifies registry state.",
+            root=self.project,
+        )
+        oracle = memory.propose_lesson(
+            kind="protocol-pattern",
+            title="Oracle round updates prices",
+            lesson="Validate oracle answer freshness and round IDs.",
+            when_relevant="Price feeds and stale oracle rounds.",
+            tags=["oracle", "price-feed"],
+            root=self.project,
+        )
+        memory.approve_lesson(
+            oracle["id"], validation_kind="test",
+            validation="The oracle adapter test verifies round freshness.",
+            root=self.project,
+        )
+        selected = memory.lessons_for_context(
+            self.project, project_limit=1, global_limit=0,
+            query_text="Factory creates child pool and updates registry mapping",
+        )
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["id"], factory["id"])
+
     def test_failed_global_promotion_rolls_back_project_approval(self):
         proposal = memory.propose_lesson(
             kind="protocol-pattern",
