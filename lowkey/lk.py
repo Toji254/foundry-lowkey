@@ -6685,7 +6685,15 @@ def discover_local_lab_fixture(root=".", requested=None):
     return candidates[0] if candidates else None
 
 
-def _temporary_fixture_foundry_config(root, state_path, safe_name):
+def _fixture_fs_permissions_override(root, state_path):
+    """Build a narrow per-test Forge permission setting without touching project config.
+
+    Foundry ignores FOUNDRY_FS_PERMISSIONS as a generic environment override.
+    This returns the effective existing permissions plus one write permission
+    for the state snapshot directory. The generated harness embeds the result
+    in a forge-config annotation, so normal project paths and root stay intact.
+    """
+
     """Create a one-run Foundry config that grants write access only to the snapshot directory.
 
     Foundry intentionally ignores generic FOUNDRY_FS_PERMISSIONS env overrides.
@@ -6748,104 +6756,7 @@ def _temporary_fixture_foundry_config(root, state_path, safe_name):
         ", path = " + quote(relative_state) + " }"
     )
     permissions_toml = "[" + ", ".join(entries) + "]"
-
-    profile = str(os.environ.get("FOUNDRY_PROFILE") or "default").strip() or "default"
-    env_config = os.environ.get("FOUNDRY_CONFIG")
-    base_config_path = Path(env_config).expanduser() if env_config else root_path / "foundry.toml"
-    if not base_config_path.is_absolute():
-        base_config_path = root_path / base_config_path
-    try:
-        raw_config = base_config_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raw_config = ""
-    except OSError as exc:
-        return None, f"could not read active Foundry config {base_config_path}: {exc}"
-
-    lines = raw_config.splitlines()
-    selected_header = re.compile(r"^\s*\[\s*profile\." + re.escape(profile) + r"\s*\]\s*(?:#.*)?$")
-    header_pattern = re.compile(r"^\s*\[")
-    section_start = None
-    section_end = len(lines)
-    for index, line in enumerate(lines):
-        if selected_header.match(line):
-            section_start = index
-            for later in range(index + 1, len(lines)):
-                if header_pattern.match(lines[later]):
-                    section_end = later
-                    break
-            break
-
-    new_assignment = "fs_permissions = " + permissions_toml
-
-    def assignment_end(start_index):
-        """Return the last line of a TOML array assignment, respecting quoted strings."""
-        first_line = lines[start_index]
-        equals = first_line.find("=")
-        if equals < 0:
-            return None
-        balance = 0
-        started = False
-        in_double = False
-        in_single = False
-        escaped = False
-        for line_index in range(start_index, len(lines)):
-            text = lines[line_index][equals + 1:] if line_index == start_index else lines[line_index]
-            for char in text:
-                if in_double:
-                    if escaped:
-                        escaped = False
-                    elif char == "\\":
-                        escaped = True
-                    elif char == '"':
-                        in_double = False
-                    continue
-                if in_single:
-                    if char == "'":
-                        in_single = False
-                    continue
-                if char == "#":
-                    break
-                if char == '"':
-                    in_double = True
-                elif char == "'":
-                    in_single = True
-                elif char == "[":
-                    balance += 1
-                    started = True
-                elif char == "]":
-                    balance -= 1
-                    if started and balance == 0:
-                        return line_index
-        return None
-
-    if section_start is None:
-        # Appending a profile override preserves top-level values and any
-        # existing sections without editing or duplicating an existing table.
-        lines.extend(["", f"[profile.{profile}]", new_assignment])
-    else:
-        perm_index = None
-        perm_end = None
-        for index in range(section_start + 1, section_end):
-            if re.match(r"^\s*fs_permissions\s*=", lines[index]):
-                perm_index = index
-                perm_end = assignment_end(index)
-                if perm_end is None or perm_end >= section_end:
-                    return None, "could not safely replace the active profile's fs_permissions entry"
-                break
-        if perm_index is not None:
-            lines[perm_index:perm_end + 1] = [new_assignment]
-        else:
-            lines.insert(section_end, new_assignment)
-
-    lowkey_dir = Path(state_path.parent)
-    config_dir = root_path / "out" / "lowkey"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / f".foundry-lab-{re.sub(r'[^A-Za-z0-9_]', '_', safe_name)}-{os.getpid()}.toml"
-    try:
-        config_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    except OSError as exc:
-        return None, f"could not create temporary Foundry lab config: {exc}"
-    return config_path, None
+    return permissions_toml, None
 
 
 def _fixture_state_files(root, safe_name):
@@ -6856,7 +6767,7 @@ def _fixture_state_files(root, safe_name):
     return state_dir / f"fixture_state_{safe_name}.json"
 
 
-def _generate_test_fixture_lab_script(root, candidate, state_path=None):
+def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permissions=None):
     """Generate a disposable harness around a project-owned setup/helper/test."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
     if state_path is None:
@@ -6906,13 +6817,23 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None):
     test_dir = root_path / "test" / "foundry" / ".lowkey"
     test_dir.mkdir(parents=True, exist_ok=True)
     test_path = test_dir / f"LowkeyAutoFixture_{safe_name}.t.sol"
+    profile = re.sub(
+        r"[^A-Za-z0-9_-]",
+        "",
+        str(os.environ.get("FOUNDRY_PROFILE") or "default"),
+    ) or "default"
+    permission_annotation = ""
+    if fs_permissions:
+        permission_annotation = (
+            f"/// forge-config: {profile}.fs_permissions = {fs_permissions}\n"
+        )
     code = f'''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 import {{ {contract} }} from "{relative}";
 import {{ console2 }} from "forge-std/console2.sol";
 
-/// @dev Runs project-owned setup logic and exports the complete local state.
+{permission_annotation}/// @dev Runs project-owned setup logic and exports the complete local state.
 contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
 {harness}}}
 '''
@@ -7353,7 +7274,13 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     """Run a project-owned Foundry setup/test path and materialize its full state."""
     safe_name = re.sub(r"[^A-Za-z0-9_]", "_", str(fixture["contract"]))
     state_path = _fixture_state_files(root, safe_name)
-    test_path = _generate_test_fixture_lab_script(root, fixture, state_path)
+    fs_permissions, permission_error = _fixture_fs_permissions_override(root, state_path)
+    if permission_error:
+        return fail("Error: Lowkey could not safely prepare project fixture state export. " + permission_error)
+
+    test_path = _generate_test_fixture_lab_script(
+        root, fixture, state_path, fs_permissions=fs_permissions
+    )
     relative_test = os.path.relpath(test_path, root)
 
     print("LOWKEY LOCAL AUDIT LAB")
@@ -7366,38 +7293,15 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print(f"Deployer: lab-deployer ({accounts[0]}) [Anvil #0]")
     print("Mode    : promoted project test fixture")
     print("Action  : executing project-owned setup/test logic, then materializing its full local state...")
-    print("Helper  : Forge executes in its test context; no broadcast to a remote chain.")
+    print("Helper  : Foundry test-scoped filesystem permission; no project config edit or remote broadcast.")
 
     before_sources = _project_source_fingerprint(root)
-    temporary_config, config_error = _temporary_fixture_foundry_config(
-        root, state_path, safe_name
-    )
-    if config_error:
-        try:
-            Path(test_path).unlink(missing_ok=True)
-        except OSError:
-            pass
-        return fail("Error: Lowkey could not safely prepare project fixture state export. " + config_error)
-
-    # Use the copied project config for this Forge test only. The user config is
-    # not edited, and the temporary override is removed after execution.
-    old_foundry_config = os.environ.get("FOUNDRY_CONFIG")
-    os.environ.pop("FOUNDRY_CONFIG", None)
-    try:
-        result = run_foundry([
-            "test", "--config-path", str(temporary_config),
-            "--match-path", relative_test,
-            "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
-            "--match-test", "testLowkeyLabStateDump",
-            "--disable-block-gas-limit", "-vv",
-        ], capture=True, cwd=str(Path(root).resolve()))
-    finally:
-        if old_foundry_config is not None:
-            os.environ["FOUNDRY_CONFIG"] = old_foundry_config
-        try:
-            Path(temporary_config).unlink(missing_ok=True)
-        except OSError:
-            pass
+    result = run_foundry([
+        "test", "--match-path", relative_test,
+        "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
+        "--match-test", "testLowkeyLabStateDump",
+        "--disable-block-gas-limit", "-vv",
+    ], capture=True, cwd=str(Path(root).resolve()))
     output = result.text
     changed_sources = _project_source_mutations(root, before_sources)
     # The harness exists only to execute this promotion once. Remove it after
