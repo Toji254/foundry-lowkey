@@ -1217,14 +1217,16 @@ if __name__ == "__main__":
                 "deployedBytecode": {"object": "0x6000"},
             }), encoding="utf-8")
 
-            implementation = "0x" + "1" * 40
+            selected_implementation = "0x" + "1" * 40
+            actual_implementation = "0x" + "3" * 40
             proxy = "0x" + "2" * 40
             slot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
             snapshot = {
-                implementation: {"code": "0x6000", "storage": {}},
+                selected_implementation: {"code": "0x6000", "storage": {}},
+                actual_implementation: {"code": "0x6000", "storage": {}},
                 proxy: {
                     "code": "0x6001",
-                    "storage": {slot: "0x" + "0" * 24 + implementation[2:]},
+                    "storage": {slot: "0x" + "0" * 24 + actual_implementation[2:]},
                 },
             }
             state_path = root / "out" / "lowkey" / "fixture_state_Template.json"
@@ -1232,7 +1234,9 @@ if __name__ == "__main__":
             state_path.write_text(json.dumps(snapshot), encoding="utf-8")
 
             def fake_run_cast(args, config=None, capture=False):
-                if args[:2] == ["code", implementation]:
+                if args[:2] == ["code", selected_implementation]:
+                    return lk.CommandResult("0x6000", 0)
+                if args[:2] == ["code", actual_implementation]:
                     return lk.CommandResult("0x6000", 0)
                 if args[:2] == ["code", proxy]:
                     return lk.CommandResult("0x60016002600360046005", 0)
@@ -1240,7 +1244,7 @@ if __name__ == "__main__":
 
             with patch.object(lk, "run_cast", side_effect=fake_run_cast):
                 recovered = lk._find_fixture_operational_instance(
-                    root, state_path, "Template", implementation,
+                    root, state_path, "Template", selected_implementation,
                     "http://127.0.0.1:8545",
                 )
 
