@@ -1196,20 +1196,30 @@ def bootstrap_plan(
         "orphaned": [],
     }
     if submodules["missing"]:
-        if shutil.which("git"):
+        orphaned_paths = {relative for relative, _ in submodules["orphaned"]}
+        tracked_missing = [
+            relative
+            for relative in submodules["missing"]
+            if relative not in orphaned_paths
+        ]
+        if tracked_missing and shutil.which("git"):
             actions.append({
                 "kind": "git-submodule",
                 "cwd": repo_root,
                 "command": ["git", "submodule", "sync", "--recursive"],
-                "evidence": f"{len(submodules['missing'])} incomplete declared submodule(s)",
+                "evidence": f"{len(tracked_missing)} incomplete tracked submodule(s)",
             })
             actions.append({
                 "kind": "git-submodule",
                 "cwd": repo_root,
-                # Respect local edits in an already-present submodule. The default
-                # update still checks out the parent repository's pinned gitlink.
-                "command": ["git", "submodule", "update", "--init", "--recursive"],
-                "evidence": f"{len(submodules['missing'])} incomplete declared submodule(s)",
+                # Force checkout only the worktrees proven incomplete above. This
+                # restores missing tracked files even when Git metadata points at
+                # the expected commit, without resetting unrelated submodules.
+                "command": [
+                    "git", "submodule", "update", "--init", "--recursive",
+                    "--force", "--", *tracked_missing,
+                ],
+                "evidence": f"{len(tracked_missing)} incomplete tracked submodule(s)",
             })
         for relative, url in submodules["orphaned"]:
             actions.append({
