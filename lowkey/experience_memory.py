@@ -151,6 +151,8 @@ def _bounded(value: str, label: str, limit: int, *, required: bool = True) -> st
     clean = str(value or "").strip()
     if required and not clean:
         raise MemoryError(f"{label} is required.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in clean):
+        raise MemoryError(f"{label} must not contain terminal/control characters.")
     if len(clean) > limit:
         raise MemoryError(f"{label} must be at most {limit} characters.")
     return clean
