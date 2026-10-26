@@ -23,6 +23,10 @@ fi
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/lowkey-ai-memory-smoke.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 PROJECT="$TMP_ROOT/project"
+# Keep the smoke test isolated from real user provider configuration and memory.
+export XDG_CONFIG_HOME="$TMP_ROOT/xdg-config"
+export XDG_DATA_HOME="$TMP_ROOT/xdg-data"
+export XDG_STATE_HOME="$TMP_ROOT/xdg-state"
 mkdir -p "$PROJECT/src" "$PROJECT/test" "$PROJECT/lib/example/src"
 
 python3 - "$PROJECT" <<'PY'
