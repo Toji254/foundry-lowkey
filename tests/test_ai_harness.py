@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lowkey import ai_harness as ai
+from lowkey import experience_memory as memory
 
 
 class AIHarnessTests(unittest.TestCase):
@@ -90,6 +91,44 @@ class AIHarnessTests(unittest.TestCase):
         with patch.object(ai, "urlopen", return_value=FakeResponse()):
             with self.assertRaises(ai.AIHarnessError):
                 ai.request_structured(purpose="protocol_analysis", task="inspect", context={})
+
+    def test_explicit_protocol_review_receives_only_approved_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                "contract Vault { function withdraw() external {} }", encoding="utf-8"
+            )
+            approved = memory.propose_lesson(
+                kind="test-procedure", title="Assert the factory registry",
+                lesson="Check the event and the registry mapping.",
+                root=root,
+            )
+            memory.approve_lesson(
+                approved["id"], validation_kind="test",
+                validation="The local Foundry regression test passes with the factory fixture.",
+                root=root,
+            )
+            pending = memory.propose_lesson(
+                kind="protocol-pattern", title="Unverified reentrancy hypothesis",
+                lesson="Investigate whether callbacks can re-enter the withdrawal path.",
+                root=root,
+            )
+            response = {
+                "summary": "A small vault contract.",
+                "contract_roles": [],
+                "invariants": [],
+                "open_questions": [],
+                "deployment_considerations": [],
+            }
+            with patch.object(ai, "request_structured", return_value=response) as request:
+                result = ai.review_project_protocol(root)
+            context = request.call_args.kwargs["context"]
+            experience = context["approved_experience"]
+            self.assertEqual([item["id"] for item in experience], [approved["id"]])
+            self.assertNotIn(pending["title"], json.dumps(experience))
+            self.assertEqual(result["summary"], response["summary"])
 
     def test_local_ollama_needs_no_key(self):
         ai.configure(provider="ollama", model="qwen2.5-coder")
