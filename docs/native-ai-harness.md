@@ -43,6 +43,26 @@ lk ai setup --provider openai-compatible --base-url https://provider.example/v1 
 
 Provider availability and pricing are controlled by the provider. Never put credentials in a URL or commit them to source control.
 
+## Manual and automatic assistance modes
+
+The default is **manual**: Lowkey does not make a model request unless you explicitly run \`lk lab --ai-review\`.
+
+~~~bash
+lk ai mode manual
+lk ai status
+~~~
+
+To opt in to complexity-triggered assistance:
+
+~~~bash
+lk ai mode auto
+lk ai status
+~~~
+
+In auto mode, Lowkey first runs a local, deterministic complexity heuristic over bounded first-party source excerpts. It triggers a protocol review only when the configured provider is ready and the project has signals such as several interrelated contracts combined with proxy, factory, implementation, initializer, or registry patterns (or a large cross-contract source set). A simple project remains native-only. The selected contract source and approved experience snippets are sent to the configured provider only when the heuristic triggers. This may incur charges.
+
+Return to manual mode at any time with \`lk ai mode manual\`. Neither mode gives the model tool execution, deployment, target-selection, or finding-confirmation authority.
+
 ## Explicit protocol review in the lab
 
 ~~~bash
