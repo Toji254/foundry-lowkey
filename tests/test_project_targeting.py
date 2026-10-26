@@ -1449,7 +1449,7 @@ if __name__ == "__main__":
                 "file": str(deployment_file),
                 "run_timestamp": 123,
             }
-            with patch.object(lk, "run_cast", side_effect=fake_run_cast), \\
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast), \
                  patch.object(lk, "discover_deployments", return_value=[record]):
                 contract, resolved_artifact, error = lk._validate_project_lab_target(
                     {"abi_paths": {}, "target_contract": None},
