@@ -177,12 +177,12 @@ class BootstrapTests(unittest.TestCase):
             self.write(
                 root,
                 ".gitmodules",
-                '[submodule "parent"]\\n\\tpath = lib/parent\\n\\turl = https://example.com/parent.git\\n',
+                '[submodule "parent"]\n\tpath = lib/parent\n\turl = https://example.com/parent.git\n',
             )
             self.write(
                 parent,
                 ".gitmodules",
-                '[submodule "child"]\\n\\tpath = vendor/child\\n\\turl = https://example.com/child.git\\n',
+                '[submodule "child"]\n\tpath = vendor/child\n\turl = https://example.com/child.git\n',
             )
 
             with patch.object(
