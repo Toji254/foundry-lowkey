@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 SCHEMA_VERSION = 1
 MAX_CONTEXT_BYTES = 42_000
+MAX_SOURCE_CONTEXT_BYTES = 32_000
 MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
@@ -335,7 +336,7 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
 
     items, used_bytes = [], 0
     for path in paths:
-        if len(items) >= 18 or used_bytes >= MAX_CONTEXT_BYTES - 2500:
+        if len(items) >= 18 or used_bytes >= MAX_SOURCE_CONTEXT_BYTES:
             break
         try:
             source = path.read_text(encoding="utf-8", errors="replace")
@@ -351,7 +352,7 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
                 continue
         entry = {"path": relative, "source_excerpt": source[:6500]}
         entry_size = len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
-        if used_bytes + entry_size > MAX_CONTEXT_BYTES - 2500:
+        if used_bytes + entry_size > MAX_SOURCE_CONTEXT_BYTES:
             break
         items.append(entry)
         used_bytes += entry_size
