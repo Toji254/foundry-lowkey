@@ -336,6 +336,35 @@ def _submodule_state(root: Path) -> dict[str, Any]:
         "orphaned": orphaned,
     }
 
+def _submodule_repository_roots(root: Path) -> list[Path]:
+    """Find the root repository and every currently complete nested submodule repo.
+
+    Descending only into valid, complete checkouts makes nested dependencies
+    discoverable after their parent has been restored, without asking Git to
+    clone every nested dependency recursively in one long, opaque operation.
+    """
+    pending = [root.resolve()]
+    visited: set[Path] = set()
+    repositories: list[Path] = []
+
+    while pending:
+        repository = pending.pop(0).resolve()
+        if repository in visited:
+            continue
+        visited.add(repository)
+        repositories.append(repository)
+
+        for relative, _url in _declared_submodules(repository):
+            child = repository / relative
+            if not (child / ".gitmodules").is_file():
+                continue
+            if _submodule_checkout_complete(repository, relative):
+                pending.append(child.resolve())
+
+    return repositories
+
+
+
 
 def _pnpm_major(lock_text: str) -> int | None:
     match = re.search(
@@ -1237,43 +1266,56 @@ def bootstrap_plan(
     repo_root = _git_root(selected_root)
     actions: list[dict[str, Any]] = []
 
-    submodules = _submodule_state(repo_root) if (repo_root / ".gitmodules").is_file() else {
-        "declared": 0,
-        "missing": [],
-        "orphaned": [],
-    }
-    if submodules["missing"]:
+    # Process dependency repositories one level at a time. A root submodule
+    # may itself declare nested Git submodules, but those declarations cannot be
+    # inspected until its checkout exists. The execution phase replans after each
+    # successful stage, so we don't use --recursive for long network operations.
+    for submodule_repo in _submodule_repository_roots(repo_root):
+        if not (submodule_repo / ".gitmodules").is_file():
+            continue
+        submodules = _submodule_state(submodule_repo)
+        if not submodules["missing"]:
+            continue
+
         orphaned_paths = {relative for relative, _ in submodules["orphaned"]}
         tracked_missing = [
             relative
             for relative in submodules["missing"]
             if relative not in orphaned_paths
         ]
+        try:
+            repo_label = str(submodule_repo.relative_to(repo_root)) or "."
+        except ValueError:
+            repo_label = str(submodule_repo)
+
         if tracked_missing and shutil.which("git"):
+            evidence = (
+                f"{len(tracked_missing)} incomplete tracked submodule(s) "
+                f"in dependency repository {repo_label}"
+            )
             actions.append({
                 "kind": "git-submodule",
-                "cwd": repo_root,
-                "command": ["git", "submodule", "sync", "--recursive"],
-                "evidence": f"{len(tracked_missing)} incomplete tracked submodule(s)",
+                "cwd": submodule_repo,
+                "command": ["git", "submodule", "sync"],
+                "evidence": evidence,
             })
             actions.append({
                 "kind": "git-submodule",
-                "cwd": repo_root,
-                # Force checkout only the worktrees proven incomplete above. This
-                # restores missing tracked files even when Git metadata points at
-                # the expected commit, without resetting unrelated submodules.
+                "cwd": submodule_repo,
+                # Repair only incomplete paths in this one repository. Nested
+                # repositories are replanned separately once their parent is ready.
                 "command": [
-                    "git", "submodule", "update", "--init", "--recursive",
+                    "git", "submodule", "update", "--init",
                     "--force", "--", *tracked_missing,
                 ],
-                "evidence": f"{len(tracked_missing)} incomplete tracked submodule(s)",
+                "evidence": evidence,
             })
         for relative, url in submodules["orphaned"]:
             actions.append({
                 "kind": "git-submodule-recovery",
-                "cwd": repo_root,
+                "cwd": submodule_repo,
                 "command": ["git", "clone", "--depth", "1", url, relative],
-                "evidence": f"orphaned .gitmodules entry: {relative}",
+                "evidence": f"orphaned .gitmodules entry in {repo_label}: {relative}",
             })
 
     node = _node_install_command(selected_root)
