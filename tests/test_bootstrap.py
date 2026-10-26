@@ -201,14 +201,86 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(
                 [item["command"] for item in actions],
                 [
-                    ["git", "submodule", "sync", "--recursive"],
+                    ["git", "submodule", "sync"],
                     [
-                        "git", "submodule", "update", "--init", "--recursive",
+                        "git", "submodule", "update", "--init",
                         "--force", "--", "lib/sample",
                     ],
                 ],
             )
             self.assertTrue(all(pathlib.Path(item["cwd"]) == root.resolve() for item in actions))
+
+    def test_bootstrap_replans_for_nested_submodules_after_parent_stage(self):
+        root = pathlib.Path("/tmp/lowkey-staged-submodules")
+        parent = root / "lib" / "parent"
+        child = parent / "vendor" / "child"
+
+        def action(kind, cwd, command):
+            return {
+                "kind": kind,
+                "cwd": cwd,
+                "command": command,
+                "evidence": "test fixture",
+            }
+
+        def plan(actions):
+            return {
+                "project_root": str(root),
+                "workspace_root": str(root),
+                "dependency_root": str(root),
+                "runtime_requirements": {},
+                "actions": actions,
+            }
+
+        root_actions = [
+            action("git-submodule", root, ["git", "submodule", "sync"]),
+            action(
+                "git-submodule",
+                root,
+                ["git", "submodule", "update", "--init", "--force", "--", "lib/parent"],
+            ),
+        ]
+        nested_actions = [
+            action("git-submodule", parent, ["git", "submodule", "sync"]),
+            action(
+                "git-submodule",
+                parent,
+                ["git", "submodule", "update", "--init", "--force", "--", "vendor/child"],
+            ),
+        ]
+        plans = [plan(root_actions), plan(nested_actions), plan([])]
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(command, **kwargs):
+            calls.append((str(kwargs["cwd"]), command))
+            return Result()
+
+        with patch.object(bootstrap, "bootstrap_plan", side_effect=plans), patch.object(
+            bootstrap.subprocess, "run", side_effect=fake_run
+        ):
+            code = bootstrap.run_bootstrap({"root": str(root)})
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            calls,
+            [
+                (str(root), ["git", "submodule", "sync"]),
+                (
+                    str(root),
+                    ["git", "submodule", "update", "--init", "--force", "--", "lib/parent"],
+                ),
+                (str(parent), ["git", "submodule", "sync"]),
+                (
+                    str(parent),
+                    ["git", "submodule", "update", "--init", "--force", "--", "vendor/child"],
+                ),
+            ],
+        )
 
     def test_node_runtime_pin_prefers_matching_installed_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
