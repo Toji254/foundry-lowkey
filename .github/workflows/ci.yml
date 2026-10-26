@@ -40,6 +40,8 @@ jobs:
           anvil --version
       - name: Install Lowkey
         run: ./install.sh
+      - name: Exercise installed native AI and memory commands
+        run: bash scripts/test-native-ai-harness.sh
       - name: Compile standalone Solidity cheat labs
         run: python -m unittest tests/test_solidity_cheat_labs.py -v
       - name: Compile Solidity connection labs
