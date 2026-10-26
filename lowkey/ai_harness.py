@@ -23,7 +23,7 @@ DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
 PROVIDERS = {"deepseek", "openai-compatible", "ollama"}
 PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses"}
-DEFAULT_URLS = {"deepseek": "https://api.deepseek.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
+DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "ollama": "http://127.0.0.1:11434/v1"}
 
 
 class AIHarnessError(RuntimeError):
