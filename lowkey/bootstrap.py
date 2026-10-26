@@ -1498,6 +1498,89 @@ def run_bootstrap(
         return 0
 
     failures = 0
+    submodule_kinds = {"git-submodule", "git-submodule-recovery"}
+    attempted_submodule_actions: set[tuple[str, str, tuple[str, ...]]] = set()
+
+    def action_signature(action: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+        return (
+            str(action["kind"]),
+            str(Path(action["cwd"]).resolve()),
+            tuple(str(part) for part in action["command"]),
+        )
+
+    # Execute Git submodules in bounded, targeted stages. A parent checkout can
+    # reveal its own .gitmodules only after it is fetched, so re-plan between
+    # stages rather than using one recursive network operation that can consume
+    # the entire bootstrap timeout before any usable source tree is available.
+    for _stage in range(32):
+        pending_submodules = [
+            action
+            for action in plan["actions"]
+            if action["kind"] in submodule_kinds
+            and action_signature(action) not in attempted_submodule_actions
+        ]
+        if not pending_submodules:
+            break
+
+        stage_failed = False
+        for action in pending_submodules:
+            signature = action_signature(action)
+            attempted_submodule_actions.add(signature)
+            command = action["command"]
+            cwd = Path(action["cwd"])
+            print(f"INFO  {action['kind']}: {' '.join(command)}")
+            print(f"      evidence: {action['evidence']}")
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=str(cwd),
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "CI": "1"},
+                    timeout=max(timeout, 300),
+                )
+            except subprocess.TimeoutExpired:
+                print(f"FAIL  {action['kind']}: timed out after {max(timeout, 300)}s")
+                failures = failures or 1
+                stage_failed = True
+                break
+            except OSError as error:
+                print(f"FAIL  {action['kind']}: {error}")
+                failures = failures or 1
+                stage_failed = True
+                break
+
+            output = (result.stdout or "") + (("\\n" + result.stderr) if result.stderr else "")
+            if output:
+                print(output.rstrip())
+            if result.returncode != 0:
+                print(f"FAIL  {action['kind']}: exit {result.returncode}")
+                failures = failures or result.returncode or 1
+                stage_failed = True
+                break
+            print(f"PASS  {action['kind']}")
+
+        # Refresh dependency discovery even after a partial failure so remaining
+        # non-submodule bootstrap work can still be planned from current state.
+        plan = bootstrap_plan(info, root, force=force, reason=reason)
+        if stage_failed:
+            break
+    else:
+        if any(
+            action["kind"] in submodule_kinds
+            and action_signature(action) not in attempted_submodule_actions
+            for action in plan["actions"]
+        ):
+            print("FAIL  git-submodule: stopped after 32 staged discovery passes")
+            failures = failures or 1
+
+    # Submodules were handled above; run all other repository-declared setup
+    # actions once, from the freshest plan after dependency checkout.
+    actions = [
+        action for action in plan["actions"]
+        if action["kind"] not in submodule_kinds
+    ]
     for action in actions:
         command = action["command"]
         cwd = Path(action["cwd"])
