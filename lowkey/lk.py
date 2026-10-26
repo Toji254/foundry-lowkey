@@ -14874,7 +14874,7 @@ COMMAND_HELP = {
         "lk import ERC20",
         "Use this while writing a contract or test and you are unsure what to import. The help distinguishes a concrete implementation you can inherit from, an interface for calling an existing contract, and a reference entry whose dependency is not installed yet.",
         forms=[
-            ("lk import", "Open the interactive browser. Choose a category, use /term to filter the current list, g for global search, r to reset a filter, b to go back, or q to quit.", "lk import"),
+            ("lk import", "Open the browser. Choose 1-9 to open a section. In a list, enter a number to open an item, /term to filter that list, g to search everywhere, r to clear the filter, b to go back one menu level, or q to quit. At the main menu, b explains that you are already at the top.", "lk import"),
             ("lk import <symbol>", "Look up a name such as Token, ERC20, or IERC20. Lowkey shows the source, exact import line, purpose, and available install guidance. Reference entries can appear even when the package is not installed.", "lk import ERC20"),
             ("lk import <path>", "Inspect a Solidity file by its Foundry remapped or package import path. A file lookup lists symbols it exports; it does not mean you should inherit from every symbol in that file.", "lk import @openzeppelin/contracts/token/ERC20/IERC20.sol"),
             ("lk import search <term>", "Search project source, installed dependencies, and Lowkey's known reference catalog using symbol names, import paths, roles, tags, and use cases. This is global search, unlike /term inside a picker.", "lk import search ERC20"),
@@ -14887,9 +14887,9 @@ COMMAND_HELP = {
         ],
         options=[
             ("--dry-run", "Use with --install to show the planned Forge install command without executing it or changing the project.", "lk import --install --dry-run ERC20"),
-            ("--copy-only", "Print only the copy-ready Solidity import line, without the learning details.", "lk import --copy-only IERC20"),
+            ("--copy-only / --copy", "Print only the copy-ready Solidity import line, without the learning details. --copy is a shorter spelling of --copy-only.", "lk import --copy-only IERC20"),
             ("--json", "Emit machine-readable symbol, source, import, learning, and audit metadata for scripts or other tools.", "lk import --json IERC20"),
-            ("--verbose / -v", "Show deeper package/version/commit details, dependency information, project usage, compatibility notes, common mistakes, and audit questions.", "lk import --verbose ERC20"),
+            ("--verbose / -v", "Show deeper package/version/commit details, dependency information, project usage, compatibility notes, common mistakes, and audit questions. -v is the short spelling.", "lk import -v ERC20"),
             ("Implementation vs interface", "A concrete implementation such as ERC20 contains reusable token behavior you can inherit from. An interface such as IERC20 describes calls to make against an existing token. For a token sale, you typically use IERC20 to interact with the token address; you do not inherit the sale contract from IERC20.", "lk import ERC20  # implementation; lk import IERC20  # interface"),
             ("REFERENCE ONLY", "Lowkey knows a documented reference for this symbol, but the dependency is not present in the project's installed source. The displayed path is a reference path, not proof the file exists locally. Read the install guidance before choosing the explicit --install mode.", "lk import --verbose ERC20"),
             ("Scoped search vs global search", "/term filters the list currently on screen only. Use g in a picker or lk import search <term> to search across project source, installed dependencies, and known references. A no-match in one list does not mean the symbol does not exist elsewhere.", "lk import search IERC20"),
@@ -15109,23 +15109,109 @@ COMMAND_HELP = {
     "decode-error": _help_entry("Decode a Solidity custom-error payload.", "lk decode-error <data>", "lk decode-error 0x...", "Use it when a revert payload is hex and you want the actual error and arguments.", related=["lk trace", "lk decode"]),
     "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
     "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
-    "generate": _help_entry(
-        "Create deployment scripts, exact-call replay tests, and impact-assertion-backed PoC candidates.",
-        "lk generate <test|poc|deployment> ...",
-        "lk generate test 'setValue(uint256)' 10",
-        "Use it after observing behavior you want to turn into repeatable evidence.",
+    "verification": _help_entry(
+        "Check which test/verification engines fit this project, or run a controlled multi-engine campaign from a JSON file.",
+        "lk verification <engines|run> ... (short alias: lk verify)",
+        "lk verification engines --json",
+        "Use engines first to see what is installed and compatible. Use run when you have a campaign manifest that names the test kind, tool settings, and resource budget.",
         forms=[
-            ("lk generate test ...", "Create a reusable Forge test from observed behavior.", "lk generate test 'setValue(uint256)' 10"),
-            ("lk generate poc ...", "Create a PoC candidate only with exact calldata and a measurable impact assertion.", "lk generate poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'"),
-            ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment MyContract"),
+            ("lk verification engines [--json]", "List available engines and which test types they support. Add --json when another tool or script will read the result.", "lk verify engines --json"),
+            ("lk verification run <manifest.json> [options]", "Run the engines selected by the campaign manifest one at a time, within the declared budget.", "lk verify run .audit/verification/campaign.json --profile balanced"),
         ],
-
         children={
-            "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<function(parameter TYPES...)>' <VALUES...>", "lk generate test 'setValue(uint256)' 10", "Use it to turn an observed transition into regression evidence."),
-            "poc": _help_entry("Generate an exploit candidate only when exact calldata and an explicit impact assertion are supplied.", "lk generate poc <function> --calldata 0x... --impact-assertion '<condition>'", "lk generate poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "The output is a candidate, not a validated vulnerability report."),
-            "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment MyContract", "Use it when you need a repeatable local deployment entry point."),
+            "engines": _help_entry(
+                "List engines Lowkey detects, whether each is installed, and the test types it can run for this project.",
+                "lk verification engines [--json]",
+                "lk verification engines --json",
+                "Use this before planning a campaign. It reports availability and compatibility; it does not install tools or run tests.",
+                options=[
+                    ("--json", "Print the inventory as machine-readable JSON instead of a human-readable list.", "lk verification engines --json"),
+                ],
+            ),
+            "run": _help_entry(
+                "Run a serial verification campaign from a JSON manifest and save the full report.",
+                "lk verification run <manifest.json> [--profile <light|balanced|deep>] [--output <path>]",
+                "lk verification run .audit/verification/campaign.json --profile balanced --output .audit/verification/run.json",
+                "Use it when you want several compatible engines to test the same project under a clear time and memory budget. The manifest supplies the test kind and engine-specific arguments; Lowkey does not guess missing engine settings.",
+                options=[
+                    ("--profile <light|balanced|deep>", "Choose the engine-selection depth. If omitted, Lowkey uses the profile in the manifest or balanced by default. You can also write --profile=deep.", "lk verification run campaign.json --profile=deep"),
+                    ("--output <path>", "Choose where the JSON report is written. Default: .audit/verification/campaign.json. You can also write --output=PATH.", "lk verification run campaign.json --output=.audit/verification/run.json"),
+                ],
+            ),
         },
-        related=["lk matrix", "lk poc"],
+        related=["lk verification-benchmark", "lk mutation-check", "lk test-gen"],
+    ),
+    "verification-benchmark": _help_entry(
+        "Run repeatable test/mutation benchmark cases and optionally fail when their measured mutation score is below your threshold.",
+        "lk verification-benchmark <manifest.json> [--workspace <dir>] [--output <path>] [--min-mutation-score <0..1>] (short alias: lk vbench)",
+        "lk vbench .audit/verification/benchmark.json --min-mutation-score 0.8",
+        "Use it to compare known cases consistently. The baseline test suite must pass first; setup errors, invalid edits, and timeouts are reported separately rather than counted as successful bug detection.",
+        options=[
+            ("--workspace <dir>", "Use this directory as the base for relative paths in the manifest.", "lk vbench benchmark.json --workspace ."),
+            ("--output <path>", "Write the benchmark report here. Default: .audit/verification/benchmark-report.json.", "lk vbench benchmark.json --output=.audit/verification/report.json"),
+            ("--min-mutation-score <0..1>", "Return a failing result if the measured score is lower. Use a decimal from 0 to 1; 0.8 means 80%.", "lk vbench benchmark.json --min-mutation-score 0.8"),
+        ],
+        related=["lk mutation-check", "lk verification engines", "lk test-gen"],
+    ),
+    "mutation-check": _help_entry(
+        "Check whether your existing tests catch specific, deliberately introduced code changes. The baseline tests must pass before mutation results count.",
+        "lk mutation-check <manifest.json> [--output <path>] [--timeout <seconds>] (short alias: lk mcheck)",
+        "lk mcheck .audit/verification/mutations.json --timeout 300",
+        "Use it after tests are written to check that they detect the bugs they are meant to prevent. Each before/after edit must match exactly once; mutations run in isolated temporary copies.",
+        options=[
+            ("--output <path>", "Write the JSON report here. Default: .audit/verification/mutation-report.json. You can also write --output=PATH.", "lk mcheck mutations.json --output=.audit/verification/mutation-report.json"),
+            ("--timeout <seconds>", "Maximum runtime, in seconds, for the configured campaign command. Default: 300. You can also write --timeout=SECONDS.", "lk mcheck mutations.json --timeout 600"),
+        ],
+        related=["lk verification-benchmark", "lk test", "lk verification engines"],
+    ),
+    "generate": _help_entry(
+        "Generate a repeatable deployment script, an exact-call Forge test, or a PoC candidate with a measurable impact assertion. Short alias: lk gen.",
+        "lk generate <test|poc|deployment> ... (short alias: lk gen)",
+        "lk gen test 'setValue(uint256)' 10 --output test/SetValueReplay.t.sol",
+        "Use it after a real call or test reveals behavior you want to preserve as repeatable evidence. Generated files are candidates until you run and review them.",
+        forms=[
+            ("lk generate test <function> [args...] [options]", "Create a Forge test that replays a concrete call. It proves the call's observed result, not that the protocol is secure.", "lk gen test 'setValue(uint256)' 10"),
+            ("lk generate poc <function> [args...] [options]", "Create a PoC candidate. You must provide --impact-assertion; Lowkey rejects a request without it.", "lk gen poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'"),
+            ("lk generate deployment <Contract> [options]", "Create a repeatable Forge deployment script for a compiled contract.", "lk gen deployment MyContract --output script/DeployMyContract.s.sol"),
+        ],
+        children={
+            "test": _help_entry(
+                "Generate a Forge regression test that replays one concrete call. The generated test is not a complete security test.",
+                "lk generate test '<function(parameter TYPES...)>' <VALUES...> [--value <amount>] [--calldata 0x...] [--output <file>] [--force]",
+                "lk gen test 'setValue(uint256)' 10 --value 0.1ether --output test/SetValueReplay.t.sol",
+                "Use it when you have a call you want to make reproducible in Forge. You can provide a function and arguments, or use an eligible recorded send as the starting point.",
+                options=[
+                    ("--value <amount>", "Attach ETH to the call. Default: 0 ETH. The contract receives it as msg.value.", "lk gen test contribute 5 --value 0.1ether"),
+                    ("--calldata <hex>", "Provide exact call data beginning with 0x when you need to reproduce a raw/encoded call.", "lk gen test withdraw --calldata 0x1234"),
+                    ("--output, -o <file>", "Choose where the generated Solidity test is written. Default: test/LowkeyTest_<Contract>.t.sol.", "lk gen test 'setValue(uint256)' 10 -o test/SetValueReplay.t.sol"),
+                    ("--force", "Allow an existing non-Lowkey file at the requested output path to be overwritten.", "lk gen test 'setValue(uint256)' 10 --force"),
+                ],
+            ),
+            "poc": _help_entry(
+                "Generate a PoC candidate with a concrete call and explicit measured-impact check. It is not marked as validated until you run it against the intended state.",
+                "lk generate poc <function> [args...] --impact-assertion '<condition>' [--value <amount>] [--calldata 0x...] [--output <file>] [--force]",
+                "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'",
+                "Use it after you have evidence of a suspicious behavior and can state exactly what measurable security impact should occur. A detector finding alone is not a PoC.",
+                options=[
+                    ("--impact-assertion <condition>", "Required. One boolean condition over the measured before/after balances or other supported impact values.", "lk gen poc withdraw --impact-assertion 'attackerAfter > attackerBefore'"),
+                    ("--value <amount>", "Attach ETH to the call. Default: 0 ETH.", "lk gen poc withdraw --value 0.2ether --impact-assertion 'attackerAfter > attackerBefore'"),
+                    ("--calldata <hex>", "Use exact calldata when the function/arguments cannot describe the call.", "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+                    ("--output, -o <file>", "Choose where the PoC script is written. Default: script/LowkeyPoC_<Contract>.s.sol.", "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore' --output script/WithdrawPoC.s.sol"),
+                    ("--force", "Allow an existing non-Lowkey output file to be overwritten.", "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore' --force"),
+                ],
+            ),
+            "deployment": _help_entry(
+                "Generate a deployment script for an already compiled contract. Lowkey builds the project before looking for the artifact.",
+                "lk generate deployment <Contract> [--output <file>] [--force]",
+                "lk gen deployment MyContract --output script/DeployMyContract.s.sol",
+                "Use it when you want a repeatable deployment script. Review it and run Forge in dry-run mode before broadcasting a transaction.",
+                options=[
+                    ("--output, -o <file>", "Choose where the script is written. Default: script/LowkeyDeploy_<Contract>.s.sol.", "lk gen deployment MyContract -o script/DeployMyContract.s.sol"),
+                    ("--force", "Allow an existing non-Lowkey output file to be overwritten.", "lk gen deployment MyContract --force"),
+                ],
+            ),
+        },
+        related=["lk matrix", "lk poc", "lk test-gen"],
     ),
     "finding": _help_entry(
         "Record a manual audit observation in the project-scoped findings ledger.",
@@ -15392,7 +15478,24 @@ COMMAND_HELP = {
     "test": _help_entry("Run the project's native Forge tests.", "lk test", "lk test", "Use it after changes and before trusting a security reproduction.", related=["lk fuzz", "lk audit"]),
     "script": _help_entry("Run a native Forge script.", "lk script <args...>", "lk script script/LocalDeploy.s.sol --sig run()", "Use it when the project already has a useful setup/deployment script.", related=["lk lab", "lk forge"]),
     "inspect": _help_entry("Run native Forge inspect commands.", "lk inspect <args...>", "lk inspect MyContract storage-layout --json", "Use it for compiler metadata Lowkey does not wrap directly.", related=["lk layout", "lk forge"]),
-    "coverage": _help_entry("Run Forge coverage reporting.", "lk coverage <args...>", "lk coverage", "Use it to see which code paths your tests actually execute.", related=["lk test", "lk audit run"]),
+    "coverage": _help_entry(
+        "Run Foundry coverage reporting and optionally write an LCOV report for editor extensions such as Coverage Gutters (short alias: lk cov).",
+        "lk coverage [Forge options...]",
+        "lk coverage --report lcov --lcov-version 1.0",
+        "Use it after running tests to see which lines and functions the executed tests reached. Coverage is evidence of execution, not proof that tests assert the right security properties.",
+        forms=[
+            ("lk coverage", "Run coverage with Foundry's default report format.", "lk coverage"),
+            ("lk coverage --report lcov", "Generate an LCOV report, normally written as lcov.info in the project root.", "lk coverage --report lcov"),
+            ("lk coverage --report lcov --lcov-version 1.0", "Select LCOV 1.0 for compatibility with parsers that do not understand newer function-record formats.", "lk coverage --report lcov --lcov-version 1.0"),
+            ("lk cov <Forge options...>", "Short alias for lk coverage; the options are passed through to the installed Forge version.", "lk cov --report lcov --lcov-version 1.0"),
+        ],
+        options=[
+            ("--report lcov", "Ask native Forge to emit LCOV coverage data.", "lk coverage --report lcov"),
+            ("--lcov-version 1.0", "Choose LCOV 1.0 when supported by the installed Forge version.", "lk coverage --report lcov --lcov-version 1.0"),
+            ("Other Forge options", "Coverage options are passed to Forge rather than reimplemented by Lowkey. Check the options supported by your installed version.", "lk forge coverage --help"),
+        ],
+        related=["lk test", "lk audit run", "lk cov"],
+    ),
     "lint": _help_entry("Run Forge lint tooling when supported.", "lk lint", "lk lint", "Use it for quick static/code-quality checks.", related=["lk geiger", "lk doctor"]),
     "geiger": _help_entry("Run Geiger-style scanning when available.", "lk geiger", "lk geiger", "Use it as an extra dependency/security signal.", related=["lk lint", "lk audit"]),
     "fmt": _help_entry("Format Foundry source files.", "lk fmt", "lk fmt", "Use it after intentional Solidity edits.", related=["lk build", "lk test"]),
@@ -15486,6 +15589,11 @@ HELP_ALIASES = {
     "signals": "findings",
     "signal": "findings",
     "investigate": "focus",
+    "gen": "generate",
+    "verify": "verification",
+    "vbench": "verification-benchmark",
+    "mcheck": "mutation-check",
+    "cov": "coverage",
     "investigation": "focus",
     "try": "probe",
     "statediff": "state-diff",
@@ -15855,20 +15963,20 @@ TRANSACTION FORENSICS
 REPRODUCE / ATTACK / TEST
   lk probe <function> [args]       Try a call without assertions. Example: lk probe withdraw
   lk test-gen                      Turn the latest send into a Forge test.
-  lk generate test '<function(parameter TYPES...)>' <VALUES...>
+  lk generate test '<function(parameter TYPES...)>' <VALUES...> (alias: lk gen test)
                                    Generate a reusable Forge test.
                                    FUNCTION SIGNATURE = function name + parameter TYPES.
                                    The quoted part contains TYPES, not real values.
                                    Put actual argument VALUES after the closing quote.
                                    Example:
                                      lk generate test 'createRecord(address,uint256)' <addr> <amount>
-  lk generate poc <function>       Requires --calldata and --impact-assertion.
-  lk generate deployment <Contract> Generate a deployment script.
+  lk generate poc <function>       Requires --calldata and --impact-assertion (alias: lk gen poc).
+  lk generate deployment <Contract> Generate a deployment script (alias: lk gen deployment).
   lk test-gen <Contract> --types ... Generate complete tests when the property is established.
-  lk mutation-check <manifest.json>  Run isolated mutation validation and report a score.
-  lk verification-benchmark <manifest> Run a manifest-driven benchmark and enforce gates.
-  lk verification engines [--json]   Inventory installed verification engines.
-  lk verification run <manifest>    Run a bounded, serial multi-engine campaign.
+  lk mutation-check <manifest.json>  Run isolated mutation validation (alias: lk mcheck).
+  lk verification-benchmark <manifest> Run a manifest-driven benchmark (alias: lk vbench).
+  lk verification engines [--json]   Inventory installed engines (alias: lk verify engines).
+  lk verification run <manifest>    Run a bounded multi-engine campaign (alias: lk verify run).
   lk poc --calldata 0x... --impact-assertion '<condition>'
                                   Generate a candidate with explicit measurable impact.
   lk fuzz [args...]                Run Forge fuzz tests.
@@ -15883,6 +15991,14 @@ REPRODUCE / ATTACK / TEST
   lk matrix add ...               Add a scenario.
   lk matrix list                   List scenarios.
   lk matrix test <name>            Generate a Forge test skeleton for a scenario.
+
+SHORT ALIASES FOR LONG COMMANDS
+  lk gen ...                       Same as lk generate; e.g. lk gen test 'setValue(uint256)' 10.
+  lk verify ...                    Same as lk verification; e.g. lk verify engines --json.
+  lk vbench ...                    Same as lk verification-benchmark; e.g. lk vbench benchmark.json.
+  lk mcheck ...                    Same as lk mutation-check; e.g. lk mcheck mutations.json.
+  lk cov ...                       Same as lk coverage; e.g. lk cov --report lcov --lcov-version 1.0.
+  Add --h to any of these to see the same help as the full command.
 
 AUDIT WORKFLOW / EVIDENCE
   lk audit                          Interactive audit dashboard.
@@ -15938,7 +16054,8 @@ FOUNDRY SHORTCUTS
   lk test                           Shortcut for forge test. Example: lk test
   lk script <args>                  Shortcut for forge script.
   lk inspect <args>                 Shortcut for forge inspect.
-  lk coverage <args>                Shortcut for forge coverage.
+  lk coverage [Forge options...]      Shortcut for forge coverage (alias: lk cov).
+                                   Example: lk coverage --report lcov --lcov-version 1.0
   lk lint / geiger                  Run those Forge tools when installed.
   lk fmt                            Format Foundry sources.
   lk create                         Create a new Foundry component.
@@ -15955,6 +16072,13 @@ UTILITIES / COMPATIBILITY
   lk batch <file>                   Run one lk command per line.
   lk self-test                      Run Lowkey regression tests.
   lk doctor                        Diagnose installation/toolchain problems.
+
+LONG COMMAND SHORTCUTS
+  lk gen ...                       Same as lk generate ...; example: lk gen test 'setValue(uint256)' 10
+  lk verify ...                    Same as lk verification ...; example: lk verify engines
+  lk vbench ...                    Same as lk verification-benchmark ...; example: lk vbench benchmark.json
+  lk mcheck ...                    Same as lk mutation-check ...; example: lk mcheck mutations.json
+  lk cov ...                       Same as lk coverage ...; example: lk cov --report lcov --lcov-version 1.0
 
 SAFETY / EXPECTATIONS
   • Preview sends before touching a chain: use --preview or --confirm.
@@ -16199,6 +16323,8 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     if help_index is not None:
         return _render_command_help([cmd, *(args or [])[:help_index]])
 
+    # Resolve documented short forms before runtime dispatch as well as help lookup.
+    cmd = HELP_ALIASES.get(lowered_cmd, lowered_cmd)
     activate_project_target(config)
     if cmd in {"--version","-V","version"}: return run_version()
     elif cmd=="target":
@@ -16801,6 +16927,30 @@ def dispatch_command(cmd, args, config, from_batch=False):
     return error_code
 
 
+def _running_from_source_checkout() -> bool:
+    """Whether this CLI is running from a recognized Lowkey source checkout."""
+    try:
+        source_root = Path(__file__).resolve().parents[1]
+        return bool(_is_lowkey_source_checkout and _is_lowkey_source_checkout(source_root))
+    except OSError:
+        return False
+
+
+def _warn_if_help_runtime_is_stale() -> None:
+    """Warn when help comes from an old installed copy, without blocking help."""
+    runtime = runtime_sync_status()
+    if runtime.get("status") not in {"stale", "corrupt"} or _running_from_source_checkout():
+        return
+    print("LOWKEY HELP MAY BE OUT OF DATE", file=sys.stderr)
+    print(f"  {runtime.get('detail', 'installed runtime verification failed')}", file=sys.stderr)
+    source_repo = runtime.get("source_repo")
+    if source_repo:
+        print(f"  FIX: cd {source_repo} && bash install.sh", file=sys.stderr)
+    else:
+        print("  FIX: run bash install.sh from the Lowkey source checkout used for installation.", file=sys.stderr)
+    print("  Help will still be shown, but recent commands may be missing until Lowkey is reinstalled.", file=sys.stderr)
+
+
 def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
@@ -16813,6 +16963,7 @@ def main():
     if command.lower() in HELP_FLAGS or any(
         str(argument).strip().lower() in HELP_FLAGS for argument in sys.argv[2:]
     ):
+        _warn_if_help_runtime_is_stale()
         result = dispatch_command(command, sys.argv[2:], config)
         if isinstance(result, int):
             raise SystemExit(result)
@@ -16836,14 +16987,7 @@ def main():
         "--h", "--help", "-h", "help", "--version", "-V", "version",
         "doctor", "self-test",
     }
-    running_from_source_checkout = False
-    try:
-        source_root = Path(__file__).resolve().parents[1]
-        running_from_source_checkout = bool(
-            _is_lowkey_source_checkout and _is_lowkey_source_checkout(source_root)
-        )
-    except OSError:
-        running_from_source_checkout = False
+    running_from_source_checkout = _running_from_source_checkout()
 
     if (
         runtime.get("status") in {"stale", "corrupt"}
@@ -16877,7 +17021,7 @@ def main():
     # Machine-readable engine inventory must be valid JSON without Lowkey's
     # normal recommendation footer appended to stdout.
     machine_readable_verification = (
-        str(command).strip().lower() == "verification"
+        _canonical_help_command(command) == "verification"
         and len(sys.argv) > 2
         and str(sys.argv[2]).strip().lower() == "engines"
         and "--json" in sys.argv[3:]
