@@ -15,9 +15,10 @@ jobs:
       - name: Publish GitHub release for the pushed tag
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" \
+          gh release create "$TAG" --repo "$GH_REPO" \
             --verify-tag \
             --title "LowkeyCast $TAG" \
             --generate-notes
