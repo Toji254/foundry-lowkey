@@ -1350,3 +1350,8 @@ if __name__ == "__main__":
             self.assertEqual(fixture["relative"], "specs/protocol/PoolFactoryTest.t.sol")
             self.assertEqual(fixture["fixture_kind"], "test")
             self.assertEqual(fixture["create_function"], "test_createPool")
+            generated = lk._generate_test_fixture_lab_script(root, fixture)
+            self.assertEqual(
+                generated.relative_to(root).as_posix(),
+                "specs/.lowkey/LowkeyAutoFixture_PoolFactoryTest.t.sol",
+            )
