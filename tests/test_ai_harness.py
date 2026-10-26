@@ -161,7 +161,7 @@ class AIHarnessTests(unittest.TestCase):
             self.assertNotIn(pending["title"], json.dumps(experience))
             self.assertEqual(result["summary"], response["summary"])
 
-    def test_source_context_excludes_tests_scripts_dependencies_and_symlinks(self):
+    def test_source_context_excludes_tests_dependencies_and_symlinks_but_includes_deploy_scripts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for name in ("src", "test", "scripts", "lib", "vendor"):
@@ -181,6 +181,7 @@ class AIHarnessTests(unittest.TestCase):
             context = ai._source_context(root, "Vault")
             serialized = json.dumps(context)
             self.assertIn("Vault.sol", serialized)
+            self.assertIn("Deploy.sol", serialized)
             self.assertNotIn("SECRET", serialized)
             self.assertNotIn("Dependency.sol", serialized)
             self.assertNotIn("Vendor.sol", serialized)
