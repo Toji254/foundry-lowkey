@@ -112,6 +112,26 @@ class ExperienceMemoryTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["id"], factory["id"])
 
+    def test_irrelevant_approved_lessons_are_not_added_to_context(self):
+        proposal = memory.propose_lesson(
+            kind="protocol-pattern",
+            title="Oracle round updates prices",
+            lesson="Validate oracle answer freshness and round IDs.",
+            when_relevant="Price feeds and stale oracle rounds.",
+            tags=["oracle", "price-feed"],
+            root=self.project,
+        )
+        memory.approve_lesson(
+            proposal["id"], validation_kind="test",
+            validation="The oracle adapter test verifies round freshness.",
+            root=self.project,
+        )
+        selected = memory.lessons_for_context(
+            self.project, project_limit=5, global_limit=0,
+            query_text="factory creates child pool and registry mapping",
+        )
+        self.assertEqual(selected, [])
+
     def test_failed_global_promotion_rolls_back_project_approval(self):
         proposal = memory.propose_lesson(
             kind="protocol-pattern",
