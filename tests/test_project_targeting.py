@@ -198,7 +198,10 @@ class ProjectTargetingTests(unittest.TestCase):
                 "}\n",
                 encoding="utf-8",
             )
-            with patch.object(lk.audit_context, "foundry_project_root", side_effect=lambda value: str(value)):
+            # Keep this detector test independent of deployment variables exported
+            # in the developer shell (for example SAFE_HARBOR_REGISTRY).
+            with patch.dict(os.environ, {}, clear=True), \
+                 patch.object(lk.audit_context, "foundry_project_root", side_effect=lambda value: str(value)):
                 self.assertEqual(
                     lk._lab_script_unresolved_env_names(script_dir / "Deploy.s.sol"),
                     ["SAFE_HARBOR_REGISTRY"],
