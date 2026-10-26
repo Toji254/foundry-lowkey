@@ -1,6 +1,6 @@
 # Lowkey native experience memory
 
-Lowkey's experience store is native Python and works without an AI provider. It keeps project feedback and reusable lessons in that project's .audit/experience directory. Approved global lessons are kept in the user's Lowkey data directory. Lessons are inert structured text; Lowkey never executes them as code or automatically changes security rules from memory.
+Lowkey's experience store is native Python and works without an AI provider. It keeps project feedback and reusable lessons in a private directory under the user's Lowkey data directory, keyed to the canonical path of the audited project. It deliberately does not trust memory files inside the target repository, because a checked-out or hostile repository could forge them. Approved global lessons are kept in the same private Lowkey data directory. Lessons are inert structured text; Lowkey never executes them as code or automatically changes security rules from memory.
 
 ## Record outcomes
 
@@ -25,7 +25,7 @@ lk memory approve LESSON_ID --validation-kind test --validation "tests/test_proj
 
 Proposed lessons do not enter AI context. Approval requires a validation type (test, reproduction, or manual-review) plus a specific note recording the evidence. This is a human promotion step; Lowkey does not claim that writing the note independently validates the lesson.
 
-Only deliberately approved lessons are offered as compact reference context when an AI task is explicitly called. Project lessons remain scoped to that project. To promote a lesson for reuse across projects, explicitly request it:
+Only deliberately approved lessons are offered as compact reference context when an AI task is explicitly called. Project lessons remain scoped to that project's canonical filesystem path. Moving the project changes the scope key. To promote a lesson for reuse across projects, explicitly request it:
 
 ~~~bash
 lk memory approve LESSON_ID --validation-kind reproduction --validation "Reproduced on the controlled fixture; regression test retained" --global
