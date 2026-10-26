@@ -7287,8 +7287,11 @@ def _find_fixture_operational_instance(root, state_path, target_contract, implem
     """Recover an operational proxy/clone that points to a locked implementation.
 
     This is a promotion-time fallback, not a heuristic deployment: the candidate
-    must exist in the fixture's exported state, resolve to the exact implementation
-    address, and have live non-empty runtime code on the configured local RPC.
+    must exist in the fixture's exported state, point to an implementation whose
+    runtime matches the requested artifact, and have live non-empty runtime code
+    on the configured local RPC. Fixture setup can deploy the same implementation
+    artifact more than once, so address equality with the first selected instance
+    is too strict.
     """
     try:
         snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
@@ -7328,7 +7331,10 @@ def _find_fixture_operational_instance(root, state_path, target_contract, implem
         implementation, kind = _fixture_snapshot_implementation(
             address, account, snapshot_runtime, code_by_address, rpc
         )
-        if not implementation or implementation.lower() != implementation_address:
+        if not implementation:
+            continue
+        implementation_runtime = code_by_address.get(implementation.lower(), "")
+        if not implementation_runtime or not normalizer(implementation_runtime):
             continue
 
         live = run_cast(["code", address, "--rpc-url", str(rpc)], config={}, capture=True)
