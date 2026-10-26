@@ -166,6 +166,26 @@ class ImportHelperTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_back_from_category_picker_redraws_import_menu(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with patch("builtins.input", side_effect=["2", "b", "q"]):
+                with contextlib.redirect_stdout(out):
+                    result = helper.interactive(root, helper.remappings(root))
+
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            # "b" in a category picker must return to a visible category menu,
+            # not leave the user at a bare prompt with no navigation choices.
+            self.assertGreaterEqual(
+                rendered.count("2. Contracts / abstract contracts"),
+                2,
+            )
+            self.assertGreaterEqual(rendered.count("IMPORT BROWSER"), 2)
+        finally:
+            tmp.cleanup()
+
     def test_direct_import_query_finds_symbol_without_category(self):
         tmp, root = self.project()
         try:
