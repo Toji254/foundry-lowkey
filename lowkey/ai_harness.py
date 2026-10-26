@@ -394,11 +394,11 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
     }
 
 
-def review_project_protocol(root: str | Path, contract_name: str | None = None) -> dict[str, Any]:
-    """Produce unverified protocol hypotheses; never alter native lab decisions."""
+def _protocol_review_context(root: str | Path, contract_name: str | None = None) -> dict[str, Any]:
+    """Build the same bounded, redacted context for preview and actual review."""
     context = _source_context(Path(root), contract_name)
-    # Only explicitly approved experience is supplied, and only to this explicit AI task.
-    # Missing or damaged memory must never block the native lab or this optional review.
+    # Only explicitly approved experience is supplied, and only to an explicit AI task.
+    # Missing or damaged memory must never block the native lab or a local preview.
     try:
         try:
             import experience_memory
@@ -414,6 +414,12 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
         )
     except Exception:
         context["approved_experience"] = []
+    return context
+
+
+def review_project_protocol(root: str | Path, contract_name: str | None = None) -> dict[str, Any]:
+    """Produce unverified protocol hypotheses; never alter native lab decisions."""
+    context = _protocol_review_context(root, contract_name)
     result = request_structured(
         purpose="lab_protocol_review",
         task=(
@@ -494,6 +500,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="action")
     sub.add_parser("status", help="show configuration without network access")
+    preview = sub.add_parser(
+        "preview", help="inspect the redacted project context locally; never contacts a provider"
+    )
+    preview.add_argument("--root", default=".", help="project directory to inspect (default: current directory)")
+    preview.add_argument("--contract", help="prioritize source matching this contract name")
+    preview.add_argument(
+        "--show-context", action="store_true",
+        help="print the full redacted context as JSON for a local privacy review",
+    )
     mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
     mode.add_argument("value", choices=("manual", "auto"))
     setup = sub.add_parser("setup", help="configure a provider once")
@@ -516,6 +531,56 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.action == "status":
             print(json.dumps(status(), indent=2, sort_keys=True))
             return 0
+        if parsed.action == "preview":
+            context = _protocol_review_context(Path(parsed.root).expanduser(), parsed.contract)
+            encoded_context = json.dumps(context, ensure_ascii=False, sort_keys=True)
+            context_bytes = len(encoded_context.encode("utf-8"))
+            source_files = context.get("source_files", [])
+            approved_experience = context.get("approved_experience", [])
+            redaction_markers = sum(
+                str(item.get("source_excerpt", "")).count("[REDACTED]")
+                + str(item.get("source_excerpt", "")).count("[REDACTED PRIVATE KEY BLOCK]")
+                for item in source_files if isinstance(item, dict)
+            )
+            if parsed.show_context:
+                print(json.dumps({
+                    "preview_only": True,
+                    "provider_request_made": False,
+                    "context_bytes": context_bytes,
+                    "context_limit_bytes": MAX_CONTEXT_BYTES,
+                    "context": context,
+                }, indent=2, ensure_ascii=False, sort_keys=True))
+                return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
+            print("AI context preview (local only; no provider request made).")
+            print(f"Project root: {json.dumps(str(Path(parsed.root).expanduser().resolve()), ensure_ascii=False)}")
+            print(f"Selected source files: {len(source_files)}")
+            print(f"Approved memory lessons: {len(approved_experience)}")
+            print(f"Serialized context: {context_bytes} / {MAX_CONTEXT_BYTES} bytes")
+            print(f"Secret-redaction markers: {redaction_markers}")
+            if context_bytes > MAX_CONTEXT_BYTES:
+                print("WARNING: this context exceeds the request limit and cannot be sent as-is.")
+            if source_files:
+                print("Source files:")
+                for item in source_files:
+                    if not isinstance(item, dict):
+                        continue
+                    source = str(item.get("source_excerpt", ""))
+                    count = source.count("[REDACTED]") + source.count("[REDACTED PRIVATE KEY BLOCK]")
+                    print(
+                        f"  - {json.dumps(str(item.get('path', '')), ensure_ascii=False)} "
+                        f"({len(source.encode('utf-8'))} bytes; {count} redaction marker(s))"
+                    )
+            if approved_experience:
+                print("Approved experience included:")
+                for item in approved_experience:
+                    if not isinstance(item, dict):
+                        continue
+                    print(
+                        f"  - {json.dumps(str(item.get('title', item.get('id', 'lesson'))), ensure_ascii=False)} "
+                        f"[{item.get('scope', 'unknown')} scope]"
+                    )
+            print("Use --show-context to inspect the complete redacted payload locally.")
+            return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
         if parsed.action == "mode":
             cfg = load_config()
             cfg["auto_assist"] = parsed.value == "auto"
