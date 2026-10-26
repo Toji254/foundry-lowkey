@@ -163,7 +163,7 @@ def _normalize_tags(raw: list[str] | None) -> list[str]:
         clean = str(value).strip().lower().replace(" ", "-")
         if not clean:
             continue
-        if len(clean) > 48 or not all(ch.isalnum() or ch in "-_./" for ch in clean):
+        if len(clean) > 48 or not all(ch.isalnum() or ch in "-_" for ch in clean):
             raise MemoryError(f"Invalid lesson tag: {value!r}")
         if clean not in tags:
             tags.append(clean)
