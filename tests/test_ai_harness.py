@@ -174,9 +174,51 @@ class AIHarnessTests(unittest.TestCase):
         result = ai.validate_ai_recommendations(raw, context, [])
         self.assertEqual(len(result["recommendations"]), 1)
         self.assertEqual(result["recommendations"][0]["command"], "lk read owner")
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(result["discarded_count"], 0)
         self.assertTrue(result["ai_generated"])
         self.assertEqual(result["origin"], "configured-model")
         self.assertEqual(result["recommendations"][0]["source"]["symbol"], "withdraw")
+
+    def test_recommend_next_steps_requests_a_concrete_source_grounded_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Registry.sol").write_text(
+                "contract Registry { "
+                "function isAgreementValid(address agreement) external view returns (bool) { return true; } "
+                "function owner() external view returns (address) { return msg.sender; } "
+                "}",
+                encoding="utf-8",
+            )
+            model_result = {
+                "recommendations": [{
+                    "title": "Inspect the agreement validity check",
+                    "why": "See the function signature and review the validity rule before relying on it.",
+                    "command": "lk fn isAgreementValid",
+                    "source": {"path": "src/Registry.sol", "symbol": "isAgreementValid"},
+                }]
+            }
+            with patch.object(ai, "request_structured", return_value=model_result) as request:
+                report = ai.recommend_next_steps(
+                    root,
+                    command="status",
+                    native_recommendations=[{"command": "lk functions", "reason": "List ABI functions."}],
+                    contract_name="Registry",
+                )
+            self.assertEqual(len(report["recommendations"]), 1)
+            self.assertEqual(report["recommendations"][0]["command"], "lk fn isAgreementValid")
+            context = request.call_args.kwargs["context"]
+            self.assertEqual(context["active_contract"], "Registry")
+            self.assertIn("Do not abstain merely because a function needs input values", request.call_args.kwargs["task"])
+            self.assertTrue(report["ai_generated"])
+
+    def test_empty_ai_recommendations_explain_abstention_or_filtered_candidates(self):
+        no_candidates = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 0, "discarded_count": 0})
+        filtered = ai.render_ai_recommendations({"recommendations": [], "candidate_count": 2, "discarded_count": 2})
+        self.assertIn("no extra command", no_candidates)
+        self.assertIn("none passed Lowkey's source and command checks", filtered)
+        self.assertIn("No rejected command was shown", filtered)
 
     def test_model_derived_text_renderers_have_visible_ai_watermarks(self):
         from lowkey import error_advisor, security_review, test_planner

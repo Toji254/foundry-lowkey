@@ -206,7 +206,7 @@ lk ai recommendations auto
 lk ai recommendations manual
 ~~~
 
-Auto mode may make a provider request after a successful command only when Lowkey already has a native next-command menu. It sends bounded, redacted first-party source excerpts plus the existing native suggestions. AI suggestions must cite a selected file and symbol and use a read-only command allowlist; malformed/unsafe suggestions are discarded. No suggested command is executed. Provider pricing and best-effort redaction still apply.
+Auto mode may make a provider request after a successful command only when Lowkey already has a native next-command menu. It sends bounded, redacted first-party source excerpts, the active contract name when known, and the existing native suggestions. AI suggestions must cite a selected file and symbol and use a read-only command allowlist; malformed/unsafe suggestions are discarded. When values for a function are unknown, the model is instructed to recommend `lk fn FunctionName` to inspect it rather than inventing argument values. The output distinguishes an empty model response from candidates rejected by Lowkey's source/command checks. No suggested command is executed. Provider pricing and best-effort redaction still apply.
 
 ## Explicit protocol review in the lab
 

@@ -24,7 +24,8 @@ class CliConsistencyTests(unittest.TestCase):
                 lk._print_recommended_next_commands("status", [], 0, {})
         rendered = output.getvalue()
         self.assertIn("LOWKEY RECOMMENDED NEXT COMMANDS", rendered)
-        self.assertIn("lk functions", rendered)
+        self.assertIn("1. lk functions", rendered)
+        self.assertIn("Why: List contract functions.", rendered)
         ai_footer.assert_called_once_with("status", native, {})
 
     def test_named_actor_resolves_for_address_argument(self):

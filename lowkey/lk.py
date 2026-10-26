@@ -17320,7 +17320,13 @@ def _print_ai_recommendations(command, native_items, config=None):
         except Exception:
             root = Path.cwd()
         contract_name = None
-        if isinstance(config, dict):
+        try:
+            project_target = project_context_target(root)
+        except Exception:
+            project_target = None
+        if isinstance(project_target, dict):
+            contract_name = str(project_target.get("contract") or "").strip() or None
+        if not contract_name and isinstance(config, dict):
             contract_name = str(config.get("target_contract") or "").strip() or None
         native = [
             {"command": str(item[0]), "reason": str(item[1])}
@@ -17355,8 +17361,9 @@ def _print_recommended_next_commands(command, args=None, result=0, config=None):
     print("")
     print("LOWKEY RECOMMENDED NEXT COMMANDS")
     print("================================")
-    for command_text, reason in items:
-        print(f"  {command_text:<42} {reason}")
+    for index, (command_text, reason) in enumerate(items, 1):
+        print(f"  {index}. {command_text}")
+        print(f"     Why: {reason}")
     _print_ai_recommendations(command, items, config)
 
 

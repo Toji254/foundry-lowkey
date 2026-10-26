@@ -1104,6 +1104,8 @@ def validate_ai_recommendations(
             break
     return {
         "recommendations": normalized,
+        "candidate_count": len(values),
+        "discarded_count": len(values) - len(normalized),
         "status": "unverified",
         "ai_generated": True,
         "origin": "configured-model",
@@ -1127,6 +1129,7 @@ def recommend_next_steps(
                 "reason": str(item.get("reason") or "")[:500],
             })
     context["current_native_command"] = str(command or "").strip().lower()[:80]
+    context["active_contract"] = str(contract_name or context.get("requested_contract") or "not supplied")
     context["native_recommendations"] = native
     context["allowed_read_only_command_forms"] = list(AI_RECOMMENDATION_COMMAND_FORMS)
     task = (
@@ -1137,8 +1140,12 @@ def recommend_next_steps(
         "in that source excerpt. Use one of the allowed read-only command forms from the context, filling in only function "
         "or identifier names supported by the source. No transaction submission, deployment, file modification, tests, "
         "shell commands, pipes, chaining, redirections, or commands outside the allowed forms. Prefer a useful command that "
-        "checks a concrete assumption about the protocol rather than a generic repeat of Lowkey's existing menu. If no "
-        "extra source-grounded command is justified, return an empty recommendations array. These are hypotheses, not proof."
+        "checks a concrete assumption about the active contract rather than a generic repeat of Lowkey's existing menu. "
+        "Do not abstain merely because a function needs input values: use 'lk fn FunctionName' to inspect its code-facing "
+        "metadata without supplying values. Prefer 'lk read FunctionName' only for a zero-argument getter/view. If source "
+        "contains at least one eligible function or identifier not already covered by the native list, return the single "
+        "most useful additional command. Return an empty array only if no source-grounded, allowlisted command is justified. "
+        "These are hypotheses, not proof."
     )
     result = request_structured(
         purpose="next_step_recommendations",
@@ -1170,10 +1177,19 @@ def render_ai_recommendations(report: Mapping[str, Any]) -> str:
         "They are based on selected, redacted source excerpts. No command was executed.",
     ]
     if not items:
-        lines.extend([
-            "",
-            "No additional source-grounded command was suggested beyond Lowkey's native list.",
-        ])
+        lines.extend([""])
+        discarded = int(report.get("discarded_count") or 0)
+        candidates = int(report.get("candidate_count") or 0)
+        if discarded:
+            lines.append(
+                f"The model returned {candidates} candidate suggestion(s), but none passed Lowkey's source and command checks."
+            )
+            lines.append("No rejected command was shown. Lowkey's native recommendations remain available above.")
+        else:
+            lines.append(
+                "The model returned no extra command that added value beyond Lowkey's native list for this source context."
+            )
+            lines.append("This is not a conclusion that the contract is safe or that no useful investigation exists.")
     for index, item in enumerate(items, 1):
         if not isinstance(item, dict):
             continue
