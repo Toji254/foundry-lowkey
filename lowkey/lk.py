@@ -6504,14 +6504,47 @@ def run_auto_target(config,name=None):
     return 0
 
 
+def _foundry_test_roots(root):
+    """Resolve custom and conventional Foundry test directories."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
+    candidates = []
+    try:
+        config_text = (root_path / "foundry.toml").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        config_text = ""
+    # Include test directories declared by any Foundry profile, then fall back
+    # to both conventional names when the active config or profile differs.
+    for configured in re.findall(
+        r"(?m)^\\s*test\\s*=\\s*[\"']([^\"']+)[\"']",
+        config_text,
+    ):
+        path = Path(configured).expanduser()
+        candidates.append(path if path.is_absolute() else root_path / path)
+    candidates.extend((root_path / "test", root_path / "tests"))
+    roots = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key in seen or not resolved.is_dir():
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
 def _local_test_fixture_candidates(root, requested=None):
     """Discover project-owned Foundry helpers or successful tests that build state."""
     root = Path(audit_context.foundry_project_root(root) or root).resolve()
     wanted = str(requested or "").strip().lower()
     source_files = []
-    for search_root in (root / "test", root / "tests"):
-        if search_root.is_dir():
-            source_files.extend(sorted(search_root.rglob("*.sol")))
+    for search_root in _foundry_test_roots(root):
+        source_files.extend(sorted(search_root.rglob("*.sol")))
     source_files = list(dict.fromkeys(source_files))
     source_cache = {}
     for path in source_files:
