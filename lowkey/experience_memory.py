@@ -141,9 +141,7 @@ def _save_lessons(path: Path, store: Mapping[str, Any]) -> None:
 def _project_store(root: str | Path | None = None, *, create: bool = False) -> tuple[Path, dict[str, Any]]:
     project = _project_root(root)
     assert project is not None
-    directory = project / ".audit" / "experience"
-    if create:
-        _secure_mkdir(directory)
+    directory = project_memory_dir(project, create=create)
     path = directory / "lessons.json"
     store = _load_store(path, project_label=project.name)
     store.setdefault("project_label", project.name)
