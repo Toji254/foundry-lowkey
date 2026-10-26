@@ -1170,11 +1170,11 @@ class CommandHelpTests(unittest.TestCase):
             lowkey_dir.mkdir()
             # The main router records its argv; forge_tools must not receive help.
             (lowkey_dir / "lk.py").write_text(
-                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
                 encoding="utf-8",
             )
             (lowkey_dir / "forge_tools.py").write_text(
-                "raise SystemExit('coverage help bypassed Lowkey router')\\n",
+                "raise SystemExit('coverage help bypassed Lowkey router')\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
