@@ -198,7 +198,10 @@ class ProjectTargetingTests(unittest.TestCase):
                 "}\n",
                 encoding="utf-8",
             )
-            with patch.object(lk.audit_context, "foundry_project_root", side_effect=lambda value: str(value)):
+            # An exported variable in the developer's shell must not make this
+            # missing-configuration test pass or fail nondeterministically.
+            with patch.dict(os.environ, {"SAFE_HARBOR_REGISTRY": ""}), \
+                 patch.object(lk.audit_context, "foundry_project_root", side_effect=lambda value: str(value)):
                 self.assertEqual(
                     lk._lab_script_unresolved_env_names(script_dir / "Deploy.s.sol"),
                     ["SAFE_HARBOR_REGISTRY"],
@@ -1662,3 +1665,65 @@ if __name__ == "__main__":
             self.assertIn("without exporting its state snapshot", errors[0])
             self.assertFalse(harness.exists())
             self.assertFalse(state_path.exists())
+
+
+
+class LocalTargetDependencyAddressTests(unittest.TestCase):
+    def test_decodes_full_abi_encoded_address_word(self):
+        address = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        encoded = "0x" + ("0" * 24) + address[2:]
+        self.assertEqual(lk._decode_address_return_data(encoded), address)
+
+    def test_accepts_direct_twenty_byte_address(self):
+        address = "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9"
+        self.assertEqual(lk._decode_address_return_data(address), address)
+
+    def test_rejects_noncanonical_abi_address_word(self):
+        malformed = "0x" + ("1" * 24) + "5fbdb2315678afecb367f032d93f642f64180aa3"
+        self.assertIsNone(lk._decode_address_return_data(malformed))
+
+    def test_validator_checks_code_at_full_decoded_address(self):
+        dependency = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        target = "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "project"
+            root.mkdir()
+            artifact_path = root / "out" / "Factory.sol" / "Factory.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(
+                json.dumps({
+                    "contractName": "Factory",
+                    "abi": [{
+                        "type": "function",
+                        "name": "implementation",
+                        "stateMutability": "view",
+                        "inputs": [],
+                        "outputs": [{"name": "", "type": "address"}],
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            code_lookups = []
+
+            def fake_cast_output(command):
+                if command[1] == "call":
+                    return 0, "0x" + ("0" * 24) + dependency[2:], ""
+                if command[1] == "code":
+                    code_lookups.append(command[2])
+                    if command[2].lower() == dependency.lower():
+                        return 0, "0x6000", ""
+                    return 0, "0x", ""
+                raise AssertionError(f"Unexpected Cast command: {command}")
+
+            with patch.object(lk, "cast_output", side_effect=fake_cast_output):
+                error = lk._validate_local_target_dependency_code(
+                    root,
+                    "http://127.0.0.1:8545",
+                    target,
+                    str(artifact_path),
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual(code_lookups, [dependency])
