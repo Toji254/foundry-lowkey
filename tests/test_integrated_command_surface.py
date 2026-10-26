@@ -15,6 +15,9 @@ class IntegratedCommandSurfaceTests(unittest.TestCase):
             "START HERE",
             "FIRST 10 MINUTES",
             "lk lab",
+            "lk lab --ai-review",
+            "lk ai status",
+            "lk memory status",
             "lk walkthrough --auto",
             "lk audit run",
             "lk benchmark",
@@ -31,6 +34,14 @@ class IntegratedCommandSurfaceTests(unittest.TestCase):
         )
         for item in required:
             self.assertIn(item, help_text)
+
+    def test_lab_ai_review_flag_has_a_native_help_path(self):
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            result = lk.run_lab({}, ["--ai-review", "--help"])
+        self.assertEqual(result, 0)
+        self.assertIn("lk lab --ai-review", stream.getvalue())
+        self.assertIn("optional unverified protocol review", stream.getvalue().lower())
 
     def test_legacy_test_gen_template_escapes_named_import(self):
         import inspect
