@@ -15198,12 +15198,13 @@ COMMAND_HELP = {
     "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
     "verification": _help_entry(
         "Check which test/verification engines fit this project, or run a controlled multi-engine campaign from a JSON file.",
-        "lk verification <engines|run> ... (short alias: lk verify)",
+        "lk verification <engines|run|correlate> ... (short alias: lk verify)",
         "lk verification engines --json",
         "Use engines first to see what is installed and compatible. Use run when you have a campaign manifest that names the test kind, tool settings, and resource budget.",
         forms=[
             ("lk verification engines [--json]", "List available engines and which test types they support. Add --json when another tool or script will read the result.", "lk verify engines --json"),
             ("lk verification run <manifest.json> [options]", "Run the engines selected by the campaign manifest one at a time, within the declared budget.", "lk verify run .audit/verification/campaign.json --profile balanced"),
+            ("lk verification correlate <campaign-report.json> [options]", "Join engine outcomes and attach repeat-safe evidence to an existing signal. A failing test is not automatically a confirmed vulnerability.", "lk verify correlate .audit/verification/campaign.json --signal SLITHER-XXXXXXXXXX"),
         ],
         children={
             "engines": _help_entry(
@@ -15223,6 +15224,16 @@ COMMAND_HELP = {
                 options=[
                     ("--profile <light|balanced|deep>", "Choose the engine-selection depth. If omitted, Lowkey uses the profile in the manifest or balanced by default. You can also write --profile=deep.", "lk verification run campaign.json --profile=deep"),
                     ("--output <path>", "Choose where the JSON report is written. Default: .audit/verification/campaign.json. You can also write --output=PATH.", "lk verification run campaign.json --output=.audit/verification/run.json"),
+                ],
+            ),
+            "correlate": _help_entry(
+                "Correlate a saved campaign with an existing finding without automatically confirming a vulnerability.",
+                "lk verification correlate <campaign-report.json> [--signal SIGNAL_ID ...] [--output <path>]",
+                "lk verify correlate .audit/verification/campaign.json --signal SLITHER-XXXXXXXXXX",
+                "Use after a multi-engine campaign. It attaches repeat-safe evidence to explicit signal IDs or one unambiguous source-file/function match; missing signals are not recreated and failures remain review leads.",
+                options=[
+                    ("--signal SIGNAL_ID", "Attach evidence to an existing signal. Repeat this flag for multiple IDs.", "lk verify correlate .audit/verification/campaign.json --signal SLITHER-XXXXXXXXXX"),
+                    ("--output <path>", "Write the normalized correlation report. Default: .audit/verification/correlation-report.json.", "lk verify correlate .audit/verification/campaign.json --output=.audit/verification/correlation.json"),
                 ],
             ),
         },
@@ -16064,6 +16075,7 @@ REPRODUCE / ATTACK / TEST
   lk verification-benchmark <manifest> Run a manifest-driven benchmark (alias: lk vbench).
   lk verification engines [--json]   Inventory installed engines (alias: lk verify engines).
   lk verification run <manifest>    Run a bounded multi-engine campaign (alias: lk verify run).
+  lk verification correlate <report> Attach campaign evidence to existing findings (alias: lk verify correlate).
   lk poc --calldata 0x... --impact-assertion '<condition>'
                                   Generate a candidate with explicit measurable impact.
   lk fuzz [args...]                Run Forge fuzz tests.
@@ -17124,7 +17136,7 @@ def main():
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
         "audit": {"run", "pipeline"},
-        "verification": {"engines", "run"},
+        "verification": {"engines", "run", "correlate"},
         "walkthrough": {"test", "seed"},
         "walk": {"test", "seed"},
         "generate": {"test", "poc", "deployment"},
