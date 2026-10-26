@@ -81,10 +81,5 @@ case "${1:-}" in
         exec python3 "$HOME/.lowkey/generator.py" "${@}"
         ;;
 esac
-        done
-        shift
-        exec python3 "$HOME/.lowkey/generator.py" "${@}"
-        ;;
-esac
 
 exec python3 "$HOME/.lowkey/lk.py" "$@"
