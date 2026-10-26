@@ -64,6 +64,17 @@ class AIHarnessTests(unittest.TestCase):
             self.assertEqual(ai.main(["errors", "status", "--json"]), 0)
         self.assertFalse(json.loads(output.getvalue())["suggested_commands_are_executed"])
 
+    def test_ledger_human_output_explains_empty_results_without_claiming_security(self):
+        rendered = ai.render_ledger({
+            "event_count": 2,
+            "ledger_path": ".audit/ai-review/ledger.jsonl",
+            "findings": [],
+        })
+        self.assertIn("LOWKEY REVIEW HISTORY", rendered)
+        self.assertIn("did not list a specific possible vulnerability", rendered)
+        self.assertIn("does NOT mean the contracts are secure", rendered)
+        self.assertNotIn("Model confidence never sets verification status", rendered)
+
     def test_mode_is_manual_by_default_and_can_be_switched(self):
         self.assertEqual(ai.status()["mode"], "manual")
         self.assertFalse(ai.status()["auto_assist"])

@@ -61,6 +61,16 @@ class SecurityReviewTests(unittest.TestCase):
         self.assertEqual(finding["status"], "candidate")
         self.assertFalse(finding["verified"])
 
+    def test_empty_review_renderer_does_not_claim_contract_is_secure(self):
+        rendered = security_review.render_review({
+            "summary": "No concrete issue was identified in this pass.",
+            "candidate_findings": [],
+            "limitations": [],
+        })
+        self.assertIn("No concrete issue was reported", rendered)
+        self.assertIn("This is NOT proof that the contracts are secure", rendered)
+        self.assertIn("No concrete issue was identified", rendered)
+
     def test_security_review_rejects_malformed_schema(self):
         response = {"summary": "Bad output", "candidate_findings": [{"title": "missing fields"}], "limitations": []}
         with patch.object(security_review.ai_harness, "request_structured", return_value=response):

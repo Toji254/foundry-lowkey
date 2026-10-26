@@ -66,7 +66,7 @@ class InstallSmokeTests(unittest.TestCase):
             self.assertIn("lk memory status", help_result.stdout)
 
             ai_status = subprocess.run(
-                [str(installed_lk), "ai", "status"], cwd=ROOT, env=env,
+                [str(installed_lk), "ai", "status", "--json"], cwd=ROOT, env=env,
                 capture_output=True, text=True,
             )
             self.assertEqual(ai_status.returncode, 0, ai_status.stdout + ai_status.stderr)

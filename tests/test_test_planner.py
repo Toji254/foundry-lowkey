@@ -106,7 +106,7 @@ class TestPlannerTests(unittest.TestCase):
         self.assertIn("LOWKEY TEST IDEAS", rendered)
         self.assertIn("this is a plan, not test code", rendered.lower())
         self.assertIn("Write order: Write first", rendered)
-        self.assertIn("One function or rule", rendered)
+        self.assertIn("Prevent a bug from coming back", rendered)
         self.assertIn("Source check: Found in the cited file", rendered)
         self.assertNotIn("[HIGH / regression]", rendered)
         self.assertIn("Existing tests were not checked", rendered)

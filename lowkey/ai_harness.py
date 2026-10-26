@@ -475,6 +475,7 @@ def render_error_status(value: Mapping[str, Any]) -> str:
             "Lowkey will not call the AI automatically after an error.",
             "Ask for help with: lk ai explain-error --last",
         ])
+    lines.append("Suggested commands are shown only; Lowkey will never execute them for you.")
     return "\n".join(lines)
 
 
@@ -510,6 +511,81 @@ def render_runtime_status(value: Mapping[str, Any]) -> str:
         "  - A local Foundry test runs only when you explicitly approve it with --run.",
         "",
         "Provider options supported by Lowkey: DeepSeek, Gemini, OpenAI, Ollama, and custom OpenAI-compatible APIs.",
+    ])
+    return "\n".join(lines)
+
+
+
+def render_ledger(value: Mapping[str, Any]) -> str:
+    findings = value.get("findings", [])
+    if not isinstance(findings, list):
+        findings = []
+    event_count = int(value.get("event_count") or 0)
+    lines = [
+        "LOWKEY REVIEW HISTORY",
+        "=====================",
+        f"Saved activity entries: {event_count}",
+        f"Possible issues recorded: {len(findings)}",
+    ]
+    if event_count == 0:
+        lines.extend([
+            "",
+            "No review history has been saved yet.",
+            "Start with: lk ai security-review --contract ContractName",
+        ])
+    elif not findings:
+        lines.extend([
+            "",
+            "The saved review did not list a specific possible vulnerability.",
+            "This does NOT mean the contracts are secure. An AI review can miss bugs and only reviews selected source.",
+        ])
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        location = item.get("location") if isinstance(item.get("location"), dict) else {}
+        status = str(item.get("status") or "candidate")
+        state_labels = {
+            "candidate": "Not confirmed — needs review",
+            "native-test-recorded": "A local test was run — human review still needed",
+            "human-confirmed": "Confirmed by human review",
+            "human-rejected": "Rejected by human review",
+            "needs-review": "Needs more review",
+        }
+        severity = str(item.get("severity") or "informational").upper()
+        quote_status = item.get("source_quote_status", "unmatched")
+        quote_label = "quoted code was found" if quote_status == "matched" else "quoted code was not found; check the reference"
+        lines.extend([
+            "",
+            f"Possible issue: {item.get('title') or 'Untitled finding'}",
+            f"Finding ID: {item.get('finding_id')}",
+            f"AI-estimated severity: {severity} (not proof)",
+            f"Where to look: {location.get('path') or 'file not recorded'} — {location.get('symbol') or 'code location not recorded'}",
+            f"Source check: {quote_label}. This check alone does not prove the claim is true.",
+            f"Current status: {state_labels.get(status, 'Status: ' + status)}",
+        ])
+        runs = item.get("test_runs", [])
+        if not isinstance(runs, list):
+            runs = []
+        lines.append(f"Local test runs recorded: {len(runs)}")
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            outcome = {
+                "passed": "passed",
+                "failed": "failed",
+                "timeout": "timed out",
+                "tool_error": "could not run",
+            }.get(str(run.get("status")), str(run.get("status") or "unknown"))
+            lines.append(f"  - {run.get('test_path') or 'test file unknown'} :: {run.get('test_name') or 'test name unknown'} — {outcome}")
+        disposition = item.get("disposition")
+        if isinstance(disposition, dict):
+            lines.append(f"Review decision: {state_labels.get(str(disposition.get('disposition')), str(disposition.get('disposition')))}")
+            if disposition.get("reason"):
+                lines.append(f"Reason recorded: {disposition['reason']}")
+    lines.extend([
+        "",
+        "Reminder: AI findings are suggestions until you check the code and evidence.",
+        "History file: " + str(value.get("ledger_path") or ".audit/ai-review/ledger.jsonl"),
     ])
     return "\n".join(lines)
 
@@ -1119,18 +1195,8 @@ def main(argv: list[str] | None = None) -> int:
             if parsed.as_json:
                 print(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False))
             else:
-                print("LOWKEY AI REVIEW EVIDENCE LEDGER")
-                print("================================")
+                print(render_ledger(value))
                 print(f"Project: {value['project_root']}")
-                print(f"Ledger: {value['ledger_path']} ({value['event_count']} events)")
-                if not value["findings"]:
-                    print("No candidate findings recorded.")
-                for item in value["findings"]:
-                    print(f"{item['finding_id']} [{item['status']}] {str(item.get('severity') or 'info').upper()} {item.get('title')}")
-                    print(f"  Source quote: {item.get('source_quote_status', 'unmatched')}; native test runs: {len(item.get('test_runs', []))}")
-                    if item.get("disposition"):
-                        print(f"  Human disposition: {item['disposition'].get('disposition')} by {item['disposition'].get('reviewer')}")
-                print(value["principle"])
             return 0
         if parsed.action == "verify":
             try:
@@ -1243,7 +1309,7 @@ def main(argv: list[str] | None = None) -> int:
                     "context": context,
                 }, indent=2, ensure_ascii=False, sort_keys=True))
                 return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
-            print("AI CONTEXT PREVIEW")
+            print("AI context preview (local only; no provider request made).")
             print("==================")
             print("This is a local preview. No request was sent to the AI provider.")
             print(f"Project: {Path(parsed.root).expanduser().resolve()}")
