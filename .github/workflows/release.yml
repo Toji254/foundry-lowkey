@@ -18,7 +18,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          cat > "$RUNNER_TEMP/lowkey-release-notes.md" <<'EOF'
+          ## Highlights
+
+          - Extensible, bounded verification campaigns with native evidence retained in JSON reports.
+          - Live Foundry unit/fuzz campaigns, Echidna and Medusa fuzzing, Halmos symbolic tests, and Slither static analysis in CI.
+          - Project-aware Solidity/Foundry test-generation workflows and seeded mutation gates.
+          - Optional Linux x86_64 installer for the exact external-engine versions exercised in CI.
+
+          ## Validation and limits
+
+          CI validates pinned versions of Echidna 2.3.3, Medusa 1.5.1, Halmos 0.3.3, Slither 0.11.6, crytic-compile 0.4.2, solc-select 1.2.0, and Certora CLI 8.20.2.
+
+          Certora CLI startup is validated, but a remote Certora proof is not submitted in CI because it requires an authorized CERTORAKEY and a meaningful project specification. Generated tests remain reviewable drafts; a successful campaign is not a guarantee that a contract is secure or formally correct.
+          EOF
           gh release create "$TAG" --repo "$GH_REPO" \
             --verify-tag \
             --title "LowkeyCast $TAG" \
-            --generate-notes
+            --notes-file "$RUNNER_TEMP/lowkey-release-notes.md"
