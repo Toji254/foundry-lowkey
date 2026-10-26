@@ -379,6 +379,22 @@ class AIHarnessTests(unittest.TestCase):
             self.assertNotIn(secret, log)
             self.assertNotIn(secret, ai.config_path().read_text(encoding="utf-8"))
 
+    def test_key_status_displays_credential_provider_id_for_compatible_endpoints(self):
+        ai.configure(
+            provider="openai-compatible",
+            model="gemini-3.5-flash-lite",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            api_key="key-status-test-secret",
+        )
+        rendered = ai.render_key_pool_status(ai.key_pool_status())
+        self.assertIn("Gemini API (OpenAI-compatible connection)", rendered)
+        self.assertIn(
+            "Credential provider ID (use with --provider): openai-compatible",
+            rendered,
+        )
+        self.assertIn("Saved key slots: 1", rendered)
+        self.assertNotIn("key-status-test-secret", rendered)
+
     def test_key_slots_reject_more_than_three_by_interface(self):
         ai.configure(provider="deepseek", model="fixture", api_key="slot-one")
         ai.set_api_key_slot("deepseek", 2, "slot-two")
