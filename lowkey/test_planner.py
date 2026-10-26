@@ -200,7 +200,7 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
         validation_retry_count = 1
         correction_task = (
             task
-            + "\\n\\nCORRECTION REQUIRED: The previous response failed Lowkey's local validation: "
+            + "\n\nCORRECTION REQUIRED: The previous response failed Lowkey's local validation: "
             + str(first_error)[:500]
             + ". Generate a fresh, complete JSON object. Follow these hard limits: at most 8 test cases, "
             "8 steps per case, 8 assertions per case, and 8 limitations. Include every required field, "
