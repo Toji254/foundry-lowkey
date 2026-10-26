@@ -1033,11 +1033,6 @@ class CommandHelpTests(unittest.TestCase):
                 return 0
             return run_cli
 
-        cases = (
-            ("verify", ["engines", "--json"], "verification"),
-            ("vbench", ["benchmark.json", "--min-mutation-score", "0.8"], "verification-benchmark"),
-            ("mcheck", ["mutations.json"], "mutation-check"),
-        )
         with patch.object(lk, "activate_project_target"):
             with patch.object(lk, "verification_cli", SimpleNamespace(run_cli=capture("verification"))):
                 code = lk.dispatch_command("verify", ["engines", "--json"], {})
@@ -1063,11 +1058,11 @@ class CommandHelpTests(unittest.TestCase):
             lowkey_dir = pathlib.Path(home) / ".lowkey"
             lowkey_dir.mkdir()
             (lowkey_dir / "forge_tools.py").write_text(
-                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
                 encoding="utf-8",
             )
             (lowkey_dir / "generator.py").write_text(
-                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
                 encoding="utf-8",
             )
             env = os.environ.copy()
