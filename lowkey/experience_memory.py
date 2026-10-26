@@ -314,6 +314,10 @@ def approve_lesson(
     record["status"] = "approved"
     record["updated_at"] = _now()
     record["validation"] = {"kind": validation_kind, "note": note, "validated_at": _now()}
+
+    global_path = None
+    global_store = None
+    global_record = None
     if global_scope:
         global_path, global_store = _global_store(create=True)
         if any(existing.get("id") == record["id"] for existing in global_store["lessons"]):
@@ -321,13 +325,34 @@ def approve_lesson(
         global_record = dict(record)
         global_record["scope"] = "global"
         global_record["source_project"] = record.get("project_label")
-        global_store["lessons"].append(global_record)
-        _save_lessons(global_path, global_store)
-    for index, existing in enumerate(store["lessons"]):
-        if existing.get("id") == lesson_id:
-            store["lessons"][index] = record
-            break
+
+    project_index = next(
+        (index for index, existing in enumerate(store["lessons"]) if existing.get("id") == lesson_id),
+        None,
+    )
+    if project_index is None:
+        raise MemoryError(f"Lesson {lesson_id!r} disappeared from project memory; no change was made.")
+    original_record = store["lessons"][project_index]
+    store["lessons"][project_index] = record
     _save_lessons(path, store)
+
+    if global_scope and global_path is not None and global_store is not None and global_record is not None:
+        global_store["lessons"].append(global_record)
+        try:
+            _save_lessons(global_path, global_store)
+        except Exception as exc:
+            # A failed global write must not leave the project record marked as
+            # promoted/approved for sharing. Restore the project's proposed
+            # record; atomic JSON writes preserve the old file on write failure.
+            store["lessons"][project_index] = original_record
+            try:
+                _save_lessons(path, store)
+            except Exception as rollback_exc:
+                raise MemoryError(
+                    "Global promotion failed and Lowkey could not roll back project memory. "
+                    "Inspect the private project memory file before retrying."
+                ) from rollback_exc
+            raise MemoryError("Global promotion failed; the lesson remains proposed in project memory.") from exc
     return record
 
 
