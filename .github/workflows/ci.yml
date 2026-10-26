@@ -186,7 +186,7 @@ jobs:
           lk ai runtime > /tmp/lowkey-ai-runtime.json
           python3 -m json.tool /tmp/lowkey-ai-runtime.json >/dev/null
           lk ai test-plan --help | tee /tmp/lowkey-ai-test-plan-help.txt
-          grep -q 'never writes or runs test code' /tmp/lowkey-ai-test-plan-help.txt
+          grep -q -- '--json' /tmp/lowkey-ai-test-plan-help.txt
           lk ai preview --root /tmp/lowkey-fixture | tee /tmp/lowkey-ai-preview.txt
           grep -q 'no provider request made' /tmp/lowkey-ai-preview.txt
           grep -q 'src/Fixture.sol' /tmp/lowkey-ai-preview.txt
