@@ -1270,3 +1270,39 @@ if __name__ == "__main__":
                     artifact_path,
                 )
             self.assertIn("poolImplementation() is the zero address", error)
+
+
+    def test_fixture_fs_permission_override_is_narrow_and_preserves_existing_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            state_dir = root / "out" / "lowkey"
+            state_dir.mkdir(parents=True)
+            state_path = state_dir / "fixture_state.json"
+            effective_config = {
+                "fs_permissions": [
+                    {"access": "read", "path": "./out"},
+                    {"access": "read", "path": "./src"},
+                ]
+            }
+            with patch.object(
+                lk,
+                "run_foundry",
+                return_value=lk.CommandResult(json.dumps(effective_config), 0),
+            ) as forge:
+                encoded, error = lk._fixture_fs_permissions_override(root, state_path)
+            self.assertIsNone(error)
+            self.assertIn('access = "read", path = "./out"', encoded)
+            self.assertIn('access = "read", path = "./src"', encoded)
+            self.assertIn('access = "read-write", path = "out/lowkey"', encoded)
+            self.assertNotIn('access = "read-write", path = "./"', encoded)
+            forge.assert_called_once_with(["config", "--json"], capture=True, cwd=str(root.resolve()))
+
+    def test_fixture_fs_permission_override_rejects_snapshot_outside_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            outside = Path(tmp).parent / "unrelated-lowkey-snapshot.json"
+            with patch.object(lk, "run_foundry") as forge:
+                encoded, error = lk._fixture_fs_permissions_override(root, outside)
+            self.assertIsNone(encoded)
+            self.assertIn("outside the active Foundry project", error)
+            forge.assert_not_called()
