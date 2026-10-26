@@ -12352,13 +12352,14 @@ def run_native_project_command(config, command_name, args):
                         2,
                     )
 
-        # Foundry build/test commands historically bypassed the shared bootstrap
-        # engine, so missing Git submodules were only noticed by the compiler. Run
-        # the repository-aware preflight first so incomplete dependency trees can
-        # be restored before native compilation starts.
+        # Run dependency repair before compilation, then classify any native
+        # failure. If the preflight completed but the compiler still reports a
+        # repairable dependency failure, make one targeted recovery attempt and
+        # retry the command once. Source/build failures are never rewritten.
+        bootstrap_code = 0
+        bootstrap_info = dict(info)
+        bootstrap_info["root"] = str(root)
         if bootstrap_project is not None:
-            bootstrap_info = dict(info)
-            bootstrap_info["root"] = str(root)
             bootstrap_code = bootstrap_project(
                 bootstrap_info, args, reason="prepare"
             )
@@ -12369,7 +12370,76 @@ def run_native_project_command(config, command_name, args):
                     file=sys.stderr,
                 )
 
-        return run_foundry([command_name, *args])
+        native_command = [command_name, *args]
+        result = run_foundry(native_command, capture=True)
+        native_code = getattr(
+            result,
+            "code",
+            result if isinstance(result, int) else 1,
+        )
+        native_output = str(getattr(result, "text", "") or "")
+        if native_output:
+            print(native_output)
+
+        if native_code == 0 or not callable(classify_build_failure):
+            return native_code
+
+        classification = classify_build_failure(native_output, native_command)
+        category = str(classification.get("category") or "unknown")
+        print(f"NATIVE FAILURE : {category}", file=sys.stderr)
+        print(
+            f"Reason         : {classification.get('reason', '')}",
+            file=sys.stderr,
+        )
+
+        if not classification.get("repairable"):
+            print(
+                "RESULT: REVIEW NEEDED — Lowkey will not auto-repair this native failure.",
+                file=sys.stderr,
+            )
+            return native_code
+
+        if bootstrap_project is None:
+            print(
+                "RESULT: REVIEW NEEDED — dependency repair is unavailable.",
+                file=sys.stderr,
+            )
+            return native_code
+
+        if bootstrap_code != 0:
+            print(
+                "RESULT: REVIEW NEEDED — preflight dependency recovery failed; "
+                "Lowkey will not repeat a failed network recovery in this command.",
+                file=sys.stderr,
+            )
+            return native_code
+
+        print("RETRY  dependency recovery: compiler diagnostics still show missing dependencies")
+        repair_code = bootstrap_project(
+            bootstrap_info,
+            args,
+            force=True,
+            reason=category,
+        )
+        if repair_code != 0:
+            print(
+                "Warning: targeted dependency recovery reported failures; "
+                "Lowkey will still retry the native command once.",
+                file=sys.stderr,
+            )
+
+        retry_result = run_foundry(native_command, capture=True)
+        retry_code = getattr(
+            retry_result,
+            "code",
+            retry_result if isinstance(retry_result, int) else 1,
+        )
+        retry_output = str(getattr(retry_result, "text", "") or "")
+        if retry_output:
+            print(retry_output)
+        if retry_code == 0:
+            print("PASS  native command after dependency recovery")
+        return retry_code
 
     planner = project_build_command if command_name == "build" else project_test_command
     if planner is None:
