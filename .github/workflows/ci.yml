@@ -371,6 +371,9 @@ jobs:
           grep -Eq "unrecognized subcommand 'debug'|Usage: forge" /tmp/lowkey-forge-debug-help.txt
 
 
+      - name: Exercise generic protocol-aware local lab setup
+        run: python3 scripts/project-lab-protocol-e2e.py
+
       - name: Generate and compile project-aware test artifacts
         working-directory: /tmp/lowkey-fixture
         run: |
