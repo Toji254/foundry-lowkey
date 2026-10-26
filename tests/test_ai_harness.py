@@ -278,6 +278,31 @@ class AIHarnessTests(unittest.TestCase):
         ai.configure(provider="ollama", model="qwen2.5-coder")
         self.assertTrue(ai.status()["usable"])
 
+    def test_source_context_redacts_secret_assignments_and_pem_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                'contract Vault { string private apiKey = "API_SECRET_DO_NOT_SEND"; '
+                'string private password = "PASSWORD_DO_NOT_SEND"; }',
+                encoding="utf-8",
+            )
+            (root / "src" / "KeyHolder.sol").write_text(
+                'contract KeyHolder { string privateKey = "PRIVATE_KEY_DO_NOT_SEND"; }',
+                encoding="utf-8",
+            )
+            (root / "src" / "Signer.sol").write_text(
+                "contract Signer { string constant KEY = "
+                '"-----BEGIN PRIVATE KEY-----\\nPEM_SECRET_DO_NOT_SEND\\n-----END PRIVATE KEY-----"; }',
+                encoding="utf-8",
+            )
+            context = ai._source_context(root, None)
+            rendered = json.dumps(context)
+            for secret in ("API_SECRET_DO_NOT_SEND", "PASSWORD_DO_NOT_SEND", "PRIVATE_KEY_DO_NOT_SEND", "PEM_SECRET_DO_NOT_SEND"):
+                self.assertNotIn(secret, rendered)
+            self.assertIn("[REDACTED]", rendered)
+            self.assertIn("[REDACTED PRIVATE KEY BLOCK]", rendered)
+
     def test_source_context_excludes_build_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
