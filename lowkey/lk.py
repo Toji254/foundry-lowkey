@@ -8026,53 +8026,54 @@ def artifact_source_name(artifact, path, root=None):
         return str(artifact.get("sourceName")).replace("\\", "/").lstrip("./")
 
     metadata = artifact.get("metadata") if isinstance(artifact, dict) else None
-    if isinstance(metadata, str):
+    payload = None
+    if isinstance(metadata, dict):
+        # Foundry artifacts may decode metadata to an object instead of retaining
+        # the serialized JSON string. Both forms contain the same compiler source map.
+        payload = metadata
+    elif isinstance(metadata, str):
         try:
             payload = json.loads(metadata)
-            sources = payload.get("sources", {})
-            if isinstance(sources, dict):
-                contract_dir = Path(path).parent.name
-                contract_name = artifact_contract_name(path, artifact)
-                preferred = [
-                    name for name in sources
-                    if Path(name).name == contract_dir
-                    or Path(name).stem == contract_dir
-                    or Path(name).stem == contract_name
-                ]
-                if root is not None:
-                    src_prefix = _configured_src_prefix(root)
-                    root_path = Path(root).expanduser().resolve()
-                    for name in preferred:
-                        normalized = str(name).replace("\\", "/").lstrip("./")
-                        candidate = root_path / normalized
-                        if (normalized == src_prefix or normalized.startswith(src_prefix + "/")) and candidate.is_file():
-                            return normalized
-                if preferred:
-                    return str(preferred[0]).replace("\\", "/").lstrip("./")
-                if root is None and sources:
-                    return str(next(iter(sources))).replace("\\", "/").lstrip("./")
         except (json.JSONDecodeError, TypeError):
-            pass
+            payload = None
 
-    # When Foundry did not retain sourceName, recover the source only from
-    # the current project source tree. Never invent a source path from the
-    # artifact directory alone.
+    if isinstance(payload, dict):
+        sources = payload.get("sources", {})
+        if isinstance(sources, dict):
+            contract_dir = Path(path).parent.name
+            contract_name = artifact_contract_name(path, artifact)
+            preferred = [
+                name for name in sources
+                if Path(name).name == contract_dir
+                or Path(name).stem == contract_dir
+                or Path(name).stem == contract_name
+            ]
+            if root is not None:
+                src_prefix = _configured_src_prefix(root)
+                root_path = Path(root).expanduser().resolve()
+                for name in preferred:
+                    normalized = str(name).replace("\\", "/").lstrip("./")
+                    candidate = root_path / normalized
+                    # Metadata is authoritative for test-only upgrade artifacts too;
+                    # don't restrict its source paths to the production src directory.
+                    if candidate.is_file():
+                        return normalized
+            if preferred:
+                return str(preferred[0]).replace("\\", "/").lstrip("./")
+            if root is None and sources:
+                return str(next(iter(sources))).replace("\\", "/").lstrip("./")
+
+    # When Foundry did not retain sourceName/metadata source names, recover the
+    # source only from the current project tree. Never invent a source path from
+    # an artifact directory alone.
     if root is not None:
         root_path = Path(root).expanduser().resolve()
         src_prefix = _configured_src_prefix(root_path)
         src_root = root_path / src_prefix
         contract_dir = Path(path).parent.name
-
-        # When sourceName/metadata is absent, anchor the artifact to the source
-        # file represented by Foundry's artifact directory. Do not fall back to
-        # "find any source with the same contract name": tests/POCs can compile
-        # another artifact with an identical contractName.
         candidates = []
         if src_root.is_dir() and contract_dir:
-            candidates.extend(
-                sorted(src_root.rglob(contract_dir))
-            )
-
+            candidates.extend(sorted(src_root.rglob(contract_dir)))
         for candidate in candidates:
             try:
                 normalized = candidate.relative_to(root_path).as_posix()
@@ -8082,6 +8083,7 @@ def artifact_source_name(artifact, path, root=None):
                 return normalized
 
     return None
+
 
 def artifact_constructor_inputs(artifact):
     abi = artifact.get("abi", []) if isinstance(artifact, dict) else []

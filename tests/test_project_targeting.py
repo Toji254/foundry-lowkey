@@ -1283,7 +1283,10 @@ if __name__ == "__main__":
             }), encoding="utf-8")
             derived_artifact.write_text(json.dumps({
                 "contractName": "TemplateV2",
-                "sourceName": "test/mocks/TemplateV2.sol",
+                "metadata": {"sources": {
+                    "test/mocks/TemplateV2.sol": {},
+                    "src/Template.sol": {},
+                }},
                 "abi": [
                     {"type": "function", "name": "initialize", "inputs": [], "outputs": []},
                     {"type": "function", "name": "revision", "inputs": [], "outputs": []},
