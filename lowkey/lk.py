@@ -6652,6 +6652,90 @@ def discover_local_lab_fixture(root=".", requested=None):
     return candidates[0] if candidates else None
 
 
+def _fixture_fs_permissions_override(root, state_path):
+    """Temporarily add permission to write one fixture-state file.
+
+    Foundry's default filesystem sandbox often denies vm.dumpState even under
+    out/. Read the effective Foundry configuration, preserve its existing
+    permissions, and add a more-specific read-write rule for Lowkey's snapshot
+    directory. The caller applies this only to one Forge subprocess; project
+    foundry.toml and the user's shell environment remain unchanged.
+    """
+    root_path = Path(root).expanduser().resolve()
+    state_path = Path(state_path).expanduser().resolve()
+    try:
+        relative_path = state_path.relative_to(root_path).as_posix()
+    except ValueError:
+        return None, "fixture snapshot path is outside the active Foundry project"
+
+    result = run_foundry(["config", "--json"], capture=True, cwd=str(root_path))
+    if result.code != 0:
+        detail = "\n".join(str(result.text or "").splitlines()[-12:])
+        return None, (
+            "could not read the effective Foundry fs_permissions before writing "
+            "the local fixture snapshot"
+            + (f":\n{detail}" if detail else "")
+        )
+
+    output = str(result.text or "").strip()
+    try:
+        config = json.loads(output)
+    except json.JSONDecodeError:
+        # Some Forge versions may put a short informational prefix before JSON.
+        start = output.find("{")
+        end = output.rfind("}")
+        if start < 0 or end < start:
+            return None, "forge config --json did not return valid JSON"
+        try:
+            config = json.loads(output[start:end + 1])
+        except json.JSONDecodeError as exc:
+            return None, f"forge config --json returned invalid JSON: {exc}"
+
+    if not isinstance(config, dict):
+        return None, "forge config --json did not return a configuration object"
+
+    existing = config.get("fs_permissions") or []
+    if not isinstance(existing, list):
+        return None, "Foundry fs_permissions is not an array; refusing to override it blindly"
+
+    permissions = []
+    seen = set()
+    for item in existing:
+        if not isinstance(item, dict):
+            continue
+        access = str(item.get("access") or "").strip().lower()
+        path = str(item.get("path") or "").strip()
+        if not access or not path:
+            continue
+        key = (access, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        permissions.append({"access": access, "path": path})
+
+    # An exact directory rule is more specific than a project-wide read-only
+    # rule and does not grant write access to unrelated project files.
+    lowkey_directory = Path(relative_path).parent.as_posix()
+    if lowkey_directory in {"", "."}:
+        return None, "fixture snapshot directory unexpectedly resolved to the project root"
+
+    permissions = [
+        item for item in permissions
+        if str(item.get("path") or "").removeprefix("./").rstrip("/") != lowkey_directory
+    ]
+    permissions.append({"access": "read-write", "path": lowkey_directory})
+
+    def toml_string(value):
+        return json.dumps(str(value), ensure_ascii=False)
+
+    encoded = "[" + ", ".join(
+        "{ access = " + toml_string(item["access"]) +
+        ", path = " + toml_string(item["path"]) + " }"
+        for item in permissions
+    ) + "]"
+    return encoded, None
+
+
 def _fixture_state_files(root, safe_name):
     # Foundry's build output is writable under its normal project permissions;
     # an arbitrary hidden directory is not necessarily permitted by fs_permissions.
@@ -7173,12 +7257,30 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
     print("Helper  : Forge executes in its test context; no broadcast to a remote chain.")
 
     before_sources = _project_source_fingerprint(root)
-    result = run_foundry([
-        "test", "--match-path", relative_test,
-        "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
-        "--match-test", "testLowkeyLabStateDump",
-        "--disable-block-gas-limit", "-vv",
-    ], capture=True)
+    fs_permissions, permission_error = _fixture_fs_permissions_override(root, state_path)
+    if permission_error:
+        try:
+            Path(test_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return fail("Error: Lowkey could not safely prepare project fixture state export. " + permission_error)
+
+    # Apply the precise permission rule to this Forge process only. Never alter
+    # foundry.toml or permanently broaden the filesystem sandbox.
+    old_fs_permissions = os.environ.get("FOUNDRY_FS_PERMISSIONS")
+    os.environ["FOUNDRY_FS_PERMISSIONS"] = fs_permissions
+    try:
+        result = run_foundry([
+            "test", "--match-path", relative_test,
+            "--match-contract", f"LowkeyAutoFixtureTest_{safe_name}",
+            "--match-test", "testLowkeyLabStateDump",
+            "--disable-block-gas-limit", "-vv",
+        ], capture=True, cwd=str(Path(root).resolve()))
+    finally:
+        if old_fs_permissions is None:
+            os.environ.pop("FOUNDRY_FS_PERMISSIONS", None)
+        else:
+            os.environ["FOUNDRY_FS_PERMISSIONS"] = old_fs_permissions
     output = result.text
     changed_sources = _project_source_mutations(root, before_sources)
     # The harness exists only to execute this promotion once. Remove it after
