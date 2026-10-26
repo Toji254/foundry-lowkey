@@ -7266,57 +7266,102 @@ LOCAL_LAB_SCRIPTS = (
     "script/DeployLocal.s.sol",
 )
 
+def _foundry_script_roots(root):
+    """Resolve configured and conventional Foundry script directories."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
+    candidates = []
+    try:
+        config_text = (root_path / "foundry.toml").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        config_text = ""
+    # This intentionally recognizes scalar paths anywhere in foundry.toml.
+    # Foundry profiles can override script=, so considering every declared
+    # path is safer than assuming [profile.default] or the directory name.
+    for configured in re.findall(
+        r"(?m)^\s*script\s*=\s*[\"']([^\"']+)[\"']",
+        config_text,
+    ):
+        path = Path(configured).expanduser()
+        candidates.append(path if path.is_absolute() else root_path / path)
+    candidates.extend((root_path / "script", root_path / "scripts"))
+
+    roots = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key in seen or not resolved.is_dir():
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return roots
+
+
 def _local_lab_script_candidates(root, requested=None):
-    """Discover project-native deployment entry points across arbitrary Foundry layouts."""
-    root = Path(audit_context.foundry_project_root(root) or root).resolve()
-    script_root = root / "script"
-    if not script_root.is_dir():
+    """Discover project-native deployment entry points across Foundry layouts."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
+    script_roots = _foundry_script_roots(root_path)
+    if not script_roots:
         return []
 
     wanted = str(requested or "").strip().lower()
     candidates = []
-    for path in sorted(script_root.rglob("*.s.sol")):
-        relative = path.relative_to(root).as_posix()
-        lowered = relative.lower()
-        basename = path.name.lower()
+    seen_paths = set()
+    for script_root in script_roots:
+        for path in sorted(script_root.rglob("*.s.sol")):
+            try:
+                resolved_path = path.resolve()
+                relative = resolved_path.relative_to(root_path).as_posix()
+                parts = path.relative_to(script_root).parts[:-1]
+            except (OSError, ValueError):
+                continue
+            if str(resolved_path).lower() in seen_paths:
+                continue
+            seen_paths.add(str(resolved_path).lower())
+            basename = path.name.lower()
 
-        if basename.startswith(("lowkey", "base.")):
-            continue
-        if any(part.lower() in {"helpers", "interfaces", "libraries"} for part in path.relative_to(script_root).parts[:-1]):
-            continue
+            if basename.startswith(("lowkey", "base.")):
+                continue
+            if any(part.lower() in {"helpers", "interfaces", "libraries"} for part in parts):
+                continue
 
-        try:
-            source = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
+            try:
+                source = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
 
-        if not re.search(r"(?m)\bfunction\s+run\s*\([^)]*\)\s+(?:external|public)", source):
-            continue
-        if not re.search(r"\b(?:startBroadcast|broadcast|deployCode|create2|new\s+[A-Za-z_])\b", source):
-            continue
+            if not re.search(r"(?m)\bfunction\s+run\s*\([^)]*\)\s+(?:external|public)", source):
+                continue
+            if not re.search(r"\b(?:startBroadcast|broadcast|deployCode|create2|new\s+[A-Za-z_])\b", source):
+                continue
 
-        score = 0
-        compact = re.sub(r"[^a-z0-9]", "", basename)
-        if "deploy" in compact:
-            score += 120
-        if "local" in compact:
-            score += 140
-        if "bootstrap" in compact or "setup" in compact:
-            score += 80
-        if "anvil" in compact:
-            score += 50
-        if wanted:
-            wanted_compact = re.sub(r"[^a-z0-9]", "", wanted)
-            if wanted_compact and wanted_compact in compact:
-                score += 500
-            if re.search(r"\b" + re.escape(str(requested)) + r"\b", source, re.I):
-                score += 700
+            score = 0
+            compact = re.sub(r"[^a-z0-9]", "", basename)
+            if "deploy" in compact:
+                score += 120
+            if "local" in compact:
+                score += 140
+            if "bootstrap" in compact or "setup" in compact:
+                score += 80
+            if "anvil" in compact:
+                score += 50
+            if wanted:
+                wanted_compact = re.sub(r"[^a-z0-9]", "", wanted)
+                if wanted_compact and wanted_compact in compact:
+                    score += 500
+                if re.search(r"\b" + re.escape(str(requested)) + r"\b", source, re.I):
+                    score += 700
 
-        number = re.match(r"^(\d+)", basename)
-        if number:
-            score += max(0, 60 - int(number.group(1)))
+            number = re.match(r"^(\d+)", basename)
+            if number:
+                score += max(0, 60 - int(number.group(1)))
 
-        candidates.append((-score, relative, str(path)))
+            candidates.append((-score, relative, str(resolved_path)))
 
     return [item[2] for item in sorted(candidates)]
 
@@ -7418,13 +7463,18 @@ def _lab_script_unresolved_env_names(script, root=None):
 
 
 def discover_local_lab_script(root=".", requested=None):
-    root = audit_context.foundry_project_root(root) or root
+    root = Path(audit_context.foundry_project_root(root) or root).resolve()
 
     candidates = []
-    for relative in LOCAL_LAB_SCRIPTS:
-        path = os.path.join(root, relative)
-        if os.path.isfile(path):
-            candidates.append(path)
+    preferred_names = [Path(relative).name for relative in LOCAL_LAB_SCRIPTS]
+    preferred_names.append("Deploy.s.sol")
+    for script_root in _foundry_script_roots(root):
+        for name in preferred_names:
+            path = script_root / name
+            if path.is_file():
+                resolved = str(path.resolve())
+                if resolved not in candidates:
+                    candidates.append(resolved)
 
     discovered = _local_lab_script_candidates(root, requested)
     for path in discovered:
