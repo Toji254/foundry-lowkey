@@ -125,6 +125,38 @@ class VerificationCorrelationTests(unittest.TestCase):
             self.assertEqual(audit_context.signals(root), [])
             self.assertTrue(any("no replacement signals" in note for note in result["notes"]))
 
+    def test_cli_correlate_parses_signal_and_output_options(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            signal = audit_context.add_signal({
+                "tool": "slither",
+                "check": "access-control",
+                "title": "Access control review",
+                "file": "src/Vault.sol",
+                "line": 1,
+                "function": "withdraw()",
+            }, root)
+            report_path = root / "campaign.json"
+            self._campaign(root, report_path)
+            output_path = root / "correlation.json"
+            rendered = StringIO()
+            with patch("lowkey.verification_cli._project_root", return_value=root):
+                with redirect_stdout(rendered):
+                    code = verification_cli.run_cli([
+                        "correlate", str(report_path), "--signal", signal["id"],
+                        "--output", str(output_path),
+                    ])
+
+            self.assertEqual(code, 0)
+            self.assertTrue(output_path.is_file())
+            self.assertIn("LOWKEY VERIFICATION CORRELATION", rendered.getvalue())
+            saved = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["attached_signal_ids"], [signal["id"]])
+
     def test_report_for_another_project_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
             root_a = self._project(tmp_a)
