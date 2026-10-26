@@ -179,11 +179,11 @@ jobs:
           # Exercise the installed AI preview route without configuring a provider.
           # The command must not contact a provider and must exclude tests/dependencies.
           lk ai status
-          lk ai keys list > /tmp/lowkey-ai-keys.txt
+          lk ai keys list --json > /tmp/lowkey-ai-keys.txt
           grep -q 'max_keys_per_provider_per_request' /tmp/lowkey-ai-keys.txt
-          lk ai errors status > /tmp/lowkey-ai-errors.txt
+          lk ai errors status --json > /tmp/lowkey-ai-errors.txt
           grep -q 'automatic_explanations_make_provider_requests' /tmp/lowkey-ai-errors.txt
-          lk ai runtime > /tmp/lowkey-ai-runtime.json
+          lk ai runtime --json > /tmp/lowkey-ai-runtime.json
           python3 -m json.tool /tmp/lowkey-ai-runtime.json >/dev/null
           lk ai test-plan --help | tee /tmp/lowkey-ai-test-plan-help.txt
           grep -q -- '--json' /tmp/lowkey-ai-test-plan-help.txt

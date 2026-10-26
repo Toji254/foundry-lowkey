@@ -92,6 +92,25 @@ class TestPlannerTests(unittest.TestCase):
         after = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*.sol"))
         self.assertEqual(after, before)
 
+    def test_test_plan_default_rendering_uses_plain_language(self):
+        case = test_planner.validate_test_plan(
+            self._response(),
+            {"source_files": [{"path": "src/Vault.sol", "source_excerpt": self.source}]},
+        )["test_cases"][0]
+        rendered = test_planner.render_test_plan({
+            "summary": "Check that withdrawals cannot exceed the caller's balance.",
+            "test_cases": [case],
+            "limitations": ["External fork tests need a reachable RPC endpoint."],
+            "_lowkey_meta": {"plan_id": "TP-example", "report_path": ".audit/ai-review/test-plans/TP-example.json"},
+        })
+        self.assertIn("LOWKEY TEST IDEAS", rendered)
+        self.assertIn("this is a plan, not test code", rendered.lower())
+        self.assertIn("Write order: Write first", rendered)
+        self.assertIn("One function or rule", rendered)
+        self.assertIn("Source check: Found in the cited file", rendered)
+        self.assertNotIn("[HIGH / regression]", rendered)
+        self.assertIn("Existing tests were not checked", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

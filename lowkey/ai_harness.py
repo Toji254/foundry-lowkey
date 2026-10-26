@@ -361,6 +361,159 @@ def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
             "max_output_tokens": cfg.get("max_output_tokens"), "key_slots_configured": key_count}
 
 
+
+def _friendly_provider_name(provider: Any, base_url: Any = None) -> str:
+    name = str(provider or "").strip().lower()
+    endpoint = str(base_url or "").lower()
+    if name == "ollama":
+        return "Ollama (local model)"
+    if name == "deepseek":
+        return "DeepSeek"
+    if name == "gemini":
+        return "Gemini"
+    if name == "openai":
+        return "OpenAI"
+    if name == "openai-compatible":
+        if "generativelanguage.googleapis.com" in endpoint:
+            return "Gemini API (OpenAI-compatible connection)"
+        if "api.deepseek.com" in endpoint:
+            return "DeepSeek API (OpenAI-compatible connection)"
+        if "api.openai.com" in endpoint:
+            return "OpenAI API (OpenAI-compatible connection)"
+        return "Custom OpenAI-compatible API"
+    return "Not configured"
+
+
+def render_status(value: Mapping[str, Any]) -> str:
+    provider = value.get("provider")
+    local_provider = provider == "ollama"
+    key_count = int(value.get("key_slots_configured") or 0)
+    lines = [
+        "LOWKEY AI STATUS",
+        "================",
+        f"AI feature: {'ON' if value.get('enabled') else 'OFF'}",
+        f"Provider: {_friendly_provider_name(provider, value.get('base_url'))}",
+        f"Model: {value.get('model') or 'Not selected'}",
+    ]
+    if not value.get("enabled"):
+        lines.append("Setup: AI is turned off.")
+        lines.append("Next step: Run 'lk ai enable' when you want to use AI.")
+    elif not value.get("configured"):
+        lines.append("Setup: NOT READY — choose an AI provider and model first.")
+        lines.append("Next step: Run 'lk ai setup --provider ... --model ...'.")
+    elif not local_provider and key_count == 0:
+        lines.append("Setup: NOT READY — no API key is available.")
+        lines.append(f"Next step: Run 'lk ai keys add --provider {provider} --slot 1'.")
+    else:
+        lines.append("Setup: READY TO TRY — settings and credentials are present.")
+        lines.append("Connection: Not checked by this command. Run 'lk ai test' to test it.")
+    if local_provider:
+        lines.append("Credentials: No API key is needed for the local Ollama endpoint.")
+    elif key_count:
+        lines.append(f"API keys available: {key_count} (key values stay hidden).")
+    else:
+        lines.append("API keys available: None.")
+    lines.append(
+        "AI review mode: Automatic" if value.get("auto_assist")
+        else "AI review mode: Manual — AI runs only when you explicitly request a review."
+    )
+    lines.append(
+        "Automatic error explanations: ON — provider requests may cost money; suggestions are never run."
+        if value.get("auto_explain_errors")
+        else "Automatic error explanations: OFF — use 'lk ai explain-error --last' when needed."
+    )
+    return "\n".join(lines)
+
+
+def render_key_pool_status(value: Mapping[str, Any]) -> str:
+    active = load_config()
+    providers = value.get("providers") if isinstance(value.get("providers"), dict) else {}
+    lines = ["LOWKEY AI KEYS", "=============="]
+    if not providers:
+        lines.extend([
+            "No provider keys are configured.",
+            "Add one with 'lk ai keys add --provider openai-compatible --slot 1'.",
+        ])
+    else:
+        for name, item in sorted(providers.items()):
+            if not isinstance(item, dict):
+                continue
+            slots = item.get("saved_slots") if isinstance(item.get("saved_slots"), list) else []
+            slot_numbers = [str(slot.get("slot")) for slot in slots if isinstance(slot, dict) and slot.get("configured")]
+            endpoint = active.get("base_url") if name == active.get("provider") else None
+            lines.extend([
+                "",
+                f"Provider: {_friendly_provider_name(name, endpoint)}",
+                f"Saved key slots: {', '.join(slot_numbers) if slot_numbers else 'None'}",
+                f"Environment key: {'available' if item.get('environment_key_configured') else 'not configured'}",
+                f"Keys available to try: {item.get('effective_key_capacity', 0)}",
+            ])
+            if not item.get("effective_key_capacity") and name != "ollama":
+                lines.append(f"Next step: lk ai keys add --provider {name} --slot 1")
+    lines.extend([
+        "",
+        "Key values are never displayed.",
+        "Lowkey tries another saved key only when the provider rejects a request for an invalid key, quota, or rate-limit reason.",
+    ])
+    return "\n".join(lines)
+
+
+def render_error_status(value: Mapping[str, Any]) -> str:
+    automatic = bool(value.get("automatic_explanations_make_provider_requests"))
+    lines = [
+        "LOWKEY AI ERROR HELP",
+        "====================",
+        f"Automatic explanations: {'ON' if automatic else 'OFF'}",
+    ]
+    if automatic:
+        lines.extend([
+            "When a supported Lowkey command fails, Lowkey may send error details to your configured AI provider.",
+            "This can incur provider charges. Suggested commands are shown only; Lowkey will not run them for you.",
+        ])
+    else:
+        lines.extend([
+            "Lowkey will not call the AI automatically after an error.",
+            "Ask for help with: lk ai explain-error --last",
+        ])
+    return "\n".join(lines)
+
+
+def render_runtime_status(value: Mapping[str, Any]) -> str:
+    active = value.get("active_provider") if isinstance(value.get("active_provider"), dict) else {}
+    runtime = value.get("runtime") if isinstance(value.get("runtime"), dict) else {}
+    names = {item.get("name") for item in runtime.get("agents", []) if isinstance(item, dict)}
+    roles = [
+        ("security-review", "Security reviewer", "Reads selected contract source and suggests possible vulnerabilities."),
+        ("source-evidence-checker", "Source quote checker", "Checks that cited code appears in the selected source; it does not prove a claim is true."),
+        ("test-planner", "Test planner", "Suggests tests to write; it does not write or run Solidity tests."),
+        ("native-test-verifier", "Local test runner", "Can run one selected local Foundry test only when you explicitly add --run."),
+    ]
+    lines = ["LOWKEY AI RUNTIME", "================="]
+    if active.get("usable"):
+        lines.append(f"AI setup: Ready to try — {_friendly_provider_name(active.get('provider'), active.get('base_url'))}.")
+        lines.append(f"Model: {active.get('model') or 'Not selected'}")
+        lines.append("To confirm the provider is reachable, run 'lk ai test'.")
+    else:
+        lines.append("AI setup: Not ready.")
+        lines.append(f"Reason: {active.get('reason') or 'Provider settings or credentials are missing.'}")
+        if active.get("provider") and active.get("provider") != "ollama":
+            lines.append(f"Next step: lk ai keys add --provider {active.get('provider')} --slot 1")
+    lines.extend(["", "What the built-in helpers do:"])
+    for name, label, description in roles:
+        if name in names:
+            lines.append(f"  - {label}: {description}")
+    lines.extend([
+        "",
+        "Safety limits:",
+        "  - The AI cannot directly call Lowkey tools from its response.",
+        "  - No built-in arbitrary shell, transaction signing, transaction broadcasting, or deployment tool exists.",
+        "  - A local Foundry test runs only when you explicitly approve it with --run.",
+        "",
+        "Provider options supported by Lowkey: DeepSeek, Gemini, OpenAI, Ollama, and custom OpenAI-compatible APIs.",
+    ])
+    return "\n".join(lines)
+
+
 def _api_key(config: Mapping[str, Any]) -> str | None:
     candidates = _key_candidates(config)
     if candidates:
@@ -515,7 +668,16 @@ def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
     cfg = load_config()
     current = status(cfg)
     if not current["usable"]:
-        raise AIUnavailable(f"Optional AI is unavailable ({current['reason']}). Native workflows remain available.")
+        if current.get("reason") == "API key unavailable":
+            provider = str(current.get("provider") or "openai-compatible")
+            raise AIUnavailable(
+                f"AI is not ready because no API key is available. Add it securely with "
+                f"'lk ai keys add --provider {provider} --slot 1'. Native workflows remain available."
+            )
+        raise AIUnavailable(
+            f"AI is not ready ({current.get('reason') or 'configuration problem'}). "
+            "Run 'lk ai status' for the next step. Native workflows remain available."
+        )
     if not isinstance(task, str) or not task.strip() or len(task) > 6000:
         raise AIHarnessError("Task must contain 1–6000 characters.")
     return _send(cfg, purpose=purpose, task=task.strip(), context=context, required_fields=required_fields)
@@ -772,10 +934,13 @@ def automatic_review_reason(
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
-        prog="lk ai", description="Optional structured reasoning for Lowkey tasks; not a chatbot."
+        prog="lk ai",
+        description="Plain-language AI helpers for contract reviews, test ideas and error explanations.",
+        epilog="Examples: lk ai status | lk ai security-review --contract Vault | lk ai test-plan --contract Vault",
     )
     sub = parser.add_subparsers(dest="action")
-    sub.add_parser("status", help="show configuration without network access")
+    status_cmd = sub.add_parser("status", help="show whether AI is set up and what to do next")
+    status_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
     preview = sub.add_parser(
         "preview", help="inspect the redacted project context locally; never contacts a provider"
     )
@@ -799,8 +964,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
     keys = sub.add_parser("keys", help="manage up to three private API-key slots per provider")
     key_actions = keys.add_subparsers(dest="key_action")
-    key_list = key_actions.add_parser("list", help="show configured slot numbers only; never prints keys")
+    key_list = key_actions.add_parser("list", help="show which keys are available without displaying key values")
     key_list.add_argument("--provider", choices=sorted(PROVIDERS), help="provider to inspect (default: all configured providers)")
+    key_list.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
     key_add = key_actions.add_parser("add", help="save or replace one provider key; input is hidden")
     key_add.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
     key_add.add_argument("--slot", type=int, choices=(1, 2, 3), required=True)
@@ -813,33 +979,37 @@ def main(argv: list[str] | None = None) -> int:
     explain.add_argument("--last", action="store_true", help="use the most recently captured Lowkey error (default)")
     explain.add_argument("--text", nargs="+", help="error text copied from any command")
     explain.add_argument("--command", default="", help="command that produced --text")
-    errors = sub.add_parser("errors", help="configure optional AI explanations after failed Lowkey commands")
+    errors = sub.add_parser("errors", help="choose whether AI explains command errors automatically")
     errors.add_argument("mode", choices=("auto", "manual", "status"))
-    test_plan = sub.add_parser("test-plan", help="propose source-cited tests; never writes or runs test code")
-    test_plan.add_argument("--root", default=".", help="project root (default: current directory)")
-    test_plan.add_argument("--contract", help="prioritize source matching a contract name")
+    errors.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON for status")
+    test_plan = sub.add_parser("test-plan", help="suggest tests in plain language; does not write or run them")
+    test_plan.add_argument("--root", default=".", help="project directory (default: current directory)")
+    test_plan.add_argument("--contract", help="focus on a contract name, such as Vault")
     test_plan.add_argument("--json", dest="as_json", action="store_true", help="print the complete test-plan JSON")
-    security = sub.add_parser("security-review", help="review source for candidate vulnerabilities; findings remain unverified")
+    security = sub.add_parser("security-review", help="look for possible contract vulnerabilities; findings are not confirmed")
     security.add_argument("--root", default=".", help="project root (default: current directory)")
     security.add_argument("--contract", help="prioritize source matching a contract name")
     security.add_argument("--json", dest="as_json", action="store_true", help="print normalized JSON")
-    ledger_cmd = sub.add_parser("ledger", help="list AI candidates, native test runs, and human dispositions")
+    ledger_cmd = sub.add_parser("ledger", help="show review history and which findings still need checking")
     ledger_cmd.add_argument("--root", default=".", help="project root (default: current directory)")
     ledger_cmd.add_argument("--json", dest="as_json", action="store_true", help="print ledger summary as JSON")
-    verify = sub.add_parser("verify", help="plan or explicitly run one selected local Foundry test")
-    verify.add_argument("finding_id", help="candidate ID shown by security-review")
+    verify = sub.add_parser("verify", help="preview or explicitly run one selected local Foundry test")
+    verify.add_argument("finding_id", help="finding ID shown by security-review")
+    verify.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
     verify.add_argument("--root", default=".", help="project root (default: current directory)")
     verify.add_argument("--test", required=True, help="single Solidity test file under test/ or tests/; fork tests excluded")
     verify.add_argument("--match-test", required=True, help="exact test function name beginning with test")
     verify.add_argument("--run", action="store_true", help="execute the selected test; without this flag only prints a plan")
-    disposition = sub.add_parser("disposition", help="record a human decision after inspecting evidence")
+    disposition = sub.add_parser("disposition", help="save your own decision after reviewing the evidence")
+    disposition.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
     disposition.add_argument("finding_id")
     disposition.add_argument("--root", default=".", help="project root (default: current directory)")
     disposition.add_argument("--status", choices=("confirmed", "rejected", "needs-review"), required=True)
     disposition.add_argument("--reviewer", required=True, help="human reviewer identifier")
     disposition.add_argument("--reason", required=True, help="reason supported by inspected evidence")
     disposition.add_argument("--evidence-id", help="event ID returned by lk ai verify --run; required for confirmed/rejected")
-    sub.add_parser("runtime", help="show registered agents, tools, adapters and execution boundaries")
+    runtime_cmd = sub.add_parser("runtime", help="explain what the AI helpers can and cannot do")
+    runtime_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
     args = list(sys.argv[1:] if argv is None else argv)
     args = ["--help" if value in {"--h", "help"} else value for value in args]
     if not args or args[0] == "-h":
@@ -848,21 +1018,26 @@ def main(argv: list[str] | None = None) -> int:
     try:
         parsed = parser.parse_args(args)
         if parsed.action == "status":
-            print(json.dumps(status(), indent=2, sort_keys=True))
+            value = status()
+            print(json.dumps(value, indent=2, sort_keys=True) if parsed.as_json else render_status(value))
             return 0
         if parsed.action == "keys":
             action = parsed.key_action
-            if action is None or action == "list":
-                info = key_pool_status(parsed.provider if action == "list" else None)
-                print(json.dumps(info, indent=2, sort_keys=True))
+            if action is None:
+                info = key_pool_status()
+                print(render_key_pool_status(info))
+                return 0
+            if action == "list":
+                info = key_pool_status(parsed.provider)
+                print(json.dumps(info, indent=2, sort_keys=True) if parsed.as_json else render_key_pool_status(info))
                 return 0
             if action == "add":
                 secret = getpass.getpass(f"{parsed.provider} API key for slot {parsed.slot} (input hidden): ").strip()
                 set_api_key_slot(parsed.provider, parsed.slot, secret)
                 # Saved slots are tried first; the environment key fills an unused slot.
                 # Neither source is ever displayed or written to the request log.
-                print(f"Saved provider '{parsed.provider}' key slot {parsed.slot}. Key value not displayed.")
-                print("Quota/rate-limit/auth rejection will trigger failover to the next configured slot.")
+                print(f"Saved the {parsed.provider} API key in slot {parsed.slot}. The key value stays hidden.")
+                print("If the provider rejects it because of credentials, quota or rate limits, Lowkey can try another saved slot.")
                 return 0
             if action in {"remove", "clear"}:
                 remove_api_key_slot(parsed.provider, None if action == "clear" or parsed.slot is None else parsed.slot)
@@ -873,11 +1048,12 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.action == "errors":
             cfg = load_config()
             if parsed.mode == "status":
-                print(json.dumps({
+                value = {
                     "mode": "automatic" if cfg.get("auto_explain_errors", False) else "manual",
                     "automatic_explanations_make_provider_requests": bool(cfg.get("auto_explain_errors", False)),
                     "suggested_commands_are_executed": False,
-                }, indent=2, sort_keys=True))
+                }
+                print(json.dumps(value, indent=2, sort_keys=True) if parsed.as_json else render_error_status(value))
                 return 0
             cfg["auto_explain_errors"] = parsed.mode == "auto"
             save_config(cfg)
@@ -968,18 +1144,36 @@ def main(argv: list[str] | None = None) -> int:
                 raise AIHarnessError(f"Unknown candidate finding ID: {parsed.finding_id}. Run lk ai security-review first.")
             if not parsed.run:
                 plan = agent_runtime.plan_native_test(root, test_path=parsed.test, match_test=parsed.match_test)
-                print("NATIVE TEST PLAN — NOT EXECUTED")
-                print(json.dumps(plan, indent=2, sort_keys=True))
-                print("Review the selected test, then add --run to execute it.")
+                if parsed.as_json:
+                    print(json.dumps(plan, indent=2, sort_keys=True))
+                else:
+                    print("LOCAL TEST PLAN — NOT RUN")
+                    print("=========================")
+                    print(f"Finding to check: {parsed.finding_id}")
+                    print(f"Test file: {plan.get('test_path', parsed.test)}")
+                    print(f"Test function: {plan.get('test_name', parsed.match_test)}")
+                    print("")
+                    print("No test was run. Read the test first, then repeat this command with --run to execute it.")
                 return 0
             result = agent_runtime.execute_native_test(
                 root, test_path=parsed.test, match_test=parsed.match_test,
                 finding_id=parsed.finding_id, approved=True,
             )
             evidence = evidence_ledger.record_native_test(root, result)
-            print("NATIVE TEST EXECUTION RECORDED")
-            print("A passing test is execution evidence, not automatic proof that the candidate is correct.")
-            print(json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False))
+            if parsed.as_json:
+                print(json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False))
+            else:
+                outcome = str(result.get("status") or "unknown")
+                label = {"passed": "PASSED", "failed": "FAILED", "timeout": "TIMED OUT", "tool_error": "TOOL ERROR"}.get(outcome, outcome.upper())
+                print(f"LOCAL TEST RESULT: {label}")
+                print("==========================")
+                print(f"Test: {result.get('test_path')} :: {result.get('test_name')}")
+                print(f"Time: {result.get('elapsed_ms', 0) / 1000:.1f} seconds")
+                for line in result.get("summary_lines", []):
+                    print(f"  {line}")
+                print(f"Evidence event ID: {evidence.get('event_id')}")
+                print("Important: a passing test is evidence for this test case; it does not automatically prove the AI finding is correct.")
+                print("Review the evidence with 'lk ai ledger'.")
             return 0 if result.get("status") == "passed" else 1
         if parsed.action == "disposition":
             try:
@@ -994,8 +1188,20 @@ def main(argv: list[str] | None = None) -> int:
                 reason=parsed.reason,
                 evidence_id=parsed.evidence_id,
             )
-            print("HUMAN DISPOSITION RECORDED; MODEL DID NOT SET THIS STATUS.")
-            print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+            if parsed.as_json:
+                print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+            else:
+                details = result.get("details") if isinstance(result.get("details"), dict) else {}
+                labels = {"confirmed": "Confirmed by human review", "rejected": "Rejected by human review", "needs-review": "Needs more review"}
+                print("REVIEW DECISION SAVED")
+                print("=====================")
+                print(f"Finding: {parsed.finding_id}")
+                print(f"Decision: {labels.get(parsed.status, parsed.status)}")
+                print(f"Reviewer: {parsed.reviewer}")
+                print(f"Reason: {parsed.reason}")
+                if details.get("evidence_id"):
+                    print(f"Linked test evidence: {details['evidence_id']}")
+                print("Lowkey saved your decision; the AI did not choose this status.")
             return 0
         if parsed.action == "runtime":
             try:
@@ -1004,15 +1210,18 @@ def main(argv: list[str] | None = None) -> int:
             except ImportError:
                 from lowkey import agent_runtime, provider_adapters
             current = status()
-            print(json.dumps({
+            value = {
                 "runtime": agent_runtime.runtime_status(),
                 "provider_adapters": provider_adapters.provider_adapter_status(),
                 "active_provider": {
                     "provider": current.get("provider"),
                     "model": current.get("model"),
+                    "base_url": current.get("base_url"),
                     "usable": current.get("usable"),
+                    "reason": current.get("reason"),
                 },
-            }, indent=2, sort_keys=True))
+            }
+            print(json.dumps(value, indent=2, sort_keys=True) if parsed.as_json else render_runtime_status(value))
             return 0
         if parsed.action == "preview":
             context = _protocol_review_context(Path(parsed.root).expanduser(), parsed.contract)
@@ -1034,12 +1243,14 @@ def main(argv: list[str] | None = None) -> int:
                     "context": context,
                 }, indent=2, ensure_ascii=False, sort_keys=True))
                 return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2
-            print("AI context preview (local only; no provider request made).")
-            print(f"Project root: {json.dumps(str(Path(parsed.root).expanduser().resolve()), ensure_ascii=False)}")
-            print(f"Selected source files: {len(source_files)}")
-            print(f"Approved memory lessons: {len(approved_experience)}")
-            print(f"Serialized context: {context_bytes} / {MAX_CONTEXT_BYTES} bytes")
-            print(f"Secret-redaction markers: {redaction_markers}")
+            print("AI CONTEXT PREVIEW")
+            print("==================")
+            print("This is a local preview. No request was sent to the AI provider.")
+            print(f"Project: {Path(parsed.root).expanduser().resolve()}")
+            print(f"Source files selected: {len(source_files)}")
+            print(f"Previously approved notes included: {len(approved_experience)}")
+            print(f"Context size: {context_bytes:,} of {MAX_CONTEXT_BYTES:,} bytes")
+            print(f"Secret values redacted: {redaction_markers} marker(s) found")
             if context_bytes > MAX_CONTEXT_BYTES:
                 print("WARNING: this context exceeds the request limit and cannot be sent as-is.")
             if source_files:
@@ -1050,8 +1261,8 @@ def main(argv: list[str] | None = None) -> int:
                     source = str(item.get("source_excerpt", ""))
                     count = source.count("[REDACTED]") + source.count("[REDACTED PRIVATE KEY BLOCK]")
                     print(
-                        f"  - {json.dumps(str(item.get('path', '')), ensure_ascii=False)} "
-                        f"({len(source.encode('utf-8'))} bytes; {count} redaction marker(s))"
+                        f"  - {str(item.get('path', ''))} "
+                        f"({len(source.encode('utf-8')):,} bytes; {count} redaction marker(s))"
                     )
             if approved_experience:
                 print("Approved experience included:")
@@ -1059,8 +1270,8 @@ def main(argv: list[str] | None = None) -> int:
                     if not isinstance(item, dict):
                         continue
                     print(
-                        f"  - {json.dumps(str(item.get('title', item.get('id', 'lesson'))), ensure_ascii=False)} "
-                        f"[{item.get('scope', 'unknown')} scope]"
+                        f"  - {str(item.get('title', item.get('id', 'lesson')))} "
+                        f"({item.get('scope', 'unknown')} scope)"
                     )
             print("Use --show-context to inspect the complete redacted payload locally.")
             return 0 if context_bytes <= MAX_CONTEXT_BYTES else 2

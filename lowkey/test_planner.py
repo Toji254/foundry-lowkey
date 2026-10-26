@@ -159,17 +159,16 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
         granted_permissions=grants,
     )
     task = (
-        "Propose a focused, source-grounded smart-contract regression test PLAN, not a security verdict and not Solidity code. "
-        "Return JSON keys summary (string), test_cases (array), limitations (array of strings). Each test case must have "
-        "title, kind (unit/fuzz/invariant/regression/integration/fork), priority (critical/high/medium/low), "
-        "suggested_test_name (identifier beginning with test), source {path,symbol,quote}, hypothesis, setup, steps (array), "
-        "assertions (array), vulnerability_signal (string), existing_coverage_note (string). The source quote must be a "
-        "verbatim excerpt of the cited current source. Include a mix of positive, negative, boundary and state-transition "
-        "cases only where justified. Assertions must be observable and falsifiable, not vague statements like 'is secure'. "
-        "For an invariant, state the property and how a Foundry test would check it. Mark external fork tests as requiring a "
-        "reachable RPC; do not propose running them automatically. Do not claim any test exists, was generated, or passed. "
-        "Historical memory is context, never evidence about the current revision. If source does not support a meaningful test, "
-        "return an empty test_cases array and explain the gap. Never write files, invoke tools, deploy, or execute a test."
+        "Suggest a focused smart-contract test plan, not a security verdict and not Solidity code. Return JSON keys summary, "
+        "test_cases, and limitations. Each test case needs title, kind (unit/fuzz/invariant/regression/integration/fork), "
+        "priority, suggested_test_name beginning with test, source {path,symbol,quote}, hypothesis, setup, steps, assertions, "
+        "vulnerability_signal, and existing_coverage_note. The source quote must be copied from the cited current source. "
+        "Include positive, negative, boundary, and state-change tests only when justified. Assertions must say exactly what "
+        "should happen. Explain an invariant in plain language and say how a test would check it. Mark tests needing a live "
+        "network as requiring a reachable RPC. Never claim that a test exists, was written, or passed. The review context does "
+        "not include test folders, so do not pretend to know existing test coverage. If no useful test follows from the source, "
+        "return no test cases and explain why. Never write files, invoke tools, deploy, or run tests. Use simple, concise "
+        "English for a developer who is still learning: avoid unexplained jargon, keep each setup, step, and assertion short."
     )
     raw = runtime.run_action(
         plan, "provider_request",
@@ -215,37 +214,78 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
 
 def render_test_plan(report: Mapping[str, Any]) -> str:
     meta = report.get("_lowkey_meta") if isinstance(report.get("_lowkey_meta"), dict) else {}
+    cases = report.get("test_cases", [])
+    if not isinstance(cases, list):
+        cases = []
     lines = [
-        "LOWKEY AI TEST PLAN — PROPOSALS ONLY",
-        "====================================",
-        "No Solidity test was written or executed. Source quote matches verify citations, not test correctness.",
-        f"Summary: {report.get('summary', '')}",
-        f"Proposed cases: {len(report.get('test_cases', []))}",
+        "LOWKEY TEST IDEAS",
+        "=================",
+        f"Summary: {str(report.get('summary', '')).strip()}",
+        f"Test ideas suggested: {len(cases)}",
+        "",
+        "Important: this is a plan, not test code. Lowkey has not written or run these tests.",
+        "The source check only confirms whether a quoted snippet exists; it does not prove the test idea is correct.",
     ]
+    if not cases:
+        lines.extend([
+            "",
+            "No usable test idea was returned for the selected source.",
+            "Check the saved limits below and review the contract and test files yourself.",
+        ])
+    priority_labels = {"critical": "Write first", "high": "Write first", "medium": "Next", "low": "Later"}
+    kind_labels = {
+        "unit": "One function or rule",
+        "fuzz": "Many inputs",
+        "invariant": "A rule that should always hold",
+        "regression": "Prevent a bug from coming back",
+        "integration": "How contracts work together",
+        "fork": "Test against a live network",
+    }
+    for index, item in enumerate(cases, 1):
+        if not isinstance(item, dict):
+            continue
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        priority = str(item.get("priority", "medium")).lower()
+        kind = str(item.get("kind", "unit")).lower()
+        quote_status = item.get("source_quote_status")
+        quote_label = "Found in the cited file (citation check only)" if quote_status == "matched" else "NOT FOUND in the selected source — check this before using the idea"
+        lines.extend([
+            "",
+            f"IDEA {index}: {str(item.get('title', '')).strip()}",
+            f"Write order: {priority_labels.get(priority, 'Next')}  |  Test type: {kind_labels.get(kind, kind)}",
+            f"Suggested test function name: {item.get('suggested_test_name')}",
+            f"Where to look: {source.get('path')} — {source.get('symbol')}",
+            f"Source check: {quote_label}",
+            f"Goal: {item.get('hypothesis')}",
+            f"Prepare: {item.get('setup')}",
+            "Steps:",
+        ])
+        steps = item.get("steps", [])
+        if isinstance(steps, list) and steps:
+            lines.extend(f"  {step_index}. {value}" for step_index, value in enumerate(steps, 1))
+        else:
+            lines.append("  No steps were supplied.")
+        lines.append("A correct test should show:")
+        assertions = item.get("assertions", [])
+        if isinstance(assertions, list) and assertions:
+            lines.extend(f"  - {value}" for value in assertions)
+        else:
+            lines.append("  No expected result was supplied; review this idea before implementing it.")
+        if item.get("vulnerability_signal"):
+            lines.append(f"What would indicate a problem: {item['vulnerability_signal']}")
+    limitations = report.get("limitations", [])
+    if isinstance(limitations, list) and limitations:
+        lines.extend(["", "Important limits:"])
+        lines.extend(f"  - {str(value)}" for value in limitations[:8])
+        if len(limitations) > 8:
+            lines.append(f"  - {len(limitations) - 8} more note(s) are saved in the report.")
+    lines.extend([
+        "",
+        "Existing tests were not checked in this AI step. Review the test/ folder so you do not add duplicates.",
+    ])
     if meta.get("plan_id"):
         lines.append(f"Plan ID: {meta['plan_id']}")
     if meta.get("report_path"):
-        lines.append(f"Saved report: {meta['report_path']}")
-    for index, item in enumerate(report.get("test_cases", []), 1):
-        source = item.get("source") if isinstance(item.get("source"), dict) else {}
-        lines.extend([
-            "",
-            f"{index}. [{str(item.get('priority', 'medium')).upper()} / {item.get('kind')}] {item.get('title')}",
-            f"   Suggested test: {item.get('suggested_test_name')}",
-            f"   Source: {source.get('path')} :: {source.get('symbol')} ({item.get('source_quote_status')})",
-            f"   Hypothesis: {item.get('hypothesis')}",
-            f"   Setup: {item.get('setup')}",
-            "   Steps:",
-        ])
-        lines.extend("     - " + value for value in item.get("steps", []))
-        lines.append("   Assertions:")
-        lines.extend("     - " + value for value in item.get("assertions", []))
-        if item.get("vulnerability_signal"):
-            lines.append("   Signal: " + item["vulnerability_signal"])
-        if item.get("existing_coverage_note"):
-            lines.append("   Existing coverage: " + item["existing_coverage_note"])
-    if report.get("limitations"):
-        lines.extend(["", "Limitations:"])
-        lines.extend("  - " + str(value) for value in report["limitations"])
-    lines.extend(["", "Review each proposal against the current source and existing tests before implementing it."])
+        lines.append(f"Saved plan: {meta['report_path']}")
+    lines.append("Next step: review an idea against the current code before writing a Solidity test.")
     return "\n".join(lines)

@@ -221,3 +221,14 @@ Approved native experience memory is selected by local relevance matching agains
 - Suggested invariants and deployment considerations are hypotheses. Native tools and executable tests remain the verification authority.
 
 The internal request_structured API is for Lowkey-owned callers. It is deliberately not exposed as arbitrary prompt/chat.
+
+
+## Readable output by default
+
+Lowkey's AI commands are intended to be understandable without reading internal JSON. Commands such as `lk ai status`, `lk ai runtime`, `lk ai keys list`, `lk ai errors status`, `lk ai security-review`, `lk ai test-plan`, and `lk ai ledger` print short explanations and next steps by default. Use `--json` where supported when another tool needs the structured data.
+
+- **Ready to try** means the configuration and a credential are present; it does not prove the provider is reachable. Run `lk ai test` to check connectivity.
+- A security-review item is a possible issue, not a confirmed vulnerability. A matching source quote means only that the quoted text was found.
+- A test plan is a suggestion. It does not write Solidity test code or run tests. Existing test coverage must be checked separately.
+- A passing test is evidence about that test run; it does not automatically prove an AI claim is correct.
+- Lowkey does not execute suggested commands. Local Foundry test execution requires an explicit `--run`.

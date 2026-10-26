@@ -148,18 +148,16 @@ def review_project_security(root: str | Path, contract_name: str | None = None) 
         granted_permissions=grants,
     )
     task = (
-        "Perform a focused smart-contract SECURITY REVIEW, not a protocol overview. Return exactly one JSON object "
-        "with keys: summary (string), candidate_findings (array), limitations (array of strings). Each finding object "
-        "must contain title, category, severity, location {path, symbol}, evidence_quote, reasoning, impact, "
-        "exploit_preconditions, recommendation, confidence. Severity must be critical/high/medium/low/info. Category "
-        "should be one of access-control, reentrancy, accounting, authorization, oracle, signature-replay, initialization, "
-        "upgradeability, validation, denial-of-service, external-call, token-integration, state-machine, invariant, other. "
-        "evidence_quote MUST be an exact verbatim excerpt from the cited source file (whitespace differences only are allowed). "
-        "Include only concrete, reachable security defects with a plausible attacker and impact. Do not report a risky-looking "
-        "pattern as an exploitable vulnerability without reasoning through state and control flow. Distinguish missing context "
-        "and design questions from candidate findings. Never claim a test ran, an exploit reproduced, or a finding is verified. "
-        "If no concrete candidate is supported by source, return an empty candidate_findings array. Prior investigation feedback "
-        "is historical only and never proves current code is vulnerable or safe. Do not return markdown."
+        "Perform a focused smart-contract security review, not a general overview. Return one JSON object with summary, "
+        "candidate_findings, and limitations. Each finding must contain title, category, severity, location {path, symbol}, "
+        "evidence_quote, reasoning, impact, exploit_preconditions, recommendation, and confidence. Severity must be "
+        "critical/high/medium/low/info. Use a verbatim quote from the cited source. Report only plausible, reachable defects "
+        "with a clear attacker action and impact; do not call a suspicious pattern exploitable without tracing the relevant "
+        "state and control flow. Never claim a test ran or that a finding is confirmed. If no concrete issue is supported, "
+        "return an empty candidate_findings array. Historical notes are not proof about current code. "
+        "Write for a developer who wants a clear explanation: use plain English, short sentences, define technical terms "
+        "when first used, avoid filler, and make each recommendation a concrete next action. Keep the summary to 2–4 sentences "
+        "and each reasoning, impact and recommendation field to 1–3 concise sentences. Return JSON only."
     )
     raw = runtime.run_action(
         plan, "provider_request",
@@ -197,27 +195,63 @@ def review_project_security(root: str | Path, contract_name: str | None = None) 
 
 
 def render_review(review: Mapping[str, Any]) -> str:
+    findings = review.get("candidate_findings", [])
+    if not isinstance(findings, list):
+        findings = []
     lines = [
-        "LOWKEY AI SECURITY REVIEW — CANDIDATES ONLY",
-        "===========================================",
-        "AI output is unverified. Source-quote match means the quote exists, not that the claim is true.",
-        f"Summary: {review.get('summary', '')}",
-        f"Candidate findings: {len(review.get('candidate_findings', []))}",
+        "LOWKEY SECURITY REVIEW",
+        "======================",
+        f"Overall result: {'No concrete issue was reported in this pass.' if not findings else f'{len(findings)} possible issue(s) need human review.'}",
+        str(review.get("summary", "")).strip(),
     ]
-    meta = review.get("_lowkey_meta") if isinstance(review.get("_lowkey_meta"), dict) else {}
-    if meta.get("context_sha256"):
-        lines.append(f"Context SHA-256: {meta['context_sha256']}")
-    for item in review.get("candidate_findings", []):
-        location = item.get("location") if isinstance(item.get("location"), dict) else {}
+    if not findings:
         lines.extend([
             "",
-            f"{item.get('finding_id')} [{str(item.get('severity', 'info')).upper()}] {item.get('title')}",
-            f"  Location: {location.get('path')} :: {location.get('symbol')}",
-            f"  Source quote: {item.get('source_quote_status')} (not an exploit proof)",
-            f"  Reasoning: {item.get('reasoning')}",
-            f"  Impact: {item.get('impact')}",
-            f"  Recommendation: {item.get('recommendation')}",
-            "  Disposition: candidate / unverified",
+            "What this means: the AI did not identify a specific vulnerability in the source it reviewed.",
+            "This is NOT proof that the contracts are secure. An AI review can miss bugs, and only selected source excerpts were reviewed.",
         ])
-    lines.extend(["", "Evidence ledger: .audit/ai-review/ledger.jsonl", "Inspect with: lk ai ledger"])
+    else:
+        lines.extend([
+            "",
+            "Important: these are leads to investigate, not confirmed vulnerabilities.",
+            "A source quote match only means the quoted text exists in the cited file; it does not prove the claim is correct.",
+        ])
+    for index, item in enumerate(findings, 1):
+        location = item.get("location") if isinstance(item.get("location"), dict) else {}
+        severity = str(item.get("severity", "info")).upper()
+        quote = " ".join(str(item.get("evidence_quote", "")).split())
+        if len(quote) > 360:
+            quote = quote[:357] + "..."
+        quote_status = item.get("source_quote_status")
+        quote_label = "Found in the cited file" if quote_status == "matched" else "NOT FOUND in the selected source — check this reference manually"
+        lines.extend([
+            "",
+            f"Possible issue {index}: {item.get('title')}",
+            f"Finding ID: {item.get('finding_id')}",
+            f"AI-estimated severity: {severity} (unconfirmed)",
+            f"Where to look: {location.get('path')} — {location.get('symbol')}",
+            f"Source check: {quote_label}",
+        ])
+        if quote:
+            lines.append(f"Code cited: {quote}")
+        lines.extend([
+            f"Why it was flagged: {item.get('reasoning')}",
+            f"What could go wrong: {item.get('impact')}",
+            f"What to check next: {item.get('recommendation')}",
+            "Status: Unconfirmed — check the current code and test the claim before treating it as a vulnerability.",
+        ])
+    limitations = review.get("limitations", [])
+    if isinstance(limitations, list) and limitations:
+        lines.extend(["", "Limits of this review:"])
+        lines.extend(f"  - {str(value)}" for value in limitations[:5])
+        if len(limitations) > 5:
+            lines.append(f"  - {len(limitations) - 5} more note(s) are saved in the report.")
+    meta = review.get("_lowkey_meta") if isinstance(review.get("_lowkey_meta"), dict) else {}
+    if meta.get("report_path"):
+        lines.extend(["", f"Saved review: {meta['report_path']}"])
+    lines.extend([
+        "",
+        "Next step: review the source and existing tests; use 'lk ai test-plan --contract ContractName' for proposed test ideas.",
+        "Review history: run 'lk ai ledger'.",
+    ])
     return "\n".join(lines)

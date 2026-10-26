@@ -29,6 +29,41 @@ class AIHarnessTests(unittest.TestCase):
         self.assertFalse(value["configured"])
         self.assertFalse(value["usable"])
 
+    def test_status_is_plain_language_by_default_and_json_is_opt_in(self):
+        ai.configure(
+            provider="openai-compatible",
+            model="demo-model",
+            base_url="https://provider.example/v1",
+            api_key="test-key",
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["status"]), 0)
+        rendered = output.getvalue()
+        self.assertIn("LOWKEY AI STATUS", rendered)
+        self.assertIn("READY TO TRY", rendered)
+        self.assertIn("Connection: Not checked", rendered)
+        self.assertNotIn('"key_slots_configured"', rendered)
+        self.assertNotIn("https://provider.example/v1", rendered)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["status", "--json"]), 0)
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["usable"])
+        self.assertEqual(payload["key_slots_configured"], 1)
+
+    def test_error_help_status_is_human_readable_by_default(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["errors", "status"]), 0)
+        self.assertIn("LOWKEY AI ERROR HELP", output.getvalue())
+        self.assertIn("suggested commands are shown only", output.getvalue().lower())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["errors", "status", "--json"]), 0)
+        self.assertFalse(json.loads(output.getvalue())["suggested_commands_are_executed"])
+
     def test_mode_is_manual_by_default_and_can_be_switched(self):
         self.assertEqual(ai.status()["mode"], "manual")
         self.assertFalse(ai.status()["auto_assist"])
