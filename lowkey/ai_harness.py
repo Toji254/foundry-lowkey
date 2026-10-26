@@ -1345,6 +1345,7 @@ OUTPUT & SAFETY
 - Preview redaction is best-effort; inspect the selected context before sharing.
 - Use --json only on commands that list it. Use --json-context for the complete machine-readable preview.
 - Lowkey's native recommendations stay separate from optional AI recommendations.
+- Help aliases: --h, --help, -h, and help. Use a valid command before requesting its detailed help.
 ''' 
 
 
