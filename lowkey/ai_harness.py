@@ -1322,14 +1322,8 @@ def render_ai_help(parser: Any) -> str:
             wrapped = textwrap.wrap(summary, width=44) or ["See command help for details."]
             lines.append(f"  {'lk ai ' + name:<26} {wrapped[0]}")
             lines.extend(" " * 28 + part for part in wrapped[1:])
-    lines.extend(["", "COMMAND HELP", "------------"])
-    lines.extend([
-        "  lk ai <command> --help          Flags and examples for a command",
-        "  lk ai keys --help               All key-management variations",
-        "  lk ai keys add --help           Flags for one key action",
-        "  lk ai recommendations --help    AI recommendation setting",
-        "",
-    ])
+    # The compact index below already contains the detailed-help navigation.
+    # Keep it once so the root menu stays in the same compact style as other lk pages.
     lines.extend(AI_HELP_GUIDE.splitlines())
     return "\n".join(lines)
 
