@@ -15,6 +15,8 @@ class IntegratedCommandSurfaceTests(unittest.TestCase):
             "START HERE",
             "FIRST 10 MINUTES",
             "lk lab",
+            "lk lab --ai-review",
+            "lk ai status",
             "lk memory status",
             "lk walkthrough --auto",
             "lk audit run",
