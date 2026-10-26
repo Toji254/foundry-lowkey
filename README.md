@@ -78,6 +78,12 @@ The active workspace scope is used by commands such as lk audit and lk lab when 
 - Protocol walkthrough: uses the richer local Foundry walkthrough/lab engine for actual stateful execution and replayable observations.
 
 lk audit and lk audit run are intentionally separate surfaces: the former is the interactive Lowkey audit console; the latter is the evidence pipeline. Neither should be read as a vulnerability verdict.
+## Optional native-first AI extension
+
+Lowkey can call a configured model for a narrow reasoning task only when explicitly requested, including a structured protocol review during local lab setup. Native workflows do not require AI. The model cannot execute tools, edit files, sign transactions, deploy contracts or declare vulnerabilities confirmed.
+
+See [the native-first AI harness guide](docs/native-ai-harness.md) for setup, provider choices, boundaries and use.
+
 ## Start here
 
 ~~~bash
