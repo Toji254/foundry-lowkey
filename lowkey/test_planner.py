@@ -168,21 +168,52 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
         "network as requiring a reachable RPC. Never claim that a test exists, was written, or passed. The review context does "
         "not include test folders, so do not pretend to know existing test coverage. If no useful test follows from the source, "
         "return no test cases and explain why. Never write files, invoke tools, deploy, or run tests. Use simple, concise "
-        "English for a developer who is still learning: avoid unexplained jargon, keep each setup, step, and assertion short."
+        "English for a developer who is still learning: avoid unexplained jargon, keep each setup, step, and assertion short. "
+        "Strict output limits: at most 8 test cases total, at most 8 steps per case, at most 8 assertions per case, and at most "
+        "8 limitations. Keep comfortably within these limits. Return only one complete JSON object, with no Markdown fences."
     )
-    raw = runtime.run_action(
-        plan, "provider_request",
-        lambda: ai_harness.request_structured(
-            purpose="test_plan", task=task, context=context,
-            required_fields=("summary", "test_cases", "limitations"),
-        ),
-        granted_permissions=grants,
-    )
-    normalized = runtime.delegate(
-        plan, "source-evidence-checker", ["source_quote_check"],
-        lambda: validate_test_plan(raw, context),
-        granted_permissions=grants,
-    )
+
+    def request_plan(prompt: str) -> dict[str, Any]:
+        return runtime.run_action(
+            plan, "provider_request",
+            lambda: ai_harness.request_structured(
+                purpose="test_plan", task=prompt, context=context,
+                required_fields=("summary", "test_cases", "limitations"),
+            ),
+            granted_permissions=grants,
+        )
+
+    def validate_with_checker(response: Mapping[str, Any]) -> dict[str, Any]:
+        return runtime.delegate(
+            plan, "source-evidence-checker", ["source_quote_check"],
+            lambda: validate_test_plan(response, context),
+            granted_permissions=grants,
+        )
+
+    raw = request_plan(task)
+    validation_retry_count = 0
+    try:
+        normalized = validate_with_checker(raw)
+    except TestPlanError as first_error:
+        # One bounded retry gives the provider a clear schema correction opportunity.
+        # The second request may incur additional provider charges.
+        validation_retry_count = 1
+        correction_task = (
+            task
+            + "\\n\\nCORRECTION REQUIRED: The previous response failed Lowkey's local validation: "
+            + str(first_error)[:500]
+            + ". Generate a fresh, complete JSON object. Follow these hard limits: at most 8 test cases, "
+            "8 steps per case, 8 assertions per case, and 8 limitations. Include every required field, "
+            "copy source quotes only from the supplied source, and return JSON only without Markdown."
+        )
+        raw = request_plan(correction_task)
+        try:
+            normalized = validate_with_checker(raw)
+        except TestPlanError as second_error:
+            raise TestPlanError(
+                "AI test plan failed local validation after one correction attempt. "
+                f"Reason: {second_error} No plan was saved, and no test was written or run."
+            ) from second_error
     status = ai_harness.status()
     normalized["ai_generated"] = True
     normalized["origin"] = "configured-model"
@@ -195,6 +226,7 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
         "provider": status.get("provider"),
         "model": status.get("model"),
         "runtime_id": runtime.runtime_id,
+        "validation_retry_count": validation_retry_count,
         "verified": False,
     }
     stored = runtime.run_action(
@@ -209,6 +241,7 @@ def create_test_plan(root: str | Path, contract_name: str | None = None) -> dict
         "source_context_sha256": normalized["_lowkey_meta"]["context_sha256"],
         "source_files_included": normalized["_lowkey_meta"]["source_files_included"],
         "test_case_count": len(normalized["test_cases"]),
+        "validation_retry_count": validation_retry_count,
         "all_source_quotes_matched": all(item["source_quote_status"] == "matched" for item in normalized["test_cases"]),
         "status": "proposed",
         "verified": False,
@@ -230,6 +263,8 @@ def render_test_plan(report: Mapping[str, Any]) -> str:
         "Important: this is a plan, not test code. Lowkey has not written or run these tests.",
         "The source check only confirms whether a quoted snippet exists; it does not prove the test idea is correct.",
     ]
+    if meta.get("validation_retry_count"):
+        lines.append("Format note: the first AI response failed validation; Lowkey requested one corrected response.")
     if not cases:
         lines.extend([
             "",
