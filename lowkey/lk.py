@@ -12352,6 +12352,23 @@ def run_native_project_command(config, command_name, args):
                         2,
                     )
 
+        # Foundry build/test commands historically bypassed the shared bootstrap
+        # engine, so missing Git submodules were only noticed by the compiler. Run
+        # the repository-aware preflight first so incomplete dependency trees can
+        # be restored before native compilation starts.
+        if bootstrap_project is not None:
+            bootstrap_info = dict(info)
+            bootstrap_info["root"] = str(root)
+            bootstrap_code = bootstrap_project(
+                bootstrap_info, args, reason="prepare"
+            )
+            if bootstrap_code != 0:
+                print(
+                    "Warning: project dependency bootstrap reported failures; "
+                    "Lowkey will continue with the native command.",
+                    file=sys.stderr,
+                )
+
         return run_foundry([command_name, *args])
 
     planner = project_build_command if command_name == "build" else project_test_command
