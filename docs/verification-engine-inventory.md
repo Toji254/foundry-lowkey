@@ -47,6 +47,8 @@ The first implementation lives in `lowkey/verification_adapters.py`:
 
 - `lk verification correlate <campaign-report.json> [--signal SIGNAL_ID ...]` joins normalized results from a saved campaign into one correlation report. A campaign manifest may include an `investigation` object with explicit `signal_ids` (or one `signal_id`) and a stable `property_id`; an exact `source_file` + `function` may attach automatically only when it resolves to one existing signal. Correlation preserves the native report by hash/reference, attaches one repeat-safe evidence record to each matched signal, and never creates a missing signal or promotes a failure into a confirmed vulnerability. A failing test/property is a review lead; a passing engine is not a protocol-wide security verdict. The finding renderer shows correlated per-engine statuses and selected-but-skipped tools. If zero engines produced results, correlation returns a coverage-gap report and exits nonzero rather than presenting an empty campaign as a successful check.
 
+- `lk verification investigate <SIGNAL_ID> [--constructor-args JSON_ARRAY]` connects an existing signal to a complete, validated local test for the initial supported case: a uniquely identified `onlyOwner` method with a simple state-changing body. It requires explicit authorization-related signal metadata, a project-local source file, and valid constructor setup. The test verifies non-owner reversion; passing does not settle the source finding, and an identified test failure is attached as a review lead. Unsupported findings produce a report explaining why and no generated test.
+
 ## Initial engine map
 
 | Engine | Potential role | Important boundary |

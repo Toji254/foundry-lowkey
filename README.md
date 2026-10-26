@@ -449,9 +449,17 @@ Correlate the saved results with an existing audit finding (use its exact signal
 lk verification correlate .audit/verification/campaign.json --signal SLITHER-XXXXXXXXXX
 ~~~
 
+Investigate an existing access-control signal with a targeted local test:
+
+~~~bash
+lk verification investigate SLITHER-XXXXXXXXXX
+~~~
+
 Use `lk mutation-check manifest.json` to test whether an existing suite detects explicit behavioral mutants, and `lk verification-benchmark manifest.json` to evaluate multiple project cases. Baseline failures, compiler/setup errors, timeouts, and mutants not killed are reported separately.
 
 `lk verification correlate <campaign-report.json> --signal <SIGNAL_ID>` joins normalized engine outcomes and attaches one repeat-safe evidence record to an existing finding. A campaign manifest may instead name `investigation.signal_ids` (or `investigation.signal_id`) and a stable `investigation.property_id`. The correlator preserves the native report by reference and hash. It does not create missing findings or mark a vulnerability as proven: property failures remain review leads, and passing engines do not certify the protocol.
+
+`lk verification investigate <SIGNAL_ID>` currently supports only an explicitly classified access-control finding that maps to one source-backed, simple `onlyOwner` state-changing function. It generates a non-owner-revert assertion, uses the existing generator validation path to compile and execute it with Forge, and attaches the run evidence to the originating signal. Findings without a defensible local test oracle are reported as unsupported with no test emitted. Required constructor arguments must be supplied with `--constructor-args`.
 
 ## Project-aware test generation
 

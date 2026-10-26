@@ -15240,13 +15240,14 @@ COMMAND_HELP = {
     "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
     "verification": _help_entry(
         "Check which test/verification engines fit this project, or run a controlled multi-engine campaign from a JSON file.",
-        "lk verification <engines|run|correlate> ... (short alias: lk verify)",
+        "lk verification <engines|run|correlate|investigate> ... (short alias: lk verify)",
         "lk verification engines --json",
         "Use engines first to see what is installed and compatible. Use run when you have a campaign manifest that names the test kind, tool settings, and resource budget.",
         forms=[
             ("lk verification engines [--json]", "List available engines and which test types they support. Add --json when another tool or script will read the result.", "lk verify engines --json"),
             ("lk verification run <manifest.json> [options]", "Run the engines selected by the campaign manifest one at a time, within the declared budget.", "lk verify run .audit/verification/campaign.json --profile balanced"),
             ("lk verification correlate <campaign-report.json> [options]", "Join engine outcomes and attach repeat-safe evidence to an existing signal. A failing test is not automatically a confirmed vulnerability.", "lk verify correlate .audit/verification/campaign.json --signal SLITHER-XXXXXXXXXX"),
+            ("lk verification investigate <SIGNAL_ID> [options]", "Generate and execute a narrowly supported test from an existing access-control finding, then attach the test outcome to the same signal.", "lk verify investigate SLITHER-XXXXXXXXXX"),
         ],
         children={
             "engines": _help_entry(
@@ -15279,6 +15280,15 @@ COMMAND_HELP = {
                 ],
             ),
         },
+            "investigate": _help_entry(
+                "Generate and execute a test only when the existing finding maps to a supported, explicit onlyOwner access-control property.",
+                "lk verification investigate <SIGNAL_ID> [--constructor-args <JSON_ARRAY>]",
+                "lk verify investigate SLITHER-XXXXXXXXXX",
+                "The first supported path tests that a non-owner cannot call a simple onlyOwner state-changing method. Lowkey requires a unique finding/source/function and valid setup. Unsupported patterns generate no test; an executed failure is a review lead, not automatic vulnerability confirmation.",
+                options=[
+                    ("--constructor-args <JSON_ARRAY>", "Supply the exact constructor expressions needed to deploy the local test fixture. Lowkey never guesses required protocol setup.", "lk verify investigate SLITHER-XXXXXXXXXX --constructor-args '[\"address(0x1234)\"]'"),
+                ],
+            ),
         related=["lk verification-benchmark", "lk mutation-check", "lk test-gen"],
     ),
     "verification-benchmark": _help_entry(
@@ -16118,6 +16128,7 @@ REPRODUCE / ATTACK / TEST
   lk verification engines [--json]   Inventory installed engines (alias: lk verify engines).
   lk verification run <manifest>    Run a bounded multi-engine campaign (alias: lk verify run).
   lk verification correlate <report> Attach campaign evidence to existing findings (alias: lk verify correlate).
+  lk verification investigate <signal> Generate and execute a scoped finding test (alias: lk verify investigate).
   lk poc --calldata 0x... --impact-assertion '<condition>'
                                   Generate a candidate with explicit measurable impact.
   lk fuzz [args...]                Run Forge fuzz tests.
@@ -17178,7 +17189,7 @@ def main():
     first_arg = str(sys.argv[2] or "").strip().lower() if len(sys.argv) > 2 else ""
     nested_commands = {
         "audit": {"run", "pipeline"},
-        "verification": {"engines", "run", "correlate"},
+        "verification": {"engines", "run", "correlate", "investigate"},
         "walkthrough": {"test", "seed"},
         "walk": {"test", "seed"},
         "generate": {"test", "poc", "deployment"},

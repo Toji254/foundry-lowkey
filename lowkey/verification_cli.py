@@ -41,6 +41,7 @@ Usage:
       [--output .audit/verification/campaign.json]
   lk verification correlate <campaign-report.json> [--signal SIGNAL_ID ...]
       [--output .audit/verification/correlation-report.json]
+  lk verification investigate <SIGNAL_ID> [--constructor-args JSON_ARRAY]
 
 Campaign manifest:
   {
@@ -492,6 +493,76 @@ def run_cli(args: list[str]) -> int:
             if engine["notes"]:
                 print(f"    note: {engine['notes']}")
         return 0
+    if command == "investigate":
+        if len(args) < 2:
+            print("Error: provide an existing audit SIGNAL_ID", file=sys.stderr)
+            return 2
+        signal_id = args[1]
+        constructor_args = None
+        index = 2
+        while index < len(args):
+            value = args[index]
+            if value == "--constructor-args":
+                index += 1
+                if index >= len(args):
+                    print("Error: --constructor-args requires a JSON array", file=sys.stderr)
+                    return 2
+                try:
+                    constructor_args = json.loads(args[index])
+                except json.JSONDecodeError as exc:
+                    print(f"Error: invalid --constructor-args JSON: {exc}", file=sys.stderr)
+                    return 2
+            elif value.startswith("--constructor-args="):
+                try:
+                    constructor_args = json.loads(value.split("=", 1)[1])
+                except json.JSONDecodeError as exc:
+                    print(f"Error: invalid --constructor-args JSON: {exc}", file=sys.stderr)
+                    return 2
+            else:
+                print(f"Error: unknown option: {value}", file=sys.stderr)
+                return 2
+            index += 1
+        if constructor_args is not None and (
+            not isinstance(constructor_args, list)
+            or not all(isinstance(item, str) and item.strip() for item in constructor_args)
+        ):
+            print("Error: --constructor-args must be a JSON array of non-empty Solidity expressions", file=sys.stderr)
+            return 2
+        try:
+            try:
+                import signal_investigation
+            except ImportError:
+                from lowkey import signal_investigation
+            report = signal_investigation.investigate_signal(
+                signal_id,
+                project_root=_project_root(),
+                constructor_args=constructor_args,
+                audit_context=audit_context,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Error: targeted investigation failed: {exc}", file=sys.stderr)
+            return 2
+        print("LOWKEY TARGETED SIGNAL INVESTIGATION")
+        print("====================================")
+        print(f"  Signal         : {report['signal_id']}")
+        print(f"  Status         : {report['status']}")
+        if report.get("function"):
+            print(f"  Function       : {report['function']}")
+        if report.get("property"):
+            print(f"  Property       : {report['property']}")
+        if report.get("targeted_test"):
+            print(f"  Test           : {report['targeted_test']}")
+        print(f"  Validation     : {report.get('validation', {}).get('status', 'not-run')}")
+        print(f"  Evidence       : {'attached' if report.get('evidence_attached') else 'not attached'}")
+        print(f"  Report         : {report.get('report_path')}")
+        print(f"  Interpretation : {report.get('interpretation')}")
+        if report.get("reason"):
+            print(f"  Detail         : {report['reason']}")
+        if report.get("status") == "passed":
+            return 0
+        if report.get("status") == "test-failed-needs-review":
+            return 1
+        return 2
     if command == "correlate":
         if len(args) < 2:
             print("Error: provide a saved campaign report to correlate", file=sys.stderr)
@@ -628,5 +699,5 @@ def run_cli(args: list[str]) -> int:
         if any(report["summary"].get(key, 0) for key in ("failed", "timeout", "resource_limit", "error", "unsupported", "inconclusive", "submitted")):
             return 1
         return 0
-    print("Error: expected 'engines', 'run', or 'correlate'. Use 'lk verification --h'.", file=sys.stderr)
+    print("Error: expected 'engines', 'run', 'correlate', or 'investigate'. Use 'lk verification --h'.", file=sys.stderr)
     return 2
