@@ -191,6 +191,13 @@ def main() -> int:
         if "Target  : PoolFactory @" not in lab.stdout:
             raise AssertionError(f"Lowkey did not select the factory proxy as the protocol root:\n{lab.stdout[-12000:]}")
 
+        generated_harness = root / "test" / "foundry" / ".lowkey" / "LowkeyAutoFixture_PoolFactoryTest.t.sol"
+        if generated_harness.exists():
+            raise AssertionError(
+                "Lowkey left its one-shot fixture harness in the project test tree; "
+                "normal forge test runs must not inherit lab bootstrap side effects."
+            )
+
         targets = run([lk, "targets", "--all"], root, env)
         if "PoolFactory" not in targets.stdout or "PoolTemplate" not in targets.stdout:
             raise AssertionError(
