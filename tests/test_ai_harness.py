@@ -174,7 +174,8 @@ class AIHarnessTests(unittest.TestCase):
             (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
             (root / "src").mkdir()
             (root / "src" / "Vault.sol").write_text(
-                "contract Vault { function withdraw() external {} }", encoding="utf-8"
+                "contract Vault { function withdraw() external {} } // factory registry",
+                encoding="utf-8",
             )
             approved = memory.propose_lesson(
                 kind="test-procedure", title="Assert the factory registry",
@@ -239,14 +240,17 @@ class AIHarnessTests(unittest.TestCase):
             (root / "src").mkdir()
             for index in range(18):
                 (root / "src" / f"Vault{index}.sol").write_text(
-                    "contract Vault" + str(index) + " { " + ("uint256 public value; " * 420) + " }",
+                    "contract Vault" + str(index) + " { mapping(address => address) public registry; "
+                    + "// factory registry "
+                    + ("uint256 public value; " * 420) + " }",
                     encoding="utf-8",
                 )
             for index in range(8):
                 proposal = memory.propose_lesson(
                     kind="test-procedure",
-                    title=f"Validated procedure {index}",
-                    lesson=("Assert the state transition and the relevant emitted event. " * 10),
+                    title=f"Factory registry procedure {index}",
+                    lesson=("Assert the factory registry after the state transition and emitted event. " * 10),
+                    tags=["factory", "registry"],
                     root=root,
                 )
                 memory.approve_lesson(
