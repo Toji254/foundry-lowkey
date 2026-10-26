@@ -170,6 +170,33 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(state["missing"], ["lib/sample"])
             self.assertEqual(state["orphaned"], [])
 
+    def test_submodule_repository_roots_discovers_initialized_nested_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            parent = root / "lib" / "parent"
+            self.write(
+                root,
+                ".gitmodules",
+                '[submodule "parent"]\\n\\tpath = lib/parent\\n\\turl = https://example.com/parent.git\\n',
+            )
+            self.write(
+                parent,
+                ".gitmodules",
+                '[submodule "child"]\\n\\tpath = vendor/child\\n\\turl = https://example.com/child.git\\n',
+            )
+
+            with patch.object(
+                bootstrap,
+                "_submodule_checkout_complete",
+                side_effect=lambda repository, relative: (
+                    repository.resolve() == root.resolve()
+                    and relative == "lib/parent"
+                ),
+            ):
+                repositories = bootstrap._submodule_repository_roots(root)
+
+            self.assertEqual(repositories, [root.resolve(), parent.resolve()])
+
     def test_bootstrap_plan_targets_only_missing_git_submodules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
