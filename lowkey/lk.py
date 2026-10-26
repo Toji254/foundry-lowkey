@@ -9165,6 +9165,16 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
             + target_error
         )
 
+    dependency_error = _validate_local_target_dependency_code(
+        root, rpc, effective_target, artifact
+    )
+    if dependency_error:
+        return fail(
+            "Error: project-native deployment exists, but its local protocol setup is incomplete. "
+            + dependency_error
+            + ". Lowkey will not report the lab as ready."
+        )
+
     config["actor"] = "lab-deployer"
     config.setdefault("wallets", {})["lab-deployer"] = {
         "source": "anvil-default",
@@ -9181,6 +9191,65 @@ def run_project_lab_script(config, root, script, rpc, accounts, key, requested=N
     _print_security_scope(root)
     print("Ready   : lk read ... | lk changes ... | lk trace")
     return 0
+
+def _validate_local_target_dependency_code(root, rpc, target, artifact_path):
+    """Validate address-valued dependency getters exposed by a project target.
+
+    Names are semantic hints only; the helper stays protocol-agnostic. Required
+    links (for example a token, registry, implementation, or agreement) must be
+    nonzero and have code. Optional links may be zero, but a nonzero address
+    that claims to be a contract must resolve to code on this exact local chain.
+    """
+    artifact = read_artifact(artifact_path) if artifact_path else None
+    abi = artifact.get("abi", []) if isinstance(artifact, dict) else []
+    required_pattern = re.compile(r"registry|implementation|stake.?token|token|agreement", re.I)
+    optional_pattern = re.compile(r"oracle|router|factory|pool|vault|strategy|module|bridge", re.I)
+    for item in abi:
+        if not isinstance(item, dict) or item.get("type") != "function":
+            continue
+        if item.get("stateMutability") not in {"view", "pure"}:
+            continue
+        if item.get("inputs"):
+            continue
+        outputs = item.get("outputs") or []
+        if len(outputs) != 1 or canonical_type(outputs[0]) != "address":
+            continue
+        name = str(item.get("name") or "")
+        required_link = bool(required_pattern.search(name))
+        if not required_link and not optional_pattern.search(name):
+            continue
+
+        signature = format_signature(item)
+        code, raw_value, error = cast_output([
+            "cast", "call", target, signature, "--rpc-url", str(rpc)
+        ])
+        address_match = re.search(r"0x[0-9a-fA-F]{40}", str(raw_value or ""))
+        if code != 0 or not address_match:
+            if required_link:
+                return (
+                    f"required dependency getter {name}() could not be read on the local chain"
+                    + (f": {error}" if error else "")
+                )
+            continue
+
+        dependency = address_match.group(0)
+        if int(dependency, 16) == 0:
+            if required_link:
+                return f"required dependency {name}() is the zero address"
+            continue
+
+        dependency_code, dependency_runtime, dependency_error = cast_output([
+            "cast", "code", dependency, "--rpc-url", str(rpc)
+        ])
+        runtime = str(dependency_runtime or "").strip().lower()
+        if dependency_code != 0 or runtime in {"", "0x", "0x0"}:
+            return (
+                f"dependency {name}() points to {dependency}, which has no code "
+                "on this local chain"
+                + (f": {dependency_error}" if dependency_error else "")
+            )
+    return None
+
 
 def _print_lab_owner_identity(config, target):
     """Show the deployed contract's owner when its ABI exposes owner()."""
