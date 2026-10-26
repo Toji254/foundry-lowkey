@@ -1,8 +1,12 @@
 import importlib.util
 import io
+import json
+import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch
 
@@ -1004,6 +1008,88 @@ class CommandHelpTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("RECOMMENDED NEXT COMMANDS", rendered)
         self.assertIn("lk ask buyNft", rendered)
+
+
+    def test_coverage_help_documents_lcov_and_short_alias(self):
+        code, output = self.capture_dispatch("coverage", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("lk coverage --report lcov --lcov-version 1.0", output)
+        self.assertIn("lcov.info", output)
+        self.assertIn("--report lcov", output)
+        self.assertIn("--lcov-version 1.0", output)
+        self.assertIn("lk cov --report lcov --lcov-version 1.0", output)
+
+        code, alias_output = self.capture_dispatch("cov", "--h")
+        self.assertEqual(code, 0)
+        self.assertIn("LOWKEY HELP", alias_output)
+        self.assertIn("lcov.info", alias_output)
+
+    def test_short_aliases_dispatch_to_existing_verification_handlers(self):
+        calls = []
+
+        def capture(label):
+            def run_cli(args):
+                calls.append((label, list(args)))
+                return 0
+            return run_cli
+
+        cases = (
+            ("verify", ["engines", "--json"], "verification"),
+            ("vbench", ["benchmark.json", "--min-mutation-score", "0.8"], "verification-benchmark"),
+            ("mcheck", ["mutations.json"], "mutation-check"),
+        )
+        with patch.object(lk, "activate_project_target"):
+            with patch.object(lk, "verification_cli", SimpleNamespace(run_cli=capture("verification"))):
+                code = lk.dispatch_command("verify", ["engines", "--json"], {})
+            self.assertEqual(code, 0)
+
+            with patch.object(lk, "verification_benchmark", SimpleNamespace(run_cli=capture("verification-benchmark"))):
+                code = lk.dispatch_command("vbench", ["benchmark.json", "--min-mutation-score", "0.8"], {})
+            self.assertEqual(code, 0)
+
+            with patch.object(lk, "behavioral_validation", SimpleNamespace(run_cli=capture("mutation-check"))):
+                code = lk.dispatch_command("mcheck", ["mutations.json"], {})
+            self.assertEqual(code, 0)
+
+        self.assertEqual(calls, [
+            ("verification", ["engines", "--json"]),
+            ("verification-benchmark", ["benchmark.json", "--min-mutation-score", "0.8"]),
+            ("mutation-check", ["mutations.json"]),
+        ])
+
+    def test_launcher_routes_cov_and_gen_to_the_same_native_handlers(self):
+        launcher = ROOT / "bin" / "lk"
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            (lowkey_dir / "forge_tools.py").write_text(
+                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "generator.py").write_text(
+                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            coverage = subprocess.run(
+                ["bash", str(launcher), "cov", "--report", "lcov", "--lcov-version", "1.0"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(coverage.returncode, 0, coverage.stderr)
+            self.assertEqual(json.loads(coverage.stdout), [
+                "coverage", "--report", "lcov", "--lcov-version", "1.0"
+            ])
+
+            generation = subprocess.run(
+                ["bash", str(launcher), "gen", "test", "setValue(uint256)", "10"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(generation.returncode, 0, generation.stderr)
+            self.assertEqual(json.loads(generation.stdout), [
+                "test", "setValue(uint256)", "10"
+            ])
 
 
 if __name__ == "__main__":
