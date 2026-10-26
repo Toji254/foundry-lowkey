@@ -1123,3 +1123,53 @@ if __name__ == "__main__":
         implementation = "1234567890abcdef1234567890abcdef12345678"
         runtime = "0x363d3d373d3d3d363d73" + implementation + "5af43d82803e903d91602b57fd5bf3"
         self.assertEqual(lk._fixture_embedded_implementation(runtime), "0x" + implementation)
+
+
+    def test_native_lab_rejects_direct_initializer_locked_implementation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "Template.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Template { "
+                "constructor() { _disableInitializers(); } "
+                "function _disableInitializers() internal {} "
+                "function initialize() external {} }",
+                encoding="utf-8",
+            )
+            artifact_path = root / "out" / "Template.sol" / "Template.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(json.dumps({
+                "contractName": "Template",
+                "sourceName": "src/Template.sol",
+                "abi": [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+            script = root / "script" / "LocalAudit.s.sol"
+            script.parent.mkdir(parents=True)
+            script.write_text("contract LocalAudit {}", encoding="utf-8")
+            target = "0x" + "1" * 40
+            def fake_run_cast(args, config=None, capture=False):
+                if args[:2] == ["code", target]:
+                    return lk.CommandResult("0x6000", 0)
+                if args[:2] == ["implementation", target]:
+                    return lk.CommandResult("0x" + "0" * 40, 0)
+                return lk.CommandResult("", 0)
+            deployment_file = root / "broadcast" / "LocalAudit.s.sol" / "31337" / "run-latest.json"
+            config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast), \\
+                 patch.object(lk, "discover_deployments", return_value=[{
+                     "contract": "Template",
+                     "address": target,
+                     "file": str(deployment_file),
+                 }]):
+                contract, artifact, error = lk._validate_project_lab_target(
+                    config,
+                    root,
+                    "http://127.0.0.1:8545",
+                    target,
+                    provenance_script=script,
+                )
+            self.assertIsNone(contract)
+            self.assertIsNone(artifact)
+            self.assertIn("initializer-locked implementation", error)
