@@ -6504,25 +6504,65 @@ def run_auto_target(config,name=None):
     return 0
 
 
-def _foundry_test_roots(root):
-    """Resolve custom and conventional Foundry test directories."""
-    root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
-    candidates = []
+def _foundry_project_config_text(root):
+    """Read the exact project config file selected by Foundry, without changing it."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).expanduser().resolve()
+    configured = os.environ.get("FOUNDRY_CONFIG")
+    config_path = Path(configured).expanduser() if configured else root_path / "foundry.toml"
+    if not config_path.is_absolute():
+        config_path = root_path / config_path
     try:
-        config_text = (root_path / "foundry.toml").read_text(
-            encoding="utf-8", errors="replace"
-        )
+        return config_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        config_text = ""
-    # Include test directories declared by any Foundry profile, then fall back
-    # to both conventional names when the active config or profile differs.
-    for configured in re.findall(
-        r"(?m)^\\s*test\\s*=\\s*[\"']([^\"']+)[\"']",
-        config_text,
-    ):
-        path = Path(configured).expanduser()
-        candidates.append(path if path.is_absolute() else root_path / path)
-    candidates.extend((root_path / "test", root_path / "tests"))
+        return ""
+
+
+def _foundry_project_setting(root, setting, default=None):
+    """Resolve common Foundry path settings using env precedence and active profile inheritance."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).expanduser().resolve()
+    env_suffix = str(setting).strip().upper()
+    for env_name in (f"FOUNDRY_{env_suffix}", f"DAPP_{env_suffix}"):
+        value = os.environ.get(env_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip().strip("'\"")
+
+    text = _foundry_project_config_text(root_path)
+    active_profile = str(os.environ.get("FOUNDRY_PROFILE") or "default").strip() or "default"
+    values = {}
+    current_profile = None
+    section_pattern = re.compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$")
+    setting_pattern = re.compile(
+        r"^\s*" + re.escape(str(setting)) + r"\s*=\s*[\"']([^\"']+)[\"']\s*(?:#.*)?$"
+    )
+    for line in text.splitlines():
+        header = section_pattern.match(line)
+        if header:
+            section = header.group(1).strip()
+            profile_match = re.fullmatch(r"profile\.([A-Za-z0-9_-]+)", section)
+            current_profile = profile_match.group(1) if profile_match else None
+            continue
+        if current_profile not in {active_profile, "default"}:
+            continue
+        match = setting_pattern.match(line)
+        if match and current_profile not in values:
+            values[current_profile] = match.group(1)
+
+    return values.get(active_profile) or values.get("default") or default
+
+
+def _foundry_resolve_project_path(root, setting, default):
+    """Resolve a project path setting relative to Foundry's root unless absolute."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).expanduser().resolve()
+    value = _foundry_project_setting(root_path, setting, default)
+    path = Path(str(value or default)).expanduser()
+    return path if path.is_absolute() else root_path / path
+
+
+def _foundry_test_roots(root):
+    """Resolve the active profile's Foundry test directory plus safe conventional fallbacks."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).expanduser().resolve()
+    configured = _foundry_resolve_project_path(root_path, "test", "test")
+    candidates = [configured, root_path / "test", root_path / "tests"]
     roots = []
     seen = set()
     for candidate in candidates:
@@ -6757,36 +6797,8 @@ def _fixture_state_files(root, safe_name):
 
 
 def _foundry_active_test_root(root):
-    """Resolve the active profile's test directory from the config Foundry will load."""
-    root_path = Path(root).expanduser().resolve()
-    config_value = os.environ.get("FOUNDRY_CONFIG")
-    config_path = Path(config_value).expanduser() if config_value else root_path / "foundry.toml"
-    if not config_path.is_absolute():
-        config_path = root_path / config_path
-    try:
-        config_text = config_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        config_text = ""
-
-    active_profile = str(os.environ.get("FOUNDRY_PROFILE") or "default").strip() or "default"
-    values = {}
-    current_profile = None
-    profile_header = re.compile(r"^\s*\[\s*profile\.([A-Za-z0-9_-]+)\s*\]\s*(?:#.*)?$")
-    test_assignment = re.compile(r"""^\s*test\s*=\s*["']([^"']+)["']\s*(?:#.*)?$""")
-    for line in config_text.splitlines():
-        header = profile_header.match(line)
-        if header:
-            current_profile = header.group(1)
-            continue
-        if current_profile not in {active_profile, "default"}:
-            continue
-        match = test_assignment.match(line)
-        if match and current_profile not in values:
-            values[current_profile] = match.group(1)
-
-    configured = values.get(active_profile) or values.get("default") or "test"
-    test_root = Path(configured).expanduser()
-    return (test_root if test_root.is_absolute() else root_path / test_root).resolve()
+    """Resolve the active profile's test directory, honoring FOUNDRY_CONFIG/FOUNDRY_TEST."""
+    return _foundry_resolve_project_path(root, "test", "test").resolve()
 
 
 def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permissions=None):
@@ -7425,29 +7437,12 @@ LOCAL_LAB_SCRIPTS = (
 )
 
 def _foundry_script_roots(root):
-    """Resolve configured and conventional Foundry script directories."""
-    root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
-    candidates = []
-    try:
-        config_text = (root_path / "foundry.toml").read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except OSError:
-        config_text = ""
-    # This intentionally recognizes scalar paths anywhere in foundry.toml.
-    # Foundry profiles can override script=, so considering every declared
-    # path is safer than assuming [profile.default] or the directory name.
-    for configured in re.findall(
-        r"(?m)^\s*script\s*=\s*[\"']([^\"']+)[\"']",
-        config_text,
-    ):
-        path = Path(configured).expanduser()
-        candidates.append(path if path.is_absolute() else root_path / path)
-    candidates.extend((root_path / "script", root_path / "scripts"))
-
+    """Resolve configured script roots and conventional fallbacks."""
+    root_path = Path(audit_context.foundry_project_root(root) or root).expanduser().resolve()
+    configured = _foundry_resolve_project_path(root_path, "script", "script")
     roots = []
     seen = set()
-    for candidate in candidates:
+    for candidate in (configured, root_path / "script", root_path / "scripts"):
         try:
             resolved = candidate.resolve()
         except OSError:
