@@ -59,6 +59,7 @@ class TestPlannerTests(unittest.TestCase):
         self.assertEqual(case["status"], "proposed")
         self.assertFalse(case["verified"])
         self.assertFalse(case["executed"])
+        self.assertEqual(report["_lowkey_meta"]["validation_retry_count"], 0)
         self.assertTrue(report["_lowkey_meta"]["plan_id"])
         saved = self.root / report["_lowkey_meta"]["report_path"]
         self.assertTrue(saved.is_file())
@@ -68,6 +69,40 @@ class TestPlannerTests(unittest.TestCase):
             and event["details"]["plan_id"] == report["_lowkey_meta"]["plan_id"]
             for event in events
         ))
+
+    def test_oversized_provider_step_list_retries_once_with_schema_limits(self):
+        invalid = self._response()
+        invalid["test_cases"][0]["steps"] = [f"Step {index}" for index in range(13)]
+        with patch.object(
+            test_planner.ai_harness, "request_structured",
+            side_effect=[invalid, self._response()],
+        ) as request:
+            report = test_planner.create_test_plan(self.root, "Vault")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(report["_lowkey_meta"]["validation_retry_count"], 1)
+        retry_task = request.call_args_list[1].kwargs["task"]
+        self.assertIn("CORRECTION REQUIRED", retry_task)
+        self.assertIn("at most 8 test cases", retry_task)
+        self.assertIn("8 steps per case", retry_task)
+        self.assertIn("Format note:", test_planner.render_test_plan(report))
+
+    def test_repeated_invalid_test_plan_is_rejected_without_saving_plan(self):
+        invalid = self._response()
+        invalid["test_cases"][0]["steps"] = [f"Step {index}" for index in range(13)]
+        with patch.object(
+            test_planner.ai_harness, "request_structured",
+            side_effect=[invalid, invalid],
+        ) as request:
+            with self.assertRaisesRegex(
+                test_planner.TestPlanError,
+                "failed local validation after one correction attempt",
+            ):
+                test_planner.create_test_plan(self.root, "Vault")
+
+        self.assertEqual(request.call_count, 2)
+        plan_dir = self.root / ".audit" / "ai-review" / "test-plans"
+        self.assertFalse(plan_dir.exists() and list(plan_dir.glob("TP-*.json")))
 
     def test_bad_source_quote_is_unmatched_not_confirmed(self):
         with patch.object(test_planner.ai_harness, "request_structured",
