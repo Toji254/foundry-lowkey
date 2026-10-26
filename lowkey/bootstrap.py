@@ -1551,7 +1551,7 @@ def run_bootstrap(
                 stage_failed = True
                 break
 
-            output = (result.stdout or "") + (("\\n" + result.stderr) if result.stderr else "")
+            output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
             if output:
                 print(output.rstrip())
             if result.returncode != 0:
