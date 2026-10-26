@@ -15944,6 +15944,14 @@ REPRODUCE / ATTACK / TEST
   lk matrix list                   List scenarios.
   lk matrix test <name>            Generate a Forge test skeleton for a scenario.
 
+SHORT ALIASES FOR LONG COMMANDS
+  lk gen ...                       Same as lk generate; e.g. lk gen test 'setValue(uint256)' 10.
+  lk verify ...                    Same as lk verification; e.g. lk verify engines --json.
+  lk vbench ...                    Same as lk verification-benchmark; e.g. lk vbench benchmark.json.
+  lk mcheck ...                    Same as lk mutation-check; e.g. lk mcheck mutations.json.
+  lk cov ...                       Same as lk coverage; e.g. lk cov --report lcov --lcov-version 1.0.
+  Add --h to any of these to see the same help as the full command.
+
 AUDIT WORKFLOW / EVIDENCE
   lk audit                          Interactive audit dashboard.
   lk audit auto                    Local autonomous audit; may provision Anvil.
@@ -16864,6 +16872,30 @@ def dispatch_command(cmd, args, config, from_batch=False):
     return error_code
 
 
+def _running_from_source_checkout() -> bool:
+    """Whether this CLI is running from a recognized Lowkey source checkout."""
+    try:
+        source_root = Path(__file__).resolve().parents[1]
+        return bool(_is_lowkey_source_checkout and _is_lowkey_source_checkout(source_root))
+    except OSError:
+        return False
+
+
+def _warn_if_help_runtime_is_stale() -> None:
+    """Warn when help comes from an old installed copy, without blocking help."""
+    runtime = runtime_sync_status()
+    if runtime.get("status") not in {"stale", "corrupt"} or _running_from_source_checkout():
+        return
+    print("LOWKEY HELP MAY BE OUT OF DATE", file=sys.stderr)
+    print(f"  {runtime.get('detail', 'installed runtime verification failed')}", file=sys.stderr)
+    source_repo = runtime.get("source_repo")
+    if source_repo:
+        print(f"  FIX: cd {source_repo} && bash install.sh", file=sys.stderr)
+    else:
+        print("  FIX: run bash install.sh from the Lowkey source checkout used for installation.", file=sys.stderr)
+    print("  Help will still be shown, but recent commands may be missing until Lowkey is reinstalled.", file=sys.stderr)
+
+
 def main():
     global _COMMAND_STATUS
     _COMMAND_STATUS = 0
@@ -16876,6 +16908,7 @@ def main():
     if command.lower() in HELP_FLAGS or any(
         str(argument).strip().lower() in HELP_FLAGS for argument in sys.argv[2:]
     ):
+        _warn_if_help_runtime_is_stale()
         result = dispatch_command(command, sys.argv[2:], config)
         if isinstance(result, int):
             raise SystemExit(result)
@@ -16899,14 +16932,7 @@ def main():
         "--h", "--help", "-h", "help", "--version", "-V", "version",
         "doctor", "self-test",
     }
-    running_from_source_checkout = False
-    try:
-        source_root = Path(__file__).resolve().parents[1]
-        running_from_source_checkout = bool(
-            _is_lowkey_source_checkout and _is_lowkey_source_checkout(source_root)
-        )
-    except OSError:
-        running_from_source_checkout = False
+    running_from_source_checkout = _running_from_source_checkout()
 
     if (
         runtime.get("status") in {"stale", "corrupt"}
