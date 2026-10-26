@@ -17,7 +17,7 @@ jobs:
           python-version: "3.11"
           check-latest: true
       - name: Compile
-        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/benchmark.py lowkey/system_model.py lowkey/project_tools.py lowkey/analysis_adapters.py lowkey/verification_adapters.py lowkey/test_generation.py lowkey/test_generation_analysis.py lowkey/generation_plugins.py lowkey/behavioral_validation.py lowkey/verification_benchmark.py lowkey/verification_cli.py lowkey/signal_investigation.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/solidity_connect_data.py lowkey/break_engine.py
+        run: python -m py_compile lowkey/lk.py lowkey/forge_tools.py lowkey/generator.py lowkey/slither_tools.py lowkey/audit_context.py lowkey/project_detection.py lowkey/bootstrap.py lowkey/clone_tools.py lowkey/walkthrough.py lowkey/walkthrough_benchmarks.py lowkey/walkthrough_finding_patterns.py lowkey/break_playbook.py lowkey/audit_engine.py lowkey/benchmark.py lowkey/system_model.py lowkey/project_tools.py lowkey/analysis_adapters.py lowkey/verification_adapters.py lowkey/test_generation.py lowkey/test_generation_analysis.py lowkey/generation_plugins.py lowkey/behavioral_validation.py lowkey/verification_benchmark.py lowkey/verification_cli.py lowkey/signal_investigation.py lowkey/import_helper.py lowkey/solidity_cheatsheet.py lowkey/solidity_cheat_topics.py lowkey/solidity_cheat_data.py lowkey/solidity_connect_data.py lowkey/break_engine.py lowkey/ai_harness.py lowkey/experience_memory.py
       - name: Solidity cheatsheet tests
         run: python -m unittest tests/test_solidity_cheatsheet.py -v
       - name: Security regression benchmark
@@ -67,6 +67,8 @@ jobs:
           grep -q '/import_helper.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_playbook.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/break_engine.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/ai_harness.py":' "$HOME/.lowkey/install-manifest.json"
+          grep -q '/experience_memory.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/analysis_adapters.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/verification_adapters.py":' "$HOME/.lowkey/install-manifest.json"
           grep -q '/test_generation.py":' "$HOME/.lowkey/install-manifest.json"

@@ -9,6 +9,18 @@ if [[ "${1:-}" == "forge" && "${2:-}" == "debug" ]]; then
     exec forge "$@"
 fi
 
+# Optional constrained reasoning; never used as a general chatbot.
+if [[ "${1:-}" == "ai" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/ai_harness.py" "$@"
+fi
+
+# Native experience memory; this command works without AI configured.
+if [[ "${1:-}" == "memory" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/experience_memory.py" "$@"
+fi
+
 for arg in "$@"; do
     case "$arg" in
         --h|--help|-h|help)

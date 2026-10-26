@@ -78,6 +78,26 @@ The active workspace scope is used by commands such as lk audit and lk lab when 
 - Protocol walkthrough: uses the richer local Foundry walkthrough/lab engine for actual stateful execution and replayable observations.
 
 lk audit and lk audit run are intentionally separate surfaces: the former is the interactive Lowkey audit console; the latter is the evidence pipeline. Neither should be read as a vulnerability verdict.
+## Native-first AI harness
+
+AI is an optional, once-configured reasoning extension for narrowly scoped tasks such as protocol interpretation and proposing test hypotheses. It does not replace Lowkey's native analyzers or run commands, edit files, sign transactions, deploy contracts, or confirm findings. Normal workflows work with AI disabled.
+
+See [the native AI harness guide](docs/native-ai-harness.md) for provider setup, privacy boundaries, and use of the explicit \`lk lab --ai-review\` option.
+
+## Native experience memory
+
+Lowkey can retain audit feedback and reusable lessons without an AI provider. Project-specific lessons are stored in a private Lowkey data directory outside the target repository, keyed to the project's canonical path, so a checked-out repository cannot forge trusted approvals. Only lessons explicitly approved with validation evidence are supplied as reference context to an explicitly requested AI review; lessons never execute as code or change native security rules.
+
+~~~bash
+lk memory status
+lk memory feedback --kind false-positive --summary "Lead did not reproduce" --evidence "Regression test confirms the only path is guarded."
+lk memory propose --kind test-procedure --title "Check factory registry" --lesson "Assert both the factory event and registry mapping." --tag factory
+lk memory list --status proposed
+lk memory approve LESSON_ID --validation-kind test --validation "The linked Foundry regression test passes."
+~~~
+
+See [the experience memory guide](docs/experience-memory.md) for validation, scope, global promotion, and correction workflows.
+
 ## Start here
 
 ~~~bash
