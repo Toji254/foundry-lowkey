@@ -1454,7 +1454,7 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
         }
     if re.search(
         r"(command not found|executable file not found|forge was not found on path|"
-        r"error executing [^\\n]*no such file|unable to execute [^\\n]*no such file)",
+        r"error executing .*no such file|unable to execute .*no such file)",
         lowered,
     ):
         return {
