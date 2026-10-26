@@ -325,6 +325,55 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(excluded["status"], "profile_excluded")
         self.assertIn("light profile", excluded["reason"])
 
+
+    def test_forge_verification_blocks_legacy_lowkey_reproduction_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            test_dir = root / "test"
+            test_dir.mkdir()
+            (test_dir / "LowkeyTest_BountyArena.t.sol").write_text(
+                "\n".join([
+                    "/// @title Lowkey-generated reproduction test from an earlier target session.",
+                    "contract LowkeyTest_BountyArena is Test {",
+                    "    address internal constant TARGET = address(uint160(0x1234));",
+                    '    function setUp() public { assertGt(TARGET.code.length, 0, "runtime guard"); }',
+                    '    function test_reproduction() public { (bool success, bytes memory data) = TARGET.call(hex""); }',
+                    "    // PLACEHOLDER: no concrete call was available yet; replace calldata/function before executing.",
+                    "}",
+                ]),
+                encoding="utf-8",
+            )
+            # The adapter advertises itself as Forge but uses Python as the command.
+            # A blocked preflight must return before trying to execute the command.
+            adapter = ExecutableAdapter(
+                EngineCapability("forge", sys.executable, ("unit",), memory_class="low")
+            )
+            result = adapter.run(
+                {"root": str(root)},
+                {"test_kind": "unit", "argv": ["test", "-vv"]},
+                budget={"timeout_seconds": 5},
+            )
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.exit_code, 2)
+        self.assertEqual(result.metadata["result_semantics"], "lowkey_generated_test_preflight_block")
+        self.assertEqual(result.raw_evidence["finding"], "legacy reproduction scaffold")
+        self.assertIn("neither forks the selected RPC", result.raw_stderr)
+        self.assertIn("Forge was not launched", result.raw_stderr)
+
+    def test_forge_verification_allows_locally_deployed_lowkey_target_template(self):
+        source = "\n".join([
+            "/// @title Lowkey-generated reproduction test",
+            "contract LowkeyTest_Vault is Test {",
+            "    Vault internal targetInstance;",
+            "    address internal TARGET;",
+            "    function setUp() public { targetInstance = new Vault(); TARGET = address(targetInstance); assertGt(TARGET.code.length, 0, 'runtime guard'); }",
+            '    function test_reproduction() public { (bool success, bytes memory data) = TARGET.call(hex"deadbeef"); }',
+            "}",
+        ])
+        from lowkey.verification_adapters import lowkey_generated_test_safety_issue
+        self.assertIsNone(lowkey_generated_test_safety_issue(source))
+
     def test_adapter_runs_argument_vector_and_preserves_output(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
         adapter = ExecutableAdapter(cap)
