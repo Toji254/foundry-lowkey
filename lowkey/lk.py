@@ -10335,7 +10335,7 @@ def run_lab(config,args):
                 from lowkey import ai_harness as _ai_harness
             _ai_status = _ai_harness.status()
             if _ai_review_mode is None and _ai_status.get("usable") and _ai_status.get("auto_assist"):
-                _reason = _ai_harness.auto_review_reason(root, requested_contract)
+                _reason = _ai_harness.automatic_review_reason(root, requested_contract, _ai_status)
                 if _reason:
                     _ai_review_mode = "auto"
                     _ai_review_reason = _reason
