@@ -209,6 +209,24 @@ class AIHarnessTests(unittest.TestCase):
             self.assertNotIn(pending["title"], json.dumps(experience))
             self.assertEqual(result["summary"], response["summary"])
 
+    def test_protocol_review_accepts_valid_nested_schema(self):
+        result = {
+            "summary": "The vault tracks balances and exposes a withdrawal path.",
+            "contract_roles": [{
+                "name": "Vault",
+                "purpose": "Holds user deposits.",
+                "evidence": "src/Vault.sol: deposit and withdraw functions.",
+            }],
+            "invariants": [{
+                "statement": "Total liabilities must not exceed tracked assets.",
+                "rationale": "Withdrawals must remain fully backed.",
+                "source": "src/Vault.sol: accounting state and withdrawal logic.",
+            }],
+            "open_questions": ["Is there a trusted price source?"],
+            "deployment_considerations": ["Confirm the initialization sequence."],
+        }
+        ai._validate_protocol_review_output(result)
+
     def test_protocol_review_rejects_malformed_nested_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
