@@ -47,6 +47,10 @@ class AIHarnessTests(unittest.TestCase):
                 self.assertIn(flag, help_text)
         self.assertIn("Why / when", help_text)
         self.assertIn("Examples:", help_text)
+        self.assertIn(
+            "Examples:\n  lk ai status\n  lk ai security-review --contract Vault\n  lk ai test-plan --contract Vault",
+            help_text,
+        )
         self.assertIn("does NOT write Solidity test code", help_text)
         self.assertIn("preview never makes a provider request", help_text)
 

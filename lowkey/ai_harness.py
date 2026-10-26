@@ -1515,7 +1515,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lk ai",
         description="Plain-language AI helpers for contract reviews, test ideas and error explanations.",
-        epilog="Examples: lk ai status | lk ai security-review --contract Vault | lk ai test-plan --contract Vault",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  lk ai status\n"
+            "  lk ai security-review --contract Vault\n"
+            "  lk ai test-plan --contract Vault"
+        ),
     )
     sub = parser.add_subparsers(dest="action")
     status_cmd = sub.add_parser("status", help="show whether AI is set up and what to do next")
