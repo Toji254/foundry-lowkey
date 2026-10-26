@@ -1007,6 +1007,509 @@ def automatic_review_reason(
     return auto_review_reason(root, contract_name)
 
 
+AI_HELP_GUIDE = r'''AI COMMAND GUIDE
+===============
+
+QUICK START — FOLLOW THESE IN ORDER
+----------------------------------
+1. Check your setup:
+   lk ai status
+
+2. Check that the provider is actually reachable. This sends a small fixed request,
+   not your contract source, and the provider may charge for it:
+   lk ai test
+
+3. Before sending contract source to an AI provider, inspect what Lowkey selected.
+   This preview is local-only and does not contact the provider:
+   lk ai preview --contract ConfidencePool
+
+4. Ask for a focused security review:
+   lk ai security-review --contract ConfidencePool
+
+5. Ask for test ideas:
+   lk ai test-plan --contract ConfidencePool
+
+6. Review what has been saved:
+   lk ai ledger
+
+
+COMPLETE COMMAND REFERENCE
+--------------------------
+Each command below lists every command-specific flag, what it does, when to use it,
+and a copy-paste example. All commands also support -h or --help. The root menu also
+accepts the compatibility forms "lk ai help" and "lk ai --h".
+
+1. STATUS — "Is my AI setup ready?"
+   Syntax:
+     lk ai status [--json]
+
+   Why / when:
+     Check whether AI is enabled, which provider/model is selected, and whether a key
+     is available. This is local and does not contact the model. "READY TO TRY" is not
+     a connection test; use "lk ai test" to verify connectivity.
+
+   Flags:
+     --json    Print structured JSON for scripts instead of the human-readable summary.
+
+   Examples:
+     lk ai status
+     lk ai status --json
+
+
+2. PREVIEW — "What source would Lowkey send?"
+   Syntax:
+     lk ai preview [--root DIRECTORY] [--contract NAME] [--show-context]
+
+   Why / when:
+     Use this before a remote security review or test plan to inspect the selected source.
+     The preview never makes a provider request. The default view shows file names, sizes,
+     and redaction counts. It does not display source contents.
+
+   Flags:
+     --root DIRECTORY    Project folder to inspect. Default: the current directory.
+     --contract NAME     Prioritize files matching a contract name; this does not guarantee
+                         that only that contract is selected.
+     --show-context      Print the full selected context as JSON after the local redaction
+                         pass. This can include substantial contract source. Keep it private
+                         and inspect it before sending anything to a provider.
+
+   Examples:
+     lk ai preview
+     lk ai preview --root ~/2026-07-bc-confidence-pools
+     lk ai preview --contract ConfidencePool
+     lk ai preview --contract ConfidencePool --show-context
+
+   Important:
+     Secret redaction is best-effort, not a guarantee that every secret is recognized.
+
+
+3. MODE — "When may Lowkey ask AI for a review?"
+   Syntax:
+     lk ai mode {manual|auto}
+
+   Why / when:
+     Choose when Lowkey is allowed to request the optional complexity-triggered protocol
+     overview. Manual is the safer default and does not automatically trigger that review.
+     Auto lets Lowkey's local heuristic request a review when the project looks complex.
+     This does not let the model choose targets or execute tools. Selected source may be sent
+     to your configured provider and charges may apply.
+
+   Values:
+     manual    Default; you explicitly request AI work.
+     auto      Opt in to complexity-triggered AI protocol review.
+
+   Examples:
+     lk ai mode manual
+     lk ai mode auto
+     lk ai status
+
+
+4. SETUP — "Choose a provider and model"
+   Syntax:
+     lk ai setup --provider PROVIDER --model MODEL
+                  [--base-url URL] [--api-key-env ENV_NAME]
+                  [--timeout SECONDS] [--max-output-tokens COUNT]
+
+   Why / when:
+     Use this once to configure the AI service. A normal API key is requested through
+     hidden terminal input; the key is stored separately from ordinary settings.
+     Setup itself does not test the connection. Run "lk ai test" afterwards.
+
+   --provider PROVIDER
+     Required. Allowed values:
+       deepseek           DeepSeek's API
+       gemini             Gemini's API
+       openai             OpenAI's API
+       openai-compatible  An OpenAI-compatible API endpoint, including a compatible
+                          Gemini endpoint; this is an API format, not a model name.
+       ollama             A local Ollama server; no API key is requested.
+   --model MODEL
+     Required. Exact model name enabled for your API account or local server. Lowkey
+     cannot make an unavailable provider model available.
+   --base-url URL
+     Optional custom API base URL. Required in practice for "openai-compatible", because
+     that provider has no default endpoint. Use HTTPS for remote services; localhost HTTP
+     is permitted for local services. Never place an API key or other credential in the URL.
+   --api-key-env ENV_NAME
+     Read the key from a named environment variable instead of prompting for a key.
+     Example: export GEMINI_API_KEY='your-key' then pass GEMINI_API_KEY as this value.
+     Do not put the secret itself after this flag. This option replaces saved keys for
+     that provider with environment-variable configuration.
+   --timeout SECONDS
+     Request timeout. Default: 45 seconds. Allowed range: 5–180.
+   --max-output-tokens COUNT
+     Maximum requested model output size. Default: 1800. Allowed range: 128–8192.
+     Larger responses can take longer and may cost more, depending on provider pricing.
+
+   Examples:
+     lk ai setup --provider gemini --model YOUR_API_MODEL
+     lk ai setup --provider openai-compatible --base-url https://generativelanguage.googleapis.com/v1beta/openai --model gemini-3.5-flash-lite
+     export GEMINI_API_KEY='your-key'
+     lk ai setup --provider gemini --model YOUR_API_MODEL --api-key-env GEMINI_API_KEY
+     lk ai setup --provider ollama --model qwen2.5-coder
+     lk ai setup --provider openai-compatible --base-url https://provider.example/v1 --model MODEL --timeout 60 --max-output-tokens 2400
+
+
+5. ENABLE — "Turn on the optional AI feature"
+   Syntax:
+     lk ai enable
+
+   Why / when:
+     Enables the configured AI feature. Configure a provider first with "lk ai setup".
+     This does not contact the provider or run a review.
+
+   Example:
+     lk ai enable
+
+
+6. DISABLE — "Turn off optional AI"
+   Syntax:
+     lk ai disable
+
+   Why / when:
+     Turns off the optional AI extension without disabling Lowkey's normal, native commands.
+     Use this if you want to pause AI requests but keep using Lowkey.
+
+   Example:
+     lk ai disable
+
+
+7. TEST — "Does my provider connection work?"
+   Syntax:
+     lk ai test
+
+   Why / when:
+     Sends a small fixed connectivity request to the configured provider. It does not send
+     project source. It may incur provider charges. Use it after setup or after changing keys.
+
+   Example:
+     lk ai test
+
+
+8. KEYS — "Manage API keys without exposing them"
+   Syntax:
+     lk ai keys
+     lk ai keys list [--provider PROVIDER] [--json]
+     lk ai keys add --provider PROVIDER --slot {1|2|3}
+     lk ai keys remove --provider PROVIDER [--slot {1|2|3}]
+     lk ai keys clear --provider PROVIDER
+
+   Why / when:
+     Use this if a provider key is missing, expired, out of quota, or you want backup keys.
+     Lowkey supports up to three saved slots per provider. Key values are never displayed.
+
+   Subcommands:
+     keys (no subcommand)
+       Shows the configured key summary. Same idea as "lk ai keys list".
+
+     list
+       Shows saved slot numbers and how many keys are usable; it never prints key values.
+       --provider PROVIDER  Show one provider only. Omit to show configured providers.
+       --json               Print machine-readable JSON.
+
+     add
+       Prompts for a key with hidden input and saves/replaces the chosen slot.
+       --provider PROVIDER  Required; one of the provider names listed under "setup".
+       --slot {1|2|3}       Required saved-key slot number.
+
+     remove
+       Removes one slot, or all saved key slots for the provider if --slot is omitted.
+       --provider PROVIDER  Required provider name.
+       --slot {1|2|3}       Optional slot to remove.
+
+     clear
+       Removes all saved keys for one provider.
+       --provider PROVIDER  Required provider name.
+
+   Examples:
+     lk ai keys list
+     lk ai keys list --provider openai-compatible
+     lk ai keys list --provider openai-compatible --json
+     lk ai keys add --provider openai-compatible --slot 1
+     lk ai keys add --provider openai-compatible --slot 2
+     lk ai keys remove --provider openai-compatible --slot 2
+     lk ai keys remove --provider openai-compatible
+     lk ai keys clear --provider openai-compatible
+
+   Key failover:
+     On quota, rate-limit, or key-auth rejection, Lowkey may try another configured slot.
+     It does not rotate keys for ordinary network failures, silently change the model, or
+     print key values.
+
+
+9. EXPLAIN-ERROR — "Explain an error in plain English"
+   Syntax:
+     lk ai explain-error [--last]
+     lk ai explain-error --text ERROR_TEXT [MORE_WORDS ...] [--command COMMAND]
+
+   Why / when:
+     Use this after a failed Lowkey, Forge, Cast, compiler, or RPC command. With no --text,
+     Lowkey reads the most recent captured error. Use --text for output that Lowkey did not
+     capture automatically. The diagnosis offers checks and suggested fixes only.
+
+   Flags:
+     --last             Explicitly request the most recently captured error. This is the
+                        default behavior when --text is not supplied.
+     --text TEXT ...    Error text copied from a command. Quote a long error as one string.
+     --command COMMAND  The command that produced the copied error; explanatory context only.
+
+   Examples:
+     lk ai explain-error --last
+     lk ai explain-error --text 'failed to retrieve chain ID from fork endpoint: connection timed out' --command 'forge test --match-path test/fork/*'
+     lk ai explain-error --text 'cast: not found' --command 'lk doctor'
+
+   Safety:
+     Lowkey prints suggestions; it does not run them. Check each command before copying it.
+
+
+10. ERRORS — "Choose automatic or manual error explanations"
+    Syntax:
+      lk ai errors {auto|manual|status} [--json]
+
+    Why / when:
+      Use status to see the current setting. Auto opts in to AI explanations after supported
+      routed Lowkey command failures; this may send a redacted error to the provider and may
+      cost money. Manual disables automatic explanations. The AI never executes a suggested fix.
+
+    Values:
+      status    Show current mode and safety behavior. --json prints structured output here.
+      auto      Turn on automatic explanations for supported captured command failures.
+      manual    Turn automatic explanations off.
+
+    Examples:
+      lk ai errors status
+      lk ai errors status --json
+      lk ai errors auto
+      lk ai errors manual
+
+    Limitation:
+      Not every command that directly invokes an external binary is captured automatically.
+      For those errors, use "lk ai explain-error --text ... --command ...".
+
+
+11. TEST-PLAN — "What tests should I write?"
+    Syntax:
+      lk ai test-plan [--root DIRECTORY] [--contract NAME] [--json]
+
+    Why / when:
+      Suggests targeted unit, fuzz, invariant, regression, integration, or fork-test ideas.
+      Use it to turn a source-level rule into a concrete test outline.
+
+    Flags:
+      --root DIRECTORY  Project directory. Default: current directory.
+      --contract NAME   Prioritize source matching this contract name.
+      --json            Print the complete structured plan instead of the readable summary.
+
+    Examples:
+      lk ai test-plan --contract ConfidencePool
+      lk ai test-plan --root ~/2026-07-bc-confidence-pools --contract ConfidencePool
+      lk ai test-plan --contract ConfidencePool --json
+
+    Important limits:
+      This command sends selected source context to the configured AI provider, so charges may
+      apply. It saves a proposal; it does NOT write Solidity test code, run a test, or confirm
+      that the suggested test is correct. Test folders are excluded from the provided source
+      context, so review existing tests yourself before adding duplicates.
+
+
+12. SECURITY-REVIEW — "What possible vulnerabilities should I investigate?"
+    Syntax:
+      lk ai security-review [--root DIRECTORY] [--contract NAME] [--json]
+
+    Why / when:
+      Use it to ask for concrete, source-grounded vulnerability leads. It is not the same as
+      the broader protocol overview from "lk lab --ai-review".
+
+    Flags:
+      --root DIRECTORY  Project directory. Default: current directory.
+      --contract NAME   Prioritize source matching this contract name.
+      --json            Print the normalized report as JSON instead of the readable summary.
+
+    Examples:
+      lk ai security-review --contract ConfidencePool
+      lk ai security-review --root ~/2026-07-bc-confidence-pools --contract ConfidencePool
+      lk ai security-review --contract ConfidencePool --json
+
+    Important limits:
+      Selected production-source excerpts and eligible approved notes are sent to the configured
+      provider; charges may apply. Test folders, dependencies and generated build output are
+      excluded from this review context. "No concrete issue reported" is NOT proof of safety.
+      A source quote marked found means only that the quote exists in the selected source; it
+      does not prove the AI's security claim. Treat findings as leads until independently checked.
+
+
+13. LEDGER — "What has Lowkey saved about the review?"
+    Syntax:
+      lk ai ledger [--root DIRECTORY] [--json]
+
+    Why / when:
+      Shows saved review activity, candidate findings, local test runs, and human decisions.
+      Use it to pick up an investigation later and see which claims still need checking.
+
+    Flags:
+      --root DIRECTORY  Project directory. Default: current directory.
+      --json            Print the structured ledger summary as JSON.
+
+    Examples:
+      lk ai ledger
+      lk ai ledger --root ~/2026-07-bc-confidence-pools
+      lk ai ledger --json
+
+    Important:
+      An empty candidate list means no candidate was recorded in that history. It does not mean
+      the contract is secure. A model response never sets a human decision automatically.
+
+
+14. VERIFY — "Preview or run one existing local test against a finding"
+    Syntax:
+      lk ai verify FINDING_ID --test TEST_FILE --match-test TEST_FUNCTION
+                    [--root DIRECTORY] [--run] [--json]
+
+    Why / when:
+      Use only after a security review has produced a finding ID and you have found an existing
+      Solidity test that checks the claim. Without --run this validates the selection and prints
+      a plan. With --run, it explicitly executes the one selected local Foundry test and saves
+      the result as evidence.
+
+    Flags:
+      FINDING_ID            Required finding ID from security-review, such as F-0123456789ab.
+      --test TEST_FILE      Required test file under test/ or tests/. Fork-test paths are excluded.
+      --match-test FUNCTION Required exact test function name; it must begin with "test".
+      --root DIRECTORY      Project directory. Default: current directory.
+      --run                 Actually run the selected test. Without it, nothing is executed.
+      --json                Print the structured plan/result as JSON.
+
+    Examples:
+      lk ai verify F-0123456789ab --test test/ConfidencePool.t.sol --match-test testWithdrawAllowedDuringAttackRequested
+      lk ai verify F-0123456789ab --test test/ConfidencePool.t.sol --match-test testWithdrawAllowedDuringAttackRequested --run
+
+    Safety:
+      Inspect the test code before using --run. It is existing project test code, not code written
+      by the AI. A passing test is evidence about that test, not automatic proof of the AI claim.
+      A test result does not automatically update a candidate to confirmed.
+
+
+15. DISPOSITION — "Record your own decision about a finding"
+    Syntax:
+      lk ai disposition FINDING_ID --status {confirmed|rejected|needs-review}
+          --reviewer NAME --reason TEXT [--root DIRECTORY] [--evidence-id EVENT_ID] [--json]
+
+    Why / when:
+      Use only after inspecting the source and test evidence. This records your decision;
+      it does not ask the model to decide for you.
+
+    Flags:
+      FINDING_ID         Required ID from the security review.
+      --status STATUS    Required: confirmed, rejected, or needs-review.
+      --reviewer NAME    Required identifier for the person making the decision.
+      --reason TEXT      Required explanation of the evidence behind your decision.
+      --root DIRECTORY   Project directory. Default: current directory.
+      --evidence-id ID   Native test event ID printed by "lk ai verify ... --run".
+                         Required for confirmed/rejected; confirmation also needs a passing run.
+      --json             Print the saved decision as JSON.
+
+    Examples:
+      lk ai disposition F-0123456789ab --status needs-review --reviewer rogue --reason 'Need to inspect the withdrawal state transition.'
+      lk ai disposition F-0123456789ab --status confirmed --reviewer rogue --reason 'Reviewed the passing reproduction and impact.' --evidence-id EVENT_ID
+
+    Important:
+      Use a real event ID from the verify result; the placeholder EVENT_ID is not literal.
+      "Confirmed" is a human disposition backed by recorded evidence, not a claim made by AI.
+
+
+16. RUNTIME — "What can the AI helpers do?"
+    Syntax:
+      lk ai runtime [--json]
+
+    Why / when:
+      Explains the built-in helper roles, current provider readiness, and execution limits.
+      Use it when learning the architecture or checking what has been made available to agents.
+
+    Flags:
+      --json  Print the detailed runtime/agent/tool registry data for scripts or inspection.
+
+    Example:
+      lk ai runtime
+      lk ai runtime --json
+
+
+COMMON OPTIONS AND WORDS
+------------------------
+-h, --help
+  Show help for the command you are using. Examples:
+    lk ai --help
+    lk ai setup --help
+    lk ai verify --help
+
+--json
+  Where a command supports it, returns structured JSON rather than the human-readable view.
+  It is useful for scripts. It is not supported by every command.
+
+--root DIRECTORY
+  Choose the project folder. If omitted, Lowkey uses the current directory.
+
+--contract NAME
+  Focus or prioritize source related to a contract name. It is not a guarantee that only that
+  contract's logic will be reviewed.
+
+Provider
+  The service that receives the AI request, such as Gemini, DeepSeek, or OpenAI.
+  "openai-compatible" describes the API request format; the actual provider can be another
+  service, such as Gemini's compatible endpoint.
+
+Model
+  The exact model identifier your provider account or local server supports.
+
+API key
+  A private credential that authorizes requests to a provider. Do not paste it into chat,
+  terminal command history, source files, or a URL. Use the hidden prompt or an environment
+  variable.
+
+Candidate finding
+  A possible vulnerability that still needs source review and evidence. It is not a confirmed bug.
+
+Source quote check
+  Checks whether a quoted snippet appears in selected source. It proves the quote's presence,
+  not that the AI's reasoning or security claim is correct.
+
+JSON output
+  Meant for scripts and integrations. For ordinary use, prefer the readable output shown by
+  default.
+
+LOCAL VS REMOTE WORK — WHAT LEAVES THE MACHINE?
+-----------------------------------------------
+Local-only commands (no provider request):
+  lk ai status
+  lk ai preview [--show-context]
+  lk ai mode manual
+  lk ai mode auto
+  lk ai setup
+  lk ai enable
+  lk ai disable
+  lk ai keys list/add/remove/clear
+  lk ai errors status/manual/auto
+  lk ai runtime
+  lk ai ledger
+
+Commands that can contact the provider:
+  lk ai test                 Sends a fixed probe, not project source.
+  lk ai security-review      Sends selected source context.
+  lk ai test-plan            Sends selected source context.
+  lk ai explain-error        Sends a redacted error for diagnosis.
+  lk ai errors auto          Enables future eligible automatic error-diagnosis requests.
+
+Remember:
+  Lowkey does not run commands suggested by its AI. Verify important claims with source,
+  existing tests, traces, state changes and native tools. Native tool results are evidence,
+  not automatically complete proof of safety.
+''' 
+
+
+def render_ai_help(parser: Any) -> str:
+    """Return the compact argparse menu followed by the complete user-facing guide."""
+    return parser.format_help() + "\n" + AI_HELP_GUIDE
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
@@ -1020,43 +1523,44 @@ def main(argv: list[str] | None = None) -> int:
     preview = sub.add_parser(
         "preview", help="inspect the redacted project context locally; never contacts a provider"
     )
-    preview.add_argument("--root", default=".", help="project directory to inspect (default: current directory)")
-    preview.add_argument("--contract", help="prioritize source matching this contract name")
+    preview.add_argument("--root", default=".", help="project directory (default: current directory)")
+    preview.add_argument("--contract", help="prioritize source matching this contract name; not an exclusive filter")
     preview.add_argument(
         "--show-context", action="store_true",
         help="print the full redacted context as JSON for a local privacy review",
     )
     mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
-    mode.add_argument("value", choices=("manual", "auto"))
+    mode.add_argument("value", choices=("manual", "auto"), help="manual = only on request (default); auto = opt in to complexity-triggered review")
     setup = sub.add_parser("setup", help="configure a provider once")
-    setup.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
-    setup.add_argument("--model", required=True)
-    setup.add_argument("--base-url", help="custom OpenAI-compatible API base URL")
-    setup.add_argument("--api-key-env", help="read the key from this environment variable")
-    setup.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    setup.add_argument("--max-output-tokens", type=int, default=DEFAULT_OUTPUT_TOKENS)
-    sub.add_parser("enable", help="enable the configured extension")
-    sub.add_parser("disable", help="disable AI without changing native commands")
-    sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
+    setup.add_argument("--provider", choices=sorted(PROVIDERS), required=True, help="service name: deepseek, gemini, openai, openai-compatible, or ollama")
+    setup.add_argument("--model", required=True, help="exact model name available to your provider account/server")
+    setup.add_argument("--base-url", help="custom API base URL; required in practice for openai-compatible")
+    setup.add_argument("--api-key-env", help="read the key from this environment variable instead of prompting")
+    setup.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help=f"request timeout in seconds (default: {DEFAULT_TIMEOUT}; allowed: 5–180)")
+    setup.add_argument("--max-output-tokens", type=int, default=DEFAULT_OUTPUT_TOKENS, help=f"maximum output size requested (default: {DEFAULT_OUTPUT_TOKENS}; allowed: 128–8192)")
+    enable_cmd = sub.add_parser("enable", help="enable the configured extension")
+    disable_cmd = sub.add_parser("disable", help="disable AI without changing native commands")
+    test_cmd = sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
     keys = sub.add_parser("keys", help="manage up to three private API-key slots per provider")
     key_actions = keys.add_subparsers(dest="key_action")
     key_list = key_actions.add_parser("list", help="show which keys are available without displaying key values")
     key_list.add_argument("--provider", choices=sorted(PROVIDERS), help="provider to inspect (default: all configured providers)")
     key_list.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
     key_add = key_actions.add_parser("add", help="save or replace one provider key; input is hidden")
-    key_add.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
-    key_add.add_argument("--slot", type=int, choices=(1, 2, 3), required=True)
+    key_add.add_argument("--provider", choices=sorted(PROVIDERS), required=True, help="provider whose key is being saved")
+    key_add.add_argument("--slot", type=int, choices=(1, 2, 3), required=True, help="saved key slot number: 1, 2, or 3")
     key_remove = key_actions.add_parser("remove", help="remove one slot or all keys for a provider")
-    key_remove.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
-    key_remove.add_argument("--slot", type=int, choices=(1, 2, 3))
+    key_remove.add_argument("--provider", choices=sorted(PROVIDERS), required=True, help="provider whose key is being removed")
+    key_remove.add_argument("--slot", type=int, choices=(1, 2, 3), help="slot to remove; omit to remove all saved slots for this provider")
     key_clear = key_actions.add_parser("clear", help="remove every saved key for a provider")
-    key_clear.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
+    key_clear.add_argument("--provider", choices=sorted(PROVIDERS), required=True, help="provider whose saved keys will all be cleared")
     explain = sub.add_parser("explain-error", help="diagnose the most recent Lowkey error or supplied error text; suggestions only")
-    explain.add_argument("--last", action="store_true", help="use the most recently captured Lowkey error (default)")
-    explain.add_argument("--text", nargs="+", help="error text copied from any command")
-    explain.add_argument("--command", default="", help="command that produced --text")
+    explain.add_argument("--last", action="store_true", help="use the most recently captured Lowkey error; this is already the default without --text")
+    explain.add_argument("--text", nargs="+", help="error text copied from a command that Lowkey did not capture")
+    explain.add_argument("--command", default="", help="original command that produced --text; context only, it is not run")
     errors = sub.add_parser("errors", help="choose whether AI explains command errors automatically")
-    errors.add_argument("mode", choices=("auto", "manual", "status"))
+    errors.add_argument("mode", choices=("auto", "manual", "status"), help="auto enables eligible automatic diagnoses; manual disables them; status shows the setting")
+
     errors.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON for status")
     test_plan = sub.add_parser("test-plan", help="suggest tests in plain language; does not write or run them")
     test_plan.add_argument("--root", default=".", help="project directory (default: current directory)")
@@ -1072,24 +1576,78 @@ def main(argv: list[str] | None = None) -> int:
     verify = sub.add_parser("verify", help="preview or explicitly run one selected local Foundry test")
     verify.add_argument("finding_id", help="finding ID shown by security-review")
     verify.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
-    verify.add_argument("--root", default=".", help="project root (default: current directory)")
-    verify.add_argument("--test", required=True, help="single Solidity test file under test/ or tests/; fork tests excluded")
-    verify.add_argument("--match-test", required=True, help="exact test function name beginning with test")
-    verify.add_argument("--run", action="store_true", help="execute the selected test; without this flag only prints a plan")
+    verify.add_argument("--root", default=".", help="project directory (default: current directory)")
+    verify.add_argument("--test", required=True, help="one Solidity test file under test/ or tests/; fork-test paths are excluded")
+    verify.add_argument("--match-test", required=True, help="exact test function name; it must begin with test")
+    verify.add_argument("--run", action="store_true", help="execute this test now; without it only prints a plan")
     disposition = sub.add_parser("disposition", help="save your own decision after reviewing the evidence")
     disposition.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
-    disposition.add_argument("finding_id")
-    disposition.add_argument("--root", default=".", help="project root (default: current directory)")
-    disposition.add_argument("--status", choices=("confirmed", "rejected", "needs-review"), required=True)
-    disposition.add_argument("--reviewer", required=True, help="human reviewer identifier")
-    disposition.add_argument("--reason", required=True, help="reason supported by inspected evidence")
-    disposition.add_argument("--evidence-id", help="event ID returned by lk ai verify --run; required for confirmed/rejected")
+    disposition.add_argument("finding_id", help="finding ID from security-review")
+    disposition.add_argument("--root", default=".", help="project directory (default: current directory)")
+    disposition.add_argument("--status", choices=("confirmed", "rejected", "needs-review"), required=True, help="your human decision")
+    disposition.add_argument("--reviewer", required=True, help="identifier of the person reviewing the evidence")
+    disposition.add_argument("--reason", required=True, help="why the evidence supports your decision")
+    disposition.add_argument("--evidence-id", help="native-test event ID from verify --run; required for confirmed/rejected")
     runtime_cmd = sub.add_parser("runtime", help="explain what the AI helpers can and cannot do")
     runtime_cmd.add_argument("--json", dest="as_json", action="store_true", help="print machine-readable JSON")
+
+    status_cmd.description = "Check whether AI is configured and whether a key is available. This is local-only; it does not test provider connectivity."
+    status_cmd.epilog = "WHEN: run this before an AI task. Example: lk ai status"
+    preview.description = "Inspect the selected, redacted project context locally. No provider request is made."
+    preview.epilog = "WHEN: review this before sending source to a provider. Example: lk ai preview --contract ConfidencePool"
+    mode.description = "Choose manual mode or opt in to complexity-triggered protocol review."
+    mode.epilog = "WHEN: use manual for full control; use auto only when you accept possible provider requests and charges. Example: lk ai mode manual"
+    setup.description = "Configure the provider, exact model name, and optional endpoint/credential source."
+    setup.epilog = "WHEN: first setup or when changing providers/models. Setup does not test the connection. Example: lk ai setup --provider gemini --model YOUR_API_MODEL"
+    enable_cmd.description = "Enable the configured AI extension without running a review."
+    enable_cmd.epilog = "WHEN: after configuring AI if it was disabled. Example: lk ai enable"
+    disable_cmd.description = "Turn off the optional AI extension while keeping native Lowkey commands available."
+    disable_cmd.epilog = "WHEN: pause AI use. Example: lk ai disable"
+    test_cmd.description = "Send a fixed provider connectivity probe without sending project source."
+    test_cmd.epilog = "WHEN: after setup or key changes; provider charges may apply. Example: lk ai test"
+    keys.description = "Manage up to three saved API keys per provider. Values are never printed."
+    keys.epilog = "WHEN: add a key, check slots, remove an expired key or configure backups. Example: lk ai keys list"
+    key_list.description = "List configured slot numbers and available-key count; does not reveal credentials."
+    key_list.epilog = "WHEN: check credential setup without exposing secrets. Example: lk ai keys list --provider openai-compatible"
+    key_add.description = "Prompt for a key using hidden terminal input and save it to a numbered slot."
+    key_add.epilog = "WHEN: add/replace a provider key. Example: lk ai keys add --provider gemini --slot 1"
+    key_remove.description = "Remove one saved slot, or every saved key for the provider if --slot is omitted."
+    key_remove.epilog = "WHEN: retire an expired/revoked key. Example: lk ai keys remove --provider gemini --slot 2"
+    key_clear.description = "Remove every saved key for one provider."
+    key_clear.epilog = "WHEN: reset saved credentials for a provider. Example: lk ai keys clear --provider gemini"
+    explain.description = "Explain an error copied from the terminal or the latest captured Lowkey error; suggestions only."
+    explain.epilog = "WHEN: after a failed build, RPC, compiler, Forge or Cast command. Example: lk ai explain-error --last"
+    errors.description = "Control automatic AI explanations after supported routed Lowkey failures."
+    errors.epilog = "WHEN: keep manual for control, or opt into auto when provider requests/charges are acceptable. Example: lk ai errors status"
+    test_plan.description = "Suggest test ideas from the selected contract source; never writes or runs Solidity tests."
+    test_plan.epilog = "WHEN: turn a state rule or possible bug into a concrete test outline. Example: lk ai test-plan --contract ConfidencePool"
+    security.description = "Ask for possible, source-grounded vulnerability leads from selected source excerpts."
+    security.epilog = "WHEN: start a focused AI-assisted security pass. Example: lk ai security-review --contract ConfidencePool"
+    ledger_cmd.description = "Show what review activity, findings, tests and decisions have been saved."
+    ledger_cmd.epilog = "WHEN: continue a prior investigation or inspect evidence history. Example: lk ai ledger"
+    verify.description = "Preview or explicitly run one existing local Foundry test linked to a candidate finding."
+    verify.epilog = "WHEN: after locating and manually reviewing a relevant existing test. Example: lk ai verify F-0123456789ab --test test/Vault.t.sol --match-test testWithdraw --run"
+    disposition.description = "Record a human review decision; the model cannot choose it."
+    disposition.epilog = "WHEN: once you've inspected current source and test evidence. Example: lk ai disposition F-0123456789ab --status needs-review --reviewer rogue --reason 'Need to inspect the state transition.'"
+    runtime_cmd.description = "Explain the helper roles, provider readiness and execution safety limits."
+    runtime_cmd.epilog = "WHEN: learn what AI helpers can and cannot do. Example: lk ai runtime"
+
+    # Make the parent and nested key-management help useful without hiding the complete guide.
+    key_actions.description = "Choose how to inspect, add, remove, or clear private provider keys."
+    key_actions.epilog = "Example: lk ai keys add --provider openai-compatible --slot 1"
+    key_list.description = "Show slot numbers and availability, never secret values."
+    key_list.epilog = "Example: lk ai keys list --provider openai-compatible --json"
+    key_add.description = "The API key is requested through hidden terminal input."
+    key_add.epilog = "Example: lk ai keys add --provider openai-compatible --slot 1"
+    key_remove.description = "Omit --slot to remove all saved keys for this provider."
+    key_remove.epilog = "Example: lk ai keys remove --provider openai-compatible --slot 2"
+    key_clear.description = "Clear every saved key for one provider."
+    key_clear.epilog = "Example: lk ai keys clear --provider openai-compatible"
+
     args = list(sys.argv[1:] if argv is None else argv)
     args = ["--help" if value in {"--h", "help"} else value for value in args]
-    if not args or args[0] == "-h":
-        parser.print_help()
+    if not args or args[0] in {"-h", "--help"}:
+        print(render_ai_help(parser))
         return 0
     try:
         parsed = parser.parse_args(args)

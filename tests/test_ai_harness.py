@@ -23,6 +23,46 @@ class AIHarnessTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
+    def test_top_level_help_is_complete_and_documents_all_ai_flags(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["--help"]), 0)
+        help_text = output.getvalue()
+        for command in (
+            "status", "preview", "mode", "setup", "enable", "disable", "test",
+            "keys list", "keys add", "keys remove", "keys clear", "explain-error",
+            "errors", "test-plan", "security-review", "ledger", "verify",
+            "disposition", "runtime",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, help_text)
+        for flag in (
+            "--json", "--root", "--contract", "--show-context", "--provider",
+            "--model", "--base-url", "--api-key-env", "--timeout",
+            "--max-output-tokens", "--slot", "--last", "--text", "--command",
+            "--test", "--match-test", "--run", "--status", "--reviewer",
+            "--reason", "--evidence-id",
+        ):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, help_text)
+        self.assertIn("Why / when", help_text)
+        self.assertIn("Examples:", help_text)
+        self.assertIn("does NOT write Solidity test code", help_text)
+        self.assertIn("This preview never makes a provider request", help_text)
+
+    def test_help_alias_and_command_specific_help_include_examples(self):
+        for alias in (["help"], ["--h"], ["-h"]):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main(alias), 0)
+            self.assertIn("COMPLETE COMMAND REFERENCE", output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["setup", "--help"]), 0)
+        self.assertIn("--api-key-env", output.getvalue())
+        self.assertIn("WHEN:", output.getvalue())
+        self.assertIn("lk ai setup --provider gemini", output.getvalue())
+
     def test_disabled_and_unconfigured_by_default(self):
         value = ai.status()
         self.assertFalse(value["enabled"])
