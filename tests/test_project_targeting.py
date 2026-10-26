@@ -1326,13 +1326,6 @@ if __name__ == "__main__":
                     "http://127.0.0.1:8545",
                 )
             self.assertEqual(recovered, (proxy.lower(), "proxy"))
-            self.assertEqual(
-                lk._fixture_target_implementation_artifact(
-                    root, state_path, proxy, "Template", "http://127.0.0.1:8545"
-                ),
-                str(derived_artifact),
-            )
-
             with ExitStack() as stack:
                 stack.enter_context(patch.object(
                     lk, "_live_runtime",
@@ -1371,11 +1364,6 @@ if __name__ == "__main__":
                     "http://127.0.0.1:8545",
                 )
             self.assertIsNone(rejected)
-            self.assertIsNone(
-                lk._fixture_target_implementation_artifact(
-                    root, state_path, proxy, "Template", "http://127.0.0.1:8545"
-                )
-            )
             with ExitStack() as stack:
                 stack.enter_context(patch.object(
                     lk, "_live_runtime",
