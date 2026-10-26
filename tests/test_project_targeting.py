@@ -1030,6 +1030,7 @@ if __name__ == "__main__":
     def test_audit_target_prefers_contract_that_creates_child_instances(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
+            (root / "src").mkdir(parents=True, exist_ok=True)
             sources = {
                 "ConfidencePool.sol": (
                     "pragma solidity ^0.8.20; contract ConfidencePool { "
@@ -1076,6 +1077,7 @@ if __name__ == "__main__":
     def test_initializer_locked_implementation_is_detected_from_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
+            (root / "src").mkdir(parents=True, exist_ok=True)
             source = root / "src" / "Template.sol"
             source.write_text(
                 "pragma solidity ^0.8.20; contract Template { "
@@ -1128,6 +1130,7 @@ if __name__ == "__main__":
     def test_native_lab_rejects_direct_initializer_locked_implementation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
+            (root / "src").mkdir(parents=True, exist_ok=True)
             source = root / "src" / "Template.sol"
             source.write_text(
                 "pragma solidity ^0.8.20; contract Template { "
