@@ -1363,7 +1363,7 @@ def _human_context_lines(label: str, value: Any, indent: int = 0) -> list[str]:
             f"{prefix}Source excerpt (redacted; inspect before sharing):",
             f"{prefix}  --- BEGIN SOURCE EXCERPT ---",
         ]
-        lines.extend(f"{prefix}  {_safe_terminal_text(line)}" for line in value.splitlines())
+        lines.extend(_safe_terminal_text(line) for line in value.splitlines())
         lines.append(f"{prefix}  --- END SOURCE EXCERPT ---")
         return lines
 
