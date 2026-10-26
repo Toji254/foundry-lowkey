@@ -1235,7 +1235,7 @@ if __name__ == "__main__":
                 if args[:2] == ["code", implementation]:
                     return lk.CommandResult("0x6000", 0)
                 if args[:2] == ["code", proxy]:
-                    return lk.CommandResult("0x6001", 0)
+                    return lk.CommandResult("0x60016002600360046005", 0)
                 return lk.CommandResult("", 1)
 
             with patch.object(lk, "run_cast", side_effect=fake_run_cast):
