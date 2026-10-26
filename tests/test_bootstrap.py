@@ -107,13 +107,13 @@ class BootstrapTests(unittest.TestCase):
             self.write(
                 root,
                 ".gitmodules",
-                '[submodule "sample"]\\n\\tpath = lib/sample\\n\\turl = https://example.com/sample.git\\n',
+                '[submodule "sample"]\n\tpath = lib/sample\n\turl = https://example.com/sample.git\n',
             )
             (root / ".git").mkdir()
             submodule = root / "lib" / "sample"
             submodule.mkdir(parents=True)
             (submodule / ".git").write_text(
-                "gitdir: ../../.git/modules/lib/sample\\n",
+                "gitdir: ../../.git/modules/lib/sample\n",
                 encoding="utf-8",
             )
 
@@ -126,17 +126,17 @@ class BootstrapTests(unittest.TestCase):
     def test_bootstrap_plan_recovers_missing_submodules_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            self.write(root, "foundry.toml", "[profile.default]\\n")
+            self.write(root, "foundry.toml", "[profile.default]\n")
             self.write(
                 root,
                 ".gitmodules",
-                '[submodule "sample"]\\n\\tpath = lib/sample\\n\\turl = https://example.com/sample.git\\n',
+                '[submodule "sample"]\n\tpath = lib/sample\n\turl = https://example.com/sample.git\n',
             )
             (root / ".git").mkdir()
             submodule = root / "lib" / "sample"
             submodule.mkdir(parents=True)
             (submodule / ".git").write_text(
-                "gitdir: ../../.git/modules/lib/sample\\n",
+                "gitdir: ../../.git/modules/lib/sample\n",
                 encoding="utf-8",
             )
 
