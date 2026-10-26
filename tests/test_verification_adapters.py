@@ -392,6 +392,71 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         self.assertEqual(issue[0], "incomplete reproduction scaffold")
         self.assertIn("disabled", issue[1])
 
+    def test_forge_set_up_failure_is_error_not_security_test_failure(self):
+        adapter = ExecutableAdapter(
+            EngineCapability("forge", sys.executable, ("unit",), memory_class="low")
+        )
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {
+                    "test_kind": "unit",
+                    "argv": [
+                        "-c",
+                        'print("[FAIL: Lowkey: TARGET has no runtime code: 0 <= 0] setUp() (gas: 0)"); raise SystemExit(1)',
+                    ],
+                },
+                budget={"timeout_seconds": 5},
+            )
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(result.metadata["result_semantics"], "forge_test_setup_failure")
+        self.assertEqual(result.raw_evidence["failure_classification"]["failure_classification"], "test_setup_failure")
+        self.assertIn("before test bodies", result.summary)
+
+    def test_forge_unreachable_fork_endpoint_is_error_not_security_test_failure(self):
+        adapter = ExecutableAdapter(
+            EngineCapability("forge", sys.executable, ("unit",), memory_class="low")
+        )
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {
+                    "test_kind": "unit",
+                    "argv": [
+                        "-c",
+                        'print("Error: failed to retrieve chain ID from fork endpoint\\nContext: Connection refused"); raise SystemExit(1)',
+                    ],
+                },
+                budget={"timeout_seconds": 5},
+            )
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.metadata["result_semantics"], "forge_rpc_unavailable")
+        self.assertEqual(result.raw_evidence["failure_classification"]["failure_classification"], "rpc_unavailable")
+        self.assertIn("no security result was established", result.summary)
+
+    def test_forge_real_test_assertion_failure_stays_failed(self):
+        adapter = ExecutableAdapter(
+            EngineCapability("forge", sys.executable, ("unit",), memory_class="low")
+        )
+        with tempfile.TemporaryDirectory() as root:
+            result = adapter.run(
+                {"root": root},
+                {
+                    "test_kind": "unit",
+                    "argv": [
+                        "-c",
+                        'print("[FAIL: expected value mismatch] test_supplyInvariant() (gas: 100)"); raise SystemExit(1)',
+                    ],
+                },
+                budget={"timeout_seconds": 5},
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertNotIn("result_semantics", result.metadata)
+
     def test_adapter_runs_argument_vector_and_preserves_output(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
         adapter = ExecutableAdapter(cap)
