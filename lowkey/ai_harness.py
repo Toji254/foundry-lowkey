@@ -468,6 +468,7 @@ def render_key_pool_status(value: Mapping[str, Any]) -> str:
             lines.extend([
                 "",
                 f"Provider: {_friendly_provider_name(name, endpoint)}",
+                f"Credential provider ID (use with --provider): {name}",
                 f"Saved key slots: {', '.join(slot_numbers) if slot_numbers else 'None'}",
                 f"Environment key: {'available' if item.get('environment_key_configured') else 'not configured'}",
                 f"Keys available to try: {item.get('effective_key_capacity', 0)}",
