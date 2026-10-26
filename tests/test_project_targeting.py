@@ -1306,3 +1306,32 @@ if __name__ == "__main__":
             self.assertIsNone(encoded)
             self.assertIn("outside the active Foundry project", error)
             forge.assert_not_called()
+
+
+    def test_project_fixture_discovery_honors_custom_foundry_test_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "foundry.toml").write_text(
+                '[profile.default]\n'
+                'src = "contracts"\n'
+                'test = "specs"\n'
+                'script = "deployment"\n',
+                encoding="utf-8",
+            )
+            specs = root / "specs" / "protocol"
+            specs.mkdir(parents=True)
+            test_path = specs / "PoolFactoryTest.t.sol"
+            test_path.write_text(
+                "pragma solidity ^0.8.20;\n"
+                "contract PoolFactoryTest {\n"
+                "    function setUp() public {}\n"
+                "    function test_createPool() external { new PoolTemplate(); }\n"
+                "}\n"
+                "contract PoolTemplate {}\n",
+                encoding="utf-8",
+            )
+            fixture = lk.discover_local_lab_fixture(root, "PoolFactory")
+            self.assertIsNotNone(fixture)
+            self.assertEqual(fixture["relative"], "specs/protocol/PoolFactoryTest.t.sol")
+            self.assertEqual(fixture["fixture_kind"], "test")
+            self.assertEqual(fixture["create_function"], "test_createPool")
