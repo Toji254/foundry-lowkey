@@ -53,11 +53,25 @@ class OpenAICompatibleAdapter:
             with urlopen_fn(request, timeout=int(config.get("timeout_seconds", 45))) as response:
                 raw = response.read(max_response_bytes + 1)
         except http_error_type as exc:
-            category = "authentication" if getattr(exc, "code", None) in {401, 403} else "http"
-            if category == "authentication":
-                detail = "authentication failed"
+            status = getattr(exc, "code", None)
+            # Inspect only a bounded body for classification; never echo or persist it.
+            try:
+                error_body = exc.read(4096).decode("utf-8", errors="replace").lower()
+            except Exception:
+                error_body = ""
+            quota_markers = (
+                "quota", "resource_exhausted", "insufficient_quota", "billing hard limit",
+                "exceeded your current quota", "token limit reached", "out of credits",
+            )
+            rate_markers = ("rate limit", "rate_limit", "too many requests", "requests per minute")
+            if any(marker in error_body for marker in quota_markers):
+                category, detail = "quota", "provider quota or token allowance exhausted"
+            elif status == 429:
+                category, detail = "rate-limit", "provider rate limit reached"
+            elif status in {401, 403}:
+                category, detail = "authentication", "authentication or access rejected"
             else:
-                detail = f"HTTP {getattr(exc, 'code', 'error')}"
+                category, detail = "http", f"HTTP {status if status is not None else 'error'}"
             raise ProviderAdapterError(category, f"AI provider request failed ({detail}).") from exc
         except url_error_type as exc:
             raise ProviderAdapterError("network", "AI provider could not be reached.") from exc
@@ -101,5 +115,5 @@ def provider_adapter_status() -> dict[str, Any]:
 
 
 _default = OpenAICompatibleAdapter()
-for _provider in ("deepseek", "openai", "openai-compatible", "ollama"):
+for _provider in ("deepseek", "gemini", "openai", "openai-compatible", "ollama"):
     register_provider_adapter(_provider, _default)

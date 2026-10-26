@@ -77,8 +77,52 @@ class AIHarnessTests(unittest.TestCase):
     def test_api_key_is_separate_and_permissions_are_private(self):
         ai.configure(provider="deepseek", model="deepseek-flash", api_key="example-secret")
         self.assertNotIn("example-secret", ai.config_path().read_text(encoding="utf-8"))
-        self.assertEqual(json.loads(ai.credentials_path().read_text(encoding="utf-8"))["deepseek"], "example-secret")
+        self.assertEqual(json.loads(ai.credentials_path().read_text(encoding="utf-8"))["keys"]["deepseek"]["1"], "example-secret")
         self.assertEqual(ai.credentials_path().stat().st_mode & 0o777, 0o600)
+
+    def test_three_key_slots_fail_over_after_quota_and_never_log_key_values(self):
+        from lowkey import provider_adapters
+
+        ai.configure(
+            provider="openai-compatible", model="fixture-model",
+            base_url="https://provider.example/v1", api_key="first-secret-key",
+        )
+        ai.set_api_key_slot("openai-compatible", 2, "second-secret-key")
+        ai.set_api_key_slot("openai-compatible", 3, "third-secret-key")
+        adapter = provider_adapters.get_provider_adapter("openai-compatible")
+        used_keys = []
+        response = json.dumps({
+            "choices": [{"message": {"content": json.dumps({"facts": [], "hypotheses": ["ok"]})}}]
+        }).encode("utf-8")
+
+        def send(**kwargs):
+            used_keys.append(kwargs["api_key"])
+            if kwargs["api_key"] in {"first-secret-key", "second-secret-key"}:
+                raise provider_adapters.ProviderAdapterError("quota", "quota")
+            return response
+
+        with patch.object(adapter, "send", side_effect=send):
+            result = ai.request_structured(
+                purpose="protocol_analysis", task="test failover",
+                context={"safe": True}, required_fields=("facts", "hypotheses"),
+            )
+        self.assertEqual(used_keys, ["first-secret-key", "second-secret-key", "third-secret-key"])
+        self.assertEqual(result["hypotheses"], ["ok"])
+        self.assertEqual(ai.status()["key_slots_configured"], 3)
+        log = (ai._state_home() / "ai-events.jsonl").read_text(encoding="utf-8")
+        record = json.loads(log.splitlines()[-1])
+        self.assertEqual(record["key_slot"], "3")
+        self.assertEqual(record["failover_attempts"], 2)
+        for secret in ("first-secret-key", "second-secret-key", "third-secret-key"):
+            self.assertNotIn(secret, log)
+            self.assertNotIn(secret, ai.config_path().read_text(encoding="utf-8"))
+
+    def test_key_slots_reject_more_than_three_by_interface(self):
+        ai.configure(provider="deepseek", model="fixture", api_key="slot-one")
+        ai.set_api_key_slot("deepseek", 2, "slot-two")
+        ai.set_api_key_slot("deepseek", 3, "slot-three")
+        with self.assertRaises(ai.AIHarnessError):
+            ai.set_api_key_slot("deepseek", 4, "slot-four")
 
     def test_public_plain_http_endpoint_is_rejected(self):
         with self.assertRaises(ai.AIHarnessError):

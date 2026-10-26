@@ -195,6 +195,47 @@ def record_status(code):
         _COMMAND_STATUS = code
     return code
 
+def _record_last_error(error_text, code=2, source="lowkey"):
+    """Persist a private, redacted error summary for optional explanation."""
+    try:
+        try:
+            import error_context
+        except ImportError:
+            from lowkey import error_context
+        root = None
+        try:
+            root = audit_context.foundry_project_root()
+        except Exception:
+            pass
+        command = sys.argv[1:2]  # never persist arbitrary argv, which may contain secrets
+        return error_context.record_last_error(
+            command=command, error=error_text, exit_code=code,
+            project_root=str(root) if root else None, source=source,
+        )
+    except Exception:
+        return None
+
+
+def _maybe_explain_error(record):
+    """Run an opt-in diagnostic suggestion after a failed command; never execute suggested commands."""
+    if not isinstance(record, dict):
+        return
+    try:
+        try:
+            import error_context
+            import error_advisor
+        except ImportError:
+            from lowkey import error_context, error_advisor
+        if not error_context.auto_error_explain_enabled():
+            return
+        print("\nOptional AI error explanation (commands are suggestions only):", file=sys.stderr)
+        result = error_advisor.maybe_auto_explain(record)
+        if result:
+            print(result, file=sys.stderr)
+    except Exception as exc:
+        print(f"Optional AI error explanation unavailable ({type(exc).__name__}); run 'lk ai explain-error --last' when ready.", file=sys.stderr)
+
+
 def fail(message, code=2):
     # Shared formatter recognizes external/runtime failures while preserving
     # Lowkey's own specific validation messages and their usage hints.
@@ -203,6 +244,7 @@ def fail(message, code=2):
     except Exception:
         rendered = str(message)
     print(rendered, file=sys.stderr)
+    _record_last_error(rendered, code=code, source="fail")
     return record_status(code)
 
 def is_tx_hash(value):
@@ -17828,6 +17870,8 @@ def dispatch_command(cmd, args, config, from_batch=False):
                 )
                 print(_ensure_error_context(rendered, cmd, code), file=sys.stderr)
                 record_status(code)
+                record = _record_last_error(rendered, code=code, source="dispatcher")
+                _maybe_explain_error(record)
             else:
                 sys.stderr.write(diagnostic)
         raise
@@ -17846,6 +17890,9 @@ def dispatch_command(cmd, args, config, from_batch=False):
         return result
 
     error_code = returned_code if isinstance(returned_code, int) and returned_code != 0 else 2
+    recorded_text = diagnostic.strip() or getattr(result, "output", None) or f"Command returned exit code {error_code} without detailed diagnostic output."
+    record = _record_last_error(recorded_text, code=error_code, source="dispatcher")
+    _maybe_explain_error(record)
     if diagnostic.strip():
         rendered = (
             diagnostic.strip()
@@ -18042,15 +18089,15 @@ def _safe_main() -> int:
         except Exception:
             root = None
 
-        print(
-            _format_cli_error(
-                f"{type(exc).__name__}: {exc}",
-                code=2,
-                command=sys.argv[1] if len(sys.argv) > 1 else None,
-                source="runtime",
-            ),
-            file=sys.stderr,
+        formatted_error = _format_cli_error(
+            f"{type(exc).__name__}: {exc}",
+            code=2,
+            command=sys.argv[1] if len(sys.argv) > 1 else None,
+            source="runtime",
         )
+        print(formatted_error, file=sys.stderr)
+        record = _record_last_error(formatted_error, code=2, source="runtime")
+        _maybe_explain_error(record)
         if root:
             print(f"  project: {root}", file=sys.stderr)
             try:

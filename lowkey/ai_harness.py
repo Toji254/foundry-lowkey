@@ -22,9 +22,9 @@ MAX_SOURCE_CONTEXT_BYTES = 32_000
 MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
-PROVIDERS = {"deepseek", "openai", "openai-compatible", "ollama"}
-PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review"}
-DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
+PROVIDERS = {"deepseek", "gemini", "openai", "openai-compatible", "ollama"}
+PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review", "error_diagnosis"}
+DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "gemini": "https://generativelanguage.googleapis.com/v1beta/openai", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
     r'''(?im)(\b[\w]*(?:api[_-]?key|secret|password|private[_-]?key|mnemonic|seed[_-]?phrase|access[_-]?token|bearer[_-]?token)\b\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^;\n,]+)'''
@@ -67,9 +67,9 @@ def credentials_path() -> Path:
 
 def _default_config() -> dict[str, Any]:
     return {"schema_version": SCHEMA_VERSION, "enabled": False, "auto_assist": False,
-            "provider": None, "model": None, "base_url": None, "api_key_env": None,
-            "timeout_seconds": DEFAULT_TIMEOUT, "max_output_tokens": DEFAULT_OUTPUT_TOKENS}
-
+            "auto_explain_errors": False, "provider": None, "model": None, "base_url": None,
+            "api_key_env": None, "timeout_seconds": DEFAULT_TIMEOUT,
+            "max_output_tokens": DEFAULT_OUTPUT_TOKENS}
 
 def _read_json(path: Path, missing: Any) -> Any:
     try:
@@ -96,6 +96,8 @@ def load_config() -> dict[str, Any]:
         raise AIHarnessError("AI configuration 'enabled' must be true or false.")
     if not isinstance(cfg.get("auto_assist"), bool):
         raise AIHarnessError("AI configuration 'auto_assist' must be true or false.")
+    if not isinstance(cfg.get("auto_explain_errors"), bool):
+        raise AIHarnessError("AI configuration 'auto_explain_errors' must be true or false.")
     return cfg
 
 
@@ -135,12 +137,148 @@ def save_config(config: Mapping[str, Any]) -> None:
     _atomic_json(config_path(), value)
 
 
-def _credentials() -> dict[str, str]:
+def _credentials() -> dict[str, dict[str, str]]:
+    """Load up to three private credential slots per provider; migrate the legacy single-key format."""
     value = _read_json(credentials_path(), {})
-    if not isinstance(value, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()):
-        raise AIHarnessError("AI credentials file is invalid; run lk ai setup again.")
-    return value
+    if not isinstance(value, dict):
+        raise AIHarnessError("AI credentials file is invalid; preserve a backup before running lk ai keys.")
+    if value.get("schema_version") == 2 and isinstance(value.get("keys"), dict):
+        raw = value["keys"]
+        pools: dict[str, dict[str, str]] = {}
+        for provider, slots in raw.items():
+            if provider not in PROVIDERS or not isinstance(slots, dict):
+                raise AIHarnessError("AI credentials file contains an invalid provider key pool.")
+            clean: dict[str, str] = {}
+            for slot, secret in slots.items():
+                if str(slot) not in {"1", "2", "3"} or not isinstance(secret, str) or not secret:
+                    raise AIHarnessError("AI credentials file contains an invalid key slot.")
+                clean[str(slot)] = secret
+            if clean:
+                pools[provider] = clean
+        return pools
+    pools: dict[str, dict[str, str]] = {}
+    for provider, secret in value.items():
+        if provider in PROVIDERS and isinstance(secret, str) and secret:
+            pools[provider] = {"1": secret}
+    return pools
 
+
+def _save_credentials(pools: Mapping[str, Mapping[str, str]]) -> None:
+    normalized: dict[str, dict[str, str]] = {}
+    for provider, slots in pools.items():
+        if provider not in PROVIDERS:
+            continue
+        values = {str(slot): str(secret) for slot, secret in slots.items()
+                  if str(slot) in {"1", "2", "3"} and isinstance(secret, str) and secret}
+        if len(values) > 3:
+            raise AIHarnessError("Each provider supports at most three saved API-key slots.")
+        if values:
+            normalized[provider] = values
+    _atomic_json(credentials_path(), {"schema_version": 2, "keys": normalized})
+
+
+def set_api_key_slot(provider: str, slot: int, secret: str) -> None:
+    provider = str(provider or "").strip().lower()
+    if provider not in PROVIDERS:
+        raise AIHarnessError(f"Provider must be one of: {', '.join(sorted(PROVIDERS))}.")
+    if int(slot) not in {1, 2, 3}:
+        raise AIHarnessError("API key slot must be 1, 2, or 3.")
+    clean = str(secret or "").strip()
+    if not clean:
+        raise AIHarnessError("API key cannot be empty.")
+    pools = _credentials()
+    pool = dict(pools.get(provider, {}))
+    pool[str(int(slot))] = clean
+    pools[provider] = pool
+    _save_credentials(pools)
+
+
+def remove_api_key_slot(provider: str, slot: int | None = None) -> None:
+    provider = str(provider or "").strip().lower()
+    if provider not in PROVIDERS:
+        raise AIHarnessError(f"Provider must be one of: {', '.join(sorted(PROVIDERS))}.")
+    pools = _credentials()
+    if slot is None:
+        pools.pop(provider, None)
+    else:
+        if int(slot) not in {1, 2, 3}:
+            raise AIHarnessError("API key slot must be 1, 2, or 3.")
+        pool = dict(pools.get(provider, {}))
+        pool.pop(str(int(slot)), None)
+        if pool:
+            pools[provider] = pool
+        else:
+            pools.pop(provider, None)
+    _save_credentials(pools)
+
+
+def _key_candidates(config: Mapping[str, Any]) -> list[tuple[str, str | None]]:
+    provider = str(config.get("provider") or "")
+    if provider == "ollama":
+        return [("local", None)]
+    candidates: list[tuple[str, str | None]] = []
+    pool = _credentials().get(provider, {})
+    # Explicit saved slots take priority; the configured environment key fills an
+    # unused slot. This keeps a three-key saved pool to exactly three attempts.
+    for slot in ("1", "2", "3"):
+        secret = pool.get(slot)
+        if secret and not any(existing == secret for _, existing in candidates):
+            candidates.append((slot, secret))
+    env_name = config.get("api_key_env")
+    if env_name and len(candidates) < 3:
+        environment_key = os.environ.get(str(env_name))
+        if environment_key and not any(existing == environment_key for _, existing in candidates):
+            candidates.append((f"env:{env_name}", environment_key))
+    return candidates[:3]
+
+
+def _rotation_path() -> Path:
+    return _state_home() / "ai-key-rotation.json"
+
+
+def _rotation_start(provider: str, labels: list[str]) -> int:
+    if not labels:
+        return 0
+    value = _read_json(_rotation_path(), {})
+    if not isinstance(value, dict):
+        return 0
+    selected = value.get(provider)
+    return labels.index(selected) if selected in labels else 0
+
+
+def _save_rotation(provider: str, label: str) -> None:
+    value = _read_json(_rotation_path(), {})
+    if not isinstance(value, dict):
+        value = {}
+    value[provider] = label
+    _atomic_json(_rotation_path(), value)
+
+
+def key_pool_status(provider: str | None = None) -> dict[str, Any]:
+    pools = _credentials()
+    cfg = load_config()
+    selected = provider
+    providers = [selected] if selected else sorted(set(pools) | ({str(cfg.get("provider"))} if cfg.get("provider") else set()))
+    result: dict[str, Any] = {}
+    rotation = _read_json(_rotation_path(), {})
+    if not isinstance(rotation, dict):
+        rotation = {}
+    for name in providers:
+        pool = pools.get(name, {})
+        active_env = cfg.get("api_key_env") if name == cfg.get("provider") else None
+        active_env_present = bool(os.environ.get(str(active_env))) if active_env else False
+        distinct_env = active_env_present and not any(secret == os.environ.get(str(active_env)) for secret in pool.values())
+        effective_keys = set(pool.values())
+        if distinct_env:
+            effective_keys.add(str(os.environ.get(str(active_env))))
+        result[name] = {
+            "saved_slots": [{"slot": int(slot), "configured": True} for slot in sorted(pool)],
+            "environment_key_configured": active_env_present,
+            "effective_key_capacity": min(3, len(effective_keys)),
+            "rotation_preference": rotation.get(name),
+        }
+    return {"providers": result, "max_keys_per_provider_per_request": 3,
+            "failover_policy": "rotate on quota, rate-limit, or key-auth rejection; never print key values"}
 
 def _endpoint(provider: str, supplied: str | None) -> str:
     value = (supplied or DEFAULT_URLS.get(provider) or "").rstrip("/")
@@ -178,13 +316,17 @@ def configure(*, provider: str, model: str, base_url: str | None = None, api_key
     if api_key is not None:
         if not api_key.strip():
             raise AIHarnessError("API key cannot be empty.")
-        creds[provider] = api_key.strip()
-        _atomic_json(credentials_path(), creds)
+        pool = dict(creds.get(provider, {}))
+        pool["1"] = api_key.strip()
+        creds[provider] = pool
+        _save_credentials(creds)
     elif api_key_env:
+        # Explicit environment-key configuration preserves the historical
+        # behavior: it replaces the saved pool for this provider.
         creds.pop(provider, None)
-        _atomic_json(credentials_path(), creds)
-    if provider != "ollama" and not api_key and not api_key_env and provider not in creds:
-        raise AIHarnessError("This provider needs an API key. Enter one securely or use --api-key-env.")
+        _save_credentials(creds)
+    if provider != "ollama" and not api_key and not api_key_env and not creds.get(provider):
+        raise AIHarnessError("This provider needs an API key. Enter one securely, set --api-key-env, or use lk ai keys add.")
     cfg = {**load_config(), "schema_version": SCHEMA_VERSION, "enabled": True, "provider": provider,
            "model": model, "base_url": endpoint, "api_key_env": api_key_env,
            "timeout_seconds": timeout_seconds, "max_output_tokens": max_output_tokens}
@@ -204,33 +346,32 @@ def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         usable, reason = False, "not configured"
     elif provider != "ollama":
         env_name = cfg.get("api_key_env")
-        has_key = bool(os.environ.get(str(env_name))) if env_name else bool(_credentials().get(str(provider)))
+        has_key = bool(os.environ.get(str(env_name))) if env_name else False
+        has_key = has_key or bool(_credentials().get(str(provider)))
         if not has_key:
             usable, reason = False, "API key unavailable"
     auto_assist = bool(cfg.get("auto_assist", False))
-    return {"enabled": bool(cfg.get("enabled")), "configured": configured, "usable": usable,
-            "auto_assist": auto_assist, "mode": "auto" if auto_assist else "manual",
+    pool_info = key_pool_status(str(provider) if provider else None)
+    key_count = pool_info.get("providers", {}).get(str(provider), {}).get("effective_key_capacity", 0) if provider else 0
+    return {"enabled": bool(cfg["enabled"]), "configured": configured, "usable": usable,
+            "auto_assist": auto_assist, "auto_explain_errors": bool(cfg.get("auto_explain_errors", False)),
+            "mode": "auto" if auto_assist else "manual",
             "provider": provider, "model": cfg.get("model"), "base_url": cfg.get("base_url"),
             "reason": reason, "timeout_seconds": cfg.get("timeout_seconds"),
-            "max_output_tokens": cfg.get("max_output_tokens")}
+            "max_output_tokens": cfg.get("max_output_tokens"), "key_slots_configured": key_count}
 
 
 def _api_key(config: Mapping[str, Any]) -> str | None:
-    if config.get("provider") == "ollama":
-        return None
+    candidates = _key_candidates(config)
+    if candidates:
+        return candidates[0][1]
     env_name = config.get("api_key_env")
     if env_name:
-        key = os.environ.get(str(env_name))
-        if not key:
-            raise AIUnavailable(f"Configured API-key variable {env_name} is not set.")
-        return key
-    key = _credentials().get(str(config.get("provider")))
-    if not key:
-        raise AIUnavailable("API key is missing. Run lk ai setup or set the configured environment variable.")
-    return key
+        raise AIUnavailable(f"Configured API-key variable {env_name} is not set.")
+    raise AIUnavailable("API key is missing. Run lk ai setup, set the configured environment variable, or add a key with lk ai keys add.")
 
-
-def _log_event(purpose: str, config: Mapping[str, Any], digest: str, outcome: str, elapsed_ms: int) -> None:
+def _log_event(purpose: str, config: Mapping[str, Any], digest: str, outcome: str, elapsed_ms: int,
+               *, key_slot: str | None = None, failover_attempts: int = 0) -> None:
     """Persist metadata only; never log source, prompts, responses or credentials."""
     try:
         path = _state_home() / "ai-events.jsonl"
@@ -241,7 +382,8 @@ def _log_event(purpose: str, config: Mapping[str, Any], digest: str, outcome: st
             pass
         record = {"timestamp": datetime.now(timezone.utc).isoformat(), "purpose": purpose,
                   "provider": config.get("provider"), "model": config.get("model"),
-                  "context_sha256": digest, "outcome": outcome, "elapsed_ms": elapsed_ms}
+                  "context_sha256": digest, "outcome": outcome, "elapsed_ms": elapsed_ms,
+                  "key_slot": key_slot, "failover_attempts": int(failover_attempts)}
         fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
@@ -256,7 +398,14 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
     if len(encoded_context) > MAX_CONTEXT_BYTES:
         raise AIHarnessError(f"AI context exceeds {MAX_CONTEXT_BYTES} bytes; narrow it to relevant evidence.")
     digest = hashlib.sha256(encoded_context).hexdigest()
-    key = _api_key(config)
+    candidates = _key_candidates(config)
+    if not candidates:
+        _api_key(config)  # raise the safe, actionable missing-key diagnostic
+        raise AIUnavailable("No usable API key slot is configured.")
+    provider = str(config.get("provider") or "")
+    labels = [label for label, _ in candidates]
+    start_index = _rotation_start(provider, labels)
+    ordered = candidates[start_index:] + candidates[:start_index]
     payload = {
         "model": config["model"],
         "messages": [
@@ -274,24 +423,58 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
         "response_format": {"type": "json_object"}, "stream": False,
     }
     started, outcome = time.monotonic(), "error"
+    last_key_slot: str | None = None
+    failover_attempts = 0
+    last_provider_error = None
     try:
         try:
             import provider_adapters
         except ImportError:
             from lowkey import provider_adapters
-        adapter = provider_adapters.get_provider_adapter(str(config.get("provider") or ""))
-        raw = adapter.send(
-            config=config,
-            api_key=key,
-            payload=payload,
-            request_type=Request,
-            urlopen_fn=urlopen,
-            http_error_type=HTTPError,
-            url_error_type=URLError,
-            max_response_bytes=MAX_RESPONSE_BYTES,
-        )
+        adapter = provider_adapters.get_provider_adapter(provider)
+        result_raw: bytes | None = None
+        for attempt, (slot_label, key) in enumerate(ordered):
+            last_key_slot = slot_label
+            try:
+                result_raw = adapter.send(
+                    config=config,
+                    api_key=key,
+                    payload=payload,
+                    request_type=Request,
+                    urlopen_fn=urlopen,
+                    http_error_type=HTTPError,
+                    url_error_type=URLError,
+                    max_response_bytes=MAX_RESPONSE_BYTES,
+                )
+                _save_rotation(provider, slot_label)
+                break
+            except provider_adapters.ProviderAdapterError as exc:
+                last_provider_error = exc
+                can_rotate = exc.category in {"quota", "rate-limit", "authentication"}
+                has_next = attempt < len(ordered) - 1
+                if can_rotate and has_next:
+                    failover_attempts += 1
+                    continue
+                if can_rotate and not has_next:
+                    slots_tried = ", ".join(label for label, _ in ordered)
+                    raise AIUnavailable(
+                        f"All configured API-key slots for provider '{provider}' were rejected or quota/rate limited "
+                        f"(slots tried: {slots_tried}). Add or replace a key with 'lk ai keys add --provider {provider} --slot 1|2|3', "
+                        "then inspect 'lk ai keys list'. Keys were not printed."
+                    ) from exc
+                if exc.category == "authentication":
+                    raise AIUnavailable("AI provider rejected the configured API key. Add another key with 'lk ai keys add'.") from exc
+                if exc.category == "network":
+                    raise AIUnavailable("AI provider could not be reached; this is a connection problem, not a key-quota result.") from exc
+                if exc.category == "http":
+                    raise AIUnavailable(str(exc) + " Native workflows remain available.") from exc
+                raise AIHarnessError(str(exc)) from exc
+        if result_raw is None:
+            if last_provider_error is not None:
+                raise AIUnavailable("No configured API-key slot completed the request.")
+            raise AIHarnessError("AI provider returned no response.")
         try:
-            envelope = json.loads(raw.decode("utf-8"))
+            envelope = json.loads(result_raw.decode("utf-8"))
             output = json.loads(envelope["choices"][0]["message"]["content"])
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
             raise AIHarnessError("Provider returned an invalid structured JSON response; result rejected.") from exc
@@ -313,7 +496,10 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
             raise AIHarnessError(str(exc)) from exc
         raise AIHarnessError(str(exc)) from exc
     finally:
-        _log_event(purpose, config, digest, outcome, int((time.monotonic() - started) * 1000))
+        _log_event(
+            purpose, config, digest, outcome, int((time.monotonic() - started) * 1000),
+            key_slot=last_key_slot, failover_attempts=failover_attempts,
+        )
 
 
 def request_structured(*, purpose: str, task: str, context: Mapping[str, Any],
@@ -606,6 +792,24 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("enable", help="enable the configured extension")
     sub.add_parser("disable", help="disable AI without changing native commands")
     sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
+    keys = sub.add_parser("keys", help="manage up to three private API-key slots per provider")
+    key_actions = keys.add_subparsers(dest="key_action")
+    key_list = key_actions.add_parser("list", help="show configured slot numbers only; never prints keys")
+    key_list.add_argument("--provider", choices=sorted(PROVIDERS), help="provider to inspect (default: all configured providers)")
+    key_add = key_actions.add_parser("add", help="save or replace one provider key; input is hidden")
+    key_add.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
+    key_add.add_argument("--slot", type=int, choices=(1, 2, 3), required=True)
+    key_remove = key_actions.add_parser("remove", help="remove one slot or all keys for a provider")
+    key_remove.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
+    key_remove.add_argument("--slot", type=int, choices=(1, 2, 3))
+    key_clear = key_actions.add_parser("clear", help="remove every saved key for a provider")
+    key_clear.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
+    explain = sub.add_parser("explain-error", help="diagnose the most recent Lowkey error or supplied error text; suggestions only")
+    explain.add_argument("--last", action="store_true", help="use the most recently captured Lowkey error (default)")
+    explain.add_argument("--text", nargs="+", help="error text copied from any command")
+    explain.add_argument("--command", default="", help="command that produced --text")
+    errors = sub.add_parser("errors", help="configure optional AI explanations after failed Lowkey commands")
+    errors.add_argument("mode", choices=("auto", "manual", "status"))
     security = sub.add_parser("security-review", help="review source for candidate vulnerabilities; findings remain unverified")
     security.add_argument("--root", default=".", help="project root (default: current directory)")
     security.add_argument("--contract", help="prioritize source matching a contract name")
@@ -636,6 +840,63 @@ def main(argv: list[str] | None = None) -> int:
         parsed = parser.parse_args(args)
         if parsed.action == "status":
             print(json.dumps(status(), indent=2, sort_keys=True))
+            return 0
+        if parsed.action == "keys":
+            action = parsed.key_action
+            if action is None or action == "list":
+                info = key_pool_status(parsed.provider if action == "list" else None)
+                print(json.dumps(info, indent=2, sort_keys=True))
+                return 0
+            if action == "add":
+                secret = getpass.getpass(f"{parsed.provider} API key for slot {parsed.slot} (input hidden): ").strip()
+                set_api_key_slot(parsed.provider, parsed.slot, secret)
+                # Prefer saved key pools when a user explicitly adds keys; an environment key
+                # remains first in line if configured, and is still never displayed.
+                print(f"Saved provider '{parsed.provider}' key slot {parsed.slot}. Key value not displayed.")
+                print("Quota/rate-limit/auth rejection will trigger failover to the next configured slot.")
+                return 0
+            if action in {"remove", "clear"}:
+                remove_api_key_slot(parsed.provider, None if action == "clear" or parsed.slot is None else parsed.slot)
+                print(f"Removed requested saved key slot(s) for provider '{parsed.provider}'. Key values not displayed.")
+                return 0
+            parser.print_help()
+            return 2
+        if parsed.action == "errors":
+            cfg = load_config()
+            if parsed.mode == "status":
+                print(json.dumps({
+                    "mode": "automatic" if cfg.get("auto_explain_errors", False) else "manual",
+                    "automatic_explanations_make_provider_requests": bool(cfg.get("auto_explain_errors", False)),
+                    "suggested_commands_are_executed": False,
+                }, indent=2, sort_keys=True))
+                return 0
+            cfg["auto_explain_errors"] = parsed.mode == "auto"
+            save_config(cfg)
+            if parsed.mode == "auto":
+                print("Automatic AI error explanations enabled for failed routed lk commands. Provider requests may incur charges.")
+                print("Suggestions are printed only; commands are never executed by the AI.")
+            else:
+                print("Automatic AI error explanations disabled. Use 'lk ai explain-error --last' when you want help.")
+            return 0
+        if parsed.action == "explain-error":
+            try:
+                import error_context
+                import error_advisor
+            except ImportError:
+                from lowkey import error_context, error_advisor
+            if parsed.text:
+                record = {
+                    "error": error_context.redact(" ".join(parsed.text), limit=6000),
+                    "command": parsed.command,
+                    "exit_code": None,
+                    "project_label": Path.cwd().name,
+                    "project_root": str(Path.cwd()),
+                    "timestamp": None,
+                }
+            else:
+                record = error_context.read_last_error()
+            diagnosis = error_advisor.diagnose_record(record)
+            print(error_advisor.render(diagnosis))
             return 0
         if parsed.action == "security-review":
             try:
@@ -835,7 +1096,37 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 2
     except (AIHarnessError, OSError, ValueError, RuntimeError) as exc:
+        try:
+            import error_context
+        except ImportError:
+            try:
+                from lowkey import error_context
+            except ImportError:
+                error_context = None
+        recorded = None
+        action = str(args[0]) if args else "unknown"
+        if error_context is not None:
+            try:
+                recorded = error_context.record_last_error(
+                    command=["ai", action], error=str(exc), exit_code=2, source="ai"
+                )
+            except Exception:
+                pass
         print(f"Error: {exc}", file=sys.stderr)
+        # Directly routed 'lk ai' failures bypass the main CLI dispatcher, so
+        # honor the same explicit opt-in here. Never recurse from explain-error.
+        if error_context is not None and action != "explain-error":
+            try:
+                if error_context.auto_error_explain_enabled() and recorded:
+                    try:
+                        import error_advisor
+                    except ImportError:
+                        from lowkey import error_advisor
+                    suggestion = error_advisor.maybe_auto_explain(recorded)
+                    if suggestion:
+                        print(suggestion, file=sys.stderr)
+            except Exception:
+                pass
         return 2
 
 

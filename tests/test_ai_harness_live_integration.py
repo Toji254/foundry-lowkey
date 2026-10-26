@@ -213,5 +213,54 @@ class AIHarnessLiveRequestIntegrationTests(unittest.TestCase):
             ai.review_project_protocol(self.root, "Vault")
 
 
+    def test_focused_security_review_uses_real_transport_and_records_unverified_candidate(self):
+        self._configure_local_provider()
+        try:
+            from lowkey import evidence_ledger, security_review
+        except ImportError:
+            import evidence_ledger
+            import security_review
+
+        response = {
+            "summary": "Fixture security review response.",
+            "candidate_findings": [{
+                "title": "Fixture candidate for transport coverage",
+                "category": "invariant",
+                "severity": "medium",
+                "location": {"path": "src/Vault.sol", "symbol": "Vault.withdraw"},
+                "evidence_quote": "require(amount <= balances[msg.sender]);",
+                "reasoning": "Fixture output exercises source quotation and lifecycle wiring only.",
+                "impact": "No impact claim is made by this transport fixture.",
+                "exploit_preconditions": "",
+                "recommendation": "Treat this fixture candidate as unverified.",
+                "confidence": "low",
+            }],
+            "limitations": ["This local HTTP fixture does not assess real model quality."],
+        }
+        self.server.response_body = provider_envelope(json.dumps(response))
+
+        review = security_review.review_project_security(self.root, "Vault")
+
+        self.assertEqual(len(review["candidate_findings"]), 1)
+        finding = review["candidate_findings"][0]
+        self.assertEqual(finding["source_quote_status"], "matched")
+        self.assertEqual(finding["status"], "candidate")
+        self.assertFalse(finding["verified"])
+        self.assertTrue(review["_lowkey_meta"]["review_id"])
+        self.assertEqual(self.server.received_path, "/v1/chat/completions")
+        request = json.loads(self.server.received_body.decode("utf-8"))
+        user_message = json.loads(request["messages"][1]["content"])
+        self.assertEqual(user_message["purpose"], "security_review")
+        self.assertIn("candidate_findings", user_message["task"])
+        self.assertNotIn("LIVE_REVIEW_SECRET_SENTINEL", json.dumps(user_message["context"]))
+
+        ledger = evidence_ledger.summary(self.root)
+        self.assertEqual(len(ledger["findings"]), 1)
+        self.assertEqual(ledger["findings"][0]["finding_id"], finding["finding_id"])
+        self.assertEqual(ledger["findings"][0]["status"], "candidate")
+        self.assertFalse(ledger["findings"][0]["verified"])
+        self.assertTrue((self.root / review["_lowkey_meta"]["report_path"]).is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

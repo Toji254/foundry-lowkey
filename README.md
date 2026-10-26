@@ -105,6 +105,20 @@ lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test t
 lk ai disposition F-0123456789ab --status confirmed --reviewer auditor --reason 'Reviewed the reproduced impact and assertion.' --evidence-id NATIVE_TEST_EVENT_ID
 lk ai runtime
 ~~~
+### Error help and provider key failover
+
+`lk ai explain-error --last` diagnoses the most recently captured Lowkey error; use `lk ai explain-error --text '...'` for any copied error. `lk ai errors auto` opts into an AI diagnosis after routed CLI failures (provider requests may incur charges); `lk ai errors manual` disables automatic explanations. AI-suggested commands are never executed.
+
+Add up to three API key slots for one configured provider with hidden input:
+
+~~~bash
+lk ai keys add --provider openai-compatible --slot 1
+lk ai keys add --provider openai-compatible --slot 2
+lk ai keys add --provider openai-compatible --slot 3
+lk ai keys list --provider openai-compatible
+~~~
+
+Quota/rate-limit/key-auth failures trigger bounded failover across the configured slots. Keys are not printed or logged; model/provider is not silently changed.
 ## Native experience memory
 
 Lowkey can retain audit feedback and reusable lessons without an AI provider. Feedback and proposed lessons are stored in a private user-data directory keyed to the canonical path of the audited project, not inside the target repository. Only lessons explicitly approved with validation evidence are supplied as relevance-ranked reference context to an explicitly requested AI review; lessons never execute as code or change native security rules.

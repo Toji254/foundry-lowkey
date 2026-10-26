@@ -126,6 +126,46 @@ The security-review pipeline stores a report under `.audit/ai-review/reviews/` a
 Provider adapters are selected through a replaceable registry. Agents depend on a structured task interface rather than a specific vendor. The built-in providers currently share an OpenAI-compatible transport; replacing a transport requires explicit application-code registration and regression tests. The agent registry exposes bounded capabilities, one-level allowlisted delegation, and an action log at `.audit/ai-review/runtime-events.jsonl`. Logs store action metadata and digests rather than prompts, model responses, credentials, or raw test output.
 
 Historical project feedback is included only as labeled historical context when available. It is not a source citation or current proof and must be rechecked against the current source revision and current native tests. Only separately approved memory lessons are treated as reusable validated procedures, and those lessons remain reference context—not proof that a current finding is true.
+## Error diagnosis and key failover
+
+Lowkey can retain the most recent routed CLI failure in a private, redacted state file and diagnose it on demand. The model provides proposed causes and copy-pasteable checks/fixes; it does not run any suggested command.
+
+~~~bash
+# Explain the most recently captured lk error
+lk ai explain-error --last
+
+# Or explain an error copied from any command, including commands outside the main router
+lk ai explain-error --text 'failed to retrieve chain ID from fork endpoint: connection timed out' --command 'forge test --match-path test/fork/*'
+
+# Keep automatic explanations off unless you explicitly enable them
+lk ai errors status
+lk ai errors auto
+lk ai errors manual
+~~~
+
+Automatic explanations are opt-in and can make provider requests (and incur charges) after routed command failures. The last-error record is stored at the user's XDG state directory with private file permissions; raw argv is not stored, diagnostic strings are redacted/truncated, and only the command name, status, project label/path and sanitized error are retained. For commands routed directly to external tools or any error not captured automatically, `--text` provides the universal fallback.
+
+Each provider can hold up to three private API-key slots. Secrets are saved separately from ordinary configuration with restrictive file permissions and are never printed by key-management commands or written to request logs.
+
+~~~bash
+# Add/replace a key; input is hidden
+lk ai keys add --provider openai-compatible --slot 1
+lk ai keys add --provider openai-compatible --slot 2
+lk ai keys add --provider openai-compatible --slot 3
+
+# See slot numbers only; never prints credential values
+lk ai keys list --provider openai-compatible
+
+# Remove a single slot or all saved keys for that provider
+lk ai keys remove --provider openai-compatible --slot 2
+lk ai keys clear --provider openai-compatible
+~~~
+
+On quota exhaustion, rate limiting, or key-auth rejection, the harness tries the other configured key slots and records only the slot label and failover count. It remembers the last successful slot as the next request's starting preference. Network failures and non-key-related HTTP errors do not trigger key rotation. Provider/model are not silently changed, and retries remain bounded to the configured three slots. Environment-variable keys can fill an unused slot when fewer than three saved keys exist.
+
+## Other opt-in AI tasks
+
+Use AI where it reduces investigation time without owning the workflow: explain a compiler/Forge/Slither/RPC error; suggest regression test cases from a cited invariant; summarize the current evidence for hand-off; and explain a static-analysis candidate in plain language. Each task should stay explicit and bounded. Generated commands/tests must be previewed, reviewed and run by native tools; AI output is never deployment authority or security proof.
 ## Manual and automatic assistance modes
 
 The default is **manual**: Lowkey does not make a model request unless you explicitly run \`lk lab --ai-review\`.
