@@ -7688,7 +7688,7 @@ def _lab_script_unresolved_env_names(script, root=None):
         )
         for branch in guarded.finditer(source):
             inactive = branch.group("no")
-            for name in required_names:
+            for name in list(required_names):
                 if re.search(
                     r"vm\.env(?!Or)[A-Za-z0-9_]*\s*\(\s*[\"']" +
                     re.escape(name) + r"[\"']",
