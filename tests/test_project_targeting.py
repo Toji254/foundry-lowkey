@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE = ROOT / "lowkey" / "lk.py"
@@ -1333,15 +1333,19 @@ if __name__ == "__main__":
                 str(derived_artifact),
             )
 
-            with patch.object(
-                lk, "_live_runtime",
-                side_effect=lambda config, address: {
-                    proxy.lower(): "0x6001",
-                    actual_implementation.lower(): "0x6002",
-                }.get(str(address).lower()),
-            ), patch.object(lk, "_minimal_proxy_implementation", return_value=None), \\
-                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
-                 patch.object(lk, "cast_output", return_value=(0, actual_implementation, "")):
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(
+                    lk, "_live_runtime",
+                    side_effect=lambda config, address: {
+                        proxy.lower(): "0x6001",
+                        actual_implementation.lower(): "0x6002",
+                    }.get(str(address).lower()),
+                ))
+                stack.enter_context(patch.object(lk, "_minimal_proxy_implementation", return_value=None))
+                stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"))
+                stack.enter_context(patch.object(
+                    lk, "cast_output", return_value=(0, actual_implementation, "")
+                ))
                 live_match = lk._live_target_artifact_match(
                     {
                         "target_contract": "Template",
@@ -1372,15 +1376,19 @@ if __name__ == "__main__":
                     root, state_path, proxy, "Template", "http://127.0.0.1:8545"
                 )
             )
-            with patch.object(
-                lk, "_live_runtime",
-                side_effect=lambda config, address: {
-                    proxy.lower(): "0x6001",
-                    actual_implementation.lower(): "0x6002",
-                }.get(str(address).lower()),
-            ), patch.object(lk, "_minimal_proxy_implementation", return_value=None), \\
-                 patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"), \\
-                 patch.object(lk, "cast_output", return_value=(0, actual_implementation, "")):
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(
+                    lk, "_live_runtime",
+                    side_effect=lambda config, address: {
+                        proxy.lower(): "0x6001",
+                        actual_implementation.lower(): "0x6002",
+                    }.get(str(address).lower()),
+                ))
+                stack.enter_context(patch.object(lk, "_minimal_proxy_implementation", return_value=None))
+                stack.enter_context(patch.object(lk, "effective_rpc", return_value="http://127.0.0.1:8545"))
+                stack.enter_context(patch.object(
+                    lk, "cast_output", return_value=(0, actual_implementation, "")
+                ))
                 rejected_live_match = lk._live_target_artifact_match(
                     {
                         "target_contract": "Template",
