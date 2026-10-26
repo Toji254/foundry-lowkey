@@ -15189,7 +15189,7 @@ COMMAND_HELP = {
         children={
             "test": _help_entry(
                 "Generate a Forge regression test that replays one concrete call. The generated test is not a complete security test.",
-                "lk generate test <function> [args...] [--value <amount>] [--calldata 0x...] [--output <file>] [--force]",
+                "lk generate test '<function(parameter TYPES...)>' <VALUES...> [--value <amount>] [--calldata 0x...] [--output <file>] [--force]",
                 "lk gen test 'setValue(uint256)' 10 --value 0.1ether --output test/SetValueReplay.t.sol",
                 "Use it when you have a call you want to make reproducible in Forge. You can provide a function and arguments, or use an eligible recorded send as the starting point.",
                 options=[
