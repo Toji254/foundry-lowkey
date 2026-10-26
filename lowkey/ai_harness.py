@@ -389,7 +389,14 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
             import experience_memory
         except ImportError:
             from lowkey import experience_memory
-        context["approved_experience"] = experience_memory.lessons_for_context(root)
+        context["approved_experience"] = experience_memory.lessons_for_context(
+            root,
+            query_text="\n".join(
+                f"{item.get('path', '')} {item.get('source_excerpt', '')}"
+                for item in context.get("source_files", [])
+                if isinstance(item, dict)
+            ),
+        )
     except Exception:
         context["approved_experience"] = []
     result = request_structured(
