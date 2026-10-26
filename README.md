@@ -443,7 +443,15 @@ Run a bounded serial campaign from a JSON manifest with explicit engine configur
 lk verification run .audit/verification/campaign.json --profile balanced
 ~~~
 
+Correlate the saved results with an existing audit finding (use its exact signal ID):
+
+~~~bash
+lk verification correlate .audit/verification/campaign.json --signal SLITHER-XXXXXXXXXX
+~~~
+
 Use `lk mutation-check manifest.json` to test whether an existing suite detects explicit behavioral mutants, and `lk verification-benchmark manifest.json` to evaluate multiple project cases. Baseline failures, compiler/setup errors, timeouts, and mutants not killed are reported separately.
+
+`lk verification correlate <campaign-report.json> --signal <SIGNAL_ID>` joins normalized engine outcomes and attaches one repeat-safe evidence record to an existing finding. A campaign manifest may instead name `investigation.signal_ids` (or `investigation.signal_id`) and a stable `investigation.property_id`. The correlator preserves the native report by reference and hash. It does not create missing findings or mark a vulnerability as proven: property failures remain review leads, and passing engines do not certify the protocol.
 
 ## Project-aware test generation
 
