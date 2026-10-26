@@ -263,6 +263,17 @@ def render(diagnosis: Mapping[str, Any]) -> str:
                 lines.append("   Verify: " + item["verify"])
             if item.get("risk"):
                 lines.append("   Risk: " + item["risk"])
+    native_hints = diagnosis.get("deterministic_hints")
+    if isinstance(native_hints, list) and native_hints:
+        lines.extend(["", "LOWKEY-NATIVE STARTING POINTS (NOT RUN)", "--------------------------------------"])
+        for item in native_hints[:4]:
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(f"- {str(item.get('title') or 'Native check')}")
+            if item.get("why"):
+                lines.append("  Why: " + str(item["why"]))
+            if item.get("command"):
+                lines.append("  $ " + prefer_lowkey_command(str(item["command"])))
     if diagnosis.get("caveats"):
         lines.extend(["", "Caveats:"])
         lines.extend("  - " + item for item in diagnosis["caveats"])
