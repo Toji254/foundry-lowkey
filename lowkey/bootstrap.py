@@ -1418,6 +1418,15 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
                 "repairable": True,
                 "reason": "The missing source is a namespaced package import; Lowkey treats it as dependency resolution.",
             }
+        if source_path.startswith(("lib/", "./lib/")):
+            return {
+                "category": "dependency",
+                "repairable": True,
+                "reason": (
+                    "The missing source is inside Foundry's conventional library directory; "
+                    "Lowkey will inspect declared dependencies before retrying."
+                ),
+            }
         if source_path.startswith(("contracts/", "src/", "./contracts/", "./src/")):
             return {
                 "category": "source_or_build_error",
@@ -1431,7 +1440,11 @@ def classify_build_failure(output: str | None, command: Sequence[str] = ()) -> d
             "repairable": True,
             "reason": "The diagnostics indicate a missing or incomplete dependency/tooling tree.",
         }
-    if re.search(r"(command not found|no such file|executable file not found)", lowered):
+    if re.search(
+        r"(command not found|executable file not found|forge was not found on path|"
+        r"error executing [^\\n]*no such file|unable to execute [^\\n]*no such file)",
+        lowered,
+    ):
         return {
             "category": "missing_tool",
             "repairable": False,
@@ -1465,6 +1478,143 @@ def _native_node_script_failure(output: str) -> bool:
             )
         )
     )
+
+
+def _recover_invalid_submodule_revision(
+    action: dict[str, Any],
+    output: str,
+    timeout: int,
+) -> bool:
+    """Reinitialize only a targeted submodule whose Git HEAD is broken.
+
+    Git refuses submodule update if a worktree's .git marker points at an
+    unborn or corrupt HEAD. Preserve that incomplete worktree inside the
+    parent's Git metadata, deinitialize it, and retry the same pinned gitlink
+    update. Never apply this fallback to unrelated errors.
+    """
+    match = re.search(
+        r"Unable to find current revision in submodule path ['\"]([^'\"]+)['\"]",
+        str(output or ""),
+        re.I,
+    )
+    if not match:
+        return False
+
+    relative = match.group(1)
+    command = [str(part) for part in action.get("command") or []]
+    if command[:3] != ["git", "submodule", "update"]:
+        return False
+    try:
+        separator = command.index("--")
+    except ValueError:
+        return False
+    targets = command[separator + 1:]
+    if len(targets) != 1 or targets[0] != relative:
+        return False
+
+    repository = Path(action["cwd"]).expanduser().resolve()
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        return False
+    worktree = repository / relative_path
+    try:
+        worktree.resolve().relative_to(repository)
+    except ValueError:
+        return False
+    if worktree.is_symlink():
+        print(
+            f"FAIL  git-submodule recovery: refusing symlink worktree {relative}"
+        )
+        return False
+
+    try:
+        gitdir_result = subprocess.run(
+            ["git", "rev-parse", "--absolute-git-dir"],
+            cwd=str(repository),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if gitdir_result.returncode != 0 or not gitdir_result.stdout.strip():
+        return False
+
+    backup_path: Path | None = None
+    if worktree.exists():
+        if not worktree.is_dir():
+            print(
+                f"FAIL  git-submodule recovery: refusing non-directory worktree {relative}"
+            )
+            return False
+        backup_root = Path(gitdir_result.stdout.strip()).resolve() / "lowkey-recovery-backups"
+        try:
+            backup_root.mkdir(parents=True, exist_ok=True)
+            stem = relative.replace("/", "__") or "submodule"
+            backup_path = backup_root / f"{stem}.incomplete"
+            suffix = 1
+            while backup_path.exists():
+                backup_path = backup_root / f"{stem}.incomplete.{suffix}"
+                suffix += 1
+            shutil.move(str(worktree), str(backup_path))
+        except OSError as error:
+            print(
+                f"FAIL  git-submodule recovery: could not preserve {relative}: {error}"
+            )
+            return False
+        print(
+            "INFO  git-submodule recovery: preserved incomplete worktree at "
+            f"{backup_path}"
+        )
+
+    print(
+        "RETRY git-submodule recovery: deinitializing invalid Git metadata for "
+        f"{relative}"
+    )
+    try:
+        deinit = subprocess.run(
+            ["git", "submodule", "deinit", "--force", "--", relative],
+            cwd=str(repository),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "CI": "1"},
+            timeout=max(timeout, 60),
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"FAIL  git-submodule recovery: deinit failed: {error}")
+        return False
+    deinit_output = (deinit.stdout or "") + (("\\n" + deinit.stderr) if deinit.stderr else "")
+    if deinit_output.strip():
+        print(deinit_output.rstrip())
+    if deinit.returncode != 0:
+        print(f"FAIL  git-submodule recovery: deinit exited {deinit.returncode}")
+        return False
+
+    try:
+        retried = subprocess.run(
+            command,
+            cwd=str(repository),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "CI": "1"},
+            timeout=max(timeout, 60),
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"FAIL  git-submodule recovery: update retry failed: {error}")
+        return False
+    retry_output = (retried.stdout or "") + (("\\n" + retried.stderr) if retried.stderr else "")
+    if retry_output.strip():
+        print(retry_output.rstrip())
+    if retried.returncode != 0:
+        print(
+            "FAIL  git-submodule recovery: the pinned checkout still cannot be restored"
+        )
+        return False
+
+    print(f"PASS  git-submodule recovery: reinitialized {relative}")
+    return True
 
 
 def run_bootstrap(
@@ -1571,6 +1721,11 @@ def run_bootstrap(
             if output:
                 print(output.rstrip())
             if result.returncode != 0:
+                if (
+                    action["kind"] == "git-submodule"
+                    and _recover_invalid_submodule_revision(action, output, timeout)
+                ):
+                    continue
                 print(f"FAIL  {action['kind']}: exit {result.returncode}")
                 failures = failures or result.returncode or 1
                 stage_failed = True
