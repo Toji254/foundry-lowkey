@@ -1885,13 +1885,22 @@ class LocalTargetDependencyAddressTests(unittest.TestCase):
             artifact_path.write_text(
                 json.dumps({
                     "contractName": "ConfidencePoolFactory",
-                    "abi": [{
-                        "type": "function",
-                        "name": "poolImplementation",
-                        "stateMutability": "view",
-                        "inputs": [],
-                        "outputs": [{"name": "", "type": "address"}],
-                    }],
+                    "abi": [
+                        {
+                            "type": "function",
+                            "name": "poolImplementation",
+                            "stateMutability": "view",
+                            "inputs": [],
+                            "outputs": [{"name": "", "type": "address"}],
+                        },
+                        {
+                            "type": "function",
+                            "name": "defaultOutcomeModerator",
+                            "stateMutability": "view",
+                            "inputs": [],
+                            "outputs": [{"name": "", "type": "address"}],
+                        },
+                    ],
                 }),
                 encoding="utf-8",
             )
@@ -1918,4 +1927,4 @@ class LocalTargetDependencyAddressTests(unittest.TestCase):
                 )
 
             self.assertIsNone(result)
-            self.assertEqual(code_lookups, [dependency])
+            self.assertEqual(code_lookups, [dependency, dependency])
