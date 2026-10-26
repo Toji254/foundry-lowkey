@@ -198,10 +198,18 @@ def main() -> int:
                 "normal forge test runs must not inherit lab bootstrap side effects."
             )
 
+        protocol_targets = run([lk, "targets"], root, env)
+        if "PoolFactory" not in protocol_targets.stdout or "PoolTemplate" not in protocol_targets.stdout:
+            raise AssertionError(
+                "Ordinary lk targets must expose the project factory and its actual pool clone; "
+                "they must not be hidden as test/support contracts.\n"
+                + protocol_targets.stdout[-12000:]
+            )
+
         targets = run([lk, "targets", "--all"], root, env)
         if "PoolFactory" not in targets.stdout or "PoolTemplate" not in targets.stdout:
             raise AssertionError(
-                "The local protocol registry must expose the factory and its actual pool clone.\n"
+                "The full local protocol registry must expose the factory and its actual pool clone.\n"
                 + targets.stdout[-12000:]
             )
         status = run([lk, "status"], root, env)
