@@ -57,6 +57,10 @@ class ImportHelperTests(unittest.TestCase):
         self.assertIn("IMPORT SYNTAX CHEAT SHEET:", rendered)
         self.assertIn('import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";', rendered)
         self.assertIn('import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";', rendered)
+        self.assertIn("BROWSER CONTROLS:", rendered)
+        self.assertIn("b goes back one menu level", rendered)
+        self.assertIn("lk import --copy ERC721", rendered)
+        self.assertIn("lk import -v ERC721", rendered)
 
     def test_remapping(self):
         tmp, root = self.project()
