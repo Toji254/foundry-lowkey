@@ -41,7 +41,7 @@ class IntegratedCommandSurfaceTests(unittest.TestCase):
             result = lk.run_lab({}, ["--ai-review", "--help"])
         self.assertEqual(result, 0)
         self.assertIn("lk lab --ai-review", stream.getvalue())
-        self.assertIn("native lab logic", stream.getvalue().lower())
+        self.assertIn("optional unverified protocol review", stream.getvalue().lower())
 
     def test_legacy_test_gen_template_escapes_named_import(self):
         import inspect
