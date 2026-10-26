@@ -1558,7 +1558,7 @@ if __name__ == "__main__":
                 "contractName": "Factory",
                 "abi": [{
                     "type": "function",
-                    "name": "poolImplementation",
+                    "name": "implementation",
                     "inputs": [],
                     "outputs": [{"name": "", "type": "address"}],
                     "stateMutability": "view",
@@ -1896,13 +1896,6 @@ class LocalTargetDependencyAddressTests(unittest.TestCase):
                             "inputs": [],
                             "outputs": [{"name": "", "type": "address"}],
                         },
-                        {
-                            "type": "function",
-                            "name": "defaultOutcomeModerator",
-                            "stateMutability": "view",
-                            "inputs": [],
-                            "outputs": [{"name": "", "type": "address"}],
-                        },
                     ],
                 }),
                 encoding="utf-8",
@@ -1930,4 +1923,4 @@ class LocalTargetDependencyAddressTests(unittest.TestCase):
                 )
 
             self.assertIsNone(result)
-            self.assertEqual(code_lookups, [dependency, dependency])
+            self.assertEqual(code_lookups, [dependency])
