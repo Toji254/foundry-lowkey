@@ -22,9 +22,9 @@ MAX_SOURCE_CONTEXT_BYTES = 32_000
 MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
-PROVIDERS = {"deepseek", "openai-compatible", "ollama"}
+PROVIDERS = {"deepseek", "openai", "openai-compatible", "ollama"}
 PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses"}
-DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "ollama": "http://127.0.0.1:11434/v1"}
+DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
 
 
 class AIHarnessError(RuntimeError):
