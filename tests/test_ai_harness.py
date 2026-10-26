@@ -26,7 +26,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertFalse(value["usable"])
 
     def test_api_key_is_separate_and_permissions_are_private(self):
-        ai.configure(provider="deepseek", model="deepseek-chat", api_key="example-secret")
+        ai.configure(provider="deepseek", model="deepseek-flash", api_key="example-secret")
         self.assertNotIn("example-secret", ai.config_path().read_text(encoding="utf-8"))
         self.assertEqual(json.loads(ai.credentials_path().read_text(encoding="utf-8"))["deepseek"], "example-secret")
         self.assertEqual(ai.credentials_path().stat().st_mode & 0o777, 0o600)
@@ -37,10 +37,10 @@ class AIHarnessTests(unittest.TestCase):
 
     def test_credentials_in_url_are_rejected(self):
         with self.assertRaises(ai.AIHarnessError):
-            ai.configure(provider="deepseek", model="deepseek-chat", base_url="https://user:pass@example.com/v1", api_key="secret")
+            ai.configure(provider="deepseek", model="deepseek-flash", base_url="https://user:pass@example.com/v1", api_key="secret")
 
     def test_disabled_ai_blocks_request(self):
-        ai.configure(provider="deepseek", model="deepseek-chat", api_key="secret")
+        ai.configure(provider="deepseek", model="deepseek-flash", api_key="secret")
         cfg = ai.load_config()
         cfg["enabled"] = False
         ai.save_config(cfg)
@@ -52,12 +52,12 @@ class AIHarnessTests(unittest.TestCase):
             ai.request_structured(purpose="chat", task="hello", context={})
 
     def test_context_size_is_bounded(self):
-        ai.configure(provider="deepseek", model="deepseek-chat", api_key="secret")
+        ai.configure(provider="deepseek", model="deepseek-flash", api_key="secret")
         with self.assertRaises(ai.AIHarnessError):
             ai.request_structured(purpose="protocol_analysis", task="inspect", context={"source": "X" * (ai.MAX_CONTEXT_BYTES + 10)})
 
     def test_json_output_and_metadata_only_event_log(self):
-        ai.configure(provider="deepseek", model="deepseek-chat", api_key="test-secret")
+        ai.configure(provider="deepseek", model="deepseek-flash", api_key="test-secret")
         class FakeResponse:
             def __enter__(self):
                 return self
@@ -79,7 +79,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertNotIn("test-secret", log)
 
     def test_invalid_json_response_is_rejected(self):
-        ai.configure(provider="deepseek", model="deepseek-chat", api_key="secret")
+        ai.configure(provider="deepseek", model="deepseek-flash", api_key="secret")
         class FakeResponse:
             def __enter__(self):
                 return self
