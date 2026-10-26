@@ -7630,10 +7630,12 @@ def _lab_script_unresolved_env_names(script, root=None):
             script_path.parent,
         )
 
-    configured_names = {
-        key for key, value in os.environ.items()
+    configured_values = {
+        key: value.strip()
+        for key, value in os.environ.items()
         if isinstance(value, str) and value.strip()
     }
+    configured_names = set(configured_values)
     env_files = [root_path / ".env"]
     # Use the same config selected by Foundry, including FOUNDRY_CONFIG.
     foundry_text = _foundry_project_config_text(root_path)
@@ -7663,6 +7665,36 @@ def _lab_script_unresolved_env_names(script, root=None):
                 value = value[1:-1].strip()
             if value:
                 configured_names.add(name)
+                configured_values[name] = value
+
+    # Required-env discovery is intentionally conservative, but it should not
+    # demand a value from a branch the configured deployment mode will not run.
+    # Resolve simple boolean vm.envOr flags guarding an if/else and mark env
+    # reads in the inactive else branch optional when the flag is true.
+    def env_flag_is_true(value):
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    for assignment in re.finditer(
+        r"\bbool\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*vm\.envOr\s*\(\s*[\"']([A-Za-z_][A-Za-z0-9_]*)[\"']\s*,\s*false\s*\)",
+        source,
+    ):
+        variable, flag_name = assignment.groups()
+        if not env_flag_is_true(configured_values.get(flag_name)):
+            continue
+        guarded = re.compile(
+            r"\bif\s*\(\s*" + re.escape(variable) +
+            r"\s*\)\s*\{(?P<yes>[^{}]*)\}\s*else\s*\{(?P<no>[^{}]*)\}",
+            re.S,
+        )
+        for branch in guarded.finditer(source):
+            inactive = branch.group("no")
+            for name in required_names:
+                if re.search(
+                    r"vm\.env(?!Or)[A-Za-z0-9_]*\s*\(\s*[\"']" +
+                    re.escape(name) + r"[\"']",
+                    inactive,
+                ):
+                    required_names.discard(name)
 
     return sorted(
         name for name in required_names
