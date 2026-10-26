@@ -55,7 +55,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
 
             def fake_run(command, cwd=None, timeout=1800):
                 output_dir = Path(command[command.index("--output-dir") + 1])
-                report_dir = output_dir / command[2]
+                report_dir = output_dir / "UnfamiliarContract"
                 report_dir.mkdir(parents=True, exist_ok=True)
                 if command[command.index("--types") + 1] == "all":
                     (report_dir / "report.json").write_text(
@@ -82,7 +82,7 @@ class TestGenerationBenchmarkRunner(unittest.TestCase):
 
             def fake_run(command, cwd=None, timeout=1800):
                 output_dir = Path(command[command.index("--output-dir") + 1])
-                report_dir = output_dir / command[2]
+                report_dir = output_dir / "UnfamiliarContract"
                 report_dir.mkdir(parents=True, exist_ok=True)
                 if command[command.index("--types") + 1] == "all":
                     (report_dir / "report.json").write_text(
