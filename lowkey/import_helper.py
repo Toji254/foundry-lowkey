@@ -32,7 +32,8 @@ Usage:
   lk import install <symbol>
   lk import --install --dry-run <symbol>
   lk import --json <symbol>
-  lk import --copy-only <symbol>
+  lk import --copy-only <symbol>   (alias: --copy)
+  lk import --verbose <symbol>      (short flag: -v)
   lk import search nft
   lk import explain ERC721
   lk import explain interface
@@ -75,9 +76,11 @@ INSTALL INTELLIGENCE:
     Emit machine-readable import/learning/dependency metadata.
 
   lk import --copy-only ERC721
-    Emit only the copy-ready Solidity import.
+  lk import --copy ERC721
+    Emit only the copy-ready Solidity import, without the extra explanation.
 
   lk import --verbose ERC721
+  lk import -v ERC721
     Show the deeper package/version/dependency/project-usage/audit details.
 
   lk import search nft
@@ -88,12 +91,17 @@ INSTALL INTELLIGENCE:
     Jump directly to the conceptual explanation, project usage, related
     components, or auditor questions for a symbol.
 
-BROWSER SEARCH SCOPE:
-  /<term> filters only the list you are currently viewing.
-  g starts a global search across project source, installed dependencies, and
-  Lowkey's known reference catalog. r resets the current list.
-  A "REFERENCE ONLY" result means its dependency is not installed yet.
-  Use lk import <symbol> for the full import, usage, and install guidance.
+BROWSER CONTROLS:
+  Main menu: choose 1-9 to open a section; q quits.
+  Inside a list: enter a shown number to open it; /<term> filters this list;
+  g searches project source + installed dependencies + the reference catalog;
+  r clears the filter; b goes back one menu level; q quits the browser.
+  At the main menu, b keeps you here and explains that you are already at the top.
+
+REFERENCE ONLY:
+  The symbol is known to Lowkey, but its dependency is not installed in this project.
+  The shown path is a reference, not proof that the file exists locally.
+  Use lk import <symbol> for the import line, explanation, and install guidance.
 
 The lookup mode is standalone: it does not select targets, change RPC/ABI/audit
 state, send transactions, or write project files. Only explicit --install mode
@@ -2068,31 +2076,55 @@ def run_category(category: str, root: Path, maps, install: bool = False, dry_run
 
 
 def interactive(root: Path, maps) -> int:
-    header("IMPORT BROWSER")
-    print("A standalone learning lookup. It does not touch audit/target/RPC state.\n")
-    print("  1. Installed packages")
-    print("  2. Contracts / abstract contracts")
-    print("  3. Interfaces")
-    print("  4. Solidity libraries")
-    print("  5. Structs / enums / types / errors / constants")
-    print("  6. Source files")
-    print("  7. Forge import mappings")
-    print("  8. Common reference imports")
-    print("  9. Global search (project, dependencies, reference catalog)")
-    print("  q. Quit")
+    """Open the import category menu and redraw it after returning from a submenu."""
     while True:
+        header("IMPORT BROWSER")
+        print("Find the Solidity item you need, then copy its import line. This browser does not change your project unless you explicitly choose install.\n")
+        print("  Choose 1-9 to open a section. In a list: number=open, /word=filter, g=search everywhere,")
+        print("  r=clear the filter, b=go back one menu level, q=quit. Example: choose 3, then type /IERC20.")
+        print()
+        print("  1. Installed packages")
+        print("  2. Contracts / abstract contracts")
+        print("  3. Interfaces")
+        print("  4. Solidity libraries")
+        print("  5. Structs / enums / types / errors / constants")
+        print("  6. Source files")
+        print("  7. Forge import mappings")
+        print("  8. Common reference imports")
+        print("  9. Global search (project, dependencies, reference catalog)")
+        print("  q. Quit")
+
         a = input("\nSelect: ").strip().lower()
         if a == "q":
             return 0
-        cat = {"1":"packages","2":"contracts","3":"interfaces","4":"libraries","5":"types","6":"files","7":"mappings","8":"common"}.get(a)
+        if a in {"b", "back"}:
+            print("This is already the main import menu. Choose 1-9, or q to quit.")
+            continue
+
+        cat = {
+            "1": "packages",
+            "2": "contracts",
+            "3": "interfaces",
+            "4": "libraries",
+            "5": "types",
+            "6": "files",
+            "7": "mappings",
+            "8": "common",
+        }.get(a)
+
         if a == "9":
             query = input("Search all imports and concepts: ").strip()
             if query:
                 search_imports(query, root, maps)
+            # Show the category menu again after global search, too.
             continue
+
         if not cat:
             print("Pick 1-9 or q.")
             continue
+
+        # Category pickers and package browsers return here when the user
+        # enters "b" for back. The next loop redraws the complete menu.
         run_category(cat, root, maps)
 
 
