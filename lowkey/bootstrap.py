@@ -288,6 +288,18 @@ def _submodule_checkout_complete(root: Path, relative: str) -> bool:
         if Path(worktree.stdout.strip()).resolve() != path.resolve():
             return False
 
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--verify", "HEAD"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if head.returncode != 0 or not re.fullmatch(
+            r"[0-9a-fA-F]{40,64}", head.stdout.strip()
+        ):
+            return False
+
         deleted = subprocess.run(
             ["git", "-C", str(path), "ls-files", "--deleted", "-z"],
             cwd=str(root),
@@ -1584,7 +1596,7 @@ def _recover_invalid_submodule_revision(
     except (OSError, subprocess.SubprocessError) as error:
         print(f"FAIL  git-submodule recovery: deinit failed: {error}")
         return False
-    deinit_output = (deinit.stdout or "") + (("\\n" + deinit.stderr) if deinit.stderr else "")
+    deinit_output = (deinit.stdout or "") + (("\n" + deinit.stderr) if deinit.stderr else "")
     if deinit_output.strip():
         print(deinit_output.rstrip())
     if deinit.returncode != 0:
@@ -1604,7 +1616,7 @@ def _recover_invalid_submodule_revision(
     except (OSError, subprocess.SubprocessError) as error:
         print(f"FAIL  git-submodule recovery: update retry failed: {error}")
         return False
-    retry_output = (retried.stdout or "") + (("\\n" + retried.stderr) if retried.stderr else "")
+    retry_output = (retried.stdout or "") + (("\n" + retried.stderr) if retried.stderr else "")
     if retry_output.strip():
         print(retry_output.rstrip())
     if retried.returncode != 0:
