@@ -107,12 +107,10 @@ def main() -> int:
             "}\n",
             encoding="utf-8",
         )
-        (root / "test" / "unit" / "PoolFactoryTest.t.sol").write_text(
+        (root / "test" / "helpers").mkdir(parents=True, exist_ok=True)
+        (root / "test" / "helpers" / "LocalEIP1967Proxy.sol").write_text(
             "// SPDX-License-Identifier: MIT\n"
             "pragma solidity ^0.8.20;\n"
-            "import {Test} from \"forge-std/Test.sol\";\n"
-            "import {PoolTemplate} from \"../../src/PoolTemplate.sol\";\n"
-            "import {PoolFactory} from \"../../src/PoolFactory.sol\";\n"
             "contract LocalEIP1967Proxy {\n"
             "    bytes32 private constant SLOT = "
             "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;\n"
@@ -134,7 +132,16 @@ def main() -> int:
             "            default { return(0, returndatasize()) }\n"
             "        }\n"
             "    }\n"
-            "}\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (root / "test" / "unit" / "PoolFactoryTest.t.sol").write_text(
+            "// SPDX-License-Identifier: MIT\n"
+            "pragma solidity ^0.8.20;\n"
+            "import {Test} from \"forge-std/Test.sol\";\n"
+            "import {PoolTemplate} from \"../../src/PoolTemplate.sol\";\n"
+            "import {PoolFactory} from \"../../src/PoolFactory.sol\";\n"
+            "import {LocalEIP1967Proxy} from \"../helpers/LocalEIP1967Proxy.sol\";\n"
             "contract PoolFactoryTest is Test {\n"
             "    PoolTemplate internal poolImplementation;\n"
             "    PoolFactory internal factory;\n"
