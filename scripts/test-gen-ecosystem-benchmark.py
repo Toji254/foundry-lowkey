@@ -214,6 +214,8 @@ def evaluate_target(project_root: Path, contract: str, output_root: Path) -> dic
         common + ["--types", "all", "--output-dir", str(all_dir)],
         cwd=project_root,
     )
+    # The generator nests each contract's report and artifacts below the
+    # supplied output directory. Resolve that documented layout explicitly.
     generation_report = load_report(all_dir / slug / "report.json")
 
     validation = run(
@@ -239,7 +241,7 @@ def evaluate_target(project_root: Path, contract: str, output_root: Path) -> dic
         "validation_status": validation_status,
         "validation_report_found": validation_report is not None,
         "validation_succeeded": validation_succeeded,
-        "formal_artifact_exists": any(all_dir.rglob("*Formal*")),
+        "formal_artifact_exists": any((all_dir / slug).glob("*Formal*")),
         "honest_result": (
             "generation-and-validation-passed"
             if generation_succeeded and validation_succeeded
