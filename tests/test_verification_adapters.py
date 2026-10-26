@@ -374,6 +374,24 @@ class VerificationAdapterRegistryTests(unittest.TestCase):
         from lowkey.verification_adapters import lowkey_generated_test_safety_issue
         self.assertIsNone(lowkey_generated_test_safety_issue(source))
 
+    def test_safety_checker_rejects_placeholder_call_even_when_forked(self):
+        from lowkey.verification_adapters import lowkey_generated_test_safety_issue
+
+        source = "\n".join([
+            "/// @title Lowkey-generated reproduction test",
+            "contract LowkeyTest_Vault is Test {",
+            "    address internal constant TARGET = address(uint160(0x1234));",
+            '    function setUp() public { vm.createSelectFork("http://127.0.0.1:8545"); assertGt(TARGET.code.length, 0, "runtime guard"); }',
+            '    function test_reproduction() public { (bool success, bytes memory data) = TARGET.call(hex""); }',
+            "    // PLACEHOLDER: no concrete call was available yet; replace calldata/function before executing.",
+            "}",
+        ])
+        issue = lowkey_generated_test_safety_issue(source)
+
+        self.assertIsNotNone(issue)
+        self.assertEqual(issue[0], "incomplete reproduction scaffold")
+        self.assertIn("disabled", issue[1])
+
     def test_adapter_runs_argument_vector_and_preserves_output(self):
         cap = EngineCapability("python-test", sys.executable, ("unit",), memory_class="low")
         adapter = ExecutableAdapter(cap)
