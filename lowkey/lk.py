@@ -7282,6 +7282,70 @@ def _fixture_snapshot_implementation(address, account, runtime_code, code_by_add
     return None, None
 
 
+
+def _find_fixture_operational_instance(root, state_path, target_contract, implementation_address, rpc):
+    """Recover an operational proxy/clone that points to a locked implementation.
+
+    This is a promotion-time fallback, not a heuristic deployment: the candidate
+    must exist in the fixture's exported state, resolve to the exact implementation
+    address, and have live non-empty runtime code on the configured local RPC.
+    """
+    try:
+        snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    accounts, _ = _fixture_accounts_map(snapshot)
+    if not isinstance(accounts, dict):
+        return None
+
+    accounts_by_lower = {
+        str(address).lower(): account
+        for address, account in accounts.items()
+        if isinstance(account, dict)
+    }
+    implementation_address = str(implementation_address or "").lower()
+    if not is_address(implementation_address):
+        return None
+
+    artifact_path, artifact = _fixture_target_artifact(root, target_contract)
+    normalizer = _artifact_runtime_normalizer(artifact)
+    if normalizer is None:
+        return None
+
+    code_by_address = {
+        address: str(account.get("code") or "0x").strip().lower()
+        for address, account in accounts_by_lower.items()
+        if str(account.get("code") or "0x").strip().lower() not in {"", "0x"}
+    }
+    candidates = []
+    for index, (address, account) in enumerate(accounts_by_lower.items()):
+        if address == implementation_address:
+            continue
+        snapshot_runtime = code_by_address.get(address, "")
+        if not snapshot_runtime or normalizer(snapshot_runtime):
+            continue
+
+        implementation, kind = _fixture_snapshot_implementation(
+            address, account, snapshot_runtime, code_by_address, rpc
+        )
+        if not implementation or implementation.lower() != implementation_address:
+            continue
+
+        live = run_cast(["code", address, "--rpc-url", str(rpc)], config={}, capture=True)
+        live_runtime = str(live.text or "").strip().lower()
+        if live.code != 0 or live_runtime in {"", "0x", "0X"} or normalizer(live_runtime):
+            continue
+
+        rank = 0 if kind == "proxy" else 1 if kind == "clone" else 2
+        candidates.append((rank, index, address, kind or "proxy"))
+
+    if not candidates:
+        return None
+    candidates.sort()
+    _, _, address, kind = candidates[0]
+    return address, kind
+
+
 def _remember_fixture_application_targets(config, root, state_path, rpc, primary_contract, primary_address):
     """Remember additional live proxy/clone instances matching first-party app artifacts."""
     try:
@@ -7438,10 +7502,38 @@ def run_test_fixture_lab(config, root, fixture, rpc, accounts, key, requested=No
         target_runtime = str(target_result.text or "").strip().lower()
         target_normalizer = _artifact_runtime_normalizer(target_artifact_data)
         if target_result.code == 0 and target_normalizer and target_normalizer(target_runtime):
-            return fail(
-                f"Error: fixture exposed only the initializer-locked {target_name} implementation. "
-                "It did not establish a proxy/clone as an operational target, so Lowkey will not mark the lab ready."
+            # Target selection can still land on the implementation when address
+            # ordering or RPC decoding obscures a proxy. The exported fixture state
+            # is authoritative: recover a proxy/clone that points to this exact
+            # implementation before refusing to promote the local lab.
+            recovered = _find_fixture_operational_instance(
+                root, state_path, target_name, target, rpc
             )
+            if recovered:
+                candidate, kind = recovered
+                candidate_result = run_cast(
+                    ["code", candidate, "--rpc-url", str(rpc)],
+                    config={}, capture=True,
+                )
+                candidate_runtime = str(candidate_result.text or "").strip().lower()
+                if (
+                    candidate_result.code == 0
+                    and candidate_runtime not in {"", "0x", "0X"}
+                    and target_normalizer(candidate_runtime) is False
+                ):
+                    print(
+                        f"INFO  recovered operational {kind} target from fixture snapshot: "
+                        f"{candidate}"
+                    )
+                    target = candidate
+                else:
+                    recovered = None
+            if not recovered:
+                return fail(
+                    f"Error: fixture exposed the initializer-locked {target_name} implementation "
+                    "and Lowkey could not validate a proxy/clone pointing to it. "
+                    "The lab will not be marked ready without an operational target."
+                )
 
     artifact = None
     if target_name:
