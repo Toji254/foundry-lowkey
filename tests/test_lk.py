@@ -3191,8 +3191,8 @@ contract Pool {
             events.append(("bootstrap", str(project_info["root"]), kwargs.get("reason")))
             return 0
 
-        def fake_foundry(command):
-            events.append(("native", list(command)))
+        def fake_foundry(command, capture=False):
+            events.append(("native", list(command), capture))
             return 0
 
         with patch.object(lk, "detected_project_root", return_value=root), patch.object(
@@ -3207,9 +3207,55 @@ contract Pool {
             events,
             [
                 ("bootstrap", str(root), "prepare"),
-                ("native", ["build"]),
+                ("native", ["build"], True),
                 ("bootstrap", str(root), "prepare"),
-                ("native", ["test"]),
+                ("native", ["test"], True),
+            ],
+        )
+
+    def test_foundry_build_retries_once_after_repairable_dependency_failure(self):
+        root = pathlib.Path("/tmp/lowkey-foundry-dependency-retry")
+        info = {
+            "root": str(root),
+            "backend": "foundry",
+            "kind": "foundry",
+            "stacks": ["foundry"],
+        }
+        events = []
+
+        def fake_bootstrap(project_info, args=(), **kwargs):
+            events.append(
+                ("bootstrap", kwargs.get("force", False), kwargs.get("reason"))
+            )
+            return 0
+
+        native_results = [
+            lk.CommandResult(
+                'Source "@openzeppelin/contracts/access/Ownable.sol" not found',
+                1,
+            ),
+            lk.CommandResult("Compilation completed successfully", 0),
+        ]
+
+        def fake_foundry(command, capture=False):
+            events.append(("native", list(command), capture))
+            return native_results.pop(0)
+
+        with patch.object(lk, "detected_project_root", return_value=root), patch.object(
+            lk, "detect_project", return_value=info
+        ), patch.object(lk, "bootstrap_project", side_effect=fake_bootstrap), patch.object(
+            lk, "run_foundry", side_effect=fake_foundry
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            code = lk.run_native_project_command({}, "build", [])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            events,
+            [
+                ("bootstrap", False, "prepare"),
+                ("native", ["build"], True),
+                ("bootstrap", True, "dependency"),
+                ("native", ["build"], True),
             ],
         )
 
