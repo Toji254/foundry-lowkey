@@ -791,7 +791,7 @@ class LowkeyGeneratorTests(unittest.TestCase):
             source = generated.read_text(encoding="utf-8")
             self.assertIn("PLACEHOLDER", source)
             self.assertIn("createPool(address,address,uint256,uint256,address,address[])", source)
-            self.assertIn(".audit/test-drafts/", output.getvalue() if "output" in locals() else str(generated))
+            self.assertIn(".audit/test-drafts", str(generated))
 
     def test_generate_poc_allows_focused_signal_without_concrete_send(self):
         target = "0x" + "2" * 40
