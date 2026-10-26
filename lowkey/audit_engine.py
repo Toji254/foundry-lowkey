@@ -1055,336 +1055,132 @@ def run_source_triage(root: str = ".") -> int:
     print("These are source-level review markers, not vulnerability verdicts.")
     return 0
 
-def _generate_vyper_poc(root: str, check: str, impact: str, confidence: str,
-                       description: str, locations: list[dict[str, Any]],
-                       function: str | None, name: str | None) -> tuple[int, list[Path]]:
-    slug = _slug(name or check)
-    project_root = Path(root).resolve()
-    tests_dir = project_root / "tests"
-    tests_dir.mkdir(parents=True, exist_ok=True)
-    test_path = tests_dir / f"poc_{slug}.py"
-
-    location_text = "\n".join(
-        f"#   {item.get('source') or item.get('file') or 'unknown'}:"
-        f"{item.get('start') or item.get('line') or '?'}"
-        for item in locations[:8]
-    )
-    test_body = f'''"""Lowkey evidence-backed Vyper PoC scaffold.
-
-Candidate: {check}
-Impact/confidence: {impact}/{confidence}
-Function: {function or "identify the exact function/interface"}
-Description: {description[:700]}
-{location_text}
-"""
-
-import pytest
-
-
-def test_poc_candidate():
-    # This scaffold is intentionally non-asserting until the exploit path is proven.
-    pytest.skip("TODO: replace with a concrete Vyper/Titanoboa reproduction")
-
-    # Suggested structure:
-    # 1. Deploy/load the vulnerable Vyper contract using the project's native test harness.
-    # 2. Establish attacker and trusted/protocol state.
-    # 3. Execute the smallest attacker-controlled sequence.
-    # 4. Assert a concrete invariant violation or asset/state delta.
-    # 5. Preserve trace/log/state evidence in .audit/evidence/.
-'''
-    write_text(test_path, test_body)
-
-    brief = {
-        "generated_at": now_stamp(),
-        "project_type": "vyper",
-        "target": _project_config(root).get("target"),
-        "security_patterns": [
-            {
-                "id": item.get("pattern_id") or item.get("check"),
-                "contract": item.get("contract"),
-                "function": item.get("function"),
-                "verification_status": item.get("verification_status") or "CANDIDATE",
-                "description": item.get("description"),
-            }
-            for item in security_patterns[:16]
-            if isinstance(item, dict)
-        ],
-        "candidate": {
-            "check": check,
-            "impact": impact,
-            "confidence": confidence,
-            "function": function,
-            "description": description,
-            "locations": locations,
-        },
-        "poc_file": os.path.relpath(test_path, project_root),
-        "refinement_checklist": [
-            "Identify the exact Vyper entry point/interface.",
-            "Load the project contract with its native test framework.",
-            "Establish attacker/trusted protocol state.",
-            "Prove the broken invariant before asserting impact.",
-            "Use traces, logs, and state deltas as supporting evidence.",
-        ],
-    }
-    json_path = poc_dir(root) / f"Poc_{slug}.json"
-    write_json(json_path, brief)
-    record_evidence("poc", brief, root)
-
-    print("POC SCAFFOLD")
-    print("=" * 52)
-    print(f"Candidate: {check} ({impact}/{confidence})")
-    print(f"Function:  {function or 'not resolved'}")
-    print(f"Generated: {test_path}")
-    print(f"Generated: {json_path}")
-    print("\nVyper/Titanoboa scaffold; manual proof is still required.")
-    return 0, [test_path, json_path]
-
-
 def _solidity_address_literal(value: str | None) -> str:
-    """Render an address safely as Solidity even when it is not EIP-55 checksummed.
-
-    Solidity 0.8.x treats a 20-byte hex literal as an address literal and validates
-    its checksum. Prefixing the literal with 00 forces integer-literal semantics;
-    the explicit uint160/address conversion then preserves the intended address.
-    """
+    """Render an address safely as Solidity, preserving arbitrary mixed-case input."""
     if not re.fullmatch(r"0x[0-9a-fA-F]{40}", str(value or "")):
         return "address(0)"
     raw = str(value)[2:]
     return f"address(uint160(0x00{raw}))"
 
 
-def generate_poc(root: str = ".", finding_index: int | None = None, name: str | None = None) -> tuple[int, list[Path]]:
-    _refresh_system_model(root, "poc:start")
-    evidence = read_json(evidence_dir(root) / "slither.json", {}).get("data", {})
-    findings = evidence.get("findings", []) if isinstance(evidence, dict) else []
-    findings = findings if isinstance(findings, list) else []
-    selected = _select_finding(findings, finding_index)
-    matrix = _matrix(root)
-    triage_payload = read_json(evidence_dir(root) / "source_triage.json", {}).get("data", {})
-    triage_markers = triage_payload.get("markers", []) if isinstance(triage_payload, dict) else []
-    trace_payload = read_json(evidence_dir(root) / "trace.json", {}).get("data", {})
-    storage_payload = read_json(evidence_dir(root) / "storage_diff.json", {}).get("data", {})
-    security_patterns = []
-    if audit_context is not None:
-        try:
-            security_patterns = audit_context.security_patterns(Path(root).resolve())
-        except Exception:
-            security_patterns = []
-    risk_payload = read_json(evidence_dir(root) / "risk.json", {}).get("data", {})
-    evidence_records = sorted(
-        p.stem for p in evidence_dir(root).glob("*.json") if p.name != "manifest.json"
-    )
-    config = _project_config(root)
-    project = detect_project(root) if detect_project else {"kind": "generic"}
+def generate_poc(
+    root: str = ".",
+    finding_index: int | None = None,
+    name: str | None = None,
+    *,
+    function: str | None = None,
+    calldata: str | None = None,
+    value: str = "0",
+    impact_assertion: str | None = None,
+) -> tuple[int, list[Path]]:
+    """Generate only a fully specified EVM PoC; never write a skipped/TODO test.
+
+    A detector, source marker, or matrix scenario is a lead, not a complete
+    exploit. The caller must provide exact calldata and an assertion over
+    measured impact. The shared generator then renders the assertion-bearing
+    Foundry script and records it as unvalidated until executed.
+    """
+    project_root = Path(root).resolve()
+    config = _project_config(str(project_root))
     target = config.get("target")
-    abi_map = _abi_functions(_load_abi(config, target))
+    missing = []
+    if not isinstance(target, str) or not re.fullmatch(r"0x[0-9a-fA-F]{40}", target):
+        missing.append("a configured target address")
+    if not isinstance(calldata, str) or not re.fullmatch(r"(?:0x)?[0-9a-fA-F]+", calldata):
+        missing.append("exact calldata (0x...)")
+    if not isinstance(impact_assertion, str) or not impact_assertion.strip():
+        missing.append("an explicit --impact-assertion")
+    if missing:
+        reason = "PoC not generated; missing " + ", ".join(missing) + "."
+        print(reason)
+        record_evidence("poc_generation", {
+            "status": "review",
+            "exit_code": 2,
+            "generated": [],
+            "reason": reason,
+            "candidate_finding_index": finding_index,
+            "requested_name": name,
+        }, str(project_root))
+        return 2, []
 
-    if project.get("kind") in {"vyper", "vyper-uv"}:
-        if selected:
-            vy_check = str(selected.get("check") or "candidate")
-            vy_impact = str(selected.get("impact") or "informational")
-            vy_confidence = str(selected.get("confidence") or "unknown")
-            vy_description = str(selected.get("description") or "").replace("\n", " ")
-            vy_locations = selected.get("locations", []) if isinstance(selected.get("locations"), list) else []
-            vy_function = None
-            for location in vy_locations:
-                candidate = str(location.get("name") or "")
-                base = candidate.split("(", 1)[0]
-                if candidate in abi_map:
-                    vy_function = abi_map[candidate][0]
-                    break
-                if base in abi_map:
-                    vy_function = abi_map[base][0]
-                    break
-        elif matrix:
-            scenario = matrix[0]
-            vy_check = "manual-matrix-scenario"
-            vy_impact = vy_confidence = "manual"
-            vy_description = str(scenario.get("expected") or scenario.get("name") or "Manual scenario")
-            vy_locations = []
-            vy_function = scenario.get("function")
-        elif triage_markers:
-            marker = triage_markers[0]
-            vy_check = "source-marker-" + str(marker.get("label") or "candidate").lower().replace(" ", "-")
-            vy_impact = vy_confidence = "manual"
-            vy_description = str(marker.get("text") or "Manual source review marker")
-            vy_locations = [marker]
-            vy_function = None
-        else:
-            vy_check = "audit-candidate"
-            vy_impact = vy_confidence = "manual"
-            vy_description = "No selected detector or manual scenario; inspect the Vyper source graph and state transitions."
-            vy_locations = []
-            vy_function = None
-        return _generate_vyper_poc(
-            root, vy_check, vy_impact, vy_confidence,
-            vy_description, vy_locations, vy_function, name
+    try:
+        import generator as shared_generator
+    except ImportError as exc:
+        reason = f"PoC generation runtime unavailable: {exc}"
+        print(reason)
+        record_evidence("poc_generation", {
+            "status": "failed", "exit_code": 2, "generated": [], "reason": reason,
+        }, str(project_root))
+        return 2, []
+
+    prior_cwd = Path.cwd()
+    try:
+        os.chdir(project_root)
+        args = [
+            "poc",
+            function or "rawCall()",
+            "--value", str(value or "0"),
+            "--calldata", str(calldata).removeprefix("0x"),
+            "--impact-assertion", str(impact_assertion),
+        ]
+        exit_code = shared_generator.run_generate(
+            {"target": target, "target_contract": name or config.get("target_contract")},
+            args,
         )
+    except (OSError, ValueError, RuntimeError) as exc:
+        reason = f"PoC generation failed: {exc}"
+        print(reason)
+        record_evidence("poc_generation", {
+            "status": "failed", "exit_code": 1, "generated": [], "reason": reason,
+        }, str(project_root))
+        return 1, []
+    finally:
+        os.chdir(prior_cwd)
 
-    if selected:
-        check = str(selected.get("check") or "candidate")
-        impact = str(selected.get("impact") or "informational")
-        confidence = str(selected.get("confidence") or "unknown")
-        description = str(selected.get("description") or "").replace("\n", " ")
-        locations = selected.get("locations", [])
-        mode = _mode(check)
-        function = None
-        for location in locations:
-            candidate = str(location.get("name") or "")
-            base = candidate.split("(", 1)[0]
-            if candidate in abi_map:
-                function = abi_map[candidate][0]
-                break
-            if base in abi_map:
-                function = abi_map[base][0]
-                break
-    elif matrix:
-        scenario = matrix[0]
-        check = "manual-matrix-scenario"
-        impact = confidence = "manual"
-        description = str(scenario.get("expected") or scenario.get("name") or "Manual scenario")
-        locations = []
-        mode = "generic"
-        function = scenario.get("function")
-    elif triage_markers:
-        marker = triage_markers[0]
-        check = "source-marker-" + str(marker.get("label") or "candidate").lower().replace(" ", "-")
-        impact = confidence = "manual"
-        description = str(marker.get("text") or "Manual source review marker")
-        locations = [marker]
-        mode = "generic"
-        function = None
-    else:
-        check = "audit-candidate"
-        impact = confidence = "manual"
-        description = "No selected Slither finding, matrix scenario, or source marker."
-        locations = []
-        mode = "generic"
-        function = None
+    if exit_code != 0:
+        record_evidence("poc_generation", {
+            "status": "failed", "exit_code": exit_code, "generated": [],
+            "reason": "Shared generator rejected the request; inspect its validation message.",
+            "target": target, "function": function, "calldata": calldata,
+            "impact_assertion": impact_assertion,
+        }, str(project_root))
+        return exit_code, []
 
-    slug = _slug(name or check)
-    target_expr = _solidity_address_literal(target)
-    attacker = ""
-    attacker_member = ""
-    constructor = ""
-    reentrancy_body = ""
-
-    if mode == "reentrancy":
-        attacker = '''
-contract PocAttacker {
-    address immutable target;
-    bytes public callbackPayload;
-    bool public entered;
-
-    constructor(address target_) {
-        target = target_;
-    }
-
-    receive() external payable {
-        if (!entered) {
-            entered = true;
-            (bool ok, ) = target.call(callbackPayload);
-            require(ok, "callback failed");
-        }
-    }
-
-    function attack(bytes calldata entryPayload, uint256 value) external {
-        callbackPayload = entryPayload;
-        (bool ok, ) = target.call{value: value}(entryPayload);
-        require(ok, "entry call failed");
-    }
-}
-'''
-        attacker_member = "PocAttacker internal attacker;"
-        constructor = "constructor() { attacker = new PocAttacker(TARGET); }"
-        reentrancy_body = '''
-    function test_poc_reentrancy() external {
-        vm.skip(true); // REMOVE after filling the proven exploit path.
-        bytes memory entryCall = hex"";
-        vm.deal(address(attacker), 10 ether);
-        attacker.attack(entryCall, 1 ether);
-        // TODO: assert the broken invariant or unexpected balance delta.
-    }
-'''
-
-    solidity = f'''// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.20;
-
-import {{Test}} from "forge-std/Test.sol";
-
-{attacker}
-contract Poc_{slug} is Test {{
-    address internal constant TARGET = {target_expr};
-    event EvidenceBool(string name, bool value);
-    {attacker_member}
-
-    // Candidate detector: {check} ({impact}/{confidence})
-    // Candidate function: {function or "<identify-function(signature)>"}
-    // Finding summary: {description[:700]}
-    // Evidence records captured: {", ".join(evidence_records) or "none"}
-    // Prior trace tx: {trace_payload.get("tx") if isinstance(trace_payload, dict) else "none"}
-    // Prior storage changes: {len(storage_payload.get("changes", [])) if isinstance(storage_payload, dict) else 0}
-    // Risk rows captured: {len(risk_payload.get("functions", [])) if isinstance(risk_payload, dict) else 0}
-
-    {constructor}
-{reentrancy_body if mode == "reentrancy" else _body(mode)}
-}}
-'''
-    out = poc_dir(root)
-    test_dir = Path(root) / "test"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    sol_path = test_dir / f"Poc_{slug}.t.sol"
-    write_text(sol_path, solidity)
-
-    brief = {
-        "generated_at": now_stamp(),
+    candidates = sorted(
+        (project_root / "script").glob("LowkeyPoC_*.s.sol"),
+        key=lambda path: path.stat().st_mtime_ns,
+    ) if (project_root / "script").is_dir() else []
+    if not candidates:
+        reason = "Generator returned success but no PoC script exists; treating this as a tool failure."
+        record_evidence("poc_generation", {
+            "status": "failed", "exit_code": 1, "generated": [], "reason": reason,
+        }, str(project_root))
+        return 1, []
+    script_path = candidates[-1]
+    contract_slug = script_path.name.removeprefix("LowkeyPoC_").removesuffix(".s.sol")
+    brief_name = "LowkeyPoc_" + contract_slug + ".json"
+    brief_path = project_root / ".audit" / "poc" / brief_name
+    if not brief_path.is_file():
+        reason = "PoC script exists but its evidence brief is missing; treating generation as incomplete."
+        record_evidence("poc_generation", {
+            "status": "failed", "exit_code": 1, "generated": [str(script_path)],
+            "reason": reason,
+        }, str(project_root))
+        return 1, [script_path]
+    brief = read_json(brief_path, {})
+    record_evidence("poc_generation", {
+        "status": "candidate-not-validated",
+        "exit_code": 0,
         "target": target,
-        "candidate": {
-            "check": check,
-            "mode": mode,
-            "impact": impact,
-            "confidence": confidence,
-            "function": function,
-            "description": description,
-            "locations": locations,
-        },
-        "evidence": {
-            "slither_findings": len(findings),
-            "source_triage_markers": len(triage_markers),
-            "matrix_scenarios": len(matrix),
-            "notes_findings_todos": _notes(root),
-            "evidence_records": evidence_records,
-            "trace_tx": trace_payload.get("tx") if isinstance(trace_payload, dict) else None,
-            "storage_changes": len(storage_payload.get("changes", [])) if isinstance(storage_payload, dict) else 0,
-            "risk_functions": len(risk_payload.get("functions", [])) if isinstance(risk_payload, dict) else 0,
-            "last_tx": config.get("last_tx"),
-            "rpc": config.get("rpc"),
-        },
-        "poc_file": os.path.relpath(sol_path.resolve(), Path(root).resolve()),
-        "refinement_checklist": [
-            "Resolve exact function/signature and calldata.",
-            "Set attacker identities, balances, and pre-state.",
-            "Write down the security invariant before the exploit call.",
-            "Execute the smallest reproducing sequence.",
-            "Assert concrete post-state corruption or asset impact.",
-            "Use trace/storage/log evidence where it strengthens proof.",
-            "Minimize the final PoC and link it back to the finding.",
-        ],
-    }
-    json_path = out / f"Poc_{slug}.json"
-    write_json(json_path, brief)
-    record_evidence("poc", brief, root)
-
-    print("POC SCAFFOLD")
-    print("=" * 52)
-    print(f"Candidate: {check} ({impact}/{confidence})")
-    print(f"Mode:      {mode}")
-    print(f"Function:  {function or 'not resolved'}")
-    print(f"Target:    {target or 'not configured'}")
-    print(f"Generated: {sol_path}")
-    print(f"Generated: {json_path}")
-    print("\nEvidence-backed scaffold; manual proof is still required.")
-    return 0, [sol_path, json_path]
+        "function": function,
+        "calldata": str(calldata),
+        "impact_assertion": str(impact_assertion),
+        "script": str(script_path.relative_to(project_root)),
+        "brief": str(brief_path.relative_to(project_root)),
+        "validation_status": brief.get("validation_status", "not-run"),
+        "note": "The PoC includes an explicit impact assertion but has not been executed/validated.",
+    }, str(project_root))
+    return 0, [script_path, brief_path]
 
 
 def _refresh_system_model(root: str, reason: str) -> None:
@@ -1547,12 +1343,43 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
             status, detail = _format_step_status(root, name)
             rows.append((f"Forge {name}", status, detail))
 
-    poc_count = (
-        len(list(poc_dir(root).glob("*.json")))
-        + len(list(poc_dir(root).glob("*.t.sol")))
+    poc_briefs = [
+        read_json(path, {})
+        for path in sorted(poc_dir(root).glob("*.json"))
+        if path.is_file()
+    ]
+    validated_pocs = [
+        brief for brief in poc_briefs
+        if isinstance(brief, dict)
+        and brief.get("status") == "validated"
+        and brief.get("validation_status") == "passed"
+    ]
+    unvalidated_pocs = [
+        brief for brief in poc_briefs
+        if isinstance(brief, dict)
+        and brief.get("status") in {"candidate-not-validated", "replay-not-validated"}
+    ]
+    legacy_artifacts = (
+        len(list(poc_dir(root).glob("*.t.sol")))
         + len(list(Path(root).glob("tests/poc_*.py")))
     )
-    rows.append(("PoC scaffold", "READY" if poc_count else "NOT RUN", f"{poc_count} artifact(s)" if poc_count else "none generated"))
+    poc_request_record = read_json(evidence_dir(root) / "poc_generation.json", {})
+    poc_request = (
+        poc_request_record.get("data", {})
+        if isinstance(poc_request_record, dict) and isinstance(poc_request_record.get("data"), dict)
+        else {}
+    )
+    if validated_pocs:
+        rows.append(("PoC evidence", "PASS", f"{len(validated_pocs)} validated artifact(s)"))
+    elif unvalidated_pocs:
+        rows.append(("PoC evidence", "REVIEW", f"{len(unvalidated_pocs)} candidate(s), not validated"))
+    elif legacy_artifacts:
+        rows.append(("PoC evidence", "REVIEW", f"{legacy_artifacts} legacy artifact(s), validation unknown"))
+    elif poc_request and str(poc_request.get("status", "")).lower() in {"requested", "review", "failed", "blocked"}:
+        reason = str(poc_request.get("reason") or "required call/impact evidence is incomplete")
+        rows.append(("PoC evidence", "REVIEW", _fit_cell(reason, 48)))
+    else:
+        rows.append(("PoC evidence", "NOT RUN", "no validated PoC evidence"))
 
     target = config.get("target") or context.get("target") or "not configured"
     rpc = config.get("rpc") or context.get("rpc") or "not configured"
@@ -1589,7 +1416,13 @@ def render_audit_dashboard(root: str = ".", pipeline_code: int | None = None) ->
     print("Heuristic findings are review leads, not vulnerability verdicts.")
     return 0 if overall == "PASS" else 1
 
-def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, generate: bool) -> int:
+def _finalize_pipeline(
+    root: str,
+    results: list[dict[str, Any]],
+    code: int,
+    generate: bool,
+    poc_request: dict[str, Any] | None = None,
+) -> int:
     manifest = read_json(manifest_path(root), {})
     optional_failures = [
         item for item in results
@@ -1639,10 +1472,53 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
     elif final_code == 0 and optional_failures:
         final_code = 1
 
+    if generate:
+        requested = dict(poc_request or {})
+        calldata = requested.get("calldata")
+        impact_assertion = requested.get("impact_assertion")
+        function = requested.get("function")
+        value = str(requested.get("value") or "0")
+        if not calldata or not impact_assertion:
+            reason = (
+                "missing exact calldata and/or impact assertion; PoC generation was requested without complete exploit inputs. "
+                "Use 'lk audit run --poc --poc-calldata 0x... --poc-impact-assertion \"...\"'."
+            )
+            coverage_gaps.append("poc generation: missing exact calldata and impact assertion")
+            if final_code == 0:
+                final_code = 2
+            record_evidence("poc_generation", {
+                "status": "review",
+                "exit_code": 2,
+                "generated": [],
+                "reason": reason,
+                "request": requested,
+            }, root)
+            print(reason)
+        else:
+            poc_code, poc_paths = generate_poc(
+                root,
+                name=requested.get("name"),
+                function=function,
+                calldata=str(calldata),
+                value=value,
+                impact_assertion=str(impact_assertion),
+            )
+            if poc_code != 0:
+                coverage_gaps.append("poc generation: tool rejected the request")
+                if final_code == 0:
+                    final_code = 2 if poc_code == 2 else 1
+            else:
+                # This proves generation completed, not that the attack succeeded.
+                # It remains a review gap until a pinned-chain validation run occurs.
+                coverage_gaps.append("poc generation: candidate generated but not behaviorally validated")
+                if final_code == 0:
+                    final_code = 2
+
     manifest["pipeline"] = {
         "completed_at": now_stamp(),
         "status": (
-            "failed" if final_code != 0
+            "failed" if final_code == 1
+            else "review-required" if final_code == 2
             else ("inconclusive" if optional_failures else "pass")
         ),
         "steps": results,
@@ -1650,8 +1526,6 @@ def _finalize_pipeline(root: str, results: list[dict[str, Any]], code: int, gene
         "coverage_gaps": coverage_gaps,
     }
     write_json(manifest_path(root), manifest)
-    if generate:
-        generate_poc(root)
     render_audit_dashboard(root, pipeline_code=final_code)
     return final_code
 
@@ -2298,7 +2172,12 @@ def _aggregate_pipeline_step(root: str, name: str, outcomes: list[dict[str, Any]
     )
 
 
-def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = None, generate: bool = False) -> int:
+def run_audit_pipeline(
+    root: str = ".",
+    slither_args: Sequence[str] | None = None,
+    generate: bool = False,
+    poc_request: dict[str, Any] | None = None,
+) -> int:
     workspace_root(root).mkdir(parents=True, exist_ok=True)
     # Keep direct pipeline callers consistent with the CLI orchestration path:
     # security-pattern signals are project-scoped shared evidence, not walkthrough-only data.
@@ -2646,4 +2525,4 @@ def run_audit_pipeline(root: str = ".", slither_args: Sequence[str] | None = Non
         final_code = execution_failures[0]
     else:
         final_code = 0
-    return _finalize_pipeline(root, results, final_code, generate)
+    return _finalize_pipeline(root, results, final_code, generate, poc_request=poc_request)

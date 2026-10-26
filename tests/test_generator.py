@@ -58,6 +58,7 @@ class LowkeyGeneratorTests(unittest.TestCase):
             "ping",
             "0",
             "deadbeef",
+            "attackerAfter > attackerBefore",
         )
         self.assertIn("vm.startBroadcast();", rendered)
         self.assertIn("vm.readCallers();", rendered)
@@ -71,12 +72,13 @@ class LowkeyGeneratorTests(unittest.TestCase):
             "ping",
             "0",
             "deadbeef",
+            "attackerAfter > attackerBefore",
         )
         self.assertIn("forge-lint: disable-next-line(low-level-calls)", rendered)
 
     def test_poc_renderer_avoids_invalid_checksum_address_literals(self):
         target = "0xa51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0"
-        rendered = generator._template_poc("BountyArena", target, "release", "0", "deadbeef")
+        rendered = generator._template_poc("BountyArena", target, "release", "0", "deadbeef", "attackerAfter > attackerBefore")
         self.assertIn(
             "address internal constant TARGET = address(uint160(0x00a51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0));",
             rendered,
@@ -440,7 +442,8 @@ class LowkeyGeneratorTests(unittest.TestCase):
         self.assertIsNone(request)
 
 
-    def test_generate_poc_context_latest_with_calldata_is_not_placeholder(self):
+
+    def test_generate_poc_context_latest_requires_and_embeds_impact_assertion(self):
         target = "0x" + "3" * 40
         context = {
             "target": {"address": target, "contract": "Escrow"},
@@ -458,15 +461,22 @@ class LowkeyGeneratorTests(unittest.TestCase):
             root = pathlib.Path(tmp)
             with patch.object(generator.Path, "cwd", return_value=root):
                 with patch.object(generator.audit_context, "load", return_value=context):
-                    result = generator.run_generate({"target": target}, ["poc"])
+                    result = generator.run_generate(
+                        {"target": target},
+                        ["poc", "--impact-assertion", "attackerAfter > attackerBefore"],
+                    )
             self.assertEqual(result, 0)
             generated = next((root / "script").glob("LowkeyPoC_*.s.sol"))
             source = generated.read_text(encoding="utf-8")
             self.assertIn('Function:", "acceptescrow(bool)"', source)
             self.assertIn('hex"5c36b186', source)
+            self.assertIn("require((attackerAfter > attackerBefore)", source)
             self.assertNotIn("PLACEHOLDER", source)
-
-
+            self.assertNotIn("Put the actual security property here", source)
+            brief = json.loads(next((root / ".audit" / "poc").glob("LowkeyPoc_*.json")).read_text())
+            self.assertEqual(brief["status"], "candidate-not-validated")
+            self.assertTrue(brief["security_impact_assertion_present"])
+            self.assertEqual(brief["validation_status"], "not-run")
     def test_find_artifact_uses_configured_foundry_source_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -758,67 +768,96 @@ class LowkeyGeneratorTests(unittest.TestCase):
             self.assertEqual(brief["evidence"]["candidate"]["id"], "SLITHER-ABC")
             self.assertEqual(brief["evidence"]["tools"]["slither_findings"], 1)
 
-    def test_full_signature_without_args_creates_placeholder_scaffold(self):
-        target = "0x" + "3" * 40
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            context = {
-                "focus": {"signal_id": "SLITHER-SIG"},
-                "signals": [{
-                    "id": "SLITHER-SIG",
-                    "status": "investigating",
-                    "impact": "Medium",
-                    "confidence": "Medium",
-                    "check": "reentrancy-eth",
-                    "title": "ETH reentrancy",
-                    "file": "src/Factory.sol",
-                    "line": 10,
-                    "function": "createPool(address,address,uint256,uint256,address,address[])",
-                    "description": "External call path needs reproduction.",
-                }],
-                "latest": {},
-                "tools": {},
-            }
-            with patch.object(generator.Path, "cwd", return_value=root):
-                with patch.object(generator.audit_context, "load", return_value=context):
-                    result = generator.run_generate(
-                        {"target": target},
-                        ["test", "createPool(address,address,uint256,uint256,address,address[])"],
-                    )
-            self.assertEqual(result, 0)
-            generated = next((root / "test").glob("LowkeyTest_*.t.sol"))
-            source = generated.read_text(encoding="utf-8")
-            self.assertIn("PLACEHOLDER", source)
-            self.assertIn("createPool(address,address,uint256,uint256,address,address[])", source)
 
-    def test_generate_poc_allows_focused_signal_without_concrete_send(self):
-        target = "0x" + "2" * 40
+    def test_full_signature_without_args_is_rejected_without_writing_a_scaffold(self):
+        target = "0x" + "3" * 40
+        context = {
+            "focus": {"signal_id": "SLITHER-SIG"},
+            "signals": [{
+                "id": "SLITHER-SIG",
+                "status": "investigating",
+                "impact": "Medium",
+                "confidence": "Medium",
+                "check": "reentrancy-eth",
+                "title": "ETH reentrancy",
+                "file": "src/Factory.sol",
+                "line": 10,
+                "function": "createPool(address,address,uint256,uint256,address,address[])",
+                "description": "External call path needs reproduction.",
+            }],
+            "latest": {},
+            "tools": {},
+        }
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
-            context = {
-                "focus": {"signal_id": "SLITHER-DEF"},
-                "signals": [{
-                    "id": "SLITHER-DEF",
-                    "status": "investigating",
-                    "impact": "Medium",
-                    "confidence": "Medium",
-                    "check": "reentrancy-eth",
-                    "title": "ETH reentrancy",
-                    "file": "src/Vault.sol",
-                    "line": 20,
-                    "description": "External ETH call needs reentrancy review.",
-                }],
-                "latest": {},
-                "tools": {},
-            }
+            output = io.StringIO()
             with patch.object(generator.Path, "cwd", return_value=root):
                 with patch.object(generator.audit_context, "load", return_value=context):
-                    result = generator.run_generate({"target": target}, ["poc"])
-            self.assertEqual(result, 0)
-            generated = next((root / "script").glob("LowkeyPoC_*.s.sol"))
-            source = generated.read_text(encoding="utf-8")
-            self.assertIn("SLITHER-DEF", source)
-            self.assertIn("PLACEHOLDER", source)
+                    with redirect_stdout(output):
+                        result = generator.run_generate(
+                            {"target": target},
+                            ["test", "createPool(address,address,uint256,uint256,address,address[])"],
+                        )
+            self.assertEqual(result, 2)
+            self.assertFalse((root / "test").exists())
+            self.assertIn("unresolved arguments", output.getvalue().lower())
+
+    def test_generate_poc_rejects_missing_call_and_missing_impact_assertion(self):
+        target = "0x" + "2" * 40
+        context = {
+            "focus": {"signal_id": "SLITHER-DEF"},
+            "signals": [{
+                "id": "SLITHER-DEF",
+                "status": "investigating",
+                "impact": "Medium",
+                "confidence": "Medium",
+                "check": "reentrancy-eth",
+                "title": "ETH reentrancy",
+                "file": "src/Vault.sol",
+                "line": 20,
+                "description": "External ETH call needs reentrancy review.",
+            }],
+            "latest": {},
+            "tools": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            output = io.StringIO()
+            with patch.object(generator.Path, "cwd", return_value=root):
+                with patch.object(generator.audit_context, "load", return_value=context):
+                    with redirect_stdout(output):
+                        result = generator.run_generate({"target": target}, ["poc"])
+            self.assertEqual(result, 2)
+            self.assertIn("requires --impact-assertion", output.getvalue())
+            self.assertFalse((root / "script").exists())
+
+    def test_impact_assertion_accepts_only_measured_variables_and_boolean_conditions(self):
+        self.assertEqual(
+            generator._validate_impact_assertion("attackerAfter > attackerBefore"),
+            "attackerAfter > attackerBefore",
+        )
+        self.assertEqual(
+            generator._validate_impact_assertion(
+                "tokenBefore.tracked && tokenAfter.attackerBalance > tokenBefore.attackerBalance"
+            ),
+            "tokenBefore.tracked && tokenAfter.attackerBalance > tokenBefore.attackerBalance",
+        )
+        self.assertEqual(
+            generator._validate_impact_assertion("tokenAfter.attackerBalance > tokenBefore.attackerBalance"),
+            "tokenAfter.attackerBalance > tokenBefore.attackerBalance",
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported name"):
+            generator._validate_impact_assertion("owner == attackerAfter")
+        with self.assertRaisesRegex(ValueError, "before/after"):
+            generator._validate_impact_assertion("true == true")
+        with self.assertRaisesRegex(ValueError, "before/after"):
+            generator._validate_impact_assertion("success == success")
+        with self.assertRaisesRegex(ValueError, "exactly one measured"):
+            generator._validate_impact_assertion("attackerAfter > attackerBefore || true")
+        with self.assertRaisesRegex(ValueError, "exactly one measured"):
+            generator._validate_impact_assertion("attackerAfter > attackerBefore && false")
+        with self.assertRaisesRegex(ValueError, "single boolean expression"):
+            generator._validate_impact_assertion("success; selfdestruct(TARGET)")
 
     def test_help_mentions_all_generation_modes(self):
         output = io.StringIO()

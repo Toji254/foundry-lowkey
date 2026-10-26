@@ -37,8 +37,9 @@ lk walkthrough --auto --steps 8
 lk walkthrough test --cases 24
 lk walkthrough test --cases 24 --technical
 lk audit run
-lk audit run --poc
-lk poc
+# A PoC request needs exact observed calldata and a measurable impact assertion.
+lk audit run --poc --poc-calldata 0x... --poc-impact-assertion 'attackerAfter > attackerBefore'
+lk poc --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'
 ~~~
 
 #### Beginner-first walkthrough view
@@ -73,7 +74,7 @@ The active workspace scope is used by commands such as lk audit and lk lab when 
 
 - Project model: detects Foundry/Vyper/Hardhat/Brownie-style project structure and builds an import/dependency graph.
 - System model: records contracts, deployments, relationships, roles, initialization, tests, adversarial evidence, and audit targets in .audit/evidence/system_bootstrap.json.
-- Audit engine: runs project-aware build/test/coverage evidence, Slither when available, source triage, and PoC scaffolding. Vyper-aware preparation is retained for mixed/non-Foundry projects.
+- Audit engine: runs project-aware build/test/coverage evidence, Slither when available, and source triage. PoCs are emitted only when exact calldata and an explicit measurable impact assertion are supplied; otherwise Lowkey records a review gap. Vyper-aware preparation is retained for mixed/non-Foundry projects.
 - Protocol walkthrough: uses the richer local Foundry walkthrough/lab engine for actual stateful execution and replayable observations.
 
 lk audit and lk audit run are intentionally separate surfaces: the former is the interactive Lowkey audit console; the latter is the evidence pipeline. Neither should be read as a vulnerability verdict.
@@ -127,7 +128,7 @@ lk invariant
 
 Legacy aliases such as `signals`, `investigate`, `try`, `c`, `s`, and `state-diff` remain supported, but the help menu presents the clearer primary forms.
 
-Plain `lk audit` detects and uses an existing Anvil node but never starts one. `lk audit auto` is the autonomous local mode: it starts a project-owned Anvil when needed, binds a safe local actor, resolves a project target when possible, and may deploy a zero-constructor-argument local artifact without inventing constructor values. Both modes collect the same audit evidence and PoC scaffold; `--checks` adds Slither and optional lint/geiger checks.
+Plain `lk audit` detects and uses an existing Anvil node but never starts one. `lk audit auto` is the autonomous local mode: it starts a project-owned Anvil when needed, binds a safe local actor, resolves a project target when possible, and may deploy a zero-constructor-argument local artifact without inventing constructor values. Both modes collect audit evidence without inventing PoCs; `--checks` adds Slither and optional lint/geiger checks. When an explicit PoC request lacks calldata or an impact assertion, Lowkey returns a review-required result instead of writing a placeholder.
 
 ## Actors
 
@@ -398,21 +399,21 @@ Lowkey can generate readable, project-aware Foundry artifacts instead of only pa
 # Rebuild, inspect the compiled artifact, and generate a reusable deployment script
 lk generate deployment EthEscrow
 
-# Generate a PoC from the latest recorded cast send
-lk generate poc
-
-# Generate a Foundry reproduction test from the latest recorded cast send
+# Generate a replay test from an available concrete send
 lk generate test
 
-# Or provide the call explicitly
-lk generate test createescrow(uint256,address) 1000000000000000000 0x0000000000000000000000000000000000000001 --value 1ether
+# Generate a PoC candidate only when the actual calldata and impact assertion are known
+lk generate poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'
+
+# A PoC request can also include attached ETH and an explicit function label
+lk generate poc withdraw --value 1ether --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'
 ~~~
 
 Generated Solidity is intentionally teaching-oriented. Focused `//` comments sit beside important Foundry ideas such as `vm.prank`, `vm.startBroadcast`, `vm.deal`, `vm.snapshot`, revert-data handling, assertions, and the difference between transaction success and a proven security property.
 
-The deployment generator uses the compiled ABI to externalize constructor inputs, adds post-deployment sanity checks, and writes a machine-readable deployment record. The PoC generator replays concrete calldata and records before/after balances. The test generator turns the same observation into a deterministic Forge test where the actual invariant or exploit condition is deliberately left for the auditor to define.
+The deployment generator uses the compiled ABI to externalize constructor inputs, adds post-deployment sanity checks, and writes a machine-readable deployment record. The PoC generator requires a concrete call and an explicit Boolean impact assertion over measured replay-state variables. Its evidence brief records the artifact as `candidate-not-validated` until the candidate is executed against the intended target and chain state. The test generator creates an exact-call replay test only when a real call is available; that test checks replay behavior, not exploitability. Neither generation nor compilation is reported as a security verdict.
 
-These generators are scaffolding and education aids; they do not automatically declare that behavior is vulnerable.
+No TODO-filled PoC/test is emitted as a substitute for missing inputs. Incomplete requests exit nonzero and preserve the reason in audit evidence.
 
 ## Optional external verification engines
 
@@ -446,14 +447,35 @@ Use `lk mutation-check manifest.json` to test whether an existing suite detects 
 
 ## Project-aware test generation
 
-Generate reviewable test drafts for one contract; generated files are written to `.audit/test-gen` instead of the configured Foundry test folder by default:
+Lowkey writes only complete test artifacts with executable assertions. It does not write TODO-filled placeholders and label them tests.
 
-~~~bash
-lk test-gen TokenSale --types unit,fuzz,invariant,integration,exploit,fork,poc,regression,formal --force
-lk test-gen TokenSale --types unit,fuzz,invariant --force --validate
-~~~
+```bash
+# Generate executable tests for a recognized direct state property
+lk test-gen Counter --types unit,fuzz,invariant --validate
 
-`--validate` builds the untouched project, compiles the generated drafts in a temporary Foundry test location, and executes eligible local unit/fuzz/invariant candidates. Fork/PoC scaffolds and artifacts without executable local assertions remain compile-only. Review report TODOs, complete assertions, and treat passing candidate tests as evidence for those cases—not proof of protocol-wide security.
+# Supply real constructor values rather than guessed placeholders
+lk test-gen Vault --types unit,fuzz,invariant \
+  --constructor-args '["address(0x0000000000000000000000000000000000000001)", "1000"]' \
+  --validate
+
+# Strictly reject missing assertions, setup, or validation
+lk test-gen Vault --types all --force --strict --validate
+```
+
+The project-aware generator currently has two native backends:
+
+- **Solidity + Foundry:** recognizes a public integer getter with a one-statement direct setter and generates executable unit, fuzz, and invariant tests.
+- **Vyper + Titanoboa:** recognizes the equivalent Vyper public integer getter/direct-setter relation and generates executable Python unit, Hypothesis fuzz, and setter-sequence tests. Use `lk test-gen Counter --language vyper --types unit,fuzz,invariant --validate --strict`; the project needs Vyper, Titanoboa, pytest, and Hypothesis installed.
+
+In a mixed-language repository, `--language solidity` or `--language vyper` selects one backend. If the requested contract name matches a source in both backends, Lowkey runs both and keeps their evidence separate: Solidity under `.audit/test-gen/<Contract>/`, Vyper under `.audit/test-gen/vyper/<Contract>/`.
+
+Both backends are deliberately narrow. They do not infer accounting invariants, dependency setup, exploit impact, or formal properties from contract names alone. Those requests are refused unless a real scenario/property and the necessary verification configuration are supplied. Rust, Move, Cairo, and other language/build-system generators are **not yet implemented** and must not be described as supported.
+
+Integration, exploit/PoC, regression, and formal categories are not filled with TODO scaffolds. If Lowkey cannot derive a complete artifact, it records the reason in the backend-specific `report.json` (Solidity: `.audit/test-gen/<Contract>/`; Vyper: `.audit/test-gen/vyper/<Contract>/`) and returns a nonzero status. A recorded call replay is not an exploit PoC, and a generated formal specification is not a completed proof.
+
+`--validate` builds the untouched project, compiles the generated files in a temporary test location, and executes eligible local unit/fuzz/invariant tests. Only files created by the current invocation are validated. A compile or test pass establishes evidence for those tests only—not protocol-wide security.
+
+The generation plugin registry currently supports Solidity + Foundry and Vyper + Titanoboa. Other languages remain explicitly unsupported until a native adapter can generate meaningful assertions, run them under the correct build system, retain results, and pass real-project tests. See [evidence-backed test generation](docs/test-generation.md) for the exact support boundary and exit semantics.
 
 ## Shared audit context
 

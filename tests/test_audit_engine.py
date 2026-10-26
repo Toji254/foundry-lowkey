@@ -50,7 +50,8 @@ class AuditEngineTests(unittest.TestCase):
         self.assertEqual(findings[0]["locations"][0]["source"], "src/Vault.sol")
         self.assertEqual(findings[0]["locations"][0]["start"], 42)
 
-    def test_generate_poc_uses_slither_evidence_and_matrix(self):
+
+    def test_generate_poc_refuses_detector_only_scaffolds(self):
         from tempfile import TemporaryDirectory
 
         with TemporaryDirectory() as raw:
@@ -58,54 +59,80 @@ class AuditEngineTests(unittest.TestCase):
             lowkey = root / ".lowkey"
             lowkey.mkdir()
             (lowkey / "config.json").write_text(
-                json.dumps(
-                    {
-                        "target": "0x1111111111111111111111111111111111111111",
-                        "rpc": "http://127.0.0.1:8545",
-                        "last_tx": "0x" + "a" * 64,
-                        "abi_paths": {},
-                    }
-                )
+                json.dumps({
+                    "target": "0x1111111111111111111111111111111111111111",
+                    "rpc": "http://127.0.0.1:8545",
+                    "last_tx": "0x" + "a" * 64,
+                    "abi_paths": {},
+                })
             )
             evidence = root / ".audit" / "evidence"
             evidence.mkdir(parents=True)
-            (evidence / "slither.json").write_text(
-                json.dumps(
-                    {
-                        "data": {
-                            "findings": [
-                                {
-                                    "check": "reentrancy-eth",
-                                    "impact": "high",
-                                    "confidence": "high",
-                                    "description": "External call before effects.",
-                                    "locations": [
-                                        {
-                                            "name": "withdraw()",
-                                            "source": "src/Vault.sol",
-                                            "start": 42,
-                                            "end": 48,
-                                        }
-                                    ],
-                                }
-                            ]
-                        }
-                    }
-                )
-            )
+            (evidence / "slither.json").write_text(json.dumps({
+                "data": {
+                    "findings": [{
+                        "check": "reentrancy-eth",
+                        "impact": "high",
+                        "confidence": "high",
+                        "description": "External call before effects.",
+                        "locations": [{"name": "withdraw()", "source": "src/Vault.sol", "start": 42, "end": 48}],
+                    }]
+                }
+            }))
 
             with patch.dict("os.environ", {"HOME": str(root)}, clear=False):
                 code, files = audit_engine.generate_poc(str(root))
 
+            self.assertEqual(code, 2)
+            self.assertEqual(files, [])
+            self.assertFalse((root / "test").exists())
+            self.assertFalse((root / ".audit" / "poc").exists())
+
+    def test_generate_poc_delegates_only_complete_impact_assertion_requests(self):
+        from tempfile import TemporaryDirectory
+        import types
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            lowkey = root / ".lowkey"
+            lowkey.mkdir()
+            (lowkey / "config.json").write_text(json.dumps({
+                "target": "0x1111111111111111111111111111111111111111",
+                "target_contract": "Escrow",
+            }))
+            calls = []
+
+            def fake_run_generate(config, args):
+                calls.append((config, args))
+                script = root / "script" / "LowkeyPoC_Escrow.s.sol"
+                script.parent.mkdir(parents=True, exist_ok=True)
+                script.write_text("assertion-bearing PoC")
+                brief = root / ".audit" / "poc" / "LowkeyPoc_Escrow.json"
+                brief.parent.mkdir(parents=True, exist_ok=True)
+                brief.write_text(json.dumps({
+                    "status": "candidate-not-validated",
+                    "validation_status": "not-run",
+                    "impact_assertion": "attackerAfter > attackerBefore",
+                }))
+                return 0
+
+            fake_generator = types.ModuleType("generator")
+            fake_generator.run_generate = fake_run_generate
+            with patch.dict("os.environ", {"HOME": str(root)}, clear=False):
+                with patch.dict("sys.modules", {"generator": fake_generator}):
+                    code, files = audit_engine.generate_poc(
+                        str(root),
+                        name="Escrow",
+                        function="withdraw()",
+                        calldata="deadbeef",
+                        impact_assertion="attackerAfter > attackerBefore",
+                    )
+
             self.assertEqual(code, 0)
             self.assertEqual(len(files), 2)
-            solidity = (root / "test" / "Poc_reentrancy_eth.t.sol").read_text()
-            self.assertIn("PocAttacker", solidity)
-            self.assertIn("reentrancy-eth", solidity)
-            brief = json.loads((root / ".audit" / "poc" / "Poc_reentrancy_eth.json").read_text())
-            self.assertEqual(brief["candidate"]["mode"], "reentrancy")
-            self.assertEqual(brief["candidate"]["impact"], "high")
-            self.assertEqual(brief["poc_file"], "test/Poc_reentrancy_eth.t.sol")
+            self.assertIn("--impact-assertion", calls[0][1])
+            self.assertIn("attackerAfter > attackerBefore", calls[0][1])
+            self.assertEqual(len(list((root / "test").glob("Poc_*.t.sol"))) if (root / "test").exists() else 0, 0)
 
     def test_generate_poc_safe_address_literal(self):
         target = "0xa51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0"
@@ -278,6 +305,50 @@ class AuditEngineTests(unittest.TestCase):
         self.assertIn("Security patterns", rendered)
         self.assertIn("0 signals", rendered)
         self.assertIn("Heuristic findings are review leads", rendered)
+
+
+    def test_dashboard_marks_incomplete_poc_request_as_review(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            evidence = root / ".audit" / "evidence"
+            evidence.mkdir(parents=True)
+            records = {
+                "context": {
+                    "target": "0x" + "1" * 40,
+                    "rpc": "http://127.0.0.1:8545",
+                    "project": {"kind": "foundry", "sources": {"solidity": 1}},
+                },
+                "build": {"exit_code": 0, "status": "passed", "stdout": "build ok", "stderr": ""},
+                "tests": {"exit_code": 0, "status": "passed", "stdout": "tests ok", "stderr": ""},
+                "coverage": {"exit_code": 0, "status": "passed", "stdout": "coverage ok", "stderr": ""},
+                "poc_generation": {
+                    "status": "review",
+                    "exit_code": 2,
+                    "generated": [],
+                    "reason": "missing exact calldata and/or impact assertion; PoC generation was requested without complete exploit inputs.",
+                },
+            }
+            for name, data in records.items():
+                (evidence / f"{name}.json").write_text(
+                    json.dumps({"kind": name, "data": data}),
+                    encoding="utf-8",
+                )
+            (evidence / "manifest.json").write_text(json.dumps({"records": {}}), encoding="utf-8")
+            (root / ".audit" / "poc").mkdir(parents=True)
+
+            output = io.StringIO()
+            with patch.object(audit_engine, "_config", return_value={"target": records["context"]["target"], "rpc": records["context"]["rpc"]}):
+                with redirect_stdout(output):
+                    audit_engine.render_audit_dashboard(str(root), pipeline_code=2)
+
+        rendered = output.getvalue()
+        self.assertIn("PoC evidence", rendered)
+        self.assertIn("REVIEW", rendered)
+        self.assertIn("missing exact calldata", rendered)
+        self.assertIn("REVIEW", rendered)
+        self.assertIn("Overall: REVIEW NEEDED", rendered)
 
     def test_run_rg_groups_matches_and_excludes_dependencies_by_default(self):
         from tempfile import TemporaryDirectory

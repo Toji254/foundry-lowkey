@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import types
 from contextlib import redirect_stdout, redirect_stderr
 import io
 import unittest
@@ -20,6 +21,58 @@ spec.loader.exec_module(lk)
 
 
 class LowkeyCastTests(unittest.TestCase):
+
+
+    def test_audit_run_poc_records_request_before_pipeline_and_forwards_flag(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            calls = []
+            with patch.object(lk.audit_context, "foundry_project_root", return_value=root), patch.object(
+                lk, "_sync_security_patterns"
+            ), patch.object(lk, "save_config"), patch.object(
+                lk, "audit_run_pipeline", side_effect=lambda *args, **kwargs: calls.append((args, kwargs)) or 2
+            ), patch.object(lk, "audit_record_evidence", wraps=lk.audit_record_evidence):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    code = lk.run_external_audit({}, ["run", "--poc"])
+
+            self.assertEqual(code, 2)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0][1]["generate"])
+            self.assertIsNone(calls[0][1]["poc_request"])
+            evidence = root / ".audit" / "evidence" / "poc_generation.json"
+            self.assertTrue(evidence.is_file())
+            payload = json.loads(evidence.read_text(encoding="utf-8"))
+            self.assertEqual(payload["data"]["status"], "requested")
+            self.assertIn("PoC request evidence:", output.getvalue())
+
+    def test_generate_command_routes_to_generator_with_all_arguments(self):
+        target = "0x" + "1" * 40
+        arguments = [
+            "poc",
+            "withdraw",
+            "--calldata",
+            "0xdeadbeef",
+            "--impact-assertion",
+            "attackerAfter > attackerBefore",
+        ]
+        fake_generator = types.ModuleType("generator")
+        calls = []
+
+        def fake_run_generate(config, args):
+            calls.append((config, args))
+            return 0
+
+        fake_generator.run_generate = fake_run_generate
+        config = {"target": target, "target_contract": "Fixture"}
+        with patch.dict("sys.modules", {"generator": fake_generator}), patch.object(
+            lk, "activate_project_target", return_value=None
+        ), patch.object(lk, "_COMMAND_STATUS", 0):
+            result = lk.dispatch_command("generate", arguments, config)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, [(config, arguments)])
+
     def test_select_project_target_rejects_stale_no_code_address(self):
         address = "0x" + "1" * 40
         config = {"rpc": "http://127.0.0.1:8545"}

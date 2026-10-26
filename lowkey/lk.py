@@ -110,9 +110,17 @@ except ImportError:
     benchmark = None
 
 try:
-    from audit_engine import run_rg as audit_run_rg, run_slither as audit_run_slither, run_audit_pipeline as audit_run_pipeline, generate_poc as audit_generate_poc, run_source_triage as audit_run_source_triage
+    from audit_engine import (
+        run_rg as audit_run_rg,
+        run_slither as audit_run_slither,
+        run_audit_pipeline as audit_run_pipeline,
+        generate_poc as audit_generate_poc,
+        run_source_triage as audit_run_source_triage,
+        record_evidence as audit_record_evidence,
+    )
 except ImportError:
     audit_run_rg = audit_run_slither = audit_run_pipeline = audit_generate_poc = None
+    audit_record_evidence = None
 
 try:
     import break_engine
@@ -12798,12 +12806,25 @@ def _full_evidence_pass(config):
 
 
 def _generate_connected_poc(config):
-    """Generate the current investigation PoC from the shared evidence context."""
+    """Interactively collect the missing concrete call and impact before generating a PoC."""
+    try:
+        function = input("Function/signature (optional if calldata is sufficient): ").strip()
+        calldata = input("Exact calldata (0x...): ").strip()
+        value = input("Attached ETH value [0]: ").strip() or "0"
+        impact = input("Boolean impact assertion over measured variables: ").strip()
+    except EOFError:
+        print("PoC generation cancelled; no file was written.")
+        return 2
+    if not calldata or not impact:
+        print("PoC generation requires exact calldata and an explicit impact assertion; no file was written.")
+        return 2
     try:
         from generator import run_generate
-        return run_generate(config, ["poc"])
+        args = ["poc", function or "rawCall()", "--value", value,
+                "--calldata", calldata, "--impact-assertion", impact]
+        return run_generate(config, args)
     except Exception as exc:
-        print(f"Warning: connected PoC generation failed: {exc}", file=sys.stderr)
+        print(f"PoC generation failed: {exc}", file=sys.stderr)
         return 1
 
 
@@ -13310,7 +13331,7 @@ def run_audit_mode(config, args=None, interactive=None):
             elif choice == "8":
                 code = _generate_connected_poc(config)
                 if code == 0:
-                    print("Connected PoC scaffold refreshed.")
+                    print("Assertion-bearing PoC candidate generated; execution/impact is still unvalidated.")
             elif choice == "9":
                 code = walkthrough.run(config, [], host=sys.modules[__name__])
                 if code != 0:
@@ -13685,17 +13706,13 @@ def run_audit(config, args):
 
 
 def refresh_generated_poc(config):
-    """Refresh the connected PoC scaffold after audit evidence or a concrete send."""
-    root = audit_context.foundry_project_root()
-    latest = audit_context.load(root).get("latest", {})
-    if not isinstance(latest, dict) or not latest.get("tx_hash"):
-        return 0
-    try:
-        from generator import run_generate
-        return run_generate(config, ["poc"])
-    except Exception as exc:
-        print(f"Warning: PoC scaffold refresh skipped: {exc}", file=sys.stderr)
-        return 0
+    """Compatibility shim: audit evidence alone must not create a PoC."""
+    print(
+        "Automatic PoC generation is disabled. Use 'lk poc --calldata 0x... "
+        "--impact-assertion ...' to supply a concrete call and measurable impact.",
+        file=sys.stderr,
+    )
+    return 2
 def run_context(config):
     root = audit_context.foundry_project_root()
     _sync_audit_context(config, root)
@@ -14350,28 +14367,65 @@ def run_audit_poc(config, args):
         return fail("Audit engine is not installed. Re-run install.sh from this checkout.")
     finding = None
     name = None
+    function = None
+    calldata = None
+    value = "0"
+    impact_assertion = None
     remaining = list(args)
     i = 0
+    value_options = {
+        "--finding": "finding",
+        "--name": "name",
+        "--function": "function",
+        "--calldata": "calldata",
+        "--value": "value",
+        "--impact-assertion": "impact_assertion",
+    }
     while i < len(remaining):
         item = remaining[i]
-        if item == "--finding" and i + 1 < len(remaining):
-            try:
-                finding = int(remaining[i + 1])
-            except ValueError:
-                return fail("Usage: lk poc [--finding N] [--name NAME]")
-            i += 2
-            continue
-        if item == "--name" and i + 1 < len(remaining):
-            name = remaining[i + 1]
-            i += 2
-            continue
         if item in {"--help", "-h"}:
-            print("Usage: lk poc [--finding N] [--name NAME]")
+            print(
+                "Usage: lk poc --calldata 0x... --impact-assertion '<boolean condition>' "
+                "[--function SIGNATURE] [--value ETH] [--finding N] [--name NAME]"
+            )
             return 0
-        return fail(f"Unknown lk poc option: {item}")
+        if item not in value_options:
+            return fail(f"Unknown lk poc option: {item}")
+        key = value_options[item]
+        if i + 1 >= len(remaining):
+            return fail(f"{item} requires a value")
+        raw = remaining[i + 1]
+        if key == "finding":
+            try:
+                finding = int(raw)
+            except ValueError:
+                return fail("--finding must be an integer")
+        elif key == "name":
+            name = raw
+        elif key == "function":
+            function = raw
+        elif key == "calldata":
+            calldata = raw
+        elif key == "value":
+            value = raw
+        elif key == "impact_assertion":
+            impact_assertion = raw
+        i += 2
+
+    if not calldata or not impact_assertion:
+        return fail(
+            "PoC generation requires exact --calldata and --impact-assertion inputs. "
+            "A detector finding alone is not an executable exploit proof."
+        )
     root = audit_context.foundry_project_root()
     save_config(config)
-    code, _paths = audit_generate_poc(str(root), finding, name)
+    code, _paths = audit_generate_poc(
+        str(root), finding, name,
+        function=function,
+        calldata=calldata,
+        value=value,
+        impact_assertion=impact_assertion,
+    )
     return code
 
 
@@ -14382,19 +14436,58 @@ def run_external_audit(config, args):
     if remaining and remaining[0] in {"run", "pipeline"}:
         remaining.pop(0)
     generate = False
+    poc_request = {}
     slither_args = []
-    for item in remaining:
+    poc_options = {
+        "--poc-function": "function",
+        "--poc-calldata": "calldata",
+        "--poc-value": "value",
+        "--poc-impact-assertion": "impact_assertion",
+    }
+    i = 0
+    while i < len(remaining):
+        item = remaining[i]
         if item in {"--poc", "--generate-poc"}:
             generate = True
-        else:
-            slither_args.append(item)
+            i += 1
+            continue
+        if item in poc_options:
+            generate = True
+            if i + 1 >= len(remaining):
+                return fail(f"{item} requires a value")
+            poc_request[poc_options[item]] = remaining[i + 1]
+            i += 2
+            continue
+        slither_args.append(item)
+        i += 1
     root = audit_context.foundry_project_root()
     _sync_security_patterns(root, announce=True)
     # The evidence engine reads ~/.lowkey/config.json directly; persist the
     # current command context first so target/RPC changes from this invocation
     # are visible to it.
     save_config(config)
-    return audit_run_pipeline(str(root), slither_args=slither_args, generate=generate)
+    if generate and audit_record_evidence is not None:
+        request_evidence = audit_record_evidence(
+            "poc_generation",
+            {
+                "status": "requested",
+                "exit_code": None,
+                "generated": [],
+                "request": poc_request,
+                "reason": (
+                    "PoC request recorded; waiting for the evidence pipeline to validate inputs "
+                    "and replace this record with a final review/candidate status."
+                ),
+            },
+            str(root),
+        )
+        print(f"PoC request evidence: {request_evidence}")
+    return audit_run_pipeline(
+        str(root),
+        slither_args=slither_args,
+        generate=generate,
+        poc_request=poc_request or None,
+    )
 
 
 
@@ -14643,7 +14736,7 @@ COMMAND_HELP = {
 
         children={
             "auto": _help_entry("Run the audit in autonomous mode and allow safe local target provisioning.", "lk audit auto [options]", "lk audit auto --checks", "Use it when you want the audit session to bootstrap itself."),
-            "run": _help_entry("Run the full evidence pipeline, with optional PoC generation.", "lk audit run [--poc]", "lk audit run --poc", "Use it for a repeatable baseline pass that leaves evidence in the audit workspace.", options=[("--poc", "Generate a connected PoC scaffold after the evidence pass.", "lk audit run --poc")]),
+            "run": _help_entry("Run the full evidence pipeline, optionally requesting an assertion-bearing PoC.", "lk audit run [--poc --poc-calldata 0x... --poc-impact-assertion '<condition>']", "lk audit run --poc --poc-calldata 0x... --poc-impact-assertion 'attackerAfter > attackerBefore'", "An incomplete PoC request leaves a review gap and returns nonzero; a generated candidate is still unvalidated.", options=[("--poc", "Request a PoC; also supply --poc-calldata and --poc-impact-assertion.", "lk audit run --poc --poc-calldata 0x... --poc-impact-assertion 'attackerAfter > attackerBefore'")]),
             "pipeline": _help_entry("Compatibility spelling for the full audit evidence pipeline.", "lk audit pipeline [--poc]", "lk audit pipeline --poc", "Use it when an older workflow or script calls the pipeline by name; new usage should normally prefer 'lk audit run'.", related=["lk audit run"]),
 
         },
@@ -15064,21 +15157,21 @@ COMMAND_HELP = {
     ),
     "decode-error": _help_entry("Decode a Solidity custom-error payload.", "lk decode-error <data>", "lk decode-error 0x...", "Use it when a revert payload is hex and you want the actual error and arguments.", related=["lk trace", "lk decode"]),
     "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
-    "poc": _help_entry("Generate an evidence-backed PoC scaffold.", "lk poc [--finding N] [--name NAME]", "lk poc --finding 2 --name setValue-bypass", "Use it when a finding is concrete enough to deserve a reproducible proof scaffold.", related=["lk finding", "lk export"]),
+    "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
     "generate": _help_entry(
-        "Create reusable Forge tests, PoC scaffolds, or deployment scripts.",
+        "Create deployment scripts, exact-call replay tests, and impact-assertion-backed PoC candidates.",
         "lk generate <test|poc|deployment> ...",
         "lk generate test 'setValue(uint256)' 10",
         "Use it after observing behavior you want to turn into repeatable evidence.",
         forms=[
             ("lk generate test ...", "Create a reusable Forge test from observed behavior.", "lk generate test 'setValue(uint256)' 10"),
-            ("lk generate poc ...", "Create a PoC scaffold connected to current evidence.", "lk generate poc setValue"),
+            ("lk generate poc ...", "Create a PoC candidate only with exact calldata and a measurable impact assertion.", "lk generate poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'"),
             ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment MyContract"),
         ],
 
         children={
             "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<function(parameter TYPES...)>' <VALUES...>", "lk generate test 'setValue(uint256)' 10", "Use it to turn an observed transition into regression evidence."),
-            "poc": _help_entry("Generate a PoC scaffold connected to current evidence.", "lk generate poc <function>", "lk generate poc setValue", "Use it as a starting point for exploit reproduction."),
+            "poc": _help_entry("Generate an exploit candidate only when exact calldata and an explicit impact assertion are supplied.", "lk generate poc <function> --calldata 0x... --impact-assertion '<condition>'", "lk generate poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "The output is a candidate, not a validated vulnerability report."),
             "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment MyContract", "Use it when you need a repeatable local deployment entry point."),
         },
         related=["lk matrix", "lk poc"],
@@ -15327,17 +15420,18 @@ COMMAND_HELP = {
     ),
     "cheatcodes": _help_entry("Show or run useful Foundry cheatcode helpers.", "lk cheatcodes [args...]", "lk cheatcodes", "Use it when you need controlled local callers, balances, time, or storage.", related=["lk forge", "lk matrix"]),
     "test-gen": _help_entry(
-        "Generate project-aware starter files from a Solidity contract, or turn the latest useful transaction/evidence into a Forge reproduction when no contract is supplied.",
-        "lk test-gen <ContractName> [--types unit,fuzz,invariant,integration,fork,poc,regression,formal] [options]",
-        "lk test-gen Vault --types unit,fuzz,invariant --validate",
-        "Generate project-aware starter files for review. Drafts default to .audit/test-gen; --validate compiles drafts and executes eligible local unit/fuzz/invariant candidates, but does not prove protocol security. Running lk test-gen with no arguments preserves the legacy last-send reproduction workflow.",
+        "Generate executable test artifacts only when Lowkey can establish a concrete property; otherwise report missing requirements. No-argument mode retains recorded-call reproduction.",
+        "lk test-gen <ContractName> [--language solidity|vyper] [--types unit,fuzz,invariant,integration,fork,poc,regression,formal] [options]",
+        "lk test-gen Counter --language vyper --types unit,fuzz,invariant --validate --strict",
+        "Write only complete artifacts with executable assertions. Solidity + Foundry and Vyper + Titanoboa are the supported native backends; --language selects one. If the contract name matches both languages, both run and keep reports separate. Unsupported categories are skipped with a nonzero result. --validate compiles and executes eligible tests; a pass does not prove protocol-wide security. Bare lk test-gen keeps the recorded-call replay workflow.",
         forms=[
-            ("lk test-gen <ContractName>", "Generate starter test drafts for a contract from the active Foundry project.", "lk test-gen Vault"),
-            ("--types <list|all>", "Select unit, fuzz, invariant, integration, fork, poc, regression, and/or formal artifacts.", "lk test-gen Vault --types unit,fuzz,invariant"),
-            ("--output-dir <path>", "Write generated drafts and the report to a selected directory; defaults to .audit/test-gen.", "lk test-gen Vault --output-dir .audit/review"),
-            ("--validate", "Compile generated drafts and execute eligible local unit/fuzz/invariant candidates; fork/PoC drafts stay compile-only. This does not prove protocol security.", "lk test-gen Vault --types unit,fuzz --validate"),
-            ("--strict", "Fail when any selected artifact remains a scaffold/unverified or when validation is not fully passed.", "lk test-gen Vault --types unit,fuzz --validate --strict"),
-            ("--force", "Replace drafts with the same generated filenames.", "lk test-gen Vault --types unit,fuzz --force"),
+            ("lk test-gen <ContractName>", "Generate executable tests only for properties Lowkey can safely establish.", "lk test-gen Vault --types unit,fuzz,invariant --validate"),
+            ("--language <solidity|vyper>", "Select the native generator backend. Without this option, all matching supported sources are generated with isolated reports.", "lk test-gen Counter --language vyper --types unit,fuzz,invariant --validate"),
+            ("--types <list|all>", "Select artifact categories; unsupported or under-specified categories are skipped and make the request nonzero.", "lk test-gen Vault --types unit,fuzz,invariant"),
+            ("--output-dir <path>", "Write complete generated artifacts and the report to a selected directory; defaults to .audit/test-gen.", "lk test-gen Vault --output-dir .audit/review"),
+            ("--validate", "Build the baseline, compile generated artifacts, and execute eligible local unit/fuzz/invariant tests.", "lk test-gen Vault --types unit,fuzz,invariant --validate"),
+            ("--strict", "Require --validate to pass and reject unverified or incomplete generation requests.", "lk test-gen Vault --types unit,fuzz,invariant --validate --strict"),
+            ("--force", "Replace existing generated artifacts with the same filenames.", "lk test-gen Vault --types unit,fuzz,invariant --force"),
             ("No-argument legacy mode", "With no arguments, replay the latest useful transaction/evidence into a Forge regression test.", "lk test-gen"),
         ],
         related=["lk generate test", "lk trace", "lk verification engines"],
@@ -15817,14 +15911,15 @@ REPRODUCE / ATTACK / TEST
                                    Put actual argument VALUES after the closing quote.
                                    Example:
                                      lk generate test 'createRecord(address,uint256)' <addr> <amount>
-  lk generate poc <function>       Generate a PoC scaffold from a function/evidence.
+  lk generate poc <function>       Requires --calldata and --impact-assertion.
   lk generate deployment <Contract> Generate a deployment script.
-  lk test-gen <Contract> --types ... Generate project-aware test drafts through adapters.
+  lk test-gen <Contract> --types ... Generate complete tests when the property is established.
   lk mutation-check <manifest.json>  Run isolated mutation validation and report a score.
   lk verification-benchmark <manifest> Run a manifest-driven benchmark and enforce gates.
   lk verification engines [--json]   Inventory installed verification engines.
   lk verification run <manifest>    Run a bounded, serial multi-engine campaign.
-  lk poc [--finding N]             Generate an evidence-backed PoC scaffold.
+  lk poc --calldata 0x... --impact-assertion '<condition>'
+                                  Generate a candidate with explicit measurable impact.
   lk fuzz [args...]                Run Forge fuzz tests.
   lk invariant [args...]           Run Forge invariant tests.
   lk symbolic [args...]            Run symbolic tests when configured.
@@ -15845,7 +15940,8 @@ AUDIT WORKFLOW / EVIDENCE
   lk audit --no-checks              Skip Slither/lint/unsafe-cheatcode checks; keep build/tests/coverage.
   lk audit auto --checks           Autonomous audit with the default static-check baseline.
   lk audit run                     Full evidence pipeline: build -> tests -> coverage -> Slither -> triage.
-  lk audit run --poc               Same pipeline, then generate a PoC scaffold.
+  lk audit run --poc --poc-calldata 0x... --poc-impact-assertion '<condition>'
+                                  An incomplete request fails closed; candidate remains unvalidated.
   lk audit--checks                 Legacy compact alias for audit --checks.
   lk finding <note>                Record a manual observation. Example: lk finding caller is not restricted
   lk finding add <sev> <title>...  Record severity/title/text in one command.
@@ -16575,6 +16671,15 @@ def _dispatch_command_impl(cmd,args,config,from_batch=False):
     elif cmd in {"seams","hotspots"}: return run_seams(config)
     elif cmd=="scan": return run_scan(args)
     elif cmd=="rg": return run_audit_rg(config,args)
+    elif cmd=="generate":
+        try:
+            import generator as generator_module
+        except ImportError:
+            try:
+                from lowkey import generator as generator_module
+            except ImportError as exc:
+                return fail(f"Generator runtime is not installed: {exc}. Re-run install.sh.")
+        return generator_module.run_generate(config, args)
     elif cmd=="poc": return run_audit_poc(config,args)
     elif cmd=="deps": run_deps(args)
     elif cmd=="layout": run_layout(args)
@@ -16813,15 +16918,6 @@ def main():
         "mapping","snapshot","diff","risk","seams","matrix","finding","focus","findings",
         "audit","audit--checks","audit-checks","audit","break","walkthrough","walk","rg","poc","project","system","q","questions"
     }
-    if (
-        result_code == 0
-        and sys.argv[1] in evidence_commands
-        and sys.argv[1] not in {"focus","findings","audit","audit--checks","audit-checks","break"}
-    ):
-        try:
-            refresh_generated_poc(config)
-        except Exception as error:
-            print(f"Warning: automatic PoC refresh failed: {error}", file=sys.stderr)
     if config.pop("_config_dirty",False):
         save_config(config)
     final_root = audit_context.foundry_project_root()
@@ -16849,7 +16945,7 @@ def main():
         "verification": {"engines", "run"},
         "walkthrough": {"test", "seed"},
         "walk": {"test", "seed"},
-        "generate": {"test", "script", "contract"},
+        "generate": {"test", "poc", "deployment"},
         "project": {"--workspace"},
         "projects": {"reset"},
         "target": {"list", "auto", "reset"},

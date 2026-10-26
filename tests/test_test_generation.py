@@ -15,7 +15,7 @@ import test_generation as generation
 
 
 class TestGenerationTests(unittest.TestCase):
-    def test_parse_types_defaults_to_all_supported_scaffolds(self):
+    def test_parse_types_defaults_to_all_supported_artifact_categories(self):
         self.assertEqual(
             generation.parse_types(None),
             ["unit", "fuzz", "invariant", "integration", "exploit", "fork", "poc", "regression", "formal"],
@@ -42,7 +42,8 @@ class TestGenerationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_generates_all_drafts_outside_foundry_test_directory(self):
+
+    def test_generates_only_complete_artifacts_and_reports_missing_categories(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root)
@@ -58,55 +59,37 @@ class TestGenerationTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
-            self.assertEqual(code, 0)
+            # Supported tests were generated, but unsupported requested types
+            # correctly make the overall request incomplete.
+            self.assertEqual(code, 1)
             folder = root / ".audit" / "test-gen" / "Counter"
             names = {p.name for p in folder.glob("*.t.sol")}
-            self.assertEqual(len(names), 8)
+            self.assertEqual(names, {
+                "LowkeyGeneratedUnit_Counter.t.sol",
+                "LowkeyGeneratedFuzz_Counter.t.sol",
+                "LowkeyGeneratedInvariant_Counter.t.sol",
+                "LowkeyGeneratedFork_Counter.t.sol",
+            })
             self.assertFalse((root / "test").exists())
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(report["generated"]), 9)
-            self.assertIn("not protocol proofs", report["warning"])
+            self.assertEqual(len(report["generated"]), 4)
+            self.assertIn("Only artifacts", report["warning"])
             self.assertEqual(len(report["source_sha256"]), 64)
             self.assertEqual(report["generation_assessment"]["unit"]["level"], "executable-candidate")
             self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "executable-candidate")
             self.assertEqual(report["generation_assessment"]["invariant"]["level"], "executable-candidate")
-            self.assertEqual(report["generation_assessment"]["integration"]["level"], "scaffold")
-            self.assertEqual(report["generation_assessment"]["exploit"]["level"], "scaffold")
-            self.assertEqual(report["generation_assessment"]["poc"]["protocol_security_established"], False)
-            self.assertIn("compile-only", output.getvalue())
-            self.assertIn("generated", output.getvalue())
+            self.assertEqual(report["generation_assessment"]["integration"]["level"], "not-generated")
+            self.assertEqual(report["generation_assessment"]["exploit"]["level"], "not-generated")
             self.assertEqual(
-                report["fuzz_property"],
-                {"setter": "setValue", "parameter": "next", "type": "uint256", "state": "value"},
+                {item["type"] for item in report["skipped"]},
+                {"integration", "exploit", "poc", "regression", "formal"},
             )
-            fuzz_draft = (
-                folder / "LowkeyGeneratedFuzz_Counter.t.sol"
-            ).read_text(encoding="utf-8")
-            self.assertIn(
-                "function testFuzz_setValue_preservesStoredValue(uint256 fuzzValue)",
-                fuzz_draft,
-            )
-            self.assertIn("assertEq(target.value(), fuzzValue);", fuzz_draft)
-            unit_draft = (folder / "LowkeyGeneratedUnit_Counter.t.sol").read_text(encoding="utf-8")
-            self.assertIn("function test_setValue_updatesPublicState()", unit_draft)
-            invariant_draft = (folder / "LowkeyGeneratedInvariant_Counter.t.sol").read_text(encoding="utf-8")
-            self.assertIn("function invariant_value_matchesLastSuccessfulSetterCall()", invariant_draft)
-            self.assertIn("targetContract(address(handler));", invariant_draft)
-            exploit_draft = (folder / "LowkeyGeneratedExploit_Counter.t.sol").read_text(encoding="utf-8")
-            self.assertIn("TODO: Add a concrete exploit precondition", exploit_draft)
-            fork_draft = (folder / "LowkeyGeneratedFork_Counter.t.sol").read_text(encoding="utf-8")
-            self.assertIn("function testFork_value_publicGetterIsCallable()", fork_draft)
-            self.assertIn('abi.encodeWithSignature("value()")', fork_draft)
-            self.assertNotIn("target.setValue(expected)", fork_draft)
-            self.assertIn("target = Counter(TARGET);", fork_draft)
-            self.assertTrue((folder / "test-plan.md").is_file())
-            self.assertIn("Test plan by family", (folder / "test-plan.md").read_text(encoding="utf-8"))
-            self.assertIn("security_surfaces", report["analysis"])
-            formal_spec = (folder / "LowkeyGeneratedFormal_Counter.spec").read_text(encoding="utf-8")
-            self.assertIn("rule setValue_round_trip(uint256 fuzzValue)", formal_spec)
-            self.assertIn("assert target.value() == fuzzValue;", formal_spec)
+            for path in folder.glob("*.t.sol"):
+                self.assertNotRegex(path.read_text(encoding="utf-8"), r"(?i)\\bTODO\\b|\\bscaffold\\b|\\bstarter\\b")
+            self.assertIn("skipped", output.getvalue().lower())
+            self.assertIn("generated", output.getvalue())
 
-    def test_constructor_arguments_generate_local_drafts_with_safe_placeholders(self):
+    def test_constructor_arguments_must_be_explicit_and_are_used_verbatim(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root, "constructor(uint256 initial) { value = initial; }")
@@ -115,32 +98,29 @@ class TestGenerationTests(unittest.TestCase):
                 os.chdir(root)
                 with contextlib.redirect_stdout(io.StringIO()):
                     code = generation.run_test_gen(
-                        {"target_contract": "Counter", "target": "0x" + "1" * 40},
-                        ["--types", "unit,fuzz,invariant,integration,fork,poc,regression"],
+                        {"target_contract": "Counter"},
+                        ["--types", "unit,fuzz,invariant", "--constructor-args", '["10"]'],
                     )
             finally:
                 os.chdir(previous)
 
             self.assertEqual(code, 0)
             folder = root / ".audit" / "test-gen" / "Counter"
-            drafts = list(folder.glob("*.t.sol"))
-            self.assertEqual(len(drafts), 7)
+            generated = list(folder.glob("*.t.sol"))
+            self.assertEqual(len(generated), 3)
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(report["constructor"], "arguments-required")
+            self.assertEqual(report["constructor"], "arguments-supplied")
             self.assertEqual(report["constructor_parameters"], "uint256 initial")
-            self.assertEqual(report["constructor_placeholders"], ["0"])
-            self.assertEqual(report["generation_assessment"]["unit"]["level"], "requires-setup-review")
-            self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "requires-setup-review")
-            self.assertEqual(report["generation_assessment"]["invariant"]["level"], "requires-setup-review")
-            self.assertEqual(len(report["generated"]), 7)
+            self.assertEqual(report["constructor_arguments"], ["10"])
+            self.assertTrue(report["constructor_arguments_explicit"])
+            self.assertEqual(len(report["generated"]), 3)
             self.assertEqual(report["skipped"], [])
-            unit = (folder / "LowkeyGeneratedUnit_Counter.t.sol").read_text(encoding="utf-8")
-            fuzz = (folder / "LowkeyGeneratedFuzz_Counter.t.sol").read_text(encoding="utf-8")
-            self.assertIn("new Counter(0)", unit)
-            self.assertIn("new Counter(0)", fuzz)
-            self.assertIn("Review the compile-safe constructor placeholder values", unit)
+            for path in generated:
+                content = path.read_text(encoding="utf-8")
+                self.assertIn("new Counter(10)", content)
+                self.assertNotRegex(content, r"(?i)\\bTODO\\b|\\bscaffold\\b|\\bstarter\\b")
 
-    def test_unsupported_constructor_types_remain_skipped(self):
+    def test_constructor_types_are_not_guessed_and_incomplete_poc_is_not_written(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root, "constructor(MyType initial) {}")
@@ -155,26 +135,22 @@ class TestGenerationTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 1)
             folder = root / ".audit" / "test-gen" / "Counter"
             names = {p.name for p in folder.glob("*.t.sol")}
-            self.assertEqual(names, {
-                "LowkeyGeneratedFork_Counter.t.sol",
-                "LowkeyGeneratedPoc_Counter.t.sol",
-            })
+            self.assertEqual(names, {"LowkeyGeneratedFork_Counter.t.sol"})
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(report["constructor"], "unsupported-arguments")
-            self.assertIsNone(report["constructor_placeholders"])
+            self.assertEqual(report["constructor"], "arguments-required")
+            self.assertIsNone(report["constructor_arguments"])
+            self.assertFalse(report["constructor_arguments_explicit"])
             self.assertEqual(
                 {item["type"] for item in report["skipped"]},
-                {"unit", "fuzz"},
+                {"unit", "fuzz", "poc"},
             )
             self.assertEqual(report["generation_assessment"]["unit"]["level"], "not-generated")
             self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "not-generated")
-            self.assertIn("unsupported", report["generation_assessment"]["unit"]["note"])
 
-
-    def test_fuzz_remains_a_todo_when_no_direct_setter_property_is_recognized(self):
+    def test_fuzz_is_not_written_when_no_executable_property_is_recognized(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root, "constructor(uint256 initial) { value = initial; }")
@@ -191,21 +167,20 @@ class TestGenerationTests(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     code = generation.run_test_gen(
                         {"target_contract": "Counter"},
-                        ["--types", "fuzz"],
+                        ["--types", "fuzz", "--constructor-args", '["0"]'],
                     )
             finally:
                 os.chdir(previous)
 
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 1)
             folder = root / ".audit" / "test-gen" / "Counter"
-            draft = (folder / "LowkeyGeneratedFuzz_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertFalse((folder / "LowkeyGeneratedFuzz_Counter.t.sol").exists())
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
             self.assertIsNone(report["fuzz_property"])
-            self.assertNotRegex(draft, r"(?m)^\s*function testFuzz_")
-            self.assertIn("No safe direct-setter/public-integer-getter property was recognized", draft)
+            self.assertEqual(report["generation_assessment"]["fuzz"]["level"], "not-generated")
+            self.assertIn("fuzz", {item["type"] for item in report["skipped"]})
 
-
-    def test_custom_modifier_prevents_unsafe_setter_inference(self):
+    def test_custom_modifier_prevents_unsafe_property_inference_and_emission(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._project(root)
@@ -224,15 +199,14 @@ class TestGenerationTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 1)
             folder = root / ".audit" / "test-gen" / "Counter"
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
             self.assertIsNone(report["fuzz_property"])
-            fuzz = (folder / "LowkeyGeneratedFuzz_Counter.t.sol").read_text(encoding="utf-8")
-            self.assertNotRegex(fuzz, r"(?m)^\\s*function testFuzz_")
-            formal = (folder / "LowkeyGeneratedFormal_Counter.md").read_text(encoding="utf-8")
-            self.assertIn("not an executable CVL spec yet", formal)
-
+            self.assertFalse((folder / "LowkeyGeneratedFuzz_Counter.t.sol").exists())
+            self.assertFalse((folder / "LowkeyGeneratedFormal_Counter.spec").exists())
+            self.assertFalse((folder / "LowkeyGeneratedFormal_Counter.md").exists())
+            self.assertEqual({item["type"] for item in report["skipped"]}, {"fuzz", "formal"})
     def test_existing_draft_is_preserved_without_force(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -294,7 +268,7 @@ class TestGenerationTests(unittest.TestCase):
                 0,
                 help_result.stdout + "\\n" + help_result.stderr,
             )
-            self.assertIn("Generate project-aware starter files", help_result.stdout)
+            self.assertIn("executable", help_result.stdout.lower())
             self.assertIn("--types", help_result.stdout)
 
             # Running the scaffold generator must not trigger the legacy
@@ -751,7 +725,7 @@ class TestGenerationTests(unittest.TestCase):
             )
             self.assertEqual(report["validation"]["status"], "partial")
             self.assertEqual(report["validation"]["unvalidated_types"], ["formal"])
-            self.assertIn("formal specification was not checked by Forge", report["validation"]["detail"])
+            self.assertIn("formal request was not executed by this Forge validation", report["validation"]["detail"])
 
     def test_external_active_test_directory_is_inventoried_without_relative_path_error(self):
         from test_generation_analysis import analyse_contract
@@ -830,7 +804,8 @@ contract Protocol {
 
 
 
-    def test_generation_assessment_does_not_overstate_scaffolds(self):
+
+    def test_generation_assessment_never_labels_missing_tests_as_scaffolds(self):
         assessment = generation._generation_assessment(
             ["unit", "fuzz", "invariant", "integration", "exploit", "fork", "poc", "regression", "formal"],
             local_deploy=True,
@@ -839,17 +814,12 @@ contract Protocol {
             target=None,
         )
         self.assertEqual(assessment["unit"]["level"], "smoke-only")
-        self.assertEqual(assessment["fuzz"]["level"], "scaffold")
-        self.assertEqual(assessment["invariant"]["level"], "scaffold")
-        self.assertEqual(assessment["integration"]["level"], "scaffold")
+        for kind in ("fuzz", "invariant", "integration", "exploit", "poc", "regression", "formal"):
+            self.assertEqual(assessment[kind]["level"], "not-generated", kind)
         self.assertEqual(assessment["fork"]["level"], "requires-target")
-        self.assertEqual(assessment["poc"]["level"], "scaffold")
-        self.assertEqual(assessment["regression"]["level"], "scaffold")
-        self.assertEqual(assessment["formal"]["level"], "worksheet")
         self.assertTrue(all(item["protocol_security_established"] is False for item in assessment.values()))
 
-
-    def test_poc_uses_matching_recorded_call_as_replay_not_security_proof(self):
+    def test_recorded_call_replay_is_not_emitted_as_an_exploit_poc_without_impact_assertion(self):
         from types import SimpleNamespace
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -877,18 +847,14 @@ contract Protocol {
                     )
             finally:
                 os.chdir(previous)
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 1)
             folder = root / ".audit" / "test-gen" / "Counter"
-            poc = (folder / "LowkeyGeneratedPoc_Counter.t.sol").read_text(encoding="utf-8")
+            self.assertFalse((folder / "LowkeyGeneratedPoc_Counter.t.sol").exists())
             report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-            self.assertIn("LOWKEY_FORK_BLOCK", poc)
-            self.assertIn("LOWKEY_EXPECTED_CHAIN_ID", poc)
-            self.assertIn("replays recorded calldata", poc)
             self.assertEqual(report["poc_replay"]["mode"], "recorded-call-replay")
             self.assertFalse(report["poc_replay"]["security_impact_assertion"])
-            self.assertEqual(report["generation_assessment"]["poc"]["level"], "recorded-call-replay")
-
-
+            self.assertEqual(report["generation_assessment"]["poc"]["level"], "not-generated")
+            self.assertIn("poc", {item["type"] for item in report["skipped"]})
     def test_strict_mode_fails_when_requested_types_are_only_scaffolds(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
