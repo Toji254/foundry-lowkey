@@ -2,8 +2,10 @@ import json
 import pathlib
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 
-from lowkey import audit_context, verification_cli
+from lowkey import audit_context, lk as lowkey_cli, verification_cli
 
 
 class VerificationCorrelationTests(unittest.TestCase):
@@ -156,6 +158,86 @@ class VerificationCorrelationTests(unittest.TestCase):
             self.assertIn("LOWKEY VERIFICATION CORRELATION", rendered.getvalue())
             saved = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["attached_signal_ids"], [signal["id"]])
+
+    def test_findings_renderer_displays_engine_outcomes_and_skipped_tools(self):
+        output = StringIO()
+        signal = {
+            "evidence": [{
+                "kind": "verification-correlation",
+                "correlation_id": "property:withdrawal-solvency",
+                "campaign_report": ".audit/verification/campaign.json",
+                "campaign_report_sha256": "a" * 64,
+                "coverage_status": "engine_results_available",
+                "security_finding_confirmed": False,
+                "engine_results": [
+                    {
+                        "engine": "echidna",
+                        "status": "failed",
+                        "summary": "Property failed with counterexample",
+                        "interpretation": "property_or_counterexample_failure_requires_review",
+                    },
+                    {
+                        "engine": "halmos",
+                        "status": "passed",
+                        "summary": "Symbolic check passed",
+                        "interpretation": "engine_completed_without_reported_failure_not_a_security_verdict",
+                    },
+                ],
+                "engine_selection": [
+                    {"engine": "medusa", "status": "missing_configuration", "reason": "medusa.json is missing"},
+                ],
+            }],
+        }
+        with redirect_stdout(output):
+            lowkey_cli._render_signal_evidence(signal)
+
+        rendered = output.getvalue()
+        self.assertIn("Echidna: FAILED — property_or_counterexample_failure_requires_review", rendered)
+        self.assertIn("Halmos: PASSED — engine_completed_without_reported_failure_not_a_security_verdict", rendered)
+        self.assertIn("Not run      : medusa (missing_configuration)", rendered)
+        self.assertIn("not confirmed; review evidence before disposition", rendered)
+        self.assertNotIn("Storage     : no changed slots", rendered)
+
+    def test_empty_campaign_is_reported_as_coverage_gap_and_cli_fails_closed(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._project(tmp)
+            report_path = root / "empty-campaign.json"
+            report = self._campaign(root, report_path)
+            report["results"] = []
+            report["considered_engines"] = [
+                {
+                    "engine": "echidna",
+                    "status": "missing_configuration",
+                    "test_kind": "invariant",
+                    "memory_class": "medium",
+                    "reason": "An explicit harness is required",
+                }
+            ]
+            report["selection_summary"] = {
+                "selected": 0,
+                "unsupported": 0,
+                "missing_configuration": 1,
+                "profile_excluded": 0,
+                "adapter_error": 0,
+            }
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            output_path = root / "correlation.json"
+            rendered = StringIO()
+            with patch("lowkey.verification_cli._project_root", return_value=root):
+                with redirect_stdout(rendered):
+                    code = verification_cli.run_cli([
+                        "correlate", str(report_path), "--output", str(output_path),
+                    ])
+
+            self.assertEqual(code, 2)
+            self.assertIn("verification coverage gap", rendered.getvalue().lower())
+            saved = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["coverage_status"], "no_engine_results")
+            self.assertEqual(saved["engine_selection"][0]["status"], "missing_configuration")
+            self.assertFalse(saved["summary"]["security_finding_confirmed"])
+
 
     def test_report_for_another_project_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
