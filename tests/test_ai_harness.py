@@ -209,6 +209,33 @@ class AIHarnessTests(unittest.TestCase):
             self.assertNotIn(pending["title"], json.dumps(experience))
             self.assertEqual(result["summary"], response["summary"])
 
+    def test_protocol_review_rejects_malformed_nested_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "Vault.sol").write_text("contract Vault {}", encoding="utf-8")
+            malformed = {
+                "summary": "Review complete.",
+                "contract_roles": [{"name": "Vault", "purpose": "Stores balances"}],
+                "invariants": [],
+                "open_questions": [],
+                "deployment_considerations": [],
+            }
+            with patch.object(ai, "request_structured", return_value=malformed):
+                with self.assertRaisesRegex(ai.AIHarnessError, "non-empty 'evidence'"):
+                    ai.review_project_protocol(root)
+
+    def test_protocol_review_rejects_unbounded_list_output(self):
+        malformed = {
+            "summary": "Review complete.",
+            "contract_roles": [],
+            "invariants": [],
+            "open_questions": ["question"] * 129,
+            "deployment_considerations": [],
+        }
+        with self.assertRaisesRegex(ai.AIHarnessError, "exceeds 128 entries"):
+            ai._validate_protocol_review_output(malformed)
+
     def test_source_context_excludes_tests_dependencies_and_symlinks_but_includes_deploy_scripts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
