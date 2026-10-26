@@ -84,6 +84,20 @@ Lowkey can call a configured model for a narrow reasoning task only when explici
 
 See [the native-first AI harness guide](docs/native-ai-harness.md) for setup, provider choices, boundaries and use.
 
+## Native experience memory
+
+Lowkey can retain audit feedback and reusable lessons without any AI provider. Feedback and proposed lessons stay project-scoped under .audit/experience by default. Only lessons explicitly approved with validation evidence are reused as reference context during an explicitly requested AI review; they never execute as code or change native security rules.
+
+~~~bash
+lk memory status
+lk memory feedback --kind false-positive --summary "Lead did not reproduce" --evidence "Regression test confirms the only path is guarded."
+lk memory propose --kind test-procedure --title "Check factory registry" --lesson "Assert both the factory event and registry mapping." --tag factory
+lk memory list --status proposed
+lk memory approve LESSON_ID --validation-kind test --validation "The linked Foundry regression test passes."
+~~~
+
+See the [experience memory guide](docs/experience-memory.md) for validation, scope, global promotion, and correction workflows.
+
 ## Start here
 
 ~~~bash
