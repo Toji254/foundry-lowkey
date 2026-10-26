@@ -6,10 +6,10 @@ set -euo pipefail
 
 if [[ -n "${LK_BIN:-}" ]]; then
     LK="${LK_BIN}"
-elif command -v lk >/dev/null 2>&1; then
-    LK="$(command -v lk)"
 elif [[ -x "$HOME/.foundry/bin/lk" ]]; then
     LK="$HOME/.foundry/bin/lk"
+elif command -v lk >/dev/null 2>&1; then
+    LK="$(command -v lk)"
 else
     echo "ERROR: Lowkey is not installed or not on PATH. Run bash install.sh first." >&2
     exit 2
