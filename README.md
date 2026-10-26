@@ -86,7 +86,7 @@ See [the native AI harness guide](docs/native-ai-harness.md) for provider setup,
 
 ## Native experience memory
 
-Lowkey can retain audit feedback and reusable lessons without an AI provider. Feedback and proposed lessons stay project-scoped under \`.audit/experience/\` by default. Only lessons explicitly approved with validation evidence are supplied as reference context to an explicitly requested AI review; lessons never execute as code or change native security rules.
+Lowkey can retain audit feedback and reusable lessons without an AI provider. Feedback and proposed lessons are stored in a private user-data directory keyed to the canonical path of the audited project, not inside the target repository. Only lessons explicitly approved with validation evidence are supplied as relevance-ranked reference context to an explicitly requested AI review; lessons never execute as code or change native security rules.
 
 ~~~bash
 lk memory status
