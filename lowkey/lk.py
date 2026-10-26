@@ -13400,7 +13400,48 @@ def _render_signal_evidence(signal, prefix="   ", config=None):
         return
     print(f"\n{prefix}Evidence ({len(evidence)}):")
     for index, item in enumerate(evidence, 1):
-        kind = str(item.get("kind") or "evidence").replace("-", " ").title()
+        raw_kind = str(item.get("kind") or "evidence").strip().lower()
+        kind = raw_kind.replace("-", " ").title()
+        if raw_kind == "verification-correlation":
+            print(f"{prefix}  {index}. Verification Correlation — campaign results")
+            if item.get("correlation_id"):
+                print(f"{prefix}     Correlation : {item.get('correlation_id')}")
+            if item.get("campaign_report"):
+                print(f"{prefix}     Campaign    : {item.get('campaign_report')}")
+            digest = str(item.get("campaign_report_sha256") or "")
+            if digest:
+                print(f"{prefix}     Report hash : {digest}")
+            print(f"{prefix}     Coverage    : {item.get('coverage_status') or 'not recorded'}")
+            if item.get("security_finding_confirmed") is False:
+                print(f"{prefix}     Verdict     : not confirmed; review evidence before disposition")
+            engine_results = item.get("engine_results", [])
+            if not isinstance(engine_results, list) or not engine_results:
+                print(f"{prefix}     Engines     : no execution results — verification coverage gap")
+            else:
+                print(f"{prefix}     Engine results:")
+                for result in engine_results:
+                    if not isinstance(result, dict):
+                        continue
+                    engine = str(result.get("engine") or "unknown")
+                    engine_status = str(result.get("status") or "unknown").upper()
+                    interpretation = str(result.get("interpretation") or "no interpretation recorded")
+                    print(f"{prefix}       {engine}: {engine_status} — {interpretation}")
+                    if result.get("summary"):
+                        print(f"{prefix}         {result.get('summary')}")
+            selections = item.get("engine_selection", [])
+            if isinstance(selections, list):
+                skipped = [
+                    selection for selection in selections
+                    if isinstance(selection, dict)
+                    and str(selection.get("status") or "") != "selected"
+                ]
+                for selection in skipped:
+                    print(
+                        f"{prefix}     Not run      : {selection.get('engine', 'unknown')} "
+                        f"({selection.get('status', 'unknown')}) — {selection.get('reason') or 'no reason supplied'}"
+                    )
+            continue
+
         function = item.get("function") or "unknown function"
         success = item.get("success")
         status = "SUCCESS" if success else "REVERTED" if success is False else "UNKNOWN"
