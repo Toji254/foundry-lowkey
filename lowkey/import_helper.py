@@ -95,7 +95,7 @@ BROWSER CONTROLS:
   Main menu: choose 1-9 to open a section; q quits.
   Inside a list: enter a shown number to open it; /<term> filters this list;
   g searches project source + installed dependencies + the reference catalog;
-  r clears the filter; b returns to the main import menu; q quits the browser.
+  r clears the filter; b goes back one menu level; q quits the browser.
   At the main menu, b keeps you here and explains that you are already at the top.
 
 REFERENCE ONLY:
@@ -2081,7 +2081,7 @@ def interactive(root: Path, maps) -> int:
         header("IMPORT BROWSER")
         print("Find the Solidity item you need, then copy its import line. This browser does not change your project unless you explicitly choose install.\n")
         print("  Choose 1-9 to open a section. In a list: number=open, /word=filter, g=search everywhere,")
-        print("  r=clear the filter, b=return to this menu, q=quit. Example: choose 3, then type /IERC20.")
+        print("  r=clear the filter, b=go back one menu level, q=quit. Example: choose 3, then type /IERC20.")
         print()
         print("  1. Installed packages")
         print("  2. Contracts / abstract contracts")
