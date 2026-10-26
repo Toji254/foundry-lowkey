@@ -8,7 +8,7 @@ class ProviderAdapterRegistryTests(unittest.TestCase):
         for name in ("deepseek", "gemini", "ollama", "openai", "openai-compatible"):
             self.assertIsNotNone(adapters.get_provider_adapter(name))
         self.assertEqual(adapters.provider_adapter_status()["registered_providers"], [
-            "deepseek", "ollama", "openai", "openai-compatible"
+            "deepseek", "gemini", "ollama", "openai", "openai-compatible"
         ])
 
     def test_custom_adapter_can_be_registered_without_changing_review_agent(self):

@@ -105,11 +105,11 @@ def _validate(result: Mapping[str, Any]) -> dict[str, Any]:
         if risk not in {"read-only", "local-change", "state-changing", "review"}:
             risk = "review"
         # Never trust the model's risk label if its suggested command is obviously high-impact.
-        command_blob = "\\n".join(commands).lower()
+        command_blob = "\n".join(commands).lower()
         if re.search(
-            r"(?:rm\\s+-rf|git\\s+reset\\s+--hard|git\\s+clean\\s+-[a-z]*f|"
-            r"forge\\s+script.*--broadcast|cast\\s+send|lk\\s+send|sudo\\s|"
-            r"curl[^\\n]*\\|\\s*(?:bash|sh)|chmod\\s+-r|chown\\s+-r)",
+            r"(?:rm\s+-rf|git\s+reset\s+--hard|git\s+clean\s+-[a-z]*f|"
+            r"forge\s+script.*--broadcast|cast\s+send|lk\s+send|sudo\s|"
+            r"curl[^\n]*\|\s*(?:bash|sh)|chmod\s+-r|chown\s+-r)",
             command_blob,
         ):
             risk = "review"

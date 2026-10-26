@@ -427,10 +427,10 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
     failover_attempts = 0
     last_provider_error = None
     try:
-        try:
+        if __package__:
+            from . import provider_adapters
+        else:
             import provider_adapters
-        except ImportError:
-            from lowkey import provider_adapters
         adapter = provider_adapters.get_provider_adapter(provider)
         result_raw: bytes | None = None
         for attempt, (slot_label, key) in enumerate(ordered):
@@ -457,8 +457,13 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
                     continue
                 if can_rotate and not has_next:
                     slots_tried = ", ".join(label for label, _ in ordered)
+                    failure_reason = {
+                        "authentication": "authentication failed",
+                        "quota": "provider quota/token allowance exhausted",
+                        "rate-limit": "provider rate limit reached",
+                    }.get(exc.category, "key request failed")
                     raise AIUnavailable(
-                        f"All configured API-key slots for provider '{provider}' were rejected or quota/rate limited "
+                        f"All configured API-key slots for provider '{provider}' failed: {failure_reason} "
                         f"(slots tried: {slots_tried}). Add or replace a key with 'lk ai keys add --provider {provider} --slot 1|2|3', "
                         "then inspect 'lk ai keys list'. Keys were not printed."
                     ) from exc
