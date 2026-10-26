@@ -26,6 +26,20 @@ PROVIDERS = {"deepseek", "openai", "openai-compatible", "ollama"}
 PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
 
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r'''(?im)(\b[\w]*(?:api[_-]?key|secret|password|private[_-]?key|mnemonic|seed[_-]?phrase|access[_-]?token|bearer[_-]?token)\b\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^;\n,]+)'''
+)
+_PEM_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _redact_sensitive_source(source: str) -> str:
+    """Redact obvious secrets locally before selected source can leave the machine."""
+    source = _PEM_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY BLOCK]", source)
+    return _SECRET_ASSIGNMENT_RE.sub(r'\1"[REDACTED]"', source)
+
 
 class AIHarnessError(RuntimeError):
     """Safe, actionable error from the optional AI extension."""
@@ -364,7 +378,8 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
             declaration_match = contract_name.lower() in "\n".join(source.splitlines()[:16]).lower()
             if not name_match and not declaration_match:
                 continue
-        entry = {"path": relative, "source_excerpt": source[:6500]}
+        source = _redact_sensitive_source(source)[:6500]
+        entry = {"path": relative, "source_excerpt": source}
         entry_size = len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
         if used_bytes + entry_size > MAX_SOURCE_CONTEXT_BYTES:
             break
