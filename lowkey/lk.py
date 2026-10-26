@@ -6686,20 +6686,12 @@ def discover_local_lab_fixture(root=".", requested=None):
 
 
 def _fixture_fs_permissions_override(root, state_path):
-    """Build a narrow per-test Forge permission setting without touching project config.
+    """Build a narrow per-test Foundry permission setting without touching project config.
 
     Foundry ignores FOUNDRY_FS_PERMISSIONS as a generic environment override.
-    This returns the effective existing permissions plus one write permission
-    for the state snapshot directory. The generated harness embeds the result
-    in a forge-config annotation, so normal project paths and root stay intact.
-    """
-
-    """Create a one-run Foundry config that grants write access only to the snapshot directory.
-
-    Foundry intentionally ignores generic FOUNDRY_FS_PERMISSIONS env overrides.
-    Instead, copy the active project's config and override fs_permissions in the
-    selected profile. The effective config output is used to preserve inherited
-    permissions; the user's foundry.toml is never edited.
+    Preserve the effective permissions and add one write rule for this exact
+    snapshot file. The generated harness embeds this array in a forge-config
+    annotation, leaving the project's config and process environment unchanged.
     """
     root_path = Path(root).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
@@ -6749,14 +6741,11 @@ def _fixture_fs_permissions_override(root, state_path):
             entries.append(
                 "{ access = " + quote(access) + ", path = " + quote(path) + " }"
             )
-    # Foundry resolves the longest matching path. Granting only this specific
-    # directory does not widen any unrelated path in a project's existing policy.
     entries.append(
         "{ access = " + quote("read-write") +
         ", path = " + quote(relative_state) + " }"
     )
-    permissions_toml = "[" + ", ".join(entries) + "]"
-    return permissions_toml, None
+    return "[" + ", ".join(entries) + "]", None
 
 
 def _fixture_state_files(root, safe_name):
