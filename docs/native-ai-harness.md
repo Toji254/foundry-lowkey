@@ -43,6 +43,25 @@ lk ai setup --provider openai-compatible --base-url https://provider.example/v1 
 
 Provider availability and pricing are controlled by the provider. Never put credentials in a URL or commit them to source control.
 
+## Preview the exact context before sending it
+
+Use the local preview to see which production-source excerpts and approved lessons would be included. This works while AI is disabled or unconfigured and never contacts a model.
+
+~~~bash
+# Summarize selected file paths, context size and redaction markers
+lk ai preview
+
+# Focus the selection on a named contract
+lk ai preview --contract ConfidencePool
+
+# Print the complete redacted context as JSON for a local review
+lk ai preview --contract ConfidencePool --show-context
+~~~
+
+The preview uses the same context-building function as the explicit protocol review, including its source filters, secret redaction and approved-memory selection. The default view shows paths and sizes, not source contents. The show-context option prints the full redacted context to your terminal; handle that output as private project data. No source is sent anywhere by the preview command.
+
+This is a useful preflight, not a guarantee that the best-effort redactor recognizes every possible secret. Review the actual payload before opting into remote analysis.
+
 ## Manual and automatic assistance modes
 
 The default is **manual**: Lowkey does not make a model request unless you explicitly run \`lk lab --ai-review\`.
