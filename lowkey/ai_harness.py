@@ -407,7 +407,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("disable", help="disable AI without changing native commands")
     sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args:
+    args = ["--help" if value in {"--h", "help"} else value for value in args]
+    if not args or args[0] == "-h":
         parser.print_help()
         return 0
     try:
