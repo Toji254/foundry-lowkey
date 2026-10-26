@@ -7,7 +7,7 @@ Lowkey's AI extension is optional and task-specific. It is not a chatbot and is 
 DeepSeek API example. The key is requested with hidden terminal input and stored separately from normal configuration with owner-only file permissions.
 
 ~~~bash
-lk ai setup --provider deepseek --model deepseek-chat
+lk ai setup --provider deepseek --model deepseek-flash
 lk ai status
 lk ai test
 ~~~
@@ -18,7 +18,7 @@ Keep the key in an environment variable instead:
 
 ~~~bash
 export DEEPSEEK_API_KEY='your-key'
-lk ai setup --provider deepseek --model deepseek-chat --api-key-env DEEPSEEK_API_KEY
+lk ai setup --provider deepseek --model deepseek-flash --api-key-env DEEPSEEK_API_KEY
 ~~~
 
 Local OpenAI-compatible Ollama example:
