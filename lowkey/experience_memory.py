@@ -466,7 +466,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("No lessons matched. Proposed lessons stay inactive until approved.")
                 return 0
             for item in items:
-                print(f"{item['id']}  [{item.get('scope', 'project')}/{item.get('status', 'unknown')}]  {item.get('kind')}: {item.get('title')}")
+                safe_title = json.dumps(str(item.get("title", "")), ensure_ascii=True)
+                print(f"{item['id']}  [{item.get('scope', 'project')}/{item.get('status', 'unknown')}]  {item.get('kind')}: {safe_title}")
             return 0
         if parsed.action == "show":
             for item in list_lessons(status="all", scope=parsed.scope):
@@ -492,7 +493,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise MemoryError("--limit must be between 1 and 200.")
             items = read_feedback()
             for item in items[-parsed.limit:]:
-                print(f"{item.get('id')}  [{item.get('kind')}] {item.get('summary')}")
+                safe_summary = json.dumps(str(item.get("summary", "")), ensure_ascii=True)
+                print(f"{item.get('id')}  [{item.get('kind')}] {safe_summary}")
             if not items:
                 print("No project feedback recorded.")
             return 0
