@@ -306,27 +306,36 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
     if not root.is_dir():
         raise AIHarnessError(f"Project path is not a directory: {root}")
     extensions = {".sol", ".vy", ".move", ".rs", ".cairo", ".tact", ".fc", ".func", ".clar"}
-    excluded = {".git", ".audit", "node_modules", "out", "cache", "artifacts", "broadcast", ".venv", "venv", "target"}
-    try:
-        from analysis_adapters import is_dependency_path
-    except ImportError:
-        try:
-            from lowkey.analysis_adapters import is_dependency_path
-        except ImportError:
-            is_dependency_path = None
-
+    # Common source-control, build, test, script, mock and dependency locations
+    # are not treated as protocol source. This is ecosystem-generic filtering.
+    excluded = {
+        ".git", ".audit", "node_modules", "out", "cache", "artifacts", "broadcast",
+        ".venv", "venv", "target", "lib", "vendor", "deps", "dependencies",
+        "test", "tests", "script", "scripts", "mock", "mocks", "fixture", "fixtures",
+    }
     paths: list[Path] = []
-    for current, dirs, names in os.walk(root):
-        dirs[:] = sorted(name for name in dirs if name not in excluded and not name.startswith(".git"))
+    for current, dirs, names in os.walk(root, followlinks=False):
+        dirs[:] = sorted(
+            name for name in dirs
+            if name not in excluded and not name.startswith(".git")
+            and not (Path(current) / name).is_symlink()
+        )
         for name in names:
             path = Path(current) / name
-            if path.suffix.lower() not in extensions:
+            if path.suffix.lower() not in extensions or path.is_symlink():
                 continue
             try:
                 relative = path.relative_to(root)
-                if is_dependency_path is not None and is_dependency_path(path, root):
+            except (OSError, ValueError):
+                continue
+            if any(part in excluded or part.startswith(".git") for part in relative.parts[:-1]):
+                continue
+            # Bound reads before loading the file: repository contents are
+            # untrusted and must not be allowed to exhaust memory during review.
+            try:
+                if path.stat().st_size > 256_000:
                     continue
-            except (OSError, ValueError, TypeError):
+            except OSError:
                 continue
             paths.append(path)
     paths.sort(key=lambda path: (
@@ -339,7 +348,8 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
         if len(items) >= 18 or used_bytes >= MAX_SOURCE_CONTEXT_BYTES:
             break
         try:
-            source = path.read_text(encoding="utf-8", errors="replace")
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                source = handle.read(64_000)
         except OSError:
             continue
         if not source.strip():
@@ -361,7 +371,7 @@ def _source_context(root: Path, contract_name: str | None) -> dict[str, Any]:
     return {
         "project_label": root.name, "requested_contract": contract_name,
         "source_files": items, "source_files_included": len(items),
-        "note": "Bounded excerpts of likely first-party contract sources only; not a complete repository dump.",
+        "note": "Bounded excerpts of first-party production source only; tests, mocks, scripts, dependencies and build output are excluded.",
     }
 
 
