@@ -65,7 +65,6 @@ def _secure_mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path, 0o700)
-        os.chmod(path.parent, 0o700)
     except OSError:
         pass
 
