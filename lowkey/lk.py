@@ -15138,7 +15138,7 @@ COMMAND_HELP = {
     ),
     "lab": _help_entry(
         "Create a disposable local EVM lab for safe contract interaction and audit experiments.",
-        "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab stop",
+        "lk lab [Contract] | lk lab --generic [Contract] | lk lab --artifact <Contract> | lk lab --ai-review | lk lab stop",
         "lk lab MyContract",
         "Use it when you need a live local target for read, send, changes, trace, or walkthrough work.",
         forms=[
@@ -15154,6 +15154,7 @@ COMMAND_HELP = {
         options=[
             ("--generic [Contract]", "Deploy a contract directly and answer constructor prompts.", "lk lab --generic MyContract"),
             ("--artifact <Contract>", "Deploy the exact compiled artifact you name.", "lk lab --artifact MyContract"),
+            ("--ai-review", "Request an optional, unverified protocol review; native lab logic remains authoritative.", "lk lab --ai-review"),
         ],
         related=["lk target", "lk walkthrough", "lk status"],
     ),
@@ -16324,6 +16325,8 @@ START HERE
   lk build                           Compile the current Foundry project.
   lk test                            Run the project's Forge tests.
   lk lab                             Start/rebuild a disposable local audit lab.
+  lk lab --ai-review                 Add an optional, unverified protocol review.
+  lk ai status                       Show optional AI provider status.
   lk target auto                     Pick the latest usable deployed target.
   lk status                          See target, RPC, actor, ABI, and last transaction.
   lk walkthrough --auto              Understand the whole protocol by executing a local flow.
