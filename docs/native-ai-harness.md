@@ -71,7 +71,7 @@ lk lab --ai-review
 
 This explicitly asks the configured model to review bounded excerpts of likely first-party contract source and return a structured overview, candidate invariants, open questions and deployment considerations. The normal native lab workflow then continues. Output is labelled unverified; it is not a vulnerability finding and does not control target selection, deployment, or testing. When AI is disabled, unconfigured or unreachable, Lowkey reports that the optional review was skipped and proceeds with native lab logic.
 
-The opt-in review sends selected source excerpts to the configured provider. Do not use it if source must not leave the machine, and keep private keys, credentials, .env contents and production secrets out of contract source.
+Lowkey locally redacts obvious API-key/password/private-key/seed-phrase assignments and PEM private-key blocks before assembling source excerpts. This is a best-effort filter, not a guarantee that arbitrary secrets will be recognized. The opt-in review sends selected source excerpts to the configured provider. Do not use it if source must not leave the machine, and keep private keys, credentials, .env contents and production secrets out of contract source.
 
 Approved native experience memory is selected by local relevance matching against the current bounded protocol source, then added as bounded context for this opt-in review. Proposed lessons are excluded until the user explicitly promotes them with recorded validation; see [the experience memory guide](experience-memory.md). Project lessons remain project-scoped, and global lessons require explicit promotion.
 
