@@ -137,7 +137,7 @@ class StateDiffGeneratorTests(unittest.TestCase):
                         result = lk.run_native_project_command({}, "test", [])
 
             self.assertEqual(result, 0)
-            run_foundry.assert_called_once_with(["test"])
+            run_foundry.assert_called_once_with(["test"], capture=True)
 
 
     def test_lk_test_blocks_legacy_reproduction_without_fork_or_local_deployment(self):
@@ -206,7 +206,7 @@ class StateDiffGeneratorTests(unittest.TestCase):
                         result = lk.run_native_project_command({}, "test", [])
 
             self.assertEqual(result, 0)
-            run_foundry.assert_called_once_with(["test"])
+            run_foundry.assert_called_once_with(["test"], capture=True)
 
 if __name__ == "__main__":
     unittest.main()
