@@ -9699,7 +9699,7 @@ def _validate_local_target_dependency_code(root, rpc, target, artifact_path):
     """
     artifact = read_artifact(artifact_path) if artifact_path else None
     abi = artifact.get("abi", []) if isinstance(artifact, dict) else []
-    required_pattern = re.compile(r"registry|implementation|stake.?token|token|agreement|moderator", re.I)
+    required_pattern = re.compile(r"registry|implementation|stake.?token|token|agreement", re.I)
     optional_pattern = re.compile(r"oracle|router|factory|pool|vault|strategy|module|bridge", re.I)
     for item in abi:
         if not isinstance(item, dict) or item.get("type") != "function":
