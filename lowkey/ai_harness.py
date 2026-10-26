@@ -855,8 +855,8 @@ def main(argv: list[str] | None = None) -> int:
             if action == "add":
                 secret = getpass.getpass(f"{parsed.provider} API key for slot {parsed.slot} (input hidden): ").strip()
                 set_api_key_slot(parsed.provider, parsed.slot, secret)
-                # Prefer saved key pools when a user explicitly adds keys; an environment key
-                # remains first in line if configured, and is still never displayed.
+                # Saved slots are tried first; the environment key fills an unused slot.
+                # Neither source is ever displayed or written to the request log.
                 print(f"Saved provider '{parsed.provider}' key slot {parsed.slot}. Key value not displayed.")
                 print("Quota/rate-limit/auth rejection will trigger failover to the next configured slot.")
                 return 0
