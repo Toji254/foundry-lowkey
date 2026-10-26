@@ -15,6 +15,12 @@ if [[ "${1:-}" == "ai" ]]; then
     exec python3 "$HOME/.lowkey/ai_harness.py" "$@"
 fi
 
+# Native project-scoped experience memory; it does not require an AI provider.
+if [[ "${1:-}" == "memory" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/experience_memory.py" "$@"
+fi
+
 for arg in "$@"; do
     case "$arg" in
         --h|--help|-h|help)
