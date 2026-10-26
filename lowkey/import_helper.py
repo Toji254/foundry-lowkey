@@ -2071,7 +2071,10 @@ def interactive(root: Path, maps) -> int:
     """Open the import category menu and redraw it after returning from a submenu."""
     while True:
         header("IMPORT BROWSER")
-        print("A standalone learning lookup. It does not touch audit/target/RPC state.\n")
+        print("Find the Solidity item you need, then copy its import line. This browser does not change your project unless you explicitly choose install.\n")
+        print("  Choose 1-9 to open a section. In a list: number=open, /word=filter, g=search everywhere,")
+        print("  r=clear the filter, b=return to this menu, q=quit. Example: choose 3, then type /IERC20.")
+        print()
         print("  1. Installed packages")
         print("  2. Contracts / abstract contracts")
         print("  3. Interfaces")
@@ -2086,6 +2089,9 @@ def interactive(root: Path, maps) -> int:
         a = input("\nSelect: ").strip().lower()
         if a == "q":
             return 0
+        if a in {"b", "back"}:
+            print("This is already the main import menu. Choose 1-9, or q to quit.")
+            continue
 
         cat = {
             "1": "packages",
