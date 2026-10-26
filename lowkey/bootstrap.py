@@ -271,7 +271,12 @@ def _submodule_state(root: Path) -> dict[str, Any]:
     for relative, url in entries:
         path = root / relative
         try:
-            initialized = path.is_dir() and any(path.iterdir())
+            # A submodule directory can exist with only Git's .git marker
+            # (a file for normal submodules). That is metadata, not a checked-out
+            # dependency tree, and must trigger the pre-build recovery path.
+            initialized = path.is_dir() and any(
+                entry.name != ".git" for entry in path.iterdir()
+            )
         except OSError:
             initialized = False
         if not initialized:
@@ -1201,7 +1206,9 @@ def bootstrap_plan(
             actions.append({
                 "kind": "git-submodule",
                 "cwd": repo_root,
-                "command": ["git", "submodule", "update", "--init", "--recursive", "--force"],
+                # Respect local edits in an already-present submodule. The default
+                # update still checks out the parent repository's pinned gitlink.
+                "command": ["git", "submodule", "update", "--init", "--recursive"],
                 "evidence": f"{len(submodules['missing'])} incomplete declared submodule(s)",
             })
         for relative, url in submodules["orphaned"]:
