@@ -12,7 +12,7 @@
       "id": "openzeppelin-contracts",
       "repository": "https://github.com/OpenZeppelin/openzeppelin-contracts",
       "target_candidates": [
-        "ERC20Mock",
+        "ERC2771Forwarder",
         "ERC20",
         "ERC721",
         "ERC4626",
