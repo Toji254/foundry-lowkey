@@ -1208,3 +1208,65 @@ if __name__ == "__main__":
             ):
                 selected = lk.discover_local_lab_script(root, "DemoApplication")
             self.assertEqual(Path(selected).resolve(), script.resolve())
+
+
+    def test_local_target_dependency_check_uses_valid_input_signature(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            artifact_path = root / "out" / "Factory.sol" / "Factory.json"
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(json.dumps({
+                "contractName": "Factory",
+                "abi": [{
+                    "type": "function",
+                    "name": "safeHarborRegistry",
+                    "inputs": [],
+                    "outputs": [{"name": "", "type": "address"}],
+                    "stateMutability": "view",
+                }],
+                "bytecode": {"object": "0x6000"},
+                "deployedBytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+            dependency = "0x" + "2" * 40
+            calls = []
+            def fake_cast_output(argv):
+                calls.append(argv)
+                if argv[1:2] == ["call"]:
+                    return 0, dependency, None
+                if argv[1:2] == ["code"]:
+                    return 0, "0x6000", None
+                return 1, "", "unexpected command"
+            with patch.object(lk, "cast_output", side_effect=fake_cast_output):
+                error = lk._validate_local_target_dependency_code(
+                    root,
+                    "http://127.0.0.1:8545",
+                    "0x" + "1" * 40,
+                    artifact_path,
+                )
+            self.assertIsNone(error)
+            self.assertEqual(calls[0][3], "safeHarborRegistry()")
+
+    def test_local_target_dependency_check_rejects_zero_required_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            artifact_path = root / "out" / "Factory.sol" / "Factory.json"
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(json.dumps({
+                "contractName": "Factory",
+                "abi": [{
+                    "type": "function",
+                    "name": "poolImplementation",
+                    "inputs": [],
+                    "outputs": [{"name": "", "type": "address"}],
+                    "stateMutability": "view",
+                }],
+                "bytecode": {"object": "0x6000"},
+            }), encoding="utf-8")
+            with patch.object(lk, "cast_output", return_value=(0, "0x" + "0" * 40, None)):
+                error = lk._validate_local_target_dependency_code(
+                    root,
+                    "http://127.0.0.1:8545",
+                    "0x" + "1" * 40,
+                    artifact_path,
+                )
+            self.assertIn("poolImplementation() is the zero address", error)
