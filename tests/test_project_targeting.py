@@ -1157,8 +1157,7 @@ if __name__ == "__main__":
                 return lk.CommandResult("", 0)
             deployment_file = root / "broadcast" / "LocalAudit.s.sol" / "31337" / "run-latest.json"
             config = {"target_contract": None, "abi_paths": {}, "project_roots": {}}
-            with patch.object(lk, "run_cast", side_effect=fake_run_cast), \\
-                 patch.object(lk, "discover_deployments", return_value=[{
+            with patch.object(lk, "run_cast", side_effect=fake_run_cast), patch.object(lk, "discover_deployments", return_value=[{
                      "contract": "Template",
                      "address": target,
                      "file": str(deployment_file),
