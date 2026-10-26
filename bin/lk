@@ -9,6 +9,12 @@ if [[ "${1:-}" == "forge" && "${2:-}" == "debug" ]]; then
     exec forge "$@"
 fi
 
+# Optional task-specific AI extension; intentionally not a chat interface.
+if [[ "${1:-}" == "ai" ]]; then
+    shift
+    exec python3 "$HOME/.lowkey/ai_harness.py" "$@"
+fi
+
 for arg in "$@"; do
     case "$arg" in
         --h|--help|-h|help)
