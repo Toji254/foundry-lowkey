@@ -15122,48 +15122,108 @@ COMMAND_HELP = {
     "event": _help_entry("Decode an event signature, data payload, and topics.", "lk event <event-signature> <data> [topics]", "lk event 'Transfer(address,address,uint256)' 0x... 0x...", "Use it when raw logs are hard to read.", related=["lk logs", "lk tx"]),
     "poc": _help_entry("Generate an exploit candidate only from exact calldata and an explicit measurable impact assertion.", "lk poc --calldata 0x... --impact-assertion '<boolean condition>' [--function SIGNATURE]", "lk poc --function withdraw() --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "A detector finding alone is not a PoC. Generated candidates remain unvalidated until run against the intended target and state.", related=["lk finding", "lk export"]),
     "verification": _help_entry(
-        "List compatible verification engines or run a bounded multi-engine campaign from a manifest.",
+        "Check which test/verification engines fit this project, or run a controlled multi-engine campaign from a JSON file.",
         "lk verification <engines|run> ... (short alias: lk verify)",
         "lk verification engines --json",
-        "Use it to see which installed engines can run against this project, or to run an explicit campaign while retaining each engine's evidence.",
+        "Use engines first to see what is installed and compatible. Use run when you have a campaign manifest that names the test kind, tool settings, and resource budget.",
+        forms=[
+            ("lk verification engines [--json]", "List available engines and which test types they support. Add --json when another tool or script will read the result.", "lk verify engines --json"),
+            ("lk verification run <manifest.json> [options]", "Run the engines selected by the campaign manifest one at a time, within the declared budget.", "lk verify run .audit/verification/campaign.json --profile balanced"),
+        ],
         children={
-            "engines": _help_entry("Inventory installed verification engines and their compatibility with this project.", "lk verification engines [--json]", "lk verification engines --json", "Use it before selecting engines for a campaign."),
-            "run": _help_entry("Run a bounded, serial verification campaign defined by a JSON manifest.", "lk verification run <manifest.json> [--profile light|balanced|deep] [--output <path>]", "lk verification run .audit/verification/campaign.json --profile balanced", "Use it when the manifest states the test kind, engine-specific arguments, and execution budget.", options=[("--profile <profile>", "Choose light, balanced, or deep engine selection.", "lk verification run campaign.json --profile light"), ("--output <path>", "Write the campaign report to this path.", "lk verification run campaign.json --output .audit/verification/run.json")]),
+            "engines": _help_entry(
+                "List engines Lowkey detects, whether each is installed, and the test types it can run for this project.",
+                "lk verification engines [--json]",
+                "lk verification engines --json",
+                "Use this before planning a campaign. It reports availability and compatibility; it does not install tools or run tests.",
+                options=[
+                    ("--json", "Print the inventory as machine-readable JSON instead of a human-readable list.", "lk verification engines --json"),
+                ],
+            ),
+            "run": _help_entry(
+                "Run a serial verification campaign from a JSON manifest and save the full report.",
+                "lk verification run <manifest.json> [--profile <light|balanced|deep>] [--output <path>]",
+                "lk verification run .audit/verification/campaign.json --profile balanced --output .audit/verification/run.json",
+                "Use it when you want several compatible engines to test the same project under a clear time and memory budget. The manifest supplies the test kind and engine-specific arguments; Lowkey does not guess missing engine settings.",
+                options=[
+                    ("--profile <light|balanced|deep>", "Choose the engine-selection depth. If omitted, Lowkey uses the profile in the manifest or balanced by default. You can also write --profile=deep.", "lk verification run campaign.json --profile=deep"),
+                    ("--output <path>", "Choose where the JSON report is written. Default: .audit/verification/campaign.json. You can also write --output=PATH.", "lk verification run campaign.json --output=.audit/verification/run.json"),
+                ],
+            ),
         },
         related=["lk verification-benchmark", "lk mutation-check", "lk test-gen"],
     ),
     "verification-benchmark": _help_entry(
-        "Evaluate a manifest of test/mutation benchmark cases and optionally enforce a minimum mutation score.",
+        "Run repeatable test/mutation benchmark cases and optionally fail when their measured mutation score is below your threshold.",
         "lk verification-benchmark <manifest.json> [--workspace <dir>] [--output <path>] [--min-mutation-score <0..1>] (short alias: lk vbench)",
-        "lk verification-benchmark .audit/verification/benchmark.json --min-mutation-score 0.8",
-        "Use it to compare reproducible cases. Failed baselines, invalid mutations, and timeouts remain separate from the scored killed/survived mutants.",
-        options=[("--workspace <dir>", "Resolve relative project paths from this workspace directory.", "lk vbench benchmark.json --workspace ."), ("--output <path>", "Write the report to this path.", "lk vbench benchmark.json --output .audit/verification/report.json"), ("--min-mutation-score <0..1>", "Fail the gate when the measured mutation score is below this threshold.", "lk vbench benchmark.json --min-mutation-score 0.8")],
+        "lk vbench .audit/verification/benchmark.json --min-mutation-score 0.8",
+        "Use it to compare known cases consistently. The baseline test suite must pass first; setup errors, invalid edits, and timeouts are reported separately rather than counted as successful bug detection.",
+        options=[
+            ("--workspace <dir>", "Use this directory as the base for relative paths in the manifest.", "lk vbench benchmark.json --workspace ."),
+            ("--output <path>", "Write the benchmark report here. Default: .audit/verification/benchmark-report.json.", "lk vbench benchmark.json --output=.audit/verification/report.json"),
+            ("--min-mutation-score <0..1>", "Return a failing result if the measured score is lower. Use a decimal from 0 to 1; 0.8 means 80%.", "lk vbench benchmark.json --min-mutation-score 0.8"),
+        ],
         related=["lk mutation-check", "lk verification engines", "lk test-gen"],
     ),
     "mutation-check": _help_entry(
-        "Run baseline-first isolated mutation validation for a manifest of explicit behavioral changes.",
-        "lk mutation-check <manifest.json> (short alias: lk mcheck)",
-        "lk mutation-check .audit/verification/mutations.json",
-        "Use it to check whether the existing tests detect specified behavior changes; setup failures are not counted as killed bugs.",
+        "Check whether your existing tests catch specific, deliberately introduced code changes. The baseline tests must pass before mutation results count.",
+        "lk mutation-check <manifest.json> [--output <path>] [--timeout <seconds>] (short alias: lk mcheck)",
+        "lk mcheck .audit/verification/mutations.json --timeout 300",
+        "Use it after tests are written to check that they detect the bugs they are meant to prevent. Each before/after edit must match exactly once; mutations run in isolated temporary copies.",
+        options=[
+            ("--output <path>", "Write the JSON report here. Default: .audit/verification/mutation-report.json. You can also write --output=PATH.", "lk mcheck mutations.json --output=.audit/verification/mutation-report.json"),
+            ("--timeout <seconds>", "Maximum runtime, in seconds, for the configured campaign command. Default: 300. You can also write --timeout=SECONDS.", "lk mcheck mutations.json --timeout 600"),
+        ],
         related=["lk verification-benchmark", "lk test", "lk verification engines"],
     ),
     "generate": _help_entry(
-        "Create deployment scripts, exact-call replay tests, and impact-assertion-backed PoC candidates.",
-        "lk generate <test|poc|deployment> ...",
-        "lk generate test 'setValue(uint256)' 10",
-        "Use it after observing behavior you want to turn into repeatable evidence.",
+        "Generate a repeatable deployment script, an exact-call Forge test, or a PoC candidate with a measurable impact assertion. Short alias: lk gen.",
+        "lk generate <test|poc|deployment> ... (short alias: lk gen)",
+        "lk gen test 'setValue(uint256)' 10 --output test/SetValueReplay.t.sol",
+        "Use it after a real call or test reveals behavior you want to preserve as repeatable evidence. Generated files are candidates until you run and review them.",
         forms=[
-            ("lk generate test ...", "Create a reusable Forge test from observed behavior.", "lk generate test 'setValue(uint256)' 10"),
-            ("lk generate poc ...", "Create a PoC candidate only with exact calldata and a measurable impact assertion.", "lk generate poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'"),
-            ("lk generate deployment ...", "Create a repeatable deployment script.", "lk generate deployment MyContract"),
+            ("lk generate test <function> [args...] [options]", "Create a Forge test that replays a concrete call. It proves the call's observed result, not that the protocol is secure.", "lk gen test 'setValue(uint256)' 10"),
+            ("lk generate poc <function> [args...] [options]", "Create a PoC candidate. You must provide --impact-assertion; Lowkey rejects a request without it.", "lk gen poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'"),
+            ("lk generate deployment <Contract> [options]", "Create a repeatable Forge deployment script for a compiled contract.", "lk gen deployment MyContract --output script/DeployMyContract.s.sol"),
         ],
-
         children={
-            "test": _help_entry("Generate a reusable Forge test.", "lk generate test '<function(parameter TYPES...)>' <VALUES...>", "lk generate test 'setValue(uint256)' 10", "Use it to turn an observed transition into regression evidence."),
-            "poc": _help_entry("Generate an exploit candidate only when exact calldata and an explicit impact assertion are supplied.", "lk generate poc <function> --calldata 0x... --impact-assertion '<condition>'", "lk generate poc withdraw --calldata 0x... --impact-assertion 'attackerAfter > attackerBefore'", "The output is a candidate, not a validated vulnerability report."),
-            "deployment": _help_entry("Generate a deployment script.", "lk generate deployment <Contract>", "lk generate deployment MyContract", "Use it when you need a repeatable local deployment entry point."),
+            "test": _help_entry(
+                "Generate a Forge regression test that replays one concrete call. The generated test is not a complete security test.",
+                "lk generate test <function> [args...] [--value <amount>] [--calldata 0x...] [--output <file>] [--force]",
+                "lk gen test 'setValue(uint256)' 10 --value 0.1ether --output test/SetValueReplay.t.sol",
+                "Use it when you have a call you want to make reproducible in Forge. You can provide a function and arguments, or use an eligible recorded send as the starting point.",
+                options=[
+                    ("--value <amount>", "Attach ETH to the call. Default: 0 ETH. The contract receives it as msg.value.", "lk gen test contribute 5 --value 0.1ether"),
+                    ("--calldata <hex>", "Provide exact call data beginning with 0x when you need to reproduce a raw/encoded call.", "lk gen test withdraw --calldata 0x1234"),
+                    ("--output, -o <file>", "Choose where the generated Solidity test is written. Default: test/LowkeyTest_<Contract>.t.sol.", "lk gen test 'setValue(uint256)' 10 -o test/SetValueReplay.t.sol"),
+                    ("--force", "Allow an existing non-Lowkey file at the requested output path to be overwritten.", "lk gen test 'setValue(uint256)' 10 --force"),
+                ],
+            ),
+            "poc": _help_entry(
+                "Generate a PoC candidate with a concrete call and explicit measured-impact check. It is not marked as validated until you run it against the intended state.",
+                "lk generate poc <function> [args...] --impact-assertion '<condition>' [--value <amount>] [--calldata 0x...] [--output <file>] [--force]",
+                "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'",
+                "Use it after you have evidence of a suspicious behavior and can state exactly what measurable security impact should occur. A detector finding alone is not a PoC.",
+                options=[
+                    ("--impact-assertion <condition>", "Required. One boolean condition over the measured before/after balances or other supported impact values.", "lk gen poc withdraw --impact-assertion 'attackerAfter > attackerBefore'"),
+                    ("--value <amount>", "Attach ETH to the call. Default: 0 ETH.", "lk gen poc withdraw --value 0.2ether --impact-assertion 'attackerAfter > attackerBefore'"),
+                    ("--calldata <hex>", "Use exact calldata when the function/arguments cannot describe the call.", "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore'"),
+                    ("--output, -o <file>", "Choose where the PoC script is written. Default: script/LowkeyPoC_<Contract>.s.sol.", "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore' --output script/WithdrawPoC.s.sol"),
+                    ("--force", "Allow an existing non-Lowkey output file to be overwritten.", "lk gen poc withdraw --calldata 0x1234 --impact-assertion 'attackerAfter > attackerBefore' --force"),
+                ],
+            ),
+            "deployment": _help_entry(
+                "Generate a deployment script for an already compiled contract. Lowkey builds the project before looking for the artifact.",
+                "lk generate deployment <Contract> [--output <file>] [--force]",
+                "lk gen deployment MyContract --output script/DeployMyContract.s.sol",
+                "Use it when you want a repeatable deployment script. Review it and run Forge in dry-run mode before broadcasting a transaction.",
+                options=[
+                    ("--output, -o <file>", "Choose where the script is written. Default: script/LowkeyDeploy_<Contract>.s.sol.", "lk gen deployment MyContract -o script/DeployMyContract.s.sol"),
+                    ("--force", "Allow an existing non-Lowkey output file to be overwritten.", "lk gen deployment MyContract --force"),
+                ],
+            ),
         },
-        related=["lk matrix", "lk poc"],
+        related=["lk matrix", "lk poc", "lk test-gen"],
     ),
     "finding": _help_entry(
         "Record a manual audit observation in the project-scoped findings ledger.",
@@ -16024,6 +16084,13 @@ UTILITIES / COMPATIBILITY
   lk batch <file>                   Run one lk command per line.
   lk self-test                      Run Lowkey regression tests.
   lk doctor                        Diagnose installation/toolchain problems.
+
+LONG COMMAND SHORTCUTS
+  lk gen ...                       Same as lk generate ...; example: lk gen test 'setValue(uint256)' 10
+  lk verify ...                    Same as lk verification ...; example: lk verify engines
+  lk vbench ...                    Same as lk verification-benchmark ...; example: lk vbench benchmark.json
+  lk mcheck ...                    Same as lk mutation-check ...; example: lk mcheck mutations.json
+  lk cov ...                       Same as lk coverage ...; example: lk cov --report lcov --lcov-version 1.0
 
 SAFETY / EXPECTATIONS
   • Preview sends before touching a chain: use --preview or --confirm.
