@@ -28,6 +28,11 @@ class AIHarnessTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(ai.main(["--help"]), 0)
         help_text = output.getvalue()
+        self.assertTrue(help_text.startswith("LOWKEY HELP  •  lk ai"))
+        self.assertIn("What it does:", help_text)
+        self.assertIn("When to use:", help_text)
+        self.assertIn("lk ai security-review", help_text)
+        self.assertNotIn("usage: lk ai", help_text)
         for command in (
             "status", "preview", "mode", "setup", "enable", "disable", "test",
             "keys", "list", "add", "remove", "clear", "explain-error",
@@ -48,7 +53,8 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("COMMAND FORMS & OPTIONS", help_text)
         self.assertIn("lk ai keys add --help", help_text)
         self.assertIn("lk ai recommendations auto", help_text)
-        self.assertLess(len(help_text), 7000)
+        self.assertIn("--h, --help, -h, and help", help_text)
+        self.assertLess(len(help_text), 8500)
         self.assertNotIn("COMPLETE COMMAND REFERENCE", help_text)
         self.assertNotIn("Key failover:", help_text)
 
@@ -109,6 +115,8 @@ class AIHarnessTests(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             self.assertEqual(ai.main(["recommendations", "manual"]), 0)
+        self.assertIn("native next-command suggestions.", output.getvalue())
+        self.assertIn("No automatic AI recommendation requests will be made.", output.getvalue())
         self.assertFalse(ai.load_config()["auto_recommendations"])
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

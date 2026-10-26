@@ -1283,7 +1283,7 @@ QUICK START
 
 IMPORTANT
 ---------
-- Use --help / -h on any command. Nested key actions have their own --help.
+- Help spellings: --h, --help, -h, and help. Nested key actions have their own --help.
 - Use lk ai preview before sending source to a provider. Redaction is best-effort.
 - Provider requests may cost money. Review and test-plan requests send selected source.
 - AI-authored text starts with "@ AI OUTPUT"; it is unverified and never runs commands.
@@ -1295,8 +1295,43 @@ IMPORTANT
 
 
 def render_ai_help(parser: Any) -> str:
-    """Return the native-style command menu and compact all-command index."""
-    return parser.format_help() + "\n" + AI_HELP_GUIDE
+    """Render the AI command root in the same readable style as other Lowkey help pages."""
+    import textwrap
+
+    lines = [
+        "LOWKEY HELP  •  lk ai",
+        "=" * 72,
+        "What it does: Optional AI helpers for source-grounded security leads, test ideas,",
+        "              error explanations, and extra next-command suggestions.",
+        "When to use: When you want AI assistance without handing it control of Lowkey.",
+        "Usage: lk ai <command> [options]",
+        "Example: lk ai security-review --contract Vault",
+        "",
+        "COMMANDS",
+        "--------",
+    ]
+    actions = [
+        action for action in getattr(parser, "_actions", [])
+        if getattr(action, "dest", None) == "action" and hasattr(action, "choices")
+    ]
+    if actions:
+        for name, command_parser in actions[0].choices.items():
+            summary = str(getattr(command_parser, "description", None) or "").strip()
+            if not summary:
+                summary = str(command_parser.format_usage()).strip()
+            wrapped = textwrap.wrap(summary, width=44) or ["See command help for details."]
+            lines.append(f"  {'lk ai ' + name:<26} {wrapped[0]}")
+            lines.extend(" " * 28 + part for part in wrapped[1:])
+    lines.extend(["", "COMMAND HELP", "------------"])
+    lines.extend([
+        "  lk ai <command> --help          Flags and examples for a command",
+        "  lk ai keys --help               All key-management variations",
+        "  lk ai keys add --help           Flags for one key action",
+        "  lk ai recommendations --help    AI recommendation setting",
+        "",
+    ])
+    lines.extend(AI_HELP_GUIDE.splitlines())
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1717,7 +1752,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("After eligible successful commands, Lowkey may send selected, redacted contract source and its native suggestions to the configured provider; charges may apply.")
                 print("AI suggestions are read-only command hints. Lowkey will not execute them.")
             else:
-                print("AI recommendations: manual/off. Lowkey will keep showing its native next-command suggestions without making extra AI requests.")
+                print("AI recommendations: MANUAL / OFF.")
+                print("Lowkey will keep showing its native next-command suggestions.")
+                print("No automatic AI recommendation requests will be made.")
             return 0
         if parsed.action == "mode":
             cfg = load_config()
