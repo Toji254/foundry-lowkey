@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -318,6 +320,45 @@ class AIHarnessTests(unittest.TestCase):
             self.assertEqual(context["source_files_included"], 1)
             self.assertIn("Vault.sol", context["source_files"][0]["path"])
             self.assertNotIn("Secret", json.dumps(context))
+
+
+    def test_ai_context_preview_is_local_and_shows_redacted_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\\nsrc='src'\\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "test").mkdir()
+            (root / "src" / "Vault.sol").write_text(
+                'contract Vault { string private apiKey = "PREVIEW_SECRET_DO_NOT_SEND"; }',
+                encoding="utf-8",
+            )
+            (root / "test" / "Vault.t.sol").write_text(
+                "contract TestVault { string constant IGNORE_ME = 'TEST_ONLY'; }", encoding="utf-8"
+            )
+
+            summary = io.StringIO()
+            with patch.object(ai, "urlopen", side_effect=AssertionError("preview must not contact a provider")) as send:
+                with contextlib.redirect_stdout(summary):
+                    self.assertEqual(ai.main(["preview", "--root", str(root)]), 0)
+                send.assert_not_called()
+            self.assertIn("no provider request made", summary.getvalue())
+            self.assertIn("Vault.sol", summary.getvalue())
+            self.assertNotIn("PREVIEW_SECRET_DO_NOT_SEND", summary.getvalue())
+            self.assertNotIn("Vault.t.sol", summary.getvalue())
+
+            full = io.StringIO()
+            with patch.object(ai, "urlopen", side_effect=AssertionError("preview must not contact a provider")) as send:
+                with contextlib.redirect_stdout(full):
+                    self.assertEqual(ai.main(["preview", "--root", str(root), "--show-context"]), 0)
+                send.assert_not_called()
+            payload = json.loads(full.getvalue())
+            self.assertTrue(payload["preview_only"])
+            self.assertFalse(payload["provider_request_made"])
+            serialized = json.dumps(payload["context"])
+            self.assertNotIn("PREVIEW_SECRET_DO_NOT_SEND", serialized)
+            self.assertNotIn("TEST_ONLY", serialized)
+            self.assertIn("[REDACTED]", serialized)
+            self.assertLessEqual(payload["context_bytes"], ai.MAX_CONTEXT_BYTES)
 
 
 if __name__ == "__main__":
