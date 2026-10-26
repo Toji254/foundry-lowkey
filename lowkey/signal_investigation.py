@@ -195,7 +195,7 @@ def investigate_signal(
         if not mapping_match:
             return finish(
                 "unsupported",
-                "The supported ETH-reentrancy probe requires a simple mapping(address => uint) credit ledger; no test was written.",
+                "The supported ETH-reentrancy probe requires a simple mapping(address => uint) credit ledger; Lowkey will not infer a reentrancy path without that source evidence, so no test was written.",
                 source_digest=source_digest,
             )
         mapping_name = mapping_match.group(1)
