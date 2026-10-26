@@ -1256,58 +1256,95 @@ def automatic_review_reason(
     return auto_review_reason(root, contract_name)
 
 
-AI_HELP_GUIDE = r'''AI COMMAND INDEX
-================
+AI_HELP_GUIDE = r'''COMMAND FORMS & OPTIONS
+=======================
 
-COMMAND FORMS & OPTIONS
------------------------
-status [--json]
-preview [--root DIR] [--contract NAME] [--show-context | --json-context]
-mode {manual|auto}
-recommendations {status|auto|manual} [--json]
-setup --provider {deepseek|gemini|openai|openai-compatible|ollama} --model MODEL
+SETUP & CONNECTION
+------------------
+lk ai status [--json]
+lk ai setup --provider {deepseek|gemini|openai|openai-compatible|ollama} --model MODEL
      [--base-url URL] [--api-key-env ENV] [--timeout SECONDS] [--max-output-tokens COUNT]
-enable | disable | test
-keys [list [--provider PROVIDER] [--json]
-    | add --provider PROVIDER --slot {1|2|3}
-    | remove --provider PROVIDER [--slot {1|2|3}]
-    | clear --provider PROVIDER]
-explain-error [--last] | --text ERROR_TEXT [MORE_WORDS ...] [--command COMMAND]
-errors {auto|manual|status} [--json]
-test-plan [--root DIR] [--contract NAME] [--json]
-security-review [--root DIR] [--contract NAME] [--json]
-ledger [--root DIR] [--json]
-verify FINDING_ID --test FILE --match-test FUNCTION [--root DIR] [--run] [--json]
-disposition FINDING_ID --status {confirmed|rejected|needs-review} --reviewer NAME
-           --reason TEXT [--root DIR] [--evidence-id EVENT_ID] [--json]
-runtime [--json]
+lk ai enable
+lk ai disable
+lk ai test
+lk ai runtime [--json]
 
-COMMAND HELP
-------------
-  lk ai <command> --help          Flags and examples for a command
-  lk ai keys --help               All key-management variations
-  lk ai keys add --help           Flags for one key action
-  lk ai recommendations --help    AI recommendation setting
+KEY MANAGEMENT
+--------------
+lk ai keys list [--provider PROVIDER] [--json]
+lk ai keys add --provider PROVIDER --slot {1|2|3}
+lk ai keys remove --provider PROVIDER [--slot {1|2|3}]
+lk ai keys clear --provider PROVIDER
 
-QUICK START
------------
-  lk ai status
-  lk ai test
-  lk ai preview --contract Vault
-  lk ai security-review --contract Vault
-  lk ai test-plan --contract Vault
-  lk ai ledger
+REVIEW & EVIDENCE
+-----------------
+lk ai preview [--root DIR] [--contract NAME] [--show-context | --json-context]
+lk ai security-review [--root DIR] [--contract NAME] [--json]
+lk ai test-plan [--root DIR] [--contract NAME] [--json]
+lk ai ledger [--root DIR] [--json]
+lk ai verify FINDING_ID --test FILE --match-test FUNCTION [--run] [--root DIR] [--json]
+lk ai disposition FINDING_ID --status {confirmed|rejected|needs-review} --reviewer NAME
+     --reason TEXT [--evidence-id EVENT_ID] [--root DIR] [--json]
 
-IMPORTANT
----------
-- Help spellings: --h, --help, -h, and help. Nested key actions have their own --help.
-- Use lk ai preview before sending source to a provider. Redaction is best-effort.
-- Provider requests may cost money. Review and test-plan requests send selected source.
-- AI-authored text starts with "@ AI OUTPUT"; it is unverified and never runs commands.
-- Native Lowkey recommendations stay separate from optional AI recommendations.
-- AI recommendations are off by default. Enable with "lk ai recommendations auto";
-  switch them off with "lk ai recommendations manual".
-- Use --json only on commands that list it. JSON stays machine-readable.
+AUTOMATION SETTINGS
+-------------------
+lk ai mode {manual|auto}
+lk ai recommendations {status|auto|manual} [--json]
+lk ai errors {status|auto|manual} [--json]
+
+TROUBLESHOOTING
+---------------
+lk ai explain-error --last
+lk ai explain-error --text "ERROR TEXT" [MORE_WORDS ...] [--command "ORIGINAL COMMAND"]
+
+WHAT DOES "AUTO" MEAN?
+----------------------
+"auto" is a setting value, not a top-level command. Choose the setting you want:
+
+  lk ai mode auto
+      Allow complexity-triggered protocol reviews from eligible Lowkey workflows.
+  lk ai recommendations auto
+      Add model-generated, source-cited read-only suggestions after eligible successful commands.
+  lk ai errors auto
+      Request an AI explanation after supported Lowkey command failures.
+
+Turn each setting off with its matching "manual" form. Check each setting with its matching "status" form where available.
+Manual mode is the default; these settings are independent of one another.
+
+COMMON WORKFLOWS
+----------------
+  Configure, then test the connection:
+    lk ai setup --provider gemini --model MODEL
+    lk ai test
+
+  Inspect what would be sent, then review:
+    lk ai preview --contract Vault --show-context
+    lk ai security-review --contract Vault
+
+  Generate suggested tests (does not write or run tests):
+    lk ai test-plan --contract Vault
+
+  Explain a failure without running a suggested command:
+    lk ai explain-error --last
+    lk ai explain-error --text "Forge test failed: expected 1, got 0" --command "lk test"
+
+HELP FOR A SPECIFIC COMMAND
+---------------------------
+  lk ai --help
+  lk ai <command> --help
+  lk ai keys --help
+  lk ai keys add --help
+  lk ai recommendations --help
+
+OUTPUT & SAFETY
+---------------
+- "AI OUTPUT" is unverified advice, not proof of a vulnerability or a test result.
+- The test planner proposes ideas; it never writes or runs Solidity tests.
+- "lk ai verify" previews by default. A local test runs only with the explicit --run flag.
+- Review and test-plan requests send selected source to the provider and may incur charges.
+- Preview redaction is best-effort; inspect the selected context before sharing.
+- Use --json only on commands that list it. Use --json-context for the complete machine-readable preview.
+- Lowkey's native recommendations stay separate from optional AI recommendations.
 ''' 
 
 
