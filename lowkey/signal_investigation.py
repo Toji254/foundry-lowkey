@@ -138,11 +138,11 @@ def investigate_signal(
         return finish("unsupported", "The signal source is missing or outside the active project.")
 
     try:
-        import test_generation
-        import test_generation_analysis
+        from lowkey import test_generation, test_generation_analysis
     except ImportError:
         try:
-            from lowkey import test_generation, test_generation_analysis
+            import test_generation
+            import test_generation_analysis
         except ImportError as exc:
             return finish("error", f"Targeted generation modules are unavailable: {exc}")
     if not (root / "foundry.toml").is_file():
