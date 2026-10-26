@@ -347,8 +347,34 @@ def correlate_campaign(
         engine_results.append(normalized)
         status_counts[status] = status_counts.get(status, 0) + 1
 
+    raw_selection = campaign.get("considered_engines")
+    if not isinstance(raw_selection, list):
+        raw_selection = []
+    engine_selection = []
+    for item in raw_selection:
+        if not isinstance(item, dict):
+            continue
+        engine_selection.append({
+            "engine": str(item.get("engine") or "unknown"),
+            "status": str(item.get("status") or "unknown"),
+            "test_kind": item.get("test_kind"),
+            "memory_class": item.get("memory_class"),
+            "reason": str(item.get("reason") or ""),
+        })
+    selection_summary = campaign.get("selection_summary")
+    if not isinstance(selection_summary, dict):
+        selection_summary = {}
+
     if not engine_results:
-        notes.append("The campaign report contains no well-formed engine result records.")
+        notes.append(
+            "No well-formed engine results were recorded. This is a coverage gap, not a passing verification result."
+        )
+    for item in engine_selection:
+        if item["status"] != "selected":
+            notes.append(
+                f"Engine {item['engine']} was not run ({item['status']}): "
+                f"{item['reason'] or 'no reason supplied'}"
+            )
 
     failures = [
         item for item in engine_results
@@ -369,16 +395,20 @@ def correlate_campaign(
         "correlation_id": correlation_id,
         "investigation": investigation,
         "target_signal_ids": target_ids,
+        "engine_selection": engine_selection,
+        "selection_summary": selection_summary,
         "engine_results": engine_results,
+        "coverage_status": "engine_results_available" if engine_results else "no_engine_results",
         "summary": {
             "engines_with_results": len(engine_results),
+            "no_engine_results": not bool(engine_results),
             "status_counts": status_counts,
             "reported_test_or_property_failures": len(failures),
             "passed_engines": status_counts.get("passed", 0),
             "execution_issues": sum(
                 status_counts.get(key, 0)
                 for key in ("error", "timeout", "resource_limit", "unsupported", "inconclusive", "submitted")
-            ),
+            ) + (1 if not engine_results else 0),
             "security_finding_confirmed": False,
         },
         "interpretation": (
@@ -509,6 +539,8 @@ def run_cli(args: list[str]) -> int:
         for note in payload["notes"]:
             print(f"  Note              : {note}")
         print(f"  Report            : {payload['correlation_report_path']}")
+        if not summary["engines_with_results"]:
+            return 2
         return 1 if payload["missing_signal_ids"] else 0
     if command == "run":
         if len(args) < 2:
