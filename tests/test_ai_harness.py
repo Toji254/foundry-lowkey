@@ -48,7 +48,7 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("Why / when", help_text)
         self.assertIn("Examples:", help_text)
         self.assertIn("does NOT write Solidity test code", help_text)
-        self.assertIn("This preview never makes a provider request", help_text)
+        self.assertIn("preview never makes a provider request", help_text)
 
     def test_help_alias_and_command_specific_help_include_examples(self):
         for alias in (["help"], ["--h"], ["-h"]):
@@ -58,7 +58,9 @@ class AIHarnessTests(unittest.TestCase):
             self.assertIn("COMPLETE COMMAND REFERENCE", output.getvalue())
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(ai.main(["setup", "--help"]), 0)
+            with self.assertRaises(SystemExit) as help_exit:
+                ai.main(["setup", "--help"])
+        self.assertEqual(help_exit.exception.code, 0)
         self.assertIn("--api-key-env", output.getvalue())
         self.assertIn("WHEN:", output.getvalue())
         self.assertIn("lk ai setup --provider gemini", output.getvalue())
