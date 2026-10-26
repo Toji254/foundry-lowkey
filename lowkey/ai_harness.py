@@ -417,6 +417,71 @@ def _protocol_review_context(root: str | Path, contract_name: str | None = None)
     return context
 
 
+def _validate_protocol_review_output(result: Mapping[str, Any]) -> None:
+    """Reject malformed or unbounded structured protocol-review output."""
+    summary = result.get("summary")
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > 12_000:
+        raise AIHarnessError("Protocol review summary is missing, empty, or too long; result rejected.")
+
+    object_fields = {
+        "contract_roles": ("name", "purpose", "evidence"),
+        "invariants": ("statement", "rationale", "source"),
+    }
+    string_lists = ("open_questions", "deployment_considerations")
+    limits = {
+        "contract_roles": 64,
+        "invariants": 128,
+        "open_questions": 128,
+        "deployment_considerations": 128,
+    }
+    field_limits = {
+        "name": 240,
+        "purpose": 2_000,
+        "evidence": 2_000,
+        "statement": 2_000,
+        "rationale": 2_000,
+        "source": 500,
+    }
+
+    for field, required_keys in object_fields.items():
+        values = result.get(field)
+        if not isinstance(values, list):
+            raise AIHarnessError(f"Protocol review field '{field}' must be a list; result rejected.")
+        if len(values) > limits[field]:
+            raise AIHarnessError(f"Protocol review field '{field}' exceeds {limits[field]} entries; result rejected.")
+        for index, item in enumerate(values):
+            if not isinstance(item, dict):
+                raise AIHarnessError(
+                    f"Protocol review field '{field}' entry {index + 1} must be an object; result rejected."
+                )
+            for key in required_keys:
+                value = item.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    raise AIHarnessError(
+                        f"Protocol review field '{field}' entry {index + 1} needs a non-empty '{key}'; result rejected."
+                    )
+                if len(value) > field_limits[key]:
+                    raise AIHarnessError(
+                        f"Protocol review field '{field}' entry {index + 1} field '{key}' is too long; result rejected."
+                    )
+
+    for field in string_lists:
+        values = result.get(field)
+        if not isinstance(values, list):
+            raise AIHarnessError(f"Protocol review field '{field}' must be a list; result rejected.")
+        if len(values) > limits[field]:
+            raise AIHarnessError(f"Protocol review field '{field}' exceeds {limits[field]} entries; result rejected.")
+        for index, value in enumerate(values):
+            if not isinstance(value, str) or not value.strip():
+                raise AIHarnessError(
+                    f"Protocol review field '{field}' entry {index + 1} must be a non-empty string; result rejected."
+                )
+            if len(value) > 2_000:
+                raise AIHarnessError(
+                    f"Protocol review field '{field}' entry {index + 1} is too long; result rejected."
+                )
+
+
 def review_project_protocol(root: str | Path, contract_name: str | None = None) -> dict[str, Any]:
     """Produce unverified protocol hypotheses; never alter native lab decisions."""
     context = _protocol_review_context(root, contract_name)
@@ -433,11 +498,7 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
         context=context,
         required_fields=("summary", "contract_roles", "invariants", "open_questions", "deployment_considerations"),
     )
-    if not isinstance(result.get("summary"), str) or not result["summary"].strip():
-        raise AIHarnessError("Protocol review summary is missing; result rejected.")
-    for field in ("contract_roles", "invariants", "open_questions", "deployment_considerations"):
-        if not isinstance(result.get(field), list):
-            raise AIHarnessError(f"Protocol review field '{field}' must be a list; result rejected.")
+    _validate_protocol_review_output(result)
     result["_lowkey_meta"] = {
         "source_files_included": context["source_files_included"],
         "context_sha256": hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
