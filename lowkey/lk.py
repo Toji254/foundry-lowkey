@@ -9662,58 +9662,7 @@ def run_generic_lab(config, root, rpc, accounts, key, requested=None, mode="gene
         print("Mode    : generic ABI deployment")
 
     print(f"Action  : deploying {contract}...")
-    # Optional semantic review is strictly opt-in. It may add context for the
-    # auditor, but it never chooses a target or changes native deployment logic.
-    if ai_review_requested and not any(str(argument).lower() == "stop" for argument in args):
-        requested_contract = next(
-            (str(argument) for argument in args
-             if not str(argument).startswith("-") and str(argument).lower() != "stop"),
-            None,
-        )
-        try:
-            try:
-                import ai_harness
-            except ImportError:
-                from lowkey import ai_harness
-            ai_status = ai_harness.status()
-            if not ai_status.get("usable"):
-                print(
-                    "INFO  Optional AI protocol review skipped "
-                    f"({ai_status.get('reason') or 'not available'}); native lab setup continues."
-                )
-            else:
-                review = ai_harness.review_project_protocol(root, requested_contract)
-                meta = review.get("_lowkey_meta", {})
-                print()
-                print("OPTIONAL AI PROTOCOL REVIEW — UNVERIFIED")
-                print("========================================")
-                print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
-                print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
-                if meta.get("context_sha256"):
-                    print(f"Context SHA-256: {meta['context_sha256']}")
-                print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=False))
-                for label, key in (
-                    ("Contract roles", "contract_roles"),
-                    ("Candidate invariants", "invariants"),
-                    ("Open questions", "open_questions"),
-                    ("Deployment considerations", "deployment_considerations"),
-                ):
-                    values = review.get(key, [])
-                    if not values:
-                        continue
-                    print(f"\n{label}:")
-                    for item in values[:8]:
-                        # JSON string escaping prevents model/source control characters
-                        # from being interpreted as terminal control sequences.
-                        rendered = json.dumps(item, ensure_ascii=False, sort_keys=True)
-                        print("  - " + rendered[:1200])
-                print("\nContinuing with Lowkey's native lab logic; AI output does not alter deployment choices.")
-        except Exception as exc:
-            # AI must never break the native path. The enhancement can be skipped;
-            # native deployment preconditions and fail-closed checks remain authoritative.
-            print(f"INFO  Optional AI protocol review failed ({type(exc).__name__}); native lab setup continues.")
-
-    project = project_tools.detect_project(root) if project_tools is not None else {}
+        project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or ("foundry" if (Path(root) / "foundry.toml").is_file() else "generic"))
 
     # Use one artifact deployment path across Foundry/Hardhat/Brownie/Vyper-on-EVM.
@@ -10031,6 +9980,57 @@ def run_lab(config,args):
                     print(f"ACTIVE PROJECT: {Path(root).resolve().relative_to(workspace_container).as_posix()}")
                     break
                 print("Please enter one of the project numbers, or q.")
+# Optional semantic review is strictly opt-in. It may add context for the
+    # auditor, but it never chooses a target or changes native deployment logic.
+    if ai_review_requested and not any(str(argument).lower() == "stop" for argument in args):
+        requested_contract = next(
+            (str(argument) for argument in args
+             if not str(argument).startswith("-") and str(argument).lower() != "stop"),
+            None,
+        )
+        try:
+            try:
+                import ai_harness
+            except ImportError:
+                from lowkey import ai_harness
+            ai_status = ai_harness.status()
+            if not ai_status.get("usable"):
+                print(
+                    "INFO  Optional AI protocol review skipped "
+                    f"({ai_status.get('reason') or 'not available'}); native lab setup continues."
+                )
+            else:
+                review = ai_harness.review_project_protocol(root, requested_contract)
+                meta = review.get("_lowkey_meta", {})
+                print()
+                print("OPTIONAL AI PROTOCOL REVIEW — UNVERIFIED")
+                print("========================================")
+                print("AI suggestions are hypotheses, not verified findings or deployment instructions.")
+                print(f"Source excerpts included: {meta.get('source_files_included', 'unknown')}")
+                if meta.get("context_sha256"):
+                    print(f"Context SHA-256: {meta['context_sha256']}")
+                print("Summary: " + json.dumps(str(review.get("summary", "")), ensure_ascii=False))
+                for label, key in (
+                    ("Contract roles", "contract_roles"),
+                    ("Candidate invariants", "invariants"),
+                    ("Open questions", "open_questions"),
+                    ("Deployment considerations", "deployment_considerations"),
+                ):
+                    values = review.get(key, [])
+                    if not values:
+                        continue
+                    print(f"\n{label}:")
+                    for item in values[:8]:
+                        # JSON string escaping prevents model/source control characters
+                        # from being interpreted as terminal control sequences.
+                        rendered = json.dumps(item, ensure_ascii=False, sort_keys=True)
+                        print("  - " + rendered[:1200])
+                print("\nContinuing with Lowkey's native lab logic; AI output does not alter deployment choices.")
+        except Exception as exc:
+            # AI must never break the native path. The enhancement can be skipped;
+            # native deployment preconditions and fail-closed checks remain authoritative.
+            print(f"INFO  Optional AI protocol review failed ({type(exc).__name__}); native lab setup continues.")
+
     project = project_tools.detect_project(root) if project_tools is not None else {}
     kind = str(project.get("kind") or "generic")
 
