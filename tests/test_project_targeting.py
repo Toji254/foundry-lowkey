@@ -1002,3 +1002,124 @@ class patch_cwd:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_required_script_environment_recognizes_project_dotenv_and_env_or_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            script_dir = root / "script"
+            script_dir.mkdir()
+            script = script_dir / "Deploy.s.sol"
+            script.write_text(
+                'contract Deploy { function run() external { '
+                'vm.envAddress("SAFE_REGISTRY"); '
+                'vm.envOr("INITIAL_TOKENS", ","); } }',
+                encoding="utf-8",
+            )
+            env_path = root / ".env"
+            env_path.write_text('SAFE_REGISTRY="0x' + "1" * 40 + '"\n', encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("SAFE_REGISTRY", None)
+                self.assertEqual(lk._lab_script_unresolved_env_names(script, root), [])
+                env_path.unlink()
+                self.assertEqual(
+                    lk._lab_script_unresolved_env_names(script, root),
+                    ["SAFE_REGISTRY"],
+                )
+
+    def test_audit_target_prefers_contract_that_creates_child_instances(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            sources = {
+                "ConfidencePool.sol": (
+                    "pragma solidity ^0.8.20; contract ConfidencePool { "
+                    "constructor() { _disableInitializers(); } "
+                    "function _disableInitializers() internal {} "
+                    "function initialize() external {} }"
+                ),
+                "ConfidencePoolFactory.sol": (
+                    "pragma solidity ^0.8.20; import {ConfidencePool} from "
+                    '"./ConfidencePool.sol"; contract ConfidencePoolFactory { '
+                    "address implementation; function createPool() external returns (address) { "
+                    "return Clones.clone(implementation); } }"
+                ),
+            }
+            for filename, text in sources.items():
+                (root / "src" / filename).write_text(text, encoding="utf-8")
+                name = filename.removesuffix(".sol")
+                artifact_path = root / "out" / filename / f"{name}.json"
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                abi = (
+                    [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}]
+                    if name == "ConfidencePool" else
+                    [{"type": "function", "name": "createPool", "inputs": [], "outputs": []}]
+                )
+                artifact_path.write_text(json.dumps({
+                    "contractName": name,
+                    "sourceName": f"src/{filename}",
+                    "abi": abi,
+                    "bytecode": {"object": "0x6000"},
+                }), encoding="utf-8")
+            for index in range(8):
+                lk.audit_context.add_signal({
+                    "id": f"POOL-WARNING-{index}",
+                    "title": f"Pool warning {index}",
+                    "tool": "forge",
+                    "impact": "High",
+                    "confidence": "High",
+                    "file": "src/ConfidencePool.sol",
+                    "line": index + 1,
+                    "status": "open",
+                }, root)
+            self.assertEqual(lk.discover_audit_target_contract(root), "ConfidencePoolFactory")
+
+    def test_initializer_locked_implementation_is_detected_from_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source = root / "src" / "Template.sol"
+            source.write_text(
+                "pragma solidity ^0.8.20; contract Template { "
+                "constructor() { _disableInitializers(); } "
+                "function _disableInitializers() internal {} "
+                "function initialize() external {} }",
+                encoding="utf-8",
+            )
+            artifact_path = root / "out" / "Template.sol" / "Template.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact = {
+                "contractName": "Template",
+                "sourceName": "src/Template.sol",
+                "abi": [{"type": "function", "name": "initialize", "inputs": [], "outputs": []}],
+                "bytecode": {"object": "0x6000"},
+            }
+            artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+            self.assertTrue(lk.artifact_is_locked_implementation(root, artifact_path, artifact))
+
+    def test_fixture_discovery_supports_successful_project_setup_test_without_create_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            source_path = root / "test" / "unit" / "FactoryFlow.t.sol"
+            source_path.parent.mkdir(parents=True)
+            source_path.write_text(
+                "pragma solidity ^0.8.20; "
+                "contract FactoryFlowTest { "
+                "address public pool; "
+                "function setUp() public { pool = address(0x1234); } "
+                "function test_createPool_success() external { "
+                "pool = address(new Child()); } } "
+                "contract Child {}",
+                encoding="utf-8",
+            )
+            fixture = lk.discover_local_lab_fixture(root, "FactoryFlow")
+            self.assertIsNotNone(fixture)
+            self.assertEqual(fixture["fixture_kind"], "test")
+            self.assertEqual(fixture["create_function"], "test_createPool_success")
+            generated = lk._generate_test_fixture_lab_script(root, fixture)
+            generated_text = generated.read_text(encoding="utf-8")
+            self.assertIn("this.test_createPool_success();", generated_text)
+            self.assertIn("vm.dumpState(", generated_text)
+
+    def test_fixture_clone_implementation_parser(self):
+        implementation = "1234567890abcdef1234567890abcdef12345678"
+        runtime = "0x363d3d373d3d3d363d73" + implementation + "5af43d82803e903d91602b57fd5bf3"
+        self.assertEqual(lk._fixture_embedded_implementation(runtime), "0x" + implementation)
