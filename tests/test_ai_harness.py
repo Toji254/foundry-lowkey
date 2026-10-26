@@ -160,6 +160,42 @@ class AIHarnessTests(unittest.TestCase):
             self.assertNotIn(pending["title"], json.dumps(experience))
             self.assertEqual(result["summary"], response["summary"])
 
+    def test_large_source_and_approved_memory_fit_context_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "foundry.toml").write_text("[profile.default]\nsrc='src'\n", encoding="utf-8")
+            (root / "src").mkdir()
+            for index in range(18):
+                (root / "src" / f"Vault{index}.sol").write_text(
+                    "contract Vault" + str(index) + " { " + ("uint256 public value; " * 420) + " }",
+                    encoding="utf-8",
+                )
+            for index in range(8):
+                proposal = memory.propose_lesson(
+                    kind="test-procedure",
+                    title=f"Validated procedure {index}",
+                    lesson=("Assert the state transition and the relevant emitted event. " * 10),
+                    root=root,
+                )
+                memory.approve_lesson(
+                    proposal["id"], validation_kind="manual-review",
+                    validation="Reviewed against reproducible fixture evidence and source paths.",
+                    root=root,
+                )
+            response = {
+                "summary": "Fixture protocol review",
+                "contract_roles": [],
+                "invariants": [],
+                "open_questions": [],
+                "deployment_considerations": [],
+            }
+            with patch.object(ai, "request_structured", return_value=response) as request:
+                ai.review_project_protocol(root)
+            context = request.call_args.kwargs["context"]
+            total_bytes = len(json.dumps(context, ensure_ascii=False).encode("utf-8"))
+            self.assertLessEqual(total_bytes, ai.MAX_CONTEXT_BYTES)
+            self.assertTrue(context["approved_experience"])
+
     def test_local_ollama_needs_no_key(self):
         ai.configure(provider="ollama", model="qwen2.5-coder")
         self.assertTrue(ai.status()["usable"])
