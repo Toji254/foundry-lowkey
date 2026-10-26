@@ -1462,3 +1462,13 @@ if __name__ == "__main__":
             self.assertEqual(contract, "PoolTemplate")
             self.assertEqual(Path(resolved_artifact).resolve(), artifact_path.resolve())
             self.assertEqual(calls, [["code", clone, "--rpc-url", "http://127.0.0.1:8545"]])
+
+
+    def test_protocol_target_filter_uses_tokens_not_substrings_or_hardcoded_stake_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            self.assertTrue(lk._target_entry_is_protocol(root, {"name": "ContestFactory"}))
+            self.assertTrue(lk._target_entry_is_protocol(root, {"name": "StakeToken"}))
+            self.assertFalse(lk._target_entry_is_protocol(root, {"name": "ConfidencePoolFactoryTest"}))
+            self.assertFalse(lk._target_entry_is_protocol(root, {"name": "MockAgreement"}))
+            self.assertFalse(lk._target_entry_is_protocol(root, {"name": "ERC1967Proxy"}))
