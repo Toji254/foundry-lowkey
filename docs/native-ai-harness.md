@@ -73,7 +73,7 @@ This explicitly asks the configured model to review bounded excerpts of likely f
 
 The opt-in review sends selected source excerpts to the configured provider. Do not use it if source must not leave the machine, and keep private keys, credentials, .env contents and production secrets out of contract source.
 
-Approved native experience memory is available as bounded context for this opt-in review. Proposed lessons are excluded until the user explicitly promotes them with recorded validation; see [the experience memory guide](experience-memory.md). Project lessons remain project-scoped, and global lessons require explicit promotion.
+Approved native experience memory is selected by local relevance matching against the current bounded protocol source, then added as bounded context for this opt-in review. Proposed lessons are excluded until the user explicitly promotes them with recorded validation; see [the experience memory guide](experience-memory.md). Project lessons remain project-scoped, and global lessons require explicit promotion.
 
 ## Boundaries
 
