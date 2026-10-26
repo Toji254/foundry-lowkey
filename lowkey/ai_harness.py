@@ -452,6 +452,19 @@ def auto_review_reason(root: str | Path, contract_name: str | None = None) -> st
     return None
 
 
+
+def automatic_review_reason(
+    root: str | Path,
+    contract_name: str | None = None,
+    current_status: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Return a reason only when auto mode is enabled, usable, and complexity warrants review."""
+    state = dict(current_status) if current_status is not None else status()
+    if not state.get("usable") or not state.get("auto_assist"):
+        return None
+    return auto_review_reason(root, contract_name)
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
