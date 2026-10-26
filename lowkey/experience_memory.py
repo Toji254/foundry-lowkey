@@ -6,6 +6,7 @@ from AI context until a human explicitly approves them with recorded evidence.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -63,9 +64,18 @@ def _project_root(start: str | Path | None = None, *, required: bool = True) -> 
 
 def _secure_mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    # Protect directories under Lowkey's own data root, not only the leaf.
+    privacy_root = _user_data_dir().resolve()
+    current = path.resolve()
     try:
-        os.chmod(path, 0o700)
+        while current == privacy_root or privacy_root in current.parents:
+            os.chmod(current, 0o700)
+            if current == privacy_root:
+                break
+            current = current.parent
     except OSError:
+        # The store remains usable where chmod is unavailable; file modes are
+        # still enforced by _atomic_json / the append-only record writer.
         pass
 
 
@@ -174,9 +184,16 @@ def _normalize_tags(raw: list[str] | None) -> list[str]:
 
 
 def project_memory_dir(root: str | Path | None = None, *, create: bool = False) -> Path:
+    """Return a private user-data directory bound to the project's canonical path.
+
+    Trusted approvals must stay outside the audited repository so the target
+    cannot forge approved lessons by committing local JSON records.
+    """
     project = _project_root(root)
     assert project is not None
-    path = project / ".audit" / "experience"
+    canonical = str(project.resolve())
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+    path = _user_data_dir() / "projects" / fingerprint / "experience"
     if create:
         _secure_mkdir(path)
     return path
@@ -272,7 +289,7 @@ def _find_lesson(lesson_id: str, root: str | Path | None = None) -> tuple[str, d
     project = _project_root(root, required=False)
     candidates: list[tuple[str, Path, dict[str, Any]]] = []
     if project is not None:
-        path = project / ".audit" / "experience" / "lessons.json"
+        path = project_memory_dir(project) / "lessons.json"
         candidates.append(("project", path, _load_store(path, project_label=project.name)))
     global_path, global_store = _global_store()
     candidates.append(("global", global_path, global_store))
