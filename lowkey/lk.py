@@ -6756,6 +6756,39 @@ def _fixture_state_files(root, safe_name):
     return state_dir / f"fixture_state_{safe_name}.json"
 
 
+def _foundry_active_test_root(root):
+    """Resolve the active profile's test directory from the config Foundry will load."""
+    root_path = Path(root).expanduser().resolve()
+    config_value = os.environ.get("FOUNDRY_CONFIG")
+    config_path = Path(config_value).expanduser() if config_value else root_path / "foundry.toml"
+    if not config_path.is_absolute():
+        config_path = root_path / config_path
+    try:
+        config_text = config_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        config_text = ""
+
+    active_profile = str(os.environ.get("FOUNDRY_PROFILE") or "default").strip() or "default"
+    values = {}
+    current_profile = None
+    profile_header = re.compile(r"^\s*\[\s*profile\.([A-Za-z0-9_-]+)\s*\]\s*(?:#.*)?$")
+    test_assignment = re.compile(r"""^\s*test\s*=\s*["']([^"']+)["']\s*(?:#.*)?$""")
+    for line in config_text.splitlines():
+        header = profile_header.match(line)
+        if header:
+            current_profile = header.group(1)
+            continue
+        if current_profile not in {active_profile, "default"}:
+            continue
+        match = test_assignment.match(line)
+        if match and current_profile not in values:
+            values[current_profile] = match.group(1)
+
+    configured = values.get(active_profile) or values.get("default") or "test"
+    test_root = Path(configured).expanduser()
+    return (test_root if test_root.is_absolute() else root_path / test_root).resolve()
+
+
 def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permissions=None):
     """Generate a disposable harness around a project-owned setup/helper/test."""
     root_path = Path(audit_context.foundry_project_root(root) or root).resolve()
@@ -6803,7 +6836,7 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None, fs_permi
 {state_capture}
     }}
 """
-    test_dir = root_path / "test" / "foundry" / ".lowkey"
+    test_dir = _foundry_active_test_root(root_path) / ".lowkey"
     test_dir.mkdir(parents=True, exist_ok=True)
     test_path = test_dir / f"LowkeyAutoFixture_{safe_name}.t.sol"
     profile = re.sub(
