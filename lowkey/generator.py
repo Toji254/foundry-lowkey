@@ -31,6 +31,7 @@ class Request:
     calldata: str | None = None
     output: Path | None = None
     force: bool = False
+    impact_assertion: str | None = None
 
 
 def _is_address(value: Any) -> bool:
@@ -736,6 +737,49 @@ def _value(value: str) -> str:
     return value
 
 
+def _validate_impact_assertion(value: str) -> str:
+    """Validate a boolean expression over measured replay-state evidence."""
+    expression = str(value or "").strip()
+    if not expression or len(expression) > 300:
+        raise ValueError("--impact-assertion needs a non-empty expression of at most 300 characters")
+    if any(char in expression for char in "\r\n;{}\"'") or chr(96) in expression:
+        raise ValueError("--impact-assertion must be a single boolean expression, not Solidity statements")
+    if not re.fullmatch(r"[A-Za-z0-9_ .\[\](){},!<>=&|+\-*/%]+", expression):
+        raise ValueError("--impact-assertion contains unsupported characters")
+    allowed_identifiers = {
+        "success", "targetBefore", "targetAfter", "attackerBefore", "attackerAfter",
+        "tokenBefore", "tokenAfter", "TARGET", "returndata", "true", "false",
+        "tracked", "targetBalance", "attackerBalance", "token", "length", "address",
+    }
+    identifiers = re.findall(r"\b[A-Za-z_]\w*\b", expression)
+    unknown = sorted(set(identifiers) - allowed_identifiers)
+    if unknown:
+        raise ValueError(
+            "--impact-assertion may reference only measured replay variables; unsupported name(s): "
+            + ", ".join(unknown)
+        )
+    if not re.search(r"(?:==|!=|<=|>=|<|>|&&|\|\||!)", expression):
+        raise ValueError("--impact-assertion must express a boolean condition over measured evidence")
+    measured_comparison = (
+        r"(?:targetAfter\s*(?:!=|>|<)\s*targetBefore|targetBefore\s*(?:!=|>|<)\s*targetAfter|"
+        r"attackerAfter\s*(?:!=|>|<)\s*attackerBefore|attackerBefore\s*(?:!=|>|<)\s*attackerAfter|"
+        r"tokenAfter\.targetBalance\s*(?:!=|>|<)\s*tokenBefore\.targetBalance|"
+        r"tokenBefore\.targetBalance\s*(?:!=|>|<)\s*tokenAfter\.targetBalance|"
+        r"tokenAfter\.attackerBalance\s*(?:!=|>|<)\s*tokenBefore\.attackerBalance|"
+        r"tokenBefore\.attackerBalance\s*(?:!=|>|<)\s*tokenAfter\.attackerBalance)"
+    )
+    # Do not accept arbitrary boolean compositions such as
+    # "attackerAfter > attackerBefore || true". The accepted grammar is one
+    # measured before/after comparison, optionally guarded by token availability.
+    accepted = rf"(?:tokenBefore\.tracked\s*&&\s*)?{measured_comparison}"
+    if not re.fullmatch(accepted, expression):
+        raise ValueError(
+            "--impact-assertion must be exactly one measured before/after ETH or token "
+            "balance comparison using >, <, or !=; tautologies and other Boolean logic are rejected"
+        )
+    return expression
+
+
 def _validate_calldata(value: str) -> str:
     value = str(value or "").removeprefix("0x")
     if not re.fullmatch(r"[0-9a-fA-F]*", value):
@@ -779,6 +823,9 @@ def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]
         elif token == "--calldata" and i + 1 < len(raw):
             request.calldata = raw[i + 1].removeprefix("0x")
             i += 1
+        elif token == "--impact-assertion" and i + 1 < len(raw):
+            request.impact_assertion = raw[i + 1]
+            i += 1
         else:
             positional.append(token)
         i += 1
@@ -795,6 +842,7 @@ def _parse_request(kind: str, root: Path, config: dict[str, Any], raw: list[str]
         if latest:
             latest.output = request.output
             latest.force = request.force
+            latest.impact_assertion = request.impact_assertion
             if request.value != "0":
                 latest.value = request.value
             if request.calldata:
@@ -918,7 +966,10 @@ def _solidity_address_literal(value: str | None) -> str:
     return f"address(uint160(0x00{raw}))"
 
 
-def _template_poc(contract: str, target: str, function: str, value: str, calldata: str) -> str:
+def _template_poc(
+    contract: str, target: str, function: str, value: str, calldata: str,
+    impact_assertion: str,
+) -> str:
     ident = _id(contract, "Target")
     return f'''// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
@@ -1038,12 +1089,8 @@ contract LowkeyPoC_{ident} is Script {{
             tokenAfter
         );
 
-        // A successful call only means it did not revert. It is NOT proof of a vulnerability.
-        require(success, "Lowkey PoC: target call reverted");
-
-        // Put the actual security property here:
-        // require(attackerAfter > attackerBefore, "exploit condition not met");
-        // require(TARGET.balance < targetBefore, "expected loss did not occur");
+        // This condition is supplied explicitly by the auditor; Lowkey does not infer impact.
+        require(({impact_assertion}), "Lowkey PoC: security-impact assertion failed");
     }}
 }}
 '''
@@ -1205,17 +1252,9 @@ contract LowkeyTest_{ident} is Test {{
             tokenAfter
         );
 
-        // Replace these placeholders with the protocol property you actually proved.
-        // assertEq(...);          // exact state transition
-        // assertGt(...);          // unexpected value increase
-        // vm.expectRevert(...);   // unauthorized path should fail
-        // vm.expectEmit(...);     // event should be emitted
-
+        // This is a recorded-call replay assertion, not a claim that the call is exploitable.
         assertTrue(vm.revertTo(snapshot), "Lowkey: snapshot rollback failed");
     }}
-
-    // Next step: turn a concrete reproduction into a fuzz test once the invariant is clear.
-    // bound(...) constrains fuzzed numbers; assume(...) rules out impossible states.
 }}
 '''
 
@@ -1225,11 +1264,14 @@ def run_generate(config: dict[str, Any], args: list[str]) -> int:
 
 Usage:
   lk generate deployment <ContractName> [--output script/File.s.sol] [--force]
-  lk generate poc [<function> [args...]] [--value <value>] [--calldata 0x...] [--output script/File.s.sol]
-  lk generate test [<function> [args...]] [--value <value>] [--calldata 0x...] [--output test/File.t.sol]
+  lk generate poc <function> [args...] --impact-assertion '<boolean condition>'
+      [--value <value>] [--calldata 0x...] [--output script/File.s.sol]
+  lk generate test <function> [args...] [--value <value>] [--calldata 0x...]
+      [--output test/File.t.sol]
 
-poc/test use the latest recorded cast send when no function is supplied.
-Generated Solidity contains teaching comments beside the Foundry primitives you need to understand.
+A matching recorded call may supply function/value/calldata when no function is provided.
+An exploit PoC requires explicit, measurable impact; incomplete requests are rejected.
+A generated call-replay test is not an exploit proof and is labelled unvalidated.
 """)
         return 0
 
@@ -1315,33 +1357,26 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         print(f"Error: {exc}")
         return 2
     evidence = _audit_candidate(root)
-    candidate = evidence.get("candidate", {})
-    placeholder_request = False
-
-    if not request.function and not request.calldata and candidate.get("function"):
-        request.function = str(candidate.get("function"))
-        placeholder_request = True
-
-    # A full ABI signature printed by 'lk focus' is intentionally enough to
-    # create a scaffold even when concrete argument values are not known yet.
-    # This keeps the suggested command copy/pasteable without pretending that
-    # missing call data has been proved.
-    if not request.calldata and _signature_has_unresolved_arguments(request.function, request.args):
-        placeholder_request = True
+    if kind == "poc":
+        if not request.impact_assertion:
+            print("Error: lk generate poc requires --impact-assertion with a concrete security-impact condition.")
+            return 2
+        try:
+            request.impact_assertion = _validate_impact_assertion(request.impact_assertion)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 2
+    elif request.impact_assertion:
+        print("Error: --impact-assertion is only valid for 'lk generate poc'.")
+        return 2
 
     if not request.function and not request.calldata:
-        # A focused signal is enough to create a compile-ready investigation scaffold.
-        tools_state = evidence.get("tools", {})
-        bootstrap_evidence = any(
-            tools_state.get(key)
-            for key in ("forge_build", "forge_tests", "forge_coverage", "slither_findings", "source_triage_markers")
-        )
-        placeholder_request = bool(candidate.get("id") or evidence.get("latest", {}).get("tx_hash") or bootstrap_evidence)
-        if not placeholder_request:
-            print("Error: no function supplied and no recorded cast send was found.")
-            return 2
-
-    if not request.calldata and not placeholder_request:
+        print("Error: no concrete function/calldata supplied and no matching recorded cast send was found.")
+        return 2
+    if not request.calldata and _signature_has_unresolved_arguments(request.function, request.args):
+        print("Error: the supplied function signature has unresolved arguments. Provide concrete arguments or --calldata.")
+        return 2
+    if not request.calldata:
         code, encoded, error = _run(
             root,
             "cast",
@@ -1401,12 +1436,14 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             deploy_test_locally = True
 
     if kind == "poc":
-        content = _context_comment_block(evidence) + _template_poc(contract, request.target, request.function or "raw-call", request.value, request.calldata or "")
-        if placeholder_request:
-            content = content.replace(
-                'require(success, "Lowkey PoC: target call reverted");',
-                '// PLACEHOLDER: no concrete call was available yet; replace calldata/function before executing.\n        // require(success, "Lowkey PoC: target call reverted");'
-            )
+        content = _context_comment_block(evidence) + _template_poc(
+            contract,
+            request.target,
+            request.function or "raw-call",
+            request.value,
+            request.calldata or "",
+            request.impact_assertion or "",
+        )
         default = Path("script") / f"LowkeyPoC_{ident}.s.sol"
     else:
         content = _context_comment_block(evidence) + _template_test(
@@ -1418,11 +1455,6 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             source_import=test_source_import,
             deploy_locally=deploy_test_locally,
         )
-        if placeholder_request:
-            content = content.replace(
-                'assertTrue(success, "Lowkey reproduction: target call reverted");',
-                '// PLACEHOLDER: no concrete call was available yet; replace calldata/function before executing.\n        // assertTrue(success, "Lowkey reproduction: target call reverted");'
-            )
         default = Path("test") / f"LowkeyTest_{ident}.t.sol"
 
     code = _write_generated_scaffold(root, request.output, default, content, request.force)
@@ -1442,14 +1474,24 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
         "value": request.value,
         "calldata": request.calldata,
         "evidence": evidence,
-        "status": "scaffold",
-        "note": "Audit context is carried forward for investigation. Validate the security property before treating this as a confirmed finding.",
+        "status": "candidate-not-validated" if kind == "poc" else "replay-not-validated",
+        "impact_assertion": request.impact_assertion,
+        "security_impact_assertion_present": bool(request.impact_assertion),
+        "validation_status": "not-run",
+        "note": (
+            "The generated script contains the explicit impact assertion, but it has not been executed against the intended chain state."
+            if kind == "poc" else
+            "This is an exact-call replay test that asserts non-reversion; it is not an exploit proof or comprehensive protocol test."
+        ),
     }
     brief_path.write_text(json.dumps(brief, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     print(f"{kind.upper()} generated: {output}")
     print(f"Evidence brief: {brief_path}")
-    print("Read the comments before running it; they are intentionally part of the learning workflow.")
+    if kind == "poc":
+        print("PoC status: CANDIDATE — explicit impact assertion included; execution/chain evidence is still required.")
+    else:
+        print("Test status: REPLAY — the exact call is asserted to succeed; no exploit claim is made.")
     audit_context.record_tool(
         "generator",
         root,
@@ -1464,7 +1506,8 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
             "evidence_brief": str(brief_path),
             "candidate_signal": evidence.get("candidate", {}).get("id"),
             "candidate_mode": evidence.get("candidate", {}).get("mode"),
-            "placeholder": placeholder_request,
+            "placeholder": False,
+            "impact_assertion": request.impact_assertion,
             "calldata_present": bool(request.calldata),
         },
     )

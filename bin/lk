@@ -1,6 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
+# Native Forge subcommands must own their own --help parsing. The generic
+# contextual-help interception below would otherwise turn 'lk forge debug --help'
+# into Lowkey's help for an unknown nested command rather than Forge's real usage.
+if [[ "${1:-}" == "forge" && "${2:-}" == "debug" ]]; then
+    shift
+    exec forge "$@"
+fi
+
 for arg in "$@"; do
     case "$arg" in
         --h|--help|-h|help)
