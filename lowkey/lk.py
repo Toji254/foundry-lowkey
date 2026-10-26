@@ -5702,8 +5702,8 @@ def _target_entry_is_protocol(root, entry):
     """Return True for contracts that belong to the protocol, not its test/fixture support."""
     name = str(entry.get("name") or entry.get("contract") or "").strip()
     # Classify Solidity-style name tokens, not arbitrary substrings:
-    # "ContestFactory" is application code, while "ConfidencePoolFactoryTest"
-    # and "MockAgreement" are normally test/support contracts.
+    # application names with those words embedded in other tokens must remain
+    # visible; whole support tokens are filtered, backed by source-path checks.
     tokenized_name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
     name_tokens = {token for token in re.split(r"[^a-z0-9]+", tokenized_name) if token}
     if name_tokens & {"mock", "fixture", "test"}:
