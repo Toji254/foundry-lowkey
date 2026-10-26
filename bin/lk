@@ -55,7 +55,7 @@ case "${1:-}" in
         done
         exec python3 "$HOME/.lowkey/forge_tools.py" "$@"
         ;;
-    generate|gen)
+    generate)
         # Keep contextual help on the main Lowkey router; normal generation
         # still uses the dedicated generator entrypoint for a lean path.
         for arg in "$@"; do
@@ -64,6 +64,23 @@ case "${1:-}" in
                     exec python3 "$HOME/.lowkey/lk.py" "$@"
                     ;;
             esac
+        done
+        shift
+        exec python3 "$HOME/.lowkey/generator.py" "${@}"
+        ;;
+    gen)
+        # Short alias for generate; preserve the same native generator route.
+        for arg in "$@"; do
+            case "$arg" in
+                --h|--help|-h|help)
+                    exec python3 "$HOME/.lowkey/lk.py" "$@"
+                    ;;
+            esac
+        done
+        shift
+        exec python3 "$HOME/.lowkey/generator.py" "${@}"
+        ;;
+esac
         done
         shift
         exec python3 "$HOME/.lowkey/generator.py" "${@}"
