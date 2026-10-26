@@ -3177,6 +3177,42 @@ contract Pool {
             self.assertEqual(lk.run_native_project_command({}, "build", []), 0)
             self.assertEqual(lk.run_native_project_command({}, "test", []), 0)
 
+    def test_foundry_build_and_test_bootstrap_before_native_command(self):
+        root = pathlib.Path("/tmp/lowkey-foundry-bootstrap-test")
+        events = []
+        info = {
+            "root": str(root),
+            "backend": "foundry",
+            "kind": "foundry",
+            "stacks": ["foundry"],
+        }
+
+        def fake_bootstrap(project_info, args=(), **kwargs):
+            events.append(("bootstrap", str(project_info["root"]), kwargs.get("reason")))
+            return 0
+
+        def fake_foundry(command):
+            events.append(("native", list(command)))
+            return 0
+
+        with patch.object(lk, "detected_project_root", return_value=root), patch.object(
+            lk, "detect_project", return_value=info
+        ), patch.object(lk, "bootstrap_project", side_effect=fake_bootstrap), patch.object(
+            lk, "run_foundry", side_effect=fake_foundry
+        ):
+            self.assertEqual(lk.run_native_project_command({}, "build", []), 0)
+            self.assertEqual(lk.run_native_project_command({}, "test", []), 0)
+
+        self.assertEqual(
+            events,
+            [
+                ("bootstrap", str(root), "prepare"),
+                ("native", ["build"]),
+                ("bootstrap", str(root), "prepare"),
+                ("native", ["test"]),
+            ],
+        )
+
     def test_native_command_without_plan_is_review_needed(self):
         with patch.object(lk, "detected_project_root", return_value=pathlib.Path("/tmp/demo")), \
              patch.object(lk, "detect_project", return_value={"root": "/tmp/demo", "backend": "generic", "stacks": []}), \
