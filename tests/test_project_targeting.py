@@ -1200,6 +1200,38 @@ if __name__ == "__main__":
         self.assertEqual(lk._fixture_embedded_implementation(runtime), "0x" + implementation)
 
 
+    def test_required_script_environment_respects_active_mock_moderator_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            script_dir = root / "script"
+            script_dir.mkdir()
+            script = script_dir / "Deploy.s.sol"
+            script.write_text(
+                'contract Deploy { function run() external { '
+                'address registry = vm.envAddress("SAFE_HARBOR_REGISTRY"); '
+                'bool deployMockModerator = vm.envOr("DEPLOY_MOCK_MODERATOR", false); '
+                'address moderator; if (deployMockModerator) { moderator = address(1); } '
+                'else { moderator = vm.envAddress("DEFAULT_MODERATOR"); } } }',
+                encoding="utf-8",
+            )
+            env_path = root / ".env"
+            env_path.write_text(
+                'SAFE_HARBOR_REGISTRY="0x' + "1" * 40 + '"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"DEPLOY_MOCK_MODERATOR": "true"}, clear=False):
+                os.environ.pop("SAFE_HARBOR_REGISTRY", None)
+                os.environ.pop("DEFAULT_MODERATOR", None)
+                self.assertEqual(
+                    lk._lab_script_unresolved_env_names(script, root),
+                    [],
+                )
+                env_path.unlink()
+                self.assertEqual(
+                    lk._lab_script_unresolved_env_names(script, root),
+                    ["SAFE_HARBOR_REGISTRY"],
+                )
+
     def test_native_lab_rejects_direct_initializer_locked_implementation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
