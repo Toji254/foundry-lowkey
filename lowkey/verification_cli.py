@@ -534,6 +534,8 @@ def run_cli(args: list[str]) -> int:
         print(f"  Test kind         : {payload['test_kind']}")
         print(f"  Correlation       : {payload['correlation_id']}")
         print(f"  Engine results    : {summary['engines_with_results']}")
+        coverage_note = " — verification coverage gap" if payload["coverage_status"] == "no_engine_results" else ""
+        print(f"  Coverage          : {payload['coverage_status']}{coverage_note}")
         print(f"  Failures to review: {summary['reported_test_or_property_failures']}")
         print(f"  Passed engines    : {summary['passed_engines']} (not a security verdict)")
         print(f"  Evidence attached : {len(payload['attached_signal_ids'])}")
