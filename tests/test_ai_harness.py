@@ -73,6 +73,70 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("WHEN:", output.getvalue())
         self.assertIn("lk ai setup --provider gemini", output.getvalue())
 
+    def test_ai_help_is_grouped_and_explains_independent_auto_settings(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(ai.main(["--help"]), 0)
+        help_text = output.getvalue()
+        for expected in (
+            "SETUP & CONNECTION",
+            "KEY MANAGEMENT",
+            "REVIEW & EVIDENCE",
+            "AUTOMATION SETTINGS",
+            "WHAT DOES \"AUTO\" MEAN?",
+            "lk ai mode auto",
+            "lk ai recommendations auto",
+            "lk ai errors auto",
+            "auto is a value after a setting command",
+            "Use --json only on commands that list it",
+        ):
+            self.assertIn(expected, help_text)
+
+    def test_auto_is_not_a_top_level_command_and_help_alias_does_not_hide_the_error(self):
+        for args in (["auto", "--h"], ["auto", "--help"]):
+            output = io.StringIO()
+            with contextlib.redirect_stderr(output):
+                self.assertEqual(ai.main(args), 2)
+            message = output.getvalue()
+            self.assertIn("not a standalone 'lk ai' command", message)
+            self.assertIn("lk ai recommendations auto", message)
+            self.assertNotIn("invalid choice", message)
+            self.assertNotIn("usage: lk ai", message)
+
+    def test_unknown_root_option_gets_lowkey_style_guidance(self):
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(ai.main(["--auto", "--help"]), 2)
+        message = output.getvalue()
+        self.assertIn("unknown 'lk ai' option '--auto'", message)
+        self.assertIn("lk ai --help", message)
+        self.assertNotIn("usage: lk ai", message)
+
+    def test_bare_setting_groups_show_current_value_and_exact_commands(self):
+        expectations = {
+            "mode": ("lk ai mode manual", "lk ai mode auto"),
+            "recommendations": ("lk ai recommendations status", "lk ai recommendations auto"),
+            "errors": ("lk ai errors status", "lk ai errors auto"),
+        }
+        for action, expected_commands in expectations.items():
+            output = io.StringIO()
+            with self.subTest(action=action), contextlib.redirect_stdout(output):
+                self.assertEqual(ai.main([action]), 0)
+            rendered = output.getvalue()
+            self.assertIn("Current setting: MANUAL / OFF", rendered)
+            for command in expected_commands:
+                self.assertIn(command, rendered)
+            self.assertNotIn("usage: lk ai", rendered)
+
+    def test_malformed_nested_command_reports_human_readable_help_hint(self):
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(ai.main(["errors", "sometimes"]), 2)
+        rendered = output.getvalue()
+        self.assertIn("Error:", rendered)
+        self.assertIn("lk ai errors --help", rendered)
+        self.assertNotIn("usage: lk ai", rendered)
+
     def test_command_help_exposes_each_command_flag_and_nested_variation(self):
         cases = [
             (["status", "--help"], ["--json"]),
