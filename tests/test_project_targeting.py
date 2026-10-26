@@ -1255,8 +1255,9 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
             source = root / "src" / "Template.sol"
-            derived_source = root / "src" / "TemplateV2.sol"
+            derived_source = root / "test" / "mocks" / "TemplateV2.sol"
             source.parent.mkdir(parents=True, exist_ok=True)
+            derived_source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text(
                 "pragma solidity ^0.8.20; contract Template { "
                 "constructor() { _disableInitializers(); } "
@@ -1282,7 +1283,7 @@ if __name__ == "__main__":
             }), encoding="utf-8")
             derived_artifact.write_text(json.dumps({
                 "contractName": "TemplateV2",
-                "sourceName": "src/TemplateV2.sol",
+                "sourceName": "test/mocks/TemplateV2.sol",
                 "abi": [
                     {"type": "function", "name": "initialize", "inputs": [], "outputs": []},
                     {"type": "function", "name": "revision", "inputs": [], "outputs": []},

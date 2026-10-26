@@ -7402,8 +7402,9 @@ def _fixture_runtime_matches_target_or_upgrade(root, target_contract, implementa
         name = artifact_contract_name(artifact_path, artifact)
         if name.lower() == target_name:
             return True
-        if not artifact_is_project_application(str(root), artifact_path, artifact):
-            continue
+        # Test fixtures can intentionally upgrade a proxy to a test-only mock
+        # derived from the real contract. The source-backed inheritance check,
+        # not an "application source" classification, is the relevant safety gate.
         if _fixture_artifact_inherits_contract(root, artifact_path, artifact, target_name):
             return True
     return False
