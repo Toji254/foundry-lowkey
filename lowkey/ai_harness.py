@@ -1382,6 +1382,55 @@ def render_ai_help(parser: Any) -> str:
     return "\n".join(lines)
 
 
+def render_ai_setting_help(action: str, config: Mapping[str, Any] | None = None) -> str:
+    """Show useful defaults and exact commands when a setting group has no value."""
+    cfg = dict(config or load_config())
+    setting = {
+        "mode": ("auto_assist", "AI protocol review mode"),
+        "recommendations": ("auto_recommendations", "AI next-command recommendations"),
+        "errors": ("auto_explain_errors", "automatic AI error explanations"),
+    }.get(action)
+    if setting is None:
+        return render_ai_help(None)
+    key, label = setting
+    enabled = bool(cfg.get(key, False))
+    lines = [
+        f"LOWKEY AI {label.upper()}",
+        "=" * (len("LOWKEY AI ") + len(label)),
+        f"Current setting: {'AUTO / ON' if enabled else 'MANUAL / OFF'}",
+        "",
+        "Choose one of these exact commands:",
+    ]
+    if action == "mode":
+        lines.extend([
+            "  lk ai mode manual   Run protocol review only when explicitly requested.",
+            "  lk ai mode auto     Allow complexity-triggered review for eligible workflows.",
+            "",
+            "Check current settings: lk ai status",
+        ])
+    elif action == "recommendations":
+        lines.extend([
+            "  lk ai recommendations status   Show the current setting.",
+            "  lk ai recommendations manual   Keep AI suggestions off.",
+            "  lk ai recommendations auto     Add optional model-generated read-only suggestions.",
+        ])
+    else:
+        lines.extend([
+            "  lk ai errors status   Show the current setting.",
+            "  lk ai errors manual   Keep explanations user-triggered only.",
+            "  lk ai errors auto     Explain supported Lowkey failures automatically.",
+            "",
+            "Manual explanation: lk ai explain-error --last",
+        ])
+    lines.extend([
+        "",
+        'Note: "auto" is a value after a setting command, not a standalone "lk ai" command.',
+        "These settings are independent. AI requests can send selected source or error context and may incur charges.",
+    ])
+    return "\n".join(lines)
+
+
+
 def _safe_terminal_text(value: str) -> str:
     """Make untrusted source text safe to print to a terminal."""
     return re.sub(
@@ -1501,7 +1550,15 @@ def render_human_context_preview(
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
-    parser = argparse.ArgumentParser(
+
+    class LowkeyArgumentParser(argparse.ArgumentParser):
+        """Turn parser mistakes into short Lowkey-style guidance instead of raw argparse errors."""
+        def error(self, message: str) -> None:
+            raise AIHarnessError(
+                f"{message}. Run '{self.prog} --help' to see the valid command form."
+            )
+
+    parser = LowkeyArgumentParser(
         prog="lk ai",
         description="Plain-language AI helpers for contract reviews, test ideas and error explanations.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1654,6 +1711,34 @@ def main(argv: list[str] | None = None) -> int:
     if not args or args[0] in {"-h", "--help"}:
         print(render_ai_help(parser))
         return 0
+
+    subcommand_actions = next(
+        (action for action in getattr(parser, "_actions", [])
+         if getattr(action, "dest", None) == "action" and hasattr(action, "choices")),
+        None,
+    )
+    known_commands = set(subcommand_actions.choices) if subcommand_actions else set()
+    if args[0] not in known_commands:
+        if args[0] == "auto":
+            print("Error: 'auto' is not a standalone 'lk ai' command.", file=sys.stderr)
+            print("Choose the setting you want to enable:", file=sys.stderr)
+            print("  lk ai mode auto              Complexity-triggered protocol review", file=sys.stderr)
+            print("  lk ai recommendations auto  Extra read-only AI suggestions", file=sys.stderr)
+            print("  lk ai errors auto            Automatic error explanations", file=sys.stderr)
+            print("Run 'lk ai --help' for the organized command guide.", file=sys.stderr)
+        elif args[0].startswith("-"):
+            print(f"Error: unknown 'lk ai' option '{args[0]}'.", file=sys.stderr)
+            print("Use a subcommand first, for example 'lk ai mode auto'.", file=sys.stderr)
+            print("Run 'lk ai --help' for all commands and options.", file=sys.stderr)
+        else:
+            print(f"Error: unknown 'lk ai' command '{args[0]}'.", file=sys.stderr)
+            print("Run 'lk ai --help' to see available commands.", file=sys.stderr)
+        return 2
+
+    if len(args) == 1 and args[0] in {"mode", "recommendations", "errors"}:
+        print(render_ai_setting_help(args[0]))
+        return 0
+
     try:
         parsed = parser.parse_args(args)
         if parsed.action == "status":
