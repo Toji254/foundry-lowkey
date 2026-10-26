@@ -23,14 +23,14 @@ class AIHarnessTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def test_top_level_help_is_complete_and_documents_all_ai_flags(self):
+    def test_top_level_help_is_compact_and_lists_commands_variations_and_flags(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             self.assertEqual(ai.main(["--help"]), 0)
         help_text = output.getvalue()
         for command in (
             "status", "preview", "mode", "setup", "enable", "disable", "test",
-            "keys list", "keys add", "keys remove", "keys clear", "explain-error",
+            "keys", "list", "add", "remove", "clear", "explain-error",
             "errors", "test-plan", "security-review", "ledger", "verify",
             "disposition", "runtime", "recommendations",
         ):
@@ -45,21 +45,19 @@ class AIHarnessTests(unittest.TestCase):
         ):
             with self.subTest(flag=flag):
                 self.assertIn(flag, help_text)
-        self.assertIn("Why / when", help_text)
-        self.assertIn("Examples:", help_text)
-        self.assertIn(
-            "Examples:\n  lk ai status\n  lk ai security-review --contract Vault\n  lk ai test-plan --contract Vault",
-            help_text,
-        )
-        self.assertIn("does NOT write Solidity test code", help_text)
-        self.assertIn("preview never makes a provider request", help_text)
+        self.assertIn("COMMAND FORMS & OPTIONS", help_text)
+        self.assertIn("lk ai keys add --help", help_text)
+        self.assertIn("lk ai recommendations auto", help_text)
+        self.assertLess(len(help_text), 7000)
+        self.assertNotIn("COMPLETE COMMAND REFERENCE", help_text)
+        self.assertNotIn("Key failover:", help_text)
 
-    def test_help_alias_and_command_specific_help_include_examples(self):
+    def test_help_alias_and_command_specific_help_include_examples(self):    def test_help_alias_and_command_specific_help_include_examples(self):
         for alias in (["help"], ["--h"], ["-h"]):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 self.assertEqual(ai.main(alias), 0)
-            self.assertIn("COMPLETE COMMAND REFERENCE", output.getvalue())
+            self.assertIn("COMMAND FORMS & OPTIONS", output.getvalue())
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             with self.assertRaises(SystemExit) as help_exit:
@@ -68,6 +66,37 @@ class AIHarnessTests(unittest.TestCase):
         self.assertIn("--api-key-env", output.getvalue())
         self.assertIn("WHEN:", output.getvalue())
         self.assertIn("lk ai setup --provider gemini", output.getvalue())
+
+    def test_command_help_exposes_each_command_flag_and_nested_variation(self):
+        cases = [
+            (["status", "--help"], ["--json"]),
+            (["preview", "--help"], ["--root", "--contract", "--show-context"]),
+            (["setup", "--help"], ["--provider", "--model", "--base-url", "--api-key-env", "--timeout", "--max-output-tokens"]),
+            (["recommendations", "--help"], ["status", "auto", "manual", "--json"]),
+            (["keys", "--help"], ["list", "add", "remove", "clear"]),
+            (["keys", "list", "--help"], ["--provider", "--json"]),
+            (["keys", "add", "--help"], ["--provider", "--slot"]),
+            (["keys", "remove", "--help"], ["--provider", "--slot"]),
+            (["keys", "clear", "--help"], ["--provider"]),
+            (["explain-error", "--help"], ["--last", "--text", "--command"]),
+            (["errors", "--help"], ["auto", "manual", "status", "--json"]),
+            (["test-plan", "--help"], ["--root", "--contract", "--json"]),
+            (["security-review", "--help"], ["--root", "--contract", "--json"]),
+            (["ledger", "--help"], ["--root", "--json"]),
+            (["verify", "--help"], ["--root", "--test", "--match-test", "--run", "--json"]),
+            (["disposition", "--help"], ["--root", "--status", "--reviewer", "--reason", "--evidence-id", "--json"]),
+            (["runtime", "--help"], ["--json"]),
+        ]
+        for args, expected in cases:
+            output = io.StringIO()
+            with self.subTest(args=args):
+                with contextlib.redirect_stdout(output):
+                    with self.assertRaises(SystemExit) as help_exit:
+                        ai.main(args)
+                self.assertEqual(help_exit.exception.code, 0)
+                rendered = output.getvalue()
+                for flag in expected:
+                    self.assertIn(flag, rendered)
 
     def test_ai_recommendations_are_off_by_default_and_setting_is_independent(self):
         value = ai.status()

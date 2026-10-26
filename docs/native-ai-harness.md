@@ -250,6 +250,6 @@ Lowkey's AI commands are intended to be understandable without reading internal 
 
 ## Complete built-in command guide
 
-Run `lk ai --help` (or `lk ai help`) for the full on-terminal command guide. It documents every public AI subcommand and its flags, explains when and why to use it, gives copy-paste examples, and distinguishes local-only commands from commands that contact the provider. A command-specific form such as `lk ai setup --help` shows that command's own options plus a short usage example.
+Run `lk ai --help` (or `lk ai help`) for a compact command index showing every subcommand, common variation, and flag family. Use `lk ai <command> --help` for concise descriptions and examples of that command's flags; use `lk ai keys <action> --help` for nested key-management variations. This follows Lowkey's native help pattern: a short index, then command-specific details when needed.
 
 Human-readable output is the default. Use `--json` on commands that support it when you need machine-readable data. The root guide is built alongside the argument parser; update its command syntax and tests whenever a CLI option is added or changed.
