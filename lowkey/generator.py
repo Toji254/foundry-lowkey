@@ -1423,7 +1423,13 @@ Generated Solidity contains teaching comments beside the Foundry primitives you 
                 'assertTrue(success, "Lowkey reproduction: target call reverted");',
                 '// PLACEHOLDER: no concrete call was available yet; replace calldata/function before executing.\n        // assertTrue(success, "Lowkey reproduction: target call reverted");'
             )
-        default = Path("test") / f"LowkeyTest_{ident}.t.sol"
+        if placeholder_request and request.output is None:
+            # A signature-only reproduction has no concrete calldata or enabled
+            # call-success assertion. Keep that investigation draft outside the
+            # active Foundry test tree so it cannot break or pollute unrelated runs.
+            default = Path(".audit") / "test-drafts" / f"LowkeyTest_{ident}.t.sol"
+        else:
+            default = Path("test") / f"LowkeyTest_{ident}.t.sol"
 
     code = _write_generated_scaffold(root, request.output, default, content, request.force)
     if code != 0:
