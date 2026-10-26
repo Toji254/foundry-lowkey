@@ -123,7 +123,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(state["missing"], ["lib/sample"])
             self.assertEqual(state["orphaned"], [])
 
-    def test_bootstrap_plan_recovers_missing_submodules_without_force(self):
+    def test_bootstrap_plan_targets_only_missing_git_submodules(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             self.write(root, "foundry.toml", "[profile.default]\n")
@@ -155,7 +155,10 @@ class BootstrapTests(unittest.TestCase):
                 [item["command"] for item in actions],
                 [
                     ["git", "submodule", "sync", "--recursive"],
-                    ["git", "submodule", "update", "--init", "--recursive"],
+                    [
+                        "git", "submodule", "update", "--init", "--recursive",
+                        "--force", "--", "lib/sample",
+                    ],
                 ],
             )
             self.assertTrue(all(pathlib.Path(item["cwd"]) == root.resolve() for item in actions))
