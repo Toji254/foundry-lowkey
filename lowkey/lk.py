@@ -6686,20 +6686,12 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None):
             fixture_call = f"address target = address({helper_ref}());"
         target_marker = '        console2.log("LOWKEY_TARGET:", target);'
 
-    state_capture = f"""        Vm.AccountAccess[] memory accesses = vm.stopAndReturnStateDiff();
-        for (uint256 i = 0; i < accesses.length; ++i) {{
-            if (
-                accesses[i].kind == Vm.AccountAccessKind.Create &&
-                accesses[i].account != address(0)
-            ) {{
-                console2.log("LOWKEY_CREATE:", accesses[i].account);
-            }}
-        }}
-        vm.dumpState("{state_literal}");"""
+    # dumpState exports the complete post-setup EVM state. Do not depend on the
+    # optional structured state-diff enums, which vary across Foundry versions.
+    state_capture = f"""        vm.dumpState("{state_literal}");"""
 
     if setup_mode == "override":
         harness = f"""    function setUp() public override {{
-        vm.startStateDiffRecording();
         super.setUp();
         {fixture_call}
 {target_marker}
@@ -6710,7 +6702,6 @@ def _generate_test_fixture_lab_script(root, candidate, state_path=None):
 """
     else:
         harness = f"""    function testLowkeyLabStateDump() public {{
-        vm.startStateDiffRecording();
         {fixture_call}
 {target_marker}
 {state_capture}
@@ -6724,7 +6715,6 @@ pragma solidity ^0.8.20;
 
 import {{ {contract} }} from "{relative}";
 import {{ console2 }} from "forge-std/console2.sol";
-import {{ Vm }} from "forge-std/Vm.sol";
 
 /// @dev Runs project-owned setup logic and exports the complete local state.
 contract LowkeyAutoFixtureTest_{safe_name} is {contract} {{
