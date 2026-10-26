@@ -92,6 +92,19 @@ lk ai preview --contract ConfidencePool --show-context
 bash scripts/test-native-ai-harness.sh
 ~~~
 
+### Focused security review with evidence
+
+The protocol overview and security-finding workflow are separate commands. The focused review records only unverified candidates; source-quote validation checks citation existence, not exploitability. Use native tests and an explicit human disposition for conclusions.
+
+~~~bash
+lk ai security-review --contract ConfidencePool
+lk ai ledger
+lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test testWithdrawSucceedsInAttackRequested
+# Inspect the plan and selected test before explicitly executing:
+lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test testWithdrawSucceedsInAttackRequested --run
+lk ai disposition F-0123456789ab --status confirmed --reviewer auditor --reason 'Reviewed the reproduced impact and assertion.' --evidence-id NATIVE_TEST_EVENT_ID
+lk ai runtime
+~~~
 ## Native experience memory
 
 Lowkey can retain audit feedback and reusable lessons without an AI provider. Feedback and proposed lessons are stored in a private user-data directory keyed to the canonical path of the audited project, not inside the target repository. Only lessons explicitly approved with validation evidence are supplied as relevance-ranked reference context to an explicitly requested AI review; lessons never execute as code or change native security rules.

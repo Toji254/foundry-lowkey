@@ -96,6 +96,36 @@ lk lab --ai-review
 
 The preview is local-only. The explicit review sends the selected, redacted source excerpts and approved memory to the configured provider, and provider charges may apply. Inspect the result as unverified hypotheses; it is not proof of safety or a confirmed vulnerability report.
 
+## Structured security review and evidence lifecycle
+
+The protocol overview (`lk lab --ai-review`) and the focused security-review task are separate jobs. The overview helps map a project; `lk ai security-review` asks for concrete candidate vulnerabilities and normalizes each item into a review record. Model confidence is descriptive only.
+
+~~~bash
+lk ai security-review --contract ConfidencePool
+lk ai ledger
+lk ai ledger --json
+
+# Plan one selected test without executing it
+lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test testWithdrawSucceedsInAttackRequested
+
+# After reviewing the test code and plan, explicitly execute that test
+lk ai verify F-0123456789ab --test test/unit/ConfidencePool.t.sol --match-test testWithdrawSucceedsInAttackRequested --run
+
+# Make a separate human decision after inspecting the evidence
+lk ai disposition F-0123456789ab --status confirmed --reviewer auditor --reason 'Reviewed the reproduction assertion and impact.' --evidence-id NATIVE_TEST_EVENT_ID
+
+lk ai runtime
+~~~
+
+The security-review pipeline stores a report under `.audit/ai-review/reviews/` and append-only events in `.audit/ai-review/ledger.jsonl`. Every AI-produced item starts as `candidate`, with `verified=false`. The source-quote checker checks whether the quoted code exists in the selected source excerpt. A matching quote proves only that the citation exists, not that the security claim is true.
+
+`lk ai verify` plans by default. Supplying `--run` explicitly authorizes one native `forge test` command with one exact test name. The tool rejects shell commands, deployment scripts, non-test paths, and fork-test paths; it uses a bounded timeout and stores summary lines plus hashes rather than the full test output. Tests are repository code: inspect the selected test before executing it. A passing test is execution evidence and never automatically upgrades a finding.
+
+`lk ai disposition` is a separate human decision. `confirmed` requires a recorded passing native test plus a non-empty human reviewer/reason; `rejected` also requires a linked native run. These checks provide traceability, not a guarantee that the test proves exploit impact. The reviewer must inspect the assertion, test scope, and source. The model has no API to set a human disposition, deploy, sign, broadcast, or run arbitrary shell commands.
+
+Provider adapters are selected through a replaceable registry. Agents depend on a structured task interface rather than a specific vendor. The built-in providers currently share an OpenAI-compatible transport; replacing a transport requires explicit application-code registration and regression tests. The agent registry exposes bounded capabilities, one-level allowlisted delegation, and an action log at `.audit/ai-review/runtime-events.jsonl`. Logs store action metadata and digests rather than prompts, model responses, credentials, or raw test output.
+
+Historical project feedback is included only as labeled historical context when available. It is not a source citation or current proof and must be rechecked against the current source revision and current native tests. Only separately approved memory lessons are treated as reusable validated procedures, and those lessons remain reference context—not proof that a current finding is true.
 ## Manual and automatic assistance modes
 
 The default is **manual**: Lowkey does not make a model request unless you explicitly run \`lk lab --ai-review\`.

@@ -23,7 +23,7 @@ MAX_RESPONSE_BYTES = 96_000
 DEFAULT_TIMEOUT = 45
 DEFAULT_OUTPUT_TOKENS = 1800
 PROVIDERS = {"deepseek", "openai", "openai-compatible", "ollama"}
-PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses"}
+PURPOSES = {"lab_protocol_review", "protocol_analysis", "test_plan", "invariant_hypotheses", "security_review"}
 DEFAULT_URLS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1", "ollama": "http://127.0.0.1:11434/v1"}
 
 _SECRET_ASSIGNMENT_RE = re.compile(
@@ -273,17 +273,22 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
         "temperature": 0.1, "max_tokens": int(config.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)),
         "response_format": {"type": "json_object"}, "stream": False,
     }
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    request = Request(str(config["base_url"]).rstrip("/") + "/chat/completions",
-                      data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-    started, outcome = time.monotonic(), "error"
     try:
-        with urlopen(request, timeout=int(config.get("timeout_seconds", DEFAULT_TIMEOUT))) as response:
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
-        if len(raw) > MAX_RESPONSE_BYTES:
-            raise AIHarnessError("Provider response exceeded Lowkey's response-size limit.")
+        try:
+            import provider_adapters
+        except ImportError:
+            from lowkey import provider_adapters
+        adapter = provider_adapters.get_provider_adapter(str(config.get("provider") or ""))
+        raw = adapter.send(
+            config=config,
+            api_key=key,
+            payload=payload,
+            request_type=Request,
+            urlopen_fn=urlopen,
+            http_error_type=HTTPError,
+            url_error_type=URLError,
+            max_response_bytes=MAX_RESPONSE_BYTES,
+        )
         try:
             envelope = json.loads(raw.decode("utf-8"))
             output = json.loads(envelope["choices"][0]["message"]["content"])
@@ -296,11 +301,16 @@ def _send(config: Mapping[str, Any], *, purpose: str, task: str, context: Mappin
             raise AIHarnessError("Provider result is missing required field(s): " + ", ".join(missing))
         outcome = "completed"
         return output
-    except HTTPError as exc:
-        detail = "authentication failed" if exc.code in {401, 403} else f"HTTP {exc.code}"
-        raise AIUnavailable(f"AI provider request failed ({detail}). Native workflows remain available.") from exc
-    except URLError as exc:
-        raise AIUnavailable("AI provider could not be reached. Native workflows remain available.") from exc
+    except provider_adapters.ProviderAdapterError as exc:
+        if exc.category == "authentication":
+            raise AIUnavailable("AI provider request failed (authentication failed). Native workflows remain available.") from exc
+        if exc.category == "network":
+            raise AIUnavailable("AI provider could not be reached. Native workflows remain available.") from exc
+        if exc.category == "http":
+            raise AIUnavailable(str(exc) + " Native workflows remain available.") from exc
+        if exc.category == "response-size":
+            raise AIHarnessError(str(exc)) from exc
+        raise AIHarnessError(str(exc)) from exc
     finally:
         _log_event(purpose, config, digest, outcome, int((time.monotonic() - started) * 1000))
 
@@ -412,8 +422,21 @@ def _protocol_review_context(root: str | Path, contract_name: str | None = None)
                 if isinstance(item, dict)
             ),
         )
+        try:
+            import evidence_ledger
+        except ImportError:
+            from lowkey import evidence_ledger
+        context["historical_investigations"] = evidence_ledger.historical_feedback_context(root, limit=5)
+        context["historical_investigations_policy"] = (
+            "Historical investigation feedback is contextual memory only. Re-check all claims against current source "
+            "and current native test evidence; prior outcomes are not proof about the current revision."
+        )
     except Exception:
         context["approved_experience"] = []
+        context["historical_investigations"] = []
+        context["historical_investigations_policy"] = (
+            "No historical investigation context was available; do not infer that past findings or checks exist."
+        )
     return context
 
 
@@ -582,6 +605,27 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("enable", help="enable the configured extension")
     sub.add_parser("disable", help="disable AI without changing native commands")
     sub.add_parser("test", help="test provider connectivity with a fixed probe; may incur charges")
+    security = sub.add_parser("security-review", help="review source for candidate vulnerabilities; findings remain unverified")
+    security.add_argument("--root", default=".", help="project root (default: current directory)")
+    security.add_argument("--contract", help="prioritize source matching a contract name")
+    security.add_argument("--json", dest="as_json", action="store_true", help="print normalized JSON")
+    ledger_cmd = sub.add_parser("ledger", help="list AI candidates, native test runs, and human dispositions")
+    ledger_cmd.add_argument("--root", default=".", help="project root (default: current directory)")
+    ledger_cmd.add_argument("--json", dest="as_json", action="store_true", help="print ledger summary as JSON")
+    verify = sub.add_parser("verify", help="plan or explicitly run one selected local Foundry test")
+    verify.add_argument("finding_id", help="candidate ID shown by security-review")
+    verify.add_argument("--root", default=".", help="project root (default: current directory)")
+    verify.add_argument("--test", required=True, help="single Solidity test file under test/ or tests/; fork tests excluded")
+    verify.add_argument("--match-test", required=True, help="exact test function name beginning with test")
+    verify.add_argument("--run", action="store_true", help="execute the selected test; without this flag only prints a plan")
+    disposition = sub.add_parser("disposition", help="record a human decision after inspecting evidence")
+    disposition.add_argument("finding_id")
+    disposition.add_argument("--root", default=".", help="project root (default: current directory)")
+    disposition.add_argument("--status", choices=("confirmed", "rejected", "needs-review"), required=True)
+    disposition.add_argument("--reviewer", required=True, help="human reviewer identifier")
+    disposition.add_argument("--reason", required=True, help="reason supported by inspected evidence")
+    disposition.add_argument("--evidence-id", help="event ID returned by lk ai verify --run; required for confirmed/rejected")
+    sub.add_parser("runtime", help="show registered agents, tools, adapters and execution boundaries")
     args = list(sys.argv[1:] if argv is None else argv)
     args = ["--help" if value in {"--h", "help"} else value for value in args]
     if not args or args[0] == "-h":
@@ -591,6 +635,102 @@ def main(argv: list[str] | None = None) -> int:
         parsed = parser.parse_args(args)
         if parsed.action == "status":
             print(json.dumps(status(), indent=2, sort_keys=True))
+            return 0
+        if parsed.action == "security-review":
+            try:
+                import security_review
+            except ImportError:
+                from lowkey import security_review
+            review = security_review.review_project_security(Path(parsed.root).expanduser(), parsed.contract)
+            if parsed.as_json:
+                print(json.dumps(review, indent=2, sort_keys=True, ensure_ascii=False))
+            else:
+                print(security_review.render_review(review))
+                meta = review.get("_lowkey_meta", {})
+                if meta.get("review_id"):
+                    print(f"Review ID: {meta['review_id']}")
+                if meta.get("report_path"):
+                    print(f"Stored report: {meta['report_path']}")
+            return 0
+        if parsed.action == "ledger":
+            try:
+                import evidence_ledger
+            except ImportError:
+                from lowkey import evidence_ledger
+            value = evidence_ledger.summary(Path(parsed.root).expanduser())
+            if parsed.as_json:
+                print(json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False))
+            else:
+                print("LOWKEY AI REVIEW EVIDENCE LEDGER")
+                print("================================")
+                print(f"Project: {value['project_root']}")
+                print(f"Ledger: {value['ledger_path']} ({value['event_count']} events)")
+                if not value["findings"]:
+                    print("No candidate findings recorded.")
+                for item in value["findings"]:
+                    print(f"{item['finding_id']} [{item['status']}] {str(item.get('severity') or 'info').upper()} {item.get('title')}")
+                    print(f"  Source quote: {item.get('source_quote_status', 'unmatched')}; native test runs: {len(item.get('test_runs', []))}")
+                    if item.get("disposition"):
+                        print(f"  Human disposition: {item['disposition'].get('disposition')} by {item['disposition'].get('reviewer')}")
+                print(value["principle"])
+            return 0
+        if parsed.action == "verify":
+            try:
+                import evidence_ledger
+                import agent_runtime
+            except ImportError:
+                from lowkey import evidence_ledger, agent_runtime
+            root = Path(parsed.root).expanduser().resolve()
+            existing = evidence_ledger.summary(root)
+            if not any(item.get("finding_id") == parsed.finding_id for item in existing["findings"]):
+                raise AIHarnessError(f"Unknown candidate finding ID: {parsed.finding_id}. Run lk ai security-review first.")
+            if not parsed.run:
+                plan = agent_runtime.plan_native_test(root, test_path=parsed.test, match_test=parsed.match_test)
+                print("NATIVE TEST PLAN — NOT EXECUTED")
+                print(json.dumps(plan, indent=2, sort_keys=True))
+                print("Review the selected test, then add --run to execute it.")
+                return 0
+            result = agent_runtime.execute_native_test(
+                root, test_path=parsed.test, match_test=parsed.match_test,
+                finding_id=parsed.finding_id, approved=True,
+            )
+            evidence = evidence_ledger.record_native_test(root, result)
+            print("NATIVE TEST EXECUTION RECORDED")
+            print("A passing test is execution evidence, not automatic proof that the candidate is correct.")
+            print(json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False))
+            return 0 if result.get("status") == "passed" else 1
+        if parsed.action == "disposition":
+            try:
+                import evidence_ledger
+            except ImportError:
+                from lowkey import evidence_ledger
+            result = evidence_ledger.record_disposition(
+                Path(parsed.root).expanduser(),
+                parsed.finding_id,
+                disposition=parsed.status,
+                reviewer=parsed.reviewer,
+                reason=parsed.reason,
+                evidence_id=parsed.evidence_id,
+            )
+            print("HUMAN DISPOSITION RECORDED; MODEL DID NOT SET THIS STATUS.")
+            print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+            return 0
+        if parsed.action == "runtime":
+            try:
+                import agent_runtime
+                import provider_adapters
+            except ImportError:
+                from lowkey import agent_runtime, provider_adapters
+            current = status()
+            print(json.dumps({
+                "runtime": agent_runtime.runtime_status(),
+                "provider_adapters": provider_adapters.provider_adapter_status(),
+                "active_provider": {
+                    "provider": current.get("provider"),
+                    "model": current.get("model"),
+                    "usable": current.get("usable"),
+                },
+            }, indent=2, sort_keys=True))
             return 0
         if parsed.action == "preview":
             context = _protocol_review_context(Path(parsed.root).expanduser(), parsed.contract)
@@ -693,7 +833,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         parser.print_help()
         return 2
-    except (AIHarnessError, OSError, ValueError) as exc:
+    except (AIHarnessError, OSError, ValueError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
