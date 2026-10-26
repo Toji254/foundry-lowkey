@@ -140,13 +140,23 @@ class BootstrapTests(unittest.TestCase):
             )
 
             def fake_run(command, **kwargs):
-                if "rev-parse" in command:
+                if command[-1:] == ["--show-toplevel"]:
                     return type(
                         "Result",
                         (),
                         {
                             "returncode": 0,
                             "stdout": str(submodule.resolve()) + "\n",
+                            "stderr": "",
+                        },
+                    )()
+                if command[-3:] == ["rev-parse", "--verify", "HEAD"]:
+                    return type(
+                        "Result",
+                        (),
+                        {
+                            "returncode": 0,
+                            "stdout": "1" * 40 + "\n",
                             "stderr": "",
                         },
                     )()
@@ -525,12 +535,8 @@ class BootstrapTests(unittest.TestCase):
                     "actions": actions,
                 }
 
-            plans = [
-                plan([action]),
-                plan([]),
-            ]
+            plans = [plan([action]), plan([])]
             update_calls = 0
-            calls = []
 
             class Result:
                 def __init__(self, code=0, stdout="", stderr=""):
@@ -540,7 +546,6 @@ class BootstrapTests(unittest.TestCase):
 
             def fake_run(actual_command, **kwargs):
                 nonlocal update_calls
-                calls.append((actual_command, kwargs.get("cwd")))
                 if actual_command == command:
                     update_calls += 1
                     if update_calls == 1:
@@ -548,20 +553,25 @@ class BootstrapTests(unittest.TestCase):
                             128,
                             stderr=(
                                 "fatal: Unable to find current revision in submodule path "
-                                "'lib/openzeppelin-contracts'\\n"
+                                "'lib/openzeppelin-contracts'\n"
                             ),
                         )
+                    worktree.mkdir(parents=True)
+                    (worktree / "recovered.sol").write_text(
+                        "contract Recovered {}\n",
+                        encoding="utf-8",
+                    )
                     return Result(
                         0,
-                        stdout="Submodule path 'lib/openzeppelin-contracts': checked out pinned revision\\n",
+                        stdout="Submodule path 'lib/openzeppelin-contracts': checked out pinned revision\n",
                     )
                 if actual_command == ["git", "rev-parse", "--absolute-git-dir"]:
-                    return Result(0, stdout=str(root / ".git") + "\\n")
+                    return Result(0, stdout=str(root / ".git") + "\n")
                 if actual_command == [
                     "git", "submodule", "deinit", "--force", "--",
                     "lib/openzeppelin-contracts",
                 ]:
-                    return Result(0, stdout="Submodule unregistered\\n")
+                    return Result(0, stdout="Submodule unregistered\n")
                 raise AssertionError(f"Unexpected command: {actual_command}")
 
             with patch.object(
@@ -579,7 +589,7 @@ class BootstrapTests(unittest.TestCase):
                 (backups[0] / "partial.txt").read_text(encoding="utf-8"),
                 "preserve this file",
             )
-            self.assertFalse(worktree.exists())
+            self.assertTrue((worktree / "recovered.sol").is_file())
 
     def test_build_command_uses_vyper_compiler_for_single_vyper_source(self):
         with tempfile.TemporaryDirectory() as tmp:
