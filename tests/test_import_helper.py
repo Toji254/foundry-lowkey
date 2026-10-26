@@ -166,6 +166,23 @@ class ImportHelperTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_back_at_main_menu_explains_that_it_is_already_at_the_top(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with patch("builtins.input", side_effect=["b", "q"]):
+                with contextlib.redirect_stdout(out):
+                    result = helper.interactive(root, helper.remappings(root))
+
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn(
+                "This is already the main import menu. Choose 1-9, or q to quit.",
+                rendered,
+            )
+        finally:
+            tmp.cleanup()
+
     def test_back_from_category_picker_redraws_import_menu(self):
         tmp, root = self.project()
         try:
