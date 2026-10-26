@@ -384,8 +384,8 @@ class LowkeyCastTests(unittest.TestCase):
         self.assertEqual(
             commands,
             [
-                ["git", "submodule", "sync", "--recursive"],
-                ["git", "submodule", "update", "--init", "--recursive", "--force"],
+                # This fixture has .gitmodules metadata but no tracked gitlink,
+                # so Lowkey should recover the orphaned entry directly.
                 ["git", "clone", "--depth", "1", "https://github.com/foundry-rs/forge-std.git", "contracts/lib/forge-std"],
                 ["pnpm", "install", "--frozen-lockfile"],
             ],
