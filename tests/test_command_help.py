@@ -1163,5 +1163,30 @@ class CommandHelpTests(unittest.TestCase):
             ])
 
 
+    def test_launcher_routes_cov_help_to_lowkey_help_router(self):
+        launcher = ROOT / "bin" / "lk"
+        with tempfile.TemporaryDirectory() as home:
+            lowkey_dir = pathlib.Path(home) / ".lowkey"
+            lowkey_dir.mkdir()
+            # The main router records its argv; forge_tools must not receive help.
+            (lowkey_dir / "lk.py").write_text(
+                "import json, sys\\nprint(json.dumps(sys.argv[1:]))\\n",
+                encoding="utf-8",
+            )
+            (lowkey_dir / "forge_tools.py").write_text(
+                "raise SystemExit('coverage help bypassed Lowkey router')\\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["HOME"] = home
+
+            result = subprocess.run(
+                ["bash", str(launcher), "cov", "--h"],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), ["cov", "--h"])
+
+
 if __name__ == "__main__":
     unittest.main()
