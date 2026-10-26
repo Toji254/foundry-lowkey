@@ -57,6 +57,10 @@ class ImportHelperTests(unittest.TestCase):
         self.assertIn("IMPORT SYNTAX CHEAT SHEET:", rendered)
         self.assertIn('import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";', rendered)
         self.assertIn('import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";', rendered)
+        self.assertIn("BROWSER CONTROLS:", rendered)
+        self.assertIn("b goes back one menu level", rendered)
+        self.assertIn("lk import --copy ERC721", rendered)
+        self.assertIn("lk import -v ERC721", rendered)
 
     def test_remapping(self):
         tmp, root = self.project()
@@ -163,6 +167,43 @@ class ImportHelperTests(unittest.TestCase):
             self.assertIn("SCOPE: project source + installed dependencies + known reference catalog", rendered)
             self.assertIn("ERC20 [contract]", rendered)
             self.assertIn("IERC20 [interface]", rendered)
+        finally:
+            tmp.cleanup()
+
+    def test_back_at_main_menu_explains_that_it_is_already_at_the_top(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with patch("builtins.input", side_effect=["b", "q"]):
+                with contextlib.redirect_stdout(out):
+                    result = helper.interactive(root, helper.remappings(root))
+
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            self.assertIn(
+                "This is already the main import menu. Choose 1-9, or q to quit.",
+                rendered,
+            )
+        finally:
+            tmp.cleanup()
+
+    def test_back_from_category_picker_redraws_import_menu(self):
+        tmp, root = self.project()
+        try:
+            out = io.StringIO()
+            with patch("builtins.input", side_effect=["2", "b", "q"]):
+                with contextlib.redirect_stdout(out):
+                    result = helper.interactive(root, helper.remappings(root))
+
+            rendered = out.getvalue()
+            self.assertEqual(result, 0)
+            # "b" in a category picker must return to a visible category menu,
+            # not leave the user at a bare prompt with no navigation choices.
+            self.assertGreaterEqual(
+                rendered.count("2. Contracts / abstract contracts"),
+                2,
+            )
+            self.assertGreaterEqual(rendered.count("IMPORT BROWSER"), 2)
         finally:
             tmp.cleanup()
 
