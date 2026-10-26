@@ -13422,10 +13422,11 @@ def _render_signal_evidence(signal, prefix="   ", config=None):
                 for result in engine_results:
                     if not isinstance(result, dict):
                         continue
-                    engine = str(result.get("engine") or "unknown")
+                    engine = str(result.get("engine") or "unknown").strip() or "unknown"
+                    engine_display = engine[:1].upper() + engine[1:]
                     engine_status = str(result.get("status") or "unknown").upper()
                     interpretation = str(result.get("interpretation") or "no interpretation recorded")
-                    print(f"{prefix}       {engine}: {engine_status} — {interpretation}")
+                    print(f"{prefix}       {engine_display}: {engine_status} — {interpretation}")
                     if result.get("summary"):
                         print(f"{prefix}         {result.get('summary')}")
             selections = item.get("engine_selection", [])
