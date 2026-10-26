@@ -40,6 +40,36 @@ class AIHarnessTests(unittest.TestCase):
         with self.assertRaises(ai.AIHarnessError):
             ai.configure(provider="deepseek", model="deepseek-flash", base_url="https://user:pass@example.com/v1", api_key="secret")
 
+    def test_provider_url_query_and_fragment_are_rejected(self):
+        with self.assertRaises(ai.AIHarnessError):
+            ai.configure(
+                provider="openai-compatible", model="demo",
+                base_url="https://provider.example/v1?token=should-not-be-here",
+                api_key="secret",
+            )
+        with self.assertRaises(ai.AIHarnessError):
+            ai.configure(
+                provider="openai-compatible", model="demo",
+                base_url="https://provider.example/v1#credentials",
+                api_key="secret",
+            )
+
+    def test_missing_required_model_fields_are_rejected(self):
+        ai.configure(provider="deepseek", model="deepseek-flash", api_key="secret")
+        class FakeResponse:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, limit):
+                return json.dumps({"choices": [{"message": {"content": '{"summary": "incomplete"}'}}]}).encode()
+        with patch.object(ai, "urlopen", return_value=FakeResponse()):
+            with self.assertRaises(ai.AIHarnessError):
+                ai.request_structured(
+                    purpose="protocol_analysis", task="inspect", context={},
+                    required_fields=("facts", "hypotheses"),
+                )
+
     def test_disabled_ai_blocks_request(self):
         ai.configure(provider="deepseek", model="deepseek-flash", api_key="secret")
         cfg = ai.load_config()
