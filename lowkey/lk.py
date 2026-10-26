@@ -14886,7 +14886,7 @@ COMMAND_HELP = {
         "lk import ERC20",
         "Use this while writing a contract or test and you are unsure what to import. The help distinguishes a concrete implementation you can inherit from, an interface for calling an existing contract, and a reference entry whose dependency is not installed yet.",
         forms=[
-            ("lk import", "Open the browser. Choose 1-9 to open a section. In a list, enter a number to open an item, /term to filter that list, g to search everywhere, r to clear the filter, b to return to the main menu, or q to quit. At the main menu, b explains that you are already at the top.", "lk import"),
+            ("lk import", "Open the browser. Choose 1-9 to open a section. In a list, enter a number to open an item, /term to filter that list, g to search everywhere, r to clear the filter, b to go back one menu level, or q to quit. At the main menu, b explains that you are already at the top.", "lk import"),
             ("lk import <symbol>", "Look up a name such as Token, ERC20, or IERC20. Lowkey shows the source, exact import line, purpose, and available install guidance. Reference entries can appear even when the package is not installed.", "lk import ERC20"),
             ("lk import <path>", "Inspect a Solidity file by its Foundry remapped or package import path. A file lookup lists symbols it exports; it does not mean you should inherit from every symbol in that file.", "lk import @openzeppelin/contracts/token/ERC20/IERC20.sol"),
             ("lk import search <term>", "Search project source, installed dependencies, and Lowkey's known reference catalog using symbol names, import paths, roles, tags, and use cases. This is global search, unlike /term inside a picker.", "lk import search ERC20"),
