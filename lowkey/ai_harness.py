@@ -52,9 +52,9 @@ def credentials_path() -> Path:
 
 
 def _default_config() -> dict[str, Any]:
-    return {"schema_version": SCHEMA_VERSION, "enabled": False, "provider": None, "model": None,
-            "base_url": None, "api_key_env": None, "timeout_seconds": DEFAULT_TIMEOUT,
-            "max_output_tokens": DEFAULT_OUTPUT_TOKENS}
+    return {"schema_version": SCHEMA_VERSION, "enabled": False, "auto_assist": False,
+            "provider": None, "model": None, "base_url": None, "api_key_env": None,
+            "timeout_seconds": DEFAULT_TIMEOUT, "max_output_tokens": DEFAULT_OUTPUT_TOKENS}
 
 
 def _read_json(path: Path, missing: Any) -> Any:
@@ -80,6 +80,8 @@ def load_config() -> dict[str, Any]:
     cfg.update(value)
     if not isinstance(cfg["enabled"], bool):
         raise AIHarnessError("AI configuration 'enabled' must be true or false.")
+    if not isinstance(cfg.get("auto_assist"), bool):
+        raise AIHarnessError("AI configuration 'auto_assist' must be true or false.")
     return cfg
 
 
@@ -191,7 +193,9 @@ def status(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         has_key = bool(os.environ.get(str(env_name))) if env_name else bool(_credentials().get(str(provider)))
         if not has_key:
             usable, reason = False, "API key unavailable"
+    auto_assist = bool(cfg.get("auto_assist", False))
     return {"enabled": bool(cfg.get("enabled")), "configured": configured, "usable": usable,
+            "auto_assist": auto_assist, "mode": "auto" if auto_assist else "manual",
             "provider": provider, "model": cfg.get("model"), "base_url": cfg.get("base_url"),
             "reason": reason, "timeout_seconds": cfg.get("timeout_seconds"),
             "max_output_tokens": cfg.get("max_output_tokens")}
@@ -414,6 +418,40 @@ def review_project_protocol(root: str | Path, contract_name: str | None = None) 
     return result
 
 
+def auto_review_reason(root: str | Path, contract_name: str | None = None) -> str | None:
+    """Return why native heuristics consider an opt-in auto-review useful.
+
+    This function performs local, bounded source inspection only. It never
+    calls a provider and never selects a deployment target.
+    """
+    try:
+        context = _source_context(Path(root), contract_name)
+    except (AIHarnessError, OSError, ValueError):
+        return None
+    sources = context.get("source_files", [])
+    if not isinstance(sources, list):
+        return None
+    if len(sources) < 3:
+        return None
+    searchable = "\n".join(
+        str(item.get("path", "")) + "\n" + str(item.get("source_excerpt", ""))
+        for item in sources if isinstance(item, dict)
+    ).lower()
+    markers = (
+        "factory", "proxy", "implementation", "clones.", "create2",
+        "delegatecall", "initialize(", "beacon", "registry", "createclone",
+    )
+    matched = [marker for marker in markers if marker in searchable]
+    if matched:
+        return (
+            f"{len(sources)} first-party source files include protocol-composition "
+            f"patterns ({', '.join(matched[:4])})"
+        )
+    if len(sources) >= 8:
+        return f"the project has {len(sources)} first-party source files, making cross-contract role review useful"
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
@@ -421,6 +459,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="action")
     sub.add_parser("status", help="show configuration without network access")
+    mode = sub.add_parser("mode", help="choose manual or complexity-triggered automatic review")
+    mode.add_argument("value", choices=("manual", "auto"))
     setup = sub.add_parser("setup", help="configure a provider once")
     setup.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
     setup.add_argument("--model", required=True)
@@ -441,6 +481,17 @@ def main(argv: list[str] | None = None) -> int:
         if parsed.action == "status":
             print(json.dumps(status(), indent=2, sort_keys=True))
             return 0
+        if parsed.action == "mode":
+            cfg = load_config()
+            cfg["auto_assist"] = parsed.value == "auto"
+            save_config(cfg)
+            if cfg["auto_assist"]:
+                print("AI mode: auto. Native heuristics may request a protocol review for complex projects.")
+                print("Only the review request is automated; model output cannot choose targets or run tools.")
+                print("Selected source is sent to the configured provider, and charges may apply.")
+            else:
+                print("AI mode: manual. A protocol review runs only when you use lk lab --ai-review.")
+            return 0
         if parsed.action == "setup":
             if parsed.api_key_env or parsed.provider == "ollama":
                 key = None
@@ -453,7 +504,8 @@ def main(argv: list[str] | None = None) -> int:
                 api_key_env=parsed.api_key_env, timeout_seconds=parsed.timeout,
                 max_output_tokens=parsed.max_output_tokens,
             )
-            print(f"Configured {cfg['provider']} ({cfg['model']}); enabled for explicitly requested tasks.")
+            mode_label = "auto" if cfg.get("auto_assist") else "manual"
+            print(f"Configured {cfg['provider']} ({cfg['model']}); AI mode is {mode_label}.")
             print("No provider request was made. Run lk ai test to test connectivity (charges may apply).")
             return 0
         if parsed.action in {"enable", "disable"}:
