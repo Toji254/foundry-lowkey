@@ -15279,7 +15279,6 @@ COMMAND_HELP = {
                     ("--output <path>", "Write the normalized correlation report. Default: .audit/verification/correlation-report.json.", "lk verify correlate .audit/verification/campaign.json --output=.audit/verification/correlation.json"),
                 ],
             ),
-        },
             "investigate": _help_entry(
                 "Generate and execute a test only when the existing finding maps to a supported, explicit onlyOwner access-control property.",
                 "lk verification investigate <SIGNAL_ID> [--constructor-args <JSON_ARRAY>]",
@@ -15289,6 +15288,7 @@ COMMAND_HELP = {
                     ("--constructor-args <JSON_ARRAY>", "Supply the exact constructor expressions needed to deploy the local test fixture. Lowkey never guesses required protocol setup.", "lk verify investigate SLITHER-XXXXXXXXXX --constructor-args '[\"address(0x1234)\"]'"),
                 ],
             ),
+        },
         related=["lk verification-benchmark", "lk mutation-check", "lk test-gen"],
     ),
     "verification-benchmark": _help_entry(
